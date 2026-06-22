@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Keep the actions and reusable workflows referenced by SHA current. Review
+  # every PR before merge; never auto-merge (a SHA bump is executable CI logic).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
