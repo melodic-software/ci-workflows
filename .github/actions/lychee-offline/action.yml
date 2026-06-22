@@ -1,0 +1,60 @@
+name: lychee-offline
+description: Deterministic offline link/anchor reference-integrity check via lychee.
+
+inputs:
+  globs:
+    description: >-
+      File globs to scan, space-separated. Default scans all markdown.
+    default: '**/*.md'
+  config:
+    description: Path to the lychee.toml ruleset in the caller repo.
+    default: modules/lychee/lychee.toml
+  exclude:
+    description: >-
+      Path-exclude regexes, space-separated (e.g. intentionally-bad fixtures).
+      Build/dependency dirs are excluded by the ruleset itself.
+    default: ''
+  version:
+    description: Exact lychee version to install.
+    default: 0.24.2
+  sha256:
+    description: >-
+      SHA-256 of the linux x86_64 .tar.gz release asset for `version`. Change
+      together with `version`.
+    default: 1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+
+runs:
+  using: composite
+  steps:
+    - name: Install lychee
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        asset="lychee-x86_64-unknown-linux-gnu"
+        url="https://github.com/lycheeverse/lychee/releases/download/lychee-v${VERSION}/${asset}.tar.gz"
+        curl -fsSL "$url" -o lychee.tar.gz
+        echo "${SHA256}  lychee.tar.gz" | sha256sum -c -
+        tar -xzf lychee.tar.gz --strip-components=1 "${asset}/lychee"
+        sudo install lychee /usr/local/bin/lychee
+        rm -f lychee.tar.gz lychee
+        lychee --version
+
+    - name: Check links (offline)
+      shell: bash
+      env:
+        GLOBS: ${{ inputs.globs }}
+        CONFIG: ${{ inputs.config }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: |
+        set -euo pipefail
+        # --offline skips all network requests, so only local file links and
+        # #anchors are checked — fully deterministic.
+        args=(--offline --no-progress --config "$CONFIG")
+        for e in $EXCLUDE; do
+          args+=(--exclude-path "$e")
+        done
+        # $GLOBS intentionally word-splits into multiple lychee path args.
+        lychee "${args[@]}" $GLOBS
