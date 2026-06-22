@@ -42,6 +42,8 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
   via the bundled `Invoke-Pssa.ps1` (per-file subprocess isolation).
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
   (installs a pinned, checksum-verified binary).
+- `.github/actions/lychee-offline` — lychee `--offline` link/anchor
+  reference-integrity over the repo's docs (deterministic; no network).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
