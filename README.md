@@ -48,6 +48,16 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
 
+## Reusable workflows
+
+- `.github/workflows/link-check.yml` — online external-link checker, consumed
+  via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
+  It is **advisory**: external link health is flaky, so it runs `fail: false` and
+  files a rolling tracking issue on failure rather than gating a build. (A whole
+  scheduled job with issue-creation is a reusable-workflow concern, not a
+  composite action; the deterministic on-disk counterpart is the
+  `lychee-offline` action above, which feeds `ci-status`.)
+
 ## Tool configuration lives elsewhere
 
 These actions execute tools; they do not carry the tools' rulesets. A consumer
