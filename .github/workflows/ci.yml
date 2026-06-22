@@ -7,15 +7,26 @@ on:
 permissions:
   contents: read
 
-# Dogfood: this repo is the first consumer of its own reusable workflows. Each
-# lane runs against this repo's vendored config copy; the local ci-status
-# gateway aggregates them into the single required check.
+# Dogfood: this repo is the first consumer of its own composite actions. Each
+# lane checks out this repo and runs a lane action against the vendored config
+# copy; the local ci-status gateway aggregates them into the single required
+# check. Local (./) action refs work here because the checkout IS this repo.
 jobs:
   markdown:
-    uses: ./.github/workflows/markdown.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Lint markdown
+        uses: ./.github/actions/markdown
 
   powershell:
-    uses: ./.github/workflows/powershell.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Analyze PowerShell
+        uses: ./.github/actions/powershell
 
   ci-status:
     if: always()
