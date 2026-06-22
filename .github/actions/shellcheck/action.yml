@@ -1,0 +1,65 @@
+name: shellcheck
+description: Lint shell scripts with ShellCheck against a caller-supplied rcfile.
+
+inputs:
+  paths:
+    description: >-
+      Roots to search for shell scripts (*.sh, *.bash), space-separated.
+      Default searches the whole repo.
+    default: '.'
+  rcfile:
+    description: Path to the .shellcheckrc ruleset in the caller repo.
+    default: modules/shellcheck/.shellcheckrc
+  exclude:
+    description: >-
+      Path substrings to skip, space-separated (e.g. intentionally-bad
+      fixtures). The .git directory is always skipped.
+    default: ''
+  version:
+    description: Exact ShellCheck version to install.
+    default: 0.11.0
+  sha256:
+    description: >-
+      SHA-256 of the linux x86_64 .tar.gz release asset for `version`. Change
+      together with `version`.
+    default: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+
+runs:
+  using: composite
+  steps:
+    - name: Install ShellCheck
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        url="https://github.com/koalaman/shellcheck/releases/download/v${VERSION}/shellcheck-v${VERSION}.linux.x86_64.tar.gz"
+        curl -fsSL "$url" -o shellcheck.tar.gz
+        echo "${SHA256}  shellcheck.tar.gz" | sha256sum -c -
+        tar -xzf shellcheck.tar.gz "shellcheck-v${VERSION}/shellcheck"
+        sudo install "shellcheck-v${VERSION}/shellcheck" /usr/local/bin/shellcheck
+        rm -rf shellcheck.tar.gz "shellcheck-v${VERSION}"
+        shellcheck --version
+
+    - name: Run ShellCheck
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        RCFILE: ${{ inputs.rcfile }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: |
+        set -euo pipefail
+        # $PATHS unquoted so multiple roots word-split.
+        mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
+        # Drop excluded substrings (space-separated, fixed-string match).
+        for sub in $EXCLUDE; do
+          mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
+        done
+        if [[ ${#files[@]} -eq 0 ]]; then
+          echo 'No shell scripts to check.'
+          exit 0
+        fi
+        printf 'Checking %d file(s):\n' "${#files[@]}"
+        printf '  %s\n' "${files[@]}"
+        shellcheck --rcfile="$RCFILE" "${files[@]}"

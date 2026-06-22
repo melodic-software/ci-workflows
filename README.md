@@ -40,6 +40,8 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
 - `.github/actions/markdown` — markdownlint-cli2 over the repo's markdown.
 - `.github/actions/powershell` — PSScriptAnalyzer over the repo's PowerShell,
   via the bundled `Invoke-Pssa.ps1` (per-file subprocess isolation).
+- `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
+  (installs a pinned, checksum-verified binary).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
