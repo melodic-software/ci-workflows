@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Dogfood: this repo is the first consumer of its own reusable workflows. Each
+# lane runs against this repo's vendored config copy; the local ci-status
+# gateway aggregates them into the single required check.
+jobs:
+  markdown:
+    uses: ./.github/workflows/markdown.yml
+
+  powershell:
+    uses: ./.github/workflows/powershell.yml
+
+  ci-status:
+    if: always()
+    needs: [markdown, powershell]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate lane results
+        env:
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }}
+        run: |
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "A lane did not pass (result: $r)."; exit 1 ;;
+            esac
+          done
+          echo "All lanes passed or were skipped."
