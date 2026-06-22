@@ -2,10 +2,15 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Dogfood: this repo is the first consumer of its own composite actions. Each
 # lane checks out this repo and runs a lane action against the vendored config
@@ -14,25 +19,34 @@ permissions:
 jobs:
   markdown:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Lint markdown
         uses: ./.github/actions/markdown
 
   powershell:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Analyze PowerShell
         uses: ./.github/actions/powershell
 
   links:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Check links and anchors (offline)
         uses: ./.github/actions/lychee-offline
 
@@ -40,6 +54,7 @@ jobs:
     if: always()
     needs: [markdown, powershell, links]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
