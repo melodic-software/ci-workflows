@@ -1,0 +1,63 @@
+name: link-check
+
+# Online external-link checker — ADVISORY, not a ci-status gate. External link
+# health is inherently flaky (transient outages, anti-bot 403/429), so this runs
+# on a schedule with fail:false and files a rolling tracking issue instead of
+# breaking a build. Deterministic on-disk link integrity is the separate
+# lychee-offline action that feeds ci-status. Call this from a scheduled caller
+# workflow that grants issues: write.
+on:
+  workflow_call:
+    inputs:
+      args:
+        description: >-
+          lychee arguments (flags + globs). Defaults tune for CI: persisted
+          cache, tolerate timeouts, and read the caller's lychee.toml ruleset.
+        type: string
+        default: >-
+          --cache
+          --max-cache-age 7d
+          --no-progress
+          --accept-timeouts
+          --config modules/lychee/lychee.toml
+          './**/*.md'
+      issue-title:
+        description: Title of the single rolling tracking issue opened on failure.
+        type: string
+        default: 'Link checker report'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  link-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Restore lychee cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .lycheecache
+          key: cache-lychee-${{ github.sha }}
+          restore-keys: cache-lychee-
+
+      - name: Check links
+        id: lychee
+        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2.8.0
+        with:
+          args: ${{ inputs.args }}
+          fail: false
+        env:
+          # Lifts the github.com link rate limit to 1,000 req/hour/repo.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Open or update tracking issue
+        if: steps.lychee.outputs.exit_code != '0'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          title: ${{ inputs.issue-title }}
+          content-filepath: ./lychee/out.md
+          labels: automated, link-check
