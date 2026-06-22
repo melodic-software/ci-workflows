@@ -72,7 +72,9 @@ jobs:
           EXCLUDE: ${{ inputs.exclude }}
           REQUIRED: ${{ inputs.analyzer-version }}
         run: |
-          $paths = $env:PATHS -split '\s+' | Where-Object { $_ }
-          $exclude = $env:EXCLUDE -split '\s+' | Where-Object { $_ }
+          # Wrap in @() so an empty input stays an empty array, never $null
+          # (a bare null would violate the runner's non-null parameter contract).
+          $paths = @($env:PATHS -split '\s+' | Where-Object { $_ })
+          $exclude = @($env:EXCLUDE -split '\s+' | Where-Object { $_ })
           ../runner/scripts/Invoke-Pssa.ps1 -Path $paths -Settings $env:SETTINGS -AnalyzerVersion $env:REQUIRED -ExcludePath $exclude
           exit $LASTEXITCODE
