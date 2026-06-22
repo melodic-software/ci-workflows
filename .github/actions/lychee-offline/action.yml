@@ -51,7 +51,10 @@ runs:
       run: |
         set -euo pipefail
         # --offline skips all network requests, so only local file links and
-        # #anchors are checked — fully deterministic.
+        # (when the ruleset sets include_fragments, as the standard lychee.toml
+        # does) #anchors are checked — fully deterministic. lychee's own CLI
+        # default for fragment checking is off, so anchor integrity is ruleset-
+        # driven; the config is intentionally not overridden here.
         args=(--offline --no-progress --config "$CONFIG")
         for e in $EXCLUDE; do
           args+=(--exclude-path "$e")

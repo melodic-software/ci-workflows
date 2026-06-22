@@ -95,6 +95,9 @@
 
         # --- Compatibility ---
 
+        # TargetVersions documents the supported window (7.4 LTS, 7.6 current).
+        # The rule matches on major version only, so both entries map to "7" —
+        # the pair is intentional documentation, not two distinct checks.
         PSUseCompatibleSyntax = @{
             Enable         = $true
             TargetVersions = @('7.4', '7.6')

@@ -51,13 +51,31 @@ jobs:
           args: ${{ inputs.args }}
           fail: false
         env:
-          # Lifts the github.com link rate limit to 1,000 req/hour/repo.
+          # Authenticates lychee's github.com requests so they use the higher
+          # authenticated rate limit instead of the stricter unauthenticated one.
           GITHUB_TOKEN: ${{ github.token }}
+
+      # create-issue-from-file does not deduplicate by title: with no issue-number
+      # it always opens a NEW issue. Resolve the existing open tracking issue
+      # first so the next step UPDATES it, keeping a single rolling issue rather
+      # than filing a fresh one on every scheduled failure.
+      - name: Find existing tracking issue
+        id: tracking
+        if: steps.lychee.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ inputs.issue-title }}
+        run: |
+          number=$(gh issue list --state open --label link-check \
+            --search "in:title \"$TITLE\"" --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n1)
+          echo "number=$number" >> "$GITHUB_OUTPUT"
 
       - name: Open or update tracking issue
         if: steps.lychee.outputs.exit_code != '0'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           title: ${{ inputs.issue-title }}
-          content-filepath: ./lychee/out.md
+          issue-number: ${{ steps.tracking.outputs.number }}
+          content-filepath: lychee/out.md
           labels: automated, link-check

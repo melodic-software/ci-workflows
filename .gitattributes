@@ -15,11 +15,11 @@
 *.bash  diff=bash
 
 ###############################################################################
-# PowerShell — LF is deliberate. Verified to run on both PowerShell 7 and
-# Windows PowerShell 5.1. The PowerShell repo pins .ps1 to eol=lf; the popular
-# community gitattributes template pins crlf — they target different eras. Listed
-# explicitly so it is not "corrected" to crlf without a requirement to round-trip
-# pre-existing CRLF-signed scripts unchanged.
+# PowerShell — LF is deliberate. Verified empirically to run on both PowerShell 7
+# and Windows PowerShell 5.1. The popular community gitattributes templates pin
+# *.ps1 to crlf; we choose lf for a uniform-LF repo. Listed explicitly so it is
+# not "corrected" to crlf without a requirement to round-trip pre-existing
+# CRLF-signed scripts unchanged.
 ###############################################################################
 
 *.ps1   text eol=lf
@@ -27,7 +27,8 @@
 *.psd1  text eol=lf
 
 ###############################################################################
-# Windows-native — cmd.exe requires CRLF (overrides the LF default above).
+# Windows-native — cmd.exe is reliable only with CRLF (LF can break goto/call
+# label seeks), so override the LF default above.
 ###############################################################################
 
 *.cmd   text eol=crlf
