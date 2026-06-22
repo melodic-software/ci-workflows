@@ -7,8 +7,9 @@ root = true
 # separate editorconfig.
 #
 # .gitattributes is the single authority for line endings (it transforms bytes
-# on checkout); end_of_line here is an editor hint only, and editorconfig-checker
-# leaves the end-of-line check disabled. See modules/editorconfig/.
+# on checkout); end_of_line here is an editor hint only, and the
+# editorconfig-checker ruleset disables its end-of-line check to avoid
+# double-enforcement.
 
 [*]
 indent_style = space
@@ -37,7 +38,8 @@ indent_size = 2
 [*.{ps1,psm1,psd1}]
 indent_size = 4
 
-# Windows batch — cmd.exe requires CRLF.
+# Windows batch — CRLF is the safe default (cmd.exe goto/call label seeks can
+# break with LF).
 [*.{cmd,bat}]
 end_of_line = crlf
 

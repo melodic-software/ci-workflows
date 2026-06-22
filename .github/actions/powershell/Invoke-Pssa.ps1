@@ -5,9 +5,9 @@
 
 .DESCRIPTION
     Lints .ps1/.psm1 files against a PSScriptAnalyzerSettings.psd1 ruleset. Each
-    file is analyzed in a fresh pwsh subprocess to avoid the PSScriptAnalyzer
-    CommandInfoCache / RunspacePool race that surfaces (notably on Linux) when
-    many files are analyzed in one process.
+    file is analyzed in a fresh pwsh subprocess to sidestep an intermittent
+    NullReferenceException in PSScriptAnalyzer's CommandInfoCache that surfaces
+    when many files are analyzed in one process (PSScriptAnalyzer issue #1708).
 
     File discovery uses Get-ChildItem -Force so dot-prefixed directories (for
     example .github) are not silently skipped by Linux pwsh.
@@ -22,8 +22,9 @@
     only resolves if a ruleset sits next to this script.
 
 .PARAMETER AnalyzerVersion
-    Required minimum PSScriptAnalyzer version. Default 1.25.0 — the floor that
-    fixes the Linux NRE under pwsh 7.4.14+.
+    Required minimum PSScriptAnalyzer version. Default 1.25.0, which resolves an
+    Import-Module assembly-version mismatch on newer pwsh 7.4.x
+    (PSScriptAnalyzer issue #2106 / PR #2107).
 
 .PARAMETER ExcludePath
     Path substrings to skip (matched against forward-slash-normalized full

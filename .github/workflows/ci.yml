@@ -28,14 +28,22 @@ jobs:
       - name: Analyze PowerShell
         uses: ./.github/actions/powershell
 
+  links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check links and anchors (offline)
+        uses: ./.github/actions/lychee-offline
+
   ci-status:
     if: always()
-    needs: [markdown, powershell]
+    needs: [markdown, powershell, links]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }}
         run: |
           for r in $RESULTS; do
             case "$r" in

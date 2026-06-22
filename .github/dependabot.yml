@@ -5,9 +5,22 @@ updates:
   # .github/workflows; the glob target is required to also scan the composite
   # actions' own action.yml files (Dependabot does not descend into
   # .github/actions/<name>/ from "/" alone).
+  #
+  # Dependabot only updates `uses:` action SHAs. The tool versions pinned inside
+  # the actions' run scripts and input defaults — markdownlint-cli2, Node.js,
+  # PSScriptAnalyzer, and the checksum-pinned ShellCheck and lychee binaries —
+  # have no ecosystem manifest here and are tracked manually at the weekly review.
   - package-ecosystem: github-actions
     directories:
       - /
       - /.github/actions/*
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: build
+    # Collapse all action bumps into a single PR to cut review noise.
+    groups:
+      github-actions:
+        patterns:
+          - '*'
