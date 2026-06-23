@@ -38,12 +38,31 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
 ## Actions
 
 - `.github/actions/markdown` — markdownlint-cli2 over the repo's markdown.
-- `.github/actions/powershell` — PSScriptAnalyzer over the repo's PowerShell,
-  via the bundled `Invoke-Pssa.ps1` (per-file subprocess isolation).
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
   (installs a pinned, checksum-verified binary).
+- `.github/actions/powershell` — PSScriptAnalyzer over the repo's PowerShell,
+  via the bundled `Invoke-Pssa.ps1` (per-file subprocess isolation).
+- `.github/actions/editorconfig` — editorconfig-checker validation of tracked
+  files against the repo's `.editorconfig`.
+- `.github/actions/typos` — `typos` spell-check over source against a
+  caller-supplied config.
+- `.github/actions/gitleaks` — gitleaks secret scan over a directory against a
+  caller-supplied config (installs a pinned, checksum-verified binary; optional
+  SARIF output + PR annotations).
+- `.github/actions/actionlint` — actionlint over the repo's GitHub Actions
+  workflow files.
+- `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
+  against one schema per call (call once per schema group).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network).
+- `.github/actions/exec-bit` — verifies every tracked shebang file carries git
+  index mode 100755, so executable scripts keep their bit on checkout.
+- `.github/actions/machine-specific-paths` — rejects machine-specific absolute /
+  user-home paths in tracked files (portable placeholders allowed).
+- `.github/actions/comment-hygiene` — scans comments for deferred-work markers
+  (TODO/FIXME/HACK/XXX) and tracker references against a caller-supplied policy.
+- `.github/actions/eol-renormalize` — detects index-level line-ending drift via
+  git's clean filter, driven by the caller's `.gitattributes` (read-only).
 - `.github/actions/ruff` — Ruff lint + format-check over the repo's Python
   (via `uvx`; emits `--output-format=github` annotations).
 - `.github/actions/pyright` — Pyright strict, warnings-as-errors type-check over
@@ -53,6 +72,12 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
   annotations).
 - `.github/actions/tsc` — TypeScript `tsc --noEmit` type-check over the repo's
   TypeScript (via `npx`).
+- `.github/actions/dotnet-build` — builds .NET projects with Roslyn analyzers and
+  code-style enforced as warnings-as-errors (the analysis owner: code-quality
+  `CAxxxx`, code-style `IDExxxx`, nullable, and compiler warnings).
+- `.github/actions/dotnet-format` — verifies C# whitespace/layout via `dotnet
+  format whitespace --verify-no-changes` (the formatting owner; the build-time
+  analyzers own code-style and code-quality, so this never double-reports).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
@@ -66,6 +91,17 @@ block.
   scheduled job with issue-creation is a reusable-workflow concern, not a
   composite action; the deterministic on-disk counterpart is the
   `lychee-offline` action above, which feeds `ci-status`.)
+- `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
+  with zizmor (dangerous triggers, excessive permissions, template injection).
+  **Advisory** (surfaces PR annotations, never gates `ci-status`); consumed via
+  `uses:` at job level. SARIF upload and blocking promotion are deferred opt-ins.
+  Inputs are documented inline.
+- `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
+  OSV-Scanner (wraps Google's SHA-pinned reusable workflows). **Advisory**
+  (`fail-on-vuln` off by default) and event-split: `pull_request` runs the
+  PR-diff variant (newly-introduced vulns only), every other event runs the
+  full-tree scan (suited to schedule/dispatch on the default branch). Inputs are
+  documented inline.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. **Advisory** (posts review comments, never
   gates `ci-status`). A whole-job concern (job permissions + a secrets
