@@ -36,6 +36,10 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # No git-credential persistence needed: the gh/lychee steps use the
+          # job's GITHUB_TOKEN env, not the checkout's stored credential.
+          persist-credentials: false
 
       - name: Restore lychee cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
