@@ -139,17 +139,48 @@ jobs:
       - name: Scan for secrets
         uses: ./.github/actions/gitleaks
 
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Lint workflows
+        uses: ./.github/actions/actionlint
+
+  jsonschema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Validate dependabot.yml
+        uses: ./.github/actions/check-jsonschema
+        with:
+          builtin-schema: vendor.dependabot
+          files: .github/dependabot.yml
+      - name: Validate workflows
+        uses: ./.github/actions/check-jsonschema
+        with:
+          builtin-schema: vendor.github-workflows
+          files: .github/workflows/ci.yml .github/workflows/link-check.yml
+
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, ruff, pyright, biome, tsc, typos, editorconfig, gitleaks]
+    needs: [markdown, powershell, links, ruff, pyright, biome, tsc, typos, editorconfig, gitleaks, actionlint, jsonschema]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }}
         run: |
-          for r in $RESULTS; do
+          read -ra results <<< "$RESULTS"
+          for r in "${results[@]}"; do
             case "$r" in
               success|skipped) ;;
               *) echo "A lane did not pass (result: $r)."; exit 1 ;;

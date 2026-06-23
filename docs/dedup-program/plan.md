@@ -50,8 +50,8 @@ missing, so there is no config work and both standards and medley benefit.
 
 ## Phase 2 — Actions and security linting
 
-- [ ] `actionlint` composite action
-- [ ] `check-jsonschema` (YAML schema) composite action
+- [x] `actionlint` composite action
+- [x] `check-jsonschema` (YAML schema) composite action
 - [ ] `zizmor` reusable workflow (Actions security lint)
 - [ ] `osv-scanner` reusable workflow (dependency vuln scan)
 
