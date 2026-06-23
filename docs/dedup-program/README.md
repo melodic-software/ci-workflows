@@ -48,8 +48,9 @@ and is adopted by copy. This program is about the *execution* side only.
 
 ## Status
 
-Phase 0 (inventory, architecture, plan) — in progress. See [plan.md](plan.md)
-for the live phase status.
+Phases 0–1 complete: plan-of-record established, and the config-ready trio
+(`typos`, `editorconfig-checker`, `gitleaks`) built, dogfooded, and adopted in
+`standards`. Phase 2 is next. See [plan.md](plan.md) for the live phase status.
 
 ## Watch-items
 
