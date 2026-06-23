@@ -106,6 +106,35 @@ jobs:
         with:
           project: fixtures/typescript/good/tsconfig.json
 
+  dotnet-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Build .NET (analyzers + code-style as errors)
+        # The vendored fixture imports the overlay's props (which wire
+        # dotnet.globalconfig); scope the build at it (the repo carries no other
+        # .NET source).
+        uses: ./.github/actions/dotnet-build
+        with:
+          project: fixtures/dotnet/good/good.csproj
+
+  dotnet-format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify .NET whitespace
+        uses: ./.github/actions/dotnet-format
+        with:
+          project: fixtures/dotnet/good/good.csproj
+
   typos:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -199,13 +228,13 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, ruff, pyright, biome, tsc, typos, editorconfig, gitleaks, actionlint, jsonschema, zizmor, osv-scanner]
+    needs: [markdown, powershell, links, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, actionlint, jsonschema, zizmor, osv-scanner]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
         run: |
           read -ra results <<< "$RESULTS"
           for r in "${results[@]}"; do

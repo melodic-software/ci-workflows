@@ -1,0 +1,42 @@
+name: dotnet-build
+description: >-
+  Build .NET projects with Roslyn analyzers and code-style enforced as
+  warnings-as-errors — the analysis owner (code-quality CAxxxx + code-style
+  IDExxxx + nullable + compiler warnings). Whitespace is owned by dotnet-format.
+
+inputs:
+  project:
+    description: >-
+      Project or solution to build (relative to the caller repo). Leave empty to
+      build the project/solution in the working directory.
+    default: ''
+  configuration:
+    description: Build configuration passed to `dotnet build --configuration`.
+    default: Release
+  dotnet-version:
+    description: >-
+      .NET SDK version to install. The strict analyzer + code-style ruleset is
+      supplied by the caller's copied Directory.Build.props + .globalconfig
+      (standards modules/dotnet), which MSBuild discovers by walking the tree;
+      this action only provisions the SDK and runs the build.
+    default: 10.0.301
+
+runs:
+  using: composite
+  steps:
+    - name: Set up .NET
+      uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Build
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        CONFIGURATION: ${{ inputs.configuration }}
+      # Warnings-as-errors lives in the caller's Directory.Build.props
+      # (TreatWarningsAsErrors), which Roslyn honours for both compiler and
+      # analyzer (CA + IDE) diagnostics — so no rule flags are needed here.
+      # $PROJECT is unquoted so an empty value expands to nothing and the
+      # working-directory project/solution is built.
+      run: dotnet build $PROJECT --configuration "$CONFIGURATION" --nologo
