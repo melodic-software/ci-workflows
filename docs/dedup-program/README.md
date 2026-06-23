@@ -29,6 +29,9 @@ and is adopted by copy. This program is about the *execution* side only.
   consumption), each backed by cited research.
 - [plan.md](plan.md) — the phased roadmap: sequencing, per-phase exit criteria,
   and progress checklists.
+- [rollout.md](rollout.md) — constellation adoption tracker: per-repo integration
+  status and the onboarding sequence (deploying the blocks, vs. plan.md's
+  building of them).
 
 ## How we work this program
 
@@ -53,11 +56,26 @@ Phases 0–2 complete: plan-of-record established; the config-ready trio
 `standards`; and the actions/security-linting set (`actionlint`,
 `check-jsonschema` composite actions; `zizmor`, `osv-scanner` reusable workflows)
 built and dogfooded here. All four Phase 2 tools run config-light, so none needed
-a `standards` config module; all are advisory or non-blocking on lift. No existing
-consumer ran them inline (`standards` runs none; `medley`'s cutover is Phase 6),
-so adoption is additive — `standards` newly adopting `actionlint`/`zizmor`/
-`osv-scanner` is an open propagation opportunity. Phase 3 is next. See
-[plan.md](plan.md) for the live phase status.
+a `standards` config module; all are advisory or non-blocking on lift.
+
+Phase 3 building blocks complete: the four cross-cutting repo-hygiene composite
+actions (`exec-bit`, `machine-specific-paths`, `eol-renormalize`,
+`comment-hygiene`) are built and dogfooded here. Three run config-light;
+`machine-specific-paths` bakes its OS-path regexes in as the check's definition
+(scope via inputs), so it needs no `standards` module either. Only
+`comment-hygiene` carries genuine policy: its pattern library is vendored here
+and split from execution — a **generalized org-default** policy (not a
+byte-identical `medley` lift; `medley`-specific rules stay with `medley` for its
+Phase 6 cutover).
+
+No existing consumer runs any Phase 1+2 or Phase 3 lane inline (`standards` ran
+none originally; `medley`'s cutover is Phase 6), so adoption is additive.
+`standards` has since adopted the Phase 2 set (`actionlint`/`zizmor`/
+`osv-scanner`). Open propagation step for Phase 3: land the **canonical**
+`comment-hygiene` config module upstream in `standards` (this repo holds only a
+vendored copy — the vendoring model wants the source of truth there) and adopt
+the four lanes in `standards` by SHA-pin. See [plan.md](plan.md) for the live
+phase status.
 
 ## Watch-items
 

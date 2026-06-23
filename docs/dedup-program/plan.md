@@ -67,6 +67,8 @@ config (new `standards` modules where a ruleset is involved).
 - [x] `machine-specific-paths` composite action
 - [x] `comment-hygiene` composite action (patterns via config input)
 - [x] `eol-renormalize` composite action
+- [ ] Adopt in `standards`: land the canonical `comment-hygiene` module upstream
+  (this repo holds only a vendored copy) and adopt the four lanes by SHA-pin
 
 ## Phase 4 — Backfill DUP-COVERED gaps for a lossless medley cutover
 
@@ -87,8 +89,15 @@ switches markdown/shell/powershell/lychee to references.
 - [ ] `dependabot-automerge` reusable workflow (semver-gated)
 - [ ] `issue-labeling` reusable workflow (allowed labels via inputs)
 
-## Phase 6 — Consumer cutover
+## Phase 6 — Consumer cutover and constellation onboarding
 
+Deploy the blocks across every constellation repo. Per-repo status, recommended
+lanes, and the live sequence are tracked in [rollout.md](rollout.md); the
+checkboxes below mirror it.
+
+- [ ] `github-iac` (org + personal, C# Pulumi): stand up CI from the building
+  blocks; onboard one as the template, then mirror to the other
+- [ ] `provisioning` (PowerShell): stand up CI from the building blocks
 - [ ] claude-code-plugins: stand up CI from the building blocks (greenfield;
   candidate for an opinionated bundle per D3)
 - [ ] medley: replace each overlapping inline lane with a SHA-pinned reference,
