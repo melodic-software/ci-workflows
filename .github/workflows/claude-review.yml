@@ -1,0 +1,201 @@
+name: claude-review
+
+# Reusable workflow — automated PR code review with anthropics/claude-code-action.
+# A whole-job concern (own job permissions + secrets interface), so a reusable
+# workflow, not a composite action.
+#
+# CONSUMER CONTRACT (the caller owns these — they are NOT set here):
+#   The triggers and the GITHUB_TOKEN permission grant live in each consumer's
+#   thin caller, because a reusable workflow's `on:` is `workflow_call` and the
+#   caller's own `on:` decides which events invoke it; and because a called
+#   workflow can only DOWNGRADE the caller's permission grant, never elevate it.
+#   So a consumer is never blocked by a choice frozen here — they shape their own
+#   caller. Canonical caller:
+#
+#     on:
+#       pull_request:
+#         types: [opened, synchronize, ready_for_review, reopened]
+#     jobs:
+#       review:
+#         permissions:
+#           contents: read         # checkout + read the diff
+#           pull-requests: write   # post review + track_progress tracking comment
+#           id-token: write        # OIDC — mints the Claude GitHub App token (required
+#                                  # even with an OAuth/API-key credential)
+#         uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@<sha>
+#         secrets: inherit         # same-org pass-through of CLAUDE_CODE_OAUTH_TOKEN
+#
+# SECURITY MODEL (see CLAUDE.md for the full rationale):
+#   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
+#     secrets — privileged context + untrusted fork code = token exfiltration).
+#     The `reject-privileged-triggers` step is a tripwire that hard-fails those
+#     two events; every other event is allowed (the consumer keeps flexibility).
+#   - Fork PRs receive no secrets and a read-only token by design, so they are
+#     simply not reviewed — that is correct, not a gap to "fix".
+#   - The action gates triggering on the actor's write access; bots are blocked
+#     unless named in `allowed-bots`.
+#   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
+
+on:
+  workflow_call:
+    inputs:
+      prompt:
+        description: >-
+          The review-criteria body. A REPO / PR NUMBER / HEAD SHA header and
+          commit-permalink guidance are prepended automatically, so this input
+          is just the instructions for what to look for.
+        type: string
+        default: >-
+          Review this pull request for correctness, security, and alignment with
+          the project's CLAUDE.md guidelines (and REVIEW.md criteria if the repo
+          has one). Focus on architecture decisions, error handling, test
+          coverage, and maintainability.
+
+
+          Scope your review to the files changed in this PR. Use `gh pr diff` to
+          identify what changed, then review those files. Do not explore
+          unrelated parts of the codebase.
+      claude-args:
+        description: >-
+          Passed through to the Claude CLI. The universal extension point: model,
+          turn budget, allowed tools, system prompt, MCP config all ride here
+          (the standalone model / max_turns / allowed_tools action inputs are
+          deprecated upstream).
+        type: string
+        default: --model claude-sonnet-4-6 --max-turns 75
+      track-progress:
+        description: >-
+          Create one tracking comment with progress checkboxes, sticky-updated
+          across pushes. Mitigates upstream #1071 (clean reviews otherwise
+          produce no visible output).
+        type: boolean
+        default: true
+      display-report:
+        description: >-
+          Write the Claude-authored report to the job step summary. Default off:
+          on public repos this would expose model-authored content (and is a
+          secret-leak vector). Private consumers may opt in.
+        type: boolean
+        default: false
+      allowed-bots:
+        description: >-
+          Comma-separated bot actors permitted to trigger the review (bots are
+          blocked by default). Never set '*' on a public repo.
+        type: string
+        default: dependabot[bot]
+      exclude-comments-by-actor:
+        description: >-
+          Comma-separated actors whose comments are withheld from Claude's
+          context (prompt-injection hygiene), not a trigger gate.
+        type: string
+        default: dependabot[bot]
+      skip-actors:
+        description: >-
+          Comma-separated actors (no spaces) for whom the job skips entirely, to
+          save runner minutes on PRs that never need review. Empty reviews all.
+        type: string
+        default: dependabot[bot]
+      timeout-minutes:
+        description: Job timeout.
+        type: number
+        default: 30
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: >-
+          Claude Code OAuth token (from `claude setup-token`). Supply as a same-org
+          org secret scoped to selected repositories; pass via `secrets: inherit`.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # Skip configured bot/automation actors (saves runner minutes). The action's
+    # own write-access gate is the security control; this is just an optimization.
+    # Comma-wrap both sides so a substring of one actor can't match another.
+    if: >-
+      ${{ !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor)) }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    concurrency:
+      # Job-level (not workflow-level): a workflow-level group would cancel
+      # before the `if` above evaluates, so a skipped actor could cancel an
+      # in-progress review.
+      group: claude-review-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: true
+    steps:
+      # Tripwire: this workflow handles secrets, so it must never run in a
+      # privileged-context trigger that also exposes untrusted fork code. We do
+      # not whitelist `pull_request` (a consumer may legitimately use
+      # workflow_dispatch / schedule); we only hard-fail the two dangerous ones.
+      - name: Reject privileged triggers
+        if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_run'
+        run: |
+          echo "::error::claude-review must not be called from '${{ github.event_name }}'." \
+            "Call it from a 'pull_request' workflow. pull_request_target/workflow_run run" \
+            "with base-repo secrets over untrusted code (token exfiltration risk)."
+          exit 1
+
+      # persist-credentials stays at its default (true) until upstream
+      # claude-code-action#1236 ships: the action's setupBranch runs
+      # `git fetch origin <ref>` BEFORE configuring git auth, so
+      # persist-credentials:false makes that fetch fail and leaves an orphan
+      # tracking comment. The final strip step below scrubs the persisted token
+      # to restore zizmor `artipacked` compliance. Reversible when #1236 lands.
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          filter: blob:none
+
+      - name: Claude review
+        id: claude-review
+        # claude-code-action exits non-zero only on infrastructure errors; review
+        # findings go to PR comments, not the exit code. continue-on-error keeps
+        # an OIDC/usage-limit/SDK blip from showing as a red check.
+        continue-on-error: true
+        uses: anthropics/claude-code-action@30544b674398ee15c84819bd87caf8a87e8c7b55 # v1.0.154
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: ${{ inputs.track-progress }}
+          display_report: ${{ inputs.display-report }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          claude_args: ${{ inputs.claude-args }}
+          # github-context expressions must appear directly in the step (a value
+          # carried in via inputs.prompt is NOT re-evaluated), so the structural
+          # header + permalink guidance live here and wrap the consumer's body.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            ${{ inputs.prompt }}
+
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+      - name: Report review outcome
+        if: always()
+        env:
+          REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
+        run: |
+          if [ "$REVIEW_OUTCOME" = "success" ]; then
+            echo "Claude review completed. Findings (if any) are in the PR comments."
+          else
+            echo "::warning::Claude review exited with: $REVIEW_OUTCOME" \
+              "(infrastructure error, not a code-quality signal — e.g. usage limit," \
+              "OIDC failure, SDK crash, or max-turns exhaustion)."
+          fi
+
+      # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
+      # persisted into .git/config (forced on by #1236, above). Drop this once
+      # the checkout step can use persist-credentials:false again.
+      - name: Strip persisted git credentials
+        if: always()
+        run: git config --unset-all http.https://github.com/.extraheader || true

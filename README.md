@@ -66,6 +66,38 @@ block.
   scheduled job with issue-creation is a reusable-workflow concern, not a
   composite action; the deterministic on-disk counterpart is the
   `lychee-offline` action above, which feeds `ci-status`.)
+- `.github/workflows/claude-review.yml` — automated PR code review with
+  `anthropics/claude-code-action`. **Advisory** (posts review comments, never
+  gates `ci-status`). A whole-job concern (job permissions + a secrets
+  interface), so a reusable workflow. The caller owns the triggers and the
+  permission grant; this workflow owns the SHA-pinned action and the safe
+  handling. Inputs (`prompt`, `claude-args`, `track-progress`, `display-report`,
+  `allowed-bots`, `exclude-comments-by-actor`, `skip-actors`, `timeout-minutes`)
+  have public-safe defaults documented inline. Consume it from a `pull_request`
+  caller:
+
+  ```yaml
+  on:
+    pull_request:
+      types: [opened, synchronize, ready_for_review, reopened]
+  jobs:
+    review:
+      permissions:
+        contents: read
+        pull-requests: write
+        id-token: write
+      uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@<sha>
+      secrets:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  ```
+
+  The caller's job must grant those three permissions (a called workflow can only
+  downgrade, not elevate) and the consumer repo must be in the
+  `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
+  secret explicitly (above) rather than `secrets: inherit`, which forwards every
+  parent secret. Fork PRs receive no
+  secrets by design and are not reviewed. Security rules live in
+  [CLAUDE.md](CLAUDE.md).
 
 ## Tool configuration lives elsewhere
 
