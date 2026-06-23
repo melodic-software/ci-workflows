@@ -63,10 +63,10 @@ lift and decide promotion separately.
 Generic shell checks medley runs as always-on gateway jobs. Pattern lists become
 config (new `standards` modules where a ruleset is involved).
 
-- [ ] `exec-bit` composite action
-- [ ] `machine-specific-paths` composite action
+- [x] `exec-bit` composite action
+- [x] `machine-specific-paths` composite action
 - [ ] `comment-hygiene` composite action (patterns via config input)
-- [ ] `eol-renormalize` composite action
+- [x] `eol-renormalize` composite action
 
 ## Phase 4 — Backfill DUP-COVERED gaps for a lossless medley cutover
 
