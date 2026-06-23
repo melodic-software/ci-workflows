@@ -73,8 +73,8 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
 - `.github/actions/tsc` — TypeScript `tsc --noEmit` type-check over the repo's
   TypeScript (via `npx`).
 - `.github/actions/dotnet-build` — builds .NET projects with Roslyn analyzers and
-  code-style enforced as warnings-as-errors (the analysis owner: CAxxxx + IDExxxx
-  + nullable + compiler warnings).
+  code-style enforced as warnings-as-errors (the analysis owner: code-quality
+  `CAxxxx`, code-style `IDExxxx`, nullable, and compiler warnings).
 - `.github/actions/dotnet-format` — verifies C# whitespace/layout via `dotnet
   format whitespace --verify-no-changes` (the formatting owner; the build-time
   analyzers own code-style and code-quality, so this never double-reports).
