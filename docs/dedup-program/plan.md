@@ -67,7 +67,7 @@ config (new `standards` modules where a ruleset is involved).
 - [x] `machine-specific-paths` composite action
 - [x] `comment-hygiene` composite action (patterns via config input)
 - [x] `eol-renormalize` composite action
-- [ ] Adopt in `standards`: land the canonical `comment-hygiene` module upstream
+- [x] Adopt in `standards`: land the canonical `comment-hygiene` module upstream
   (this repo holds only a vendored copy) and adopt the four lanes by SHA-pin
 
 ## Phase 4 — Backfill DUP-COVERED gaps for a lossless medley cutover
