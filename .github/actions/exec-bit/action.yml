@@ -1,0 +1,20 @@
+name: exec-bit
+description: >-
+  Verify every tracked file whose content starts with a shebang (#! at byte 0)
+  has git index mode 100755, so executable scripts keep their executable bit on
+  clone/checkout.
+
+inputs:
+  paths:
+    description: >-
+      Pathspec to scan, space-separated. Default '.' scans the whole repo.
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - name: Verify shebang files are mode 100755 in the index
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+      run: bash "$GITHUB_ACTION_PATH/check-exec-bit.sh"

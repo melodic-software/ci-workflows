@@ -1,0 +1,39 @@
+name: eol-renormalize
+description: >-
+  Detect index-level line-ending drift: re-stage every tracked file through
+  git's clean filter (driven by the caller's .gitattributes) and fail if the
+  index changes — i.e. a blob is committed with stale EOL. Read-only: resets the
+  index afterward.
+
+inputs:
+  paths:
+    description: >-
+      Pathspec to renormalize, space-separated. Default '.' = whole repo.
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - name: Detect index-level EOL drift
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+        # `git add --renormalize` re-applies the clean filter (.gitattributes
+        # text/eol) to tracked files; a resulting staged diff is exactly the
+        # stale-index EOL drift this gate catches. The working tree's normal
+        # add path cannot self-heal a blob committed before its eol rule
+        # existed, or one staged via a bypassed hook — that lives in the index
+        # until renormalized. https://git-scm.com/docs/git-add (--renormalize)
+        read -ra paths <<<"${PATHS:-.}"
+        git add --renormalize -- "${paths[@]}"
+        if git diff --cached --quiet; then
+          echo "Index EOL clean — no stale blobs."
+          git reset --quiet
+          exit 0
+        fi
+        echo "::error::Index-level EOL drift. Fix locally: 'git add --renormalize . && git commit'. Drifted files:"
+        git diff --cached --name-only
+        git reset --quiet
+        exit 1
