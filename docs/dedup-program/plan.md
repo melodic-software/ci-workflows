@@ -46,7 +46,7 @@ missing, so there is no config work and both standards and medley benefit.
 - [x] `editorconfig-checker` composite action
 - [x] `gitleaks` composite action (binary install + checksum verify, SARIF
   output, PR annotations as optional inputs)
-- [ ] Adopt in `standards` (retire its inline copies)
+- [x] Adopt in `standards` (retire its inline copies)
 
 ## Phase 2 — Actions and security linting
 
