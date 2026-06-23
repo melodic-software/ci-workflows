@@ -48,9 +48,16 @@ and is adopted by copy. This program is about the *execution* side only.
 
 ## Status
 
-Phases 0–1 complete: plan-of-record established, and the config-ready trio
+Phases 0–2 complete: plan-of-record established; the config-ready trio
 (`typos`, `editorconfig-checker`, `gitleaks`) built, dogfooded, and adopted in
-`standards`. Phase 2 is next. See [plan.md](plan.md) for the live phase status.
+`standards`; and the actions/security-linting set (`actionlint`,
+`check-jsonschema` composite actions; `zizmor`, `osv-scanner` reusable workflows)
+built and dogfooded here. All four Phase 2 tools run config-light, so none needed
+a `standards` config module; all are advisory or non-blocking on lift. No existing
+consumer ran them inline (`standards` runs none; `medley`'s cutover is Phase 6),
+so adoption is additive — `standards` newly adopting `actionlint`/`zizmor`/
+`osv-scanner` is an open propagation opportunity. Phase 3 is next. See
+[plan.md](plan.md) for the live phase status.
 
 ## Watch-items
 

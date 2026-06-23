@@ -1,0 +1,65 @@
+name: zizmor
+
+# Reusable workflow — GitHub Actions security/static analysis with zizmor
+# (supply-chain risks, dangerous triggers, excessive permissions, template
+# injection). ADVISORY by default: findings surface as PR annotations without
+# blocking. Promotion to blocking and/or SARIF upload to the Security tab is a
+# separate, later decision; SARIF mode would add an opt-in input plus the
+# matching security-events: write permission, so this advisory lane needs only
+# contents: read. The ci-status gateway stays consumer-local — this is a lane,
+# not the gateway.
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: >-
+          Whitespace-separated paths to audit. zizmor discovers workflow and
+          composite-action definitions under them.
+        type: string
+        default: .github/workflows
+      version:
+        description: zizmor CLI version ('latest' or an exact X.Y.Z).
+        type: string
+        default: v1.26.1
+      online-audits:
+        description: Run online audits (uses the workflow token).
+        type: boolean
+        default: true
+      persona:
+        description: 'Audit persona: regular, pedantic, or auditor.'
+        type: string
+        default: regular
+      fail-on-findings:
+        description: >-
+          Fail the job when zizmor reports findings. Default false keeps the
+          lane advisory (annotations only, no block).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        # Advisory unless the caller opts into fail-on-findings: in annotations
+        # mode zizmor exits 11-14 on findings (no `fail` input exists), so
+        # continue-on-error is the advisory mechanism.
+        continue-on-error: ${{ !inputs.fail-on-findings }}
+        uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
+        with:
+          inputs: ${{ inputs.paths }}
+          version: ${{ inputs.version }}
+          online-audits: ${{ inputs.online-audits }}
+          persona: ${{ inputs.persona }}
+          # Annotations mode (not SARIF), so no security-events: write is needed.
+          advanced-security: false
+          annotations: true
