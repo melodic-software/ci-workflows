@@ -65,7 +65,7 @@ config (new `standards` modules where a ruleset is involved).
 
 - [x] `exec-bit` composite action
 - [x] `machine-specific-paths` composite action
-- [ ] `comment-hygiene` composite action (patterns via config input)
+- [x] `comment-hygiene` composite action (patterns via config input)
 - [x] `eol-renormalize` composite action
 
 ## Phase 4 — Backfill DUP-COVERED gaps for a lossless medley cutover

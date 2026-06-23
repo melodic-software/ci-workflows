@@ -1,0 +1,32 @@
+name: comment-hygiene
+description: >-
+  Scan code comments for deferred-work markers (TODO/FIXME/HACK/XXX) and
+  issue-tracker references, against a caller-supplied policy ruleset.
+
+inputs:
+  patterns-file:
+    description: >-
+      Path to the comment-hygiene policy library (sourced) in the caller repo.
+    default: modules/comment-hygiene/comment-hygiene-patterns.sh
+  extensions:
+    description: >-
+      Pathspec allowlist of code files to scan, space-separated globs.
+    default: >-
+      *.cs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.mts *.cts *.py *.sh *.ps1
+      *.razor *.cshtml
+  exclude:
+    description: >-
+      Additional git pathspec exclusions, space-separated (e.g.
+      ':(exclude)docs/**'). Appended to the scan. Default none.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Scan comment hygiene
+      shell: bash
+      env:
+        PATTERNS_FILE: ${{ inputs.patterns-file }}
+        EXTENSIONS: ${{ inputs.extensions }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: bash "$GITHUB_ACTION_PATH/scan-tree.sh"
