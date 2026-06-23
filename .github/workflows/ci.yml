@@ -50,15 +50,41 @@ jobs:
       - name: Check links and anchors (offline)
         uses: ./.github/actions/lychee-offline
 
+  ruff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Lint and format-check Python
+        uses: ./.github/actions/ruff
+
+  pyright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Type-check Python
+        # The vendored ruleset ships no project-scope `include`, so scope Pyright
+        # at the dogfood source explicitly.
+        uses: ./.github/actions/pyright
+        with:
+          paths: fixtures/python/good
+
   ci-status:
     if: always()
-    needs: [markdown, powershell, links]
+    needs: [markdown, powershell, links, ruff, pyright]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }}
         run: |
           for r in $RESULTS; do
             case "$r" in
