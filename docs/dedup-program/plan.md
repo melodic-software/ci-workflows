@@ -52,8 +52,8 @@ missing, so there is no config work and both standards and medley benefit.
 
 - [x] `actionlint` composite action
 - [x] `check-jsonschema` (YAML schema) composite action
-- [ ] `zizmor` reusable workflow (Actions security lint)
-- [ ] `osv-scanner` reusable workflow (dependency vuln scan)
+- [x] `zizmor` reusable workflow (Actions security lint)
+- [x] `osv-scanner` reusable workflow (dependency vuln scan)
 
 `zizmor` and `osv-scanner` are advisory in medley today; keep them advisory on
 lift and decide promotion separately.

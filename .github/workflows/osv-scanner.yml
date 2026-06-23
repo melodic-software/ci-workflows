@@ -1,0 +1,70 @@
+name: osv-scanner
+
+# Reusable workflow — dependency vulnerability scan with OSV-Scanner, wrapping
+# Google's own SHA-pinned reusable workflows. ADVISORY by default
+# (fail-on-vuln: false). Splits by event: pull_request runs the PR-diff variant
+# (reports only newly-introduced vulns); every other event runs the full-tree
+# scan (suited to schedule/dispatch on the default branch). The ci-status
+# gateway stays consumer-local — this is a lane, not the gateway.
+#
+# Permissions: Google's reusable workflows statically declare
+# security-events: write (for the code-scanning upload step), which GitHub
+# validates at parse time even when upload-sarif is false. Permissions do not
+# inherit across the chain, so each calling job re-declares the full set AND a
+# consumer calling this workflow must grant the same set on its caller job.
+on:
+  workflow_call:
+    inputs:
+      scan-args:
+        description: >-
+          OSV-Scanner arguments (newline-separated). Cannot set --format /
+          --output. Default scans the tree recursively from the repo root.
+        type: string
+        default: |-
+          -r
+          ./
+      fail-on-vuln:
+        description: Fail the scan when a vulnerability is found.
+        type: boolean
+        default: false
+      upload-sarif:
+        description: Upload results to the Security > Code Scanning dashboard.
+        type: boolean
+        default: false
+      results-file-name:
+        description: SARIF result file name.
+        type: string
+        default: results.sarif
+      checkout-submodules:
+        description: Pass through to actions/checkout `submodules`.
+        type: boolean
+        default: false
+
+jobs:
+  scan-pr:
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      scan-args: ${{ inputs.scan-args }}
+      fail-on-vuln: ${{ inputs.fail-on-vuln }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+      results-file-name: ${{ inputs.results-file-name }}
+      checkout-submodules: ${{ inputs.checkout-submodules }}
+
+  scan-full:
+    if: github.event_name != 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      scan-args: ${{ inputs.scan-args }}
+      fail-on-vuln: ${{ inputs.fail-on-vuln }}
+      upload-sarif: ${{ inputs.upload-sarif }}
+      results-file-name: ${{ inputs.results-file-name }}
+      checkout-submodules: ${{ inputs.checkout-submodules }}
