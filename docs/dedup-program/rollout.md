@@ -19,7 +19,7 @@ keys on.
 
 | Repo | Stack | Workflows | Consumes | Gate | standards configs | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| `melodic/standards` | multi (configs) | 2 | ✅ full | ✅ inline | full (`modules/`) | **Integrated** — model consumer; Phase 3 hygiene lanes pending |
+| `melodic/standards` | multi (configs) | 2 | ✅ full | ✅ inline | full (`modules/`) | **Integrated** — model consumer; all lanes incl. Phase 3 hygiene |
 | `melodic/ci-workflows` | platform | 4 | self-dogfoods | ✅ inline | full (`modules/`) | **Platform** (this repo) |
 | `melodic/medley` | .NET + polyglot | 26 | ❌ all inline | ✅ | full | **Harvest source** → Phase 6 cutover |
 | `melodic/claude-code-plugins` | markdown + JSON | 0 | ❌ | ❌ | `.gitattributes` only | **Greenfield** — bundle candidate (D3) |
@@ -38,10 +38,10 @@ Recommended lanes are grounded in each repo's actual tracked file types
 `.gitleaks.toml`, plus per-language module configs) and a local `ci-status`
 gateway job aggregating its lanes (D2).
 
-- **`standards`** — finish Phase 3: adopt `exec-bit`, `machine-specific-paths`,
-  `eol-renormalize`, `comment-hygiene` by SHA-pin; land the canonical
-  `comment-hygiene` module upstream here (`ci-workflows` holds only a vendored
-  copy). In progress.
+- **`standards`** — **done** (PR #25): adopted `exec-bit`,
+  `machine-specific-paths`, `eol-renormalize`, `comment-hygiene` by SHA-pin;
+  landed the canonical `comment-hygiene` module upstream (`ci-workflows` holds
+  the vendored copy). 15 shebang scripts fixed to mode 100755 along the way.
 - **`github-iac` (both org + personal, near-identical C# Pulumi)** — lanes:
   `dotnet-build`, `dotnet-format`, `editorconfig`, `typos`, `gitleaks`,
   `actionlint`, `check-jsonschema` (dependabot + workflows), `markdown`, the four
@@ -63,9 +63,9 @@ gateway job aggregating its lanes (D2).
 
 Onboarding proceeds incrementally; this is the intended order, not a hard gate.
 
-1. **`standards`** Phase 3 adoption (in progress).
+1. ~~**`standards`** Phase 3 adoption~~ — **done** (PR #25).
 2. **`github-iac`** — stand up CI on one as the reusable onboarding template,
-   then apply to the second.
+   then apply to the second. ← next
 3. **`provisioning`**.
 4. **`claude-code-plugins`** — greenfield CI, bundle candidate.
 5. **`medley`** Phase 6 cutover (largest; sequenced last).

@@ -68,14 +68,18 @@ and split from execution — a **generalized org-default** policy (not a
 byte-identical `medley` lift; `medley`-specific rules stay with `medley` for its
 Phase 6 cutover).
 
-No existing consumer runs any Phase 1+2 or Phase 3 lane inline (`standards` ran
+No existing consumer ran any Phase 1+2 or Phase 3 lane inline (`standards` ran
 none originally; `medley`'s cutover is Phase 6), so adoption is additive.
-`standards` has since adopted the Phase 2 set (`actionlint`/`zizmor`/
-`osv-scanner`). Open propagation step for Phase 3: land the **canonical**
-`comment-hygiene` config module upstream in `standards` (this repo holds only a
-vendored copy — the vendoring model wants the source of truth there) and adopt
-the four lanes in `standards` by SHA-pin. See [plan.md](plan.md) for the live
-phase status.
+`standards` is now a full consumer of every quality lane, having adopted the
+Phase 2 set (`actionlint`/`zizmor`/`osv-scanner`) and then the **Phase 3 hygiene
+set** — the four lanes by SHA-pin, with the **canonical** `comment-hygiene`
+config module landed upstream in `standards` (this repo keeps the vendored copy
+in lockstep). Phase 3 is complete.
+
+Next is constellation onboarding of the greenfield repos (`github-iac` ×2,
+`provisioning`, `claude-code-plugins`), then `medley`'s Phase 6 cutover — tracked
+per-repo in [rollout.md](rollout.md). See [plan.md](plan.md) for the live phase
+status.
 
 ## Watch-items
 
