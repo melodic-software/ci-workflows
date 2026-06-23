@@ -1,0 +1,60 @@
+name: actionlint
+description: Lint GitHub Actions workflow files with actionlint.
+
+inputs:
+  paths:
+    description: >-
+      Workflow files/dirs to lint, space-separated. Empty (default) lets
+      actionlint auto-discover .github/workflows/*.{yml,yaml}.
+    default: ''
+  config-file:
+    description: >-
+      Path to an actionlint.yaml config in the caller repo. Empty (default)
+      auto-discovers .github/actionlint.yaml if one exists.
+    default: ''
+  color:
+    description: Force colored output (true/false).
+    default: 'true'
+  version:
+    description: Exact actionlint version to install.
+    default: 1.7.12
+  sha256:
+    description: >-
+      SHA-256 of the linux_amd64 .tar.gz release asset for `version`. Change
+      together with `version`.
+    default: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+runs:
+  using: composite
+  steps:
+    - name: Install actionlint
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        url="https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+        curl -fsSL "$url" -o actionlint.tar.gz
+        echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
+        tar -xzf actionlint.tar.gz actionlint
+        sudo install actionlint /usr/local/bin/actionlint
+        rm -f actionlint actionlint.tar.gz
+        actionlint --version
+
+    - name: Lint workflows
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        CONFIG_FILE: ${{ inputs.config-file }}
+        COLOR: ${{ inputs.color }}
+      run: |
+        set -euo pipefail
+        # shellcheck/pyflakes are auto-detected on PATH (ubuntu-latest ships
+        # shellcheck), so embedded run: scripts are linted too.
+        args=()
+        if [[ "$COLOR" == "true" ]]; then args+=(-color); fi
+        if [[ -n "${CONFIG_FILE// }" ]]; then args+=(-config-file "$CONFIG_FILE"); fi
+        # $PATHS unquoted so multiple targets word-split; empty appends nothing
+        # and actionlint auto-discovers .github/workflows.
+        actionlint "${args[@]}" $PATHS

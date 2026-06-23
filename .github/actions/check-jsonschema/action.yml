@@ -1,0 +1,69 @@
+name: check-jsonschema
+description: >-
+  Validate JSON/YAML files against one JSON Schema with check-jsonschema. One
+  invocation = one schema source + one-or-more files; call once per schema group.
+
+inputs:
+  files:
+    description: Space-separated files to validate (relative to the caller repo).
+    required: true
+  builtin-schema:
+    description: >-
+      Name of a built-in vendored schema (e.g. vendor.dependabot,
+      vendor.github-workflows, vendor.github-issue-forms). Mutually exclusive
+      with schemafile; set exactly one.
+    default: ''
+  schemafile:
+    description: >-
+      Path or URL of a caller-supplied JSON Schema. Mutually exclusive with
+      builtin-schema; set exactly one.
+    default: ''
+  no-cache:
+    description: Disable schema/$ref caching (true/false).
+    default: 'false'
+  output-format:
+    description: 'Output format: TEXT or JSON. Empty uses the tool default (TEXT).'
+    default: ''
+  version:
+    description: Exact check-jsonschema version to run.
+    default: 0.37.3
+  python-version:
+    description: Python version uv provisions for the ephemeral tool environment.
+    default: '3.14'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Validate
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+        BUILTIN: ${{ inputs.builtin-schema }}
+        SCHEMAFILE: ${{ inputs.schemafile }}
+        NO_CACHE: ${{ inputs.no-cache }}
+        OUTPUT_FORMAT: ${{ inputs.output-format }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${FILES// }" ]]; then
+          echo '::error::files is required.'; exit 1
+        fi
+        # Exactly one schema source (the tool treats them as mutually exclusive).
+        if [[ -n "${BUILTIN// }" && -n "${SCHEMAFILE// }" ]]; then
+          echo '::error::Set only one of builtin-schema or schemafile, not both.'; exit 1
+        fi
+        if [[ -z "${BUILTIN// }" && -z "${SCHEMAFILE// }" ]]; then
+          echo '::error::Set one of builtin-schema or schemafile.'; exit 1
+        fi
+        args=()
+        if [[ -n "${BUILTIN// }" ]]; then args+=(--builtin-schema "$BUILTIN"); fi
+        if [[ -n "${SCHEMAFILE// }" ]]; then args+=(--schemafile "$SCHEMAFILE"); fi
+        if [[ "$NO_CACHE" == "true" ]]; then args+=(--no-cache); fi
+        if [[ -n "${OUTPUT_FORMAT// }" ]]; then args+=(--output-format "$OUTPUT_FORMAT"); fi
+        # $FILES unquoted so multiple targets word-split.
+        uvx "check-jsonschema@${VERSION}" "${args[@]}" $FILES
