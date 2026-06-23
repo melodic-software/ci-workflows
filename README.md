@@ -48,6 +48,11 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
   (via `uvx`; emits `--output-format=github` annotations).
 - `.github/actions/pyright` — Pyright strict, warnings-as-errors type-check over
   the repo's Python (via `uvx`).
+- `.github/actions/biome` — Biome lint + format-check over the repo's JS/TS
+  (via `npx`; `biome ci --error-on-warnings`, emits `--reporter=github`
+  annotations).
+- `.github/actions/tsc` — TypeScript `tsc --noEmit` type-check over the repo's
+  TypeScript (via `npx`).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.

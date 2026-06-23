@@ -76,6 +76,36 @@ jobs:
         with:
           paths: fixtures/python/good
 
+  biome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Lint and format-check JS/TS
+        # Biome has no CLI exclude, so scope at the conforming fixture (the repo
+        # carries no other JS/TS source).
+        uses: ./.github/actions/biome
+        with:
+          paths: fixtures/typescript/good
+
+  tsc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Type-check TypeScript
+        # The vendored ruleset ships no project-scope `include`, so point tsc at
+        # the fixture project that extends it and supplies `include`.
+        uses: ./.github/actions/tsc
+        with:
+          project: fixtures/typescript/good/tsconfig.json
+
   typos:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -111,13 +141,13 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, ruff, pyright, typos, editorconfig, gitleaks]
+    needs: [markdown, powershell, links, ruff, pyright, biome, tsc, typos, editorconfig, gitleaks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }}
         run: |
           for r in $RESULTS; do
             case "$r" in
