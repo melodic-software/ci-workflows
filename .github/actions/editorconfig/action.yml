@@ -1,0 +1,68 @@
+name: editorconfig
+description: >-
+  Validate files against the repo .editorconfig with editorconfig-checker,
+  using a caller-supplied config.
+
+inputs:
+  paths:
+    description: >-
+      Files/dirs to check (relative to the caller repo), space-separated.
+      Default checks the whole repo.
+    default: '.'
+  config:
+    description: Path to the editorconfig-checker JSON config in the caller repo.
+    default: modules/editorconfig/.editorconfig-checker.json
+  exclude:
+    description: >-
+      A single regular expression of paths to skip (e.g. intentionally-bad
+      fixtures). Unlike most lanes this is one regex, not space-split globs;
+      combine multiple patterns with '|'. Additive on top of the config's own
+      Exclude list.
+    default: ''
+  format:
+    description: >-
+      Output format: default, gcc, github-actions, or codeclimate. Empty uses
+      the tool default. Use github-actions for inline PR annotations.
+    default: ''
+  version:
+    description: Exact editorconfig-checker version to install.
+    default: 3.7.0
+  sha256:
+    description: >-
+      SHA-256 of the ec-linux-amd64.tar.gz release asset for `version`. Change
+      together with `version`.
+    default: 9a0c3a5170bffa24f9e5f0def53d285777b6c5284a95367f40d399d0b76af552
+
+runs:
+  using: composite
+  steps:
+    - name: Install editorconfig-checker
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        url="https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${VERSION}/ec-linux-amd64.tar.gz"
+        curl -fsSL "$url" -o ec.tar.gz
+        echo "${SHA256}  ec.tar.gz" | sha256sum -c -
+        tar -xzf ec.tar.gz bin/ec-linux-amd64
+        sudo install bin/ec-linux-amd64 /usr/local/bin/ec
+        rm -rf ec.tar.gz bin
+        ec --version
+
+    - name: Check editorconfig conformance
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        CONFIG: ${{ inputs.config }}
+        EXCLUDE: ${{ inputs.exclude }}
+        FORMAT: ${{ inputs.format }}
+      run: |
+        set -euo pipefail
+        args=(-config "$CONFIG")
+        # -exclude takes ONE regex (quoted, never word-split).
+        if [[ -n "${EXCLUDE// }" ]]; then args+=(-exclude "$EXCLUDE"); fi
+        if [[ -n "${FORMAT// }" ]]; then args+=(-format "$FORMAT"); fi
+        # $PATHS unquoted so multiple targets word-split.
+        ec "${args[@]}" $PATHS

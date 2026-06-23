@@ -34,7 +34,7 @@ Establish the plan-of-record (this folder).
 - [x] Cross-repo inventory and classification
 - [x] Architecture decisions backed by research
 - [x] Phased plan
-- [ ] Confirm `ci-workflows` Actions access is set to org-accessible (D6)
+- [x] Confirm `ci-workflows` Actions access is set to org-accessible (D6)
 
 ## Phase 1 — Config-ready trio (quick wins)
 
@@ -42,9 +42,9 @@ Lanes whose config already lives in `standards` (`modules/typos`,
 `modules/editorconfig`, `modules/gitleaks`) — only the execution action is
 missing, so there is no config work and both standards and medley benefit.
 
-- [ ] `typos` composite action
-- [ ] `editorconfig-checker` composite action
-- [ ] `gitleaks` composite action (binary install + checksum verify, SARIF
+- [x] `typos` composite action
+- [x] `editorconfig-checker` composite action
+- [x] `gitleaks` composite action (binary install + checksum verify, SARIF
   output, PR annotations as optional inputs)
 - [ ] Adopt in `standards` (retire its inline copies)
 
