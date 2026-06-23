@@ -36,6 +36,15 @@ workflow files, orchestrated by `ci-status.yml` (inline change-detection via
 marketplace actions by SHA. Consumes `ci-workflows` for **nothing** today —
 every overlapping lane is reimplemented inline or via a third-party action.
 
+### Greenfield / bare consumers
+
+`github-iac` (org + personal, C# Pulumi), `provisioning` (PowerShell), and
+`claude-code-plugins` (greenfield, markdown + plugin JSON) have little or no
+quality CI today and are onboarding targets rather than harvest sources — they
+have no inline lanes to lift, only blocks to adopt. Their per-repo lane
+recommendations and onboarding status live in the adoption tracker
+([rollout.md](rollout.md)), not here.
+
 ## Classification
 
 Four buckets. `DUP-COVERED` = overlaps an existing `ci-workflows` action (but the
