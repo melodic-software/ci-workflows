@@ -1,0 +1,37 @@
+name: tsc
+description: Type-check TypeScript with the compiler (tsc --noEmit, strict) against a caller-supplied project.
+
+inputs:
+  project:
+    description: >-
+      Path to the tsconfig.json (or its directory) to type-check, passed as
+      tsc's --project. The project supplies the `include`/`files` that the
+      shared ruleset base intentionally omits. tsc cannot mix --project with
+      file arguments (TS5042), so scope via the project's own `include`.
+    default: tsconfig.json
+  version:
+    description: Exact TypeScript version to run.
+    default: 6.0.3
+  node-version:
+    description: Node.js version to set up.
+    default: 24.17.0
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Type-check
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        VERSION: ${{ inputs.version }}
+      # --noEmit type-checks without writing JS; it lives on the CLI (not the
+      # shared base) so the base stays usable for builds that emit. The `tsc`
+      # binary ships in the `typescript` package, hence `npx --package`. tsc has
+      # no native GitHub-annotation format, so findings are plain text (as with
+      # pyright); the non-zero exit gates the build.
+      run: npx --yes --package "typescript@$VERSION" tsc --noEmit --project "$PROJECT"
