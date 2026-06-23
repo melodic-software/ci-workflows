@@ -76,15 +76,48 @@ jobs:
         with:
           paths: fixtures/python/good
 
+  typos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Spell-check
+        uses: ./.github/actions/typos
+
+  editorconfig:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check editorconfig conformance
+        uses: ./.github/actions/editorconfig
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Scan for secrets
+        uses: ./.github/actions/gitleaks
+
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, ruff, pyright]
+    needs: [markdown, powershell, links, ruff, pyright, typos, editorconfig, gitleaks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }}
         run: |
           for r in $RESULTS; do
             case "$r" in

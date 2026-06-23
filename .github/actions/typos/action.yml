@@ -1,0 +1,67 @@
+name: typos
+description: Spell-check source code with typos against a caller-supplied config.
+
+inputs:
+  paths:
+    description: >-
+      Files/dirs to check (relative to the caller repo), space-separated.
+      Directories recurse. Default checks the whole repo.
+    default: '.'
+  config:
+    description: Path to the typos config (_typos.toml) in the caller repo.
+    default: modules/typos/_typos.toml
+  exclude:
+    description: >-
+      Gitignore-syntax globs to skip, space-separated (e.g. intentionally-bad
+      fixtures). Additive on top of the config's own extend-exclude and typos'
+      defaults, never replacing them.
+    default: ''
+  format:
+    description: >-
+      Output format: silent, brief, long, json, or sarif. Empty uses typos'
+      default (long). Use sarif to emit a report for code-scanning upload.
+    default: ''
+  version:
+    description: Exact typos version to install.
+    default: 1.47.2
+  sha256:
+    description: >-
+      SHA-256 of the x86_64-unknown-linux-musl .tar.gz release asset for
+      `version`. Change together with `version`.
+    default: 7aef58932fc123b4cf4b40d86468e89a3297d80169051d7cfd13a235e05fc426
+
+runs:
+  using: composite
+  steps:
+    - name: Install typos
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        asset="typos-v${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+        url="https://github.com/crate-ci/typos/releases/download/v${VERSION}/${asset}"
+        curl -fsSL "$url" -o typos.tar.gz
+        echo "${SHA256}  typos.tar.gz" | sha256sum -c -
+        tar -xzf typos.tar.gz ./typos
+        sudo install ./typos /usr/local/bin/typos
+        rm -f typos.tar.gz ./typos
+        typos --version
+
+    - name: Spell-check
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        CONFIG: ${{ inputs.config }}
+        EXCLUDE: ${{ inputs.exclude }}
+        FORMAT: ${{ inputs.format }}
+      run: |
+        set -euo pipefail
+        args=(--config "$CONFIG")
+        # Each exclude is a separate --exclude (repeatable, additive). $EXCLUDE
+        # word-splits so multiple globs are honoured.
+        for e in $EXCLUDE; do args+=(--exclude "$e"); done
+        if [[ -n "${FORMAT// }" ]]; then args+=(--format "$FORMAT"); fi
+        # $PATHS unquoted so multiple targets word-split.
+        typos "${args[@]}" $PATHS
