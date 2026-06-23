@@ -1,0 +1,28 @@
+name: Claude Review
+
+# Dogfood caller: this repo is the first consumer of its own claude-review
+# reusable workflow, exercising the exact pattern downstream consumers use
+# (caller owns `on:` + permissions; reusable workflow owns the action pin and
+# safe handling). Local `./` ref works because the checkout IS this repo.
+#
+# Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
+# "selected repositories" scope (UI-managed); without it, fork PRs and an
+# unscoped run get no token and the review degrades to a warning (no leak).
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/claude-review.yml
+    # Pass only the one named secret (least privilege) rather than `secrets:
+    # inherit`, which would forward every parent secret to the called workflow.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

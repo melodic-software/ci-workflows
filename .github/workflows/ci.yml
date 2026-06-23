@@ -201,6 +201,8 @@ jobs:
             .github/workflows/link-check.yml
             .github/workflows/zizmor.yml
             .github/workflows/osv-scanner.yml
+            .github/workflows/claude-review.yml
+            .github/workflows/claude-review-self.yml
 
   exec-bit:
     runs-on: ubuntu-latest
