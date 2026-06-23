@@ -44,6 +44,10 @@ via `$GITHUB_ACTION_PATH` without any checkout of this repo.
   (installs a pinned, checksum-verified binary).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network).
+- `.github/actions/ruff` — Ruff lint + format-check over the repo's Python
+  (via `uvx`; emits `--output-format=github` annotations).
+- `.github/actions/pyright` — Pyright strict, warnings-as-errors type-check over
+  the repo's Python (via `uvx`).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.

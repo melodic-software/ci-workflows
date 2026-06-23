@@ -1,0 +1,62 @@
+name: ruff
+description: Lint and format-check Python with Ruff against a caller-supplied config.
+
+inputs:
+  paths:
+    description: >-
+      Files/dirs to check (relative to the caller repo), space-separated.
+      Directories recurse. Default checks the whole repo.
+    default: '.'
+  config:
+    description: Path to the ruff.toml ruleset in the caller repo.
+    default: modules/python/ruff.toml
+  exclude:
+    description: >-
+      Path patterns to skip, space-separated (e.g. intentionally-bad fixtures).
+      Added on top of the config's own excludes and Ruff's defaults, never
+      replacing them.
+    default: ''
+  version:
+    description: Exact Ruff version to run.
+    default: 0.15.14
+  python-version:
+    description: Python version uv provisions for the ephemeral tool environment.
+    default: '3.14'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Lint and format-check
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        CONFIG: ${{ inputs.config }}
+        EXCLUDE: ${{ inputs.exclude }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        args=(--config "$CONFIG")
+        # Translate the excludes into an additive extend-exclude TOML override so
+        # the config's own excludes (and Ruff's defaults) survive. extend-exclude
+        # is the one exclude mechanism both `check` and `format` honour via
+        # --config; `ruff format` has no --extend-exclude flag, and a bare
+        # --exclude would replace the defaults rather than add to them.
+        if [[ -n "${EXCLUDE// }" ]]; then
+          quoted=()
+          for e in $EXCLUDE; do quoted+=("'$e'"); done
+          IFS=,; joined="${quoted[*]}"; unset IFS
+          args+=(--config "extend-exclude=[$joined]")
+        fi
+        rc=0
+        # $PATHS unquoted so multiple targets word-split. Run both checks even if
+        # the first fails, so a single run surfaces every issue. --output-format
+        # =github emits inline PR annotations for lint findings (the formatter has
+        # no such format; its diff goes to the log).
+        uvx "ruff@${VERSION}" check $PATHS "${args[@]}" --output-format=github || rc=1
+        uvx "ruff@${VERSION}" format --check $PATHS "${args[@]}" || rc=1
+        exit $rc

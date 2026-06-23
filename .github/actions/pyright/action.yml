@@ -1,0 +1,49 @@
+name: pyright
+description: Type-check Python with Pyright (strict, warnings-as-errors) against a caller-supplied config.
+
+inputs:
+  paths:
+    description: >-
+      Files/dirs to type-check (relative to the caller repo), space-separated.
+      Leave empty to let the config's `include` drive discovery (the recommended
+      consumer setup); set it to scope a repo whose shipped ruleset carries no
+      project-scope keys. Pyright has no CLI exclude — narrow via `paths` here or
+      via `exclude` in the config.
+    default: ''
+  config:
+    description: >-
+      Path to the pyrightconfig.json ruleset (or its directory) in the caller
+      repo, passed as Pyright's --project.
+    default: modules/python/pyrightconfig.json
+  version:
+    description: Exact Pyright version to run.
+    default: 1.1.409
+  python-version:
+    description: Python version uv provisions for the ephemeral tool environment.
+    default: '3.14'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Type-check
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        CONFIG: ${{ inputs.config }}
+        VERSION: ${{ inputs.version }}
+        # Pin the pyright-python wrapper to the requested build exactly. Its
+        # "new version available" notice (stderr, exit stays 0) is benign and
+        # left unsuppressed so a genuine toolchain change stays visible.
+        PYRIGHT_PYTHON_FORCE_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # --warnings makes residual warnings fail the build (strict posture).
+        # Pyright has no native GitHub-annotation output format, so findings are
+        # plain text. $PATHS unquoted so multiple targets word-split; an empty
+        # value appends nothing and the config's `include` drives discovery.
+        uvx "pyright@${VERSION}" --warnings -p "$CONFIG" $PATHS
