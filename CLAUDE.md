@@ -48,3 +48,11 @@ is a reusable workflow and the tool-runner lanes are composite actions.
 Every `uses:` (workflows and actions, first-party included) pins a full commit
 SHA with the version as a trailing `# vX.Y.Z` comment so Dependabot updates both
 the pin and the comment. This is enforced repo-wide, not just for review.
+
+Dependabot covers only those `uses:` SHAs. The tool versions pinned inside the
+actions — each `version:`/`analyzer-version:` input default and the
+checksum-verified install URLs — have no manifest it can read, so they are not
+auto-bumped. The `tool-version-drift-check` workflow watches each tool's
+upstream releases and files an advisory tracking issue when a default falls
+behind; the operator absorbs the bump (recomputing the paired `sha256:` for
+binary-install lanes).

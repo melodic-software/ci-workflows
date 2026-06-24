@@ -1,0 +1,168 @@
+name: Tool Version Drift Check
+
+# Advisory — NOT in any ci-status gate; never blocks a merge. Surfaces a rolling
+# tracking issue when an upstream tool releases a stable version past the default
+# pinned in a composite action's `version:` (or `analyzer-version:`) input.
+#
+# Dependabot cannot see these: its github-actions ecosystem updates only `uses:`
+# SHAs, and a tool version embedded in an action.yml input default or a curl
+# install URL has no package manifest to track (see .github/dependabot.yml). The
+# operator absorbs a flagged bump by editing the action's version default and,
+# for binary-install lanes, recomputing the paired `sha256:`.
+
+on:
+  schedule:
+    # Weekly Mondays 07:00 UTC — offset from other crons to avoid scheduler noise.
+    - cron: '0 7 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tool-version-drift-check.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tool-version-drift-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    name: Detect tool-version drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Rolling tracking issue create/update via create-issue-from-file.
+      issues: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Detect drift
+        id: drift
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Manifest: "<action-dir>:<version-input-key>:<source>:<upstream-id>".
+          # The action.yml version default is the single source of truth for the
+          # current pin; <source> selects the registry to query for latest stable.
+          # An optional 5th field is the github tag prefix to strip (default "v";
+          # lychee tags as lychee-vX.Y.Z).
+          tools=(
+            "shellcheck:version:github:koalaman/shellcheck"
+            "shfmt:version:github:mvdan/sh"
+            "typos:version:github:crate-ci/typos"
+            "editorconfig:version:github:editorconfig-checker/editorconfig-checker"
+            "gitleaks:version:github:gitleaks/gitleaks"
+            "actionlint:version:github:rhysd/actionlint"
+            "lychee-offline:version:github:lycheeverse/lychee:lychee-v"
+            "ruff:version:github:astral-sh/ruff"
+            "powershell:analyzer-version:github:PowerShell/PSScriptAnalyzer"
+            "check-jsonschema:version:pypi:check-jsonschema"
+            "pyright:version:pypi:pyright"
+            "markdown:version:npm:markdownlint-cli2"
+            "biome:version:npm:@biomejs/biome"
+            "tsc:version:npm:typescript"
+          )
+
+          # Read inputs.<key>.default from an action.yml with yq (mikefarah,
+          # preinstalled on ubuntu-latest). The quoted key handles the hyphen in
+          # analyzer-version; a missing key yields the literal "null".
+          # $2: tag prefix to strip (default "v"; e.g. "lychee-v").
+          latest_github() { gh api "repos/$1/releases/latest" --jq '.tag_name' | sed "s/^${2:-v}//"; }
+          latest_pypi() { curl -fsSL "https://pypi.org/pypi/$1/json" | jq -r '.info.version'; }
+          latest_npm() {
+            # URL-encode a scoped package's leading @ and / (e.g. @biomejs/biome).
+            local enc="${1//@/%40}"; enc="${enc//\//%2F}"
+            curl -fsSL "https://registry.npmjs.org/$enc/latest" | jq -r '.version'
+          }
+
+          drift_lines=""
+          for entry in "${tools[@]}"; do
+            IFS=: read -r dir key source id strip <<<"$entry"
+            file=".github/actions/${dir}/action.yml"
+            current="$(yq ".inputs.\"${key}\".default" "$file")"
+            if [[ -z "$current" || "$current" == "null" ]]; then
+              echo "::error::could not read ${key} default from ${file}"
+              exit 1
+            fi
+            case "$source" in
+              github) latest="$(latest_github "$id" "$strip")" ;;
+              pypi) latest="$(latest_pypi "$id")" ;;
+              npm) latest="$(latest_npm "$id")" ;;
+              *) echo "::error::unknown source '${source}' for ${dir}"; exit 1 ;;
+            esac
+            if [[ -z "$latest" || "$latest" == "null" ]]; then
+              echo "::warning::could not resolve latest for ${id} (${source}); skipping"
+              continue
+            fi
+            lowest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | head -1)"
+            if [[ "$lowest" == "$current" && "$current" != "$latest" ]]; then
+              drift_lines+="- **${dir}** (\`${id}\`): pinned \`${current}\`, upstream latest \`${latest}\`"$'\n'
+              echo "DRIFT ${dir}: ${current} -> ${latest}"
+            else
+              echo "ok    ${dir}: ${current} (latest ${latest})"
+            fi
+          done
+
+          if [[ -z "$drift_lines" ]]; then
+            echo "drift_detected=false" >> "$GITHUB_OUTPUT"
+            echo "No drift — all action-default tool versions current."
+            exit 0
+          fi
+
+          {
+            echo "## Tool-version drift detected"
+            echo
+            echo "One or more composite actions pin a tool version behind its upstream latest stable."
+            echo
+            printf '%s' "$drift_lines"
+            echo
+            echo "### Absorb procedure"
+            echo
+            echo "Bump the \`version:\` (or \`analyzer-version:\`) default in the listed"
+            echo "\`.github/actions/<name>/action.yml\`. For binary-install lanes (shellcheck,"
+            echo "shfmt, typos, editorconfig, gitleaks, actionlint, lychee-offline) ALSO recompute"
+            echo "the paired \`sha256:\` default from the new release asset. The uvx/npx lanes (ruff,"
+            echo "pyright, check-jsonschema, markdown, biome, tsc) and PSScriptAnalyzer carry no"
+            echo "checksum. Consumers pick the new default up when they re-pin."
+            echo
+            echo "### Why advisory"
+            echo
+            echo "Dependabot cannot bump these — its github-actions ecosystem updates only"
+            echo "\`uses:\` SHAs (see \`.github/dependabot.yml\`). A new tool release can ship"
+            echo "checks that break unrelated PRs, and binary lanes need a recomputed checksum,"
+            echo "so bumps are absorbed deliberately rather than auto-merged."
+            echo
+            echo "---"
+            echo "*Updated automatically by \`.github/workflows/tool-version-drift-check.yml\`."
+            echo "Closing this issue without absorbing the bump reopens it on the next run.*"
+          } > drift.md
+
+          echo "drift_detected=true" >> "$GITHUB_OUTPUT"
+
+      - name: Find existing tracking issue
+        id: find-issue
+        if: steps.drift.outputs.drift_detected == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing="$(gh issue list --state open \
+            --search 'in:title "[Maintenance] Tool-version drift"' \
+            --json number,title \
+            --jq '.[] | select(.title == "[Maintenance] Tool-version drift") | .number' | head -1)"
+          echo "issue-number=${existing}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update tracking issue
+        if: steps.drift.outputs.drift_detected == 'true'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          issue-number: ${{ steps.find-issue.outputs.issue-number }}
+          title: '[Maintenance] Tool-version drift'
+          content-filepath: ./drift.md

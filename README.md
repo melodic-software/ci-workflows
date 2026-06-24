@@ -30,7 +30,11 @@ checkout of this repo. (Public is required because a public consumer such as
   action.
 - **Pin by SHA.** Reference every action at a full commit SHA; Dependabot
   (`github-actions`, weekly) opens bump PRs that are reviewed and merged
-  manually.
+  manually. Dependabot updates only `uses:` SHAs — the tool versions pinned in
+  each action's `version:`/`analyzer-version:` input default (and the
+  checksum-verified install URLs) have no package manifest it can track, so the
+  scheduled `tool-version-drift-check` workflow watches upstream releases and
+  files an advisory issue when a default falls behind.
 - **Each consumer aggregates locally.** One action runs one tool inside a
   consumer job. The required-check contract is a single check named `ci-status`,
   produced by a thin gateway job the consumer keeps local so the required-check
