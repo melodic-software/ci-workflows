@@ -30,9 +30,16 @@
     Path substrings to skip (matched against forward-slash-normalized full
     paths). The .git directory is always skipped.
 
+.PARAMETER FailOnNoFiles
+    When set, exit 1 if no .ps1/.psm1 files are found, instead of exit 0. A
+    tripwire for sparse-checkout/path mistakes that would otherwise pass the
+    gate on zero files. Only takes effect when the analyzer is installed.
+
 .OUTPUTS
-    Exit 0: no findings (or PSScriptAnalyzer not installed — see note below).
-    Exit 1: findings present (printed to the host).
+    Exit 0: no findings (or PSScriptAnalyzer not installed — see note below),
+            or no files to analyze when -FailOnNoFiles is not set.
+    Exit 1: findings present (printed to the host), or no files found when
+            -FailOnNoFiles is set.
     Exit 2: configuration error or a per-file analysis subprocess crashed.
 #>
 [CmdletBinding()]
@@ -41,7 +48,8 @@ param(
     [string[]]$Path = @('.'),
     [string]$Settings = (Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'),
     [string]$AnalyzerVersion = '1.25.0',
-    [string[]]$ExcludePath = @()
+    [string[]]$ExcludePath = @(),
+    [switch]$FailOnNoFiles
 )
 
 Set-StrictMode -Version 3.0
@@ -113,6 +121,11 @@ foreach ($entry in $Path) {
 }
 
 if ($files.Count -eq 0) {
+    if ($FailOnNoFiles) {
+        # Non-terminating so the exit-1 contract holds under $ErrorActionPreference='Stop'.
+        Write-Error 'No .ps1/.psm1 files matched, but -FailOnNoFiles is set.' -ErrorAction Continue
+        exit 1
+    }
     Write-Output 'No .ps1/.psm1 files to analyze.'
     exit 0
 }

@@ -15,6 +15,13 @@ inputs:
       Path substrings to skip, space-separated (e.g. intentionally-bad
       fixtures). The .git directory is always skipped.
     default: ''
+  fail-on-no-files:
+    description: >-
+      Fail (exit 1) when no .ps1/.psm1 files are found instead of passing.
+      Default false. Set true as a tripwire where a sparse-checkout or path
+      mistake would otherwise silently pass the gate on zero files. Only applies
+      when PSScriptAnalyzer is installed (a missing analyzer still self-skips).
+    default: 'false'
   analyzer-version:
     description: Exact PSScriptAnalyzer version to install and require.
     default: 1.25.0
@@ -47,11 +54,13 @@ runs:
         SETTINGS: ${{ inputs.settings }}
         EXCLUDE: ${{ inputs.exclude }}
         REQUIRED: ${{ inputs.analyzer-version }}
+        FAIL_ON_NO_FILES: ${{ inputs.fail-on-no-files }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         # Wrap in @() so an empty input stays an empty array, never $null
         # (a bare null would violate the runner's non-null parameter contract).
         $paths = @($env:PATHS -split '\s+' | Where-Object { $_ })
         $exclude = @($env:EXCLUDE -split '\s+' | Where-Object { $_ })
-        & "$env:ACTION_PATH/Invoke-Pssa.ps1" -Path $paths -Settings $env:SETTINGS -AnalyzerVersion $env:REQUIRED -ExcludePath $exclude
+        $failOnNoFiles = $env:FAIL_ON_NO_FILES -eq 'true'
+        & "$env:ACTION_PATH/Invoke-Pssa.ps1" -Path $paths -Settings $env:SETTINGS -AnalyzerVersion $env:REQUIRED -ExcludePath $exclude -FailOnNoFiles:$failOnNoFiles
         exit $LASTEXITCODE

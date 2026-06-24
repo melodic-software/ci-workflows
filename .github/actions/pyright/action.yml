@@ -15,6 +15,13 @@ inputs:
       Path to the pyrightconfig.json ruleset (or its directory) in the caller
       repo, passed as Pyright's --project.
     default: modules/python/pyrightconfig.json
+  warnings-as-errors:
+    description: >-
+      Treat residual Pyright warnings as build failures (passes --warnings).
+      Default true keeps the strict posture; set false to let a ruleset that
+      deliberately downgrades rules to "warning" (e.g. reportMissingTypeStubs)
+      pass.
+    default: 'true'
   version:
     description: Exact Pyright version to run.
     default: 1.1.409
@@ -36,14 +43,19 @@ runs:
         PATHS: ${{ inputs.paths }}
         CONFIG: ${{ inputs.config }}
         VERSION: ${{ inputs.version }}
+        WARNINGS_AS_ERRORS: ${{ inputs.warnings-as-errors }}
         # Pin the pyright-python wrapper to the requested build exactly. Its
         # "new version available" notice (stderr, exit stays 0) is benign and
         # left unsuppressed so a genuine toolchain change stays visible.
         PYRIGHT_PYTHON_FORCE_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        # --warnings makes residual warnings fail the build (strict posture).
-        # Pyright has no native GitHub-annotation output format, so findings are
-        # plain text. $PATHS unquoted so multiple targets word-split; an empty
-        # value appends nothing and the config's `include` drives discovery.
-        uvx "pyright@${VERSION}" --warnings -p "$CONFIG" $PATHS
+        # --warnings makes residual warnings fail the build (strict posture, the
+        # default). Pyright has no native GitHub-annotation output format, so
+        # findings are plain text. The flag is a defined (possibly empty) array
+        # so unquoted expansion is set -u-safe. $PATHS unquoted so multiple
+        # targets word-split; an empty value appends nothing and the config's
+        # `include` drives discovery.
+        warn=()
+        if [[ "$WARNINGS_AS_ERRORS" == "true" ]]; then warn=(--warnings); fi
+        uvx "pyright@${VERSION}" "${warn[@]}" -p "$CONFIG" $PATHS

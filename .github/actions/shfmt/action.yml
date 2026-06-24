@@ -1,0 +1,65 @@
+name: shfmt
+description: Check shell script formatting with shfmt, driven by the repo .editorconfig.
+
+inputs:
+  paths:
+    description: >-
+      Roots to search for shell scripts (*.sh, *.bash), space-separated.
+      Default searches the whole repo.
+    default: '.'
+  exclude:
+    description: >-
+      Path substrings to skip, space-separated (e.g. intentionally-bad
+      fixtures). The .git directory is always skipped.
+    default: ''
+  version:
+    description: Exact shfmt version to install.
+    default: 3.13.1
+  sha256:
+    description: >-
+      SHA-256 of the linux_amd64 release binary for `version`. Change together
+      with `version`.
+    default: fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+
+runs:
+  using: composite
+  steps:
+    - name: Install shfmt
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        url="https://github.com/mvdan/sh/releases/download/v${VERSION}/shfmt_v${VERSION}_linux_amd64"
+        curl -fsSL "$url" -o shfmt
+        echo "${SHA256}  shfmt" | sha256sum -c -
+        sudo install shfmt /usr/local/bin/shfmt
+        rm -f shfmt
+        shfmt --version
+
+    - name: Check formatting
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: |
+        set -euo pipefail
+        # $PATHS unquoted so multiple roots word-split.
+        mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
+        # Drop excluded substrings (space-separated, fixed-string match).
+        for sub in $EXCLUDE; do
+          mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
+        done
+        if [[ ${#files[@]} -eq 0 ]]; then
+          echo 'No shell scripts to check.'
+          exit 0
+        fi
+        printf 'Checking %d file(s):\n' "${#files[@]}"
+        printf '  %s\n' "${files[@]}"
+        # No formatting flags: shfmt reads each file's .editorconfig for indent
+        # width, switch-case indent, and binary-next-line. Passing any -i/-ci/-bn
+        # would make shfmt IGNORE .editorconfig entirely, so formatting policy
+        # stays externalized in the caller's .editorconfig. -d prints a unified
+        # diff and exits non-zero when a file is not already formatted.
+        shfmt -d "${files[@]}"

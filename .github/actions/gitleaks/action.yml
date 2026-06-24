@@ -5,6 +5,12 @@ inputs:
   path:
     description: Directory or file to scan (relative to the caller repo).
     default: '.'
+  scan-mode:
+    description: >-
+      What to scan: `dir` (the working tree, the default) or `git` (the full
+      commit history). History mode catches secrets that were committed and
+      later removed, and requires the caller to check out with fetch-depth: 0.
+    default: dir
   config:
     description: Path to the gitleaks config (.gitleaks.toml) in the caller repo.
     default: modules/gitleaks/.gitleaks.toml
@@ -50,12 +56,20 @@ runs:
       shell: bash
       env:
         PATH_TO_SCAN: ${{ inputs.path }}
+        SCAN_MODE: ${{ inputs.scan-mode }}
         CONFIG: ${{ inputs.config }}
         REPORT_FORMAT: ${{ inputs.report-format }}
         REPORT_PATH: ${{ inputs.report-path }}
       run: |
         set -euo pipefail
-        args=(dir "$PATH_TO_SCAN" --config "$CONFIG" --no-banner)
+        # `dir` scans the working tree at the given path; `git` scans the commit
+        # history of the repo rooted at that path. Both take the path as the
+        # positional source argument.
+        case "$SCAN_MODE" in
+          dir | git) ;;
+          *) echo "::error::gitleaks: invalid scan-mode '$SCAN_MODE' (expected dir or git)"; exit 1 ;;
+        esac
+        args=("$SCAN_MODE" "$PATH_TO_SCAN" --config "$CONFIG" --no-banner)
         if [[ -n "${REPORT_FORMAT// }" ]]; then args+=(--report-format "$REPORT_FORMAT"); fi
         if [[ -n "${REPORT_PATH// }" ]]; then args+=(--report-path "$REPORT_PATH"); fi
         gitleaks "${args[@]}"
