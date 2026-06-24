@@ -1,70 +1,55 @@
 name: osv-scanner
 
-# Reusable workflow — dependency vulnerability scan with OSV-Scanner, wrapping
-# Google's own SHA-pinned reusable workflows. ADVISORY by default
-# (fail-on-vuln: false). Splits by event: pull_request runs the PR-diff variant
-# (reports only newly-introduced vulns); every other event runs the full-tree
-# scan (suited to schedule/dispatch on the default branch). The ci-status
-# gateway stays consumer-local — this is a lane, not the gateway.
+# Reusable workflow — dependency vulnerability scan with OSV-Scanner. ADVISORY by
+# default (fail-on-vuln: false): a finding — or a scanner/setup error — annotates
+# without failing the job, so it never reddens a consumer's aggregating ci-status.
+# The SAME scan runs on every event (no pull_request/full-tree split), so a check
+# that is green on a PR cannot turn red when the merge lands on the default branch.
 #
-# Permissions: Google's reusable workflows statically declare
-# security-events: write (for the code-scanning upload step), which GitHub
-# validates at parse time even when upload-sarif is false. Permissions do not
-# inherit across the chain, so each calling job re-declares the full set AND a
-# consumer calling this workflow must grant the same set on its caller job.
+# It invokes Google's Docker sub-action directly rather than Google's reusable
+# workflows: the full-tree reusable workflow references actions/download-artifact
+# by a mutable tag internally, which an org policy that requires every action be
+# pinned to a full-length commit SHA rejects at "Set up job". The sub-action has no
+# nested action references, so this workflow pins cleanly. A job that calls a
+# reusable workflow cannot carry continue-on-error, so the advisory posture has to
+# live on a step here — this is a lane, not the consumer-local ci-status gateway.
 on:
   workflow_call:
     inputs:
       scan-args:
         description: >-
-          OSV-Scanner arguments (newline-separated). Cannot set --format /
-          --output. Default scans the tree recursively from the repo root.
+          OSV-Scanner arguments (newline-separated). Default scans the tree
+          recursively from the repo root.
         type: string
         default: |-
           -r
           ./
       fail-on-vuln:
-        description: Fail the scan when a vulnerability is found.
+        description: >-
+          Fail the job when a vulnerability is found. Default false keeps the lane
+          advisory (annotations only); in that mode a scanner or setup error is
+          likewise non-blocking.
         type: boolean
         default: false
-      upload-sarif:
-        description: Upload results to the Security > Code Scanning dashboard.
-        type: boolean
-        default: false
-      results-file-name:
-        description: SARIF result file name.
-        type: string
-        default: results.sarif
-      checkout-submodules:
-        description: Pass through to actions/checkout `submodules`.
-        type: boolean
-        default: false
+
+permissions:
+  contents: read
 
 jobs:
-  scan-pr:
-    if: github.event_name == 'pull_request'
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-    with:
-      scan-args: ${{ inputs.scan-args }}
-      fail-on-vuln: ${{ inputs.fail-on-vuln }}
-      upload-sarif: ${{ inputs.upload-sarif }}
-      results-file-name: ${{ inputs.results-file-name }}
-      checkout-submodules: ${{ inputs.checkout-submodules }}
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
-  scan-full:
-    if: github.event_name != 'pull_request'
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-    with:
-      scan-args: ${{ inputs.scan-args }}
-      fail-on-vuln: ${{ inputs.fail-on-vuln }}
-      upload-sarif: ${{ inputs.upload-sarif }}
-      results-file-name: ${{ inputs.results-file-name }}
-      checkout-submodules: ${{ inputs.checkout-submodules }}
+      - name: Run OSV-Scanner
+        # Advisory unless the caller opts into fail-on-vuln: OSV-Scanner exits
+        # non-zero on findings (and on errors), so continue-on-error is the
+        # advisory mechanism — the same pattern the zizmor lane uses.
+        continue-on-error: ${{ !inputs.fail-on-vuln }}
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: ${{ inputs.scan-args }}
