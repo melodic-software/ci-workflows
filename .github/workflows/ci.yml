@@ -295,14 +295,12 @@ jobs:
 
   osv-scanner:
     permissions:
-      actions: read
       contents: read
-      security-events: write
     uses: ./.github/workflows/osv-scanner.yml
     with:
       # This repo carries no dependency manifests, so allow an empty scan: the
-      # dogfood proves the wrapper's wiring (inputs forward, permissions parse,
-      # advisory posture holds) without inventing a fixture manifest.
+      # dogfood proves the wrapper's wiring (inputs forward, advisory posture
+      # holds) without inventing a fixture manifest.
       scan-args: |-
         -r
         ./
