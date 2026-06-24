@@ -114,6 +114,11 @@ block.
   PR-diff variant (newly-introduced vulns only), every other event runs the
   full-tree scan (suited to schedule/dispatch on the default branch). Inputs are
   documented inline.
+- `.github/workflows/pester.yml` — runs a Pester suite on a dedicated runner
+  (Windows by default) with a pinned Pester install. A whole-job concern (its own
+  runner OS + checkout), so a reusable workflow: the caller passes a `run` command
+  and owns discovery/reporting/exit; this supplies the runner, pinned Pester, and
+  checkout. Inputs are documented inline.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. **Advisory** (posts review comments, never
   gates `ci-status`). A whole-job concern (job permissions + a secrets

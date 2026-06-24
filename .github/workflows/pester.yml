@@ -1,0 +1,88 @@
+name: pester
+
+# Reusable workflow: run a Pester suite on a dedicated runner (Windows by
+# default) with a pinned Pester install. A whole-job concern — its own runner OS
+# and checkout — so a reusable workflow rather than a composite action (per the
+# architecture's D1 split). The caller owns test discovery, reporting, and exit
+# handling by passing a `run` command; this workflow supplies the runner, a
+# pinned Pester, and the checkout. Consume it at job level:
+#
+#   jobs:
+#     pester:
+#       permissions:
+#         contents: read
+#       uses: melodic-software/ci-workflows/.github/workflows/pester.yml@<sha>
+#       with:
+#         run: ./tests/Invoke-Tests.ps1
+
+on:
+  workflow_call:
+    inputs:
+      run:
+        description: >-
+          pwsh command(s) that run the suite (Pester is already installed and
+          imported). Passed through an env var and executed with
+          Invoke-Expression, so a multi-line block or a custom runner script
+          works and the value never lands in the shell command line.
+        required: true
+        type: string
+      runner-os:
+        description: Runner label to execute on (Windows-specific suites need windows-latest).
+        default: windows-latest
+        type: string
+      pester-version:
+        description: Exact Pester version to install and import.
+        default: 5.7.1
+        type: string
+      working-directory:
+        description: Directory to run the suite from.
+        default: '.'
+        type: string
+      sparse-checkout:
+        description: >-
+          Newline-delimited sparse-checkout patterns. Empty (the default) checks
+          out the whole repo.
+        default: ''
+        type: string
+      sparse-checkout-cone-mode:
+        description: >-
+          Cone mode for sparse-checkout. Set false when mixing file-extension and
+          exact-path patterns.
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  pester:
+    name: Pester
+    runs-on: ${{ inputs.runner-os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          sparse-checkout: ${{ inputs.sparse-checkout }}
+          sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+
+      - name: Install Pester
+        shell: pwsh
+        env:
+          PESTER_VERSION: ${{ inputs.pester-version }}
+        run: |
+          Install-PSResource -Name Pester -Version $env:PESTER_VERSION -Scope CurrentUser -TrustRepository
+          Import-Module Pester -MinimumVersion $env:PESTER_VERSION -Force
+          Write-Output "Pester $((Get-Module Pester).Version) on pwsh $($PSVersionTable.PSVersion)"
+
+      - name: Run Pester
+        shell: pwsh
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          # Through env (not the command line) so the caller-supplied block keeps
+          # its structure and never becomes a template-injection surface.
+          PESTER_RUN: ${{ inputs.run }}
+        run: Invoke-Expression $env:PESTER_RUN
