@@ -1,0 +1,27 @@
+name: reference-integrity
+description: >-
+  Resolve `file.md` "Anchor" prose citations across the markdown corpus against
+  each cited file's actual headings and bold lead-ins (dependency-free awk).
+  Pairs with lychee-offline, which covers link/fragment targets.
+
+inputs:
+  globs:
+    description: >-
+      git pathspec(s) selecting the markdown corpus, space-separated. Empty or
+      the default checks all tracked markdown.
+    default: '*.md'
+  exclude:
+    description: >-
+      Extended-regex of corpus paths to drop (grep -vE) — generated, vendored,
+      or work-in-progress trees a consumer keeps out of scope. Default none.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve heading citations
+      shell: bash
+      env:
+        GLOBS: ${{ inputs.globs }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: bash "$GITHUB_ACTION_PATH/check-heading-cites.sh"

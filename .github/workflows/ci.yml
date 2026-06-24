@@ -50,6 +50,21 @@ jobs:
       - name: Check links and anchors (offline)
         uses: ./.github/actions/lychee-offline
 
+  reference-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Resolve heading citations
+        # Scope to the fixture corpus: the repo's own docs use no `file.md`
+        # "Anchor" prose-cite convention, so the fixture is what exercises it.
+        uses: ./.github/actions/reference-integrity
+        with:
+          globs: fixtures/reference-integrity/*.md
+
   ruff:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -309,13 +324,13 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, zizmor, osv-scanner]
+    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, zizmor, osv-scanner]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
         run: |
           read -ra results <<< "$RESULTS"
           for r in "${results[@]}"; do
