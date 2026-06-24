@@ -15,10 +15,12 @@ jobs:
       - uses: melodic-software/ci-workflows/.github/actions/markdown@<sha>
 ```
 
-A composite action is pulled cross-repo via GitHub's scoped, read-only
-installation token (distinct from the caller's repo-scoped `GITHUB_TOKEN`), so
-this repo stays private with no PAT, and an action's bundled script is reached
-via `$GITHUB_ACTION_PATH` without any checkout of this repo.
+This repo is public, so its actions and reusable workflows are consumable by any
+repository — public or private, in or out of the org — with no access
+configuration and no PAT. The runner fetches the referenced action directly, and
+an action's bundled script is reached via `$GITHUB_ACTION_PATH` without any
+checkout of this repo. (Public is required because a public consumer such as
+`melodic-software/claude-code-plugins` can only `uses:` public repos.)
 
 ## Contract
 
