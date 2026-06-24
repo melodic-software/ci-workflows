@@ -16,6 +16,13 @@ inputs:
   node-version:
     description: Node.js version to set up.
     default: 24.17.0
+  annotations:
+    description: >-
+      Register a problem matcher so each finding renders as a GitHub inline
+      PR-diff annotation (markdownlint-cli2 has no native GitHub formatter; the
+      matcher parses its `file:line:col … MD### …` output). Self-contained — no
+      change to the caller's config. Set false for summary output only.
+    default: 'true'
 
 runs:
   using: composite
@@ -30,5 +37,14 @@ runs:
         CONFIG: ${{ inputs.config }}
         VERSION: ${{ inputs.version }}
         GLOBS: ${{ inputs.globs }}
-      # $GLOBS is intentionally unquoted so multiple glob arguments word-split.
-      run: npx --yes "markdownlint-cli2@$VERSION" --config "$CONFIG" $GLOBS
+        ANNOTATIONS: ${{ inputs.annotations }}
+        MATCHER: ${{ github.action_path }}/markdownlint-problem-matcher.json
+      run: |
+        # Register the matcher so the lint output below is annotated inline;
+        # remove it afterwards and exit with the real lint result.
+        if [[ "$ANNOTATIONS" == "true" ]]; then echo "::add-matcher::$MATCHER"; fi
+        rc=0
+        # $GLOBS is intentionally unquoted so multiple glob arguments word-split.
+        npx --yes "markdownlint-cli2@$VERSION" --config "$CONFIG" $GLOBS || rc=$?
+        if [[ "$ANNOTATIONS" == "true" ]]; then echo "::remove-matcher owner=markdownlint-cli2::"; fi
+        exit $rc
