@@ -7,8 +7,13 @@ inputs:
   paths:
     description: >-
       Files/dirs to check (relative to the caller repo), space-separated.
-      Default checks the whole repo.
-    default: '.'
+      Empty (the default) runs editorconfig-checker in its native git-aware
+      mode: only files tracked by git are checked, so ignored or generated
+      artifacts present in a dirty/post-build tree are never gated. Pass
+      explicit paths to check exactly those files instead — a raw filesystem
+      walk that does NOT consult .gitignore (the tool's documented behavior
+      when given FILE arguments).
+    default: ''
   config:
     description: Path to the editorconfig-checker JSON config in the caller repo.
     default: modules/editorconfig/.editorconfig-checker.json
