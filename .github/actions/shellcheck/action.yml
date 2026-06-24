@@ -15,6 +15,13 @@ inputs:
       Path substrings to skip, space-separated (e.g. intentionally-bad
       fixtures). The .git directory is always skipped.
     default: ''
+  severity:
+    description: >-
+      Minimum severity to report and fail on: error, warning, info, or style.
+      Empty (the default) omits --severity, so ShellCheck applies its own
+      default (style) and reports everything. Set e.g. warning to ignore
+      info/style findings. Not expressible via the rcfile, hence an input.
+    default: ''
   version:
     description: Exact ShellCheck version to install.
     default: 0.11.0
@@ -48,6 +55,7 @@ runs:
         PATHS: ${{ inputs.paths }}
         RCFILE: ${{ inputs.rcfile }}
         EXCLUDE: ${{ inputs.exclude }}
+        SEVERITY: ${{ inputs.severity }}
       run: |
         set -euo pipefail
         # $PATHS unquoted so multiple roots word-split.
@@ -62,4 +70,7 @@ runs:
         fi
         printf 'Checking %d file(s):\n' "${#files[@]}"
         printf '  %s\n' "${files[@]}"
-        shellcheck --rcfile="$RCFILE" "${files[@]}"
+        args=(--rcfile="$RCFILE")
+        # Empty severity omits the flag, leaving ShellCheck's own default (style).
+        if [[ -n "${SEVERITY// }" ]]; then args+=(--severity="$SEVERITY"); fi
+        shellcheck "${args[@]}" "${files[@]}"
