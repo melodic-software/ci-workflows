@@ -318,10 +318,15 @@ main() {
 
   local corpus="${corpus_file:-$tmpdir/corpus.txt}"
   if [[ -z "$corpus_file" ]]; then
+    # noglob: GLOBS are git PATHSPECS, not shell globs — without `set -f` an
+    # unquoted `*.md` would expand against the cwd (matching only top-level
+    # files) instead of reaching git, which matches recursively.
+    set -f
     # shellcheck disable=SC2086  # GLOBS intentionally word-splits into pathspecs
-    git -C "$root" ls-files $GLOBS | tr -d '\r' \
+    git -C "$root" ls-files -- $GLOBS | tr -d '\r' \
       | { if [[ -n "$EXCLUDE" ]]; then grep -vE "$EXCLUDE"; else cat; fi } \
       | LC_ALL=C sort -u >"$corpus" || true
+    set +f
   fi
 
   (cd "$root" && awk "$AWK_PROG" <"$corpus")
