@@ -64,6 +64,9 @@ checkout of this repo. (Public is required because a public consumer such as
   against one schema per call (call once per schema group).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network).
+- `.github/actions/reference-integrity` — resolves `file.md` "Anchor" prose
+  citations against each cited file's headings and bold lead-ins (dependency-free
+  awk); pairs with `lychee-offline`, which covers link/fragment targets.
 - `.github/actions/exec-bit` — verifies every tracked shebang file carries git
   index mode 100755, so executable scripts keep their bit on checkout.
 - `.github/actions/machine-specific-paths` — rejects machine-specific absolute /
