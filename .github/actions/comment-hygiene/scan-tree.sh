@@ -21,8 +21,10 @@ read -ra excludes <<<"${EXCLUDE:-}"
 
 # Coarse comment-marker prefilter — a SUPERSET of chp::scan_text's triggers
 # (case-insensitive via -i), so it never drops a real violation; chp::scan_text
-# filters the false positives (non-comment context, partial tokens).
-COARSE_RE='^[[:space:]]*(//|#).*(TODO|FIXME|HACK|XXX|(issue|fixes|closes)[[:space:]]*#?[0-9]+|PR[[:space:]]*#[0-9]+)'
+# filters the false positives (non-comment context, partial tokens). Comment
+# prefixes and triggers mirror the widened policy: //, #, /*, * and <!-- lines
+# carrying a marker, cc-issue, GH-N, any #N, owner/repo#N, or issue/tracked N.
+COARSE_RE='^[[:space:]]*(//|#|/\*|\*|<!--).*(TODO|FIXME|HACK|XXX|cc-issue|GH-[0-9]|#[0-9]|/[A-Za-z0-9._-]+#[0-9]|(issues?|tracked)[[:space:]]*:?[[:space:]]*[0-9])'
 
 # Run the prefilter into a tempfile so the git grep exit code can be read before
 # consuming output:
