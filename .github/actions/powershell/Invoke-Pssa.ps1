@@ -40,7 +40,20 @@
             or no files to analyze when -FailOnNoFiles is not set.
     Exit 1: findings present (printed to the host), or no files found when
             -FailOnNoFiles is set.
-    Exit 2: configuration error or a per-file analysis subprocess crashed.
+    Exit 2: configuration error, a non-transient analysis failure, or the
+            transient PSScriptAnalyzer #1708 race that reproduced on every retry.
+
+.NOTES
+    PSScriptAnalyzer #1708: the UseCorrectCasing rule reads CommandInfo.Parameters
+    off the pipeline thread, hitting an intermittent PowerShell runspace-affinity
+    crash (NullReferenceException / InvalidOperationException). It is unfixed
+    upstream through 1.25.0 and is intra-rule, so per-file subprocess isolation
+    cannot fully clear it. Each per-file child classifies that exact transient
+    signature (an ErrorRecord with FullyQualifiedErrorId 'RULE_ERROR*' carrying
+    one of those exception types) as exit 3 and the parent retries it on a fresh
+    subprocess up to a bounded count, then hard-fails — never masking it. Findings
+    (success stream) and crashes (error stream) are disjoint, so the retry can
+    never reclassify or drop a real finding.
 #>
 [CmdletBinding()]
 param(
@@ -131,20 +144,86 @@ if ($files.Count -eq 0) {
 }
 
 $findingCount = 0
+# Bounded retry for the transient #1708 race (see .NOTES). The race is
+# intermittent and intra-rule; a fresh subprocess almost always clears it. Only
+# the exact transient signature (child exit 3) is retried — real failures fail
+# fast, and exhausting the budget hard-fails so a persistent crash is exposed.
+# Retries cost nothing unless a crash actually occurs. The measured per-attempt
+# rate on a cmdlet-heavy file is ~12%, so 8 attempts leave a < 1-in-a-million
+# residual even at a pessimistic CI rate, while a deterministic crash still fails.
+$maxAttempts = 8
+# If a runner enables the PSNativeCommandUseErrorActionPreference experimental
+# feature, a non-zero child exit would throw under ErrorActionPreference=Stop
+# before $LASTEXITCODE is read. Opt out so the exit code is always captured.
+$PSNativeCommandUseErrorActionPreference = $false
 foreach ($file in $files) {
     $env:PSSA_FILE = $file
     $env:PSSA_SETTINGS = $Settings
     $env:PSSA_VERSION = $AnalyzerVersion
-    # Single-quoted here-string: variables expand in the child from its
-    # inherited environment, not here.
-    $output = pwsh -NoProfile -NonInteractive -Command @'
-Import-Module PSScriptAnalyzer -MinimumVersion $env:PSSA_VERSION -ErrorAction Stop
-Invoke-ScriptAnalyzer -Path $env:PSSA_FILE -Settings $env:PSSA_SETTINGS |
-    ForEach-Object { '{0}:{1}:{2} {3} [{4}]' -f $_.ScriptName, $_.Line, $_.Column, $_.Message, $_.RuleName }
+    $output = $null
+    $childExit = -1
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        # Single-quoted here-string: variables expand in the child from its
+        # inherited environment, not here. The child classifies its own outcome
+        # off the error stream: 0 clean, 1 findings, 2 real error, 3 transient.
+        $output = pwsh -NoProfile -NonInteractive -Command @'
+try {
+    Import-Module PSScriptAnalyzer -MinimumVersion $env:PSSA_VERSION -ErrorAction Stop
+} catch {
+    [Console]::Error.WriteLine("Import-Module failed: $($_.Exception.Message)")
+    exit 2
+}
+$errs = $null
+$params = @{
+    Path          = $env:PSSA_FILE
+    Settings      = $env:PSSA_SETTINGS
+    ErrorVariable = 'errs'
+    ErrorAction   = 'SilentlyContinue'
+}
+try {
+    $findings = Invoke-ScriptAnalyzer @params
+} catch [System.NullReferenceException] {
+    [Console]::Error.WriteLine($_.Exception.ToString())
+    exit 3
+} catch {
+    [Console]::Error.WriteLine($_.Exception.ToString())
+    exit 2
+}
+# A rule that throws surfaces as a non-terminating ErrorRecord with
+# FullyQualifiedErrorId 'RULE_ERROR'. The #1708 affinity family throws
+# NullReference/InvalidOperation there; treat only that exact pairing as
+# transient. Any other error record is a real failure (parse error, bad
+# settings, ...). Findings are on a separate stream and are never inspected here.
+$transient = @($errs | Where-Object {
+        $_.FullyQualifiedErrorId -like 'RULE_ERROR*' -and
+        ($_.Exception -is [System.NullReferenceException] -or $_.Exception -is [System.InvalidOperationException])
+    })
+$real = @($errs | Where-Object { $transient -notcontains $_ })
+if ($real.Count -gt 0) {
+    $real | ForEach-Object { [Console]::Error.WriteLine($_.ToString()) }
+    exit 2
+}
+# A transient crash means the analysis was incomplete (the crashed rule did not
+# run), so discard any partial findings and signal a retry rather than trust them.
+if ($transient.Count -gt 0) {
+    [Console]::Error.WriteLine($transient[0].Exception.ToString())
+    exit 3
+}
+$findings | ForEach-Object { '{0}:{1}:{2} {3} [{4}]' -f $_.ScriptName, $_.Line, $_.Column, $_.Message, $_.RuleName }
+if (@($findings).Count -gt 0) { exit 1 } else { exit 0 }
 '@
-    $childExit = $LASTEXITCODE
-    if ($childExit -ne 0) {
-        Write-Error "PSScriptAnalyzer subprocess crashed for ${file} (exit $childExit)." -ErrorAction Continue
+        $childExit = $LASTEXITCODE
+        if ($childExit -ne 3) { break }
+        Write-Warning "PSSA #1708 transient race on ${file} (attempt $attempt/$maxAttempts); retrying."
+    }
+    if ($childExit -eq 3) {
+        $msg = 'PSScriptAnalyzer: the transient #1708 race reproduced on all ' +
+        "$maxAttempts attempts for ${file} (stack above); failing rather than masking it."
+        Write-Error $msg -ErrorAction Continue
+        exit 2
+    }
+    if ($childExit -ne 0 -and $childExit -ne 1) {
+        Write-Error "PSSA subprocess failed for ${file} (exit $childExit; see stack above)." -ErrorAction Continue
         exit 2
     }
     if ($output) {
