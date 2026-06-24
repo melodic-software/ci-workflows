@@ -21,6 +21,12 @@ inputs:
       Output format: silent, brief, long, json, or sarif. Empty uses typos'
       default (long). Use sarif to emit a report for code-scanning upload.
     default: ''
+  annotations:
+    description: >-
+      Emit GitHub inline PR-diff annotations for each typo (a json pass piped to
+      `::warning` workflow commands, ported from crate-ci/typos-action).
+      Advisory — the gate pass owns pass/fail. Set false for summary output only.
+    default: 'true'
   version:
     description: Exact typos version to install.
     default: 1.47.2
@@ -56,12 +62,23 @@ runs:
         CONFIG: ${{ inputs.config }}
         EXCLUDE: ${{ inputs.exclude }}
         FORMAT: ${{ inputs.format }}
+        ANNOTATIONS: ${{ inputs.annotations }}
       run: |
         set -euo pipefail
         args=(--config "$CONFIG")
         # Each exclude is a separate --exclude (repeatable, additive). $EXCLUDE
         # word-splits so multiple globs are honoured.
         for e in $EXCLUDE; do args+=(--exclude "$e"); done
-        if [[ -n "${FORMAT// }" ]]; then args+=(--format "$FORMAT"); fi
+        # Inline PR annotations: a json pass piped to GitHub `::warning` commands
+        # (ports crate-ci/typos-action's format_gh.sh). Advisory — `|| true` so
+        # the gate pass below owns pass/fail; col is the 1-based byte offset.
         # $PATHS unquoted so multiple targets word-split.
+        if [[ "$ANNOTATIONS" == "true" ]]; then
+          typos "${args[@]}" --format json $PATHS 2>/dev/null \
+            | jq -r 'select(.type == "typo")
+                | "::warning file=\(.path),line=\(.line_num),col=\(.byte_offset + 1)::\"\(.typo)\" should be \"\(.corrections | join("\", \""))\"."' \
+            || true
+        fi
+        # Gate pass: respects the caller's format (default long); its exit fails.
+        if [[ -n "${FORMAT// }" ]]; then args+=(--format "$FORMAT"); fi
         typos "${args[@]}" $PATHS
