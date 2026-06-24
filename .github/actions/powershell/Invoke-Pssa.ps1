@@ -9,12 +9,17 @@
     NullReferenceException in PSScriptAnalyzer's CommandInfoCache that surfaces
     when many files are analyzed in one process (PSScriptAnalyzer issue #1708).
 
-    File discovery uses Get-ChildItem -Force so dot-prefixed directories (for
-    example .github) are not silently skipped by Linux pwsh.
+    With no -Path, discovery is git-tracked: only *.ps1/*.psm1 files tracked by
+    git are analyzed, so ignored or generated scripts in a dirty tree are never
+    gated. When -Path is given, each directory is walked with Get-ChildItem
+    -Force (a raw filesystem walk that does not consult .gitignore) so
+    dot-prefixed directories (for example .github) are not silently skipped by
+    Linux pwsh.
 
 .PARAMETER Path
     Files and/or directories to analyze. Directories are searched recursively.
-    Defaults to the current directory.
+    Empty (the default) runs git-tracked discovery over the whole repo; pass
+    explicit paths to opt into a raw filesystem walk of exactly those paths.
 
 .PARAMETER Settings
     Path to the PSScriptAnalyzerSettings.psd1 ruleset. The consumer supplies its
@@ -58,7 +63,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string[]]$Path = @('.'),
+    [string[]]$Path = @(),
     [string]$Settings = (Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'),
     [string]$AnalyzerVersion = '1.25.0',
     [string[]]$ExcludePath = @(),
@@ -109,27 +114,45 @@ if (-not (Test-Path -LiteralPath $Settings)) {
     exit 2
 }
 
-# -Force so dot-prefixed directories (.github, etc.) are descended on Linux pwsh.
 $files = [System.Collections.Generic.List[string]]::new()
-foreach ($entry in $Path) {
-    if (Test-Path -LiteralPath $entry -PathType Leaf) {
-        $resolved = (Resolve-Path -LiteralPath $entry).Path
-        $ext = [System.IO.Path]::GetExtension($resolved)
-        # Filter leaf inputs by extension too — a hook may pass a mixed file list.
-        if (($ext -in '.ps1', '.psm1') -and -not (Test-PathExcluded -FullPath $resolved -Patterns $ExcludePath)) {
+if ($Path.Count -eq 0) {
+    # Git-tracked discovery (default): only tracked *.ps1/*.psm1, so ignored or
+    # generated scripts in a dirty tree are never gated. Filter to on-disk files
+    # so a sparse checkout (skip-worktree entries absent) is handled cleanly.
+    $tracked = & git ls-files -- '*.ps1' '*.psm1'
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'git ls-files failed — not a git checkout?' -ErrorAction Continue
+        exit 2
+    }
+    foreach ($rel in $tracked) {
+        if (-not $rel -or -not (Test-Path -LiteralPath $rel -PathType Leaf)) { continue }
+        $resolved = (Resolve-Path -LiteralPath $rel).Path
+        if (-not (Test-PathExcluded -FullPath $resolved -Patterns $ExcludePath)) {
             $files.Add($resolved)
         }
-    } elseif (Test-Path -LiteralPath $entry -PathType Container) {
-        Get-ChildItem -LiteralPath $entry -Recurse -Force -File |
-            Where-Object { $_.Extension -in '.ps1', '.psm1' } |
-            ForEach-Object {
-                if (-not (Test-PathExcluded -FullPath $_.FullName -Patterns $ExcludePath)) {
-                    $files.Add($_.FullName)
-                }
+    }
+} else {
+    # -Force so dot-prefixed directories (.github, etc.) are descended on Linux pwsh.
+    foreach ($entry in $Path) {
+        if (Test-Path -LiteralPath $entry -PathType Leaf) {
+            $resolved = (Resolve-Path -LiteralPath $entry).Path
+            $ext = [System.IO.Path]::GetExtension($resolved)
+            # Filter leaf inputs by extension too — a hook may pass a mixed file list.
+            if (($ext -in '.ps1', '.psm1') -and -not (Test-PathExcluded -FullPath $resolved -Patterns $ExcludePath)) {
+                $files.Add($resolved)
             }
-    } else {
-        Write-Error "Path not found: $entry" -ErrorAction Continue
-        exit 2
+        } elseif (Test-Path -LiteralPath $entry -PathType Container) {
+            Get-ChildItem -LiteralPath $entry -Recurse -Force -File |
+                Where-Object { $_.Extension -in '.ps1', '.psm1' } |
+                ForEach-Object {
+                    if (-not (Test-PathExcluded -FullPath $_.FullName -Patterns $ExcludePath)) {
+                        $files.Add($_.FullName)
+                    }
+                }
+        } else {
+            Write-Error "Path not found: $entry" -ErrorAction Continue
+            exit 2
+        }
     }
 }
 

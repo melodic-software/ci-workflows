@@ -5,8 +5,12 @@ inputs:
   paths:
     description: >-
       Files/dirs to analyze (relative to the caller repo), space-separated.
-      Directories recurse. Default analyzes the whole repo.
-    default: '.'
+      Directories recurse. Empty (the default) runs git-tracked discovery: only
+      *.ps1/*.psm1 files tracked by git are analyzed, so ignored or generated
+      scripts in a dirty or post-build tree are never gated (mirrors the
+      editorconfig/shellcheck git-aware default). Pass explicit paths to opt into
+      a raw filesystem walk that does NOT consult .gitignore.
+    default: ''
   settings:
     description: Path to the PSScriptAnalyzerSettings.psd1 ruleset in the caller repo.
     default: modules/powershell/PSScriptAnalyzerSettings.psd1

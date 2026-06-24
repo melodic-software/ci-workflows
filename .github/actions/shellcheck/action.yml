@@ -5,8 +5,13 @@ inputs:
   paths:
     description: >-
       Roots to search for shell scripts (*.sh, *.bash), space-separated.
-      Default searches the whole repo.
-    default: '.'
+      Empty (the default) runs git-tracked discovery: only files tracked by
+      git are linted, so ignored or generated artifacts present in a dirty or
+      post-build tree are never gated (mirrors the editorconfig action's
+      git-aware default). Pass explicit roots to opt into a raw filesystem walk
+      that does NOT consult .gitignore — checking exactly what is found under
+      those roots, including untracked files.
+    default: ''
   rcfile:
     description: Path to the .shellcheckrc ruleset in the caller repo.
     default: modules/shellcheck/.shellcheckrc
@@ -58,12 +63,28 @@ runs:
         SEVERITY: ${{ inputs.severity }}
       run: |
         set -euo pipefail
-        # $PATHS unquoted so multiple roots word-split.
-        mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
-        # Drop excluded substrings (space-separated, fixed-string match).
-        for sub in $EXCLUDE; do
-          mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
-        done
+        if [[ -z "${PATHS// }" ]]; then
+          # Git-tracked discovery (default): tracked *.sh/*.bash only, so ignored
+          # or generated scripts in a dirty tree are never gated. NUL-delimited so
+          # any path is safe; ls-files output is already sorted.
+          mapfile -d '' -t files < <(git ls-files -z -- '*.sh' '*.bash')
+        else
+          # $PATHS unquoted so multiple roots word-split. Explicit roots opt into
+          # a raw filesystem walk that does not consult .gitignore.
+          mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
+        fi
+        # Keep only on-disk files: a sparse checkout leaves tracked-but-absent
+        # (skip-worktree) entries that ShellCheck cannot open.
+        present=()
+        for f in ${files[@]+"${files[@]}"}; do [[ -f "$f" ]] && present+=("$f"); done
+        files=(${present[@]+"${present[@]}"})
+        # Drop excluded substrings (space-separated, fixed-string match). Guarded
+        # on a non-empty list so an empty array never feeds printf a lone newline.
+        if [[ ${#files[@]} -gt 0 ]]; then
+          for sub in $EXCLUDE; do
+            mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
+          done
+        fi
         if [[ ${#files[@]} -eq 0 ]]; then
           echo 'No shell scripts to check.'
           exit 0
