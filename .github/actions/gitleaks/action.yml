@@ -25,6 +25,12 @@ inputs:
       Path to write the report when report-format is set. Written before a
       non-zero exit, so it exists even when secrets are found.
     default: ''
+  redact:
+    description: >-
+      Mask the secret in gitleaks' output and report (passes --redact). Default
+      false keeps gitleaks' raw output; set true so a finding never prints the
+      secret to the log or writes it into the report file.
+    default: 'false'
   version:
     description: Exact gitleaks version to install.
     default: 8.30.1
@@ -60,6 +66,7 @@ runs:
         CONFIG: ${{ inputs.config }}
         REPORT_FORMAT: ${{ inputs.report-format }}
         REPORT_PATH: ${{ inputs.report-path }}
+        REDACT: ${{ inputs.redact }}
       run: |
         set -euo pipefail
         # `dir` scans the working tree at the given path; `git` scans the commit
@@ -70,6 +77,7 @@ runs:
           *) echo "::error::gitleaks: invalid scan-mode '$SCAN_MODE' (expected dir or git)"; exit 1 ;;
         esac
         args=("$SCAN_MODE" "$PATH_TO_SCAN" --config "$CONFIG" --no-banner)
+        if [[ "$REDACT" == "true" ]]; then args+=(--redact); fi
         if [[ -n "${REPORT_FORMAT// }" ]]; then args+=(--report-format "$REPORT_FORMAT"); fi
         if [[ -n "${REPORT_PATH// }" ]]; then args+=(--report-path "$REPORT_PATH"); fi
         gitleaks "${args[@]}"
