@@ -1,34 +1,37 @@
 name: osv-scanner
 
 # Reusable workflow — dependency vulnerability scan with OSV-Scanner. ADVISORY by
-# default (fail-on-vuln: false): a finding — or a scanner/setup error — annotates
-# without failing the job, so it never reddens a consumer's aggregating ci-status.
-# The SAME scan runs on every event (no pull_request/full-tree split), so a check
-# that is green on a PR cannot turn red when the merge lands on the default branch.
+# default (fail-on-vuln: false): findings are surfaced as GitHub PR annotations and
+# a scanner/reporter hiccup is swallowed, so the lane never reddens a consumer's
+# aggregating ci-status. The SAME scan runs on every event (no pull_request/full-tree
+# split), so a PR-green check cannot turn red when the merge lands on the default
+# branch.
 #
-# It invokes Google's Docker sub-action directly rather than Google's reusable
-# workflows: the full-tree reusable workflow references actions/download-artifact
-# by a mutable tag internally, which an org policy that requires every action be
-# pinned to a full-length commit SHA rejects at "Set up job". The sub-action has no
-# nested action references, so this workflow pins cleanly. A job that calls a
-# reusable workflow cannot carry continue-on-error, so the advisory posture has to
-# live on a step here — this is a lane, not the consumer-local ci-status gateway.
+# It composes Google's two SHA-pinnable Docker sub-actions directly
+# (osv-scanner-action -> osv-reporter-action) instead of calling Google's reusable
+# workflow: that workflow references actions/download-artifact by a mutable tag
+# internally, which the org "pin every action to a full-length commit SHA" policy
+# rejects at "Set up job". Composing the sub-actions reproduces the reusable
+# workflow's reporter — including PR annotations via osv-reporter's --gh-annotations
+# — while staying fully SHA-pinned and free: annotations are workflow-command output
+# (no permissions, no GitHub Advanced Security / code-scanning SKU).
 on:
   workflow_call:
     inputs:
       scan-args:
         description: >-
-          OSV-Scanner arguments (newline-separated). Default scans the tree
-          recursively from the repo root.
+          OSV-Scanner arguments (newline-separated), e.g. scan paths. Default scans
+          the tree recursively from the repo root. Do not pass --format or --output;
+          this workflow sets them so the reporter can consume the scan results.
         type: string
         default: |-
           -r
           ./
       fail-on-vuln:
         description: >-
-          Fail the job when a vulnerability is found. Default false keeps the lane
-          advisory (annotations only); in that mode a scanner or setup error is
-          likewise non-blocking.
+          Fail the job on a vulnerability OR an empty scan (mis-scoped args / no
+          supported manifests). Default false keeps the lane advisory (annotations
+          only); in that mode a scanner or reporter error is likewise non-blocking.
         type: boolean
         default: false
 
@@ -46,10 +49,51 @@ jobs:
           persist-credentials: false
 
       - name: Run OSV-Scanner
-        # Advisory unless the caller opts into fail-on-vuln: OSV-Scanner exits
-        # non-zero on findings (and on errors), so continue-on-error is the
-        # advisory mechanism — the same pattern the zizmor lane uses.
-        continue-on-error: ${{ !inputs.fail-on-vuln }}
+        # Scan to JSON for the reporter to consume. continue-on-error so a finding
+        # (OSV exits non-zero), an error, or an empty scan never fails the job here;
+        # the guard and the reporter own the pass/fail decision.
+        continue-on-error: true
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
-          scan-args: ${{ inputs.scan-args }}
+          scan-args: |-
+            --output=results.json
+            --format=json
+            ${{ inputs.scan-args }}
+
+      - name: Guard against an empty scan
+        # The pinned scanner image rewrites OSV exit 128 ("no packages found") to 0,
+        # so a mis-scoped scan-args or a repo with no manifests would otherwise let a
+        # *blocking* run pass while scanning nothing. Advisory runs are allowed to
+        # find nothing, so this only applies under fail-on-vuln.
+        if: ${{ inputs.fail-on-vuln }}
+        run: |
+          count=$(jq '.results | length' results.json 2>/dev/null || echo 0)
+          if [ "${count:-0}" -eq 0 ]; then
+            echo "::error::OSV-Scanner scanned 0 sources (mis-scoped scan-args or no supported manifests); failing because fail-on-vuln is set."
+            exit 1
+          fi
+
+      - name: Report findings
+        # Google's reporter renders the scan as GitHub PR annotations
+        # (--gh-annotations) and owns the exit code (--fail-on-vuln). Advisory runs
+        # swallow a reporter hiccup so the lane never reddens ci-status; blocking
+        # runs let a real finding fail the job.
+        continue-on-error: ${{ !inputs.fail-on-vuln }}
+        uses: google/osv-scanner-action/osv-reporter-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --output=results.sarif
+            --new=results.json
+            --gh-annotations=true
+            --fail-on-vuln=${{ inputs.fail-on-vuln }}
+
+      - name: Upload SARIF artifact
+        # Durable, downloadable record in the run's Actions tab (free; not the paid
+        # code-scanning dashboard). Best-effort — never fail the lane on upload.
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: osv-scanner-sarif
+          path: results.sarif
+          retention-days: 5
