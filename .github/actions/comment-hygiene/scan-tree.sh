@@ -19,12 +19,14 @@ source "$PATTERNS_FILE"
 read -ra scan_globs <<<"${EXTENSIONS:-}"
 read -ra excludes <<<"${EXCLUDE:-}"
 
-# Coarse comment-marker prefilter — a SUPERSET of chp::scan_text's triggers
+# Coarse comment-marker prefilter — a SUPERSET of every chp::scan_text trigger
 # (case-insensitive via -i), so it never drops a real violation; chp::scan_text
-# filters the false positives (non-comment context, partial tokens). Comment
-# prefixes and triggers mirror the widened policy: //, #, /*, * and <!-- lines
-# carrying a marker, cc-issue, GH-N, any #N, owner/repo#N, or issue/tracked N.
-COARSE_RE='^[[:space:]]*(//|#|/\*|\*|<!--).*(TODO|FIXME|HACK|XXX|cc-issue|GH-[0-9]|#[0-9]|/[A-Za-z0-9._-]+#[0-9]|(issues?|tracked)[[:space:]]*:?[[:space:]]*[0-9])'
+# filters the false positives (non-comment context, partial tokens). It must
+# cover ANY caller's policy library, so the tracker-keyword alternation also
+# admits a BARE number (no `#`): a consumer may flag `fixes 123` / `closes 123`
+# even though the org default requires the `#`. Over-matching here is harmless —
+# the validator is the authority. Comment prefixes: //, #, /*, * and <!--.
+COARSE_RE='^[[:space:]]*(//|#|/\*|\*|<!--).*(TODO|FIXME|HACK|XXX|cc-issue|GH-[0-9]|#[0-9]|/[A-Za-z0-9._-]+#[0-9]|(issues?|tracked|fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]*:?[[:space:]]*[0-9])'
 
 # Run the prefilter into a tempfile so the git grep exit code can be read before
 # consuming output:
