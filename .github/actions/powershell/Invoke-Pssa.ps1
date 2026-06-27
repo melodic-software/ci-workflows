@@ -51,14 +51,18 @@
 .NOTES
     PSScriptAnalyzer #1708: the UseCorrectCasing rule reads CommandInfo.Parameters
     off the pipeline thread, hitting an intermittent PowerShell runspace-affinity
-    crash (NullReferenceException / InvalidOperationException). It is unfixed
-    upstream through 1.25.0 and is intra-rule, so per-file subprocess isolation
-    cannot fully clear it. Each per-file child classifies that exact transient
-    signature (an ErrorRecord with FullyQualifiedErrorId 'RULE_ERROR*' carrying
-    one of those exception types) as exit 3 and the parent retries it on a fresh
-    subprocess up to a bounded count, then hard-fails — never masking it. Findings
+    crash. It is unfixed upstream through 1.25.0 and is intra-rule, so per-file
+    subprocess isolation cannot fully clear it. The race surfaces under several
+    exception types — NullReferenceException, InvalidOperationException, and (when
+    the crashed runspace loses its core cmdlets) CommandNotFoundException, i.e.
+    "The term 'Get-Command' is not recognized". So each per-file child keys on the
+    FullyQualifiedErrorId ('RULE_ERROR*'), not the exception type: a rule that
+    throws is always a tooling crash, never a real finding, so any RULE_ERROR is
+    classified exit 3 and the parent retries it on a fresh subprocess up to a
+    bounded count, then hard-fails — never masking it. Findings
     (success stream) and crashes (error stream) are disjoint, so the retry can
-    never reclassify or drop a real finding.
+    never reclassify or drop a real finding; non-rule errors (parse, bad settings)
+    carry a different FullyQualifiedErrorId and fail fast.
 #>
 [CmdletBinding()]
 param(
@@ -213,14 +217,15 @@ try {
     exit 2
 }
 # A rule that throws surfaces as a non-terminating ErrorRecord with
-# FullyQualifiedErrorId 'RULE_ERROR'. The #1708 affinity family throws
-# NullReference/InvalidOperation there; treat only that exact pairing as
-# transient. Any other error record is a real failure (parse error, bad
-# settings, ...). Findings are on a separate stream and are never inspected here.
-$transient = @($errs | Where-Object {
-        $_.FullyQualifiedErrorId -like 'RULE_ERROR*' -and
-        ($_.Exception -is [System.NullReferenceException] -or $_.Exception -is [System.InvalidOperationException])
-    })
+# FullyQualifiedErrorId 'RULE_ERROR'. A rule throwing is ALWAYS a tooling crash,
+# never a real finding (findings are on the success stream, below), so every
+# RULE_ERROR is treated as the transient #1708-family race and retried. The race
+# surfaces under several exception types (NullReference/InvalidOperation, and
+# CommandNotFound - "Get-Command is not recognized" - when the crashed runspace
+# loses its core cmdlets), so keying on RULE_ERROR* rather than the exception type
+# catches every manifestation. Any other error record (parse error, bad settings,
+# ...) carries a different FullyQualifiedErrorId and is a real failure that fails fast.
+$transient = @($errs | Where-Object { $_.FullyQualifiedErrorId -like 'RULE_ERROR*' })
 $real = @($errs | Where-Object { $transient -notcontains $_ })
 if ($real.Count -gt 0) {
     $real | ForEach-Object { [Console]::Error.WriteLine($_.ToString()) }
