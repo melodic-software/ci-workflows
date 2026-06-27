@@ -173,6 +173,7 @@ block.
   on:
     pull_request:
       types: [opened, edited, reopened, synchronize]
+    merge_group:
   permissions:
     pull-requests: read
   jobs:
@@ -182,7 +183,11 @@ block.
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
-  `edited` is required so re-titling re-validates. Then require the
+  `edited` is required so re-titling re-validates. `merge_group` is required on
+  any repo with a merge queue — the queue gates on `pr-title / pr-title`, and
+  without it that required check never reports and the queue deadlocks
+  (semantic-pr passes on `merge_group` since the title was validated at PR time);
+  it is inert where no queue exists. Then require the
   `pr-title / pr-title` check in the repo's ruleset (governed via `github-iac`) —
   but only **after** the caller is merged and emitting the check, or open PRs
   block on a check that never runs.
