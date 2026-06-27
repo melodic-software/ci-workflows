@@ -1,9 +1,10 @@
 name: dotnet-format
 description: >-
-  Verify C# whitespace/layout formatting with `dotnet format whitespace
-  --verify-no-changes` — the formatting owner. The build-time analyzers own
-  code-style (IDExxxx) and code-quality (CAxxxx), so this checks whitespace only
-  and never double-reports.
+  Verify C# formatting that the build does not own: whitespace/layout via `dotnet
+  format whitespace --verify-no-changes`, and using-directive organization via
+  `dotnet format style --diagnostics IDE0055 --verify-no-changes`. The build-time
+  analyzers own code-style (IDExxxx) and code-quality (CAxxxx); these two lanes
+  cover only formatting and import ordering, so none of the three double-report.
 
 inputs:
   project:
@@ -32,3 +33,15 @@ runs:
       # --verify-no-changes exits non-zero on any file that is not already
       # formatted. $PROJECT is unquoted so an empty value expands to nothing.
       run: dotnet format whitespace $PROJECT --verify-no-changes
+
+    - name: Verify import ordering
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+      # `dotnet format style` restricted to IDE0055 gates only using-directive
+      # organization. The OrganizeImports pass runs regardless of IDE0055's
+      # severity (the overlay keeps it `none` so the build never reports
+      # whitespace), and --diagnostics IDE0055 keeps this lane from re-reporting
+      # whitespace or any other IDExxxx/CAxxxx rule the build already owns — so the
+      # build, the whitespace lane, and this lane never double-report.
+      run: dotnet format style $PROJECT --diagnostics IDE0055 --verify-no-changes
