@@ -39,13 +39,20 @@ read -ra excludes <<<"${EXCLUDE:-}"
 
 failed=0
 run_check() {
-  local label=$1 pattern=$2 matches
-  # `| head -20` caps noise; the `|| true` absorbs git grep's exit 1 (no match)
-  # and head's SIGPIPE under pipefail. Empty result => this pattern is clean.
-  matches=$(git grep -nIE "$pattern" -- "${scan_paths[@]}" "${excludes[@]}" | head -20 || true)
+  local label=$1 pattern=$2 matches rc=0
+  # Capture git grep's status separately so a fatal error (bad pathspec, blob
+  # read failure: exit >=2) fails the gate CLOSED instead of looking like a
+  # clean "no match". Exit 1 (no match) is the only non-zero treated as clean.
+  # Piping straight to head would lose that status under pipefail + `|| true`.
+  matches=$(git grep -nIE "$pattern" -- "${scan_paths[@]}" "${excludes[@]}") || rc=$?
+  if [[ "$rc" -ne 0 && "$rc" -ne 1 ]]; then
+    echo "::error::git grep failed (exit $rc) scanning for ${label} — refusing to pass without a full scan." >&2
+    exit 1
+  fi
   if [[ -n "$matches" ]]; then
     echo "Machine-specific path detected (${label}):" >&2
-    echo "$matches" >&2
+    # head caps display noise only; the scan status is already validated above.
+    echo "$matches" | head -20 >&2 || true
     echo "" >&2
     failed=1
   fi

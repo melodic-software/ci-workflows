@@ -323,9 +323,13 @@ main() {
     # files) instead of reaching git, which matches recursively.
     set -f
     # shellcheck disable=SC2086  # GLOBS intentionally word-splits into pathspecs
+    # The `|| true` is scoped to grep -vE alone (its exit 1 when EXCLUDE filters
+    # out every path is a legitimate empty corpus). A git ls-files failure must
+    # NOT be swallowed: under pipefail it propagates and set -e fails closed,
+    # rather than yielding an empty corpus that passes the gate green.
     git -C "$root" ls-files -- $GLOBS | tr -d '\r' \
-      | { if [[ -n "$EXCLUDE" ]]; then grep -vE "$EXCLUDE"; else cat; fi } \
-      | LC_ALL=C sort -u >"$corpus" || true
+      | { if [[ -n "$EXCLUDE" ]]; then grep -vE "$EXCLUDE" || true; else cat; fi } \
+      | LC_ALL=C sort -u >"$corpus"
     set +f
   fi
 

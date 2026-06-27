@@ -75,7 +75,7 @@ jobs:
           PESTER_VERSION: ${{ inputs.pester-version }}
         run: |
           Install-PSResource -Name Pester -Version $env:PESTER_VERSION -Scope CurrentUser -TrustRepository
-          Import-Module Pester -MinimumVersion $env:PESTER_VERSION -Force
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
           Write-Output "Pester $((Get-Module Pester).Version) on pwsh $($PSVersionTable.PSVersion)"
 
       - name: Run Pester

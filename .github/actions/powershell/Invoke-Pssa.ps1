@@ -123,13 +123,18 @@ if ($Path.Count -eq 0) {
     # Git-tracked discovery (default): only tracked *.ps1/*.psm1, so ignored or
     # generated scripts in a dirty tree are never gated. Filter to on-disk files
     # so a sparse checkout (skip-worktree entries absent) is handled cleanly.
-    $tracked = & git ls-files -- '*.ps1' '*.psm1'
+    # NUL-delimited with quoting disabled so paths with non-ASCII/special bytes
+    # (which git C-quotes by default) and embedded newlines survive — mirrors the
+    # check-exec-bit.sh discovery idiom. PowerShell may split native stdout on
+    # newline, so reassemble and split on the NUL separator.
+    $raw = & git -c core.quotePath=false ls-files -z -- '*.ps1' '*.psm1'
     if ($LASTEXITCODE -ne 0) {
         Write-Error 'git ls-files failed — not a git checkout?' -ErrorAction Continue
         exit 2
     }
+    $tracked = ($raw -join "`n") -split "`0" | Where-Object { $_ }
     foreach ($rel in $tracked) {
-        if (-not $rel -or -not (Test-Path -LiteralPath $rel -PathType Leaf)) { continue }
+        if (-not (Test-Path -LiteralPath $rel -PathType Leaf)) { continue }
         $resolved = (Resolve-Path -LiteralPath $rel).Path
         if (-not (Test-PathExcluded -FullPath $resolved -Patterns $ExcludePath)) {
             $files.Add($resolved)

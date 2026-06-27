@@ -30,14 +30,19 @@ failed=0
 #         blob:none checkout can surface real read errors here, so fail CLOSED
 #         rather than swallow them into a silent pass.
 candidates=$(mktemp)
-trap 'rm -f "$candidates"' EXIT
+errfile=$(mktemp)
+trap 'rm -f "$candidates" "$errfile"' EXIT
 grep_rc=0
+# stderr to its own file: $candidates is a NUL-delimited path list consumed by
+# the read loop below, so a stderr line (no NUL terminator) merged in would
+# corrupt an adjacent record and silently drop a real shebang file. stderr is
+# only needed for the fatal-error report.
 git -c core.quotePath=false grep --cached -z -lIE '^#!' -- "${paths[@]}" \
-  >"$candidates" 2>&1 || grep_rc=$?
+  >"$candidates" 2>"$errfile" || grep_rc=$?
 if [[ "$grep_rc" -ne 0 && "$grep_rc" -ne 1 ]]; then
   echo "::error::git grep failed (exit $grep_rc) — refusing to pass the exec-bit gate without a full candidate scan."
-  echo "::group::git grep stderr/stdout"
-  cat "$candidates"
+  echo "::group::git grep stderr"
+  cat "$errfile"
   echo "::endgroup::"
   exit 1
 fi

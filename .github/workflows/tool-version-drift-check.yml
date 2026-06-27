@@ -92,10 +92,13 @@ jobs:
               echo "::error::could not read ${key} default from ${file}"
               exit 1
             fi
+            # `|| latest=''` so a transient registry failure (rate limit, 5xx,
+            # network blip) under set -e + pipefail does not abort the whole
+            # weekly run; the empty/null guard below then skips just that tool.
             case "$source" in
-              github) latest="$(latest_github "$id" "$strip")" ;;
-              pypi) latest="$(latest_pypi "$id")" ;;
-              npm) latest="$(latest_npm "$id")" ;;
+              github) latest="$(latest_github "$id" "$strip")" || latest='' ;;
+              pypi) latest="$(latest_pypi "$id")" || latest='' ;;
+              npm) latest="$(latest_npm "$id")" || latest='' ;;
               *) echo "::error::unknown source '${source}' for ${dir}"; exit 1 ;;
             esac
             if [[ -z "$latest" || "$latest" == "null" ]]; then
