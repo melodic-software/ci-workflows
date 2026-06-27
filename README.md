@@ -87,9 +87,11 @@ checkout of this repo. (Public is required because a public consumer such as
 - `.github/actions/dotnet-build` — builds .NET projects with Roslyn analyzers and
   code-style enforced as warnings-as-errors (the analysis owner: code-quality
   `CAxxxx`, code-style `IDExxxx`, nullable, and compiler warnings).
-- `.github/actions/dotnet-format` — verifies C# whitespace/layout via `dotnet
-  format whitespace --verify-no-changes` (the formatting owner; the build-time
-  analyzers own code-style and code-quality, so this never double-reports).
+- `.github/actions/dotnet-format` — verifies the C# formatting the build does not
+  own: whitespace/layout via `dotnet format whitespace --verify-no-changes`, and
+  using-directive organization via `dotnet format style --diagnostics IDE0055
+  --verify-no-changes` (the build-time analyzers own code-style and code-quality,
+  so none of the three lanes double-report).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
