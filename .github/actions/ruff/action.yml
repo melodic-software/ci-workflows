@@ -48,7 +48,12 @@ runs:
         # --exclude would replace the defaults rather than add to them.
         if [[ -n "${EXCLUDE// }" ]]; then
           quoted=()
+          # set -f: $EXCLUDE is unquoted to word-split, but its entries are Ruff
+          # extend-exclude PATTERNS (e.g. fixtures/**) — without noglob bash would
+          # pathname-expand them to today's matching paths before Ruff sees them.
+          set -f
           for e in $EXCLUDE; do quoted+=("'$e'"); done
+          set +f
           IFS=,; joined="${quoted[*]}"; unset IFS
           args+=(--config "extend-exclude=[$joined]")
         fi

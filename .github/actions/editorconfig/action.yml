@@ -44,17 +44,11 @@ runs:
     - name: Install editorconfig-checker
       shell: bash
       env:
-        VERSION: ${{ inputs.version }}
+        URL: https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${{ inputs.version }}/ec-linux-amd64.tar.gz
         SHA256: ${{ inputs.sha256 }}
-      run: |
-        set -euo pipefail
-        url="https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${VERSION}/ec-linux-amd64.tar.gz"
-        curl -fsSL "$url" -o ec.tar.gz
-        echo "${SHA256}  ec.tar.gz" | sha256sum -c -
-        tar -xzf ec.tar.gz bin/ec-linux-amd64
-        sudo install bin/ec-linux-amd64 /usr/local/bin/ec
-        rm -rf ec.tar.gz bin
-        ec --version
+        BIN: ec
+        ARCHIVE_MEMBER: bin/ec-linux-amd64
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Check editorconfig conformance
       shell: bash

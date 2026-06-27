@@ -29,18 +29,12 @@ runs:
     - name: Install lychee
       shell: bash
       env:
-        VERSION: ${{ inputs.version }}
+        URL: https://github.com/lycheeverse/lychee/releases/download/lychee-v${{ inputs.version }}/lychee-x86_64-unknown-linux-gnu.tar.gz
         SHA256: ${{ inputs.sha256 }}
-      run: |
-        set -euo pipefail
-        asset="lychee-x86_64-unknown-linux-gnu"
-        url="https://github.com/lycheeverse/lychee/releases/download/lychee-v${VERSION}/${asset}.tar.gz"
-        curl -fsSL "$url" -o lychee.tar.gz
-        echo "${SHA256}  lychee.tar.gz" | sha256sum -c -
-        tar -xzf lychee.tar.gz --strip-components=1 "${asset}/lychee"
-        sudo install lychee /usr/local/bin/lychee
-        rm -f lychee.tar.gz lychee
-        lychee --version
+        BIN: lychee
+        ARCHIVE_MEMBER: lychee-x86_64-unknown-linux-gnu/lychee
+        STRIP_COMPONENTS: '1'
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Check links (offline)
       shell: bash
@@ -56,8 +50,14 @@ runs:
         # default for fragment checking is off, so anchor integrity is ruleset-
         # driven; the config is intentionally not overridden here.
         args=(--offline --no-progress --config "$CONFIG")
+        # noglob for the rest of the step: $EXCLUDE entries are --exclude-path
+        # REGEXES and $GLOBS are lychee's own globs (lychee expands ** itself and
+        # documents quoting the pattern). Without set -f, GH Actions bash (globstar
+        # off) would pathname-expand both before lychee — mangling `**/*.md` into
+        # one-directory-deep matches and expanding regex metacharacters.
+        set -f
         for e in $EXCLUDE; do
           args+=(--exclude-path "$e")
         done
-        # $GLOBS intentionally word-splits into multiple lychee path args.
+        # $GLOBS word-splits into multiple lychee path/glob args (still noglob).
         lychee "${args[@]}" $GLOBS

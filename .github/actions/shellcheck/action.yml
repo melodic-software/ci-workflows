@@ -42,17 +42,11 @@ runs:
     - name: Install ShellCheck
       shell: bash
       env:
-        VERSION: ${{ inputs.version }}
+        URL: https://github.com/koalaman/shellcheck/releases/download/v${{ inputs.version }}/shellcheck-v${{ inputs.version }}.linux.x86_64.tar.gz
         SHA256: ${{ inputs.sha256 }}
-      run: |
-        set -euo pipefail
-        url="https://github.com/koalaman/shellcheck/releases/download/v${VERSION}/shellcheck-v${VERSION}.linux.x86_64.tar.gz"
-        curl -fsSL "$url" -o shellcheck.tar.gz
-        echo "${SHA256}  shellcheck.tar.gz" | sha256sum -c -
-        tar -xzf shellcheck.tar.gz "shellcheck-v${VERSION}/shellcheck"
-        sudo install "shellcheck-v${VERSION}/shellcheck" /usr/local/bin/shellcheck
-        rm -rf shellcheck.tar.gz "shellcheck-v${VERSION}"
-        shellcheck --version
+        BIN: shellcheck
+        ARCHIVE_MEMBER: shellcheck-v${{ inputs.version }}/shellcheck
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Run ShellCheck
       shell: bash
@@ -78,11 +72,14 @@ runs:
         present=()
         for f in ${files[@]+"${files[@]}"}; do [[ -f "$f" ]] && present+=("$f"); done
         files=(${present[@]+"${present[@]}"})
-        # Drop excluded substrings (space-separated, fixed-string match). Guarded
-        # on a non-empty list so an empty array never feeds printf a lone newline.
+        # Drop excluded substrings (space-separated, fixed-string match). The
+        # outer guard plus the per-iteration break keep an emptied list from
+        # feeding printf a lone newline, which grep -vF would pass back as a
+        # spurious empty-string element (length 1, not 0).
         if [[ ${#files[@]} -gt 0 ]]; then
           for sub in $EXCLUDE; do
             mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
+            [[ ${#files[@]} -eq 0 ]] && break
           done
         fi
         if [[ ${#files[@]} -eq 0 ]]; then

@@ -266,6 +266,12 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      - name: Verify prefilter is a superset of the policy library
+        # Self-enforces the scan's load-bearing invariant: the coarse git-grep
+        # prefilter must admit every line the vendored policy library flags, or
+        # the gate fails open. The two are versioned in separate repos.
+        shell: bash
+        run: bash .github/actions/comment-hygiene/superset-test.sh
       - name: Scan comment hygiene
         # The bundled scan script and the vendored policy library reference the
         # literal marker tokens in their own comments, so skip the action's own

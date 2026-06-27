@@ -19,26 +19,28 @@ source "$PATTERNS_FILE"
 read -ra scan_globs <<<"${EXTENSIONS:-}"
 read -ra excludes <<<"${EXCLUDE:-}"
 
-# Coarse comment-marker prefilter — a SUPERSET of every chp::scan_text trigger
-# (case-insensitive via -i), so it never drops a real violation; chp::scan_text
-# filters the false positives (non-comment context, partial tokens). It must
-# cover ANY caller's policy library, so the tracker-keyword alternation also
-# admits a BARE number (no `#`): a consumer may flag `fixes 123` / `closes 123`
-# even though the org default requires the `#`. Over-matching here is harmless —
-# the validator is the authority. Comment prefixes: //, #, /*, * and <!--.
-COARSE_RE='^[[:space:]]*(//|#|/\*|\*|<!--).*(TODO|FIXME|HACK|XXX|cc-issue|GH-[0-9]|#[0-9]|/[A-Za-z0-9._-]+#[0-9]|(issues?|tracked|fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]*:?[[:space:]]*[0-9])'
+# Coarse comment-marker prefilter, defined and documented in the sourced fragment
+# (shared with superset-test.sh, which enforces its superset contract against the
+# policy library).
+# shellcheck source=coarse-prefilter.sh
+source "$(dirname "${BASH_SOURCE[0]}")/coarse-prefilter.sh"
+coarse_re="$(chp::coarse_re)"
 
 # Run the prefilter into a tempfile so the git grep exit code can be read before
 # consuming output:
 #   0 = matches, 1 = no matches (clean), anything else = fatal. Fail CLOSED on a
 #   fatal grep rather than passing an incomplete scan.
 matches=$(mktemp)
-trap 'rm -f "$matches"' EXIT
+errfile=$(mktemp)
+trap 'rm -f "$matches" "$errfile"' EXIT
 grep_rc=0
-git grep -niE "$COARSE_RE" -- "${scan_globs[@]}" "${excludes[@]}" >"$matches" 2>&1 || grep_rc=$?
+# Keep stderr out of $matches: it is parsed as path:lineno:content on the
+# success path, so a non-fatal git warning merged in would become a spurious
+# candidate. stderr is only needed for the fatal-error report below.
+git grep -niE "$coarse_re" -- "${scan_globs[@]}" "${excludes[@]}" >"$matches" 2>"$errfile" || grep_rc=$?
 if [[ "$grep_rc" -ne 0 && "$grep_rc" -ne 1 ]]; then
   echo "comment-hygiene: git grep failed (exit $grep_rc):" >&2
-  cat "$matches" >&2
+  cat "$errfile" >&2
   exit 2
 fi
 

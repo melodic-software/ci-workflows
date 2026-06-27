@@ -30,17 +30,11 @@ runs:
     - name: Install actionlint
       shell: bash
       env:
-        VERSION: ${{ inputs.version }}
+        URL: https://github.com/rhysd/actionlint/releases/download/v${{ inputs.version }}/actionlint_${{ inputs.version }}_linux_amd64.tar.gz
         SHA256: ${{ inputs.sha256 }}
-      run: |
-        set -euo pipefail
-        url="https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
-        curl -fsSL "$url" -o actionlint.tar.gz
-        echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
-        tar -xzf actionlint.tar.gz actionlint
-        sudo install actionlint /usr/local/bin/actionlint
-        rm -f actionlint actionlint.tar.gz
-        actionlint --version
+        BIN: actionlint
+        ARCHIVE_MEMBER: actionlint
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Lint workflows
       shell: bash

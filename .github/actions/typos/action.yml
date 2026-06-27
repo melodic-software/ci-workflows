@@ -19,7 +19,15 @@ inputs:
   format:
     description: >-
       Output format: silent, brief, long, json, or sarif. Empty uses typos'
-      default (long). Use sarif to emit a report for code-scanning upload.
+      default (long). For a code-scanning upload set sarif together with
+      report-path, which writes the SARIF to a file (stdout alone is not
+      uploadable).
+    default: ''
+  report-path:
+    description: >-
+      Path to write the gate pass's output when set (pair with a machine format
+      such as sarif). Written before a non-zero exit, so the file exists even
+      when typos are found. Empty (the default) prints to the step log.
     default: ''
   annotations:
     description: >-
@@ -42,18 +50,11 @@ runs:
     - name: Install typos
       shell: bash
       env:
-        VERSION: ${{ inputs.version }}
+        URL: https://github.com/crate-ci/typos/releases/download/v${{ inputs.version }}/typos-v${{ inputs.version }}-x86_64-unknown-linux-musl.tar.gz
         SHA256: ${{ inputs.sha256 }}
-      run: |
-        set -euo pipefail
-        asset="typos-v${VERSION}-x86_64-unknown-linux-musl.tar.gz"
-        url="https://github.com/crate-ci/typos/releases/download/v${VERSION}/${asset}"
-        curl -fsSL "$url" -o typos.tar.gz
-        echo "${SHA256}  typos.tar.gz" | sha256sum -c -
-        tar -xzf typos.tar.gz ./typos
-        sudo install ./typos /usr/local/bin/typos
-        rm -f typos.tar.gz ./typos
-        typos --version
+        BIN: typos
+        ARCHIVE_MEMBER: ./typos
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Spell-check
       shell: bash
@@ -62,13 +63,17 @@ runs:
         CONFIG: ${{ inputs.config }}
         EXCLUDE: ${{ inputs.exclude }}
         FORMAT: ${{ inputs.format }}
+        REPORT_PATH: ${{ inputs.report-path }}
         ANNOTATIONS: ${{ inputs.annotations }}
       run: |
         set -euo pipefail
         args=(--config "$CONFIG")
         # Each exclude is a separate --exclude (repeatable, additive). $EXCLUDE
-        # word-splits so multiple globs are honoured.
+        # word-splits so multiple globs are honoured; set -f stops bash from
+        # pathname-expanding a gitignore-glob (e.g. fixtures/**) before typos.
+        set -f
         for e in $EXCLUDE; do args+=(--exclude "$e"); done
+        set +f
         # Inline PR annotations: a json pass piped to GitHub `::warning` commands
         # (ports crate-ci/typos-action's format_gh.sh). Advisory — `|| true` so
         # the gate pass below owns pass/fail; col is the 1-based byte offset.
@@ -81,4 +86,12 @@ runs:
         fi
         # Gate pass: respects the caller's format (default long); its exit fails.
         if [[ -n "${FORMAT// }" ]]; then args+=(--format "$FORMAT"); fi
-        typos "${args[@]}" $PATHS
+        # When report-path is set, redirect the formatted report to that file so
+        # a caller can upload it (e.g. SARIF). typos still exits non-zero on a
+        # finding, and the file is written before that exit, so the gate fails
+        # AND the report exists. $PATHS unquoted so multiple targets word-split.
+        if [[ -n "${REPORT_PATH// }" ]]; then
+          typos "${args[@]}" $PATHS >"$REPORT_PATH"
+        else
+          typos "${args[@]}" $PATHS
+        fi
