@@ -50,10 +50,13 @@ on:
         default: ''
       validate-single-commit:
         description: >-
-          Also validate the lone commit message on single-commit PRs (guards the
-          GitHub squash UI suggesting the commit message over the PR title).
+          Also validate the lone commit message on single-commit PRs. Off by
+          default: governed repos set the squash title to PR_TITLE, so the
+          branch commit never becomes the subject and validating it would fail a
+          one-commit PR with a valid title for no gain. Enable it only on repos
+          that squash from the commit message rather than PR_TITLE.
         type: boolean
-        default: true
+        default: false
       ignore-labels:
         description: >-
           Skip validation when the PR carries one of these labels

@@ -164,7 +164,10 @@ block.
   (`types`, `scopes`, `require-scope`, `subject-pattern`, `subject-pattern-error`,
   `validate-single-commit`, `ignore-labels`) have spec-aligned defaults documented
   inline. Consume it from a thin caller that triggers on title-relevant events
-  (the `pr-title.yml` in this repo is the reference dogfood):
+  (the `pr-title.yml` in this repo is the reference dogfood). Note the emitted
+  check context is `<caller job> / <reusable job>` — with the caller below it is
+  **`pr-title / pr-title`** (the name a ruleset must require, not bare
+  `pr-title`):
 
   ```yaml
   on:
@@ -179,10 +182,10 @@ block.
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
-  `edited` is required so re-titling re-validates. Then require the `pr-title`
-  check in the repo's ruleset (governed via `github-iac`) — but only **after** the
-  caller is merged and emitting the check, or open PRs block on a check that never
-  runs.
+  `edited` is required so re-titling re-validates. Then require the
+  `pr-title / pr-title` check in the repo's ruleset (governed via `github-iac`) —
+  but only **after** the caller is merged and emitting the check, or open PRs
+  block on a check that never runs.
 
 ## Tool configuration lives elsewhere
 
