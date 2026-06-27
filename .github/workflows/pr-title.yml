@@ -1,0 +1,25 @@
+name: pr-title
+
+# Dogfood + reference caller for the semantic-pr reusable workflow: this repo is
+# the first consumer of its own Conventional-Commits PR-title gate. Consumers
+# copy this thin caller verbatim (bumping the @sha) and require the resulting
+# `pr-title` check in their ruleset. `edited` is required so re-titling a PR
+# re-runs the gate; `synchronize`/`reopened` keep the check fresh across pushes
+# and reopens. A local (./) ref works here because the checkout IS this repo;
+# consumers reference melodic-software/ci-workflows/.github/workflows@<sha>.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    permissions:
+      pull-requests: read
+    uses: ./.github/workflows/semantic-pr.yml

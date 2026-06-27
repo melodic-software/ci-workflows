@@ -217,6 +217,8 @@ jobs:
             .github/workflows/zizmor.yml
             .github/workflows/osv-scanner.yml
             .github/workflows/pester.yml
+            .github/workflows/semantic-pr.yml
+            .github/workflows/pr-title.yml
             .github/workflows/tool-version-drift-check.yml
             .github/workflows/claude-review.yml
             .github/workflows/claude-review-self.yml
