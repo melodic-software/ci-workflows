@@ -153,6 +153,36 @@ block.
   parent secret. Fork PRs receive no
   secrets by design and are not reviewed. Security rules live in
   [CLAUDE.md](CLAUDE.md).
+- `.github/workflows/semantic-pr.yml` — validates the PR **title** against the
+  Conventional Commits spec (wraps the SHA-pinned
+  `amannn/action-semantic-pull-request`). **Gating**: a non-conforming title
+  fails the job. Because governed repos squash-merge with the squash title set to
+  `PR_TITLE`, the PR title becomes the default-branch subject line, so this is the
+  single lever that yields a Conventional-Commits history (no commit-msg hook
+  needed). It is a **standalone required check named `pr-title`**, not a
+  `ci-status` lane — title edits must not re-run the file-lint lanes. Inputs
+  (`types`, `scopes`, `require-scope`, `subject-pattern`, `subject-pattern-error`,
+  `validate-single-commit`, `ignore-labels`) have spec-aligned defaults documented
+  inline. Consume it from a thin caller that triggers on title-relevant events
+  (the `pr-title.yml` in this repo is the reference dogfood):
+
+  ```yaml
+  on:
+    pull_request:
+      types: [opened, edited, reopened, synchronize]
+  permissions:
+    pull-requests: read
+  jobs:
+    pr-title:
+      permissions:
+        pull-requests: read
+      uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
+  ```
+
+  `edited` is required so re-titling re-validates. Then require the `pr-title`
+  check in the repo's ruleset (governed via `github-iac`) — but only **after** the
+  caller is merged and emitting the check, or open PRs block on a check that never
+  runs.
 
 ## Tool configuration lives elsewhere
 

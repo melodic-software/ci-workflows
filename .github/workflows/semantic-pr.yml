@@ -1,0 +1,84 @@
+name: semantic-pr
+
+# Reusable workflow — validates that the pull request TITLE follows the
+# Conventional Commits spec (https://www.conventionalcommits.org). GATING by
+# design: a non-conforming title fails the job, so a caller that requires this
+# check blocks the merge until the title is fixed.
+#
+# Why the title (not the commits): governed repos are squash-merge-only with the
+# squash commit title set to PR_TITLE, so the PR title becomes the subject line
+# on the default branch. Enforcing Conventional Commits here is therefore the
+# single lever that produces a Conventional-Commits history — branch commits are
+# squashed away and need no separate commit-msg hook.
+#
+# The caller owns the triggers and must include `edited` so a re-titled PR
+# re-validates; see the consumer-side caller example in the README. This is a
+# standalone required check, NOT a ci-status lane: title edits should not re-run
+# the file-lint lanes, so it lives in its own thin caller workflow.
+on:
+  workflow_call:
+    inputs:
+      types:
+        description: >-
+          Allowed Conventional Commits types (newline-delimited regex patterns,
+          auto-wrapped in `^ $`). Empty uses the action's spec-aligned defaults
+          (build, chore, ci, docs, feat, fix, perf, refactor, revert, style,
+          test).
+        type: string
+        default: ''
+      scopes:
+        description: >-
+          Allowed scopes (newline-delimited regex patterns). Empty allows any
+          scope.
+        type: string
+        default: ''
+      require-scope:
+        description: Require a scope to always be present in the title.
+        type: boolean
+        default: false
+      subject-pattern:
+        description: >-
+          Optional regex the subject must match (e.g. `^(?![A-Z]).+$` to forbid
+          a leading uppercase). Empty disables the extra subject check.
+        type: string
+        default: ''
+      subject-pattern-error:
+        description: >-
+          Error message shown when `subject-pattern` does not match; the
+          `subject` and `title` variables are interpolated.
+        type: string
+        default: ''
+      validate-single-commit:
+        description: >-
+          Also validate the lone commit message on single-commit PRs (guards the
+          GitHub squash UI suggesting the commit message over the PR title).
+        type: boolean
+        default: true
+      ignore-labels:
+        description: >-
+          Skip validation when the PR carries one of these labels
+          (newline-delimited). Add `labeled`/`unlabeled` to the caller's
+          triggers to re-validate on label changes.
+        type: string
+        default: ''
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate PR title against Conventional Commits
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: ${{ inputs.types }}
+          scopes: ${{ inputs.scopes }}
+          requireScope: ${{ inputs.require-scope }}
+          subjectPattern: ${{ inputs.subject-pattern }}
+          subjectPatternError: ${{ inputs.subject-pattern-error }}
+          validateSingleCommit: ${{ inputs.validate-single-commit }}
+          ignoreLabels: ${{ inputs.ignore-labels }}
