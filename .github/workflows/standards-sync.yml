@@ -1,0 +1,163 @@
+name: standards-sync
+
+# Reusable workflow — Track B config/file distribution. Propagates the drop-in
+# files `standards` owns into downstream consumers: reads a manifest, copies each
+# included file to its per-layout destination in each target repo, and opens a
+# PR per target (never pushes to a default branch). Upstream is authoritative;
+# synced files are read-only-by-convention downstream (change them in `standards`,
+# which re-cascades). See standards docs/dedup-program/config-distribution-plan.md.
+#
+# DRAFT — NOT YET ACTIVE. Two gates must clear before this runs (both tracked in
+# the plan doc): (1) a GitHub App with contents:write + pull-requests:write on the
+# targets, provisioned via github-iac (Pulumi) and its app-id/private-key wired as
+# secrets; (2) the caller pinning this workflow by SHA. Until then `dry-run`
+# defaults true (plan only, no writes). Validate against this repo's actionlint +
+# zizmor lanes before first merge.
+
+on:
+  workflow_call:
+    inputs:
+      manifest:
+        description: Path to the distribution manifest in the standards checkout.
+        type: string
+        default: distribution/sync-manifest.yml
+      standards-ref:
+        description: Ref (branch/tag/SHA) of standards to distribute from.
+        type: string
+        default: main
+      dry-run:
+        description: >-
+          Plan only — log the per-target file set without checking out targets or
+          opening PRs. Default true keeps the workflow inert until activated.
+        type: boolean
+        default: true
+    secrets:
+      app-id:
+        description: GitHub App ID for the cross-repo sync token.
+        required: true
+      app-private-key:
+        description: GitHub App private key (PEM) for the cross-repo sync token.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Check out standards
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: melodic-software/standards
+          ref: ${{ inputs.standards-ref }}
+          persist-credentials: false
+
+      - name: Build target matrix from manifest
+        id: build
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          # yq is preinstalled on ubuntu-latest runners. Emit one matrix entry
+          # per target: { repo, layout }. The per-file mapping is resolved in the
+          # sync job from the same manifest (kept out of the matrix to bound size).
+          matrix="$(yq -o=json -I=0 '{"include": [.targets[] | {"repo": .repo, "repo_owner": (.repo | split("/")[0]), "repo_name": (.repo | split("/")[1]), "layout": .layout}]}' "$MANIFEST")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+      - name: Log distribution plan
+        # The dry-run preview: list source -> dest per target from the manifest
+        # alone — no target checkout, no token — so it works before the App is
+        # provisioned and on every real run as a record of what will sync.
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          echo "Distribution plan (dry-run=${DRY_RUN}):"
+          while IFS= read -r repo; do
+            layout="$(repo="$repo" yq -r '.targets[] | select(.repo == strenv(repo)) | .layout' "$MANIFEST")"
+            echo "## $repo (layout: $layout)"
+            while IFS= read -r tool; do
+              src="$(tool="$tool" yq -r '.files[strenv(tool)].source' "$MANIFEST")"
+              dest="$(tool="$tool" layout="$layout" yq -r '.files[strenv(tool)][strenv(layout)] // "null"' "$MANIFEST")"
+              if [ "$dest" = "null" ]; then echo "  $tool: (skipped — not for layout $layout)"; continue; fi
+              echo "  $tool: $src -> $dest"
+            done < <(repo="$repo" yq -r '.targets[] | select(.repo == strenv(repo)) | .include[]' "$MANIFEST")
+          done < <(yq -r '.targets[].repo' "$MANIFEST")
+
+  sync:
+    needs: plan
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Mint app token scoped to the target
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ matrix.repo_owner }}
+          repositories: ${{ matrix.repo_name }}
+
+      - name: Check out standards (sources)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: melodic-software/standards
+          ref: ${{ inputs.standards-ref }}
+          path: .standards-src
+          persist-credentials: false
+
+      - name: Check out target
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ matrix.repo }}
+          token: ${{ steps.token.outputs.token }}
+          path: .target
+          persist-credentials: false
+
+      - name: Copy included files to their per-layout destinations
+        env:
+          MANIFEST: .standards-src/${{ inputs.manifest }}
+          TARGET: ${{ matrix.repo }}
+          LAYOUT: ${{ matrix.layout }}
+        run: |
+          set -euo pipefail
+          # For each tool this target includes, copy source -> destination[layout].
+          mapfile -t tools < <(yq -r ".targets[] | select(.repo == strenv(TARGET)) | .include[]" "$MANIFEST")
+          for tool in "${tools[@]}"; do
+            src="$(tool="$tool" yq -r '.files[strenv(tool)].source // "null"' "$MANIFEST")"
+            dest="$(tool="$tool" lo="$LAYOUT" yq -r '.files[strenv(tool)][strenv(lo)] // "null"' "$MANIFEST")"
+            if [ "$src" = "null" ]; then
+              echo "::error::manifest entry '$tool' has no source"; exit 1
+            fi
+            if [ "$dest" = "null" ]; then
+              echo "skip $tool: no '$LAYOUT' destination"; continue
+            fi
+            mkdir -p ".target/$(dirname "$dest")"
+            cp ".standards-src/$src" ".target/$dest"
+            echo "synced $tool: $src -> $dest"
+          done
+
+      - name: Open / update sync PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: .target
+          token: ${{ steps.token.outputs.token }}
+          branch: chore/standards-sync
+          commit-message: "chore: sync standards configs (${{ inputs.standards-ref }})"
+          title: "chore: sync standards configs"
+          body: >-
+            Automated by the standards Track-B sync. Upstream
+            (melodic-software/standards) is authoritative; review and merge, do
+            not hand-edit these files downstream — change them upstream instead.
+          labels: standards-sync
