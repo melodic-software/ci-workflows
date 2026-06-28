@@ -1,0 +1,95 @@
+name: release
+
+# Cut a semantic-version release on demand: compute the next tag from the
+# latest existing tag + the chosen bump, then create a tag + GitHub Release
+# (auto-generated notes) at the current main HEAD.
+#
+# Why this shape:
+#   - NO commit is pushed to main — only a tag is created — so the branch
+#     `required_signatures` rule never applies and there is no bot-signing
+#     problem. The tag references the already-signed HEAD commit.
+#   - GITHUB_TOKEN only: no PAT, no GitHub App, no stored signing key (matches
+#     this repo's GitHub-native, no-stored-secret posture). The tag itself is
+#     therefore unsigned, but it points at a signed/verified commit and tags are
+#     not covered by the commit-signing rule.
+#   - Manual dispatch (not on: push) so releasing is a deliberate act — every
+#     merge to main does NOT cut a release; you pick when and how much to bump.
+#
+# Consumers pin `ci-workflows` by SHA with a `# vX.Y.Z` comment; Dependabot
+# bumps them to each new release. Cut a release whenever main changes so HEAD
+# stays at the latest tag and Dependabot never falls back to tracking HEAD.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic-version increment for this release
+        type: choice
+        options: [patch, minor, major]
+        default: minor
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag + GitHub Release
+    steps:
+      - name: Check out (full history + tags)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          # Read-only checkout: tag creation goes through gh (GH_TOKEN/API), not
+          # git push, so no git credential needs to persist into .git/config.
+          persist-credentials: false
+
+      - name: Guard — releases only from main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Releases may only be cut from main (got ${GITHUB_REF})."
+            exit 1
+          fi
+
+      - name: Compute next version
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)"
+          latest="${latest:-v0.0.0}"
+          IFS=. read -r major minor patch <<< "${latest#v}"
+          case "$BUMP" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          next="v${major}.${minor}.${patch}"
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "Next release: ${next} (from ${latest}, bump=${BUMP})"
+
+      - name: Guard — tag does not already exist
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${NEXT}" >/dev/null; then
+            echo "::error::Tag ${NEXT} already exists."
+            exit 1
+          fi
+
+      - name: Create tag + GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          gh release create "${NEXT}" \
+            --target "${GITHUB_SHA}" \
+            --title "${NEXT}" \
+            --generate-notes
+          echo "Released ${NEXT} at ${GITHUB_SHA}"
