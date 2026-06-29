@@ -59,6 +59,7 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
       - name: Check out standards
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -66,6 +67,13 @@ jobs:
           repository: melodic-software/standards
           ref: ${{ inputs.standards-ref }}
           persist-credentials: false
+
+      - name: Resolve standards commit
+        # Pin the exact SHA so every sync leg copies from the same tree the plan
+        # was built against, even if a movable `standards-ref` (e.g. main)
+        # advances between the plan and sync jobs.
+        id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build target matrix from manifest
         id: build
@@ -134,7 +142,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: melodic-software/standards
-          ref: ${{ inputs.standards-ref }}
+          ref: ${{ needs.plan.outputs.sha }}  # the SHA the plan was built from
           path: .standards-src
           persist-credentials: false
 
@@ -180,10 +188,11 @@ jobs:
           path: .target
           token: ${{ steps.token.outputs.token }}
           branch: chore/standards-sync
-          commit-message: "chore: sync standards configs (${{ inputs.standards-ref }})"
-          title: "chore: sync standards configs (${{ inputs.standards-ref }})"
+          commit-message: "chore: sync standards configs (${{ needs.plan.outputs.sha }})"
+          title: "chore: sync standards configs"
           body: >-
-            Automated by the standards Track-B sync. Upstream
-            (melodic-software/standards) is authoritative; review and merge, do
-            not hand-edit these files downstream — change them upstream instead.
+            Automated by the standards Track-B sync from
+            melodic-software/standards@${{ needs.plan.outputs.sha }} (ref
+            ${{ inputs.standards-ref }}). Upstream is authoritative; review and
+            merge, do not hand-edit these files downstream — change them upstream.
           labels: standards-sync
