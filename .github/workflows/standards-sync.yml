@@ -45,10 +45,18 @@ on:
 permissions:
   contents: read
 
+# Serialize runs so two invocations never race on the same per-target sync
+# branch. Queue rather than cancel — a half-applied sync should finish.
+concurrency:
+  group: standards-sync
+  cancel-in-progress: false
+
 jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
     steps:
@@ -173,7 +181,7 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           branch: chore/standards-sync
           commit-message: "chore: sync standards configs (${{ inputs.standards-ref }})"
-          title: "chore: sync standards configs"
+          title: "chore: sync standards configs (${{ inputs.standards-ref }})"
           body: >-
             Automated by the standards Track-B sync. Upstream
             (melodic-software/standards) is authoritative; review and merge, do
