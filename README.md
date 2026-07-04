@@ -86,7 +86,10 @@ checkout of this repo. (Public is required because a public consumer such as
   TypeScript (via `npx`).
 - `.github/actions/dotnet-build` — builds .NET projects with Roslyn analyzers and
   code-style enforced as warnings-as-errors (the analysis owner: code-quality
-  `CAxxxx`, code-style `IDExxxx`, nullable, and compiler warnings).
+  `CAxxxx`, code-style `IDExxxx`, nullable, and compiler warnings). Restores in
+  NuGet locked mode by default: a committed `packages.lock.json` that drifted
+  from the project dependencies fails with `NU1004` instead of silently
+  re-resolving (a no-op for repos without lock-file usage).
 - `.github/actions/dotnet-format` — verifies the C# formatting the build does not
   own: whitespace/layout via `dotnet format whitespace --verify-no-changes`, and
   using-directive organization via `dotnet format style --diagnostics IDE0055
@@ -111,10 +114,21 @@ block.
   `uses:` at job level. SARIF upload and blocking promotion are deferred opt-ins.
   Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
-  OSV-Scanner (wraps Google's SHA-pinned reusable workflows). **Advisory**
-  (`fail-on-vuln` off by default) and event-split: `pull_request` runs the
-  PR-diff variant (newly-introduced vulns only), every other event runs the
-  full-tree scan (suited to schedule/dispatch on the default branch). Inputs are
+  OSV-Scanner (composes Google's SHA-pinned scanner + reporter sub-actions;
+  the same full scan runs on every event). **Advisory** (`fail-on-vuln` off by
+  default). OSV-Scanner reads lockfiles only — a .NET repo gets transitive
+  coverage exactly when it commits `packages.lock.json` (the standards .NET
+  overlay's `RestorePackagesWithLockFile`, kept honest by `dotnet-build`'s
+  locked-mode restore). An empty scan therefore warns (advisory) or fails
+  (blocking) unless the caller declares the repo genuinely dependency-less via
+  `allow-no-lockfiles: true`. Inputs are documented inline.
+- `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
+  `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
+  and pushes the result back to the PR branch, covering the lock-file updates
+  Dependabot's NuGet ecosystem misses. Self-guards to `dependabot[bot]` events
+  on `dependabot/nuget/` branches, so the caller is a thin unconditional
+  `pull_request` job granting `contents: write`. Inputs, the optional
+  `PUSH_TOKEN` Dependabot secret, and the default-token no-retrigger caveat are
   documented inline.
 - `.github/workflows/pester.yml` — runs a Pester suite on a dedicated runner
   (Windows by default) with a pinned Pester install. A whole-job concern (its own
