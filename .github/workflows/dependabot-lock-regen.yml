@@ -117,10 +117,12 @@ jobs:
         env:
           COMMIT_MESSAGE: ${{ inputs.commit-message }}
         # Stage only lock files: the restore may touch obj/ artifacts that are
-        # never committed. ls-files (never-erroring) probes for changes first —
-        # `git add` would fail the job when the pathspec matches nothing.
+        # never committed. ls-files (never-erroring) probes for new, modified,
+        # and deleted lock files first — `git add` would fail the job when the
+        # pathspec matches nothing. (--modified already reports worktree
+        # deletions; --deleted makes that intent explicit.)
         run: |
-          if [ -z "$(git ls-files --others --modified --exclude-standard -- ':(glob)**/packages.lock.json')" ]; then
+          if [ -z "$(git ls-files --others --modified --deleted --exclude-standard -- ':(glob)**/packages.lock.json')" ]; then
             echo "Lock files already consistent with the bumped dependencies; nothing to push."
             exit 0
           fi
@@ -128,5 +130,5 @@ jobs:
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit -m "$COMMIT_MESSAGE"
-          git push
+          git push origin HEAD
           echo "::notice::Regenerated packages.lock.json pushed to ${GITHUB_HEAD_REF}."
