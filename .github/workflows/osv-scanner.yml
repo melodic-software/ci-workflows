@@ -82,22 +82,27 @@ jobs:
         # A repo whose dependencies live outside any lockfile (e.g. .NET
         # PackageReference with no committed packages.lock.json) or a mis-scoped
         # scan-args scans zero sources while looking green — false assurance.
-        # Empty is fine only when the caller declared the repo dependency-less;
+        # OSV's JSON `results` lists only VULNERABLE sources (a clean scan is
+        # `results: []`), so its length cannot measure coverage. The reliable
+        # signal, verified against the pinned scanner: a run that scanned at
+        # least one source always writes `results` as an array, while a run
+        # that scanned nothing leaves it null (--allow-no-lockfiles) or writes
+        # no results.json at all (no-lockfiles error, scanner failure). Empty
+        # is fine only when the caller declared the repo dependency-less;
         # otherwise it fails a blocking run and annotates an advisory one.
         env:
           ALLOW_NO_LOCKFILES: ${{ inputs.allow-no-lockfiles }}
           FAIL_ON_VULN: ${{ inputs.fail-on-vuln }}
         run: |
-          count=$(jq '.results | length' results.json 2>/dev/null || echo 0)
-          if [ "${count:-0}" -gt 0 ]; then
-            echo "OSV-Scanner scanned ${count} source(s)."
+          if jq -e '.results | type == "array"' results.json >/dev/null 2>&1; then
+            echo "Scan completed: at least one dependency source was scanned."
           elif [ "$ALLOW_NO_LOCKFILES" = "true" ]; then
             echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
           elif [ "$FAIL_ON_VULN" = "true" ]; then
-            echo "::error::OSV-Scanner scanned 0 sources (mis-scoped scan-args, or dependencies without a committed lockfile); failing because fail-on-vuln is set."
+            echo "::error::OSV-Scanner scanned nothing (no supported lockfiles, mis-scoped scan-args, or a scanner error); failing because fail-on-vuln is set."
             exit 1
           else
-            echo "::warning::OSV-Scanner scanned 0 sources — this advisory lane verified nothing. Commit lockfiles (for .NET: packages.lock.json) or, if the repo truly has no dependencies, set allow-no-lockfiles: true."
+            echo "::warning::OSV-Scanner scanned nothing (no supported lockfiles, mis-scoped scan-args, or a scanner error) — this advisory lane verified no dependencies. Commit lockfiles (for .NET: packages.lock.json), or set allow-no-lockfiles: true if the repo truly has none."
           fi
 
       - name: Report findings

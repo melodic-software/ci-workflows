@@ -103,10 +103,15 @@ jobs:
         env:
           PROJECT: ${{ inputs.project }}
         # --force-evaluate re-resolves the graph and rewrites every
-        # packages.lock.json even where NuGet considers it current. $PROJECT is
-        # unquoted so an empty value expands to nothing and the
-        # working-directory project/solution is restored.
-        run: dotnet restore --force-evaluate $PROJECT
+        # packages.lock.json even where NuGet considers it current. PROJECT is
+        # appended only when non-empty so the working-directory
+        # project/solution is restored by default.
+        run: |
+          args=(--force-evaluate)
+          if [ -n "$PROJECT" ]; then
+            args+=("$PROJECT")
+          fi
+          dotnet restore "${args[@]}"
 
       - name: Commit and push lock-file changes
         env:
