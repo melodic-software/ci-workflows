@@ -24,7 +24,7 @@ inputs:
     default: 'true'
   version:
     description: Exact Pyright version to run.
-    default: 1.1.410
+    default: 1.1.411
   python-version:
     description: Python version uv provisions for the ephemeral tool environment.
     default: '3.14'
