@@ -53,6 +53,12 @@ jobs:
         uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2.8.0
         with:
           args: ${{ inputs.args }}
+          # The action's default lychee (v0.23.0) predates --accept-timeouts
+          # (added in lychee 0.24.0), which the default args rely on. Pin the
+          # same lychee the offline lane installs; bump both together (this pin
+          # is inside a workflow, so tool-version-drift-check watches only the
+          # lychee-offline action default).
+          lycheeVersion: v0.24.2
           fail: false
         env:
           # Authenticates lychee's github.com requests so they use the higher
