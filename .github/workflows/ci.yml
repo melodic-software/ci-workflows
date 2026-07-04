@@ -216,6 +216,7 @@ jobs:
             .github/workflows/link-check.yml
             .github/workflows/zizmor.yml
             .github/workflows/osv-scanner.yml
+            .github/workflows/dependabot-lock-regen.yml
             .github/workflows/pester.yml
             .github/workflows/semantic-pr.yml
             .github/workflows/pr-title.yml
@@ -323,13 +324,11 @@ jobs:
       contents: read
     uses: ./.github/workflows/osv-scanner.yml
     with:
-      # This repo carries no dependency manifests, so allow an empty scan: the
-      # dogfood proves the wrapper's wiring (inputs forward, advisory posture
-      # holds) without inventing a fixture manifest.
-      scan-args: |-
-        -r
-        ./
-        --allow-no-lockfiles
+      # This repo carries no dependency manifests, so declare it dependency-less
+      # and let the empty scan pass: the dogfood proves the wrapper's wiring
+      # (inputs forward, advisory posture holds) without inventing a fixture
+      # manifest.
+      allow-no-lockfiles: true
 
   pester:
     permissions:

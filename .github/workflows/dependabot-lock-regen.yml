@@ -1,0 +1,127 @@
+name: dependabot-lock-regen
+
+# Reusable workflow — regenerate NuGet packages.lock.json on Dependabot PRs.
+# Dependabot's NuGet ecosystem can bump a PackageReference while leaving the
+# committed lock file stale (known upstream dependabot-core lockfile gaps
+# around CPM and transitive-via-ProjectReference dependencies). With the
+# dotnet-build action restoring in locked mode, that stale lock file
+# fails the PR with NU1004 and the bump strands — so this workflow runs
+# `dotnet restore --force-evaluate` on the Dependabot branch and pushes the
+# regenerated lock file back. A whole-job concern (PR-head checkout with a
+# pushable credential + job permissions + a secrets interface), so a reusable
+# workflow rather than a composite action.
+#
+# The job self-guards to Dependabot NuGet branches (actor `dependabot[bot]`,
+# head ref `dependabot/nuget/`) and skips everywhere else, so the caller stays
+# thin — no `if` needed:
+#
+#   on:
+#     pull_request:
+#   jobs:
+#     lock-regen:
+#       permissions:
+#         contents: write
+#       uses: melodic-software/ci-workflows/.github/workflows/dependabot-lock-regen.yml@<sha>
+#
+# Dependabot branches live in the base repo (a fork PR can never carry the
+# dependabot[bot] actor), so the push always targets a same-repo branch.
+#
+# Two GitHub behaviors consumers must know:
+# - A push made with the default GITHUB_TOKEN does NOT trigger new workflow
+#   runs (loop protection), so the regen commit leaves the PR's required
+#   checks pending until re-run manually (or via `@dependabot recreate`, which
+#   force-pushes and re-triggers this workflow in turn). Pass PUSH_TOKEN (a
+#   fine-grained PAT or GitHub App token with contents: write) to have the
+#   push re-trigger CI; the actor guard breaks the loop either way, because
+#   the token owner's synchronize event is not dependabot[bot].
+# - Dependabot-triggered runs read *Dependabot* secrets, not Actions secrets —
+#   register PUSH_TOKEN under Settings > Secrets > Dependabot in the caller.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: >-
+          Project or solution to restore (relative to the caller repo). Leave
+          empty to restore the project/solution in the working directory.
+        default: ''
+        type: string
+      dotnet-version:
+        description: .NET SDK version to install.
+        default: 10.0.301
+        type: string
+      commit-message:
+        description: >-
+          Commit message for the regen commit. Squash-merge repos take the PR
+          title as the default-branch subject, so this only appears in the PR's
+          branch history.
+        default: 'build(deps): regenerate packages.lock.json'
+        type: string
+    secrets:
+      PUSH_TOKEN:
+        description: >-
+          Optional token (fine-grained PAT or GitHub App installation token
+          with contents: write) used for checkout and push so the regen commit
+          re-triggers the PR's CI. Omitted, the default GITHUB_TOKEN pushes but
+          triggers no runs. Must be a *Dependabot* secret in the caller repo.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  lock-regen:
+    name: Regenerate NuGet lock files
+    # Actor-gated: only events Dependabot itself caused, on its own NuGet
+    # branches. A writer pushing to (or re-creating) such a branch becomes the
+    # actor and is skipped — which also breaks any PUSH_TOKEN regen loop.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.actor == 'dependabot[bot]' &&
+      startsWith(github.head_ref, 'dependabot/nuget/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.PUSH_TOKEN || github.token }}
+          # Deliberately persisted: the push step below is this job's whole
+          # point, and the actor guard scopes the credential to Dependabot's
+          # own same-repo branch.
+          persist-credentials: true
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Regenerate lock files
+        env:
+          PROJECT: ${{ inputs.project }}
+        # --force-evaluate re-resolves the graph and rewrites every
+        # packages.lock.json even where NuGet considers it current. $PROJECT is
+        # unquoted so an empty value expands to nothing and the
+        # working-directory project/solution is restored.
+        run: dotnet restore --force-evaluate $PROJECT
+
+      - name: Commit and push lock-file changes
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        # Stage only lock files: the restore may touch obj/ artifacts that are
+        # never committed. ls-files (never-erroring) probes for changes first —
+        # `git add` would fail the job when the pathspec matches nothing.
+        run: |
+          if [ -z "$(git ls-files --others --modified --exclude-standard -- ':(glob)**/packages.lock.json')" ]; then
+            echo "Lock files already consistent with the bumped dependencies; nothing to push."
+            exit 0
+          fi
+          git add -- ':(glob)**/packages.lock.json'
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "$COMMIT_MESSAGE"
+          git push
+          echo "::notice::Regenerated packages.lock.json pushed to ${GITHUB_HEAD_REF}."

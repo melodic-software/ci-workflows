@@ -20,6 +20,18 @@ inputs:
       (standards modules/dotnet), which MSBuild discovers by walking the tree;
       this action only provisions the SDK and runs the build.
     default: 10.0.301
+  locked-mode:
+    description: >-
+      Restore in NuGet locked mode (RestoreLockedMode=true): a committed
+      packages.lock.json that no longer matches the project dependencies fails
+      the build with NU1004 instead of silently re-resolving, so the lock file
+      OSV-Scanner reads stays the exact dependency set the build used. The
+      default is safe for every caller — locked mode only engages where
+      lock-file usage is enabled (RestorePackagesWithLockFile or a committed
+      packages.lock.json) and is a no-op elsewhere. Set false only to unblock a
+      drifted lock file temporarily; the durable fix is regenerating it with
+      `dotnet restore --force-evaluate` and committing the result.
+    default: 'true'
 
 runs:
   using: composite
@@ -34,9 +46,18 @@ runs:
       env:
         PROJECT: ${{ inputs.project }}
         CONFIGURATION: ${{ inputs.configuration }}
+        LOCKED_MODE: ${{ inputs.locked-mode }}
       # Warnings-as-errors lives in the caller's Directory.Build.props
       # (TreatWarningsAsErrors), which Roslyn honours for both compiler and
       # analyzer (CA + IDE) diagnostics — so no rule flags are needed here.
+      # RestoreLockedMode rides the build's implicit restore as an MSBuild
+      # property, so there is no separate restore step to drift from the build.
       # $PROJECT is unquoted so an empty value expands to nothing and the
       # working-directory project/solution is built.
-      run: dotnet build $PROJECT --configuration "$CONFIGURATION" --nologo
+      run: |
+        set -euo pipefail
+        args=(--configuration "$CONFIGURATION" --nologo)
+        if [[ "$LOCKED_MODE" == 'true' ]]; then
+          args+=(-p:RestoreLockedMode=true)
+        fi
+        dotnet build $PROJECT "${args[@]}"

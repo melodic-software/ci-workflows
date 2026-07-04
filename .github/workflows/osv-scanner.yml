@@ -34,6 +34,19 @@ on:
           only); in that mode a scanner or reporter error is likewise non-blocking.
         type: boolean
         default: false
+      allow-no-lockfiles:
+        description: >-
+          Declare the repo genuinely dependency-less: a scan that finds no
+          supported lockfiles passes without complaint. Leave false (the
+          default) wherever dependencies exist — OSV-Scanner reads lockfiles
+          (for .NET: a committed packages.lock.json via
+          RestorePackagesWithLockFile, kept honest by the dotnet-build action's
+          locked-mode restore), never .csproj/PackageReference, so a repo with
+          dependencies but no lockfile scans zero sources. Under the default an
+          empty scan surfaces a coverage warning (advisory) or fails the job
+          (fail-on-vuln) instead of reporting green-but-empty.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -55,22 +68,36 @@ jobs:
         continue-on-error: true
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
+          # The image's entrypoint word-splits scan-args, so the blank line the
+          # expression leaves when the input is false disappears harmlessly —
+          # and a caller still passing the bare flag through scan-args keeps
+          # working (no conflicting =false to fight it).
           scan-args: |-
             --output=results.json
             --format=json
+            ${{ inputs.allow-no-lockfiles && '--allow-no-lockfiles' || '' }}
             ${{ inputs.scan-args }}
 
       - name: Guard against an empty scan
-        # The pinned scanner image rewrites OSV exit 128 ("no packages found") to 0,
-        # so a mis-scoped scan-args or a repo with no manifests would otherwise let a
-        # *blocking* run pass while scanning nothing. Advisory runs are allowed to
-        # find nothing, so this only applies under fail-on-vuln.
-        if: ${{ inputs.fail-on-vuln }}
+        # A repo whose dependencies live outside any lockfile (e.g. .NET
+        # PackageReference with no committed packages.lock.json) or a mis-scoped
+        # scan-args scans zero sources while looking green — false assurance.
+        # Empty is fine only when the caller declared the repo dependency-less;
+        # otherwise it fails a blocking run and annotates an advisory one.
+        env:
+          ALLOW_NO_LOCKFILES: ${{ inputs.allow-no-lockfiles }}
+          FAIL_ON_VULN: ${{ inputs.fail-on-vuln }}
         run: |
           count=$(jq '.results | length' results.json 2>/dev/null || echo 0)
-          if [ "${count:-0}" -eq 0 ]; then
-            echo "::error::OSV-Scanner scanned 0 sources (mis-scoped scan-args or no supported manifests); failing because fail-on-vuln is set."
+          if [ "${count:-0}" -gt 0 ]; then
+            echo "OSV-Scanner scanned ${count} source(s)."
+          elif [ "$ALLOW_NO_LOCKFILES" = "true" ]; then
+            echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
+          elif [ "$FAIL_ON_VULN" = "true" ]; then
+            echo "::error::OSV-Scanner scanned 0 sources (mis-scoped scan-args, or dependencies without a committed lockfile); failing because fail-on-vuln is set."
             exit 1
+          else
+            echo "::warning::OSV-Scanner scanned 0 sources — this advisory lane verified nothing. Commit lockfiles (for .NET: packages.lock.json) or, if the repo truly has no dependencies, set allow-no-lockfiles: true."
           fi
 
       - name: Report findings
