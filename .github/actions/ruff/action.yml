@@ -18,7 +18,7 @@ inputs:
     default: ''
   version:
     description: Exact Ruff version to run.
-    default: 0.15.19
+    default: 0.15.20
   python-version:
     description: Python version uv provisions for the ephemeral tool environment.
     default: '3.14'
