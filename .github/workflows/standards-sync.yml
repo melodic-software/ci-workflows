@@ -99,9 +99,15 @@ jobs:
               | select(strenv(only) == "" or ([.repo] - (strenv(only) | split(",")) | length) == 0)
               | {"repo": .repo, "repo_owner": (.repo | split("/")[0]), "repo_name": (.repo | split("/")[1]), "layout": .layout}]}
           ' "$MANIFEST")"
-          if [ "$(yq '.include | length' <<<"$matrix")" -eq 0 ]; then
-            echo "::error::targets filter '$TARGETS' matches no manifest target"
-            exit 1
+          # Fail on ANY unmatched filter entry, not just an empty matrix — a
+          # typo in one of several targets must not silently drop that repo
+          # from a staged rollout while the rest sync "successfully".
+          if [ -n "$only" ]; then
+            unmatched="$(only="$only" yq -r '((strenv(only) | split(",")) - [.targets[].repo]) | map(select(. != "")) | join(",")' "$MANIFEST")"
+            if [ -n "$unmatched" ]; then
+              echo "::error::targets filter names unknown manifest targets: $unmatched"
+              exit 1
+            fi
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
