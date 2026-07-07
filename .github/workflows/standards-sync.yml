@@ -224,6 +224,9 @@ jobs:
         with:
           path: .target
           token: ${{ steps.token.outputs.token }}
+          # API-created commits, signed by GitHub as the sync App's bot — targets
+          # enforce required_signatures, which rejects the default CLI commits.
+          sign-commits: true
           branch: chore/standards-sync
           commit-message: "chore: sync standards configs (${{ needs.plan.outputs.sha }})"
           title: "chore: sync standards configs"
