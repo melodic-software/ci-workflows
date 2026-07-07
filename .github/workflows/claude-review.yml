@@ -158,7 +158,7 @@ jobs:
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
         continue-on-error: true
-        uses: anthropics/claude-code-action@30544b674398ee15c84819bd87caf8a87e8c7b55 # v1.0.154
+        uses: anthropics/claude-code-action@fad22eb3fa582b7357fc0ea48af6645851b884fd # v1.0.161
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: ${{ inputs.track-progress }}
