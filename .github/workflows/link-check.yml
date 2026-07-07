@@ -50,9 +50,19 @@ jobs:
 
       - name: Check links
         id: lychee
-        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2.8.0
+        # Pinned past v2.8.0 (latest release): its installer expects the lychee
+        # binary at the archive root, but lychee >= 0.24 tarballs nest it in a
+        # subdirectory, and its default lychee (v0.23.0) predates the
+        # --accept-timeouts flag the default args rely on (added in lychee
+        # 0.24.0). Master fixes both; drop back to a release tag once one ships.
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # master (post-v2.8.0)
         with:
           args: ${{ inputs.args }}
+          # Explicit pin so the checked lychee stays deterministic across action
+          # bumps and in lockstep with the lychee-offline lane; bump both
+          # together (this pin is inside a workflow, so tool-version-drift-check
+          # watches only the lychee-offline action default).
+          lycheeVersion: v0.24.2
           fail: false
         env:
           # Authenticates lychee's github.com requests so they use the higher
