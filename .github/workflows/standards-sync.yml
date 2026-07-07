@@ -40,8 +40,8 @@ on:
       # Optional so a caller can invoke dry-run (the default, inert mode) without
       # wiring secrets before the App exists. The sync job validates they are
       # present before it does any real work.
-      app-id:
-        description: GitHub App ID for the cross-repo sync token.
+      app-client-id:
+        description: GitHub App client ID for the cross-repo sync token.
         required: false
       app-private-key:
         description: GitHub App private key (PEM) for the cross-repo sync token.
@@ -154,11 +154,11 @@ jobs:
     steps:
       - name: Require App credentials
         env:
-          APP_ID: ${{ secrets.app-id }}
+          APP_CLIENT_ID: ${{ secrets.app-client-id }}
           APP_KEY: ${{ secrets.app-private-key }}
         run: |
-          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
-            echo "::error::app-id and app-private-key are required when dry-run is false"
+          if [ -z "$APP_CLIENT_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::app-client-id and app-private-key are required when dry-run is false"
             exit 1
           fi
 
@@ -166,7 +166,7 @@ jobs:
         id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.app-id }}
+          client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ matrix.repo_owner }}
           repositories: ${{ matrix.repo_name }}
