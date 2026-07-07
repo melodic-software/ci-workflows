@@ -91,9 +91,15 @@ jobs:
           # per target: { repo, layout }. The per-file mapping is resolved in the
           # sync job from the same manifest (kept out of the matrix to bound size).
           # TARGETS narrows to an exact-match repo allowlist (the set subtraction
-          # is empty iff .repo is listed — no substring matching). Spaces are
-          # stripped so "a, b" and "a,b" filter alike.
-          only="$(tr -d '[:space:]' <<<"$TARGETS")"
+          # is empty iff .repo is listed — no substring matching). Normalize it —
+          # strip spaces, squeeze/trim commas — so "a, b" and "a,b" filter alike
+          # and split never yields empty tokens; a filter with no repo names at
+          # all (e.g. ",,") is a hard error, not a silent plan-nothing run.
+          only="$(tr -d '[:space:]' <<<"$TARGETS" | tr -s ',' | sed 's/^,//; s/,$//')"
+          if [ -n "$(tr -d '[:space:]' <<<"$TARGETS")" ] && [ -z "$only" ]; then
+            echo "::error::targets filter '$TARGETS' contains no repo names"
+            exit 1
+          fi
           matrix="$(only="$only" yq -o=json -I=0 '
             {"include": [.targets[]
               | select(strenv(only) == "" or ([.repo] - (strenv(only) | split(",")) | length) == 0)
@@ -103,7 +109,7 @@ jobs:
           # typo in one of several targets must not silently drop that repo
           # from a staged rollout while the rest sync "successfully".
           if [ -n "$only" ]; then
-            unmatched="$(only="$only" yq -r '((strenv(only) | split(",")) - [.targets[].repo]) | map(select(. != "")) | join(",")' "$MANIFEST")"
+            unmatched="$(only="$only" yq -r '((strenv(only) | split(",")) - [.targets[].repo]) | join(",")' "$MANIFEST")"
             if [ -n "$unmatched" ]; then
               echo "::error::targets filter names unknown manifest targets: $unmatched"
               exit 1
