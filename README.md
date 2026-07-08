@@ -177,11 +177,12 @@ block.
   `ci-status` lane — title edits must not re-run the file-lint lanes. Inputs
   (`types`, `scopes`, `require-scope`, `subject-pattern`, `subject-pattern-error`,
   `validate-single-commit`, `ignore-labels`) have spec-aligned defaults documented
-  inline. Consume it from a thin caller that triggers on title-relevant events
-  (the `pr-title.yml` in this repo is the reference dogfood). Note the emitted
-  check context is `<caller job> / <reusable job>` — with the caller below it is
-  **`pr-title / pr-title`** (the name a ruleset must require, not bare
-  `pr-title`):
+  inline. Consume it from a thin caller that triggers on title-relevant events.
+  **Adopt the canonical block below** (not the in-repo `.github/workflows/pr-title.yml`,
+  which intentionally still triggers on `pull_request` — see the note after the
+  block). Note the emitted check context is `<caller job> / <reusable job>` — with
+  the caller below it is **`pr-title / pr-title`** (the name a ruleset must
+  require, not bare `pr-title`):
 
   ```yaml
   on:
@@ -199,6 +200,14 @@ block.
         pull-requests: read
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
+
+  This block is the canonical pattern to copy. The in-repo
+  `.github/workflows/pr-title.yml` dogfood caller deliberately stays on
+  `pull_request` for now: this repo is already gated on its own `pr-title / pr-title`
+  check, so a PR that flips that caller to `pull_request_target` would have the
+  required check run the base-branch (still-`pull_request`) definition and block
+  the flip. The self-flip is therefore deferred; consumers should follow this
+  documented block rather than copying the dogfood file.
 
   `pull_request_target` runs the base-branch definition, so a head-branch edit to
   this file cannot bypass the gate (safe here because semantic-pr reads PR title
