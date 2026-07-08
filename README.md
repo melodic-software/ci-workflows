@@ -190,6 +190,9 @@ block.
     merge_group:
   permissions:
     pull-requests: read
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
   jobs:
     pr-title:
       permissions:
@@ -199,7 +202,11 @@ block.
 
   `pull_request_target` runs the base-branch definition, so a head-branch edit to
   this file cannot bypass the gate (safe here because semantic-pr reads PR title
-  metadata only — it checks out and runs no head code). `edited` is required so
+  metadata only — it checks out and runs no head code). Under
+  `pull_request_target` `github.ref` is the base branch, so the concurrency group
+  keys on `github.event.pull_request.number` (falling back to `github.ref` for
+  `merge_group`) — a `github.ref` key would collapse all PRs into one group and
+  let one PR's run cancel another's required check. `edited` is required so
   re-titling re-validates. `merge_group` is required on
   any repo with a merge queue — the queue gates on `pr-title / pr-title`, and
   without it that required check never reports and the queue deadlocks

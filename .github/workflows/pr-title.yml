@@ -24,7 +24,12 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Key per-PR, not by github.ref: under pull_request_target github.ref resolves
+  # to the BASE branch, so a github.ref key would collapse every open PR into one
+  # group and cancel-in-progress would let one PR's run cancel another PR's
+  # required check. On merge_group pull_request.number is empty, so it falls back
+  # to github.ref (correct — the queue ref keys the group).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
