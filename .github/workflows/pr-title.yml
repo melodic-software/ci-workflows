@@ -3,16 +3,20 @@ name: pr-title
 # Dogfood + reference caller for the semantic-pr reusable workflow: this repo is
 # the first consumer of its own Conventional-Commits PR-title gate. Consumers
 # copy this thin caller verbatim (bumping the @sha) and require the resulting
-# `pr-title / pr-title` check in their ruleset. `edited` is required so re-titling
-# a PR re-runs the gate; `synchronize`/`reopened` keep the check fresh across
-# pushes and reopens. `merge_group` is required on any repo with a merge queue —
-# the queue gates on `pr-title / pr-title`, and without this trigger that required
-# check never reports and the queue deadlocks (semantic-pr passes on merge_group,
-# since the title was already validated at PR time). It is inert on repos with no
-# queue. A local (./) ref works here because the checkout IS this repo; consumers
-# reference melodic-software/ci-workflows/.github/workflows@<sha>.
+# `pr-title / pr-title` check in their ruleset. It triggers on
+# `pull_request_target`, not `pull_request`, so the gate runs the caller
+# definition from the BASE branch — a head-branch edit to this file cannot weaken
+# or bypass the gate on its own PR. This is safe because semantic-pr checks out
+# and runs no head code; it reads PR title metadata only. `edited` is required so
+# re-titling a PR re-runs the gate; `synchronize`/`reopened` keep the check fresh
+# across pushes and reopens. `merge_group` is required on any repo with a merge
+# queue — the queue gates on `pr-title / pr-title`, and without this trigger that
+# required check never reports and the queue deadlocks (semantic-pr passes on
+# merge_group, since the title was already validated at PR time). It is inert on
+# repos with no queue. A local (./) ref works here because the checkout IS this
+# repo; consumers reference melodic-software/ci-workflows/.github/workflows@<sha>.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, reopened, synchronize]
   merge_group:
 

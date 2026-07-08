@@ -74,12 +74,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Validate PR title against Conventional Commits
+        # Runs on both `pull_request` AND `pull_request_target`, skipping only the
+        # merge queue. Guarding on `!= 'merge_group'` (not `== 'pull_request'`) is
+        # load-bearing: a caller on `pull_request_target` (base-branch definition,
+        # so a head-branch edit to the caller cannot bypass the gate) must still
+        # reach this step. An `== 'pull_request'` guard would skip it there, the job
+        # would pass vacuously, and the gate would be silently disabled.
         # Merge-queue safe: a caller that also triggers on `merge_group` (required
-        # for repos with a merge queue, or the required check never reports and
-        # the queue deadlocks) reaches this job with no PR context. The title was
-        # already validated when the PR was opened/edited, so on `merge_group`
-        # this step is skipped and the job succeeds, reporting the required check.
-        if: ${{ github.event_name == 'pull_request' }}
+        # for repos with a merge queue, or the required check never reports and the
+        # queue deadlocks) reaches this job with no PR context. The title was
+        # already validated when the PR was opened/edited, so on `merge_group` this
+        # step is skipped and the job succeeds, reporting the required check.
+        if: ${{ github.event_name != 'merge_group' }}
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ github.token }}

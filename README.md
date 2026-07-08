@@ -185,7 +185,7 @@ block.
 
   ```yaml
   on:
-    pull_request:
+    pull_request_target:
       types: [opened, edited, reopened, synchronize]
     merge_group:
   permissions:
@@ -197,7 +197,10 @@ block.
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
-  `edited` is required so re-titling re-validates. `merge_group` is required on
+  `pull_request_target` runs the base-branch definition, so a head-branch edit to
+  this file cannot bypass the gate (safe here because semantic-pr reads PR title
+  metadata only — it checks out and runs no head code). `edited` is required so
+  re-titling re-validates. `merge_group` is required on
   any repo with a merge queue — the queue gates on `pr-title / pr-title`, and
   without it that required check never reports and the queue deadlocks
   (semantic-pr passes on `merge_group` since the title was validated at PR time);
