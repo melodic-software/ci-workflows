@@ -34,6 +34,8 @@ runs:
       # no native GitHub-annotation format, so findings are plain text (as with
       # pyright); the non-zero exit gates the build.
       run: |
+        set -euo pipefail
+
         if [[ ! -e "$PROJECT" ]]; then
           echo "::error::tsc: project path not found: $PROJECT"
           exit 2

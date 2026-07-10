@@ -42,6 +42,8 @@ runs:
       # --reporter=github emits inline PR annotations. $PATHS is unquoted so
       # multiple targets word-split.
       run: |
+        set -euo pipefail
+
         if [[ ! -f "$CONFIG" ]]; then
           echo "::error::biome: config file not found: $CONFIG"
           exit 2
