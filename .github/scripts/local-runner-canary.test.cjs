@@ -416,6 +416,7 @@ test("canonical private seed pins the corrected reusable contract", () => {
   );
   assert.match(dependabot, /package-ecosystem: github-actions/u);
   assert.match(dependabot, /interval: weekly/u);
+  assert.match(dependabot, /cooldown:\n {6}default-days: 7/u);
 
   const pinned = spawnSync(
     "git",

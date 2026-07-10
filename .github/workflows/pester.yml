@@ -1,10 +1,10 @@
 name: pester
 
-# Reusable workflow: run a Pester suite on a dedicated runner (Windows by
-# default) with a pinned Pester install. A whole-job concern — its own runner OS
+# Reusable workflow: run a Pester suite on the fixed GitHub-hosted Windows 2025
+# runner with a pinned Pester install. A whole-job concern — its own runner OS
 # and checkout — so a reusable workflow rather than a composite action (per the
 # architecture's D1 split). The caller owns test discovery, reporting, and exit
-# handling by passing a `run` command; this workflow supplies the runner, a
+# handling by passing a `run` command; this workflow supplies the hosted runner,
 # pinned Pester, and the checkout. Consume it at job level:
 #
 #   jobs:
@@ -25,10 +25,6 @@ on:
           Invoke-Expression, so a multi-line block or a custom runner script
           works and the value never lands in the shell command line.
         required: true
-        type: string
-      runner-os:
-        description: Runner label to execute on (Windows-specific suites need windows-2025).
-        default: windows-2025
         type: string
       pester-version:
         description: Exact Pester version to install and import.
@@ -57,7 +53,7 @@ permissions:
 jobs:
   pester:
     name: Pester
-    runs-on: ${{ inputs.runner-os }}
+    runs-on: windows-2025
     timeout-minutes: 30
     permissions:
       contents: read

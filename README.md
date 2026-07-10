@@ -373,11 +373,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pull_request` job granting `contents: write`. Inputs, the optional
   `PUSH_TOKEN` Dependabot secret, and the default-token no-retrigger caveat are
   documented inline.
-- `.github/workflows/pester.yml` — runs a Pester suite on a dedicated runner
-  (Windows by default) with a pinned Pester install. A whole-job concern (its own
-  runner OS + checkout), so a reusable workflow: the caller passes a `run` command
-  and owns discovery/reporting/exit; this supplies the runner, pinned Pester, and
-  checkout. Inputs are documented inline.
+- `.github/workflows/pester.yml` — runs a Pester suite on the fixed
+  GitHub-hosted Windows 2025 runner with a pinned Pester install. A whole-job
+  concern (its own runner OS + checkout), so a reusable workflow: the caller
+  passes a `run` command and owns discovery/reporting/exit; this supplies the
+  hosted runner, pinned Pester, and checkout. Inputs are documented inline.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. **Advisory** (posts review comments, never
   gates `ci-status`). A whole-job concern (job permissions + a secrets
