@@ -1,9 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Vendored dogfood fixture: imports the overlay's strict props (which wire
-       dotnet.globalconfig) the same way a consumer would, then supplies the
-       project scope the base omits. -->
-  <Import Project="../../../modules/dotnet/Directory.Build.props" />
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 </Project>

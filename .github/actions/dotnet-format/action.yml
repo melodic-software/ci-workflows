@@ -40,8 +40,8 @@ runs:
         PROJECT: ${{ inputs.project }}
       # `dotnet format style` restricted to IDE0055 gates only using-directive
       # organization. The OrganizeImports pass runs regardless of IDE0055's
-      # severity (the overlay keeps it `none` so the build never reports
-      # whitespace), and --diagnostics IDE0055 keeps this lane from re-reporting
-      # whitespace or any other IDExxxx/CAxxxx rule the build already owns — so the
-      # build, the whitespace lane, and this lane never double-report.
+      # configured severity, and --diagnostics IDE0055 keeps this lane from
+      # re-reporting whitespace or any other IDExxxx/CAxxxx rule the build
+      # already owns — so the build, whitespace lane, and this lane never
+      # double-report.
       run: dotnet format style $PROJECT --diagnostics IDE0055 --verify-no-changes

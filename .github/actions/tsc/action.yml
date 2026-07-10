@@ -5,16 +5,15 @@ inputs:
   project:
     description: >-
       Path to the tsconfig.json (or its directory) to type-check, passed as
-      tsc's --project. The project supplies the `include`/`files` that the
-      shared ruleset base intentionally omits. tsc cannot mix --project with
-      file arguments (TS5042), so scope via the project's own `include`.
+      tsc's --project. tsc cannot mix --project with file arguments (TS5042),
+      so scope via the project's own `include` or `files`.
     default: tsconfig.json
   version:
     description: Exact TypeScript version to run.
     default: 6.0.3
   node-version:
     description: Node.js version to set up.
-    default: 24.17.0
+    default: 24.18.0
 
 runs:
   using: composite
@@ -34,4 +33,9 @@ runs:
       # binary ships in the `typescript` package, hence `npx --package`. tsc has
       # no native GitHub-annotation format, so findings are plain text (as with
       # pyright); the non-zero exit gates the build.
-      run: npx --yes --package "typescript@$VERSION" tsc --noEmit --project "$PROJECT"
+      run: |
+        if [[ ! -e "$PROJECT" ]]; then
+          echo "::error::tsc: project path not found: $PROJECT"
+          exit 2
+        fi
+        npx --yes --package "typescript@$VERSION" tsc --noEmit --project "$PROJECT"

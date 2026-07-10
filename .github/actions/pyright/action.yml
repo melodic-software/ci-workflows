@@ -14,7 +14,7 @@ inputs:
     description: >-
       Path to the pyrightconfig.json ruleset (or its directory) in the caller
       repo, passed as Pyright's --project.
-    default: modules/python/pyrightconfig.json
+    default: pyrightconfig.json
   warnings-as-errors:
     description: >-
       Treat residual Pyright warnings as build failures (passes --warnings).
@@ -50,6 +50,10 @@ runs:
         PYRIGHT_PYTHON_FORCE_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
+        if [[ ! -e "$CONFIG" ]]; then
+          echo "::error::pyright: config path not found: $CONFIG"
+          exit 2
+        fi
         # --warnings makes residual warnings fail the build (strict posture, the
         # default). Pyright has no native GitHub-annotation output format, so
         # findings are plain text. The flag is a defined (possibly empty) array

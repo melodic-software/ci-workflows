@@ -72,7 +72,8 @@ checkout of this repo. (Public is required because a public consumer such as
 - `.github/actions/machine-specific-paths` — rejects machine-specific absolute /
   user-home paths in tracked files (portable placeholders allowed).
 - `.github/actions/comment-hygiene` — scans comments for deferred-work markers
-  (TODO/FIXME/HACK/XXX) and tracker references against a caller-supplied policy.
+  (TODO/FIXME/HACK/XXX) and tracker references against its bundled organization
+  policy, with an optional complete caller replacement.
 - `.github/actions/eol-renormalize` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
 - `.github/actions/ruff` — Ruff lint + format-check over the repo's Python
@@ -101,6 +102,13 @@ block.
 
 ## Reusable workflows
 
+- `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
+  from the schema-v2 component manifest in `melodic-software/standards`. The
+  standards checkout validates and materializes its own manifest; this workflow
+  resolves one immutable standards SHA, scopes a GitHub App token to each target,
+  and opens a signed, human-reviewed PR enumerating every managed
+  source-to-destination mapping. It never writes a downstream receipt and never
+  copies components declared `locally-owned`.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -117,9 +125,8 @@ block.
   OSV-Scanner (composes Google's SHA-pinned scanner + reporter sub-actions;
   the same full scan runs on every event). **Advisory** (`fail-on-vuln` off by
   default). OSV-Scanner reads lockfiles only — a .NET repo gets transitive
-  coverage exactly when it commits `packages.lock.json` (the standards .NET
-  overlay's `RestorePackagesWithLockFile`, kept honest by `dotnet-build`'s
-  locked-mode restore). An empty scan therefore warns (advisory) or fails
+  coverage when it opts into and commits `packages.lock.json`, kept honest by
+  `dotnet-build`'s locked-mode restore. An empty scan therefore warns (advisory) or fails
   (blocking) unless the caller declares the repo genuinely dependency-less via
   `allow-no-lockfiles: true`. Inputs are documented inline.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
@@ -225,9 +232,18 @@ block.
   but only **after** the caller is merged and emitting the check, or open PRs
   block on a check that never runs.
 
-## Tool configuration lives elsewhere
+## Policy ownership and action inputs
 
-These actions execute tools; they do not carry the tools' rulesets. A consumer
-supplies its own config file and points the action at it through an input, so
-adopting an action never couples the consumer to this repo at runtime beyond the
-referenced action itself.
+Reusable rulesets are authored in
+[`melodic-software/standards`](https://github.com/melodic-software/standards).
+Consumers receive them through a tool-native package/reference or as managed
+files at the tool's normal root path. Config-driven actions default to those
+root paths and fail clearly when a required file is absent; an explicit input
+can select a repository-owned config where the tool supports customization.
+
+Comment hygiene is the intentional CI-only exception: its default policy ships
+inside the action and is resolved through `$GITHUB_ACTION_PATH`, so consumers do
+not need another repository file. `patterns-file` accepts a complete replacement
+for repositories with a genuinely different policy. The small configs under
+`fixtures/` exist only to exercise action contracts; they are not mirrors of the
+standards catalog.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Full-tree comment-hygiene scan. A coarse `git grep` prefilter narrows to
-# candidate comment lines; the policy library (sourced from PATTERNS_FILE) then
+# candidate comment lines; the selected policy library (the action-bundled
+# default or a caller replacement, sourced from PATTERNS_FILE) then
 # authoritatively validates each hit. This two-pass shape keeps the scan fast on
 # large trees — looping the library over every file would be O(files × lines).
 #

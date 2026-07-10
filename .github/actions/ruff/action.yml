@@ -9,7 +9,7 @@ inputs:
     default: '.'
   config:
     description: Path to the ruff.toml ruleset in the caller repo.
-    default: modules/python/ruff.toml
+    default: ruff.toml
   exclude:
     description: >-
       Path patterns to skip, space-separated (e.g. intentionally-bad fixtures).
@@ -40,6 +40,10 @@ runs:
         VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::ruff: config file not found: $CONFIG"
+          exit 2
+        fi
         args=(--config "$CONFIG")
         # Translate the excludes into an additive extend-exclude TOML override so
         # the config's own excludes (and Ruff's defaults) survive. extend-exclude

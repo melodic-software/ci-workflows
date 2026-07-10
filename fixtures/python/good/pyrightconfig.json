@@ -1,0 +1,5 @@
+{
+  "include": ["example.py"],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.14"
+}

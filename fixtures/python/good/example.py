@@ -1,8 +1,4 @@
-"""Dogfood sample: clean Python that passes the strict ruff and pyright configs.
-
-ci-workflows has no production Python; this minimal conforming module gives the
-ruff and pyright actions real input to analyse against the vendored rulesets.
-"""
+"""Clean Python input for the Ruff and Pyright action contract fixtures."""
 
 from pathlib import Path
 

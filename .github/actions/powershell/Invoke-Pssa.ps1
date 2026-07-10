@@ -22,9 +22,9 @@
     explicit paths to opt into a raw filesystem walk of exactly those paths.
 
 .PARAMETER Settings
-    Path to the PSScriptAnalyzerSettings.psd1 ruleset. The consumer supplies its
-    own copied ruleset; callers pass -Settings explicitly. The fallback default
-    only resolves if a ruleset sits next to this script.
+    Path to the caller's PSScriptAnalyzerSettings.psd1 ruleset. Callers pass
+    -Settings explicitly. The fallback default only resolves if a ruleset sits
+    next to this script.
 
 .PARAMETER AnalyzerVersion
     Required minimum PSScriptAnalyzer version. Default 1.25.0, which resolves an

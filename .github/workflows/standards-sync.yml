@@ -1,57 +1,45 @@
 name: standards-sync
 
-# Reusable workflow — Track B config/file distribution. Propagates the drop-in
-# files `standards` owns into downstream consumers: reads a manifest, copies each
-# included file to its per-layout destination in each target repo, and opens a
-# PR per target (never pushes to a default branch). Upstream is authoritative;
-# synced files are read-only-by-convention downstream (change them in `standards`,
-# which re-cascades). See standards docs/dedup-program/config-distribution-plan.md.
-#
-# Activation is gated in the standards caller (see the plan doc): real runs need
-# the GitHub App secrets (contents:write + pull-requests:write on the targets)
-# and the caller pinning this workflow by SHA. `dry-run` defaults true, so a
-# caller without secrets can still plan; `targets` narrows a run to named repos
-# for the pilot and the staged rollout.
-
+# Reusable workflow for exact-file standards distribution. The standards
+# checkout owns the schema-v2 manifest and its interpreter; this workflow owns
+# GitHub orchestration only: resolve one immutable source SHA, mint a narrowly
+# scoped App token, materialize each target, and open a reviewed signed PR.
 on:
   workflow_call:
     inputs:
       manifest:
-        description: Path to the distribution manifest in the standards checkout.
+        description: Repository-relative manifest path in the standards checkout.
         type: string
         default: distribution/sync-manifest.yml
       standards-ref:
-        description: Ref (branch/tag/SHA) of standards to distribute from.
+        description: Ref (branch, tag, or SHA) of standards to distribute.
         type: string
         default: main
       dry-run:
-        description: >-
-          Plan only — log the per-target file set without checking out targets or
-          opening PRs. Default true keeps the workflow inert until activated.
+        description: Validate and print the plan without checking out targets or opening PRs.
         type: boolean
         default: true
       targets:
-        description: >-
-          Comma-separated allowlist of manifest targets (owner/name) to sync;
-          empty means all. Narrows a run for the pilot / staged rollout.
+        description: Comma-separated exact target allowlist; empty selects all manifest targets.
         type: string
         default: ''
     secrets:
-      # Optional so a caller can invoke dry-run (the default, inert mode) without
-      # wiring secrets before the App exists. The sync job validates they are
-      # present before it does any real work.
       app-client-id:
-        description: GitHub App client ID for the cross-repo sync token.
+        description: GitHub App client ID for cross-repository sync.
         required: false
       app-private-key:
-        description: GitHub App private key (PEM) for the cross-repo sync token.
+        description: GitHub App private key for cross-repository sync.
         required: false
 
 permissions:
   contents: read
 
-# Serialize runs so two invocations never race on the same per-target sync
-# branch. Queue rather than cancel — a half-applied sync should finish.
+env:
+  YQ_VERSION: v4.53.3
+  YQ_LINUX_AMD64_SHA256: fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
+
+# One fixed PR branch is updated per target. Queue invocations so two source
+# revisions cannot race while refreshing those branches.
 concurrency:
   group: standards-sync
   cancel-in-progress: false
@@ -73,73 +61,50 @@ jobs:
           ref: ${{ inputs.standards-ref }}
           persist-credentials: false
 
+      - name: Install checksum-verified yq
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/standards-sync-bin"
+          install -d "$install_dir"
+          curl --fail --location --proto '=https' --silent --show-error \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            --output "$install_dir/yq"
+          printf '%s  %s\n' "$YQ_LINUX_AMD64_SHA256" "$install_dir/yq" \
+            | sha256sum --check --strict -
+          chmod 0755 "$install_dir/yq"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
       - name: Resolve standards commit
-        # Pin the exact SHA so every sync leg copies from the same tree the plan
-        # was built against, even if a movable `standards-ref` (e.g. main)
-        # advances between the plan and sync jobs.
         id: resolve
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Build target matrix from manifest
+      - name: Validate manifest and build target matrix
         id: build
         env:
           MANIFEST: ${{ inputs.manifest }}
           TARGETS: ${{ inputs.targets }}
         run: |
           set -euo pipefail
-          # yq is preinstalled on ubuntu-latest runners. Emit one matrix entry
-          # per target: { repo, layout }. The per-file mapping is resolved in the
-          # sync job from the same manifest (kept out of the matrix to bound size).
-          # TARGETS narrows to an exact-match repo allowlist (the set subtraction
-          # is empty iff .repo is listed — no substring matching). Normalize it —
-          # strip spaces, squeeze/trim commas — so "a, b" and "a,b" filter alike
-          # and split never yields empty tokens; a filter with no repo names at
-          # all (e.g. ",,") is a hard error, not a silent plan-nothing run.
-          only="$(tr -d '[:space:]' <<<"$TARGETS" | tr -s ',' | sed 's/^,//; s/,$//')"
-          if [ -n "$(tr -d '[:space:]' <<<"$TARGETS")" ] && [ -z "$only" ]; then
-            echo "::error::targets filter '$TARGETS' contains no repo names"
-            exit 1
-          fi
-          matrix="$(only="$only" yq -o=json -I=0 '
-            {"include": [.targets[]
-              | select(strenv(only) == "" or ([.repo] - (strenv(only) | split(",")) | length) == 0)
-              | {"repo": .repo, "repo_owner": (.repo | split("/")[0]), "repo_name": (.repo | split("/")[1]), "layout": .layout}]}
-          ' "$MANIFEST")"
-          # Fail on ANY unmatched filter entry, not just an empty matrix — a
-          # typo in one of several targets must not silently drop that repo
-          # from a staged rollout while the rest sync "successfully".
-          if [ -n "$only" ]; then
-            unmatched="$(only="$only" yq -r '((strenv(only) | split(",")) - [.targets[].repo]) | join(",")' "$MANIFEST")"
-            if [ -n "$unmatched" ]; then
-              echo "::error::targets filter names unknown manifest targets: $unmatched"
-              exit 1
-            fi
-          fi
+          matrix="$(
+            bash distribution/sync-manifest.sh matrix \
+              --source-root . \
+              --manifest "$MANIFEST" \
+              --targets "$TARGETS"
+          )"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       - name: Log distribution plan
-        # The dry-run preview: list source -> dest per target from the manifest
-        # alone — no target checkout, no token — so it works before the App is
-        # provisioned and on every real run as a record of what will sync.
-        # Iterates the built matrix (not the raw manifest) so the logged plan is
-        # exactly the target set the sync job will run, filter included.
         env:
-          MANIFEST: ${{ inputs.manifest }}
           DRY_RUN: ${{ inputs.dry-run }}
-          MATRIX: ${{ steps.build.outputs.matrix }}
+          MANIFEST: ${{ inputs.manifest }}
+          TARGETS: ${{ inputs.targets }}
         run: |
           set -euo pipefail
-          echo "Distribution plan (dry-run=${DRY_RUN}):"
-          while IFS= read -r repo; do
-            layout="$(repo="$repo" yq -r '.targets[] | select(.repo == strenv(repo)) | .layout' "$MANIFEST")"
-            echo "## $repo (layout: $layout)"
-            while IFS= read -r tool; do
-              src="$(tool="$tool" yq -r '.files[strenv(tool)].source' "$MANIFEST")"
-              dest="$(tool="$tool" layout="$layout" yq -r '.files[strenv(tool)][strenv(layout)] // "null"' "$MANIFEST")"
-              if [ "$dest" = "null" ]; then echo "  $tool: (skipped — not for layout $layout)"; continue; fi
-              echo "  $tool: $src -> $dest"
-            done < <(repo="$repo" yq -r '.targets[] | select(.repo == strenv(repo)) | .include[]' "$MANIFEST")
-          done < <(yq -p=json -r '.include[].repo' <<<"$MATRIX")
+          echo "dry-run=${DRY_RUN}"
+          bash distribution/sync-manifest.sh plan \
+            --source-root . \
+            --manifest "$MANIFEST" \
+            --targets "$TARGETS"
 
   sync:
     needs: plan
@@ -155,14 +120,14 @@ jobs:
       - name: Require App credentials
         env:
           APP_CLIENT_ID: ${{ secrets.app-client-id }}
-          APP_KEY: ${{ secrets.app-private-key }}
+          APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
         run: |
-          if [ -z "$APP_CLIENT_ID" ] || [ -z "$APP_KEY" ]; then
+          if [[ -z "$APP_CLIENT_ID" || -z "$APP_PRIVATE_KEY" ]]; then
             echo "::error::app-client-id and app-private-key are required when dry-run is false"
             exit 1
           fi
 
-      - name: Mint app token scoped to the target
+      - name: Mint App token scoped to target
         id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -170,18 +135,29 @@ jobs:
           private-key: ${{ secrets.app-private-key }}
           owner: ${{ matrix.repo_owner }}
           repositories: ${{ matrix.repo_name }}
-          # Narrow the minted token to the sync's needs (push branch + open PR)
-          # even if the App installation ever carries wider grants.
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Check out standards (sources)
+      - name: Check out exact standards source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: melodic-software/standards
-          ref: ${{ needs.plan.outputs.sha }}  # the SHA the plan was built from
+          ref: ${{ needs.plan.outputs.sha }}
           path: .standards-src
           persist-credentials: false
+
+      - name: Install checksum-verified yq
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/standards-sync-bin"
+          install -d "$install_dir"
+          curl --fail --location --proto '=https' --silent --show-error \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            --output "$install_dir/yq"
+          printf '%s  %s\n' "$YQ_LINUX_AMD64_SHA256" "$install_dir/yq" \
+            | sha256sum --check --strict -
+          chmod 0755 "$install_dir/yq"
+          echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Check out target
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -191,48 +167,51 @@ jobs:
           path: .target
           persist-credentials: false
 
-      - name: Copy included files to their per-layout destinations
+      - name: Apply managed components
         env:
-          MANIFEST: .standards-src/${{ inputs.manifest }}
+          MANIFEST: ${{ inputs.manifest }}
           TARGET: ${{ matrix.repo }}
-          LAYOUT: ${{ matrix.layout }}
         run: |
           set -euo pipefail
-          # For each tool this target includes, copy source -> destination[layout].
-          mapfile -t tools < <(yq -r ".targets[] | select(.repo == strenv(TARGET)) | .include[]" "$MANIFEST")
-          for tool in "${tools[@]}"; do
-            src="$(tool="$tool" yq -r '.files[strenv(tool)].source // "null"' "$MANIFEST")"
-            dest="$(tool="$tool" lo="$LAYOUT" yq -r '.files[strenv(tool)][strenv(lo)] // "null"' "$MANIFEST")"
-            if [ "$src" = "null" ]; then
-              echo "::error::manifest entry '$tool' has no source"; exit 1
-            fi
-            if [ "$dest" = "null" ]; then
-              echo "skip $tool: no '$LAYOUT' destination"; continue
-            fi
-            # Defense-in-depth: the manifest is first-party, but never let a
-            # source/dest escape the standards or target trees.
-            if [[ "$src" = /* || "$src" == *..* || "$dest" = /* || "$dest" == *..* ]]; then
-              echo "::error::unsafe path in manifest entry '$tool' (src=$src dest=$dest)"; exit 1
-            fi
-            mkdir -p ".target/$(dirname "$dest")"
-            cp ".standards-src/$src" ".target/$dest"
-            echo "synced $tool: $src -> $dest"
-          done
+          bash .standards-src/distribution/sync-manifest.sh apply \
+            --source-root .standards-src \
+            --manifest "$MANIFEST" \
+            --target "$TARGET" \
+            --target-root .target
 
-      - name: Open / update sync PR
+      - name: Build reviewed sync PR body
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          PR_BODY: ${{ github.workspace }}/.standards-sync-pr-body.md
+          STANDARDS_REF: ${{ inputs.standards-ref }}
+          STANDARDS_SHA: ${{ needs.plan.outputs.sha }}
+          TARGET: ${{ matrix.repo }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'Automated exact-file synchronization from '
+            printf "[\`melodic-software/standards@%s\`](https://github.com/melodic-software/standards/commit/%s)" \
+              "$STANDARDS_SHA" "$STANDARDS_SHA"
+            printf " (requested ref \`%s\`).\n\n" "$STANDARDS_REF"
+            printf "Managed component mappings applied to \`%s\`:\n\n" "$TARGET"
+            bash .standards-src/distribution/sync-manifest.sh mappings \
+              --source-root .standards-src \
+              --manifest "$MANIFEST" \
+              --target "$TARGET"
+            printf '\nReview and merge this PR normally. '
+            printf 'Do not hand-edit these managed files downstream; change their standards source instead.\n'
+          } > "$PR_BODY"
+
+      - name: Open or update reviewed sync PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: .target
           token: ${{ steps.token.outputs.token }}
-          # API-created commits, signed by GitHub as the sync App's bot — targets
-          # enforce required_signatures, which rejects the default CLI commits.
+          # API-created commits are signed by GitHub as the installation bot,
+          # satisfying target signature rules without direct default-branch pushes.
           sign-commits: true
           branch: chore/standards-sync
-          commit-message: "chore: sync standards configs (${{ needs.plan.outputs.sha }})"
-          title: "chore: sync standards configs"
-          body: >-
-            Automated by the standards Track-B sync from
-            melodic-software/standards@${{ needs.plan.outputs.sha }} (ref
-            ${{ inputs.standards-ref }}). Upstream is authoritative; review and
-            merge, do not hand-edit these files downstream — change them upstream.
+          commit-message: "chore: sync standards components (${{ needs.plan.outputs.sha }})"
+          title: "chore: sync standards components"
+          body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync

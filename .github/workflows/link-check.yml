@@ -19,7 +19,7 @@ on:
           --max-cache-age 7d
           --no-progress
           --accept-timeouts
-          --config modules/lychee/lychee.toml
+          --config lychee.toml
           './**/*.md'
       issue-title:
         description: Title of the single rolling tracking issue opened on failure.

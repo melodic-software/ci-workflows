@@ -16,7 +16,7 @@ inputs:
     default: ''
   config:
     description: Path to the editorconfig-checker JSON config in the caller repo.
-    default: modules/editorconfig/.editorconfig-checker.json
+    default: .editorconfig-checker.json
   exclude:
     description: >-
       A single regular expression of paths to skip (e.g. intentionally-bad
@@ -59,6 +59,10 @@ runs:
         FORMAT: ${{ inputs.format }}
       run: |
         set -euo pipefail
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::editorconfig: config file not found: $CONFIG"
+          exit 2
+        fi
         args=(-config "$CONFIG")
         # -exclude takes ONE regex (quoted, never word-split).
         if [[ -n "${EXCLUDE// }" ]]; then args+=(-exclude "$EXCLUDE"); fi

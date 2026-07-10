@@ -13,15 +13,14 @@ inputs:
   config:
     description: >-
       Path to the biome.json ruleset in the caller repo, passed as Biome's
-      --config-path. The shipped base sets `root: false`, so it loads from this
-      nested location without a project-root config above it.
-    default: modules/typescript/biome.json
+      --config-path.
+    default: biome.json
   version:
     description: Exact Biome version to run.
     default: 2.5.1
   node-version:
     description: Node.js version to set up.
-    default: 24.17.0
+    default: 24.18.0
 
 runs:
   using: composite
@@ -42,4 +41,9 @@ runs:
       # fail the build (strict posture, the analog of pyright --warnings).
       # --reporter=github emits inline PR annotations. $PATHS is unquoted so
       # multiple targets word-split.
-      run: npx --yes "@biomejs/biome@$VERSION" ci --config-path="$CONFIG" --error-on-warnings --reporter=github $PATHS
+      run: |
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::biome: config file not found: $CONFIG"
+          exit 2
+        fi
+        npx --yes "@biomejs/biome@$VERSION" ci --config-path="$CONFIG" --error-on-warnings --reporter=github $PATHS

@@ -1,6 +1,4 @@
-# Language/framework-agnostic base: OS/editor noise plus the tooling present in
-# this repo. Language overlays (.NET, Python, …) extend it with their own
-# ignores when adopted.
+# OS/editor noise plus build and cache output from tooling this repository runs.
 
 # OS / editor noise
 .DS_Store
@@ -16,6 +14,9 @@ Thumbs.db
 
 # Node
 node_modules/
+
+# Python tooling
+.ruff_cache/
 
 # .NET — build output from the dotnet fixtures
 bin/
