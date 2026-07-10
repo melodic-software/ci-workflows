@@ -18,6 +18,10 @@ name: semantic-pr
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        default: ubuntu-24.04
       types:
         description: >-
           Allowed Conventional Commits types (newline-delimited regex patterns,
@@ -70,7 +74,7 @@ permissions:
 
 jobs:
   pr-title:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     steps:
       - name: Validate PR title against Conventional Commits

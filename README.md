@@ -9,7 +9,7 @@ Consumed by reference from a consumer job, never copied:
 ```yaml
 jobs:
   markdown:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@<sha>
       - uses: melodic-software/ci-workflows/.github/actions/markdown@<sha>
@@ -109,6 +109,82 @@ block.
   and opens a signed, human-reviewed PR enumerating every managed
   source-to-destination mapping. It never writes a downstream receipt and never
   copies components declared `locally-owned`.
+- `.github/workflows/select-runner.yml` — the single organization-approved
+  hosted/self-hosted selector. It runs on `ubuntu-slim` with a two-minute
+  timeout and returns one `runs-on` string. A downstream job has its own runner
+  and timeout; the selector's platform limit does not carry into that job.
+  Selection is deliberately fail-open to the configured hosted runner. It uses
+  a read-only observer GitHub App and chooses local only when an exact-label,
+  managed-prefix runner is online, idle, and ephemeral. Full reruns
+  (`github.run_attempt > 1`) always route hosted. Public repositories, fork pull
+  requests, and Dependabot runs route hosted before the observer-token action
+  can execute, following GitHub's [self-hosted runner security guidance][runner-security]
+  and [Dependabot secret boundary][dependabot-secrets]. Call it once per
+  independently schedulable workload:
+
+  ```yaml
+  jobs:
+    select-runner:
+      uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@<sha>
+      with:
+        policy: ${{ vars.CI_RUNNER_POLICY }}
+        self-hosted-label: ${{ vars.CI_SELF_HOSTED_LABEL }}
+        self-hosted-labels-json: ${{ vars.CI_SELF_HOSTED_LABELS_JSON }}
+        hosted-runner: ${{ vars.CI_HOSTED_RUNNER }}
+        scope: ${{ vars.CI_RUNNER_SCOPE }}
+        managed-runner-prefix: ${{ vars.CI_MANAGED_RUNNER_PREFIX }}
+        observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
+      secrets:
+        observer-private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}
+
+    test:
+      needs: select-runner
+      runs-on: ${{ needs.select-runner.outputs.runner }}
+      steps:
+        - run: ./test.sh
+  ```
+
+  Never use `secrets: inherit`; pass only the observer key. Stable output reasons
+  are `idle`, `hosted-only`, `rerun`, `no-idle-runner`, `missing-config`,
+  `missing-secret`, `auth-error`, `api-timeout`, `api-error`, and
+  `invalid-response`. The security eligibility guard also reports
+  `hosted-only`. `selector-conformance.yml` runs the deterministic selector test
+  suite and proves the public, hosted-only, and attempt-2 contracts without
+  accessing local capacity. The tested CommonJS source is generated into the
+  workflow, so the reusable-workflow SHA pins the implementation without a
+  second checkout/ref. This matters because actions inside a called workflow
+  otherwise run in the [caller's repository context][reusable-workflow-context].
+  A conformance check fails if the executable copy drifts.
+
+  `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
+  When present it overrides `self-hosted-label`; malformed, empty, or duplicate
+  candidate lists route hosted with `invalid-response`. Candidate priority is
+  the array order, independent of runner API order. GitHub's [generic default
+  self-hosted labels][default-runner-labels] (`self-hosted`, OS, and architecture
+  labels), as well as a candidate equal to the hosted fallback, are rejected;
+  returning either as `runs-on` could escape the managed fleet. Organization
+  routing normally leaves it unset and uses one shared exact label. The personal
+  phase provisions it as operational data so the documented live-proof fallback
+  can switch from one shared label to two host-specific exact labels without a
+  workflow or selector code change.
+
+  `CI_HOSTED_RUNNER` is trusted routing configuration, not a value GitHub's
+  runner-inventory API can prove belongs to GitHub-hosted infrastructure. The
+  selector rejects generic self-hosted labels and every configured local
+  candidate, including candidates hidden behind malformed JSON, then falls back
+  immutably to `ubuntu-24.04`. In V1, `ubuntu-24.04` is the only guaranteed
+  standard fallback; introducing another hosted label requires an explicit
+  governance and conformance review.
+
+  Inventory is an observation, not a reservation. Several simultaneous
+  selectors can observe the same idle runner and select local; that burst can
+  queue until capacity appears. Once all matching runners report busy, later
+  selectors route hosted with `no-idle-runner`. Validation, authentication,
+  API, timeout, malformed-response, and github-script failures produce hosted
+  outputs. A failure of the selector job or hosted runner before outputs exist
+  cannot be converted by workflow expressions; dependent jobs remain blocked
+  and must be rerun. This boundary is intentionally not described as atomic
+  fallback.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -119,16 +195,78 @@ block.
 - `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
   **Advisory** (surfaces PR annotations, never gates `ci-status`); consumed via
-  `uses:` at job level. SARIF upload and blocking promotion are deferred opt-ins.
-  Inputs are documented inline.
+  `uses:` at job level. It is explicitly hosted because the pinned upstream
+  [action][zizmor-action-script] invokes a digest-pinned container through
+  Docker, while local workers deliberately receive no Docker socket. SARIF
+  upload and blocking promotion are deferred opt-ins. Inputs are documented
+  inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
-  OSV-Scanner (composes Google's SHA-pinned scanner + reporter sub-actions;
-  the same full scan runs on every event). **Advisory** (`fail-on-vuln` off by
-  default). OSV-Scanner reads lockfiles only — a .NET repo gets transitive
-  coverage when it opts into and commits `packages.lock.json`, kept honest by
-  `dotnet-build`'s locked-mode restore. An empty scan therefore warns (advisory) or fails
-  (blocking) unless the caller declares the repo genuinely dependency-less via
-  `allow-no-lockfiles: true`. Inputs are documented inline.
+  Google's official OSV-Scanner v2.4.0 action image, invoked directly by an
+  exact linux/amd64 OCI manifest digest. One JSON scan feeds the image's
+  reporter for GitHub annotations plus a SARIF artifact; the same full scan runs
+  on every event. **Advisory** (`fail-on-vuln` off by default). V2.4.0 scans
+  supported manifests and lockfiles; .NET `.csproj`/`PackageReference` and
+  Central Package Management are enabled by default. A committed
+  `packages.lock.json` remains the reproducibility contract enforced by
+  `dotnet-build`'s locked-mode restore, but is no longer the only .NET coverage
+  path. An empty scan warns (advisory) or fails (blocking) unless the caller
+  declares the repo genuinely dependency-less via `allow-no-lockfiles: true`.
+  The job remains explicitly hosted because it invokes Docker. Inputs are
+  documented inline. See the [official v2.4.0 release][osv-release-v2-4] and
+  [action-container build source][osv-action-container-source].
+
+  “Enabled by default” is not treated as proof that every MSBuild layout is
+  covered. Each consumer canary must show nonzero package discovery for its
+  actual `.csproj`/Central Package Management layout; committed lockfiles and
+  the empty-scan guard remain required until that proof passes. The scanner's
+  documented exit contract is also enforced: only `0` (clean) and `1`
+  (findings) can be completed scans, `128` follows the explicit no-packages
+  policy, and every other code warns in advisory mode or fails blocking mode.
+
+  The scanner receives the caller checkout read-only plus one fresh writable
+  output directory under the hosted runner's temporary directory. The reporter
+  receives only that output, with networking disabled. Neither container gets
+  host credentials, GitHub file-command directories, the Docker socket, added
+  capabilities, or permission to gain privileges. Host-side policy accepts JSON
+  and SARIF only as valid regular, non-symlink files inside that fresh directory;
+  error/partial output is neither reported nor uploaded.
+
+  Private consumers record these intentional hosted jobs in their
+  `.github/runner-policy.json`; replace the workflow path and job IDs with the
+  caller's actual keys:
+
+  ```json
+  {
+    "exceptions": {
+      ".github/workflows/ci.yml#zizmor": {
+        "reason": "docker-socket",
+        "justification": "The pinned zizmor action invokes Docker; local workers expose no Docker socket."
+      },
+      ".github/workflows/ci.yml#osv-scanner": {
+        "reason": "docker-socket",
+        "justification": "The official OSV image is invoked by exact OCI digest through Docker; local workers expose no Docker socket."
+      }
+    }
+  }
+  ```
+
+  The reviewed pin is machine-readable in `.github/osv-scanner-pin.json` and the
+  workflow verifies the pulled image's version and source-revision labels before
+  scanning. Deployment never references a mutable tag. The daily
+  `tool-version-drift-check` compares both Google's latest stable release and
+  its current action-image manifest digest, then opens or refreshes the existing
+  maintenance issue; it never rewrites or auto-merges the pin. Updating requires
+  release review, exact linux/amd64 platform-digest resolution, label/platform
+  verification, and a canary. GitHub documents that pulling by digest selects
+  the same immutable container image [across pulls][github-container-digest].
+  Google publishes SLSA provenance for the standalone scanner binaries, but the
+  prebuilt reporter is experimental and available only in the action image; the
+  digest-pinned image is the reviewed parity choice for one scan plus annotations
+  and SARIF. Revisit the binary path if Google publishes an equally supported,
+  provenance-verifiable reporter. See the [official installation and SLSA
+  guidance][osv-installation].
+  The `semantic-pr` workflow remains selectable through its backward-compatible
+  `runner` input; these two Docker-dependent workflows do not expose one.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
   `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
   and pushes the result back to the PR branch, covering the lock-file updates
@@ -247,3 +385,13 @@ not need another repository file. `patterns-file` accepts a complete replacement
 for repositories with a genuinely different policy. The small configs under
 `fixtures/` exist only to exercise action contracts; they are not mirrors of the
 standards catalog.
+
+[dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
+[default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
+[github-container-digest]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pulling-container-images
+[osv-action-container-source]: https://github.com/google/osv-scanner/blob/b56b5191101d5f27d4787d5583d8d01e9518a7af/goreleaser-action.dockerfile
+[osv-installation]: https://google.github.io/osv-scanner/installation/
+[osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
+[runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+[reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
+[zizmor-action-script]: https://github.com/zizmorcore/zizmor-action/blob/192e21d79ab29983730a13d1382995c2307fbcaa/action.sh
