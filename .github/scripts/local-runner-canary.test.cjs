@@ -390,6 +390,9 @@ test("private caller documentation delegates selection and passes only the obser
 
 test("canonical private seed pins the corrected reusable contract", () => {
   const expectedReusableSha = "bb762391c41e9d12975fae25a06ac930050baba9";
+  for (const source of [rootCi, selectorConformance]) {
+    assert.match(source, /fetch-depth: 0[\s\S]*?lfs: true/u);
+  }
   assert.match(templateWorkflow, /^ {2}workflow_dispatch:/mu);
   assert.doesNotMatch(templateWorkflow, /^ {2}(?:push|pull_request):/mu);
   assert.match(
