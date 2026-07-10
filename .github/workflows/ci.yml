@@ -304,7 +304,7 @@ jobs:
         # generated security boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts
+          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard
 
   selector-contract:
     runs-on: ubuntu-24.04
@@ -325,6 +325,10 @@ jobs:
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scan policy guard
         run: bash .github/scripts/osv-scan-guard.test.sh
+      - name: Test Pulumi deployment guard
+        run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
+      - name: Test Pulumi version-drift lifecycle
+        run: bash .github/scripts/pulumi-version-drift.test.sh
 
   zizmor:
     permissions:

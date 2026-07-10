@@ -50,7 +50,20 @@ checkout of this repo. (Public is required because a public consumer such as
   scripts, driven by the caller's `.editorconfig` (installs a pinned,
   checksum-verified binary).
 - `.github/actions/powershell` — PSScriptAnalyzer over the repo's PowerShell,
-  via the bundled `Invoke-Pssa.ps1` (per-file subprocess isolation).
+  via the bundled `Invoke-Pssa.ps1`. Each file is analyzed exactly once and any
+  analyzer or rule error fails closed. `PSUseCorrectCasing` remains disabled
+  while the upstream [runspace-affinity defect][pssa-1708] is open; retrying a
+  crashing rule is not a quality gate.
+- `.github/actions/pulumi-deploy-guard` — verifies the complete Pulumi personal
+  [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
+  then [exports stack state][pulumi-stack-export] without plaintext secrets and
+  classifies reviewed operational
+  resource URNs as existing or first-apply. Both GitHub IaC repositories call
+  this one implementation after OIDC authentication and before minting their
+  broad GitHub governance token. Contract v2 uses GitHub immutable owner/repo
+  IDs and rejects Pulumi's `*`, `?`, and `.` pattern operators. Callers reserve
+  its exact workflow name uniquely and require paired live positive/near-match
+  negative token-exchange evidence before removing the legacy trust rules.
 - `.github/actions/editorconfig` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a
@@ -107,6 +120,16 @@ Hosted workflow defaults use explicit GA operating-system generations
 keeps hosted/self-hosted parity reviews tied to a declared image contract while
 GitHub continues the normal weekly patching of each hosted image generation.
 
+- `.github/workflows/pulumi-version-drift-check.yml` — reusable-only maintenance
+  job for GitHub IaC callers. It accepts only a hosted default-branch push,
+  schedule, or manual dispatch, compares the exact `.pulumi.version` pin with
+  Pulumi's current stable release, and maintains one marker-identified auditable
+  incident across rename or manual closure without resetting its age. It never
+  changes or auto-merges a pin, retires resolved incidents instead of reusing
+  them, and hard-fails after 14 days of unresolved drift. The tested canonical
+  shell source is generated inline because reusable-workflow checkout resolves
+  to the caller repository; an equality test prevents drift and callers never
+  copy the implementation. Per-caller concurrency serializes issue mutation.
 - `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
@@ -470,6 +493,9 @@ standards catalog.
 [osv-action-container-source]: https://github.com/google/osv-scanner/blob/b56b5191101d5f27d4787d5583d8d01e9518a7af/goreleaser-action.dockerfile
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
+[pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
+[pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
+[pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
