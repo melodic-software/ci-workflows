@@ -1,6 +1,7 @@
 "use strict";
 
 const DEFAULT_HOSTED_RUNNER = "ubuntu-24.04";
+const APPROVED_HOSTED_RUNNERS = new Set([DEFAULT_HOSTED_RUNNER]);
 const GITHUB_API_VERSION = "2026-03-10";
 const PAGE_SIZE = 100;
 const LOCAL_EVENT_ALLOWLIST = new Set([
@@ -71,6 +72,7 @@ function canonicalHostedRunner(input) {
     : DEFAULT_HOSTED_RUNNER;
   const configuredLower = configured.toLowerCase();
   const unsafe =
+    !APPROVED_HOSTED_RUNNERS.has(configured) ||
     RESERVED_SELF_HOSTED_LABELS.has(configuredLower) ||
     configuredCandidateLabels(input).some(
       (label) => label.toLowerCase() === configuredLower,

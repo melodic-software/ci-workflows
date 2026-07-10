@@ -99,6 +99,8 @@ for (const [routeName, overrides, reason] of [
 ]) {
   for (const [fallbackName, fallback] of [
     ["reserved", { hostedRunner: "self-hosted" }],
+    ["unapproved label", { hostedRunner: "some-other-self-hosted-label" }],
+    ["unreviewed hosted generation", { hostedRunner: "ubuntu-26.04" }],
     [
       "managed-label",
       {

@@ -196,13 +196,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   can switch from one shared label to two host-specific exact labels without a
   workflow or selector code change.
 
-  `CI_HOSTED_RUNNER` is trusted routing configuration, not a value GitHub's
-  runner-inventory API can prove belongs to GitHub-hosted infrastructure. The
-  selector rejects generic self-hosted labels and every configured local
-  candidate, including candidates hidden behind malformed JSON, then falls back
-  immutably to `ubuntu-24.04`. In V1, `ubuntu-24.04` is the only guaranteed
-  standard fallback; introducing another hosted label requires an explicit
-  governance and conformance review.
+  `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
+  API cannot prove that an arbitrary label belongs to hosted infrastructure. The
+  selector therefore allowlists only the reviewed V1 value `ubuntu-24.04` and
+  canonicalizes every missing, malformed, unapproved, generic self-hosted, or
+  configured local-candidate value back to it. Introducing another hosted label
+  requires an explicit governance and conformance review.
 
   Inventory is an observation, not a reservation. Several simultaneous
   selectors can observe the same idle runner and select local; that burst can
