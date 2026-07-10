@@ -27,8 +27,8 @@ on:
         required: true
         type: string
       runner-os:
-        description: Runner label to execute on (Windows-specific suites need windows-latest).
-        default: windows-latest
+        description: Runner label to execute on (Windows-specific suites need windows-2025).
+        default: windows-2025
         type: string
       pester-version:
         description: Exact Pester version to install and import.

@@ -44,7 +44,7 @@ runs:
         COLOR: ${{ inputs.color }}
       run: |
         set -euo pipefail
-        # shellcheck/pyflakes are auto-detected on PATH (ubuntu-latest ships
+        # shellcheck/pyflakes are auto-detected on PATH (ubuntu-24.04 ships
         # shellcheck), so embedded run: scripts are linted too.
         args=()
         if [[ "$COLOR" == "true" ]]; then args+=(-color); fi

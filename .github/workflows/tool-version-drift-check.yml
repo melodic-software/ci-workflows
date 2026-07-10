@@ -74,7 +74,7 @@ jobs:
           )
 
           # Read inputs.<key>.default from an action.yml with yq (mikefarah,
-          # preinstalled on ubuntu-latest). The quoted key handles the hyphen in
+          # preinstalled on ubuntu-24.04). The quoted key handles the hyphen in
           # analyzer-version; a missing key yields the literal "null".
           # $2: tag prefix to strip (default "v"; e.g. "lychee-v").
           latest_github() { gh api "repos/$1/releases/latest" --jq '.tag_name' | sed "s/^${2:-v}//"; }

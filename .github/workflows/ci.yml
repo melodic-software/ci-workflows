@@ -20,7 +20,7 @@ concurrency:
 # work here because the checkout IS this repo.
 jobs:
   markdown:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -31,7 +31,7 @@ jobs:
         uses: ./.github/actions/markdown
 
   powershell:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -42,7 +42,7 @@ jobs:
         uses: ./.github/actions/powershell
 
   links:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -53,7 +53,7 @@ jobs:
         uses: ./.github/actions/lychee-offline
 
   reference-integrity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -68,7 +68,7 @@ jobs:
           globs: fixtures/reference-integrity/*.md
 
   ruff:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -82,7 +82,7 @@ jobs:
           config: fixtures/python/good/ruff.toml
 
   pyright:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -95,7 +95,7 @@ jobs:
           config: fixtures/python/good/pyrightconfig.json
 
   biome:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -111,7 +111,7 @@ jobs:
           config: fixtures/typescript/good/biome.json
 
   tsc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -126,7 +126,7 @@ jobs:
           project: fixtures/typescript/good/tsconfig.json
 
   dotnet-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -141,7 +141,7 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   dotnet-format:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -154,7 +154,7 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   typos:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -165,7 +165,7 @@ jobs:
         uses: ./.github/actions/typos
 
   editorconfig:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -176,7 +176,7 @@ jobs:
         uses: ./.github/actions/editorconfig
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -187,7 +187,7 @@ jobs:
         uses: ./.github/actions/gitleaks
 
   actionlint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -198,7 +198,7 @@ jobs:
         uses: ./.github/actions/actionlint
 
   jsonschema:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -222,7 +222,7 @@ jobs:
           files: .github/actions/*/action.yml
 
   exec-bit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -233,7 +233,7 @@ jobs:
         uses: ./.github/actions/exec-bit
 
   machine-specific-paths:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -248,7 +248,7 @@ jobs:
           exclude: ':(exclude).github/actions/machine-specific-paths/**'
 
   eol-renormalize:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -259,7 +259,7 @@ jobs:
         uses: ./.github/actions/eol-renormalize
 
   comment-hygiene:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -280,7 +280,7 @@ jobs:
           exclude: ':(exclude).github/actions/comment-hygiene/**'
 
   shellcheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -291,7 +291,7 @@ jobs:
         uses: ./.github/actions/shellcheck
 
   shfmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -359,7 +359,7 @@ jobs:
   ci-status:
     if: always()
     needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, zizmor, osv-scanner]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results

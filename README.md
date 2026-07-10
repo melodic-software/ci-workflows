@@ -102,6 +102,11 @@ block.
 
 ## Reusable workflows
 
+Hosted workflow defaults use explicit GA operating-system generations
+(`ubuntu-24.04` and `windows-2025`) instead of moving `*-latest` aliases. This
+keeps hosted/self-hosted parity reviews tied to a declared image contract while
+GitHub continues the normal weekly patching of each hosted image generation.
+
 - `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
