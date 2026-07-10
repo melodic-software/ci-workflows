@@ -8,7 +8,7 @@ inputs:
     default: '**/*.md'
   config:
     description: Path to the lychee.toml ruleset in the caller repo.
-    default: modules/lychee/lychee.toml
+    default: lychee.toml
   exclude:
     description: >-
       Path-exclude regexes, space-separated (e.g. intentionally-bad fixtures).
@@ -44,6 +44,10 @@ runs:
         EXCLUDE: ${{ inputs.exclude }}
       run: |
         set -euo pipefail
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::lychee-offline: config file not found: $CONFIG"
+          exit 2
+        fi
         # --offline skips all network requests, so only local file links and
         # (when the ruleset sets include_fragments, as the standard lychee.toml
         # does) #anchors are checked — fully deterministic. lychee's own CLI

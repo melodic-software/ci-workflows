@@ -9,7 +9,7 @@ inputs:
     default: '.'
   config:
     description: Path to the typos config (_typos.toml) in the caller repo.
-    default: modules/typos/_typos.toml
+    default: _typos.toml
   exclude:
     description: >-
       Gitignore-syntax globs to skip, space-separated (e.g. intentionally-bad
@@ -67,6 +67,10 @@ runs:
         ANNOTATIONS: ${{ inputs.annotations }}
       run: |
         set -euo pipefail
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::typos: config file not found: $CONFIG"
+          exit 2
+        fi
         args=(--config "$CONFIG")
         # Each exclude is a separate --exclude (repeatable, additive). $EXCLUDE
         # word-splits so multiple globs are honoured; set -f stops bash from

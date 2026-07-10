@@ -5,13 +5,15 @@ description: >-
 
 inputs:
   files:
-    description: Space-separated files to validate (relative to the caller repo).
+    description: >-
+      Space-separated files or shell globs to validate (relative to the caller
+      repo).
     required: true
   builtin-schema:
     description: >-
       Name of a built-in vendored schema (e.g. vendor.dependabot,
-      vendor.github-workflows, vendor.github-issue-forms). Mutually exclusive
-      with schemafile; set exactly one.
+      vendor.github-workflows, vendor.github-actions). Mutually exclusive with
+      schemafile; set exactly one.
     default: ''
   schemafile:
     description: >-
@@ -65,5 +67,5 @@ runs:
         if [[ -n "${SCHEMAFILE// }" ]]; then args+=(--schemafile "$SCHEMAFILE"); fi
         if [[ "$NO_CACHE" == "true" ]]; then args+=(--no-cache); fi
         if [[ -n "${OUTPUT_FORMAT// }" ]]; then args+=(--output-format "$OUTPUT_FORMAT"); fi
-        # $FILES unquoted so multiple targets word-split.
+        # $FILES unquoted so multiple targets word-split and shell globs expand.
         uvx "check-jsonschema@${VERSION}" "${args[@]}" $FILES

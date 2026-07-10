@@ -1,13 +1,15 @@
 name: comment-hygiene
 description: >-
   Scan code comments for deferred-work markers (TODO/FIXME/HACK/XXX) and
-  issue-tracker references, against a caller-supplied policy ruleset.
+  issue-tracker references. Uses the bundled organization policy by default;
+  callers may supply a complete replacement.
 
 inputs:
   patterns-file:
     description: >-
-      Path to the comment-hygiene policy library (sourced) in the caller repo.
-    default: modules/comment-hygiene/comment-hygiene-patterns.sh
+      Optional path to a complete replacement comment-hygiene policy library in
+      the caller repo. Empty uses the policy bundled with this action.
+    default: ''
   extensions:
     description: >-
       Pathspec allowlist of code files to scan, space-separated globs.
@@ -29,4 +31,10 @@ runs:
         PATTERNS_FILE: ${{ inputs.patterns-file }}
         EXTENSIONS: ${{ inputs.extensions }}
         EXCLUDE: ${{ inputs.exclude }}
-      run: bash "$GITHUB_ACTION_PATH/scan-tree.sh"
+      run: |
+        set -euo pipefail
+        patterns_file="$PATTERNS_FILE"
+        if [[ -z "${patterns_file// }" ]]; then
+          patterns_file="$GITHUB_ACTION_PATH/comment-hygiene-patterns.sh"
+        fi
+        PATTERNS_FILE="$patterns_file" bash "$GITHUB_ACTION_PATH/scan-tree.sh"

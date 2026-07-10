@@ -13,7 +13,7 @@ inputs:
     default: dir
   config:
     description: Path to the gitleaks config (.gitleaks.toml) in the caller repo.
-    default: modules/gitleaks/.gitleaks.toml
+    default: .gitleaks.toml
   report-format:
     description: >-
       Report format to emit: json, csv, junit, sarif, or template. Empty emits
@@ -64,6 +64,10 @@ runs:
         REDACT: ${{ inputs.redact }}
       run: |
         set -euo pipefail
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::gitleaks: config file not found: $CONFIG"
+          exit 2
+        fi
         # `dir` scans the working tree at the given path; `git` scans the commit
         # history of the repo rooted at that path. Both take the path as the
         # positional source argument.

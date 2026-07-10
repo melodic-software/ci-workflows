@@ -8,22 +8,22 @@
 # by the prefilter. If the prefilter under-matches, scan-tree silently drops a
 # real violation before the validator sees it (a fail-open gate).
 #
-# Nothing structural couples the two: the prefilter regex lives in this repo
-# while the policy library is vendored from the standards repo and versioned
-# independently. This test makes the invariant self-enforcing — it sources both
-# and asserts, for a representative line per library rule across all five comment
-# prefixes, that the library flags it AND the prefilter admits it. A narrowed
-# prefilter, or a library that grows a rule the prefilter misses, turns this red.
+# The prefilter and default policy ship in the same action, but remain separate
+# executable expressions. This test makes their invariant self-enforcing — it
+# sources both and asserts, for a representative line per library rule across
+# all five comment prefixes, that the library flags it AND the prefilter admits
+# it. A narrowed prefilter, or a policy that grows a rule the prefilter misses,
+# turns this red.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=coarse-prefilter.sh
 source "$here/coarse-prefilter.sh"
-# Policy library left opaque to ShellCheck (it is vendored and linted at its own
+# Policy library left opaque to ShellCheck (it is linted at its normative
 # source); following it here would treat chp::scan_text as a known function and
 # trip check-set-e-suppressed on the intentional exit-code capture below.
 # shellcheck source=/dev/null
-source "$here/../../../modules/comment-hygiene/comment-hygiene-patterns.sh"
+source "$here/comment-hygiene-patterns.sh"
 
 coarse_re="$(chp::coarse_re)"
 failures=0

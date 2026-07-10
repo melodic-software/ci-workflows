@@ -16,9 +16,8 @@ inputs:
   dotnet-version:
     description: >-
       .NET SDK version to install. The strict analyzer + code-style ruleset is
-      supplied by the caller's copied Directory.Build.props + .globalconfig
-      (standards modules/dotnet), which MSBuild discovers by walking the tree;
-      this action only provisions the SDK and runs the build.
+      supplied by the caller's MSBuild policy, which MSBuild discovers by
+      walking the tree; this action only provisions the SDK and runs the build.
     default: 10.0.301
   locked-mode:
     description: >-

@@ -1,10 +1,10 @@
 # PSScriptAnalyzer settings — repo-agnostic PowerShell quality ruleset.
 # OTBS (One True Brace Style) with strict, cross-platform rules. Targets
-# PowerShell 7.4+ (LTS) and 7.6+ (current).
+# PowerShell 7.4+ (the platform floor; no Windows PowerShell 5.1 consumers).
 #
-# Adopt by copying this file to a consuming repo's root; PSScriptAnalyzer
-# discovers a root-level PSScriptAnalyzerSettings.psd1 automatically, and
-# editors (VS Code PowerShell extension) pick it up. Severity below is the
+# The managed payload lives at a consuming repo's root, where PSScriptAnalyzer
+# and editors discover it automatically. Consumers do not edit it in place.
+# Severity below is the
 # single source of truth for which findings block — CLI -Severity is ignored
 # when it conflicts with this file (Invoke-ScriptAnalyzer Example 8).
 #
@@ -93,15 +93,14 @@
             Enable = $true
         }
 
-        # --- Compatibility ---
-
-        # TargetVersions documents the supported window (7.4 LTS, 7.6 current).
-        # The rule matches on major version only, so both entries map to "7" —
-        # the pair is intentional documentation, not two distinct checks.
-        PSUseCompatibleSyntax = @{
-            Enable         = $true
-            TargetVersions = @('7.4', '7.6')
-        }
+        # PSUseCompatibleSyntax is deliberately absent: it only flags syntax
+        # NEWER than a targeted version (the rule doc's own example flags
+        # ??/ternary only when 5.1-or-earlier targets are present), so with
+        # this ruleset's 7.4+ floor and no 5.1/6.x consumers it can never
+        # fire — verified empirically: a ??/ternary probe is flagged with a
+        # 5.1 target and silent with 7.4/7.6. Re-add with TargetVersions if
+        # a consumer ever needs a floor below the newest syntax-bearing
+        # PowerShell release.
 
         # --- Best practices ---
 
@@ -114,7 +113,9 @@
             Enable = $true
         }
 
-        # Unused variables are bugs in automation scripts — promote to Error.
+        # Unused variables are bugs in automation scripts. A settings file
+        # cannot re-map a rule's severity, so findings surface at the shipped
+        # Warning — which the top-level Severity filter above lets block.
         PSUseDeclaredVarsMoreThanAssignments = @{
             Enable = $true
         }

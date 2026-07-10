@@ -14,7 +14,7 @@ inputs:
     default: ''
   rcfile:
     description: Path to the .shellcheckrc ruleset in the caller repo.
-    default: modules/shellcheck/.shellcheckrc
+    default: .shellcheckrc
   exclude:
     description: >-
       Path substrings to skip, space-separated (e.g. intentionally-bad
@@ -57,6 +57,10 @@ runs:
         SEVERITY: ${{ inputs.severity }}
       run: |
         set -euo pipefail
+        if [[ ! -f "$RCFILE" ]]; then
+          echo "::error::shellcheck: rcfile not found: $RCFILE"
+          exit 2
+        fi
         if [[ -z "${PATHS// }" ]]; then
           # Git-tracked discovery (default): tracked *.sh/*.bash only, so ignored
           # or generated scripts in a dirty tree are never gated. NUL-delimited so

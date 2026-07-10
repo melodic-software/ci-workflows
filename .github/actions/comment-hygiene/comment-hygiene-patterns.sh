@@ -13,8 +13,9 @@
 # the issue tracker, not in code comments, so it stays visible and does not rot
 # silently in the source.
 #
-# This file is the CONFIG artifact: to tune the policy for a repo, vendor and
-# edit it. The execution action is sourced separately and stays put.
+# This file is the managed policy payload and is not edited downstream. Route a
+# reusable change upstream; a repository with genuinely different policy opts
+# out and owns the complete component. Execution remains in ci-workflows.
 
 # chp::scan_text <content>
 #

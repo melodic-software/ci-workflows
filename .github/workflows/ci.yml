@@ -13,9 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 # Dogfood: this repo is the first consumer of its own composite actions. Each
-# lane checks out this repo and runs a lane action against the vendored config
-# copy; the local ci-status gateway aggregates them into the single required
-# check. Local (./) action refs work here because the checkout IS this repo.
+# lane checks out this repo and runs a lane action against either a root-native
+# standards config or a small fixture-local contract input; the local ci-status
+# gateway aggregates them into the single required check. Local (./) action refs
+# work here because the checkout IS this repo.
 jobs:
   markdown:
     runs-on: ubuntu-latest
@@ -75,6 +76,9 @@ jobs:
           persist-credentials: false
       - name: Lint and format-check Python
         uses: ./.github/actions/ruff
+        with:
+          paths: fixtures/python/good
+          config: fixtures/python/good/ruff.toml
 
   pyright:
     runs-on: ubuntu-latest
@@ -85,11 +89,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Type-check Python
-        # The vendored ruleset ships no project-scope `include`, so scope Pyright
-        # at the dogfood source explicitly.
         uses: ./.github/actions/pyright
         with:
-          paths: fixtures/python/good
+          config: fixtures/python/good/pyrightconfig.json
 
   biome:
     runs-on: ubuntu-latest
@@ -100,11 +102,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint and format-check JS/TS
-        # Biome has no CLI exclude, so scope at the conforming fixture (the repo
-        # carries no other JS/TS source).
+        # Biome has no CLI exclude, so scope at the conforming contract fixture.
         uses: ./.github/actions/biome
         with:
           paths: fixtures/typescript/good
+          config: fixtures/typescript/good/biome.json
 
   tsc:
     runs-on: ubuntu-latest
@@ -115,8 +117,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Type-check TypeScript
-        # The vendored ruleset ships no project-scope `include`, so point tsc at
-        # the fixture project that extends it and supplies `include`.
+        # Point tsc at a self-contained fixture project; this lane verifies the
+        # action contract without mirroring the standards catalog.
         uses: ./.github/actions/tsc
         with:
           project: fixtures/typescript/good/tsconfig.json
@@ -129,10 +131,9 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Build .NET (analyzers + code-style as errors)
-        # The vendored fixture imports the overlay's props (which wire
-        # dotnet.globalconfig); scope the build at it (the repo carries no other
-        # .NET source).
+      - name: Build .NET contract fixture
+        # Scope at a self-contained fixture project; this lane verifies the
+        # action contract without mirroring the standards catalog.
         uses: ./.github/actions/dotnet-build
         with:
           project: fixtures/dotnet/good/good.csproj
@@ -211,18 +212,12 @@ jobs:
         uses: ./.github/actions/check-jsonschema
         with:
           builtin-schema: vendor.github-workflows
-          files: >-
-            .github/workflows/ci.yml
-            .github/workflows/link-check.yml
-            .github/workflows/zizmor.yml
-            .github/workflows/osv-scanner.yml
-            .github/workflows/dependabot-lock-regen.yml
-            .github/workflows/pester.yml
-            .github/workflows/semantic-pr.yml
-            .github/workflows/pr-title.yml
-            .github/workflows/tool-version-drift-check.yml
-            .github/workflows/claude-review.yml
-            .github/workflows/claude-review-self.yml
+          files: .github/workflows/*.yml
+      - name: Validate composite actions
+        uses: ./.github/actions/check-jsonschema
+        with:
+          builtin-schema: vendor.github-actions
+          files: .github/actions/*/action.yml
 
   exec-bit:
     runs-on: ubuntu-latest
@@ -271,17 +266,16 @@ jobs:
           persist-credentials: false
       - name: Verify prefilter is a superset of the policy library
         # Self-enforces the scan's load-bearing invariant: the coarse git-grep
-        # prefilter must admit every line the vendored policy library flags, or
-        # the gate fails open. The two are versioned in separate repos.
+        # prefilter must admit every line the bundled default policy flags, or
+        # the gate fails open.
         shell: bash
         run: bash .github/actions/comment-hygiene/superset-test.sh
       - name: Scan comment hygiene
-        # The bundled scan script and the vendored policy library reference the
-        # literal marker tokens in their own comments, so skip the action's own
-        # source and the module to avoid self-matching.
+        # The bundled scan and policy reference the literal marker tokens in
+        # their own comments, so skip the action's source to avoid self-matching.
         uses: ./.github/actions/comment-hygiene
         with:
-          exclude: ':(exclude).github/actions/comment-hygiene/** :(exclude)modules/comment-hygiene/**'
+          exclude: ':(exclude).github/actions/comment-hygiene/**'
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -324,7 +318,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/osv-scanner.yml
     with:
-      # This repo carries no dependency manifests, so declare it dependency-less
+      # This repo carries no dependency lockfiles, so declare it dependency-less
       # and let the empty scan pass: the dogfood proves the wrapper's wiring
       # (inputs forward, advisory posture holds) without inventing a fixture
       # manifest.

@@ -9,13 +9,13 @@ inputs:
     default: '**/*.md'
   config:
     description: Path to the markdownlint-cli2 config file in the caller repo.
-    default: modules/markdown/.markdownlint-cli2.jsonc
+    default: .markdownlint-cli2.jsonc
   version:
     description: Exact markdownlint-cli2 version to run.
-    default: 0.22.1
+    default: 0.23.0
   node-version:
     description: Node.js version to set up.
-    default: 24.17.0
+    default: 24.18.0
   annotations:
     description: >-
       Register a problem matcher so each finding renders as a GitHub inline
@@ -40,6 +40,10 @@ runs:
         ANNOTATIONS: ${{ inputs.annotations }}
         MATCHER: ${{ github.action_path }}/markdownlint-problem-matcher.json
       run: |
+        if [[ ! -f "$CONFIG" ]]; then
+          echo "::error::markdown: config file not found: $CONFIG"
+          exit 2
+        fi
         # Register the matcher so the lint output below is annotated inline;
         # remove it afterwards and exit with the real lint result.
         if [[ "$ANNOTATIONS" == "true" ]]; then echo "::add-matcher::$MATCHER"; fi

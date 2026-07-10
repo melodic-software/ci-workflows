@@ -13,7 +13,7 @@ inputs:
     default: ''
   settings:
     description: Path to the PSScriptAnalyzerSettings.psd1 ruleset in the caller repo.
-    default: modules/powershell/PSScriptAnalyzerSettings.psd1
+    default: PSScriptAnalyzerSettings.psd1
   exclude:
     description: >-
       Path substrings to skip, space-separated (e.g. intentionally-bad
@@ -61,6 +61,10 @@ runs:
         FAIL_ON_NO_FILES: ${{ inputs.fail-on-no-files }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
+        if (-not (Test-Path -LiteralPath $env:SETTINGS -PathType Leaf)) {
+            Write-Output "::error::powershell: settings file not found: $($env:SETTINGS)"
+            exit 2
+        }
         # Wrap in @() so an empty input stays an empty array, never $null
         # (a bare null would violate the runner's non-null parameter contract).
         $paths = @($env:PATHS -split '\s+' | Where-Object { $_ })
