@@ -1,0 +1,574 @@
+name: local-runner-canary
+
+# This workflow is intentionally reusable-only. The selected private canary
+# repository owns the manual workflow_dispatch caller and must obtain
+# selected-runner from select-runner.yml before invoking this contract.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: full or cancellation.
+        type: string
+        default: full
+      expected-repository:
+        description: Exact selected private repository allowed to run the canary.
+        type: string
+        required: true
+      expected-canary-label:
+        description: Exact governed canary label supplied to the selector.
+        type: string
+        required: true
+      selected-runner:
+        description: Runner returned by the approved selector; never a raw caller label.
+        type: string
+        required: true
+      selected-route:
+        description: Route returned by the approved selector.
+        type: string
+        required: true
+      selected-reason:
+        description: Reason returned by the approved selector.
+        type: string
+        required: true
+      selected-idle-runner-count:
+        description: Idle count returned by the approved selector.
+        type: string
+        required: true
+      lfs-fixture:
+        description: Relative path to the caller's committed Git LFS fixture.
+        type: string
+        default: fixtures/lfs/canary.txt
+      lfs-fixture-sha256:
+        description: Expected SHA-256 of the materialized Git LFS fixture.
+        type: string
+        default: 962ab05586b24dbc1c300c70385ead92d59393900fb9240f6d4d5cc949ec1cb2
+      cache-key-file:
+        description: Relative path to a nonsecret caller-owned lock/key fixture.
+        type: string
+        default: fixtures/cache/canary.lock
+      cache-epoch:
+        description: Reviewed cache invalidation epoch.
+        type: string
+        default: v1
+      dotnet-version:
+        description: Exact stable .NET SDK exercised on hosted and self-hosted.
+        type: string
+        default: 10.0.301
+      node-version:
+        description: Exact LTS Node.js runtime exercised on hosted and self-hosted.
+        type: string
+        default: 24.18.0
+      python-version:
+        description: Exact stable Python runtime exercised on hosted and self-hosted.
+        type: string
+        default: 3.14.6
+      long-proof-minutes:
+        description: Downstream self-hosted duration proof; accepted range is 16-20.
+        type: number
+        default: 16
+      cancellation-window-minutes:
+        description: Manual cancellation observation window; accepted range is 5-25.
+        type: number
+        default: 20
+      artifact-retention-days:
+        description: Canary evidence retention; accepted range is 1-7 days.
+        type: number
+        default: 1
+
+permissions: {}
+
+concurrency:
+  group: local-runner-canary-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Validate selector proof contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Require a trusted first-attempt private dispatch and idle canary
+        shell: bash
+        env:
+          CACHE_EPOCH: ${{ inputs.cache-epoch }}
+          CACHE_KEY_FILE: ${{ inputs.cache-key-file }}
+          CANCELLATION_WINDOW_MINUTES: ${{ inputs.cancellation-window-minutes }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_CANARY_LABEL: ${{ inputs.expected-canary-label }}
+          EXPECTED_REPOSITORY: ${{ inputs.expected-repository }}
+          IDLE_RUNNER_COUNT: ${{ inputs.selected-idle-runner-count }}
+          LFS_FIXTURE: ${{ inputs.lfs-fixture }}
+          LFS_FIXTURE_SHA256: ${{ inputs.lfs-fixture-sha256 }}
+          LONG_PROOF_MINUTES: ${{ inputs.long-proof-minutes }}
+          MODE: ${{ inputs.mode }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SELECTED_REASON: ${{ inputs.selected-reason }}
+          SELECTED_ROUTE: ${{ inputs.selected-route }}
+          SELECTED_RUNNER: ${{ inputs.selected-runner }}
+          SOURCE_REF: ${{ github.ref }}
+          ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+          NODE_VERSION: ${{ inputs.node-version }}
+          PYTHON_VERSION: ${{ inputs.python-version }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          safe_path() {
+            [[ $1 =~ ^[A-Za-z0-9._/-]+$ ]] &&
+              [[ $1 != /* ]] &&
+              [[ "/$1/" != *"/../"* ]] &&
+              [[ "/$1/" != *"/./"* ]]
+          }
+
+          [[ "$EVENT_NAME" = workflow_dispatch ]] || fail "caller must use workflow_dispatch"
+          [[ "$REPOSITORY_PRIVATE" = true ]] || fail "canary caller must be private"
+          [[ "$REPOSITORY" = "$EXPECTED_REPOSITORY" ]] || fail "unexpected canary repository"
+          [[ "$SOURCE_REF" = refs/heads/main ]] || fail "canary must run from protected main"
+          [[ "$RUN_ATTEMPT" = 1 ]] || fail "reruns must route hosted; start a new dispatch"
+          [[ "$MODE" = full || "$MODE" = cancellation ]] || fail "invalid canary mode"
+          [[ "$SELECTED_ROUTE" = self-hosted ]] || fail "selector did not choose local"
+          [[ "$SELECTED_REASON" = idle ]] || fail "selector reason is not idle"
+          [[ -n "$EXPECTED_CANARY_LABEL" ]] || fail "expected label is empty"
+          [[ "$SELECTED_RUNNER" = "$EXPECTED_CANARY_LABEL" ]] || fail "selector returned another runner"
+          [[ "$SELECTED_RUNNER" != self-hosted ]] || fail "generic self-hosted label is forbidden"
+          [[ "$SELECTED_RUNNER" != ubuntu-24.04 ]] || fail "hosted fallback cannot satisfy canary proof"
+          [[ "$IDLE_RUNNER_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "selector reported no idle runner"
+          safe_path "$LFS_FIXTURE" || fail "unsafe Git LFS fixture path"
+          safe_path "$CACHE_KEY_FILE" || fail "unsafe cache-key path"
+          [[ "$LFS_FIXTURE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid Git LFS SHA-256"
+          [[ "$CACHE_EPOCH" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || fail "invalid cache epoch"
+          [[ "$DOTNET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid .NET version"
+          [[ "$NODE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid Node.js version"
+          [[ "$PYTHON_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid Python version"
+          [[ "$LONG_PROOF_MINUTES" =~ ^(16|17|18|19|20)$ ]] || fail "invalid duration proof"
+          [[ "$CANCELLATION_WINDOW_MINUTES" =~ ^([5-9]|1[0-9]|2[0-5])$ ]] || fail "invalid cancellation window"
+          [[ "$ARTIFACT_RETENTION_DAYS" =~ ^[1-7]$ ]] || fail "invalid artifact retention"
+
+  hosted-baseline:
+    name: Hosted compatibility baseline
+    if: inputs.mode == 'full'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      result-sha256: ${{ steps.result.outputs.sha256 }}
+    steps:
+      - name: Check out private canary caller with Git LFS
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          lfs: true
+          persist-credentials: false
+      - name: Resolve the immutable reusable-workflow source
+        id: contract
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          test "$WORKFLOW_REPOSITORY" = melodic-software/ci-workflows
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "repository=$WORKFLOW_REPOSITORY" >>"$GITHUB_OUTPUT"
+          echo "sha=$WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+      - name: Check out the exact reusable-workflow implementation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ steps.contract.outputs.repository }}
+          ref: ${{ steps.contract.outputs.sha }}
+          path: .ci-workflows-contract
+          persist-credentials: false
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          cache: false
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: false
+          package-manager-cache: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: ''
+      - name: Validate caller fixtures and exact workflow checkout
+        shell: bash
+        env:
+          CACHE_KEY_FILE: ${{ inputs.cache-key-file }}
+          WORKFLOW_SHA: ${{ steps.contract.outputs.sha }}
+        run: |
+          test -s "$CACHE_KEY_FILE"
+          test "$(git -C .ci-workflows-contract rev-parse HEAD)" = "$WORKFLOW_SHA"
+      - name: Run the shared compatibility probe
+        shell: bash
+        env:
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+          LFS_FIXTURE: ${{ inputs.lfs-fixture }}
+          LFS_FIXTURE_SHA256: ${{ inputs.lfs-fixture-sha256 }}
+          NODE_VERSION: ${{ inputs.node-version }}
+          OUTPUT: ${{ runner.temp }}/hosted-result/result.txt
+          PYTHON_VERSION: ${{ inputs.python-version }}
+        run: >-
+          bash .ci-workflows-contract/.github/scripts/local-runner-parity.sh
+          "$LFS_FIXTURE" "$LFS_FIXTURE_SHA256" "$DOTNET_VERSION"
+          "$NODE_VERSION" "$PYTHON_VERSION" "$OUTPUT"
+      - name: Create nonsecret hosted cache payload
+        shell: bash
+        env:
+          CACHE_PATH: ${{ runner.temp }}/hosted-to-self-cache
+        run: |
+          mkdir -p "$CACHE_PATH"
+          printf 'hosted-to-self:%s:%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$CACHE_PATH/payload"
+      - name: Save hosted-to-self cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/hosted-to-self-cache
+          key: >-
+            ci-runner-canary-h2s-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
+            inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
+            inputs.cache-epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Hash hosted result
+        id: result
+        shell: bash
+        env:
+          RESULT: ${{ runner.temp }}/hosted-result/result.txt
+        run: echo "sha256=$(sha256sum -- "$RESULT" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - name: Upload hosted result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canary-hosted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hosted-result/result.txt
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+  local-sentinel-seed:
+    name: Seed first ephemeral worker
+    if: inputs.mode == 'full'
+    needs: preflight
+    runs-on: ${{ inputs.selected-runner }}
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      container-id: ${{ steps.identity.outputs.container-id }}
+    steps:
+      - name: Record first container identity
+        id: identity
+        shell: bash
+        run: |
+          test -s /etc/hostname
+          echo "container-id=$(</etc/hostname)" >>"$GITHUB_OUTPUT"
+      - name: Leave isolation sentinels in every ephemeral area
+        shell: bash
+        env:
+          MARKER: ci-runner-canary-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          work_root=$(dirname -- "$(dirname -- "$GITHUB_WORKSPACE")")
+          for root in "$HOME" "$work_root" "$RUNNER_TEMP" "$RUNNER_TOOL_CACHE" /tmp; do
+            test -n "$root"
+            printf '%s\n' "$MARKER" >"$root/$MARKER"
+          done
+          printf '%s\n' "$MARKER" | sudo tee "/usr/local/share/$MARKER" >/dev/null
+
+  local-freshness:
+    name: Prove fresh second worker
+    if: inputs.mode == 'full'
+    needs: local-sentinel-seed
+    runs-on: ${{ inputs.selected-runner }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require a different container with no first-job state
+        shell: bash
+        env:
+          FIRST_CONTAINER_ID: ${{ needs.local-sentinel-seed.outputs.container-id }}
+          MARKER: ci-runner-canary-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          current_container_id=$(</etc/hostname)
+          test -n "$FIRST_CONTAINER_ID"
+          test "$current_container_id" != "$FIRST_CONTAINER_ID"
+          work_root=$(dirname -- "$(dirname -- "$GITHUB_WORKSPACE")")
+          for root in "$HOME" "$work_root" "$RUNNER_TEMP" "$RUNNER_TOOL_CACHE" /tmp /usr/local/share; do
+            if [[ -e "$root/$MARKER" ]]; then
+              echo "sentinel survived in $root" >&2
+              exit 1
+            fi
+          done
+
+  local-parity:
+    name: Self-hosted compatibility parity
+    if: inputs.mode == 'full'
+    needs: [hosted-baseline, local-freshness]
+    runs-on: ${{ inputs.selected-runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      result-sha256: ${{ steps.result.outputs.sha256 }}
+    steps:
+      - name: Check out private canary caller with Git LFS
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          lfs: true
+          persist-credentials: false
+      - name: Resolve the immutable reusable-workflow source
+        id: contract
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+        run: |
+          test "$WORKFLOW_REPOSITORY" = melodic-software/ci-workflows
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "repository=$WORKFLOW_REPOSITORY" >>"$GITHUB_OUTPUT"
+          echo "sha=$WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+      - name: Check out the exact reusable-workflow implementation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ steps.contract.outputs.repository }}
+          ref: ${{ steps.contract.outputs.sha }}
+          path: .ci-workflows-contract
+          persist-credentials: false
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          cache: false
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: false
+          package-manager-cache: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: ''
+      - name: Validate caller fixtures and exact workflow checkout
+        shell: bash
+        env:
+          CACHE_KEY_FILE: ${{ inputs.cache-key-file }}
+          WORKFLOW_SHA: ${{ steps.contract.outputs.sha }}
+        run: |
+          test -s "$CACHE_KEY_FILE"
+          test "$(git -C .ci-workflows-contract rev-parse HEAD)" = "$WORKFLOW_SHA"
+      - name: Restore hosted-to-self cache
+        id: hosted-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/hosted-to-self-cache
+          key: >-
+            ci-runner-canary-h2s-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
+            inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
+            inputs.cache-epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: Verify hosted cache payload
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.hosted-cache.outputs.cache-hit }}
+          CACHE_PATH: ${{ runner.temp }}/hosted-to-self-cache
+        run: |
+          test "$CACHE_HIT" = true
+          test "$(<"$CACHE_PATH/payload")" = "hosted-to-self:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
+      - name: Download hosted result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: canary-hosted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hosted-result
+      - name: Verify hosted artifact digest
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.hosted-baseline.outputs.result-sha256 }}
+          RESULT: ${{ runner.temp }}/hosted-result/result.txt
+        run: test "$(sha256sum -- "$RESULT" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
+      - name: Run the shared compatibility probe
+        shell: bash
+        env:
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+          LFS_FIXTURE: ${{ inputs.lfs-fixture }}
+          LFS_FIXTURE_SHA256: ${{ inputs.lfs-fixture-sha256 }}
+          NODE_VERSION: ${{ inputs.node-version }}
+          OUTPUT: ${{ runner.temp }}/self-result/result.txt
+          PYTHON_VERSION: ${{ inputs.python-version }}
+        run: >-
+          bash .ci-workflows-contract/.github/scripts/local-runner-parity.sh
+          "$LFS_FIXTURE" "$LFS_FIXTURE_SHA256" "$DOTNET_VERSION"
+          "$NODE_VERSION" "$PYTHON_VERSION" "$OUTPUT"
+      - name: Compare hosted and self-hosted results
+        shell: bash
+        env:
+          HOSTED_RESULT: ${{ runner.temp }}/hosted-result/result.txt
+          SELF_RESULT: ${{ runner.temp }}/self-result/result.txt
+        run: diff --unified "$HOSTED_RESULT" "$SELF_RESULT"
+      - name: Create nonsecret self-to-hosted cache payload
+        shell: bash
+        env:
+          CACHE_PATH: ${{ runner.temp }}/self-to-hosted-cache
+        run: |
+          mkdir -p "$CACHE_PATH"
+          printf 'self-to-hosted:%s:%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$CACHE_PATH/payload"
+      - name: Save self-to-hosted cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/self-to-hosted-cache
+          key: >-
+            ci-runner-canary-s2h-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
+            inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
+            inputs.cache-epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Hash self-hosted result
+        id: result
+        shell: bash
+        env:
+          RESULT: ${{ runner.temp }}/self-result/result.txt
+        run: echo "sha256=$(sha256sum -- "$RESULT" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - name: Upload self-hosted result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canary-self-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/self-result/result.txt
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+  hosted-verify:
+    name: Verify self-hosted outputs on hosted
+    if: inputs.mode == 'full'
+    needs: local-parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out private canary caller for the cache-key hash
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Restore self-to-hosted cache
+        id: self-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/self-to-hosted-cache
+          key: >-
+            ci-runner-canary-s2h-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
+            inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
+            inputs.cache-epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: Verify self-hosted cache payload
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.self-cache.outputs.cache-hit }}
+          CACHE_PATH: ${{ runner.temp }}/self-to-hosted-cache
+        run: |
+          test "$CACHE_HIT" = true
+          test "$(<"$CACHE_PATH/payload")" = "self-to-hosted:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
+      - name: Download hosted result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: canary-hosted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hosted-result
+      - name: Download self-hosted result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: canary-self-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/self-result
+      - name: Verify equivalent artifact outputs
+        shell: bash
+        env:
+          EXPECTED_SELF_SHA256: ${{ needs.local-parity.outputs.result-sha256 }}
+          HOSTED_RESULT: ${{ runner.temp }}/hosted-result/result.txt
+          SELF_RESULT: ${{ runner.temp }}/self-result/result.txt
+        run: |
+          test "$(sha256sum -- "$SELF_RESULT" | cut -d ' ' -f 1)" = "$EXPECTED_SELF_SHA256"
+          diff --unified "$HOSTED_RESULT" "$SELF_RESULT"
+
+  long-running-proof:
+    name: Prove downstream duration
+    if: inputs.mode == 'full'
+    needs: hosted-verify
+    runs-on: ${{ inputs.selected-runner }}
+    timeout-minutes: 25
+    permissions: {}
+    steps:
+      - name: Run independently for at least sixteen minutes
+        shell: bash
+        env:
+          PROOF_MINUTES: ${{ inputs.long-proof-minutes }}
+        run: |
+          started=$(date +%s)
+          sleep "$((PROOF_MINUTES * 60))"
+          finished=$(date +%s)
+          elapsed=$((finished - started))
+          minimum=$((PROOF_MINUTES * 60))
+          test "$elapsed" -ge "$minimum"
+          {
+            echo "### Downstream duration proof"
+            echo
+            echo "The selected self-hosted job ran for ${elapsed} seconds after the selector completed."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  full-evidence:
+    name: Full conformance evidence
+    if: inputs.mode == 'full'
+    needs: long-running-proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Record completed proof
+        shell: bash
+        env:
+          EXPECTED_CANARY_LABEL: ${{ inputs.expected-canary-label }}
+          IDLE_RUNNER_COUNT: ${{ inputs.selected-idle-runner-count }}
+        run: |
+          {
+            echo "### Local runner canary passed"
+            echo
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "- Selected label: ${EXPECTED_CANARY_LABEL}"
+            echo "- Selector idle count: ${IDLE_RUNNER_COUNT}"
+            echo "- Fresh-container, toolchain, artifact, cache, and duration proofs passed."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  cancellation-probe:
+    name: Manual cancellation probe
+    if: inputs.mode == 'cancellation'
+    needs: preflight
+    runs-on: ${{ inputs.selected-runner }}
+    timeout-minutes: 30
+    permissions: {}
+    steps:
+      - name: Record cancellation breadcrumb
+        shell: bash
+        run: |
+          {
+            echo "### Manual cancellation probe"
+            echo
+            echo "Cancel this workflow from the GitHub UI while the next step is running."
+            echo "Do not rerun this attempt; dispatch a new full canary afterward."
+            echo
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Job: ${GITHUB_JOB}"
+            echo "- Runner: ${RUNNER_NAME}"
+            echo "- Container: $(</etc/hostname)"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Await operator cancellation without replay
+        shell: bash
+        env:
+          CANCELLATION_WINDOW_MINUTES: ${{ inputs.cancellation-window-minutes }}
+        run: |
+          # Invoked asynchronously by trap.
+          # shellcheck disable=SC2329
+          on_cancel() {
+            echo "Cancellation signal observed for run $GITHUB_RUN_ID on container $(</etc/hostname)"
+            exit 130
+          }
+          trap on_cancel INT TERM
+          echo "Waiting ${CANCELLATION_WINDOW_MINUTES} minutes for a manual GitHub cancellation."
+          sleep "$((CANCELLATION_WINDOW_MINUTES * 60))"
+          echo "::error::No manual cancellation was observed; dispatch cancellation mode again."
+          exit 1

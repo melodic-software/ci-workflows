@@ -185,6 +185,138 @@ block.
   cannot be converted by workflow expressions; dependent jobs remain blocked
   and must be rerun. This boundary is intentionally not described as atomic
   fallback.
+- `.github/workflows/local-runner-canary.yml` — a reusable-only acceptance
+  contract for the private `melodic-software/ci-runner-canary` repository. It
+  has no `workflow_dispatch`, push, or pull-request trigger in this public
+  repository. A manual private caller must run the approved selector first and
+  pass its `runner`, `route`, `reason`, and `idle-runner-count` outputs. A hosted
+  preflight rejects the call before any local job is scheduled unless this is a
+  first-attempt dispatch from protected `main`, the caller is the expected
+  private repository, the route is `self-hosted` for reason `idle`, the idle
+  count is positive, and the selected runner equals the governed exact canary
+  label. The executable workflow therefore contains no raw managed label.
+
+  Canary routing is data, not code. The private repository has these reviewed
+  values before its caller is enabled:
+
+  ```text
+  CI_RUNNER_POLICY=prefer-self-hosted
+  CI_SELF_HOSTED_LABEL=melodic-canary-ubuntu-24.04-x64
+  CI_HOSTED_RUNNER=ubuntu-24.04
+  CI_RUNNER_SCOPE=organization
+  CI_MANAGED_RUNNER_PREFIX=ci-runner-canary-
+  CI_RUNNER_OBSERVER_CLIENT_ID=<observer App client ID>
+  ```
+
+  `ci-runner-canary-` is deliberately narrower than the production prefix and
+  is the shared base of the host-unique names
+  `ci-runner-canary-melo-desk-001-...` and
+  `ci-runner-canary-melo-lap-001-...`. The canary runner groups expose only the
+  private canary repository. The caller explicitly passes the one observer key;
+  it never inherits secrets:
+
+  ```yaml
+  name: Local runner canary
+
+  on:
+    workflow_dispatch:
+      inputs:
+        mode:
+          description: Acceptance mode
+          type: choice
+          options: [full, cancellation]
+          default: full
+
+  permissions: {}
+
+  concurrency:
+    group: local-runner-canary
+    cancel-in-progress: false
+
+  jobs:
+    select-runner:
+      permissions: {}
+      uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@<reviewed-40-character-sha>
+      with:
+        policy: ${{ vars.CI_RUNNER_POLICY }}
+        self-hosted-label: ${{ vars.CI_SELF_HOSTED_LABEL }}
+        hosted-runner: ${{ vars.CI_HOSTED_RUNNER }}
+        scope: ${{ vars.CI_RUNNER_SCOPE }}
+        managed-runner-prefix: ${{ vars.CI_MANAGED_RUNNER_PREFIX }}
+        observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
+      secrets:
+        observer-private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}
+
+    conformance:
+      needs: select-runner
+      permissions:
+        contents: read
+      uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@<same-reviewed-40-character-sha>
+      with:
+        mode: ${{ inputs.mode }}
+        expected-repository: melodic-software/ci-runner-canary
+        expected-canary-label: ${{ vars.CI_SELF_HOSTED_LABEL }}
+        selected-runner: ${{ needs.select-runner.outputs.runner }}
+        selected-route: ${{ needs.select-runner.outputs.route }}
+        selected-reason: ${{ needs.select-runner.outputs.reason }}
+        selected-idle-runner-count: ${{ needs.select-runner.outputs.idle-runner-count }}
+  ```
+
+  Both reusable-workflow references use the same reviewed full SHA. GitHub's
+  `job.workflow_repository` and `job.workflow_sha` identify the exact repository
+  and commit that define a reusable job; the hosted and self-hosted parity jobs
+  use those fields to check out one co-located probe implementation, then verify
+  its commit before execution. This avoids maintaining two compatibility test
+  scripts while retaining the caller checkout behavior GitHub documents for
+  reusable workflows. [GitHub's job-context reference][job-workflow-context]
+  defines those fields.
+
+  Bootstrap two nonsecret caller fixtures before the first dispatch:
+
+  ```bash
+  git lfs install --local
+  git lfs track fixtures/lfs/canary.txt
+  mkdir -p fixtures/lfs fixtures/cache
+  printf 'ci-runner-canary-lfs-v1\n' >fixtures/lfs/canary.txt
+  printf 'ci-runner-canary-cache-v1\n' >fixtures/cache/canary.lock
+  git add .gitattributes fixtures/lfs/canary.txt fixtures/cache/canary.lock
+  ```
+
+  The default expected LFS digest is the SHA-256 of that exact newline-terminated
+  content. `full` mode proves a different container ID and no surviving
+  sentinels across home, `_work`, temp, tool cache, `/tmp`, and a privileged
+  filesystem path. The same probe then runs on explicit `ubuntu-24.04` and the
+  selector-returned local runner: Git LFS checkout, exact setup actions for .NET,
+  Node.js, and Python, PowerShell, passwordless `sudo`, custom certificate trust,
+  and Linux x64 Native AOT. It compares deterministic outputs, transfers
+  artifacts in both directions, and restores nonsecret hosted-to-self and
+  self-to-hosted caches. GitHub stores self-hosted caches in GitHub-owned cloud
+  storage, and restored caches are untrusted, so these canary paths contain only
+  run IDs and fixed text—never credentials. [GitHub's cache guidance][dependency-cache]
+  and [artifact guidance][workflow-artifacts] define those boundaries. The final
+  self-hosted job runs for at least 16 minutes after selection, proving the
+  selector's separate two-minute timeout does not limit downstream work. The
+  Native AOT probe follows Microsoft's documented Ubuntu `clang` and zlib
+  prerequisites. [Native AOT deployment][native-aot] The daily tool-version
+  drift workflow compares each exact runtime default with its current stable
+  patch line through the first-party .NET, Node.js, and setup-python indexes; it
+  opens review evidence and never edits or auto-merges the pin.
+
+  Cancellation is a separate two-dispatch observation, not an automated retry:
+
+  1. Dispatch `cancellation` mode and record the run ID, worker/container ID,
+     controller job record, and diagnostic archive named in the controller log.
+  2. Use GitHub's **Cancel workflow** control while the probe is waiting and
+     verify the job and controller diagnostics record cancellation and worker
+     removal. GitHub sends the cancellation message to the runner; this workflow
+     does not call the cancellation API. [Workflow cancellation][workflow-cancellation]
+  3. Do **not** rerun that attempt: attempt 2 is intentionally hosted. Start a
+     new `full` workflow dispatch and record its new run ID/container ID and
+     successful freshness proof.
+
+  This evidence is a live promotion gate. Static tests can prove the contract,
+  pins, and safety guards, but cannot substitute for GitHub runner assignment,
+  cache/artifact transport, cancellation delivery, or controller diagnostics.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -389,9 +521,14 @@ standards catalog.
 [dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
 [default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
 [github-container-digest]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pulling-container-images
+[dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
+[job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+[native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
 [osv-action-container-source]: https://github.com/google/osv-scanner/blob/b56b5191101d5f27d4787d5583d8d01e9518a7af/goreleaser-action.dockerfile
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
+[workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
+[workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
 [zizmor-action-script]: https://github.com/zizmorcore/zizmor-action/blob/192e21d79ab29983730a13d1382995c2307fbcaa/action.sh

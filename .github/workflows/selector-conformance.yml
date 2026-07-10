@@ -3,12 +3,15 @@ name: selector-conformance
 on:
   pull_request:
     paths:
+      - .github/workflows/local-runner-canary.yml
       - .github/workflows/select-runner.yml
       - .github/workflows/selector-conformance.yml
       - .github/workflows/zizmor.yml
       - .github/workflows/osv-scanner.yml
       - .github/workflows/tool-version-drift-check.yml
       - .github/osv-scanner-pin.json
+      - .github/scripts/local-runner-canary.test.cjs
+      - .github/scripts/local-runner-parity.sh
       - .github/scripts/osv-scanner-pin.test.cjs
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
@@ -19,12 +22,15 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/workflows/local-runner-canary.yml
       - .github/workflows/select-runner.yml
       - .github/workflows/selector-conformance.yml
       - .github/workflows/zizmor.yml
       - .github/workflows/osv-scanner.yml
       - .github/workflows/tool-version-drift-check.yml
       - .github/osv-scanner-pin.json
+      - .github/scripts/local-runner-canary.test.cjs
+      - .github/scripts/local-runner-parity.sh
       - .github/scripts/osv-scanner-pin.test.cjs
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
