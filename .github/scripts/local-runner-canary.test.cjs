@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -27,11 +28,34 @@ const driftWorkflowPath = path.join(
   "workflows",
   "tool-version-drift-check.yml",
 );
+const rootCiPath = path.join(repositoryRoot, ".github", "workflows", "ci.yml");
+const selectorConformancePath = path.join(
+  repositoryRoot,
+  ".github",
+  "workflows",
+  "selector-conformance.yml",
+);
+const templateRoot = path.join(repositoryRoot, "templates", "ci-runner-canary");
+const templateWorkflowPath = path.join(
+  templateRoot,
+  ".github",
+  "workflows",
+  "local-runner-canary.yml",
+);
+const templateLfsPath = path.join(
+  templateRoot,
+  "fixtures",
+  "lfs",
+  "canary.txt",
+);
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const parityScript = fs.readFileSync(scriptPath, "utf8");
 const readme = fs.readFileSync(readmePath, "utf8");
 const driftWorkflow = fs.readFileSync(driftWorkflowPath, "utf8");
+const rootCi = fs.readFileSync(rootCiPath, "utf8");
+const selectorConformance = fs.readFileSync(selectorConformancePath, "utf8");
+const templateWorkflow = fs.readFileSync(templateWorkflowPath, "utf8");
 
 const runnerAssertionScripts = [
   ...workflow.matchAll(
@@ -316,6 +340,114 @@ test("private caller documentation delegates selection and passes only the obser
     /observer-private-key: \$\{\{ secrets\.CI_RUNNER_OBSERVER_PRIVATE_KEY \}\}/u,
   );
   assert.doesNotMatch(readme, /^\s+secrets:\s+inherit\s*$/mu);
+});
+
+test("canonical private seed pins the corrected reusable contract", () => {
+  const expectedReusableSha = "bb762391c41e9d12975fae25a06ac930050baba9";
+  assert.match(templateWorkflow, /^ {2}workflow_dispatch:/mu);
+  assert.doesNotMatch(templateWorkflow, /^ {2}(?:push|pull_request):/mu);
+  assert.match(
+    templateWorkflow,
+    new RegExp(
+      `uses: melodic-software/ci-workflows/\\.github/workflows/local-runner-canary\\.yml@${expectedReusableSha} # reviewed canary contract`,
+      "u",
+    ),
+  );
+  assert.match(
+    templateWorkflow,
+    /observer-client-id: \$\{\{ vars\.CI_RUNNER_OBSERVER_CLIENT_ID \}\}/u,
+  );
+  assert.match(
+    templateWorkflow,
+    /observer-private-key: \$\{\{ secrets\.CI_RUNNER_OBSERVER_PRIVATE_KEY \}\}/u,
+  );
+  assert.doesNotMatch(templateWorkflow, /secrets:\s+inherit/u);
+  assert.doesNotMatch(templateWorkflow, /selected-(?:runner|route|reason)/u);
+  assert.doesNotMatch(templateWorkflow, /<[^>]+>/u);
+  const dependabot = fs.readFileSync(
+    path.join(templateRoot, ".github", "dependabot.yml"),
+    "utf8",
+  );
+  assert.match(dependabot, /package-ecosystem: github-actions/u);
+  assert.match(dependabot, /interval: weekly/u);
+
+  const pinned = spawnSync(
+    "git",
+    [
+      "show",
+      `${expectedReusableSha}:.github/workflows/local-runner-canary.yml`,
+    ],
+    { cwd: repositoryRoot, encoding: "utf8" },
+  );
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.match(
+    pinned.stdout,
+    /EXPECTED_REPOSITORY: melodic-software\/ci-runner-canary/u,
+  );
+  assert.match(
+    pinned.stdout,
+    /select-runner\.yml@4943b1c4ff6ae9624736ac95622d7ab748132c8d/u,
+  );
+  assert.doesNotMatch(pinned.stdout, /inputs\.selected-runner/u);
+});
+
+test("canonical seed carries a real reviewed Git LFS object and safe bootstrap", () => {
+  const expectedDigest =
+    "962ab05586b24dbc1c300c70385ead92d59393900fb9240f6d4d5cc949ec1cb2";
+  const attributes = fs.readFileSync(
+    path.join(templateRoot, ".gitattributes"),
+    "utf8",
+  );
+  assert.match(
+    attributes,
+    /^fixtures\/lfs\/canary\.txt filter=lfs diff=lfs merge=lfs -text$/mu,
+  );
+
+  const materialized = fs.readFileSync(templateLfsPath);
+  assert.equal(materialized.toString("utf8"), "ci-runner-canary-lfs-v1\n");
+  assert.equal(
+    createHash("sha256").update(materialized).digest("hex"),
+    expectedDigest,
+  );
+  assert.match(
+    rootCi,
+    /selector-contract:[\s\S]*?uses: actions\/checkout@[0-9a-f]{40}[\s\S]*?lfs: true/u,
+  );
+  assert.match(
+    selectorConformance,
+    /selector-unit:[\s\S]*?uses: actions\/checkout@[0-9a-f]{40}[\s\S]*?lfs: true/u,
+  );
+
+  const indexed = spawnSync(
+    "git",
+    ["show", ":templates/ci-runner-canary/fixtures/lfs/canary.txt"],
+    { cwd: repositoryRoot, encoding: "utf8" },
+  );
+  assert.equal(
+    indexed.status,
+    0,
+    "template LFS fixture must be staged or committed",
+  );
+  assert.equal(
+    indexed.stdout,
+    `version https://git-lfs.github.com/spec/v1\noid sha256:${expectedDigest}\nsize 24\n`,
+  );
+
+  const cacheFixture = fs.readFileSync(
+    path.join(templateRoot, "fixtures", "cache", "canary.lock"),
+    "utf8",
+  );
+  assert.equal(cacheFixture, "ci-runner-canary-cache-v1\n");
+
+  const bootstrap = fs.readFileSync(
+    path.join(templateRoot, "bootstrap.ps1"),
+    "utf8",
+  );
+  assert.match(bootstrap, /melodic-software\/ci-runner-canary/u);
+  assert.match(bootstrap, /'lfs', 'install', '--local'/u);
+  assert.match(bootstrap, /'lfs', 'ls-files', '--name-only'/u);
+  assert.match(bootstrap, /'show', ':fixtures\/lfs\/canary\.txt'/u);
+  assert.doesNotMatch(bootstrap, /ArgumentList[^\n]*(?:'commit'|'push')/u);
 });
 
 test("parity script rejects an incomplete invocation before side effects", () => {

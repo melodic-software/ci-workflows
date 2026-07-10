@@ -1,0 +1,28 @@
+name: Local runner canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Acceptance mode
+        type: choice
+        options: [full, cancellation]
+        default: full
+
+permissions: {}
+
+concurrency:
+  group: local-runner-canary
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    name: Local runner canary
+    permissions:
+      contents: read
+    uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@bb762391c41e9d12975fae25a06ac930050baba9 # reviewed canary contract
+    with:
+      mode: ${{ inputs.mode }}
+      observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
+    secrets:
+      observer-private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}
