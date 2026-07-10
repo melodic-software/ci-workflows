@@ -48,6 +48,7 @@ const templateLfsPath = path.join(
   "lfs",
   "canary.txt",
 );
+const templateBootstrapPath = path.join(templateRoot, "bootstrap.ps1");
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const parityScript = fs.readFileSync(scriptPath, "utf8");
@@ -91,6 +92,51 @@ function runRunnerAssertion(runnerEnvironment, runnerName) {
     };
   } finally {
     fs.rmSync(outputDirectory, { force: true, recursive: true });
+  }
+}
+
+function runTemplateBootstrap(remoteUrl) {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "ci-runner-canary-bootstrap-"),
+  );
+  const targetPath = path.join(temporaryRoot, "target");
+  try {
+    const initialize = spawnSync(
+      "git",
+      ["init", "--initial-branch=main", targetPath],
+      { encoding: "utf8" },
+    );
+    assert.equal(initialize.status, 0, initialize.stderr);
+
+    const addRemote = spawnSync(
+      "git",
+      ["-C", targetPath, "remote", "add", "origin", remoteUrl],
+      { encoding: "utf8" },
+    );
+    assert.equal(addRemote.status, 0, addRemote.stderr);
+
+    const result = spawnSync(
+      process.env.PWSH_PATH || "pwsh",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-File",
+        templateBootstrapPath,
+        "-TargetPath",
+        targetPath,
+      ],
+      { encoding: "utf8" },
+    );
+    const status = spawnSync(
+      "git",
+      ["-C", targetPath, "status", "--porcelain=v1"],
+      { encoding: "utf8" },
+    );
+    assert.equal(status.status, 0, status.stderr);
+
+    return { result, status: status.stdout };
+  } finally {
+    fs.rmSync(temporaryRoot, { force: true, recursive: true });
   }
 }
 
@@ -448,6 +494,47 @@ test("canonical seed carries a real reviewed Git LFS object and safe bootstrap",
   assert.match(bootstrap, /'lfs', 'ls-files', '--name-only'/u);
   assert.match(bootstrap, /'show', ':fixtures\/lfs\/canary\.txt'/u);
   assert.doesNotMatch(bootstrap, /ArgumentList[^\n]*(?:'commit'|'push')/u);
+});
+
+test("bootstrap accepts only GitHub's canonical HTTPS and SSH origins", () => {
+  const allowedOrigins = [
+    "https://github.com/melodic-software/ci-runner-canary.git",
+    "git@github.com:melodic-software/ci-runner-canary.git",
+  ];
+
+  for (const origin of allowedOrigins) {
+    const { result, status } = runTemplateBootstrap(origin);
+    assert.equal(
+      result.status,
+      0,
+      `${origin}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.match(
+      status,
+      /^A {2}\.github\/workflows\/local-runner-canary\.yml$/mu,
+    );
+    assert.match(status, /^A {2}fixtures\/lfs\/canary\.txt$/mu);
+  }
+});
+
+test("bootstrap rejects lookalike and noncanonical origins before staging", () => {
+  const rejectedOrigins = [
+    "https://evilgithub.com/melodic-software/ci-runner-canary.git",
+    "https://github.com.evil.example/melodic-software/ci-runner-canary.git",
+    "git@evilgithub.com:melodic-software/ci-runner-canary.git",
+    "git@github.com:melodic-software/ci-runner-canary-evil.git",
+    "https://github.com/melodic-software/ci-runner-canary",
+  ];
+
+  for (const origin of rejectedOrigins) {
+    const { result, status } = runTemplateBootstrap(origin);
+    assert.notEqual(result.status, 0, `${origin} unexpectedly passed`);
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /Target origin is not melodic-software\/ci-runner-canary/u,
+    );
+    assert.equal(status, "", `${origin} staged files before rejection`);
+  }
 });
 
 test("parity script rejects an incomplete invocation before side effects", () => {

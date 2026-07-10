@@ -13,7 +13,10 @@ $ExpectedPointer = @(
     'oid sha256:962ab05586b24dbc1c300c70385ead92d59393900fb9240f6d4d5cc949ec1cb2'
     'size 24'
 ) -join "`n"
-$ExpectedRemotePattern = '(?:github\.com[/:])melodic-software/ci-runner-canary(?:\.git)?$'
+$ExpectedRemoteUrls = @(
+    'https://github.com/melodic-software/ci-runner-canary.git'
+    'git@github.com:melodic-software/ci-runner-canary.git'
+)
 $SeedFiles = @(
     '.gitattributes'
     '.github/dependabot.yml'
@@ -59,7 +62,7 @@ if (-not $target.PSIsContainer -or -not (Test-Path -LiteralPath (Join-Path $targ
 $remote = (Invoke-GitCommand -WorkingDirectory $target.FullName -ArgumentList @(
         'remote', 'get-url', 'origin'
     ) -PassThru) -join ''
-if ($remote -notmatch $ExpectedRemotePattern) {
+if ($remote -cnotin $ExpectedRemoteUrls) {
     throw "Target origin is not melodic-software/ci-runner-canary: $remote"
 }
 
