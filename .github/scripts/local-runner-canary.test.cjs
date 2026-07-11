@@ -49,6 +49,8 @@ const templateLfsPath = path.join(
   "canary.txt",
 );
 const templateBootstrapPath = path.join(templateRoot, "bootstrap.ps1");
+const currentSelectorSha = "d94877932012972391b98dcea5ce92b804b74418";
+const supersededSelectorSha = "4943b1c4ff6ae9624736ac95622d7ab748132c8d";
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const parityScript = fs.readFileSync(scriptPath, "utf8");
@@ -166,8 +168,12 @@ test("immutable canary owns selector policy and direct routing outputs", () => {
   );
   assert.match(
     workflow,
-    /select-runner:[\s\S]*?needs: preflight[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/select-runner\.yml@4943b1c4ff6ae9624736ac95622d7ab748132c8d/u,
+    new RegExp(
+      `select-runner:[\\s\\S]*?needs: preflight[\\s\\S]*?uses: melodic-software/ci-workflows/\\.github/workflows/select-runner\\.yml@${currentSelectorSha}`,
+      "u",
+    ),
   );
+  assert.doesNotMatch(workflow, new RegExp(supersededSelectorSha, "u"));
   assert.match(
     workflow,
     /self-hosted-label: melodic-canary-ubuntu-24\.04-x64/u,
