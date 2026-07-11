@@ -143,7 +143,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   and timeout; the selector's platform limit does not carry into that job.
   Selection is deliberately fail-open to the configured hosted runner. It uses
   a read-only observer GitHub App and chooses local only when an exact-label,
-  managed-prefix runner is online, idle, and ephemeral. Full reruns
+  managed-prefix runner is online, idle, and not explicitly reported as
+  non-ephemeral. Full reruns
   (`github.run_attempt > 1`) always route hosted. Public repositories, fork pull
   requests, and Dependabot runs route hosted before the observer-token action
   can execute, following GitHub's [self-hosted runner security guidance][runner-security]
@@ -195,6 +196,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   phase provisions it as operational data so the documented live-proof fallback
   can switch from one shared label to two host-specific exact labels without a
   workflow or selector code change.
+
+  GitHub's official `2026-03-10` [OpenAPI runner schema][runner-openapi] requires
+  `id`, `name`, `os`, `status`, `busy`, and `labels`, but declares `ephemeral`
+  optional; runner-list responses can therefore omit it. A present non-boolean
+  value invalidates the complete inventory, and explicit `false` excludes that
+  runner. When the field is omitted, the authoritative fleet identity is the
+  conjunction of the exact governed runner-name prefix and exact governed
+  scale-set label. Both belong to the `ci-runner` controller's one-job JIT
+  contract, so omission does not broaden selection to an arbitrary self-hosted
+  runner. The selector still requires online and idle state in the same
+  inventory snapshot.
 
   `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
   API cannot prove that an arbitrary label belongs to hosted infrastructure. The
@@ -496,6 +508,7 @@ standards catalog.
 [pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+[runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run

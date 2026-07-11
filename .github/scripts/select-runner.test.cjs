@@ -68,6 +68,12 @@ function runner(overrides = {}) {
   };
 }
 
+function runnerWithoutEphemeral(overrides = {}) {
+  const candidate = runner(overrides);
+  delete candidate.ephemeral;
+  return candidate;
+}
+
 function response(runners, totalCount = runners.length) {
   return { data: { total_count: totalCount, runners } };
 }
@@ -190,6 +196,16 @@ test("rerun attempt 2 routes hosted before authentication or inventory", async (
   assert.equal(result.reason, "rerun");
 });
 
+for (const runAttempt of [undefined, Number.NaN, 0, 1.5, -1]) {
+  test(`invalid run attempt ${String(runAttempt)} fails hosted as missing configuration`, async () => {
+    const result = await selectRunner(input({ runAttempt }), {
+      request: requestMustNotRun,
+    });
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "missing-config");
+  });
+}
+
 test("invalid scope fails hosted without an inventory request", async () => {
   const result = await selectRunner(input({ scope: "enterprise" }), {
     request: requestMustNotRun,
@@ -310,7 +326,7 @@ test("repository inventory success targets only the caller repository", async ()
   assert.equal(result.route, "self-hosted");
 });
 
-test("filter requires exact label, managed prefix, online, idle, and ephemeral", async () => {
+test("filter requires exact label, managed prefix, online and idle, and rejects explicit non-ephemeral", async () => {
   const inventory = [
     runner({ name: "unmanaged-1" }),
     runner({ status: "offline" }),
@@ -318,6 +334,62 @@ test("filter requires exact label, managed prefix, online, idle, and ephemeral",
     runner({ ephemeral: false }),
     runner({ labels: [{ name: "melodic-ubuntu-24.04-x64-other" }] }),
     runner({ name: "ci-runner-melo-lap-001-1" }),
+  ];
+  const result = await selectRunner(input(), {
+    request: async () => response(inventory),
+  });
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("an unrelated runner with omitted optional ephemeral is valid but ineligible", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({ labels: [{ name: "unrelated-label" }] }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "no-idle-runner");
+});
+
+test("a matching managed runner remains eligible when optional ephemeral is omitted", async () => {
+  const result = await selectRunner(input(), {
+    request: async () => response([runnerWithoutEphemeral()]),
+  });
+  assert.deepEqual(result, {
+    runner: "melodic-ubuntu-24.04-x64",
+    route: "self-hosted",
+    reason: "idle",
+    idleRunnerCount: 1,
+  });
+});
+
+test("an explicit ephemeral false remains authoritative exclusion", async () => {
+  const result = await selectRunner(input(), {
+    request: async () => response([runner({ ephemeral: false })]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "no-idle-runner");
+});
+
+for (const ephemeral of [undefined, null, "true", 1]) {
+  test(`a present non-boolean ephemeral value ${String(ephemeral)} invalidates inventory`, async () => {
+    const result = await selectRunner(input(), {
+      request: async () => response([runner({ ephemeral })]),
+    });
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "invalid-response");
+  });
+}
+
+test("mixed live-shape inventory selects only the exact managed omitted-field runner", async () => {
+  const inventory = [
+    runnerWithoutEphemeral({ name: "unmanaged-1" }),
+    runnerWithoutEphemeral({ status: "offline" }),
+    runnerWithoutEphemeral({ busy: true }),
+    runnerWithoutEphemeral({ labels: [{ name: "unrelated-label" }] }),
+    runnerWithoutEphemeral({ name: "ci-runner-melo-lap-001-1" }),
   ];
   const result = await selectRunner(input(), {
     request: async () => response(inventory),
@@ -357,7 +429,7 @@ test("stable saturation routes hosted", async () => {
 test("pagination reads every page before selecting", async () => {
   const calls = [];
   const firstPage = Array.from({ length: 100 }, (_, index) =>
-    runner({
+    runnerWithoutEphemeral({
       name: `other-managed-${index}`,
       labels: [{ name: "unrelated" }],
     }),
@@ -366,7 +438,7 @@ test("pagination reads every page before selecting", async () => {
     calls.push(parameters.page);
     return parameters.page === 1
       ? response(firstPage, 101)
-      : response([runner()], 101);
+      : response([runnerWithoutEphemeral()], 101);
   };
   const result = await selectRunner(input(), { request });
   assert.deepEqual(calls, [1, 2]);

@@ -44,6 +44,11 @@ function exactNonEmptyString(value) {
 }
 
 function configuredCandidateLabels(input) {
+  // This is deliberately a safety-only superset for the hosted-label
+  // collision check: keep every exact non-empty configured value, including a
+  // reserved label, and retain the legacy single label if JSON is malformed.
+  // parseCandidateLabels remains the authoritative local-routing parser and
+  // rejects malformed JSON, reserved labels, and duplicates before selection.
   const labels = exactNonEmptyString(input.selfHostedLabel)
     ? [input.selfHostedLabel]
     : [];
@@ -173,6 +178,9 @@ function preflight(input) {
     !exactNonEmptyString(input.observerClientID) ||
     !exactNonEmptyString(input.owner) ||
     (input.scope === "repository" && !exactNonEmptyString(input.repository)) ||
+    // Attempts greater than one returned `rerun` above. Requiring exactly one
+    // here makes missing, zero, fractional, and NaN values fail as malformed
+    // configuration without misclassifying them as reruns.
     input.runAttempt !== 1 ||
     !validTimeout
   ) {
@@ -202,13 +210,17 @@ function preflight(input) {
 }
 
 function validateRunner(runner) {
+  if (runner === null || typeof runner !== "object") {
+    throw new InvalidResponseError(
+      "runner inventory contains a malformed runner",
+    );
+  }
   if (
-    runner === null ||
-    typeof runner !== "object" ||
     typeof runner.name !== "string" ||
     typeof runner.status !== "string" ||
     typeof runner.busy !== "boolean" ||
-    typeof runner.ephemeral !== "boolean" ||
+    (Object.hasOwn(runner, "ephemeral") &&
+      typeof runner.ephemeral !== "boolean") ||
     !Array.isArray(runner.labels) ||
     runner.labels.some(
       (label) =>
@@ -298,14 +310,22 @@ function throwIfAborted(signal) {
 }
 
 function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
-  const idleRunners = runners.filter(
-    (runner) =>
+  const idleRunners = runners.filter((runner) => {
+    // GitHub's 2026-03-10 OpenAPI makes `ephemeral` optional, and live list
+    // responses can omit it. An explicit false is authoritative exclusion;
+    // omission relies on the governed exact prefix + exact label identifying
+    // controller-created, one-job JIT workers. validateRunner has already
+    // rejected every present non-boolean value.
+    const eligibleEphemeralState =
+      !Object.hasOwn(runner, "ephemeral") || runner.ephemeral === true;
+    return (
       runner.name.startsWith(managedRunnerPrefix) &&
       runner.status === "online" &&
       runner.busy === false &&
-      runner.ephemeral === true &&
-      runner.labels.some((runnerLabel) => labels.includes(runnerLabel.name)),
-  );
+      eligibleEphemeralState &&
+      runner.labels.some((runnerLabel) => labels.includes(runnerLabel.name))
+    );
+  });
 
   const selectedLabel = labels.find((label) =>
     idleRunners.some((runner) =>
