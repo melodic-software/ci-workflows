@@ -44,6 +44,62 @@ const templateReadme = fs.readFileSync(
 );
 const implementationSha = "4e2fe8829bcfd593079346868f13b19364ce3535";
 
+function jobBlock(jobId) {
+  const start = workflow.indexOf(`  ${jobId}:\n`);
+  assert.notEqual(start, -1, `missing job ${jobId}`);
+  const afterFirstLine = workflow.indexOf("\n", start) + 1;
+  const nextJob = /^ {2}[a-z][a-z0-9-]*:$/gmu;
+  nextJob.lastIndex = afterFirstLine;
+  const next = nextJob.exec(workflow);
+  return workflow.slice(start, next ? next.index : undefined);
+}
+
+function jobHeader(jobId) {
+  const block = jobBlock(jobId);
+  const boundaries = ["\n    steps:", "\n    uses:"]
+    .map((marker) => block.indexOf(marker))
+    .filter((index) => index >= 0);
+  return block.slice(
+    0,
+    boundaries.length === 0 ? undefined : Math.min(...boundaries),
+  );
+}
+
+const preflightBlock = jobBlock("preflight");
+const preflightRunMarker = "        run: |\n";
+const preflightRunStart =
+  preflightBlock.indexOf(preflightRunMarker) + preflightRunMarker.length;
+const preflightScript = preflightBlock
+  .slice(preflightRunStart)
+  .split("\n")
+  .map((line) => line.replace(/^ {10}/u, ""))
+  .join("\n");
+
+function runPreflight(overrides = {}) {
+  return spawnSync(process.env.BASH_PATH || "bash", ["-c", preflightScript], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ARTIFACT_RETENTION_DAYS: "3",
+      CALLER_WORKFLOW_REF: PROOF_CALLER_WORKFLOW,
+      DRAIN_WAIT_MINUTES: "20",
+      EVENT_NAME: "workflow_dispatch",
+      EXPECTED_CALLER_WORKFLOW_REF: PROOF_CALLER_WORKFLOW,
+      EXPECTED_REPOSITORY: PROOF_REPOSITORY,
+      LAPTOP_PROOF_MINUTES: "20",
+      MODE: "inventory",
+      OBSERVER_CLIENT_ID: "Iv23observer",
+      REF_PROTECTED: "true",
+      REPOSITORY: PROOF_REPOSITORY,
+      REPOSITORY_PRIVATE: "true",
+      RUN_ATTEMPT: "1",
+      SOURCE_REF: "refs/heads/main",
+      ...overrides,
+    },
+  });
+}
+
 function group(host, id) {
   return {
     id,
@@ -468,6 +524,7 @@ test("workflow is reusable-only and binds the exact private caller before secret
     "github.workflow_ref",
     PROOF_CALLER_WORKFLOW,
     "github.event.repository.private",
+    "github.ref_protected",
     "refs/heads/main",
     "github.run_attempt",
     "workflow_dispatch",
@@ -476,6 +533,50 @@ test("workflow is reusable-only and binds the exact private caller before secret
   }
   const tokenStep = workflow.indexOf("Mint read-only observer token");
   assert.ok(tokenStep > workflow.indexOf("  inventory:"));
+});
+
+test("preflight rejects an unprotected main ref and every rerun attempt", () => {
+  const accepted = runPreflight();
+  assert.equal(accepted.status, 0, `${accepted.stdout}\n${accepted.stderr}`);
+
+  for (const overrides of [
+    { REF_PROTECTED: "false" },
+    { REF_PROTECTED: "" },
+    { RUN_ATTEMPT: "2" },
+  ]) {
+    const rejected = runPreflight(overrides);
+    assert.notEqual(
+      rejected.status,
+      0,
+      `preflight accepted ${JSON.stringify(overrides)}`,
+    );
+  }
+});
+
+test("every routed or evidence-producing job independently rejects reruns", () => {
+  for (const jobId of [
+    "inventory",
+    "select-production-runner",
+    "validate-selection",
+    "failover-hold",
+    "production-execution",
+  ]) {
+    assert.match(
+      jobHeader(jobId),
+      /github\.run_attempt == 1/u,
+      `${jobId} can reuse attempt-1 outputs during a specific-job rerun`,
+    );
+  }
+});
+
+test("production execution is cancellation-aware while allowing a skipped hold", () => {
+  const header = jobHeader("production-execution");
+  assert.match(header, /\$\{\{ !cancelled\(\) &&/u);
+  assert.doesNotMatch(header, /always\(\)/u);
+  assert.match(
+    header,
+    /\(inputs\.mode != 'failover' \|\| needs\.failover-hold\.result == 'success'\)/u,
+  );
 });
 
 test("inventory and control stay hosted while execution consumes only selector output", () => {
@@ -517,6 +618,10 @@ test("observer secret is explicit and every API contract remains read-only", () 
         /permission-organization-self-hosted-runners: read/gu,
       ),
     ].length,
+    2,
+  );
+  assert.equal(
+    [...workflow.matchAll(/repositories: ci-runner-canary/gu)].length,
     2,
   );
   assert.doesNotMatch(
