@@ -143,7 +143,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   and timeout; the selector's platform limit does not carry into that job.
   Selection is deliberately fail-open to the configured hosted runner. It uses
   a read-only observer GitHub App and chooses local only when an exact-label,
-  managed-prefix runner is online, idle, and ephemeral. Full reruns
+  managed-prefix runner is online, idle, and not explicitly reported as
+  non-ephemeral. Full reruns
   (`github.run_attempt > 1`) always route hosted. Public repositories, fork pull
   requests, and Dependabot runs route hosted before the observer-token action
   can execute, following GitHub's [self-hosted runner security guidance][runner-security]
@@ -187,14 +188,63 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
   When present it overrides `self-hosted-label`; malformed, empty, or duplicate
   candidate lists route hosted with `invalid-response`. Candidate priority is
-  the array order, independent of runner API order. GitHub's [generic default
-  self-hosted labels][default-runner-labels] (`self-hosted`, OS, and architecture
-  labels), as well as a candidate equal to the hosted fallback, are rejected;
-  returning either as `runs-on` could escape the managed fleet. Organization
+  the array order, independent of runner API order. Because GitHub documents
+  [runner labels as case-insensitive][runner-labels], candidate and inventory
+  labels are compared through case-normalized keys, case-only duplicates are
+  rejected, and the selector returns the configured spelling. V1's governed
+  labels and name prefixes are conservative ASCII literals provisioned by IaC;
+  this contract does not claim generic Unicode case-fold or collation safety.
+  GitHub's
+  [generic default self-hosted labels][default-runner-labels] (`self-hosted`, OS,
+  and architecture labels), as well as a candidate equal to the hosted fallback,
+  are rejected because returning either as `runs-on` could escape the managed
+  fleet. Organization
   routing normally leaves it unset and uses one shared exact label. The personal
   phase provisions it as operational data so the documented live-proof fallback
   can switch from one shared label to two host-specific exact labels without a
   workflow or selector code change.
+
+  GitHub's official `2026-03-10` [OpenAPI runner schema][runner-openapi] requires
+  `id`, `name`, `os`, `status`, `busy`, and `labels`, but declares `ephemeral`
+  optional; runner-list responses can therefore omit it. A present non-boolean
+  value invalidates the complete inventory, and explicit `false` excludes that
+  runner. When the field is omitted, local selection relies on the governed
+  trust assumption that the configured runner-name prefix and scale-set label
+  are reserved for the `ci-runner` controller's one-job JIT workers. The REST
+  response does not attest that ownership or lifecycle. The selector rejects
+  visible namespace conflicts, but credentials and configuration must prevent
+  another runner from satisfying the same prefix-and-label contract. Online and
+  idle state are still required in the returned inventory observation.
+
+  V1 compute is Linux x64, but GitHub's official
+  [JIT-configuration response][runner-jit-config] reports `os: unknown`, as can
+  live JIT inventory. The selector therefore accepts case-insensitive `linux`
+  or `unknown` only. `unknown` is not an OS attestation; it is accepted solely
+  under the same governed prefix-and-label/JIT trust assumption. Any bearer of a
+  candidate label reporting another OS contaminates that label. The canary
+  separately requires the official [runner context][runner-context] values
+  `runner.os == Linux` and `runner.arch == X64` before substantive work, then
+  executes its Linux x64 compatibility proof.
+
+  Because downstream `runs-on` contains only the returned label, namespace
+  integrity is checked across every runner returned by the paginated inventory
+  that bears each case-insensitive candidate label—not only the idle runner
+  observed by the selector. A label is contaminated when any bearer is outside
+  the managed name prefix, explicitly reports `ephemeral: false`, or reports an
+  OS outside the V1 Linux/JIT-unknown contract; that label is never returned. In
+  an ordered
+  candidate list, a distinct clean lower-priority label remains eligible because
+  GitHub cannot route that label to a bearer of the contaminated one. Idle counts
+  include only eligible runners on clean labels. If every configured label is
+  contaminated, selection fails hosted with `invalid-response`; omitted-field
+  runners carrying unrelated labels do not poison the managed namespace.
+
+  Organization inventory is organization-wide. Selection therefore relies on
+  IaC giving every same-label runner group identical selected-repository access
+  for the migrated workflows. The selector cannot attest runner-group access
+  parity: `runner_group_id` is optional in the inventory schema, and an
+  observation without it does not prove which caller repositories can route to
+  that runner.
 
   `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
   API cannot prove that an arbitrary label belongs to hosted infrastructure. The
@@ -203,9 +253,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   configured local-candidate value back to it. Introducing another hosted label
   requires an explicit governance and conformance review.
 
-  Inventory is an observation, not a reservation. Several simultaneous
-  selectors can observe the same idle runner and select local; that burst can
-  queue until capacity appears. Once all matching runners report busy, later
+  Inventory is an observation, not a reservation or snapshot. Pagination can
+  race with registration and status changes between requests; stable
+  `total_count` and unique runner IDs are fail-closed consistency checks, not
+  snapshot isolation. Several simultaneous selectors can observe the same idle
+  runner and select local; that burst can queue until capacity appears. Once all
+  matching runners report busy, later
   selectors route hosted with `no-idle-runner`. Validation, authentication,
   API, timeout, malformed-response, and github-script failures produce hosted
   outputs. A failure of the selector job or hosted runner before outputs exist
@@ -496,6 +549,10 @@ standards catalog.
 [pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+[runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
+[runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
+[runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
+[runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
