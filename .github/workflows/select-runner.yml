@@ -183,6 +183,13 @@ jobs:
                 );
               }
 
+              function normalizedLabel(value) {
+                // GitHub documents self-hosted runner labels as case-insensitive. Preserve
+                // the configured spelling for the output, but use one normalized key for
+                // every comparison and set membership decision.
+                return value.toLowerCase();
+              }
+
               function configuredCandidateLabels(input) {
                 // This is deliberately a safety-only superset for the hosted-label
                 // collision check: keep every exact non-empty configured value, including a
@@ -215,12 +222,12 @@ jobs:
                 const configured = exactNonEmptyString(input.hostedRunner)
                   ? input.hostedRunner
                   : DEFAULT_HOSTED_RUNNER;
-                const configuredLower = configured.toLowerCase();
+                const configuredLower = normalizedLabel(configured);
                 const unsafe =
                   !APPROVED_HOSTED_RUNNERS.has(configured) ||
                   RESERVED_SELF_HOSTED_LABELS.has(configuredLower) ||
                   configuredCandidateLabels(input).some(
-                    (label) => label.toLowerCase() === configuredLower,
+                    (label) => normalizedLabel(label) === configuredLower,
                   );
 
                 return {
@@ -232,7 +239,7 @@ jobs:
               function validManagedLabel(value) {
                 return (
                   exactNonEmptyString(value) &&
-                  !RESERVED_SELF_HOSTED_LABELS.has(value.toLowerCase())
+                  !RESERVED_SELF_HOSTED_LABELS.has(normalizedLabel(value))
                 );
               }
 
@@ -252,7 +259,7 @@ jobs:
                     !Array.isArray(labels) ||
                     labels.length === 0 ||
                     labels.some((label) => !validManagedLabel(label)) ||
-                    new Set(labels).size !== labels.length
+                    new Set(labels.map(normalizedLabel)).size !== labels.length
                   ) {
                     return { error: "invalid-response" };
                   }
@@ -356,7 +363,9 @@ jobs:
                   );
                 }
                 if (
+                  !Number.isInteger(runner.id) ||
                   typeof runner.name !== "string" ||
+                  !exactNonEmptyString(runner.os) ||
                   typeof runner.status !== "string" ||
                   typeof runner.busy !== "boolean" ||
                   (Object.hasOwn(runner, "ephemeral") &&
@@ -366,7 +375,7 @@ jobs:
                     (label) =>
                       label === null ||
                       typeof label !== "object" ||
-                      typeof label.name !== "string",
+                      !exactNonEmptyString(label.name),
                   )
                 ) {
                   throw new InvalidResponseError(
@@ -386,6 +395,7 @@ jobs:
                     ? { org: input.owner }
                     : { owner: input.owner, repo: input.repository };
                 const runners = [];
+                const runnerIDs = new Set();
                 let declaredTotal;
 
                 for (let page = 1; ; page += 1) {
@@ -417,14 +427,23 @@ jobs:
                   if (declaredTotal === undefined) {
                     declaredTotal = response.data.total_count;
                   } else if (declaredTotal !== response.data.total_count) {
-                    // A changing inventory snapshot cannot support a deterministic ordered
-                    // choice. Failing hosted is safer than selecting from a partial snapshot.
+                    // The REST pages are separate observations, not a transactional snapshot.
+                    // A changed total means they cannot be reconciled as one complete result.
                     throw new InvalidResponseError(
                       "runner inventory total changed during pagination",
                     );
                   }
 
-                  runners.push(...response.data.runners.map(validateRunner));
+                  const pageRunners = response.data.runners.map(validateRunner);
+                  for (const runner of pageRunners) {
+                    if (runnerIDs.has(runner.id)) {
+                      throw new InvalidResponseError(
+                        "runner inventory contains a duplicate runner id",
+                      );
+                    }
+                    runnerIDs.add(runner.id);
+                    runners.push(runner);
+                  }
                   if (runners.length > declaredTotal) {
                     throw new InvalidResponseError(
                       "runner inventory exceeds its declared total",
@@ -451,31 +470,50 @@ jobs:
 
               function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
                 // `runs-on` contains only the selected label, so GitHub may assign any
-                // runner carrying it. Treat that exact label as contaminated if even one
-                // bearer falls outside the managed namespace or explicitly reports itself
+                // runner carrying it. Treat that case-insensitive label as contaminated
+                // if even one bearer falls outside the managed namespace or reports itself
                 // non-ephemeral. Contamination is per label: a later distinct configured
                 // label remains safe when none of its own bearers violate the contract.
-                const contaminatedLabels = new Set();
-                for (const runner of runners) {
+                const configuredLabels = labels.map((label) => ({
+                  label,
+                  key: normalizedLabel(label),
+                }));
+                const configuredLabelKeys = new Set(
+                  configuredLabels.map((candidate) => candidate.key),
+                );
+                const inventory = runners.map((runner) => ({
+                  runner,
+                  // A Set matches GitHub's case-insensitive semantics and prevents duplicate
+                  // casing variants in one response from affecting counts or priority.
+                  labelKeys: new Set(
+                    runner.labels.map((runnerLabel) => normalizedLabel(runnerLabel.name)),
+                  ),
+                }));
+                const contaminatedLabelKeys = new Set();
+                for (const { runner, labelKeys } of inventory) {
                   if (
                     !runner.name.startsWith(managedRunnerPrefix) ||
                     runner.ephemeral === false
                   ) {
-                    for (const runnerLabel of runner.labels) {
-                      if (labels.includes(runnerLabel.name)) {
-                        contaminatedLabels.add(runnerLabel.name);
+                    for (const labelKey of labelKeys) {
+                      if (configuredLabelKeys.has(labelKey)) {
+                        contaminatedLabelKeys.add(labelKey);
                       }
                     }
                   }
                 }
-                const safeLabels = labels.filter((label) => !contaminatedLabels.has(label));
+                const safeLabels = configuredLabels.filter(
+                  (candidate) => !contaminatedLabelKeys.has(candidate.key),
+                );
+                const safeLabelKeys = new Set(safeLabels.map((candidate) => candidate.key));
 
-                const idleRunners = runners.filter((runner) => {
+                const idleRunners = inventory.filter(({ runner, labelKeys }) => {
                   // GitHub's 2026-03-10 OpenAPI makes `ephemeral` optional, and live list
                   // responses can omit it. An explicit false is authoritative exclusion;
-                  // omission relies on the governed exact prefix + exact label identifying
-                  // controller-created, one-job JIT workers. validateRunner has already
-                  // rejected every present non-boolean value.
+                  // omission relies on the governed assumption that the exact prefix and
+                  // case-insensitive label namespace are reserved for controller-created,
+                  // one-job JIT workers. validateRunner has already rejected every present
+                  // non-boolean value.
                   const eligibleEphemeralState =
                     !Object.hasOwn(runner, "ephemeral") || runner.ephemeral === true;
                   return (
@@ -483,20 +521,18 @@ jobs:
                     runner.status === "online" &&
                     runner.busy === false &&
                     eligibleEphemeralState &&
-                    runner.labels.some((runnerLabel) => safeLabels.includes(runnerLabel.name))
+                    [...labelKeys].some((labelKey) => safeLabelKeys.has(labelKey))
                   );
                 });
 
-                const selectedLabel = safeLabels.find((label) =>
-                  idleRunners.some((runner) =>
-                    runner.labels.some((runnerLabel) => runnerLabel.name === label),
-                  ),
+                const selectedLabel = safeLabels.find((candidate) =>
+                  idleRunners.some(({ labelKeys }) => labelKeys.has(candidate.key)),
                 );
                 return {
                   idleRunnerCount: idleRunners.length,
-                  selectedLabel,
+                  selectedLabel: selectedLabel?.label,
                   labelNamespaceInvalid:
-                    contaminatedLabels.size > 0 && safeLabels.length === 0,
+                    contaminatedLabelKeys.size > 0 && safeLabels.length === 0,
                 };
               }
 
