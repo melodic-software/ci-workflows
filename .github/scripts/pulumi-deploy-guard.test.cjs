@@ -54,6 +54,11 @@ test("deployment guard exposes only reviewed state-adoption outputs", () => {
     assert.match(action, new RegExp(`^ {2}${output}:`, "mu"));
   }
   assert.match(action, /bash "\$ACTION_PATH\/guard\.sh"/u);
+  assert.match(
+    action,
+    /Empty array selects policy-only validation while still validating exported stack state\./u,
+  );
+  assert.match(action, /Empty in policy-only mode\./u);
   assert.doesNotMatch(action, /secrets\./u);
 });
 
@@ -67,6 +72,9 @@ test("guard audits the complete personal allow set before exporting state", () =
   );
   assert.match(guard, /cmp -s "\$expected_policies" "\$actual_policies"/u);
   assert.match(guard, /\.count == 0 or \.count == 1/u);
+  assert.match(guard, /type == "array" and\n\s+length <= 32/u);
+  assert.match(guard, /length == 1 and/u);
+  assert.doesNotMatch(guard, /length >= 1 and length <= 32/u);
   assert.doesNotMatch(guard, /--show-secrets/u);
   assert.doesNotMatch(guard, /set -x/u);
 });

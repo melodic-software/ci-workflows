@@ -53,6 +53,7 @@ stdout="$temporary_directory/stdout"
 stderr="$temporary_directory/stderr"
 
 reset_valid_fixtures() {
+  requested_urns="$(jq -cn --arg one "$urn_one" --arg two "$urn_two" '[$one, $two]')"
   cat >"$issuers" <<'JSON'
 {"oidcIssuers":[{"id":"b4302a8d-1111-4222-8333-123456789abc","url":"https://token.actions.githubusercontent.com"}]}
 JSON
@@ -98,6 +99,38 @@ grep -Fx "existing-urns-json=[\"$urn_one\"]" "$output" >/dev/null
 grep -Fx "missing-urns-json=[\"$urn_two\"]" "$output" >/dev/null
 grep -Fx "$urn_one" "$output" >/dev/null
 printf 'PASS: exact policy and mixed established/first-apply state\n'
+
+reset_valid_fixtures
+requested_urns='[]'
+run_guard
+cat >"$temporary_directory/expected-policy-only-output" <<'OUTPUT'
+existing-count=0
+missing-count=0
+existing-urns-json=[]
+missing-urns-json=[]
+existing-targets<<ci_runner_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ci_runner_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+OUTPUT
+cmp "$temporary_directory/expected-policy-only-output" "$output"
+printf 'PASS: empty array performs policy-only validation with deterministic empty outputs\n'
+
+reset_valid_fixtures
+requested_urns='[]'
+jq '.policies[0].rules.workflow = "github-iac-production-deploy-v2"' "$policy" >"$policy.tmp"
+mv "$policy.tmp" "$policy"
+expect_failure 'policy-only mode still requires the exact OIDC policy'
+grep -F 'do not exactly match' "$stderr" >/dev/null
+
+reset_valid_fixtures
+requested_urns='[]'
+jq -cn '{deployment:{resources:{}}}' >"$state"
+expect_failure 'policy-only mode still requires a valid stack export shape'
+grep -F 'invalid stack export' "$stderr" >/dev/null
+
+reset_valid_fixtures
+requested_urns='[]'
+TEST_STACK_NAME='other/project/production' expect_failure 'policy-only mode still validates stack identity'
+grep -F 'policy contract organization does not match stack organization' "$stderr" >/dev/null
 
 invalid_action_path="$temporary_directory/invalid-action"
 mkdir -p "$invalid_action_path/contracts"
@@ -162,6 +195,22 @@ printf 'PASS: unknown policy contract fails before authentication\n'
 reset_valid_fixtures
 requested_urns='["urn:pulumi:ok","urn:pulumi:ok"]'
 expect_failure 'duplicate requested URNs fail before authentication'
+grep -F 'operational-resource-urns-json is invalid' "$stderr" >/dev/null
+
+reset_valid_fixtures
+requested_urns='not-json'
+expect_failure 'malformed operational resource JSON fails before authentication'
+grep -F 'operational-resource-urns-json is invalid' "$stderr" >/dev/null
+
+reset_valid_fixtures
+requested_urns='{"urn":"urn:pulumi:production::project::github:index/actionsVariable:ActionsVariable::not-an-array"}'
+expect_failure 'non-array operational resource JSON fails before authentication'
+grep -F 'operational-resource-urns-json is invalid' "$stderr" >/dev/null
+
+reset_valid_fixtures
+requested_urns=$'[]\n[]'
+expect_failure 'multiple JSON documents fail before authentication'
+grep -F 'operational-resource-urns-json is invalid' "$stderr" >/dev/null
 
 reset_valid_fixtures
 requested_urns='["urn:pulumi:other::project::github:index/actionsVariable:ActionsVariable::wrong-stack"]'

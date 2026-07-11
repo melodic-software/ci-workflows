@@ -9,24 +9,24 @@ inputs:
     description: Fully qualified Pulumi organization/project/stack name.
     required: true
   operational-resource-urns-json:
-    description: JSON array of exact operational resource URNs whose live values must be adopted.
+    description: JSON array of zero to 32 exact operational resource URNs whose live values must be adopted. Empty array selects policy-only validation while still validating exported stack state.
     required: true
 
 outputs:
   existing-count:
-    description: Number of requested operational resources already present in stack state.
+    description: Number of requested operational resources already present in stack state. Zero in policy-only mode.
     value: ${{ steps.guard.outputs.existing-count }}
   missing-count:
-    description: Number of requested operational resources absent on this first apply.
+    description: Number of requested operational resources absent on this first apply. Zero in policy-only mode.
     value: ${{ steps.guard.outputs.missing-count }}
   existing-targets:
-    description: Newline-delimited existing URNs suitable for pulumi/actions target.
+    description: Newline-delimited existing URNs suitable for pulumi/actions target. Empty in policy-only mode.
     value: ${{ steps.guard.outputs.existing-targets }}
   existing-urns-json:
-    description: JSON array of requested URNs present exactly once.
+    description: JSON array of requested URNs present exactly once. Empty in policy-only mode.
     value: ${{ steps.guard.outputs.existing-urns-json }}
   missing-urns-json:
-    description: JSON array of requested URNs absent from state.
+    description: JSON array of requested URNs absent from state. Empty in policy-only mode.
     value: ${{ steps.guard.outputs.missing-urns-json }}
 
 runs:

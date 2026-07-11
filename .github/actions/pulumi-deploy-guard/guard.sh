@@ -45,14 +45,17 @@ trap 'rm -rf -- "$temporary_directory"' EXIT
 
 requested_urns="$temporary_directory/requested-urns.json"
 printf '%s' "$OPERATIONAL_RESOURCE_URNS_JSON" >"$requested_urns"
-jq -e '
-  type == "array" and
-  length >= 1 and length <= 32 and
-  all(.[];
-    type == "string" and
-    test("^urn:pulumi:[A-Za-z0-9_.$:/@-]+$")
-  ) and
-  (unique | length) == length
+jq -e -s '
+  length == 1 and
+  (.[0] |
+    type == "array" and
+    length <= 32 and
+    all(.[];
+      type == "string" and
+      test("^urn:pulumi:[A-Za-z0-9_.$:/@-]+$")
+    ) and
+    (unique | length) == length
+  )
 ' "$requested_urns" >/dev/null || fail "operational-resource-urns-json is invalid"
 jq -e --arg prefix "$stack_urn_prefix" 'all(.[]; startswith($prefix))' "$requested_urns" >/dev/null ||
   fail "every operational resource URN must belong to the requested stack and project"

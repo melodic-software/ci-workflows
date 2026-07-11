@@ -11,8 +11,9 @@ It fails closed unless:
 - the complete set of personal-token `allow` policies exactly equals the
   versioned bundled contract, including every claim and an empty
   `authorizedPermissions` array;
-- every requested operational resource URN appears zero or one time in a valid
-  stack export.
+- the requested operational-resource input is one JSON array containing zero to
+  32 unique URNs from the named stack, and every requested URN appears zero or
+  one time in a valid stack export.
 
 Contract v2 uses GitHub's immutable owner/repository-ID subject and additional
 exact claims for the private repository, owner ID, actor ID, protected
@@ -29,6 +30,15 @@ reviewed hosted-only default. Duplicate state, malformed responses, wildcard or
 extra policies, unknown contracts, API failures, and authentication failures all
 stop the apply. The action never prints tokens or requests plaintext stack
 secrets; its temporary state export is deleted on exit.
+
+An exactly empty JSON array (`[]`) is the explicit policy-only mode. The action
+still verifies the named stack and complete OIDC policy, exports the stack, and
+validates the export shape; it then emits deterministic zero counts, `[]` for
+both JSON outputs, and an empty multiline target output. This lets a protected
+apply retain the same identity and policy gate when it has no state-adoption
+targets. Omitting the input, passing malformed JSON, passing any non-array value,
+or providing multiple JSON documents still fails closed. Inputs containing one
+to 32 URNs retain the state-adoption behavior above.
 
 Immutable-subject cutover is deliberately two-sided and fail-closed:
 
