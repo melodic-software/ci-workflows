@@ -222,9 +222,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   or `unknown` only. `unknown` is not an OS attestation; it is accepted solely
   under the same governed prefix-and-label/JIT trust assumption. Any bearer of a
   candidate label reporting another OS contaminates that label. The canary
-  separately requires the official runner context values `runner.os == Linux`
-  and `runner.arch == X64` before substantive work, then executes its Linux x64
-  compatibility proof.
+  separately requires the official [runner context][runner-context] values
+  `runner.os == Linux` and `runner.arch == X64` before substantive work, then
+  executes its Linux x64 compatibility proof.
 
   Because downstream `runs-on` contains only the returned label, namespace
   integrity is checked across every runner returned by the paginated inventory
@@ -551,6 +551,7 @@ standards catalog.
 [runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
 [runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
 [runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
+[runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
