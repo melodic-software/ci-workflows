@@ -55,6 +55,11 @@ const supersededSelectorShas = [
   "d94877932012972391b98dcea5ce92b804b74418",
   "257f584ea24f65824acd17a8d9bbfbe650d24033",
 ];
+const currentCanarySha = "ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4";
+const supersededCanaryShas = [
+  "bb762391c41e9d12975fae25a06ac930050baba9",
+  "2dfd2c97ea12e027d5b1067f35a7a391673b45a2",
+];
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const parityScript = fs.readFileSync(scriptPath, "utf8");
@@ -450,7 +455,7 @@ test("private caller documentation delegates selection and passes only the obser
 });
 
 test("canonical private seed pins the corrected reusable contract", () => {
-  const expectedReusableSha = "bb762391c41e9d12975fae25a06ac930050baba9";
+  const expectedReusableSha = currentCanarySha;
   for (const source of [rootCi, selectorConformance]) {
     assert.match(source, /fetch-depth: 0[\s\S]*?lfs: true/u);
   }
@@ -463,6 +468,9 @@ test("canonical private seed pins the corrected reusable contract", () => {
       "u",
     ),
   );
+  for (const supersededCanarySha of supersededCanaryShas) {
+    assert.doesNotMatch(templateWorkflow, new RegExp(supersededCanarySha, "u"));
+  }
   assert.match(
     templateWorkflow,
     /observer-client-id: \$\{\{ vars\.CI_RUNNER_OBSERVER_CLIENT_ID \}\}/u,
@@ -497,8 +505,13 @@ test("canonical private seed pins the corrected reusable contract", () => {
   );
   assert.match(
     pinned.stdout,
-    /select-runner\.yml@4943b1c4ff6ae9624736ac95622d7ab748132c8d/u,
+    new RegExp(`select-runner\\.yml@${currentSelectorSha}`, "u"),
   );
+  for (const supersededSelectorSha of supersededSelectorShas) {
+    assert.doesNotMatch(pinned.stdout, new RegExp(supersededSelectorSha, "u"));
+  }
+  assert.match(pinned.stdout, /RUNNER_OS: \$\{\{ runner\.os \}\}/u);
+  assert.match(pinned.stdout, /RUNNER_ARCH: \$\{\{ runner\.arch \}\}/u);
   assert.doesNotMatch(pinned.stdout, /inputs\.selected-runner/u);
 });
 

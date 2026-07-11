@@ -191,7 +191,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the array order, independent of runner API order. Because GitHub documents
   [runner labels as case-insensitive][runner-labels], candidate and inventory
   labels are compared through case-normalized keys, case-only duplicates are
-  rejected, and the selector returns the configured spelling. GitHub's
+  rejected, and the selector returns the configured spelling. V1's governed
+  labels and name prefixes are conservative ASCII literals provisioned by IaC;
+  this contract does not claim generic Unicode case-fold or collation safety.
+  GitHub's
   [generic default self-hosted labels][default-runner-labels] (`self-hosted`, OS,
   and architecture labels), as well as a candidate equal to the hosted fallback,
   are rejected because returning either as `runs-on` could escape the managed
@@ -234,6 +237,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   include only eligible runners on clean labels. If every configured label is
   contaminated, selection fails hosted with `invalid-response`; omitted-field
   runners carrying unrelated labels do not poison the managed namespace.
+
+  Organization inventory is organization-wide. Selection therefore relies on
+  IaC giving every same-label runner group identical selected-repository access
+  for the migrated workflows. The selector cannot attest runner-group access
+  parity: `runner_group_id` is optional in the inventory schema, and an
+  observation without it does not prove which caller repositories can route to
+  that runner.
 
   `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
   API cannot prove that an arbitrary label belongs to hosted infrastructure. The
