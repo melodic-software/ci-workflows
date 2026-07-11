@@ -230,8 +230,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   integrity is checked across every runner returned by the paginated inventory
   that bears each case-insensitive candidate label—not only the idle runner
   observed by the selector. A label is contaminated when any bearer is outside
-  the managed name prefix or explicitly reports `ephemeral: false`; that label
-  is never returned. In an ordered
+  the managed name prefix, explicitly reports `ephemeral: false`, or reports an
+  OS outside the V1 Linux/JIT-unknown contract; that label is never returned. In
+  an ordered
   candidate list, a distinct clean lower-priority label remains eligible because
   GitHub cannot route that label to a bearer of the contaminated one. Idle counts
   include only eligible runners on clean labels. If every configured label is
