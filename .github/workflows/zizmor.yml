@@ -8,6 +8,9 @@ name: zizmor
 # matching security-events: write permission, so this advisory lane needs only
 # contents: read. The ci-status gateway stays consumer-local — this is a lane,
 # not the gateway.
+#
+# runner-policy-exception-template:
+# {"reason":"docker-socket","justification":"The pinned zizmor action invokes a digest-pinned container through Docker; the local worker contract deliberately exposes no Docker socket."}
 on:
   workflow_call:
     inputs:
@@ -41,7 +44,9 @@ permissions:
 
 jobs:
   zizmor:
-    runs-on: ubuntu-latest
+    # Intentionally hosted: zizmor-action calls `docker run`, while local
+    # workers receive neither a Docker socket nor privileged host access.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out

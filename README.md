@@ -9,7 +9,7 @@ Consumed by reference from a consumer job, never copied:
 ```yaml
 jobs:
   markdown:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@<sha>
       - uses: melodic-software/ci-workflows/.github/actions/markdown@<sha>
@@ -50,7 +50,20 @@ checkout of this repo. (Public is required because a public consumer such as
   scripts, driven by the caller's `.editorconfig` (installs a pinned,
   checksum-verified binary).
 - `.github/actions/powershell` — PSScriptAnalyzer over the repo's PowerShell,
-  via the bundled `Invoke-Pssa.ps1` (per-file subprocess isolation).
+  via the bundled `Invoke-Pssa.ps1`. Each file is analyzed exactly once and any
+  analyzer or rule error fails closed. `PSUseCorrectCasing` remains disabled
+  while the upstream [runspace-affinity defect][pssa-1708] is open; retrying a
+  crashing rule is not a quality gate.
+- `.github/actions/pulumi-deploy-guard` — verifies the complete Pulumi personal
+  [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
+  then [exports stack state][pulumi-stack-export] without plaintext secrets and
+  classifies reviewed operational
+  resource URNs as existing or first-apply. Both GitHub IaC repositories call
+  this one implementation after OIDC authentication and before minting their
+  broad GitHub governance token. Contract v2 uses GitHub immutable owner/repo
+  IDs and rejects Pulumi's `*`, `?`, and `.` pattern operators. Callers reserve
+  its exact workflow name uniquely and require paired live positive/near-match
+  negative token-exchange evidence before removing the legacy trust rules.
 - `.github/actions/editorconfig` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a
@@ -59,7 +72,9 @@ checkout of this repo. (Public is required because a public consumer such as
   caller-supplied config (installs a pinned, checksum-verified binary; optional
   SARIF output + PR annotations).
 - `.github/actions/actionlint` — actionlint over the repo's GitHub Actions
-  workflow files.
+  workflow files, with the canonical checksum-pinned ShellCheck release
+  installed explicitly so embedded shell validation is identical on hosted and
+  self-hosted workers.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
@@ -102,6 +117,21 @@ block.
 
 ## Reusable workflows
 
+Hosted workflow defaults use explicit GA operating-system generations
+(`ubuntu-24.04` and `windows-2025`) instead of moving `*-latest` aliases. This
+keeps hosted/self-hosted parity reviews tied to a declared image contract while
+GitHub continues the normal weekly patching of each hosted image generation.
+
+- `.github/workflows/pulumi-version-drift-check.yml` — reusable-only maintenance
+  job for GitHub IaC callers. It accepts only a hosted default-branch push,
+  schedule, or manual dispatch, compares the exact `.pulumi.version` pin with
+  Pulumi's current stable release, and maintains one marker-identified auditable
+  incident across rename or manual closure without resetting its age. It never
+  changes or auto-merges a pin, retires resolved incidents instead of reusing
+  them, and hard-fails after 14 days of unresolved drift. The tested canonical
+  shell source is generated inline because reusable-workflow checkout resolves
+  to the caller repository; an equality test prevents drift and callers never
+  copy the implementation. Per-caller concurrency serializes issue mutation.
 - `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
@@ -109,6 +139,260 @@ block.
   and opens a signed, human-reviewed PR enumerating every managed
   source-to-destination mapping. It never writes a downstream receipt and never
   copies components declared `locally-owned`.
+- `.github/workflows/select-runner.yml` — the single organization-approved
+  hosted/self-hosted selector. It runs on `ubuntu-slim` with a two-minute
+  timeout and returns one `runs-on` string. A downstream job has its own runner
+  and timeout; the selector's platform limit does not carry into that job.
+  Selection is deliberately fail-open to the configured hosted runner. It uses
+  a read-only observer GitHub App and chooses local only when an exact-label,
+  managed-prefix runner is online, idle, and not explicitly reported as
+  non-ephemeral. Full reruns
+  (`github.run_attempt > 1`) always route hosted. Public repositories, fork pull
+  requests, and Dependabot runs route hosted before the observer-token action
+  can execute, following GitHub's [self-hosted runner security guidance][runner-security]
+  and [Dependabot secret boundary][dependabot-secrets]. Call it once per
+  independently schedulable workload:
+
+  ```yaml
+  jobs:
+    select-runner:
+      uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@<sha>
+      with:
+        policy: ${{ vars.CI_RUNNER_POLICY }}
+        self-hosted-label: ${{ vars.CI_SELF_HOSTED_LABEL }}
+        self-hosted-labels-json: ${{ vars.CI_SELF_HOSTED_LABELS_JSON }}
+        hosted-runner: ${{ vars.CI_HOSTED_RUNNER }}
+        scope: ${{ vars.CI_RUNNER_SCOPE }}
+        managed-runner-prefix: ${{ vars.CI_MANAGED_RUNNER_PREFIX }}
+        observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
+      secrets:
+        observer-private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}
+
+    test:
+      needs: select-runner
+      runs-on: ${{ needs.select-runner.outputs.runner }}
+      steps:
+        - run: ./test.sh
+  ```
+
+  Never use `secrets: inherit`; pass only the observer key. Stable output reasons
+  are `idle`, `hosted-only`, `rerun`, `no-idle-runner`, `missing-config`,
+  `missing-secret`, `auth-error`, `api-timeout`, `api-error`, and
+  `invalid-response`. The security eligibility guard also reports
+  `hosted-only`. `selector-conformance.yml` runs the deterministic selector test
+  suite and proves the public, hosted-only, and attempt-2 contracts without
+  accessing local capacity. The tested CommonJS source is generated into the
+  workflow, so the reusable-workflow SHA pins the implementation without a
+  second checkout/ref. This matters because actions inside a called workflow
+  otherwise run in the [caller's repository context][reusable-workflow-context].
+  A conformance check fails if the executable copy drifts.
+
+  `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
+  When present it overrides `self-hosted-label`; malformed, empty, or duplicate
+  candidate lists route hosted with `invalid-response`. Candidate priority is
+  the array order, independent of runner API order. Because GitHub documents
+  [runner labels as case-insensitive][runner-labels], candidate and inventory
+  labels are compared through case-normalized keys, case-only duplicates are
+  rejected, and the selector returns the configured spelling. V1's governed
+  labels and name prefixes are conservative ASCII literals provisioned by IaC;
+  this contract does not claim generic Unicode case-fold or collation safety.
+  GitHub's
+  [generic default self-hosted labels][default-runner-labels] (`self-hosted`, OS,
+  and architecture labels), as well as a candidate equal to the hosted fallback,
+  are rejected because returning either as `runs-on` could escape the managed
+  fleet. Organization
+  routing normally leaves it unset and uses one shared exact label. The personal
+  phase provisions it as operational data so the documented live-proof fallback
+  can switch from one shared label to two host-specific exact labels without a
+  workflow or selector code change.
+
+  GitHub's official `2026-03-10` [OpenAPI runner schema][runner-openapi] requires
+  `id`, `name`, `os`, `status`, `busy`, and `labels`, but declares `ephemeral`
+  optional; runner-list responses can therefore omit it. A present non-boolean
+  value invalidates the complete inventory, and explicit `false` excludes that
+  runner. When the field is omitted, local selection relies on the governed
+  trust assumption that the configured runner-name prefix and scale-set label
+  are reserved for the `ci-runner` controller's one-job JIT workers. The REST
+  response does not attest that ownership or lifecycle. The selector rejects
+  visible namespace conflicts, but credentials and configuration must prevent
+  another runner from satisfying the same prefix-and-label contract. Online and
+  idle state are still required in the returned inventory observation.
+
+  V1 compute is Linux x64, but GitHub's official
+  [JIT-configuration response][runner-jit-config] reports `os: unknown`, as can
+  live JIT inventory. The selector therefore accepts case-insensitive `linux`
+  or `unknown` only. `unknown` is not an OS attestation; it is accepted solely
+  under the same governed prefix-and-label/JIT trust assumption. Any bearer of a
+  candidate label reporting another OS contaminates that label. The canary
+  separately requires the official [runner context][runner-context] values
+  `runner.os == Linux` and `runner.arch == X64` before substantive work, then
+  executes its Linux x64 compatibility proof.
+
+  Because downstream `runs-on` contains only the returned label, namespace
+  integrity is checked across every runner returned by the paginated inventory
+  that bears each case-insensitive candidate label—not only the idle runner
+  observed by the selector. A label is contaminated when any bearer is outside
+  the managed name prefix, explicitly reports `ephemeral: false`, or reports an
+  OS outside the V1 Linux/JIT-unknown contract; that label is never returned. In
+  an ordered
+  candidate list, a distinct clean lower-priority label remains eligible because
+  GitHub cannot route that label to a bearer of the contaminated one. Idle counts
+  include only eligible runners on clean labels. If every configured label is
+  contaminated, selection fails hosted with `invalid-response`; omitted-field
+  runners carrying unrelated labels do not poison the managed namespace.
+
+  Organization inventory is organization-wide. Selection therefore relies on
+  IaC giving every same-label runner group identical selected-repository access
+  for the migrated workflows. The selector cannot attest runner-group access
+  parity: `runner_group_id` is optional in the inventory schema, and an
+  observation without it does not prove which caller repositories can route to
+  that runner.
+
+  `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
+  API cannot prove that an arbitrary label belongs to hosted infrastructure. The
+  selector therefore allowlists only the reviewed V1 value `ubuntu-24.04` and
+  canonicalizes every missing, malformed, unapproved, generic self-hosted, or
+  configured local-candidate value back to it. Introducing another hosted label
+  requires an explicit governance and conformance review.
+
+  Inventory is an observation, not a reservation or snapshot. Pagination can
+  race with registration and status changes between requests; stable
+  `total_count` and unique runner IDs are fail-closed consistency checks, not
+  snapshot isolation. Several simultaneous selectors can observe the same idle
+  runner and select local; that burst can queue until capacity appears. Once all
+  matching runners report busy, later
+  selectors route hosted with `no-idle-runner`. Validation, authentication,
+  API, timeout, malformed-response, and github-script failures produce hosted
+  outputs. A failure of the selector job or hosted runner before outputs exist
+  cannot be converted by workflow expressions; dependent jobs remain blocked
+  and must be rerun. This boundary is intentionally not described as atomic
+  fallback.
+- `.github/workflows/local-runner-canary.yml` — a reusable-only acceptance
+  contract bound to the private `melodic-software/ci-runner-canary` repository.
+  It has no executable trigger in this public repository. A hosted preflight
+  requires that exact private caller, `workflow_dispatch`, protected `main`, and
+  attempt 1 before any job receives the observer key. The immutable reusable
+  workflow owns the selector: it calls the already-reviewed central selector at
+  a full SHA with the exact `melodic-canary-ubuntu-24.04-x64` label and
+  `ci-runner-canary-` name prefix, then consumes only direct `needs` outputs.
+  The caller cannot claim a runner, route, reason, idle count, repository, label,
+  or prefix.
+
+  Each selected job independently requires `runner.environment` to be
+  `self-hosted`, checks the actual `runner.name` against the canary prefix, and
+  derives only `melo-desk-001` or `melo-lap-001`. Static executable tests reject
+  GitHub-hosted identity, a hosted label presented as a name, and the production
+  fleet prefix. The seed and freshness jobs must derive the same host while
+  reporting different container IDs and no surviving sentinels across home,
+  `_work`, temp, tool cache, `/tmp`, and a privileged path.
+
+  The canonical private-repository seed is under
+  `templates/ci-runner-canary/`. Its caller delegates selection to this reusable
+  workflow and explicitly passes only
+  `CI_RUNNER_OBSERVER_PRIVATE_KEY`; it never inherits secrets. The seed also owns
+  `.gitattributes`, a real Git LFS fixture, and a nonsecret cache-key fixture.
+  IaC creates the empty selected-access repository; the reviewed seed is then
+  pushed as its initial content before the workflow is enabled.
+
+  `full` mode runs the same immutable compatibility probe on explicit
+  `ubuntu-24.04` and the selector-returned local worker: Git LFS checkout, exact
+  setup actions for .NET, Node.js, and Python, PowerShell, passwordless `sudo`,
+  custom certificate trust, and Linux x64 Native AOT. It compares deterministic
+  outputs, transfers artifacts in both directions, and restores nonsecret
+  hosted-to-self and self-to-hosted caches. GitHub stores self-hosted caches in
+  GitHub-owned cloud storage and restored caches are untrusted, so canary caches
+  contain only fixed text and run IDs. [GitHub's cache guidance][dependency-cache]
+  and [artifact guidance][workflow-artifacts] define those boundaries. The last
+  selected job runs for at least 16 minutes after selection, proving the
+  selector's separate timeout does not limit downstream work. Native AOT uses
+  Microsoft's documented Ubuntu `clang` and zlib prerequisites.
+  [Native AOT deployment][native-aot] The hosted and local jobs resolve their
+  single shared probe from the exact reusable-workflow repository and SHA via
+  GitHub's documented [job workflow context][job-workflow-context].
+
+  Live acceptance is two sequential single-host proofs, not a two-host proof:
+
+  1. Advertise canary capacity only from `melo-desk-001`; verify the laptop
+     listener reports capacity zero. Dispatch `full` and record the workflow/job
+     IDs, both runner names, their derived desktop host, both container IDs, and
+     the controller diagnostic archives proving each completed container was
+     deleted.
+  2. Drain desktop canary capacity to zero. Advertise canary capacity only from
+     `melo-lap-001`, repeat `full`, and correlate the same evidence to the laptop
+     controller diagnostics.
+  3. Do not infer distribution or high availability from these runs. The
+     production two-host failover proof is a separate rollout gate.
+
+  Cancellation is a separate two-dispatch observation on one isolated host.
+  Dispatch `cancellation`, record the run, runner, host, container, controller
+  job record, and diagnostic archive, then use GitHub's **Cancel workflow**
+  control while the probe waits. Verify cancellation and container deletion in
+  controller diagnostics. The workflow never calls the cancellation API.
+  [Workflow cancellation][workflow-cancellation] Do not rerun that attempt:
+  attempt 2 is intentionally hosted. Start a new `full` dispatch and record its
+  fresh identities and diagnostics.
+
+  Static gates cannot substitute for assignment, JIT registration, LFS object
+  transfer, cache/artifact transport, cancellation delivery, or deletion
+  diagnostics. All are required promotion evidence. The daily drift workflow
+  monitors the exact .NET, Node.js, and Python patch lines and opens review
+  evidence without editing or auto-merging a pin.
+- `.github/workflows/production-ha-proof.yml` — the executable production
+  two-host rollout gate, separate from compatibility canarying. It is
+  reusable-only and accepts only a first-attempt manual dispatch from the exact
+  private protected-main caller
+  `melodic-software/ci-runner-canary/.github/workflows/production-ha-proof.yml`.
+  The caller supplies no runner label or prefix and passes only the read-only
+  observer key explicitly. Every inventory, validation, and operator-hold job is
+  explicitly GitHub-hosted. Production execution consumes only the central
+  selector's direct output, so hosted fallback and attempt-2 routing semantics
+  remain owned by the selector; a fallback cannot be mistaken for a passing
+  self-hosted proof.
+
+  The hosted inventory reads the official organization runner-group,
+  selected-repository, and group-runner endpoints with **Self-hosted runners:
+  read**. It requires unique independent groups
+  `ci-local-melo-desk-001` and `ci-local-melo-lap-001`, selected visibility,
+  public access disabled, identical all-private repository sets containing the
+  proof repository, and exact host-specific runner-name namespaces bearing
+  `melodic-ubuntu-24.04-x64`. [GitHub's runner-group REST API][runner-group-rest]
+  defines those public fields and the read permission. Its group `id` identifies
+  a runner-group resource; the response contains no scale-set ID. The evidence
+  therefore records that limitation instead of claiming the REST inventory can
+  map the controller's persistent scale-set ID. Controller status and logs own
+  that separate proof.
+
+  Manual modes are deliberately small, observable gates:
+
+  1. `inventory` requires an online idle production runner in each independent
+     group.
+  2. `desktop-only` and `laptop-only` require the other group to have zero online
+     runners, then assert the acquired `runner.name`, `runner.os == Linux`, and
+     `runner.arch == X64`. Those values are GitHub's documented
+     [runner context][runner-context].
+  3. `failover` first proves both groups idle and completes selection. A hosted
+     hold then asks the operator to drain the desktop and waits read-only for
+     two stable observations of desktop-zero/laptop-idle before releasing the
+     governed job, which must acquire the laptop. It never reserves a runner,
+     changes capacity, cancels, or replays a run. This exercises GitHub's
+     documented active-active topology: same scale-set name in different runner
+     groups, arbitrary assignment while both are online, and continued
+     acquisition by the surviving set. [High availability and automatic
+     failover][runner-scale-set-ha]
+  4. `laptop-power` acquires the laptop while the desktop is drained and records
+     UTC heartbeats for 10-30 minutes. The heartbeat artifact proves only that
+     the already-running job survived across those timestamps. Promotion also
+     requires externally captured controller status/logs and Windows power
+     evidence for unplug, zero advertised new capacity, retained busy work,
+     stable AC recovery, and fresh logon while already on battery. A workflow
+     cannot prove the negative condition in which no runner is allowed to start,
+     and REST runner inventory does not report controller `maxCapacity`.
+
+  Evidence is sanitized JSON/JSONL retained as normal workflow artifacts. It
+  includes REST group IDs, repository access, runner identities, observations,
+  run correlation, and explicit limitations—never an App token, private key,
+  JIT configuration, controller credential, or raw API response. GitHub's
+  [artifact contract][workflow-artifacts] supplies the review/download boundary.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -119,16 +403,78 @@ block.
 - `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
   **Advisory** (surfaces PR annotations, never gates `ci-status`); consumed via
-  `uses:` at job level. SARIF upload and blocking promotion are deferred opt-ins.
-  Inputs are documented inline.
+  `uses:` at job level. It is explicitly hosted because the pinned upstream
+  [action][zizmor-action-script] invokes a digest-pinned container through
+  Docker, while local workers deliberately receive no Docker socket. SARIF
+  upload and blocking promotion are deferred opt-ins. Inputs are documented
+  inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
-  OSV-Scanner (composes Google's SHA-pinned scanner + reporter sub-actions;
-  the same full scan runs on every event). **Advisory** (`fail-on-vuln` off by
-  default). OSV-Scanner reads lockfiles only — a .NET repo gets transitive
-  coverage when it opts into and commits `packages.lock.json`, kept honest by
-  `dotnet-build`'s locked-mode restore. An empty scan therefore warns (advisory) or fails
-  (blocking) unless the caller declares the repo genuinely dependency-less via
-  `allow-no-lockfiles: true`. Inputs are documented inline.
+  Google's official OSV-Scanner v2.4.0 action image, invoked directly by an
+  exact linux/amd64 OCI manifest digest. One JSON scan feeds the image's
+  reporter for GitHub annotations plus a SARIF artifact; the same full scan runs
+  on every event. **Advisory** (`fail-on-vuln` off by default). V2.4.0 scans
+  supported manifests and lockfiles; .NET `.csproj`/`PackageReference` and
+  Central Package Management are enabled by default. A committed
+  `packages.lock.json` remains the reproducibility contract enforced by
+  `dotnet-build`'s locked-mode restore, but is no longer the only .NET coverage
+  path. An empty scan warns (advisory) or fails (blocking) unless the caller
+  declares the repo genuinely dependency-less via `allow-no-lockfiles: true`.
+  The job remains explicitly hosted because it invokes Docker. Inputs are
+  documented inline. See the [official v2.4.0 release][osv-release-v2-4] and
+  [action-container build source][osv-action-container-source].
+
+  “Enabled by default” is not treated as proof that every MSBuild layout is
+  covered. Each consumer canary must show nonzero package discovery for its
+  actual `.csproj`/Central Package Management layout; committed lockfiles and
+  the empty-scan guard remain required until that proof passes. The scanner's
+  documented exit contract is also enforced: only `0` (clean) and `1`
+  (findings) can be completed scans, `128` follows the explicit no-packages
+  policy, and every other code warns in advisory mode or fails blocking mode.
+
+  The scanner receives the caller checkout read-only plus one fresh writable
+  output directory under the hosted runner's temporary directory. The reporter
+  receives only that output, with networking disabled. Neither container gets
+  host credentials, GitHub file-command directories, the Docker socket, added
+  capabilities, or permission to gain privileges. Host-side policy accepts JSON
+  and SARIF only as valid regular, non-symlink files inside that fresh directory;
+  error/partial output is neither reported nor uploaded.
+
+  Private consumers record these intentional hosted jobs in their
+  `.github/runner-policy.json`; replace the workflow path and job IDs with the
+  caller's actual keys:
+
+  ```json
+  {
+    "exceptions": {
+      ".github/workflows/ci.yml#zizmor": {
+        "reason": "docker-socket",
+        "justification": "The pinned zizmor action invokes Docker; local workers expose no Docker socket."
+      },
+      ".github/workflows/ci.yml#osv-scanner": {
+        "reason": "docker-socket",
+        "justification": "The official OSV image is invoked by exact OCI digest through Docker; local workers expose no Docker socket."
+      }
+    }
+  }
+  ```
+
+  The reviewed pin is machine-readable in `.github/osv-scanner-pin.json` and the
+  workflow verifies the pulled image's version and source-revision labels before
+  scanning. Deployment never references a mutable tag. The daily
+  `tool-version-drift-check` compares both Google's latest stable release and
+  its current action-image manifest digest, then opens or refreshes the existing
+  maintenance issue; it never rewrites or auto-merges the pin. Updating requires
+  release review, exact linux/amd64 platform-digest resolution, label/platform
+  verification, and a canary. GitHub documents that pulling by digest selects
+  the same immutable container image [across pulls][github-container-digest].
+  Google publishes SLSA provenance for the standalone scanner binaries, but the
+  prebuilt reporter is experimental and available only in the action image; the
+  digest-pinned image is the reviewed parity choice for one scan plus annotations
+  and SARIF. Revisit the binary path if Google publishes an equally supported,
+  provenance-verifiable reporter. See the [official installation and SLSA
+  guidance][osv-installation].
+  The `semantic-pr` workflow remains selectable through its backward-compatible
+  `runner` input; these two Docker-dependent workflows do not expose one.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
   `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
   and pushes the result back to the PR branch, covering the lock-file updates
@@ -137,11 +483,11 @@ block.
   `pull_request` job granting `contents: write`. Inputs, the optional
   `PUSH_TOKEN` Dependabot secret, and the default-token no-retrigger caveat are
   documented inline.
-- `.github/workflows/pester.yml` — runs a Pester suite on a dedicated runner
-  (Windows by default) with a pinned Pester install. A whole-job concern (its own
-  runner OS + checkout), so a reusable workflow: the caller passes a `run` command
-  and owns discovery/reporting/exit; this supplies the runner, pinned Pester, and
-  checkout. Inputs are documented inline.
+- `.github/workflows/pester.yml` — runs a Pester suite on the fixed
+  GitHub-hosted Windows 2025 runner with a pinned Pester install. A whole-job
+  concern (its own runner OS + checkout), so a reusable workflow: the caller
+  passes a `run` command and owns discovery/reporting/exit; this supplies the
+  hosted runner, pinned Pester, and checkout. Inputs are documented inline.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. **Advisory** (posts review comments, never
   gates `ci-status`). A whole-job concern (job permissions + a secrets
@@ -247,3 +593,27 @@ not need another repository file. `patterns-file` accepts a complete replacement
 for repositories with a genuinely different policy. The small configs under
 `fixtures/` exist only to exercise action contracts; they are not mirrors of the
 standards catalog.
+
+[dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
+[default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
+[github-container-digest]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pulling-container-images
+[dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
+[job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+[native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
+[osv-action-container-source]: https://github.com/google/osv-scanner/blob/b56b5191101d5f27d4787d5583d8d01e9518a7af/goreleaser-action.dockerfile
+[osv-installation]: https://google.github.io/osv-scanner/installation/
+[osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
+[pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
+[pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
+[pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
+[runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+[runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
+[runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
+[runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
+[runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
+[runner-group-rest]: https://docs.github.com/en/rest/actions/self-hosted-runner-groups?apiVersion=2026-03-10
+[runner-scale-set-ha]: https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover
+[reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
+[workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
+[workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
+[zizmor-action-script]: https://github.com/zizmorcore/zizmor-action/blob/192e21d79ab29983730a13d1382995c2307fbcaa/action.sh

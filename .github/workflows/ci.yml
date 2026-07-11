@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -19,7 +20,7 @@ concurrency:
 # work here because the checkout IS this repo.
 jobs:
   markdown:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -30,7 +31,7 @@ jobs:
         uses: ./.github/actions/markdown
 
   powershell:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -41,7 +42,7 @@ jobs:
         uses: ./.github/actions/powershell
 
   links:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -52,7 +53,7 @@ jobs:
         uses: ./.github/actions/lychee-offline
 
   reference-integrity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -67,7 +68,7 @@ jobs:
           globs: fixtures/reference-integrity/*.md
 
   ruff:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -81,7 +82,7 @@ jobs:
           config: fixtures/python/good/ruff.toml
 
   pyright:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -94,7 +95,7 @@ jobs:
           config: fixtures/python/good/pyrightconfig.json
 
   biome:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -102,14 +103,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint and format-check JS/TS
-        # Biome has no CLI exclude, so scope at the conforming contract fixture.
+        # Biome has no CLI exclude, so scope at the conforming fixture and the
+        # selector's tested CommonJS source/generator/tests.
         uses: ./.github/actions/biome
         with:
-          paths: fixtures/typescript/good
+          paths: fixtures/typescript/good .github/scripts
           config: fixtures/typescript/good/biome.json
 
   tsc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -124,7 +126,7 @@ jobs:
           project: fixtures/typescript/good/tsconfig.json
 
   dotnet-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -139,7 +141,7 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   dotnet-format:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -152,7 +154,7 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   typos:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -163,7 +165,7 @@ jobs:
         uses: ./.github/actions/typos
 
   editorconfig:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -174,7 +176,7 @@ jobs:
         uses: ./.github/actions/editorconfig
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -185,7 +187,7 @@ jobs:
         uses: ./.github/actions/gitleaks
 
   actionlint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -194,9 +196,30 @@ jobs:
           persist-credentials: false
       - name: Lint workflows
         uses: ./.github/actions/actionlint
+      - name: Prove embedded scripts are checked by ShellCheck
+        run: |
+          set -euo pipefail
+          expected_version="$(awk '
+            $0 == "  shellcheck-version:" { in_input=1; next }
+            in_input && /^  [^ ]/ { exit }
+            in_input && /^    default: / { sub(/^    default: /, ""); print; exit }
+          ' .github/actions/actionlint/action.yml)"
+          actual_version="$(shellcheck --version | awk '$1 == "version:" { print $2 }')"
+          if [[ -z "$expected_version" || "$actual_version" != "$expected_version" ]]; then
+            echo "::error::Expected ShellCheck $expected_version, got $actual_version."
+            exit 1
+          fi
+          output="$RUNNER_TEMP/actionlint-shellcheck.txt"
+          if actionlint .github/actions/actionlint/fixtures/shellcheck.yml >"$output" 2>&1; then
+            echo '::error::The intentional ShellCheck fixture unexpectedly passed actionlint.'
+            exit 1
+          fi
+          cat "$output"
+          grep -F '[shellcheck]' "$output"
+          grep -F 'SC2086' "$output"
 
   jsonschema:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -220,7 +243,7 @@ jobs:
           files: .github/actions/*/action.yml
 
   exec-bit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -231,7 +254,7 @@ jobs:
         uses: ./.github/actions/exec-bit
 
   machine-specific-paths:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -246,7 +269,7 @@ jobs:
           exclude: ':(exclude).github/actions/machine-specific-paths/**'
 
   eol-renormalize:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -257,7 +280,7 @@ jobs:
         uses: ./.github/actions/eol-renormalize
 
   comment-hygiene:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -278,7 +301,7 @@ jobs:
           exclude: ':(exclude).github/actions/comment-hygiene/**'
 
   shellcheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -289,7 +312,7 @@ jobs:
         uses: ./.github/actions/shellcheck
 
   shfmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -297,12 +320,36 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        # shfmt is a formatter; like the biome/dotnet-format lanes it dogfoods a
-        # conforming fixture (the repo's own scripts predate this lane and use a
-        # switch-case indent .editorconfig does not declare).
+        # The root EditorConfig owns the same two-space, case-indented contract
+        # as `shfmt -i 2 -ci`; include the selector/OSV shell sources so their
+        # generated security boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good
+          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard
+
+  selector-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          lfs: true
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+      - name: Test selector and generated workflow contracts
+        run: node --test .github/scripts/*.test.cjs
+      - name: Test OSV scan policy guard
+        run: bash .github/scripts/osv-scan-guard.test.sh
+      - name: Test Pulumi deployment guard
+        run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
+      - name: Test Pulumi version-drift lifecycle
+        run: bash .github/scripts/pulumi-version-drift.test.sh
 
   zizmor:
     permissions:
@@ -336,13 +383,13 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, zizmor, osv-scanner]
-    runs-on: ubuntu-latest
+    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, zizmor, osv-scanner]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
         run: |
           read -ra results <<< "$RESULTS"
           for r in "${results[@]}"; do

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "component": "google/osv-scanner-action",
+  "version": "2.4.0",
+  "sourceRevision": "b56b5191101d5f27d4787d5583d8d01e9518a7af",
+  "sourceUrl": "https://github.com/google/osv-scanner",
+  "releaseUrl": "https://github.com/google/osv-scanner/releases/tag/v2.4.0",
+  "image": {
+    "repository": "ghcr.io/google/osv-scanner-action",
+    "platform": "linux/amd64",
+    "digest": "sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868"
+  },
+  "update": {
+    "releaseApi": "https://api.github.com/repos/google/osv-scanner/releases/latest",
+    "tagPrefix": "v",
+    "driftWorkflow": ".github/workflows/tool-version-drift-check.yml",
+    "automaticMerge": false
+  }
+}

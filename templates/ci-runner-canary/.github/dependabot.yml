@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Executable workflow updates require review. Delay routine releases so a
+    # compromised or yanked version can be detected; security updates bypass
+    # Dependabot cooldowns.
+    cooldown:
+      default-days: 7

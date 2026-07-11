@@ -1,23 +1,29 @@
 name: Tool Version Drift Check
 
 # Advisory — NOT in any ci-status gate; never blocks a merge. Surfaces a rolling
-# tracking issue when an upstream tool releases a stable version past the default
-# pinned in a composite action's `version:` (or `analyzer-version:`) input.
+# tracking issue when an upstream tool releases a stable version past a reviewed
+# composite-action default, canary runtime default, or shell-invoked image pin.
 #
 # Dependabot cannot see these: its github-actions ecosystem updates only `uses:`
-# SHAs, and a tool version embedded in an action.yml input default or a curl
-# install URL has no package manifest to track (see .github/dependabot.yml). The
-# operator absorbs a flagged bump by editing the action's version default and,
-# for binary-install lanes, recomputing the paired `sha256:`.
+# SHAs, and a tool version embedded in an action.yml input default, curl URL, or
+# shell-invoked OCI digest has no package manifest to track (see
+# .github/dependabot.yml). The operator absorbs every flagged bump deliberately;
+# this workflow never rewrites or auto-merges a software/supply-chain pin.
 
 on:
   schedule:
-    # Weekly Mondays 07:00 UTC — offset from other crons to avoid scheduler noise.
-    - cron: '0 7 * * 1'
+    # Daily 07:00 UTC — detects reviewed-pin drift within 24 hours.
+    - cron: '0 7 * * *'
   push:
     branches: [main]
     paths:
       - '.github/workflows/tool-version-drift-check.yml'
+      - '.github/workflows/local-runner-canary.yml'
+      - '.github/workflows/osv-scanner.yml'
+      - '.github/osv-scanner-pin.json'
+      - '.github/actions/actionlint/action.yml'
+      - '.github/actions/shellcheck/action.yml'
+      - '.github/scripts/actionlint-shellcheck-pin.test.cjs'
   workflow_dispatch:
 
 concurrency:
@@ -30,12 +36,11 @@ permissions:
 jobs:
   drift-check:
     name: Detect tool-version drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
-      # Rolling tracking issue create/update via create-issue-from-file.
-      issues: write
+      issues: write # Rolling tracking issue create/update via create-issue-from-file.
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -52,6 +57,9 @@ jobs:
           # Manifest: "<action-dir>:<version-input-key>:<source>:<upstream-id>".
           # The action.yml version default is the single source of truth for the
           # current pin; <source> selects the registry to query for latest stable.
+          # actionlint's ShellCheck inputs are intentionally not a second drift
+          # entry: actionlint-shellcheck-pin.test.cjs requires them to equal the
+          # canonical shellcheck action, whose entry appears below.
           # An optional 5th field is the github tag prefix to strip (default "v";
           # lychee tags as lychee-vX.Y.Z).
           tools=(
@@ -72,7 +80,7 @@ jobs:
           )
 
           # Read inputs.<key>.default from an action.yml with yq (mikefarah,
-          # preinstalled on ubuntu-latest). The quoted key handles the hyphen in
+          # preinstalled on ubuntu-24.04). The quoted key handles the hyphen in
           # analyzer-version; a missing key yields the literal "null".
           # $2: tag prefix to strip (default "v"; e.g. "lychee-v").
           latest_github() { gh api "repos/$1/releases/latest" --jq '.tag_name' | sed "s/^${2:-v}//"; }
@@ -81,6 +89,33 @@ jobs:
             # URL-encode a scoped package's leading @ and / (e.g. @biomejs/biome).
             local enc="${1//@/%40}"; enc="${enc//\//%2F}"
             curl -fsSL "https://registry.npmjs.org/$enc/latest" | jq -r '.version'
+          }
+          latest_dotnet_sdk() {
+            local channel="${1%%.*}.0"
+            curl -fsSL https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json |
+              jq -er --arg channel "$channel" '
+                .["releases-index"][] |
+                select(.["channel-version"] == $channel) |
+                .["latest-sdk"]
+              '
+          }
+          latest_node_runtime() {
+            local prefix="v${1%%.*}."
+            curl -fsSL https://nodejs.org/dist/index.json |
+              jq -er --arg prefix "$prefix" '
+                [.[] | select(.lts != false and (.version | startswith($prefix)))] |
+                sort_by(.version[1:] | split(".") | map(tonumber)) |
+                last.version[1:]
+              '
+          }
+          latest_python_runtime() {
+            local prefix="${1%.*}."
+            curl -fsSL https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json |
+              jq -er --arg prefix "$prefix" '
+                [.[] | select(.stable == true and (.version | startswith($prefix)))] |
+                sort_by(.version | split(".") | map(tonumber)) |
+                last.version
+              '
           }
 
           drift_lines=""
@@ -94,7 +129,7 @@ jobs:
             fi
             # `|| latest=''` so a transient registry failure (rate limit, 5xx,
             # network blip) under set -e + pipefail does not abort the whole
-            # weekly run; the empty/null guard below then skips just that tool.
+            # daily run; the empty/null guard below then skips just that tool.
             case "$source" in
               github) latest="$(latest_github "$id" "$strip")" || latest='' ;;
               pypi) latest="$(latest_pypi "$id")" || latest='' ;;
@@ -114,16 +149,104 @@ jobs:
             fi
           done
 
+          # The canary pins exact representative language runtimes so hosted and
+          # self-hosted execute the same setup-action contract. Dependabot cannot
+          # update workflow_call input defaults, so watch the current stable patch
+          # within each reviewed major/minor line through the upstream first-party
+          # release indexes used by .NET, Node.js, and setup-python.
+          canary_file=.github/workflows/local-runner-canary.yml
+          canary_runtimes=(
+            "dotnet-version:dotnet:.NET SDK"
+            "node-version:node:Node.js"
+            "python-version:python:Python"
+          )
+          for entry in "${canary_runtimes[@]}"; do
+            IFS=: read -r key source label <<<"$entry"
+            current="$(yq ".on.workflow_call.inputs.\"${key}\".default" "$canary_file")"
+            if [[ -z "$current" || "$current" == "null" ]]; then
+              echo "::error::could not read ${key} default from ${canary_file}"
+              exit 1
+            fi
+            case "$source" in
+              dotnet) latest="$(latest_dotnet_sdk "$current")" || latest='' ;;
+              node) latest="$(latest_node_runtime "$current")" || latest='' ;;
+              python) latest="$(latest_python_runtime "$current")" || latest='' ;;
+              *) echo "::error::unknown canary runtime source '${source}'"; exit 1 ;;
+            esac
+            if [[ -z "$latest" || "$latest" == "null" ]]; then
+              echo "::warning::could not resolve latest ${label}; skipping"
+              continue
+            fi
+            lowest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | head -1)"
+            if [[ "$lowest" == "$current" && "$current" != "$latest" ]]; then
+              drift_lines+="- **Canary ${label}**: pinned \`${current}\`, reviewed line latest \`${latest}\`"$'\n'
+              echo "DRIFT canary ${label}: ${current} -> ${latest}"
+            else
+              echo "ok    canary ${label}: ${current} (line latest ${latest})"
+            fi
+          done
+
+          # The OSV workflow invokes an OCI image from shell, so Dependabot
+          # cannot track it. Compare both the latest stable release and the
+          # linux/amd64 tag's current manifest digest. A same-version digest
+          # change is still drift and may indicate that the upstream tag moved.
+          osv_pin=.github/osv-scanner-pin.json
+          osv_current="$(jq -er '.version' "$osv_pin")"
+          osv_repository="$(jq -er '.image.repository' "$osv_pin")"
+          osv_digest="$(jq -er '.image.digest' "$osv_pin")"
+          osv_platform="$(jq -er '.image.platform' "$osv_pin")"
+          osv_os="${osv_platform%%/*}"
+          osv_architecture="${osv_platform#*/}"
+          osv_tag="$(gh api repos/google/osv-scanner/releases/latest --jq '.tag_name')" || osv_tag=''
+          osv_latest="${osv_tag#v}"
+          osv_latest_digest=''
+          if [[ -n "$osv_tag" ]]; then
+            osv_manifest="$(
+              docker buildx imagetools inspect "${osv_repository}:${osv_tag}" \
+                --format '{{json .Manifest}}'
+            )" || osv_manifest=''
+            if [[ -n "$osv_manifest" ]]; then
+              osv_latest_digest="$(
+                jq -er --arg os "$osv_os" --arg architecture "$osv_architecture" '
+                  if (.manifests? | type) == "array" then
+                    [.manifests[] | select(
+                      .platform.os == $os and
+                      .platform.architecture == $architecture and
+                      ((.platform.variant // "") == "")
+                    ) | .digest] |
+                    if length == 1 then .[0] else error("platform manifest is not unique") end
+                  else
+                    .digest
+                  end
+                ' <<< "$osv_manifest"
+              )" || osv_latest_digest=''
+            fi
+          fi
+
+          if [[ -z "$osv_latest" ]]; then
+            echo "::warning::could not resolve latest google/osv-scanner release; skipping OSV drift"
+          elif [[ "$osv_current" != "$osv_latest" ]]; then
+            drift_lines+="- **OSV-Scanner action image**: pinned \`${osv_current}\` (\`${osv_digest}\`), upstream latest \`${osv_latest}\` (\`${osv_latest_digest:-unresolved}\`)"$'\n'
+            echo "DRIFT OSV-Scanner action image: ${osv_current} -> ${osv_latest}"
+          elif [[ -z "$osv_latest_digest" ]]; then
+            echo "::warning::could not resolve ${osv_repository}:${osv_tag} digest; skipping OSV digest drift"
+          elif [[ "$osv_digest" != "$osv_latest_digest" ]]; then
+            drift_lines+="- **OSV-Scanner action image**: release \`${osv_current}\` still current, but reviewed digest \`${osv_digest}\` differs from tag digest \`${osv_latest_digest}\`"$'\n'
+            echo "DRIFT OSV-Scanner action image digest: ${osv_digest} -> ${osv_latest_digest}"
+          else
+            echo "ok    OSV-Scanner action image: ${osv_current} (${osv_digest})"
+          fi
+
           if [[ -z "$drift_lines" ]]; then
             echo "drift_detected=false" >> "$GITHUB_OUTPUT"
-            echo "No drift — all action-default tool versions current."
+            echo "No drift — all tracked tool and image pins are current."
             exit 0
           fi
 
           {
             echo "## Tool-version drift detected"
             echo
-            echo "One or more composite actions pin a tool version behind its upstream latest stable."
+            echo "One or more reviewed tool or image pins differ from upstream stable."
             echo
             printf '%s' "$drift_lines"
             echo
@@ -134,14 +257,19 @@ jobs:
             echo "shfmt, typos, editorconfig, gitleaks, actionlint, lychee-offline) ALSO recompute"
             echo "the paired \`sha256:\` default from the new release asset. The uvx/npx lanes (ruff,"
             echo "pyright, check-jsonschema, markdown, biome, tsc) and PSScriptAnalyzer carry no"
-            echo "checksum. Consumers pick the new default up when they re-pin."
+            echo "checksum. For OSV, update \`.github/osv-scanner-pin.json\` only after reviewing"
+            echo "the release, resolving the exact linux/amd64 manifest digest, verifying its OCI"
+            echo "version/source-revision labels, and passing the canary. Consumers pick the new"
+            echo "default up when they re-pin this repository. For canary runtime drift, update the"
+            echo "matching workflow_call default only after reviewing the stable patch and run the"
+            echo "full private canary on hosted and self-hosted. Never auto-merge these updates."
             echo
             echo "### Why advisory"
             echo
             echo "Dependabot cannot bump these — its github-actions ecosystem updates only"
             echo "\`uses:\` SHAs (see \`.github/dependabot.yml\`). A new tool release can ship"
-            echo "checks that break unrelated PRs, and binary lanes need a recomputed checksum,"
-            echo "so bumps are absorbed deliberately rather than auto-merged."
+            echo "checks that break unrelated PRs; binary and image lanes also need reviewed"
+            echo "checksums/digests, so bumps are absorbed deliberately rather than auto-merged."
             echo
             echo "---"
             echo "*Updated automatically by \`.github/workflows/tool-version-drift-check.yml\`."

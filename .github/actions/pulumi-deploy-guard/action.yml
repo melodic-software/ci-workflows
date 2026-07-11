@@ -1,0 +1,43 @@
+name: Pulumi deployment guard
+description: Verify the exact Pulumi OIDC policy and inventory operational state before a protected apply.
+
+inputs:
+  policy-contract:
+    description: Versioned bundled OIDC allow-policy contract name.
+    required: true
+  stack-name:
+    description: Fully qualified Pulumi organization/project/stack name.
+    required: true
+  operational-resource-urns-json:
+    description: JSON array of exact operational resource URNs whose live values must be adopted.
+    required: true
+
+outputs:
+  existing-count:
+    description: Number of requested operational resources already present in stack state.
+    value: ${{ steps.guard.outputs.existing-count }}
+  missing-count:
+    description: Number of requested operational resources absent on this first apply.
+    value: ${{ steps.guard.outputs.missing-count }}
+  existing-targets:
+    description: Newline-delimited existing URNs suitable for pulumi/actions target.
+    value: ${{ steps.guard.outputs.existing-targets }}
+  existing-urns-json:
+    description: JSON array of requested URNs present exactly once.
+    value: ${{ steps.guard.outputs.existing-urns-json }}
+  missing-urns-json:
+    description: JSON array of requested URNs absent from state.
+    value: ${{ steps.guard.outputs.missing-urns-json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify OIDC policy and operational resource state
+      id: guard
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        OPERATIONAL_RESOURCE_URNS_JSON: ${{ inputs.operational-resource-urns-json }}
+        POLICY_CONTRACT: ${{ inputs.policy-contract }}
+        STACK_NAME: ${{ inputs.stack-name }}
+      run: bash "$ACTION_PATH/guard.sh"

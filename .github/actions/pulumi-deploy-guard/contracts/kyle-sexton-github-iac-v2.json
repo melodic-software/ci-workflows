@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 2,
+  "organization": "kyle-sexton",
+  "issuerUrl": "https://token.actions.githubusercontent.com",
+  "personalAllowPolicies": [
+    {
+      "decision": "allow",
+      "tokenType": "personal",
+      "userLogin": "kyle-sexton",
+      "authorizedPermissions": [],
+      "rules": {
+        "aud": "urn:pulumi:org:kyle-sexton",
+        "sub": "repo:kyle-sexton@153232337/github-iac@1277607417:environment:github-iac-production",
+        "repository": "kyle-sexton/github-iac",
+        "repository_id": "1277607417",
+        "repository_owner_id": "153232337",
+        "repository_visibility": "private",
+        "ref": "refs/heads/main",
+        "ref_type": "branch",
+        "environment": "github-iac-production",
+        "event_name": "workflow_dispatch",
+        "workflow": "github-iac-production-deploy-v1",
+        "runner_environment": "github-hosted",
+        "actor_id": "153232337",
+        "run_attempt": "1"
+      }
+    },
+    {
+      "decision": "allow",
+      "tokenType": "personal",
+      "userLogin": "kyle-sexton",
+      "authorizedPermissions": [],
+      "rules": {
+        "aud": "urn:pulumi:org:kyle-sexton",
+        "sub": "repo:melodic-software@58273638/github-iac@1277417810:environment:github-iac-production",
+        "repository": "melodic-software/github-iac",
+        "repository_id": "1277417810",
+        "repository_owner_id": "58273638",
+        "repository_visibility": "private",
+        "ref": "refs/heads/main",
+        "ref_type": "branch",
+        "environment": "github-iac-production",
+        "event_name": "workflow_dispatch",
+        "workflow": "github-iac-production-deploy-v1",
+        "runner_environment": "github-hosted",
+        "actor_id": "153232337",
+        "run_attempt": "1"
+      }
+    }
+  ]
+}

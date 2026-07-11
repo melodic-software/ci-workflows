@@ -23,7 +23,8 @@ name: claude-review
 #           id-token: write        # OIDC — mints the Claude GitHub App token (required
 #                                  # even with an OAuth/API-key credential)
 #         uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@<sha>
-#         secrets: inherit         # same-org pass-through of CLAUDE_CODE_OAUTH_TOKEN
+#         secrets:
+#           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
 # SECURITY MODEL (see CLAUDE.md for the full rationale):
 #   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
@@ -102,8 +103,9 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
-          Claude Code OAuth token (from `claude setup-token`). Supply as a same-org
-          org secret scoped to selected repositories; pass via `secrets: inherit`.
+          Claude Code OAuth token (from `claude setup-token`). Supply as a
+          same-org organization secret scoped to selected repositories and pass
+          this named secret explicitly from the caller.
         required: true
 
 permissions:
@@ -111,7 +113,7 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.

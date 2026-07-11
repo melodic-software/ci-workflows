@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf '::error::%s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
+}
+
+require_command date
+require_command gh
+require_command jq
+
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+
+issue_title="${ISSUE_TITLE:-[Maintenance] Pulumi CLI version drift}"
+version_file="${PULUMI_VERSION_FILE:-.pulumi.version}"
+active_marker='<!-- ci-workflows:pulumi-cli-version-drift:v1:active -->'
+resolved_marker='<!-- ci-workflows:pulumi-cli-version-drift:v1:resolved -->'
+
+[[ -f "$version_file" && ! -L "$version_file" ]] ||
+  fail "$version_file must be a regular reviewed file"
+
+current="$(<"$version_file")"
+if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  fail "$version_file must contain one exact stable SemVer; got '$current'"
+fi
+
+latest_tag="$(gh api repos/pulumi/pulumi/releases/latest --jq '
+  if (.draft == false and .prerelease == false) then .tag_name
+  else error("latest release is not stable") end
+')"
+latest="${latest_tag#v}"
+if [[ ! "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  fail "Pulumi latest stable tag is malformed: '$latest_tag'"
+fi
+
+find_active_incidents() {
+  gh api --paginate --slurp \
+    "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" |
+    jq -ce --arg marker "$active_marker" '
+      [
+        .[][] |
+        select(.pull_request? == null) |
+        select((.body // "") | contains($marker)) |
+        {number, title, state, created_at}
+      ] |
+      if all(.[];
+        (.number | type == "number" and floor == .) and
+        (.title | type == "string") and
+        (.state == "open" or .state == "closed") and
+        (.created_at | type == "string" and length > 0)
+      ) then . else error("malformed active issue") end
+    '
+}
+
+active_incidents="$(find_active_incidents)"
+incident_count="$(jq -r 'length' <<<"$active_incidents")"
+if ((incident_count > 1)); then
+  fail "found $incident_count active Pulumi drift incidents; reconcile them manually"
+fi
+
+if [[ "$current" == "$latest" ]]; then
+  printf 'Pulumi CLI pin is current: %s.\n' "$current"
+  if ((incident_count == 1)); then
+    issue_number="$(jq -r '.[0].number' <<<"$active_incidents")"
+    issue_state="$(jq -r '.[0].state' <<<"$active_incidents")"
+    if [[ "$issue_state" == 'open' ]]; then
+      gh issue close "$issue_number" \
+        --comment "Resolved: reviewed pin is now current at \`$current\`."
+    fi
+    cat >"$RUNNER_TEMP/pulumi-drift-resolved.md" <<EOF
+$resolved_marker
+
+Resolved: the reviewed Pulumi CLI pin is current at \`$current\`.
+
+This closes the prior drift incident. A future release starts a new
+independently aged incident; this resolved record is never reused.
+EOF
+    gh issue edit "$issue_number" --title "$issue_title" \
+      --body-file "$RUNNER_TEMP/pulumi-drift-resolved.md"
+  fi
+  exit 0
+fi
+
+cat >"$RUNNER_TEMP/pulumi-drift.md" <<EOF
+$active_marker
+
+The reviewed Pulumi CLI pin differs from Pulumi's latest stable release.
+
+- Pinned: \`$current\`
+- Latest stable: \`$latest\`
+- Release: https://github.com/pulumi/pulumi/releases/tag/$latest_tag
+
+Review the official release and checksums, update \`$version_file\` in a pull
+request, run locked restore plus static/mock gates, and collect a live preview
+where provider behavior changed. Never auto-merge this pin.
+
+This issue is refreshed daily and the scheduled workflow hard-fails after
+14 days of unresolved drift. Critical tool advisories require immediate review.
+EOF
+
+if ((incident_count == 0)); then
+  gh issue create --title "$issue_title" \
+    --body-file "$RUNNER_TEMP/pulumi-drift.md"
+  active_incidents="$(find_active_incidents)"
+  incident_count="$(jq -r 'length' <<<"$active_incidents")"
+  if ((incident_count != 1)); then
+    fail "drift issue creation produced $incident_count active incidents; expected one"
+  fi
+fi
+
+issue_number="$(jq -r '.[0].number' <<<"$active_incidents")"
+issue_state="$(jq -r '.[0].state' <<<"$active_incidents")"
+created_at="$(jq -r '.[0].created_at' <<<"$active_incidents")"
+if [[ "$issue_state" == 'closed' ]]; then
+  gh issue reopen "$issue_number" \
+    --comment 'Reopened automatically because the pinned version still drifts.'
+fi
+gh issue edit "$issue_number" --title "$issue_title" \
+  --body-file "$RUNNER_TEMP/pulumi-drift.md"
+
+created_epoch="$(date -u -d "$created_at" +%s)" ||
+  fail "active drift incident has an invalid created_at value"
+now_epoch="$(date -u +%s)"
+if ((created_epoch > now_epoch)); then
+  fail "active drift incident has a future created_at value"
+fi
+age_seconds=$((now_epoch - created_epoch))
+if ((age_seconds >= 14 * 24 * 60 * 60)); then
+  fail "Pulumi CLI pin has drifted for at least 14 days ($current -> $latest)"
+fi
+
+age_days=$((age_seconds / 86400))
+printf '::warning::Pulumi CLI drift is %s day(s) old: %s -> %s.\n' \
+  "$age_days" "$current" "$latest"

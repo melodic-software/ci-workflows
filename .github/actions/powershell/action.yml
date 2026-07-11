@@ -1,5 +1,5 @@
 name: powershell
-description: Analyze PowerShell with PSScriptAnalyzer via the bundled per-file runner.
+description: Analyze PowerShell exactly once per file with fail-closed PSScriptAnalyzer handling.
 
 inputs:
   paths:

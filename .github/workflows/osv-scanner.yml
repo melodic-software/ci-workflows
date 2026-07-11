@@ -7,22 +7,24 @@ name: osv-scanner
 # split), so a PR-green check cannot turn red when the merge lands on the default
 # branch.
 #
-# It composes Google's two SHA-pinnable Docker sub-actions directly
-# (osv-scanner-action -> osv-reporter-action) instead of calling Google's reusable
-# workflow: that workflow references actions/download-artifact by a mutable tag
-# internally, which the org "pin every action to a full-length commit SHA" policy
-# rejects at "Set up job". Composing the sub-actions reproduces the reusable
-# workflow's reporter — including PR annotations via osv-reporter's --gh-annotations
-# — while staying fully SHA-pinned and free: annotations are workflow-command output
-# (no permissions, no GitHub Advanced Security / code-scanning SKU).
+# It invokes Google's official v2.4.0 action container directly by its exact
+# linux/amd64 OCI manifest digest. The SHA-pinned wrapper action is deliberately
+# not used: its action.yml launches a nested GHCR image by a mutable tag. The
+# machine-readable version/revision/digest contract lives in
+# .github/osv-scanner-pin.json and is checked locally plus by the scheduled drift
+# workflow. The same image contains both osv-scanner and osv-reporter, preserving
+# JSON scan, GitHub annotations, and SARIF output without a mutable dependency.
+#
+# runner-policy-exception-template:
+# {"reason":"docker-socket","justification":"The official OSV image is invoked by exact OCI digest through Docker; the local worker contract deliberately exposes no Docker socket."}
 on:
   workflow_call:
     inputs:
       scan-args:
         description: >-
           OSV-Scanner arguments (newline-separated), e.g. scan paths. Default scans
-          the tree recursively from the repo root. Do not pass --format or --output;
-          this workflow sets them so the reporter can consume the scan results.
+          the tree recursively from the repo root. Do not pass --format, --output,
+          or --output-file; this workflow owns them for reporter compatibility.
         type: string
         default: |-
           -r
@@ -37,14 +39,13 @@ on:
       allow-no-lockfiles:
         description: >-
           Declare the repo genuinely dependency-less: a scan that finds no
-          supported lockfiles passes without complaint. Leave false (the
-          default) wherever dependencies exist — OSV-Scanner reads lockfiles
-          (for .NET: a committed packages.lock.json via
-          RestorePackagesWithLockFile, kept honest by the dotnet-build action's
-          locked-mode restore), never .csproj/PackageReference, so a repo with
-          dependencies but no lockfile scans zero sources. Under the default an
-          empty scan surfaces a coverage warning (advisory) or fails the job
-          (fail-on-vuln) instead of reporting green-but-empty.
+          supported dependency sources passes without complaint. Leave false
+          wherever dependencies exist. OSV-Scanner v2.4.0 reads supported
+          manifests and lockfiles; .NET .csproj/PackageReference and Central
+          Package Management are enabled by default. A committed
+          packages.lock.json remains the reproducibility contract enforced by
+          dotnet-build's locked-mode restore, not a prerequisite for scanner
+          coverage. An empty scan warns (advisory) or fails (blocking).
         type: boolean
         default: false
 
@@ -53,79 +54,385 @@ permissions:
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    # Intentionally hosted: the official OSV image requires Docker, while local
+    # workers receive neither a Docker socket nor privileged host access.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # A called workflow's checkout is the caller repository, so deployment pins
+    # must be embedded here. The machine-readable manifest is the update
+    # breadcrumb; osv-scanner-pin.test.cjs deterministically enforces exact sync.
+    env:
+      OSV_IMAGE_REPOSITORY: ghcr.io/google/osv-scanner-action
+      OSV_IMAGE_DIGEST: sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868
+      OSV_IMAGE_PLATFORM: linux/amd64
+      OSV_VERSION: 2.4.0
+      OSV_SOURCE_REVISION: b56b5191101d5f27d4787d5583d8d01e9518a7af
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
+      - name: Resolve and verify immutable OSV image
+        id: osv-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$OSV_IMAGE_REPOSITORY" != ghcr.io/google/osv-scanner-action || "$OSV_IMAGE_PLATFORM" != linux/amd64 ]]; then
+            echo "::error::Invalid OSV image pin identity or platform."
+            exit 1
+          fi
+          if [[ ! "$OSV_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ || ! "$OSV_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$OSV_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid OSV version, source revision, or OCI digest."
+            exit 1
+          fi
+
+          image="${OSV_IMAGE_REPOSITORY}@${OSV_IMAGE_DIGEST}"
+          docker pull --platform "$OSV_IMAGE_PLATFORM" "$image"
+          actual_version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")"
+          actual_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+          actual_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+          if [[ "$actual_version" != "$OSV_VERSION" || "$actual_revision" != "$OSV_SOURCE_REVISION" || "$actual_platform" != "$OSV_IMAGE_PLATFORM" ]]; then
+            echo "::error::Pinned OSV image labels or platform do not match the reviewed release manifest."
+            exit 1
+          fi
+
+          results_dir="$(mktemp -d "$RUNNER_TEMP/osv-scanner.XXXXXX")"
+          # The image stores its binaries below /root, so the container remains
+          # UID 0 but has no capabilities. Grant only the runner's primary group
+          # access to this random output directory and run with that same GID.
+          chmod 770 "$results_dir"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "results-dir=$results_dir" >> "$GITHUB_OUTPUT"
+          echo "OSV-Scanner v${OSV_VERSION} (${OSV_SOURCE_REVISION}) verified at ${OSV_IMAGE_DIGEST}."
+
       - name: Run OSV-Scanner
-        # Scan to JSON for the reporter to consume. continue-on-error so a finding
-        # (OSV exits non-zero), an error, or an empty scan never fails the job here;
-        # the guard and the reporter own the pass/fail decision.
-        continue-on-error: true
-        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-        with:
-          # The image's entrypoint word-splits scan-args, so the blank line the
-          # expression leaves when the input is false disappears harmlessly —
-          # and a caller still passing the bare flag through scan-args keeps
-          # working (no conflicting =false to fight it).
-          scan-args: |-
-            --output=results.json
-            --format=json
-            ${{ inputs.allow-no-lockfiles && '--allow-no-lockfiles' || '' }}
-            ${{ inputs.scan-args }}
+        # Scan to JSON for the reporter. This step captures every documented
+        # scanner status; the guard and reporter own the policy decision.
+        id: scan
+        shell: bash
+        env:
+          ALLOW_NO_LOCKFILES: ${{ inputs.allow-no-lockfiles }}
+          OSV_IMAGE: ${{ steps.osv-pin.outputs.image }}
+          OSV_RESULTS_DIR: ${{ steps.osv-pin.outputs.results-dir }}
+          SCAN_ARGS: ${{ inputs.scan-args }}
+        run: |
+          set -euo pipefail
+          : "${SCAN_ARGS:?scan-args must contain at least one newline-delimited argument}"
+          allow_args=()
+          if [[ "$ALLOW_NO_LOCKFILES" == true ]]; then
+            allow_args+=(--allow-no-lockfiles)
+          fi
+          scan_args=()
+          while IFS= read -r argument || [[ -n "$argument" ]]; do
+            [[ -z "$argument" ]] && continue
+            scan_args+=("$argument")
+          done <<< "$SCAN_ARGS"
+
+          # Every caller-supplied line remains one quoted argument; the host
+          # shell never evaluates caller-controlled text. The source tree is
+          # read-only and the fresh results directory is the only writable mount.
+          set +e
+          docker run --rm \
+            --platform "$OSV_IMAGE_PLATFORM" \
+            --user "0:$(id -g)" \
+            --cap-drop=ALL \
+            --security-opt no-new-privileges \
+            --volume "$GITHUB_WORKSPACE:/github/workspace:ro" \
+            --volume "$OSV_RESULTS_DIR:/results" \
+            --workdir /github/workspace \
+            --entrypoint /root/osv-scanner \
+            "$OSV_IMAGE" \
+            --output-file=/results/results.json \
+            --format=json \
+            "${allow_args[@]}" \
+            "${scan_args[@]}"
+          scan_exit=$?
+          set -e
+
+          echo "exit-code=$scan_exit" >> "$GITHUB_OUTPUT"
+          echo "OSV-Scanner container exit code: $scan_exit"
 
       - name: Guard against an empty scan
-        # A repo whose dependencies live outside any lockfile (e.g. .NET
-        # PackageReference with no committed packages.lock.json) or a mis-scoped
-        # scan-args scans zero sources while looking green — false assurance.
-        # OSV's JSON `results` lists only VULNERABLE sources (a clean scan is
-        # `results: []`), so its length cannot measure coverage. The reliable
-        # signal, verified against the pinned scanner: a run that scanned at
-        # least one source always writes `results` as an array, while a run
-        # that scanned nothing leaves it null (--allow-no-lockfiles) or writes
-        # no results.json at all (no-lockfiles error, scanner failure). Empty
-        # is fine only when the caller declared the repo dependency-less;
-        # otherwise it fails a blocking run and annotates an advisory one.
+        # OSV's documented exit status distinguishes clean/findings (0/1),
+        # general or reserved errors, and no packages (128). JSON shape then
+        # proves a completed 0/1 scan produced a valid result. This prevents an
+        # operational error with a partial results array from looking green.
+        id: scan-policy
         env:
           ALLOW_NO_LOCKFILES: ${{ inputs.allow-no-lockfiles }}
           FAIL_ON_VULN: ${{ inputs.fail-on-vuln }}
+          OSV_RESULTS_DIR: ${{ steps.osv-pin.outputs.results-dir }}
+          SCAN_EXIT: ${{ steps.scan.outputs.exit-code }}
         run: |
-          if jq -e '.results | type == "array"' results.json >/dev/null 2>&1; then
-            echo "Scan completed: at least one dependency source was scanned."
-          elif [ "$ALLOW_NO_LOCKFILES" = "true" ]; then
-            echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
-          elif [ "$FAIL_ON_VULN" = "true" ]; then
-            echo "::error::OSV-Scanner scanned nothing (no supported lockfiles, mis-scoped scan-args, or a scanner error); failing because fail-on-vuln is set."
+          # BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT
+          # Source: .github/scripts/osv-scan-guard.sh
+          # shellcheck shell=bash
+          set -euo pipefail
+
+          policy_phase="${OSV_POLICY_PHASE:-scan}"
+          fail_on_vuln="${FAIL_ON_VULN:-}"
+          osv_results_dir="${OSV_RESULTS_DIR:-}"
+
+          set_policy_output() {
+            if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+              echo "$1=$2" >>"$GITHUB_OUTPUT"
+            fi
+          }
+
+          report_policy_problem() {
+            local message="$1"
+            if [[ "$fail_on_vuln" == true ]]; then
+              echo "::error::$message"
+              return 1
+            fi
+            echo "::warning::$message"
+          }
+
+          if [[ "$fail_on_vuln" != true && "$fail_on_vuln" != false ]]; then
+            echo "::error::fail-on-vuln must resolve to true or false."
             exit 1
-          else
-            echo "::warning::OSV-Scanner scanned nothing (no supported lockfiles, mis-scoped scan-args, or a scanner error) — this advisory lane verified no dependencies. Commit lockfiles (for .NET: packages.lock.json), or set allow-no-lockfiles: true if the repo truly has none."
           fi
+
+          regular_file_in_results() {
+            local candidate="$1"
+            local resolved_candidate
+            local resolved_root
+
+            if [[ ! -d "$osv_results_dir" || -L "$osv_results_dir" || ! -f "$candidate" || -L "$candidate" ]]; then
+              printf 'false\n'
+              return
+            fi
+            if ! resolved_root="$(realpath -e -- "$osv_results_dir")"; then
+              printf 'false\n'
+              return
+            fi
+            if ! resolved_candidate="$(realpath -e -- "$candidate")"; then
+              printf 'false\n'
+              return
+            fi
+            if [[ "${resolved_candidate%/*}" == "$resolved_root" ]]; then
+              printf 'true\n'
+            else
+              printf 'false\n'
+            fi
+          }
+
+          case "$policy_phase" in
+            scan)
+              allow_no_lockfiles="${ALLOW_NO_LOCKFILES:-}"
+              scan_exit="${SCAN_EXIT:-}"
+              results_json="$osv_results_dir/results.json"
+              if [[ "$allow_no_lockfiles" != true && "$allow_no_lockfiles" != false ]]; then
+                echo "::error::allow-no-lockfiles must resolve to true or false."
+                exit 1
+              fi
+              if [[ ! "$scan_exit" =~ ^[0-9]+$ ]]; then
+                echo "::error::OSV-Scanner did not report a numeric container exit code."
+                exit 1
+              fi
+
+              set_policy_output reportable false
+              case "$scan_exit" in
+                0 | 1)
+                  results_json_is_regular="$(regular_file_in_results "$results_json")"
+                  if [[ "$results_json_is_regular" == true ]] &&
+                    jq -e '.results | type == "array"' "$results_json" >/dev/null 2>&1; then
+                    set_policy_output reportable true
+                    echo "Scan completed: at least one dependency source was scanned."
+                  elif [[ "$scan_exit" == 0 && "$allow_no_lockfiles" == true && "$results_json_is_regular" == true ]] &&
+                    jq -e '.results == null' "$results_json" >/dev/null 2>&1; then
+                    echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
+                  else
+                    report_policy_problem "OSV-Scanner exited $scan_exit but did not produce a valid regular completed-scan JSON result."
+                  fi
+                  ;;
+                128)
+                  if [[ "$allow_no_lockfiles" == true ]]; then
+                    echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
+                  else
+                    report_policy_problem "OSV-Scanner found no supported dependency sources (exit 128). Add a supported manifest/lockfile, correct scan-args, or set allow-no-lockfiles: true only for a dependency-less repository."
+                  fi
+                  ;;
+                *)
+                  report_policy_problem "OSV-Scanner failed with operational exit code $scan_exit; results are not trusted."
+                  ;;
+              esac
+              ;;
+            sarif)
+              results_sarif="$osv_results_dir/results.sarif"
+              set_policy_output uploadable false
+              results_sarif_is_regular="$(regular_file_in_results "$results_sarif")"
+              if [[ "$results_sarif_is_regular" == true ]] &&
+                jq -e '.version == "2.1.0" and (.runs | type == "array")' "$results_sarif" >/dev/null 2>&1; then
+                set_policy_output uploadable true
+                echo "SARIF artifact is a regular file inside the isolated results directory."
+              else
+                report_policy_problem "OSV reporter did not produce a valid regular in-directory SARIF artifact; upload suppressed."
+              fi
+              ;;
+            *)
+              echo "::error::Unknown OSV output policy phase: $policy_phase"
+              exit 1
+              ;;
+          esac
+          # END GENERATED OSV SCAN GUARD
 
       - name: Report findings
         # Google's reporter renders the scan as GitHub PR annotations
         # (--gh-annotations) and owns the exit code (--fail-on-vuln). Advisory runs
         # swallow a reporter hiccup so the lane never reddens ci-status; blocking
         # runs let a real finding fail the job.
+        if: ${{ steps.scan-policy.outputs.reportable == 'true' }}
         continue-on-error: ${{ !inputs.fail-on-vuln }}
-        uses: google/osv-scanner-action/osv-reporter-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-        with:
-          scan-args: |-
-            --output=results.sarif
-            --new=results.json
-            --gh-annotations=true
-            --fail-on-vuln=${{ inputs.fail-on-vuln }}
+        shell: bash
+        env:
+          FAIL_ON_VULN: ${{ inputs.fail-on-vuln }}
+          OSV_IMAGE: ${{ steps.osv-pin.outputs.image }}
+          OSV_RESULTS_DIR: ${{ steps.osv-pin.outputs.results-dir }}
+        run: |
+          docker run --rm \
+            --platform "$OSV_IMAGE_PLATFORM" \
+            --user "0:$(id -g)" \
+            --cap-drop=ALL \
+            --security-opt no-new-privileges \
+            --network none \
+            --volume "$OSV_RESULTS_DIR:/results" \
+            --workdir /results \
+            --entrypoint /root/osv-reporter \
+            "$OSV_IMAGE" \
+            --output-files='sarif:/results/results.sarif,gh-annotations:#stderr' \
+            --new=/results/results.json \
+            --fail-on-vuln="$FAIL_ON_VULN"
+
+      - name: Verify SARIF artifact
+        id: sarif-policy
+        if: ${{ !cancelled() && steps.scan-policy.outputs.reportable == 'true' }}
+        env:
+          FAIL_ON_VULN: ${{ inputs.fail-on-vuln }}
+          OSV_POLICY_PHASE: sarif
+          OSV_RESULTS_DIR: ${{ steps.osv-pin.outputs.results-dir }}
+        run: |
+          # BEGIN GENERATED OSV SARIF GUARD - DO NOT EDIT
+          # Source: .github/scripts/osv-scan-guard.sh
+          # shellcheck shell=bash
+          set -euo pipefail
+
+          policy_phase="${OSV_POLICY_PHASE:-scan}"
+          fail_on_vuln="${FAIL_ON_VULN:-}"
+          osv_results_dir="${OSV_RESULTS_DIR:-}"
+
+          set_policy_output() {
+            if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+              echo "$1=$2" >>"$GITHUB_OUTPUT"
+            fi
+          }
+
+          report_policy_problem() {
+            local message="$1"
+            if [[ "$fail_on_vuln" == true ]]; then
+              echo "::error::$message"
+              return 1
+            fi
+            echo "::warning::$message"
+          }
+
+          if [[ "$fail_on_vuln" != true && "$fail_on_vuln" != false ]]; then
+            echo "::error::fail-on-vuln must resolve to true or false."
+            exit 1
+          fi
+
+          regular_file_in_results() {
+            local candidate="$1"
+            local resolved_candidate
+            local resolved_root
+
+            if [[ ! -d "$osv_results_dir" || -L "$osv_results_dir" || ! -f "$candidate" || -L "$candidate" ]]; then
+              printf 'false\n'
+              return
+            fi
+            if ! resolved_root="$(realpath -e -- "$osv_results_dir")"; then
+              printf 'false\n'
+              return
+            fi
+            if ! resolved_candidate="$(realpath -e -- "$candidate")"; then
+              printf 'false\n'
+              return
+            fi
+            if [[ "${resolved_candidate%/*}" == "$resolved_root" ]]; then
+              printf 'true\n'
+            else
+              printf 'false\n'
+            fi
+          }
+
+          case "$policy_phase" in
+            scan)
+              allow_no_lockfiles="${ALLOW_NO_LOCKFILES:-}"
+              scan_exit="${SCAN_EXIT:-}"
+              results_json="$osv_results_dir/results.json"
+              if [[ "$allow_no_lockfiles" != true && "$allow_no_lockfiles" != false ]]; then
+                echo "::error::allow-no-lockfiles must resolve to true or false."
+                exit 1
+              fi
+              if [[ ! "$scan_exit" =~ ^[0-9]+$ ]]; then
+                echo "::error::OSV-Scanner did not report a numeric container exit code."
+                exit 1
+              fi
+
+              set_policy_output reportable false
+              case "$scan_exit" in
+                0 | 1)
+                  results_json_is_regular="$(regular_file_in_results "$results_json")"
+                  if [[ "$results_json_is_regular" == true ]] &&
+                    jq -e '.results | type == "array"' "$results_json" >/dev/null 2>&1; then
+                    set_policy_output reportable true
+                    echo "Scan completed: at least one dependency source was scanned."
+                  elif [[ "$scan_exit" == 0 && "$allow_no_lockfiles" == true && "$results_json_is_regular" == true ]] &&
+                    jq -e '.results == null' "$results_json" >/dev/null 2>&1; then
+                    echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
+                  else
+                    report_policy_problem "OSV-Scanner exited $scan_exit but did not produce a valid regular completed-scan JSON result."
+                  fi
+                  ;;
+                128)
+                  if [[ "$allow_no_lockfiles" == true ]]; then
+                    echo "Empty scan accepted: the caller declared the repo dependency-less (allow-no-lockfiles)."
+                  else
+                    report_policy_problem "OSV-Scanner found no supported dependency sources (exit 128). Add a supported manifest/lockfile, correct scan-args, or set allow-no-lockfiles: true only for a dependency-less repository."
+                  fi
+                  ;;
+                *)
+                  report_policy_problem "OSV-Scanner failed with operational exit code $scan_exit; results are not trusted."
+                  ;;
+              esac
+              ;;
+            sarif)
+              results_sarif="$osv_results_dir/results.sarif"
+              set_policy_output uploadable false
+              results_sarif_is_regular="$(regular_file_in_results "$results_sarif")"
+              if [[ "$results_sarif_is_regular" == true ]] &&
+                jq -e '.version == "2.1.0" and (.runs | type == "array")' "$results_sarif" >/dev/null 2>&1; then
+                set_policy_output uploadable true
+                echo "SARIF artifact is a regular file inside the isolated results directory."
+              else
+                report_policy_problem "OSV reporter did not produce a valid regular in-directory SARIF artifact; upload suppressed."
+              fi
+              ;;
+            *)
+              echo "::error::Unknown OSV output policy phase: $policy_phase"
+              exit 1
+              ;;
+          esac
+          # END GENERATED OSV SARIF GUARD
 
       - name: Upload SARIF artifact
         # Durable, downloadable record in the run's Actions tab (free; not the paid
         # code-scanning dashboard). Best-effort — never fail the lane on upload.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scan-policy.outputs.reportable == 'true' && steps.sarif-policy.outputs.uploadable == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: osv-scanner-sarif
-          path: results.sarif
+          path: ${{ steps.osv-pin.outputs.results-dir }}/results.sarif
           retention-days: 5
