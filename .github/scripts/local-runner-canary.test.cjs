@@ -408,6 +408,10 @@ test("canonical private seed pins the corrected reusable contract", () => {
   );
   assert.match(
     templateWorkflow,
+    /cache-epoch: \$\{\{ vars\.CI_CACHE_EPOCH \}\}/u,
+  );
+  assert.match(
+    templateWorkflow,
     /observer-private-key: \$\{\{ secrets\.CI_RUNNER_OBSERVER_PRIVATE_KEY \}\}/u,
   );
   assert.doesNotMatch(templateWorkflow, /secrets:\s+inherit/u);

@@ -23,6 +23,7 @@ jobs:
     uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@bb762391c41e9d12975fae25a06ac930050baba9 # reviewed canary contract
     with:
       mode: ${{ inputs.mode }}
+      cache-epoch: ${{ vars.CI_CACHE_EPOCH }}
       observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
     secrets:
       observer-private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}

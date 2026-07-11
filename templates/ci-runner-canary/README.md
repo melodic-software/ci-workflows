@@ -8,11 +8,15 @@ selection, routing, and proof behavior to the reviewed immutable workflow in
 The repository must remain private. Configure only:
 
 - repository variable `CI_RUNNER_OBSERVER_CLIENT_ID`;
+- repository variable `CI_CACHE_EPOCH`, provisioned by IaC and matching the
+  production cache epoch;
 - repository secret `CI_RUNNER_OBSERVER_PRIVATE_KEY` with access granted by the
   observer-secret policy;
 - Actions access to the pinned public reusable workflow.
 
-The caller passes that one secret explicitly. It must never use
+The caller passes the governed epoch and that one secret explicitly. The
+reusable preflight rejects a missing or unsafe epoch before local work. The
+caller must never use
 `secrets: inherit`, accept a runner label, or reproduce selector logic.
 Dependabot checks the immutable reusable-workflow reference weekly and opens a
 reviewed PR; no dependency update is auto-merged.
