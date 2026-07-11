@@ -442,6 +442,52 @@ test("same-label explicit-false sibling contaminates the complete label namespac
   assert.equal(result.idleRunnerCount, 0);
 });
 
+for (const os of ["unknown", "UNKNOWN", "LiNuX"]) {
+  test(`managed omitted-field runner accepts the V1 ${os} inventory OS`, async () => {
+    const configuredLabel = "Melodic-Ubuntu-24.04-X64";
+    const result = await selectRunner(
+      input({ selfHostedLabel: configuredLabel }),
+      {
+        request: async () =>
+          response([
+            runnerWithoutEphemeral({
+              os,
+              labels: [{ name: configuredLabel.toUpperCase() }],
+            }),
+          ]),
+      },
+    );
+    assert.equal(result.route, "self-hosted");
+    assert.equal(result.runner, configuredLabel);
+  });
+}
+
+for (const os of ["windows", "macOS"]) {
+  test(`same-label ${os} sibling contaminates the V1 Linux namespace`, async () => {
+    const configuredLabel = "Melodic-Ubuntu-24.04-X64";
+    const result = await selectRunner(
+      input({ selfHostedLabel: configuredLabel }),
+      {
+        request: async () =>
+          response([
+            runnerWithoutEphemeral({
+              os: "unknown",
+              labels: [{ name: configuredLabel.toLowerCase() }],
+            }),
+            runnerWithoutEphemeral({
+              name: `ci-runner-melo-wrong-os-${os}`,
+              os,
+              labels: [{ name: configuredLabel.toUpperCase() }],
+            }),
+          ]),
+      },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "invalid-response");
+    assert.equal(result.idleRunnerCount, 0);
+  });
+}
+
 test("an omitted-field runner on an unrelated label does not poison a good sibling", async () => {
   const result = await selectRunner(input(), {
     request: async () =>
@@ -451,6 +497,22 @@ test("an omitted-field runner on an unrelated label does not poison a good sibli
           labels: [{ name: "unrelated-label" }],
         }),
         runnerWithoutEphemeral(),
+      ]),
+  });
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("a wrong-OS runner on an unrelated label does not poison the V1 namespace", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          name: "ci-runner-melo-windows-unrelated",
+          os: "windows",
+          labels: [{ name: "unrelated-label" }],
+        }),
+        runnerWithoutEphemeral({ os: "unknown" }),
       ]),
   });
   assert.equal(result.route, "self-hosted");
@@ -473,6 +535,33 @@ test("ordered candidates skip a contaminated label and select a clean lower prio
           }),
           runnerWithoutEphemeral({
             name: "ci-runner-melo-lap-001-1",
+            labels: [{ name: labels[1].toLowerCase() }],
+          }),
+        ]),
+    },
+  );
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.runner, labels[1]);
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("ordered candidates skip a wrong-OS label and preserve clean configured spelling", async () => {
+  const labels = ["Kyle-Desk-Ubuntu-24.04-X64", "Kyle-Lap-Ubuntu-24.04-X64"];
+  const result = await selectRunner(
+    input({
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: JSON.stringify(labels),
+    }),
+    {
+      request: async () =>
+        response([
+          runnerWithoutEphemeral({
+            os: "Windows",
+            labels: [{ name: labels[0].toUpperCase() }],
+          }),
+          runnerWithoutEphemeral({
+            name: "ci-runner-melo-lap-001-1",
+            os: "UNKNOWN",
             labels: [{ name: labels[1].toLowerCase() }],
           }),
         ]),

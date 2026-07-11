@@ -4,6 +4,7 @@ const DEFAULT_HOSTED_RUNNER = "ubuntu-24.04";
 const APPROVED_HOSTED_RUNNERS = new Set([DEFAULT_HOSTED_RUNNER]);
 const GITHUB_API_VERSION = "2026-03-10";
 const PAGE_SIZE = 100;
+const V1_MANAGED_RUNNER_OSES = new Set(["linux", "unknown"]);
 const LOCAL_EVENT_ALLOWLIST = new Set([
   "push",
   "schedule",
@@ -331,9 +332,10 @@ function throwIfAborted(signal) {
 function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
   // `runs-on` contains only the selected label, so GitHub may assign any
   // runner carrying it. Treat that case-insensitive label as contaminated
-  // if even one bearer falls outside the managed namespace or reports itself
-  // non-ephemeral. Contamination is per label: a later distinct configured
-  // label remains safe when none of its own bearers violate the contract.
+  // if even one bearer falls outside the managed namespace, reports itself
+  // non-ephemeral, or reports an OS outside the V1 Linux/JIT-unknown contract.
+  // Contamination is per label: a later distinct configured label remains safe
+  // when none of its own bearers violate the contract.
   const configuredLabels = labels.map((label) => ({
     label,
     key: normalizedLabel(label),
@@ -353,7 +355,8 @@ function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
   for (const { runner, labelKeys } of inventory) {
     if (
       !runner.name.startsWith(managedRunnerPrefix) ||
-      runner.ephemeral === false
+      runner.ephemeral === false ||
+      !V1_MANAGED_RUNNER_OSES.has(runner.os.toLowerCase())
     ) {
       for (const labelKey of labelKeys) {
         if (configuredLabelKeys.has(labelKey)) {
