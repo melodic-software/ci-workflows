@@ -1,0 +1,12 @@
+name: intentional-actionlint-shellcheck-fixture
+
+on: push
+
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Intentional unquoted expansion
+        env:
+          FIXTURE_VALUE: two words
+        run: printf '%s\n' $FIXTURE_VALUE

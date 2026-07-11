@@ -72,7 +72,9 @@ checkout of this repo. (Public is required because a public consumer such as
   caller-supplied config (installs a pinned, checksum-verified binary; optional
   SARIF output + PR annotations).
 - `.github/actions/actionlint` — actionlint over the repo's GitHub Actions
-  workflow files.
+  workflow files, with the canonical checksum-pinned ShellCheck release
+  installed explicitly so embedded shell validation is identical on hosted and
+  self-hosted workers.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor

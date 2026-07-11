@@ -21,6 +21,9 @@ on:
       - '.github/workflows/local-runner-canary.yml'
       - '.github/workflows/osv-scanner.yml'
       - '.github/osv-scanner-pin.json'
+      - '.github/actions/actionlint/action.yml'
+      - '.github/actions/shellcheck/action.yml'
+      - '.github/scripts/actionlint-shellcheck-pin.test.cjs'
   workflow_dispatch:
 
 concurrency:
@@ -54,6 +57,9 @@ jobs:
           # Manifest: "<action-dir>:<version-input-key>:<source>:<upstream-id>".
           # The action.yml version default is the single source of truth for the
           # current pin; <source> selects the registry to query for latest stable.
+          # actionlint's ShellCheck inputs are intentionally not a second drift
+          # entry: actionlint-shellcheck-pin.test.cjs requires them to equal the
+          # canonical shellcheck action, whose entry appears below.
           # An optional 5th field is the github tag prefix to strip (default "v";
           # lychee tags as lychee-vX.Y.Z).
           tools=(
