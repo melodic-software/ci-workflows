@@ -23,6 +23,16 @@ inputs:
       SHA-256 of the linux_amd64 .tar.gz release asset for `version`. Change
       together with `version`.
     default: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  shellcheck-version:
+    description: >-
+      Exact ShellCheck version used by actionlint for embedded bash/sh `run:`
+      scripts. Kept in lockstep with the standalone ShellCheck action.
+    default: 0.11.0
+  shellcheck-sha256:
+    description: >-
+      SHA-256 of ShellCheck's linux x86_64 release archive for
+      `shellcheck-version`. Change together with that version.
+    default: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
 
 runs:
   using: composite
@@ -36,6 +46,15 @@ runs:
         ARCHIVE_MEMBER: actionlint
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
+    - name: Install ShellCheck for embedded scripts
+      shell: bash
+      env:
+        URL: https://github.com/koalaman/shellcheck/releases/download/v${{ inputs.shellcheck-version }}/shellcheck-v${{ inputs.shellcheck-version }}.linux.x86_64.tar.gz
+        SHA256: ${{ inputs.shellcheck-sha256 }}
+        BIN: shellcheck
+        ARCHIVE_MEMBER: shellcheck-v${{ inputs.shellcheck-version }}/shellcheck
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
+
     - name: Lint workflows
       shell: bash
       env:
@@ -44,8 +63,10 @@ runs:
         COLOR: ${{ inputs.color }}
       run: |
         set -euo pipefail
-        # shellcheck/pyflakes are auto-detected on PATH (ubuntu-24.04 ships
-        # shellcheck), so embedded run: scripts are linted too.
+        # ShellCheck is installed above instead of relying on a runner image, so
+        # embedded bash/sh `run:` scripts receive identical checks on hosted and
+        # self-hosted workers. Pyflakes remains actionlint's optional PATH-based
+        # integration; neither supported runner contract preinstalls it.
         args=()
         if [[ "$COLOR" == "true" ]]; then args+=(-color); fi
         if [[ -n "${CONFIG_FILE// }" ]]; then args+=(-config-file "$CONFIG_FILE"); fi

@@ -196,6 +196,27 @@ jobs:
           persist-credentials: false
       - name: Lint workflows
         uses: ./.github/actions/actionlint
+      - name: Prove embedded scripts are checked by ShellCheck
+        run: |
+          set -euo pipefail
+          expected_version="$(awk '
+            $0 == "  shellcheck-version:" { in_input=1; next }
+            in_input && /^  [^ ]/ { exit }
+            in_input && /^    default: / { sub(/^    default: /, ""); print; exit }
+          ' .github/actions/actionlint/action.yml)"
+          actual_version="$(shellcheck --version | awk '$1 == "version:" { print $2 }')"
+          if [[ -z "$expected_version" || "$actual_version" != "$expected_version" ]]; then
+            echo "::error::Expected ShellCheck $expected_version, got $actual_version."
+            exit 1
+          fi
+          output="$RUNNER_TEMP/actionlint-shellcheck.txt"
+          if actionlint .github/actions/actionlint/fixtures/shellcheck.yml >"$output" 2>&1; then
+            echo '::error::The intentional ShellCheck fixture unexpectedly passed actionlint.'
+            exit 1
+          fi
+          cat "$output"
+          grep -F '[shellcheck]' "$output"
+          grep -F 'SC2086' "$output"
 
   jsonschema:
     runs-on: ubuntu-24.04
