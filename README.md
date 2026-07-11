@@ -335,6 +335,62 @@ GitHub continues the normal weekly patching of each hosted image generation.
   diagnostics. All are required promotion evidence. The daily drift workflow
   monitors the exact .NET, Node.js, and Python patch lines and opens review
   evidence without editing or auto-merging a pin.
+- `.github/workflows/production-ha-proof.yml` — the executable production
+  two-host rollout gate, separate from compatibility canarying. It is
+  reusable-only and accepts only a first-attempt manual dispatch from the exact
+  private protected-main caller
+  `melodic-software/ci-runner-canary/.github/workflows/production-ha-proof.yml`.
+  The caller supplies no runner label or prefix and passes only the read-only
+  observer key explicitly. Every inventory, validation, and operator-hold job is
+  explicitly GitHub-hosted. Production execution consumes only the central
+  selector's direct output, so hosted fallback and attempt-2 routing semantics
+  remain owned by the selector; a fallback cannot be mistaken for a passing
+  self-hosted proof.
+
+  The hosted inventory reads the official organization runner-group,
+  selected-repository, and group-runner endpoints with **Self-hosted runners:
+  read**. It requires unique independent groups
+  `ci-local-melo-desk-001` and `ci-local-melo-lap-001`, selected visibility,
+  public access disabled, identical all-private repository sets containing the
+  proof repository, and exact host-specific runner-name namespaces bearing
+  `melodic-ubuntu-24.04-x64`. [GitHub's runner-group REST API][runner-group-rest]
+  defines those public fields and the read permission. Its group `id` identifies
+  a runner-group resource; the response contains no scale-set ID. The evidence
+  therefore records that limitation instead of claiming the REST inventory can
+  map the controller's persistent scale-set ID. Controller status and logs own
+  that separate proof.
+
+  Manual modes are deliberately small, observable gates:
+
+  1. `inventory` requires an online idle production runner in each independent
+     group.
+  2. `desktop-only` and `laptop-only` require the other group to have zero online
+     runners, then assert the acquired `runner.name`, `runner.os == Linux`, and
+     `runner.arch == X64`. Those values are GitHub's documented
+     [runner context][runner-context].
+  3. `failover` first proves both groups idle and completes selection. A hosted
+     hold then asks the operator to drain the desktop and waits read-only for
+     two stable observations of desktop-zero/laptop-idle before releasing the
+     governed job, which must acquire the laptop. It never reserves a runner,
+     changes capacity, cancels, or replays a run. This exercises GitHub's
+     documented active-active topology: same scale-set name in different runner
+     groups, arbitrary assignment while both are online, and continued
+     acquisition by the surviving set. [High availability and automatic
+     failover][runner-scale-set-ha]
+  4. `laptop-power` acquires the laptop while the desktop is drained and records
+     UTC heartbeats for 10-30 minutes. The heartbeat artifact proves only that
+     the already-running job survived across those timestamps. Promotion also
+     requires externally captured controller status/logs and Windows power
+     evidence for unplug, zero advertised new capacity, retained busy work,
+     stable AC recovery, and fresh logon while already on battery. A workflow
+     cannot prove the negative condition in which no runner is allowed to start,
+     and REST runner inventory does not report controller `maxCapacity`.
+
+  Evidence is sanitized JSON/JSONL retained as normal workflow artifacts. It
+  includes REST group IDs, repository access, runner identities, observations,
+  run correlation, and explicit limitations—never an App token, private key,
+  JIT configuration, controller credential, or raw API response. GitHub's
+  [artifact contract][workflow-artifacts] supplies the review/download boundary.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -553,6 +609,8 @@ standards catalog.
 [runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
 [runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
 [runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
+[runner-group-rest]: https://docs.github.com/en/rest/actions/self-hosted-runner-groups?apiVersion=2026-03-10
+[runner-scale-set-ha]: https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
