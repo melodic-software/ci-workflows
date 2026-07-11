@@ -125,7 +125,7 @@ jobs:
     if: needs.preflight.result == 'success'
     needs: preflight
     permissions: {}
-    uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@d94877932012972391b98dcea5ce92b804b74418 # governed selector review
+    uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@257f584ea24f65824acd17a8d9bbfbe650d24033 # governed selector review
     with:
       policy: prefer-self-hosted
       self-hosted-label: melodic-canary-ubuntu-24.04-x64
