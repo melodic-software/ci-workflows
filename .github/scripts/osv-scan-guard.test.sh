@@ -23,13 +23,13 @@ run_case() {
 
   rm -f "$results_json" "$github_output"
   case "$result_shape" in
-    array) printf '{"results":[]}\n' >"$results_json" ;;
-    null) printf '{"results":null}\n' >"$results_json" ;;
-    absent) ;;
-    *)
-      echo "unknown result shape: $result_shape" >&2
-      return 2
-      ;;
+  array) printf '{"results":[]}\n' >"$results_json" ;;
+  null) printf '{"results":null}\n' >"$results_json" ;;
+  absent) ;;
+  *)
+    echo "unknown result shape: $result_shape" >&2
+    return 2
+    ;;
   esac
 
   set +e
@@ -70,16 +70,16 @@ run_sarif_case() {
 
   rm -f "$results_sarif" "$sarif_target" "$github_output"
   case "$result_shape" in
-    regular) printf '{"version":"2.1.0","runs":[]}\n' >"$results_sarif" ;;
-    absent) ;;
-    symlink)
-      printf '{"version":"2.1.0","runs":[]}\n' >"$sarif_target"
-      ln -s "$sarif_target" "$results_sarif"
-      ;;
-    *)
-      echo "unknown SARIF shape: $result_shape" >&2
-      return 2
-      ;;
+  regular) printf '{"version":"2.1.0","runs":[]}\n' >"$results_sarif" ;;
+  absent) ;;
+  symlink)
+    printf '{"version":"2.1.0","runs":[]}\n' >"$sarif_target"
+    ln -s "$sarif_target" "$results_sarif"
+    ;;
+  *)
+    echo "unknown SARIF shape: $result_shape" >&2
+    return 2
+    ;;
   esac
 
   set +e
