@@ -42,7 +42,7 @@ const templateReadme = fs.readFileSync(
   path.join(templateRoot, "README.md"),
   "utf8",
 );
-const implementationSha = "4e2fe8829bcfd593079346868f13b19364ce3535";
+const implementationSha = "fdf0e6e5905e50be8e332f9bc522e24947a61b13";
 
 function jobBlock(jobId) {
   const start = workflow.indexOf(`  ${jobId}:\n`);
@@ -718,7 +718,7 @@ test("generated workflow bundles match the single tested implementation", () => 
   );
 });
 
-test("private production caller pins the first immutable implementation commit", () => {
+test("private production caller pins the corrected immutable implementation", () => {
   assert.match(templateWorkflow, /^ {2}workflow_dispatch:/mu);
   assert.doesNotMatch(
     templateWorkflow,
@@ -771,6 +771,15 @@ test("pinned reusable commit contains the exact caller and selector contracts", 
   assert.match(
     pinned.stdout,
     /runs-on: \$\{\{ needs\.select-production-runner\.outputs\.runner \}\}/u,
+  );
+  assert.match(
+    pinned.stdout,
+    /REF_PROTECTED: \$\{\{ github\.ref_protected \}\}/u,
+  );
+  assert.match(pinned.stdout, /\$\{\{ !cancelled\(\) &&/u);
+  assert.equal(
+    [...pinned.stdout.matchAll(/repositories: ci-runner-canary/gu)].length,
+    2,
   );
   assert.doesNotMatch(pinned.stdout, /runs-on:\s+melodic-ubuntu-24\.04-x64/u);
 });
