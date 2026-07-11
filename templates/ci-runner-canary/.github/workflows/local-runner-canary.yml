@@ -20,7 +20,7 @@ jobs:
     name: Local runner canary
     permissions:
       contents: read
-    uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@bb762391c41e9d12975fae25a06ac930050baba9 # reviewed canary contract
+    uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4 # reviewed canary contract
     with:
       mode: ${{ inputs.mode }}
       observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}

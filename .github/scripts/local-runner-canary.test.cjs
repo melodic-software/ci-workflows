@@ -49,6 +49,17 @@ const templateLfsPath = path.join(
   "canary.txt",
 );
 const templateBootstrapPath = path.join(templateRoot, "bootstrap.ps1");
+const currentSelectorSha = "66e3e974e9c0132150cc982cdd76aca284df19de";
+const supersededSelectorShas = [
+  "4943b1c4ff6ae9624736ac95622d7ab748132c8d",
+  "d94877932012972391b98dcea5ce92b804b74418",
+  "257f584ea24f65824acd17a8d9bbfbe650d24033",
+];
+const currentCanarySha = "ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4";
+const supersededCanaryShas = [
+  "bb762391c41e9d12975fae25a06ac930050baba9",
+  "2dfd2c97ea12e027d5b1067f35a7a391673b45a2",
+];
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const parityScript = fs.readFileSync(scriptPath, "utf8");
@@ -64,7 +75,12 @@ const runnerAssertionScripts = [
   ),
 ].map((match) => match.groups.script.replace(/^ {10}/gmu, ""));
 
-function runRunnerAssertion(runnerEnvironment, runnerName) {
+function runRunnerAssertion(
+  runnerEnvironment,
+  runnerName,
+  runnerOS = "Linux",
+  runnerArch = "X64",
+) {
   const outputDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), "ci-runner-canary-assertion-"),
   );
@@ -81,6 +97,8 @@ function runRunnerAssertion(runnerEnvironment, runnerName) {
           GITHUB_OUTPUT: outputPath,
           RUNNER_ENVIRONMENT: runnerEnvironment,
           RUNNER_NAME: runnerName,
+          RUNNER_OS: runnerOS,
+          RUNNER_ARCH: runnerArch,
         },
       },
     );
@@ -166,8 +184,14 @@ test("immutable canary owns selector policy and direct routing outputs", () => {
   );
   assert.match(
     workflow,
-    /select-runner:[\s\S]*?needs: preflight[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/select-runner\.yml@4943b1c4ff6ae9624736ac95622d7ab748132c8d/u,
+    new RegExp(
+      `select-runner:[\\s\\S]*?needs: preflight[\\s\\S]*?uses: melodic-software/ci-workflows/\\.github/workflows/select-runner\\.yml@${currentSelectorSha}`,
+      "u",
+    ),
   );
+  for (const supersededSelectorSha of supersededSelectorShas) {
+    assert.doesNotMatch(workflow, new RegExp(supersededSelectorSha, "u"));
+  }
   assert.match(
     workflow,
     /self-hosted-label: melodic-canary-ubuntu-24\.04-x64/u,
@@ -200,11 +224,35 @@ test("immutable canary owns selector policy and direct routing outputs", () => {
     ].length,
     5,
   );
+  assert.equal(
+    [...workflow.matchAll(/RUNNER_OS: \$\{\{ runner\.os \}\}/gu)].length,
+    5,
+  );
+  assert.equal(
+    [...workflow.matchAll(/RUNNER_ARCH: \$\{\{ runner\.arch \}\}/gu)].length,
+    5,
+  );
 });
 
 test("every selected job rejects hosted and unmanaged runner identities", () => {
   assert.equal(runnerAssertionScripts.length, 5);
   assert.equal(new Set(runnerAssertionScripts).size, 1);
+  assert.equal(
+    [
+      ...workflow.matchAll(
+        /^ {4}steps:\n {6}- name: Assert managed self-hosted runner$/gmu,
+      ),
+    ].length,
+    5,
+  );
+  assert.match(
+    runnerAssertionScripts[0],
+    /\[\[ "\$RUNNER_OS" = Linux \]\] \|\| fail "runner\.os is not Linux"/u,
+  );
+  assert.match(
+    runnerAssertionScripts[0],
+    /\[\[ "\$RUNNER_ARCH" = X64 \]\] \|\| fail "runner\.arch is not X64"/u,
+  );
 
   const desktop = runRunnerAssertion(
     "self-hosted",
@@ -231,6 +279,24 @@ test("every selected job rejects hosted and unmanaged runner identities", () => 
   ]) {
     const rejected = runRunnerAssertion(environment, name);
     assert.notEqual(rejected.status, 0, `${environment}/${name} was accepted`);
+  }
+
+  const managedName = "ci-runner-canary-melo-desk-001-job-runtime";
+  for (const [runnerOS, runnerArch] of [
+    ["Windows", "X64"],
+    ["Linux", "ARM64"],
+  ]) {
+    const rejected = runRunnerAssertion(
+      "self-hosted",
+      managedName,
+      runnerOS,
+      runnerArch,
+    );
+    assert.notEqual(
+      rejected.status,
+      0,
+      `${runnerOS}/${runnerArch} runtime was accepted`,
+    );
   }
 });
 
@@ -389,7 +455,7 @@ test("private caller documentation delegates selection and passes only the obser
 });
 
 test("canonical private seed pins the corrected reusable contract", () => {
-  const expectedReusableSha = "bb762391c41e9d12975fae25a06ac930050baba9";
+  const expectedReusableSha = currentCanarySha;
   for (const source of [rootCi, selectorConformance]) {
     assert.match(source, /fetch-depth: 0[\s\S]*?lfs: true/u);
   }
@@ -402,6 +468,9 @@ test("canonical private seed pins the corrected reusable contract", () => {
       "u",
     ),
   );
+  for (const supersededCanarySha of supersededCanaryShas) {
+    assert.doesNotMatch(templateWorkflow, new RegExp(supersededCanarySha, "u"));
+  }
   assert.match(
     templateWorkflow,
     /observer-client-id: \$\{\{ vars\.CI_RUNNER_OBSERVER_CLIENT_ID \}\}/u,
@@ -436,8 +505,13 @@ test("canonical private seed pins the corrected reusable contract", () => {
   );
   assert.match(
     pinned.stdout,
-    /select-runner\.yml@4943b1c4ff6ae9624736ac95622d7ab748132c8d/u,
+    new RegExp(`select-runner\\.yml@${currentSelectorSha}`, "u"),
   );
+  for (const supersededSelectorSha of supersededSelectorShas) {
+    assert.doesNotMatch(pinned.stdout, new RegExp(supersededSelectorSha, "u"));
+  }
+  assert.match(pinned.stdout, /RUNNER_OS: \$\{\{ runner\.os \}\}/u);
+  assert.match(pinned.stdout, /RUNNER_ARCH: \$\{\{ runner\.arch \}\}/u);
   assert.doesNotMatch(pinned.stdout, /inputs\.selected-runner/u);
 });
 

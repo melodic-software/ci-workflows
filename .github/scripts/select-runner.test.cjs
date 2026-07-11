@@ -33,6 +33,7 @@ const BLOCKED_LOCAL_EVENTS = [
   "merge_group",
   "unknown-event",
 ];
+let nextRunnerID = 1;
 
 function input(overrides = {}) {
   return {
@@ -59,13 +60,21 @@ function input(overrides = {}) {
 
 function runner(overrides = {}) {
   return {
+    id: nextRunnerID++,
     name: "ci-runner-melo-desk-001-1",
+    os: "linux",
     status: "online",
     busy: false,
     ephemeral: true,
     labels: [{ name: "melodic-ubuntu-24.04-x64" }],
     ...overrides,
   };
+}
+
+function runnerWithoutEphemeral(overrides = {}) {
+  const candidate = runner(overrides);
+  delete candidate.ephemeral;
+  return candidate;
 }
 
 function response(runners, totalCount = runners.length) {
@@ -190,6 +199,16 @@ test("rerun attempt 2 routes hosted before authentication or inventory", async (
   assert.equal(result.reason, "rerun");
 });
 
+for (const runAttempt of [undefined, Number.NaN, 0, 1.5, -1]) {
+  test(`invalid run attempt ${String(runAttempt)} fails hosted as missing configuration`, async () => {
+    const result = await selectRunner(input({ runAttempt }), {
+      request: requestMustNotRun,
+    });
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "missing-config");
+  });
+}
+
 test("invalid scope fails hosted without an inventory request", async () => {
   const result = await selectRunner(input({ scope: "enterprise" }), {
     request: requestMustNotRun,
@@ -220,6 +239,7 @@ test("malformed and duplicate ordered candidate lists fail hosted", async () => 
     "{not-json",
     "[]",
     '["duplicate","duplicate"]',
+    '["duplicate","DUPLICATE"]',
     '[" spaced "]',
     '["self-hosted"]',
     '["Linux"]',
@@ -310,12 +330,11 @@ test("repository inventory success targets only the caller repository", async ()
   assert.equal(result.route, "self-hosted");
 });
 
-test("filter requires exact label, managed prefix, online, idle, and ephemeral", async () => {
+test("filter requires exact label, managed prefix, online, and idle", async () => {
   const inventory = [
-    runner({ name: "unmanaged-1" }),
+    runner({ name: "unmanaged-1", labels: [{ name: "unrelated-label" }] }),
     runner({ status: "offline" }),
     runner({ busy: true }),
-    runner({ ephemeral: false }),
     runner({ labels: [{ name: "melodic-ubuntu-24.04-x64-other" }] }),
     runner({ name: "ci-runner-melo-lap-001-1" }),
   ];
@@ -323,6 +342,254 @@ test("filter requires exact label, managed prefix, online, idle, and ephemeral",
     request: async () => response(inventory),
   });
   assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("an unrelated runner with omitted optional ephemeral is valid but ineligible", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({ labels: [{ name: "unrelated-label" }] }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "no-idle-runner");
+});
+
+test("a matching managed runner remains eligible when optional ephemeral is omitted", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          labels: [{ name: "MELODIC-UBUNTU-24.04-X64" }],
+        }),
+      ]),
+  });
+  assert.deepEqual(result, {
+    runner: "melodic-ubuntu-24.04-x64",
+    route: "self-hosted",
+    reason: "idle",
+    idleRunnerCount: 1,
+  });
+});
+
+test("an explicit ephemeral false remains authoritative exclusion", async () => {
+  const result = await selectRunner(input(), {
+    request: async () => response([runner({ ephemeral: false })]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "invalid-response");
+});
+
+for (const ephemeral of [undefined, null, "true", 1]) {
+  test(`a present non-boolean ephemeral value ${String(ephemeral)} invalidates inventory`, async () => {
+    const result = await selectRunner(input(), {
+      request: async () => response([runner({ ephemeral })]),
+    });
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "invalid-response");
+  });
+}
+
+test("mixed live-shape inventory selects only the exact managed omitted-field runner", async () => {
+  const inventory = [
+    runnerWithoutEphemeral({
+      name: "unmanaged-1",
+      labels: [{ name: "unrelated-label" }],
+    }),
+    runnerWithoutEphemeral({ status: "offline" }),
+    runnerWithoutEphemeral({ busy: true }),
+    runnerWithoutEphemeral({ labels: [{ name: "unrelated-label" }] }),
+    runnerWithoutEphemeral({ name: "ci-runner-melo-lap-001-1" }),
+  ];
+  const result = await selectRunner(input(), {
+    request: async () => response(inventory),
+  });
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("same-label wrong-prefix sibling contaminates the complete label namespace", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral(),
+        runnerWithoutEphemeral({
+          name: "unmanaged-same-label",
+          labels: [{ name: "MeLoDiC-UbUnTu-24.04-X64" }],
+        }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "invalid-response");
+  assert.equal(result.idleRunnerCount, 0);
+});
+
+test("same-label explicit-false sibling contaminates the complete label namespace", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral(),
+        runner({
+          name: "ci-runner-melo-lap-001-persistent",
+          ephemeral: false,
+          labels: [{ name: "MELODIC-UBUNTU-24.04-X64" }],
+        }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "invalid-response");
+  assert.equal(result.idleRunnerCount, 0);
+});
+
+for (const os of ["unknown", "UNKNOWN", "LiNuX"]) {
+  test(`managed omitted-field runner accepts the V1 ${os} inventory OS`, async () => {
+    const configuredLabel = "Melodic-Ubuntu-24.04-X64";
+    const result = await selectRunner(
+      input({ selfHostedLabel: configuredLabel }),
+      {
+        request: async () =>
+          response([
+            runnerWithoutEphemeral({
+              os,
+              labels: [{ name: configuredLabel.toUpperCase() }],
+            }),
+          ]),
+      },
+    );
+    assert.equal(result.route, "self-hosted");
+    assert.equal(result.runner, configuredLabel);
+  });
+}
+
+for (const os of ["windows", "macOS"]) {
+  test(`same-label ${os} sibling contaminates the V1 Linux namespace`, async () => {
+    const configuredLabel = "Melodic-Ubuntu-24.04-X64";
+    const result = await selectRunner(
+      input({ selfHostedLabel: configuredLabel }),
+      {
+        request: async () =>
+          response([
+            runnerWithoutEphemeral({
+              os: "unknown",
+              labels: [{ name: configuredLabel.toLowerCase() }],
+            }),
+            runnerWithoutEphemeral({
+              name: `ci-runner-melo-wrong-os-${os}`,
+              os,
+              labels: [{ name: configuredLabel.toUpperCase() }],
+            }),
+          ]),
+      },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "invalid-response");
+    assert.equal(result.idleRunnerCount, 0);
+  });
+}
+
+test("an omitted-field runner on an unrelated label does not poison a good sibling", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          name: "unmanaged-unrelated",
+          labels: [{ name: "unrelated-label" }],
+        }),
+        runnerWithoutEphemeral(),
+      ]),
+  });
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("a wrong-OS runner on an unrelated label does not poison the V1 namespace", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          name: "ci-runner-melo-windows-unrelated",
+          os: "windows",
+          labels: [{ name: "unrelated-label" }],
+        }),
+        runnerWithoutEphemeral({ os: "unknown" }),
+      ]),
+  });
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("ordered candidates skip a contaminated label and select a clean lower priority", async () => {
+  const labels = ["Kyle-Desk-Ubuntu-24.04-X64", "Kyle-Lap-Ubuntu-24.04-X64"];
+  const result = await selectRunner(
+    input({
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: JSON.stringify(labels),
+    }),
+    {
+      request: async () =>
+        response([
+          runnerWithoutEphemeral({
+            name: "unmanaged-desktop-label",
+            labels: [{ name: labels[0].toUpperCase() }],
+          }),
+          runnerWithoutEphemeral({
+            name: "ci-runner-melo-lap-001-1",
+            labels: [{ name: labels[1].toLowerCase() }],
+          }),
+        ]),
+    },
+  );
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.runner, labels[1]);
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("ordered candidates skip a wrong-OS label and preserve clean configured spelling", async () => {
+  const labels = ["Kyle-Desk-Ubuntu-24.04-X64", "Kyle-Lap-Ubuntu-24.04-X64"];
+  const result = await selectRunner(
+    input({
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: JSON.stringify(labels),
+    }),
+    {
+      request: async () =>
+        response([
+          runnerWithoutEphemeral({
+            os: "Windows",
+            labels: [{ name: labels[0].toUpperCase() }],
+          }),
+          runnerWithoutEphemeral({
+            name: "ci-runner-melo-lap-001-1",
+            os: "UNKNOWN",
+            labels: [{ name: labels[1].toLowerCase() }],
+          }),
+        ]),
+    },
+  );
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.runner, labels[1]);
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("runner label case variants dedupe while configured spelling is returned", async () => {
+  const configuredLabel = "Melodic-Ubuntu-24.04-X64";
+  const result = await selectRunner(
+    input({ selfHostedLabel: configuredLabel }),
+    {
+      request: async () =>
+        response([
+          runnerWithoutEphemeral({
+            labels: [
+              { name: configuredLabel.toLowerCase() },
+              { name: configuredLabel.toUpperCase() },
+            ],
+          }),
+        ]),
+    },
+  );
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.runner, configuredLabel);
   assert.equal(result.idleRunnerCount, 1);
 });
 
@@ -357,7 +624,7 @@ test("stable saturation routes hosted", async () => {
 test("pagination reads every page before selecting", async () => {
   const calls = [];
   const firstPage = Array.from({ length: 100 }, (_, index) =>
-    runner({
+    runnerWithoutEphemeral({
       name: `other-managed-${index}`,
       labels: [{ name: "unrelated" }],
     }),
@@ -366,7 +633,7 @@ test("pagination reads every page before selecting", async () => {
     calls.push(parameters.page);
     return parameters.page === 1
       ? response(firstPage, 101)
-      : response([runner()], 101);
+      : response([runnerWithoutEphemeral()], 101);
   };
   const result = await selectRunner(input(), { request });
   assert.deepEqual(calls, [1, 2]);
@@ -389,6 +656,20 @@ test("pagination failure on a later page routes hosted", async () => {
   assert.equal(result.reason, "api-error");
 });
 
+test("a duplicate runner id across pagination fails hosted", async () => {
+  const firstPage = Array.from({ length: 100 }, (_, index) =>
+    runner({ name: `other-managed-${index}`, labels: [{ name: "unrelated" }] }),
+  );
+  const result = await selectRunner(input(), {
+    request: async (_route, parameters) =>
+      parameters.page === 1
+        ? response(firstPage, 101)
+        : response([runner({ id: firstPage[0].id })], 101),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "invalid-response");
+});
+
 test("malformed inventory responses fail hosted", async () => {
   const cases = [
     undefined,
@@ -401,6 +682,23 @@ test("malformed inventory responses fail hosted", async () => {
     const result = await selectRunner(input(), {
       request: async () => invalid,
     });
+    assert.equal(result.reason, "invalid-response");
+  }
+});
+
+test("malformed required runner id and os fields fail hosted", async () => {
+  for (const malformed of [
+    runner({ id: undefined }),
+    runner({ id: "1" }),
+    runner({ id: 1.5 }),
+    runner({ os: undefined }),
+    runner({ os: "" }),
+    runner({ os: " linux " }),
+  ]) {
+    const result = await selectRunner(input(), {
+      request: async () => response([malformed]),
+    });
+    assert.equal(result.route, "hosted");
     assert.equal(result.reason, "invalid-response");
   }
 });
