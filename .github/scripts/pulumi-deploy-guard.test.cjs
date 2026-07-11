@@ -58,10 +58,7 @@ test("deployment guard exposes only reviewed state-adoption outputs", () => {
     action,
     /Empty array selects policy-only validation while still validating exported stack state\./u,
   );
-  assert.match(
-    action,
-    /Empty in policy-only mode\./u,
-  );
+  assert.match(action, /Empty in policy-only mode\./u);
   assert.doesNotMatch(action, /secrets\./u);
 });
 
