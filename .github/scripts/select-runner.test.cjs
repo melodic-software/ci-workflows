@@ -326,12 +326,11 @@ test("repository inventory success targets only the caller repository", async ()
   assert.equal(result.route, "self-hosted");
 });
 
-test("filter requires exact label, managed prefix, online and idle, and rejects explicit non-ephemeral", async () => {
+test("filter requires exact label, managed prefix, online, and idle", async () => {
   const inventory = [
-    runner({ name: "unmanaged-1" }),
+    runner({ name: "unmanaged-1", labels: [{ name: "unrelated-label" }] }),
     runner({ status: "offline" }),
     runner({ busy: true }),
-    runner({ ephemeral: false }),
     runner({ labels: [{ name: "melodic-ubuntu-24.04-x64-other" }] }),
     runner({ name: "ci-runner-melo-lap-001-1" }),
   ];
@@ -370,7 +369,7 @@ test("an explicit ephemeral false remains authoritative exclusion", async () => 
     request: async () => response([runner({ ephemeral: false })]),
   });
   assert.equal(result.route, "hosted");
-  assert.equal(result.reason, "no-idle-runner");
+  assert.equal(result.reason, "invalid-response");
 });
 
 for (const ephemeral of [undefined, null, "true", 1]) {
@@ -385,7 +384,10 @@ for (const ephemeral of [undefined, null, "true", 1]) {
 
 test("mixed live-shape inventory selects only the exact managed omitted-field runner", async () => {
   const inventory = [
-    runnerWithoutEphemeral({ name: "unmanaged-1" }),
+    runnerWithoutEphemeral({
+      name: "unmanaged-1",
+      labels: [{ name: "unrelated-label" }],
+    }),
     runnerWithoutEphemeral({ status: "offline" }),
     runnerWithoutEphemeral({ busy: true }),
     runnerWithoutEphemeral({ labels: [{ name: "unrelated-label" }] }),
@@ -395,6 +397,76 @@ test("mixed live-shape inventory selects only the exact managed omitted-field ru
     request: async () => response(inventory),
   });
   assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("same-label wrong-prefix sibling contaminates the complete label namespace", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral(),
+        runnerWithoutEphemeral({ name: "unmanaged-same-label" }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "invalid-response");
+  assert.equal(result.idleRunnerCount, 0);
+});
+
+test("same-label explicit-false sibling contaminates the complete label namespace", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral(),
+        runner({
+          name: "ci-runner-melo-lap-001-persistent",
+          ephemeral: false,
+        }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "invalid-response");
+  assert.equal(result.idleRunnerCount, 0);
+});
+
+test("an omitted-field runner on an unrelated label does not poison a good sibling", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          name: "unmanaged-unrelated",
+          labels: [{ name: "unrelated-label" }],
+        }),
+        runnerWithoutEphemeral(),
+      ]),
+  });
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.idleRunnerCount, 1);
+});
+
+test("ordered candidates skip a contaminated label and select a clean lower priority", async () => {
+  const labels = ["kyle-desk-ubuntu-24.04-x64", "kyle-lap-ubuntu-24.04-x64"];
+  const result = await selectRunner(
+    input({
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: JSON.stringify(labels),
+    }),
+    {
+      request: async () =>
+        response([
+          runnerWithoutEphemeral({
+            name: "unmanaged-desktop-label",
+            labels: [{ name: labels[0] }],
+          }),
+          runnerWithoutEphemeral({
+            name: "ci-runner-melo-lap-001-1",
+            labels: [{ name: labels[1] }],
+          }),
+        ]),
+    },
+  );
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.runner, labels[1]);
   assert.equal(result.idleRunnerCount, 1);
 });
 

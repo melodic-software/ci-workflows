@@ -450,6 +450,26 @@ jobs:
               }
 
               function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
+                // `runs-on` contains only the selected label, so GitHub may assign any
+                // runner carrying it. Treat that exact label as contaminated if even one
+                // bearer falls outside the managed namespace or explicitly reports itself
+                // non-ephemeral. Contamination is per label: a later distinct configured
+                // label remains safe when none of its own bearers violate the contract.
+                const contaminatedLabels = new Set();
+                for (const runner of runners) {
+                  if (
+                    !runner.name.startsWith(managedRunnerPrefix) ||
+                    runner.ephemeral === false
+                  ) {
+                    for (const runnerLabel of runner.labels) {
+                      if (labels.includes(runnerLabel.name)) {
+                        contaminatedLabels.add(runnerLabel.name);
+                      }
+                    }
+                  }
+                }
+                const safeLabels = labels.filter((label) => !contaminatedLabels.has(label));
+
                 const idleRunners = runners.filter((runner) => {
                   // GitHub's 2026-03-10 OpenAPI makes `ephemeral` optional, and live list
                   // responses can omit it. An explicit false is authoritative exclusion;
@@ -463,16 +483,21 @@ jobs:
                     runner.status === "online" &&
                     runner.busy === false &&
                     eligibleEphemeralState &&
-                    runner.labels.some((runnerLabel) => labels.includes(runnerLabel.name))
+                    runner.labels.some((runnerLabel) => safeLabels.includes(runnerLabel.name))
                   );
                 });
 
-                const selectedLabel = labels.find((label) =>
+                const selectedLabel = safeLabels.find((label) =>
                   idleRunners.some((runner) =>
                     runner.labels.some((runnerLabel) => runnerLabel.name === label),
                   ),
                 );
-                return { idleRunnerCount: idleRunners.length, selectedLabel };
+                return {
+                  idleRunnerCount: idleRunners.length,
+                  selectedLabel,
+                  labelNamespaceInvalid:
+                    contaminatedLabels.size > 0 && safeLabels.length === 0,
+                };
               }
 
               function errorResult(error, controller, hostedRunner) {
@@ -521,6 +546,9 @@ jobs:
                     prepared.labels,
                     input.managedRunnerPrefix,
                   );
+                  if (idle.labelNamespaceInvalid) {
+                    return hostedResult(prepared.hostedRunner, "invalid-response");
+                  }
                   if (!idle.selectedLabel) {
                     return hostedResult(prepared.hostedRunner, "no-idle-runner");
                   }

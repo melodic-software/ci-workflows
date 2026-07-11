@@ -208,6 +208,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   runner. The selector still requires online and idle state in the same
   inventory snapshot.
 
+  Because downstream `runs-on` contains only the returned label, namespace
+  integrity is checked across every inventoried runner bearing each exact
+  candidate label—not only the idle runner observed by the selector. A label is
+  contaminated when any bearer is outside the managed name prefix or explicitly
+  reports `ephemeral: false`; that label is never returned. In an ordered
+  candidate list, a distinct clean lower-priority label remains eligible because
+  GitHub cannot route that label to a bearer of the contaminated one. Idle counts
+  include only eligible runners on clean labels. If every configured label is
+  contaminated, selection fails hosted with `invalid-response`; omitted-field
+  runners carrying unrelated labels do not poison the managed namespace.
+
   `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
   API cannot prove that an arbitrary label belongs to hosted infrastructure. The
   selector therefore allowlists only the reviewed V1 value `ubuntu-24.04` and
