@@ -30,6 +30,19 @@ const workflowPath = path.join(
 );
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
+const templateRoot = path.join(repositoryRoot, "templates", "ci-runner-canary");
+const templateWorkflowPath = path.join(
+  templateRoot,
+  ".github",
+  "workflows",
+  "production-ha-proof.yml",
+);
+const templateWorkflow = fs.readFileSync(templateWorkflowPath, "utf8");
+const templateReadme = fs.readFileSync(
+  path.join(templateRoot, "README.md"),
+  "utf8",
+);
+const implementationSha = "4e2fe8829bcfd593079346868f13b19364ce3535";
 
 function group(host, id) {
   return {
@@ -598,4 +611,101 @@ test("generated workflow bundles match the single tested implementation", () => 
     ].length,
     2,
   );
+});
+
+test("private production caller pins the first immutable implementation commit", () => {
+  assert.match(templateWorkflow, /^ {2}workflow_dispatch:/mu);
+  assert.doesNotMatch(
+    templateWorkflow,
+    /^ {2}(?:push|pull_request|pull_request_target|schedule):/mu,
+  );
+  assert.match(
+    templateWorkflow,
+    new RegExp(
+      `uses: melodic-software/ci-workflows/\\.github/workflows/production-ha-proof\\.yml@${implementationSha} # reviewed production HA contract`,
+      "u",
+    ),
+  );
+  assert.match(
+    templateWorkflow,
+    /observer-client-id: \$\{\{ vars\.CI_RUNNER_OBSERVER_CLIENT_ID \}\}/u,
+  );
+  assert.match(
+    templateWorkflow,
+    /observer-private-key: \$\{\{ secrets\.CI_RUNNER_OBSERVER_PRIVATE_KEY \}\}/u,
+  );
+  assert.doesNotMatch(templateWorkflow, /secrets:\s+inherit/u);
+  assert.doesNotMatch(templateWorkflow, /melodic-ubuntu-24\.04-x64/u);
+  assert.doesNotMatch(templateWorkflow, /ci-runner-melo-/u);
+  assert.match(
+    templateWorkflow,
+    /options: \[inventory, desktop-only, laptop-only, failover, laptop-power\]/u,
+  );
+  assert.match(
+    templateWorkflow,
+    /drain-wait-minutes: \$\{\{ fromJSON\(inputs\.drain-wait-minutes\) \}\}/u,
+  );
+  assert.match(
+    templateWorkflow,
+    /laptop-proof-minutes: \$\{\{ fromJSON\(inputs\.laptop-proof-minutes\) \}\}/u,
+  );
+});
+
+test("pinned reusable commit contains the exact caller and selector contracts", () => {
+  const pinned = spawnSync(
+    "git",
+    ["show", `${implementationSha}:.github/workflows/production-ha-proof.yml`],
+    { cwd: repositoryRoot, encoding: "utf8" },
+  );
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.match(pinned.stdout, new RegExp(PROOF_CALLER_WORKFLOW, "u"));
+  assert.match(
+    pinned.stdout,
+    /select-runner\.yml@66e3e974e9c0132150cc982cdd76aca284df19de/u,
+  );
+  assert.match(
+    pinned.stdout,
+    /runs-on: \$\{\{ needs\.select-production-runner\.outputs\.runner \}\}/u,
+  );
+  assert.doesNotMatch(pinned.stdout, /runs-on:\s+melodic-ubuntu-24\.04-x64/u);
+});
+
+test("bootstrap stages the exact production caller without committing or pushing", () => {
+  const bootstrap = fs.readFileSync(
+    path.join(templateRoot, "bootstrap.ps1"),
+    "utf8",
+  );
+  assert.match(bootstrap, /'\.github\/workflows\/production-ha-proof\.yml'/u);
+  assert.doesNotMatch(bootstrap, /ArgumentList[^\n]*(?:'commit'|'push')/u);
+});
+
+test("operator runbook requires external scale-set, capacity, and battery evidence", () => {
+  for (const mode of [
+    "inventory",
+    "desktop-only",
+    "laptop-only",
+    "failover",
+    "laptop-power",
+  ]) {
+    assert.match(templateReadme, new RegExp(`\`${mode}\``, "u"));
+  }
+  for (const evidence of [
+    "pools[].scaleSetId",
+    "pools[].listenerId",
+    "pools[].maxCapacity",
+    "pools[].capacityAcknowledged",
+    "power.acConnected=false",
+    "Fresh-logon-on-battery",
+    "docker desktop status",
+    "docker info",
+  ]) {
+    assert.ok(templateReadme.includes(evidence), evidence);
+  }
+  assert.match(templateReadme, /do not report listener capacity/u);
+  assert.match(templateReadme, /Heartbeats prove only/u);
+  assert.match(
+    templateReadme,
+    /workflow cannot run\s+on the runner whose absence it must prove/u,
+  );
+  assert.match(templateReadme, /Never use \*\*Re-run jobs\*\*/u);
 });

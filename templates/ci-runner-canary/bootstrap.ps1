@@ -21,6 +21,7 @@ $SeedFiles = @(
     '.gitattributes'
     '.github/dependabot.yml'
     '.github/workflows/local-runner-canary.yml'
+    '.github/workflows/production-ha-proof.yml'
     'bootstrap.ps1'
     'fixtures/cache/canary.lock'
     'fixtures/lfs/canary.txt'
