@@ -154,11 +154,7 @@ jobs:
           # only those semantic finding codes; download, verification, argument,
           # collection, and internal failures still fail closed.
           set +e
-          if [[ "$ONLINE_AUDITS" == true ]]; then
-            GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}"
-          else
-            "$binary" "${args[@]}" -- "${targets[@]}"
-          fi
+          GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}"
           status=$?
           set -e
           unset token

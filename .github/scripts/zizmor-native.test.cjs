@@ -115,7 +115,14 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.match(step, /--format=github/u);
   assert.match(step, /--cache-dir=\$work_dir\/cache/u);
   assert.match(step, /args\+=\(--no-online-audits\)/u);
-  assert.match(step, /"\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}"/u);
+  assert.match(
+    step,
+    /GH_TOKEN="\$token" "\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}"/u,
+  );
+  assert.doesNotMatch(
+    step,
+    /^\s*"\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}"$/mu,
+  );
   assert.doesNotMatch(step, /continue-on-error/u);
   assert.match(step, /^ {12}11\|12\|13\|14\)$/mu);
   assert.match(
