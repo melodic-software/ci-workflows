@@ -143,15 +143,23 @@ GitHub continues the normal weekly patching of each hosted image generation.
   hosted/self-hosted selector. It runs on `ubuntu-slim` with a two-minute
   timeout and returns one `runs-on` string. A downstream job has its own runner
   and timeout; the selector's platform limit does not carry into that job.
-  Selection is deliberately fail-open to the configured hosted runner. It uses
-  a read-only observer GitHub App and chooses local only when a governed
-  scale-set route has a managed-prefix runner that is online, idle, and not
-  explicitly reported as non-ephemeral. Full reruns
-  (`github.run_attempt > 1`) always route hosted. Public repositories, fork pull
-  requests, and Dependabot runs route hosted before the observer-token action
-  can execute, following GitHub's [self-hosted runner security guidance][runner-security]
-  and [Dependabot secret boundary][dependabot-secrets]. Call it once per
-  independently schedulable workload:
+  `prefer-self-hosted` is deliberately fail-open to the configured hosted
+  runner. It uses a read-only observer GitHub App and chooses local only when a
+  governed scale-set route has a managed-prefix runner that is online, idle, and
+  not explicitly reported as non-ephemeral. Full reruns route hosted in that
+  mode. `self-hosted-only` instead returns the configured exact managed
+  label without inventory or observer credentials, including on reruns, so a
+  trusted private workload queues until governed capacity is available. The
+  queue-only label must be the exact centrally allowlisted
+  `melodic-ubuntu-24.04-x64` route; adding another route requires a reviewed
+  immutable selector revision. Invalid queue-only configuration and selector
+  infrastructure faults fail the selector job instead of falling back to paid
+  hosted execution. Public
+  repositories, fork pull requests, and Dependabot runs route hosted before the
+  observer-token action can execute, following GitHub's
+  [self-hosted runner security guidance][runner-security] and
+  [Dependabot secret boundary][dependabot-secrets]. Call it once per independently
+  schedulable workload:
 
   ```yaml
   jobs:
@@ -176,21 +184,24 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   Never use `secrets: inherit`; pass only the observer key. Stable output reasons
-  are `idle`, `hosted-only`, `rerun`, `no-idle-runner`, `missing-config`,
-  `missing-secret`, `auth-error`, `api-timeout`, `api-error`, and
-  `invalid-response`. The security eligibility guard also reports
+  are `idle`, `self-hosted-only`, `hosted-only`, `rerun`, `no-idle-runner`,
+  `missing-config`, `missing-secret`, `auth-error`, `api-timeout`, `api-error`,
+  `invalid-response`, and the strict infrastructure sentinel `selector-error`.
+  The security eligibility guard also reports
   `hosted-only`. `selector-conformance.yml` runs the deterministic selector test
-  suite and proves the public, hosted-only, and attempt-2 contracts without
-  accessing local capacity. The tested CommonJS source is generated into the
-  workflow, so the reusable-workflow SHA pins the implementation without a
-  second checkout/ref. This matters because actions inside a called workflow
-  otherwise run in the [caller's repository context][reusable-workflow-context].
-  A conformance check fails if the executable copy drifts.
+  suite and proves the public, hosted-only, queue-only, and attempt-2 contracts
+  without accessing local capacity. The tested CommonJS source is generated
+  into the workflow, so the reusable-workflow SHA pins the implementation
+  without a second checkout/ref. This matters because actions inside a called
+  workflow otherwise run in the
+  [caller's repository context][reusable-workflow-context]. A conformance check
+  fails if the executable copy drifts.
 
   `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
   When present it overrides `self-hosted-label`; malformed, empty, or duplicate
   candidate lists route hosted with `invalid-response`. Candidate priority is
-  the array order, independent of runner API order. Because GitHub documents
+  the array order, independent of runner API order. `self-hosted-only` requires
+  exactly one centrally allowlisted candidate. Because GitHub documents
   [runner labels as case-insensitive][runner-labels], candidate and inventory
   labels are compared through case-normalized keys, case-only duplicates are
   rejected, and the selector returns the configured spelling. V1's governed

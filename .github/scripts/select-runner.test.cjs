@@ -97,6 +97,80 @@ test("hosted-only returns without an inventory request", async () => {
   });
 });
 
+test("self-hosted-only queues the primary managed label without credentials or inventory", async () => {
+  const result = await selectRunner(
+    input({
+      policy: "self-hosted-only",
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: '["melodic-ubuntu-24.04-x64"]',
+      scope: "",
+      managedRunnerPrefix: "",
+      observerClientID: "",
+      hasObserverSecret: false,
+      tokenOutcome: "skipped",
+      owner: "",
+      repository: "",
+      apiTimeoutSeconds: Number.NaN,
+      runAttempt: 2,
+    }),
+    { request: requestMustNotRun },
+  );
+  assert.deepEqual(result, {
+    runner: "melodic-ubuntu-24.04-x64",
+    route: "self-hosted",
+    reason: "self-hosted-only",
+    idleRunnerCount: 0,
+  });
+});
+
+for (const [name, overrides, reason] of [
+  ["missing label", { selfHostedLabel: "" }, "missing-config"],
+  [
+    "malformed labels",
+    { selfHostedLabelsJSON: "{bad-json" },
+    "invalid-response",
+  ],
+  ["arbitrary label", { selfHostedLabel: "legacy-runner" }, "unapproved-label"],
+  [
+    "multiple labels",
+    {
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: '["melodic-ubuntu-24.04-x64","legacy-runner"]',
+    },
+    "unapproved-label",
+  ],
+  ["invalid run attempt", { runAttempt: 0 }, "missing-config"],
+]) {
+  test(`self-hosted-only rejects ${name} instead of spending hosted minutes`, async () => {
+    await assert.rejects(
+      selectRunner(input({ policy: "self-hosted-only", ...overrides }), {
+        request: requestMustNotRun,
+      }),
+      (error) => error.name === "StrictRoutingError" && error.reason === reason,
+    );
+  });
+}
+
+for (const [name, overrides] of [
+  ["public repository", { repositoryPrivate: false }],
+  ["fork pull request", { eventName: "pull_request", isForkPullRequest: true }],
+  ["Dependabot", { isDependabot: true }],
+  ["blocked event", { eventName: "pull_request_target" }],
+]) {
+  test(`self-hosted-only keeps ${name} on the hosted security route`, async () => {
+    const result = await selectRunner(
+      input({
+        policy: "self-hosted-only",
+        tokenOutcome: "skipped",
+        ...overrides,
+      }),
+      { request: requestMustNotRun },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "hosted-only");
+  });
+}
+
 for (const [routeName, overrides, reason] of [
   ["hosted-only", { policy: "hosted-only" }, "hosted-only"],
   ["rerun", { runAttempt: 2, tokenOutcome: "skipped" }, "rerun"],
@@ -859,6 +933,8 @@ test("token mint is statically guarded before the App action runs", () => {
     workflow.indexOf("- name: Mint read-only observer token"),
     workflow.indexOf("- name: Select runner"),
   );
+  assert.match(tokenStep, /inputs\.policy == 'prefer-self-hosted'/u);
+  assert.doesNotMatch(tokenStep, /inputs\.policy == 'self-hosted-only'/u);
   for (const requiredGuard of [
     "(inputs.scope == 'organization' || inputs.scope == 'repository')",
     "github.event_name == 'push'",
@@ -910,7 +986,7 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   const selectStep = workflow.slice(workflow.indexOf("- name: Select runner"));
   assert.match(
     workflow,
-    /runner: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}/u,
+    /runner: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.runner \|\| inputs\.policy == 'self-hosted-only' && 'ci-runner-selection-failed' \|\| 'ubuntu-24\.04' \}\}/u,
   );
   assert.doesNotMatch(
     workflow,
@@ -918,11 +994,11 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   );
   assert.match(
     workflow,
-    /route: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.route \|\| 'hosted' \}\}/u,
+    /route: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.route \|\| inputs\.policy == 'self-hosted-only' && 'error' \|\| 'hosted' \}\}/u,
   );
   assert.match(
     workflow,
-    /reason: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.reason \|\| 'api-error' \}\}/u,
+    /reason: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.reason \|\| inputs\.policy == 'self-hosted-only' && 'selector-error' \|\| 'api-error' \}\}/u,
   );
   assert.match(
     workflow,
@@ -934,7 +1010,7 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   );
   assert.match(
     selectStep,
-    /id: select\n\s+continue-on-error: true\n\s+uses: actions\/github-script@/u,
+    /id: select\n\s+continue-on-error: \$\{\{ inputs\.policy != 'self-hosted-only' \}\}\n\s+uses: actions\/github-script@/u,
   );
 });
 
