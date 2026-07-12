@@ -343,22 +343,50 @@ function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
   const configuredLabelKeys = new Set(
     configuredLabels.map((candidate) => candidate.key),
   );
-  const inventory = runners.map((runner) => ({
-    runner,
+  const soleConfiguredLabelKey =
+    configuredLabels.length === 1 ? configuredLabels[0].key : undefined;
+  const inventory = runners.map((runner) => {
     // A Set matches GitHub's case-insensitive semantics and prevents duplicate
     // casing variants in one response from affecting counts or priority.
-    labelKeys: new Set(
+    const observedLabelKeys = new Set(
       runner.labels.map((runnerLabel) => normalizedLabel(runnerLabel.name)),
-    ),
-  }));
+    );
+    // GitHub runner-scale-set jobs target the scale-set name, but live REST
+    // inventory can represent an owned JIT runner with `labels: []`. Only a
+    // single configured route is unambiguous: attribute an empty-label runner
+    // inside the governed name prefix to that sole candidate. Ordered
+    // multi-route selection still requires an observed label and fails closed.
+    const routingLabelKeys =
+      observedLabelKeys.size === 0 &&
+      soleConfiguredLabelKey !== undefined &&
+      runner.name.startsWith(managedRunnerPrefix)
+        ? new Set([soleConfiguredLabelKey])
+        : observedLabelKeys;
+    const hasUnattributedManagedRoute =
+      observedLabelKeys.size === 0 &&
+      soleConfiguredLabelKey === undefined &&
+      runner.name.startsWith(managedRunnerPrefix);
+    return { runner, routingLabelKeys, hasUnattributedManagedRoute };
+  });
   const contaminatedLabelKeys = new Set();
-  for (const { runner, labelKeys } of inventory) {
+  for (const {
+    runner,
+    routingLabelKeys,
+    hasUnattributedManagedRoute,
+  } of inventory) {
     if (
       !runner.name.startsWith(managedRunnerPrefix) ||
       runner.ephemeral === false ||
       !V1_MANAGED_RUNNER_OSES.has(runner.os.toLowerCase())
     ) {
-      for (const labelKey of labelKeys) {
+      // In multi-route mode, an empty-label managed runner cannot be mapped to
+      // one candidate. If it violates the lifecycle or OS contract, fail every
+      // candidate closed because the hidden scale-set target may be any one of
+      // them. A conforming but unattributed runner remains merely ineligible.
+      const possiblyAffectedLabelKeys = hasUnattributedManagedRoute
+        ? configuredLabelKeys
+        : routingLabelKeys;
+      for (const labelKey of possiblyAffectedLabelKeys) {
         if (configuredLabelKeys.has(labelKey)) {
           contaminatedLabelKeys.add(labelKey);
         }
@@ -370,7 +398,7 @@ function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
   );
   const safeLabelKeys = new Set(safeLabels.map((candidate) => candidate.key));
 
-  const idleRunners = inventory.filter(({ runner, labelKeys }) => {
+  const idleRunners = inventory.filter(({ runner, routingLabelKeys }) => {
     // GitHub's 2026-03-10 OpenAPI makes `ephemeral` optional, and live list
     // responses can omit it. An explicit false is authoritative exclusion;
     // omission relies on the governed assumption that the exact prefix and
@@ -384,12 +412,14 @@ function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
       runner.status === "online" &&
       runner.busy === false &&
       eligibleEphemeralState &&
-      [...labelKeys].some((labelKey) => safeLabelKeys.has(labelKey))
+      [...routingLabelKeys].some((labelKey) => safeLabelKeys.has(labelKey))
     );
   });
 
   const selectedLabel = safeLabels.find((candidate) =>
-    idleRunners.some(({ labelKeys }) => labelKeys.has(candidate.key)),
+    idleRunners.some(({ routingLabelKeys }) =>
+      routingLabelKeys.has(candidate.key),
+    ),
   );
   return {
     idleRunnerCount: idleRunners.length,

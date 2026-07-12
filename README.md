@@ -144,9 +144,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   timeout and returns one `runs-on` string. A downstream job has its own runner
   and timeout; the selector's platform limit does not carry into that job.
   Selection is deliberately fail-open to the configured hosted runner. It uses
-  a read-only observer GitHub App and chooses local only when an exact-label,
-  managed-prefix runner is online, idle, and not explicitly reported as
-  non-ephemeral. Full reruns
+  a read-only observer GitHub App and chooses local only when a governed
+  scale-set route has a managed-prefix runner that is online, idle, and not
+  explicitly reported as non-ephemeral. Full reruns
   (`github.run_attempt > 1`) always route hosted. Public repositories, fork pull
   requests, and Dependabot runs route hosted before the observer-token action
   can execute, following GitHub's [self-hosted runner security guidance][runner-security]
@@ -206,40 +206,51 @@ GitHub continues the normal weekly patching of each hosted image generation.
   can switch from one shared label to two host-specific exact labels without a
   workflow or selector code change.
 
-  GitHub's official `2026-03-10` [OpenAPI runner schema][runner-openapi] requires
-  `id`, `name`, `os`, `status`, `busy`, and `labels`, but declares `ephemeral`
-  optional; runner-list responses can therefore omit it. A present non-boolean
-  value invalidates the complete inventory, and explicit `false` excludes that
-  runner. When the field is omitted, local selection relies on the governed
-  trust assumption that the configured runner-name prefix and scale-set label
-  are reserved for the `ci-runner` controller's one-job JIT workers. The REST
+  GitHub's official [runner-scale-set contract][runner-scale-sets] routes jobs
+  by scale-set name. Its `2026-03-10` [OpenAPI runner schema][runner-openapi]
+  requires `id`, `name`, `os`, `status`, `busy`, and a `labels` array, but
+  declares `ephemeral` optional. Live scale-set inventory can represent a JIT
+  runner with an empty label array and omit `ephemeral`. When exactly one route
+  is configured, the selector can unambiguously attribute such an empty-label
+  runner inside the governed name prefix to that sole scale-set route. With an
+  ordered multi-route list, an empty-label runner cannot be attributed safely
+  and is ineligible; a candidate must be observed explicitly instead. A present
+  non-boolean `ephemeral` value invalidates the complete inventory, and explicit
+  `false` excludes and contaminates the inferred single-route namespace.
+
+  When `ephemeral` is omitted, local selection relies on the governed trust
+  assumption that the configured runner-name prefix and scale-set route are
+  reserved for the `ci-runner` controller's one-job JIT workers. The REST
   response does not attest that ownership or lifecycle. The selector rejects
   visible namespace conflicts, but credentials and configuration must prevent
-  another runner from satisfying the same prefix-and-label contract. Online and
+  another runner from satisfying the same prefix-and-route contract. Online and
   idle state are still required in the returned inventory observation.
 
   V1 compute is Linux x64, but GitHub's official
   [JIT-configuration response][runner-jit-config] reports `os: unknown`, as can
   live JIT inventory. The selector therefore accepts case-insensitive `linux`
   or `unknown` only. `unknown` is not an OS attestation; it is accepted solely
-  under the same governed prefix-and-label/JIT trust assumption. Any bearer of a
-  candidate label reporting another OS contaminates that label. The canary
-  separately requires the official [runner context][runner-context] values
+  under the same governed prefix-and-route/JIT trust assumption. Any explicit
+  bearer of a candidate route reporting another OS contaminates that route. The
+  canary separately requires the official [runner context][runner-context] values
   `runner.os == Linux` and `runner.arch == X64` before substantive work, then
   executes its Linux x64 compatibility proof.
 
-  Because downstream `runs-on` contains only the returned label, namespace
-  integrity is checked across every runner returned by the paginated inventory
-  that bears each case-insensitive candidate label—not only the idle runner
-  observed by the selector. A label is contaminated when any bearer is outside
-  the managed name prefix, explicitly reports `ephemeral: false`, or reports an
-  OS outside the V1 Linux/JIT-unknown contract; that label is never returned. In
-  an ordered
-  candidate list, a distinct clean lower-priority label remains eligible because
-  GitHub cannot route that label to a bearer of the contaminated one. Idle counts
-  include only eligible runners on clean labels. If every configured label is
-  contaminated, selection fails hosted with `invalid-response`; omitted-field
-  runners carrying unrelated labels do not poison the managed namespace.
+  Because downstream `runs-on` contains only the returned route, namespace
+  integrity is checked across every explicit case-insensitive bearer returned
+  by the paginated inventory—not only the idle runner observed by the selector.
+  A route is contaminated when an explicit bearer is outside the managed name
+  prefix, reports `ephemeral: false`, or reports an OS outside the V1
+  Linux/JIT-unknown contract; that route is never returned. For one configured
+  route, an empty-label managed runner is its unambiguous inferred bearer. For
+  multiple configured routes, a conforming empty-label managed runner is
+  ineligible because it cannot be attributed, while a nonconforming one
+  contaminates every candidate because its hidden route could be any of them.
+  An explicitly distinct clean lower-priority route remains eligible. Idle
+  counts include only eligible runners on clean routes. If every configured
+  route is contaminated, selection fails hosted with `invalid-response`;
+  omitted-field runners carrying unrelated explicit labels do not poison the
+  managed namespace.
 
   Organization inventory is organization-wide. Selection therefore relies on
   IaC giving every same-label runner group identical selected-repository access
@@ -610,6 +621,7 @@ standards catalog.
 [runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
 [runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
 [runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
+[runner-scale-sets]: https://docs.github.com/en/actions/concepts/runners/runner-scale-sets
 [runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
 [runner-group-rest]: https://docs.github.com/en/rest/actions/self-hosted-runner-groups?apiVersion=2026-03-10
 [runner-scale-set-ha]: https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover
