@@ -1065,19 +1065,22 @@ test("generated github-script bundle executes the tested adapter", async () => {
   assert.equal(outputs.get("idle-runner-count"), "1");
 });
 
-test("Docker-dependent hosted exception breadcrumbs remain machine-readable", () => {
-  for (const workflowName of ["zizmor.yml", "osv-scanner.yml"]) {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, "..", "workflows", workflowName),
-      "utf8",
-    );
-    const match = workflow.match(
-      /# runner-policy-exception-template:\n# (\{.*\})/u,
-    );
-    assert.ok(match, workflowName);
-    const exception = JSON.parse(match[1]);
-    assert.equal(exception.reason, "docker-socket");
-    assert.equal(typeof exception.justification, "string");
-    assert.notEqual(exception.justification.trim(), "");
-  }
+test("Docker-dependent OSV exception breadcrumb remains machine-readable", () => {
+  const osv = fs.readFileSync(
+    path.join(__dirname, "..", "workflows", "osv-scanner.yml"),
+    "utf8",
+  );
+  const match = osv.match(/# runner-policy-exception-template:\n# (\{.*\})/u);
+  assert.ok(match, "osv-scanner.yml");
+  const exception = JSON.parse(match[1]);
+  assert.equal(exception.reason, "docker-socket");
+  assert.equal(typeof exception.justification, "string");
+  assert.notEqual(exception.justification.trim(), "");
+
+  const zizmor = fs.readFileSync(
+    path.join(__dirname, "..", "workflows", "zizmor.yml"),
+    "utf8",
+  );
+  assert.doesNotMatch(zizmor, /runner-policy-exception-template/u);
+  assert.doesNotMatch(zizmor, /\bdocker\b/iu);
 });

@@ -449,12 +449,20 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `lychee-offline` action above, which feeds `ci-status`.)
 - `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
-  **Advisory** (surfaces PR annotations, never gates `ci-status`); consumed via
-  `uses:` at job level. It is explicitly hosted because the pinned upstream
-  [action][zizmor-action-script] invokes a digest-pinned container through
-  Docker, while local workers deliberately receive no Docker socket. SARIF
-  upload and blocking promotion are deferred opt-ins. Inputs are documented
-  inline.
+  **Advisory for findings** (surfaces PR annotations without failing unless
+  `fail-on-findings` is enabled); consumed via `uses:` at job level. The
+  workflow downloads the official x86_64 GNU/Linux archive for the reviewed
+  [v1.26.1 release][zizmor-release-v1-26-1], verifies its committed SHA-256
+  before extraction, and verifies the CLI-reported version before auditing.
+  `latest` remains accepted for compatibility but resolves to that reviewed
+  default rather than a mutable release. Installation and internal errors fail
+  closed even in advisory mode; only zizmor's documented finding codes 11-14
+  are suppressed. The verified binary runs from a fresh runner-temporary
+  directory with a per-job cache and without Docker, a job/service container,
+  or an installer-time privilege escalation. `runner` defaults to
+  `ubuntu-24.04` and can consume the approved selector output for eligible
+  private, non-fork, non-Dependabot calls. SARIF upload and blocking promotion
+  remain deferred opt-ins. Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
   Google's official OSV-Scanner v2.4.0 action image, invoked directly by an
   exact linux/amd64 OCI manifest digest. One JSON scan feeds the image's
@@ -493,10 +501,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```json
   {
     "exceptions": {
-      ".github/workflows/ci.yml#zizmor": {
-        "reason": "docker-socket",
-        "justification": "The pinned zizmor action invokes Docker; local workers expose no Docker socket."
-      },
       ".github/workflows/ci.yml#osv-scanner": {
         "reason": "docker-socket",
         "justification": "The official OSV image is invoked by exact OCI digest through Docker; local workers expose no Docker socket."
@@ -520,8 +524,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   and SARIF. Revisit the binary path if Google publishes an equally supported,
   provenance-verifiable reporter. See the [official installation and SLSA
   guidance][osv-installation].
-  The `semantic-pr` workflow remains selectable through its backward-compatible
-  `runner` input; these two Docker-dependent workflows do not expose one.
+  The optional `runner` inputs on `semantic-pr` and native `zizmor` preserve the
+  hosted default while permitting governed selection; Docker-dependent OSV does
+  not expose one.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
   `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
   and pushes the result back to the PR branch, covering the lock-file updates
@@ -670,4 +675,4 @@ standards catalog.
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
-[zizmor-action-script]: https://github.com/zizmorcore/zizmor-action/blob/192e21d79ab29983730a13d1382995c2307fbcaa/action.sh
+[zizmor-release-v1-26-1]: https://github.com/zizmorcore/zizmor/releases/tag/v1.26.1

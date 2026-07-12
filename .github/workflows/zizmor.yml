@@ -8,12 +8,13 @@ name: zizmor
 # matching security-events: write permission, so this advisory lane needs only
 # contents: read. The ci-status gateway stays consumer-local — this is a lane,
 # not the gateway.
-#
-# runner-policy-exception-template:
-# {"reason":"docker-socket","justification":"The pinned zizmor action invokes a digest-pinned container through Docker; the local worker contract deliberately exposes no Docker socket."}
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        default: ubuntu-24.04
       paths:
         description: >-
           Whitespace-separated paths to audit. zizmor discovers workflow and
@@ -21,9 +22,17 @@ on:
         type: string
         default: .github/workflows
       version:
-        description: zizmor CLI version ('latest' or an exact X.Y.Z).
+        description: >-
+          Exact zizmor CLI version. 'latest' is a compatibility alias for the
+          workflow's reviewed default, never a mutable download.
         type: string
         default: v1.26.1
+      sha256:
+        description: >-
+          SHA-256 of the x86_64-unknown-linux-gnu release archive. Change
+          together with version.
+        type: string
+        default: 8556289a64e7aaf2400cd516f61a471aa91c5902cc56ad96a82fd12f90c2ef73
       online-audits:
         description: Run online audits (uses the workflow token).
         type: boolean
@@ -44,9 +53,7 @@ permissions:
 
 jobs:
   zizmor:
-    # Intentionally hosted: zizmor-action calls `docker run`, while local
-    # workers receive neither a Docker socket nor privileged host access.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -55,16 +62,117 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        # Advisory unless the caller opts into fail-on-findings: in annotations
-        # mode zizmor exits 11-14 on findings (no `fail` input exists), so
-        # continue-on-error is the advisory mechanism.
-        continue-on-error: ${{ !inputs.fail-on-findings }}
-        uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
-        with:
-          inputs: ${{ inputs.paths }}
-          version: ${{ inputs.version }}
-          online-audits: ${{ inputs.online-audits }}
-          persona: ${{ inputs.persona }}
-          # Annotations mode (not SARIF), so no security-events: write is needed.
-          advanced-security: false
-          annotations: true
+        shell: bash
+        env:
+          PATHS: ${{ inputs.paths }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA256: ${{ inputs.sha256 }}
+          ONLINE_AUDITS: ${{ inputs.online-audits }}
+          PERSONA: ${{ inputs.persona }}
+          FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+          ZIZMOR_TOKEN: ${{ github.token }}
+          PINNED_VERSION: 1.26.1
+          ASSET_NAME: zizmor-x86_64-unknown-linux-gnu.tar.gz
+        run: |
+          set -euo pipefail
+
+          # Keep the token out of curl/tar's environment. It is exported only
+          # to the already checksum-verified zizmor process below.
+          token=$ZIZMOR_TOKEN
+          unset ZIZMOR_TOKEN
+
+          if [[ "${RUNNER_OS:-}" != Linux || "${RUNNER_ARCH:-}" != X64 ]]; then
+            echo '::error::The native zizmor release requires a Linux X64 runner.'
+            exit 2
+          fi
+
+          case "$REQUESTED_VERSION" in
+            latest) resolved_version=$PINNED_VERSION ;;
+            *)
+              resolved_version=${REQUESTED_VERSION#v}
+              if [[ ! "$resolved_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::zizmor version must be 'latest' or an exact X.Y.Z version."
+                exit 2
+              fi
+              ;;
+          esac
+          if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo '::error::zizmor sha256 must be exactly 64 lowercase hexadecimal characters.'
+            exit 2
+          fi
+          case "$ONLINE_AUDITS:$FAIL_ON_FINDINGS" in
+            true:true|true:false|false:true|false:false) ;;
+            *)
+              echo '::error::zizmor boolean inputs must resolve to true or false.'
+              exit 2
+              ;;
+          esac
+
+          work_dir=$(mktemp -d "${RUNNER_TEMP:?}/zizmor.XXXXXX")
+          trap 'rm -rf -- "$work_dir"' EXIT
+          archive="$work_dir/$ASSET_NAME"
+          url="https://github.com/zizmorcore/zizmor/releases/download/v${resolved_version}/${ASSET_NAME}"
+          curl --fail --show-error --location --proto '=https' \
+            --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --output "$archive" "$url"
+          printf '%s  %s\n' "$EXPECTED_SHA256" "$archive" \
+            | sha256sum --check --strict -
+          tar --extract --gzip --file="$archive" --directory="$work_dir" \
+            --no-same-owner zizmor
+          binary="$work_dir/zizmor"
+          if [[ ! -x "$binary" ]]; then
+            echo '::error::Verified zizmor archive did not contain an executable zizmor binary.'
+            exit 2
+          fi
+          version_output=$("$binary" --version)
+          actual_version=${version_output##* }
+          if [[ "$actual_version" != "$resolved_version" ]]; then
+            echo "::error::Expected zizmor $resolved_version, got $version_output."
+            exit 2
+          fi
+          mkdir -- "$work_dir/cache"
+
+          normalized_paths=${PATHS//$'\n'/ }
+          targets=()
+          read -r -a targets <<< "$normalized_paths"
+          if [[ ${#targets[@]} -eq 0 ]]; then
+            echo '::error::zizmor paths must contain at least one input.'
+            exit 2
+          fi
+
+          args=(
+            --format=github
+            "--persona=$PERSONA"
+            --color=never
+            "--cache-dir=$work_dir/cache"
+          )
+          if [[ "$ONLINE_AUDITS" == false ]]; then
+            args+=(--no-online-audits)
+          fi
+
+          # Annotations mode exits 11-14 for findings. Advisory mode suppresses
+          # only those semantic finding codes; download, verification, argument,
+          # collection, and internal failures still fail closed.
+          set +e
+          if [[ "$ONLINE_AUDITS" == true ]]; then
+            GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}"
+          else
+            "$binary" "${args[@]}" -- "${targets[@]}"
+          fi
+          status=$?
+          set -e
+          unset token
+
+          case "$status" in
+            0) exit 0 ;;
+            11|12|13|14)
+              if [[ "$FAIL_ON_FINDINGS" == false ]]; then
+                echo "::notice::zizmor reported findings (exit $status); advisory mode keeps this lane successful."
+                exit 0
+              fi
+              ;;
+            *)
+              echo "::error::zizmor failed before completing a valid advisory audit (exit $status)."
+              ;;
+          esac
+          exit "$status"
