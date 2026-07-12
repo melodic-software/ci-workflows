@@ -373,6 +373,120 @@ test("a matching managed runner remains eligible when optional ephemeral is omit
   });
 });
 
+test("a single scale-set route selects a live managed runner with an empty REST label list", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          os: "unknown",
+          labels: [],
+        }),
+      ]),
+  });
+  assert.deepEqual(result, {
+    runner: "melodic-ubuntu-24.04-x64",
+    route: "self-hosted",
+    reason: "idle",
+    idleRunnerCount: 1,
+  });
+});
+
+test("an empty REST label list cannot be attributed across ordered scale-set routes", async () => {
+  const result = await selectRunner(
+    input({
+      selfHostedLabel: "",
+      selfHostedLabelsJSON: JSON.stringify([
+        "kyle-desk-ubuntu-24.04-x64",
+        "kyle-lap-ubuntu-24.04-x64",
+      ]),
+    }),
+    {
+      request: async () =>
+        response([runnerWithoutEphemeral({ os: "unknown", labels: [] })]),
+    },
+  );
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "no-idle-runner");
+  assert.equal(result.idleRunnerCount, 0);
+});
+
+for (const incompatible of [
+  { ephemeral: false, os: "unknown" },
+  { os: "windows" },
+]) {
+  test(`an incompatible unattributed managed runner contaminates every ordered route: ${JSON.stringify(incompatible)}`, async () => {
+    const labels = ["kyle-desk-ubuntu-24.04-x64", "kyle-lap-ubuntu-24.04-x64"];
+    const result = await selectRunner(
+      input({
+        selfHostedLabel: "",
+        selfHostedLabelsJSON: JSON.stringify(labels),
+      }),
+      {
+        request: async () =>
+          response([
+            runnerWithoutEphemeral({
+              name: "ci-runner-melo-lap-001-1",
+              labels: [{ name: labels[1] }],
+            }),
+            runner({
+              labels: [],
+              ...incompatible,
+            }),
+          ]),
+      },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "invalid-response");
+    assert.equal(result.idleRunnerCount, 0);
+  });
+}
+
+test("empty-label scale-set inference still requires the managed prefix, online state, and idle state", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
+        runnerWithoutEphemeral({
+          name: "unmanaged-empty-label-runner",
+          os: "unknown",
+          labels: [],
+        }),
+        runnerWithoutEphemeral({
+          status: "offline",
+          os: "unknown",
+          labels: [],
+        }),
+        runnerWithoutEphemeral({
+          busy: true,
+          os: "unknown",
+          labels: [],
+        }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "no-idle-runner");
+  assert.equal(result.idleRunnerCount, 0);
+});
+
+for (const incompatible of [
+  { ephemeral: false, os: "unknown" },
+  { os: "windows" },
+]) {
+  test(`an incompatible empty-label managed runner contaminates the inferred single route: ${JSON.stringify(incompatible)}`, async () => {
+    const result = await selectRunner(input(), {
+      request: async () =>
+        response([
+          runner({
+            labels: [],
+            ...incompatible,
+          }),
+        ]),
+    });
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "invalid-response");
+    assert.equal(result.idleRunnerCount, 0);
+  });
+}
+
 test("an explicit ephemeral false remains authoritative exclusion", async () => {
   const result = await selectRunner(input(), {
     request: async () => response([runner({ ephemeral: false })]),
