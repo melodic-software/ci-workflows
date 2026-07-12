@@ -5,6 +5,7 @@ const APPROVED_HOSTED_RUNNERS = new Set([DEFAULT_HOSTED_RUNNER]);
 const GITHUB_API_VERSION = "2026-03-10";
 const PAGE_SIZE = 100;
 const V1_MANAGED_RUNNER_OSES = new Set(["linux", "unknown"]);
+const SELF_HOSTED_ONLY_LABELS = new Set(["melodic-ubuntu-24.04-x64"]);
 const LOCAL_EVENT_ALLOWLIST = new Set([
   "push",
   "schedule",
@@ -26,6 +27,14 @@ class InvalidResponseError extends Error {
   constructor(message) {
     super(message);
     this.name = "InvalidResponseError";
+  }
+}
+
+class StrictRoutingError extends Error {
+  constructor(reason) {
+    super(`self-hosted-only selection failed: ${reason}`);
+    this.name = "StrictRoutingError";
+    this.reason = reason;
   }
 }
 
@@ -156,7 +165,13 @@ function preflight(input) {
     return { result: hostedResult(hostedRunner, "hosted-only") };
   }
 
-  if (Number.isInteger(input.runAttempt) && input.runAttempt > 1) {
+  const selfHostedOnly = input.policy === "self-hosted-only";
+
+  if (
+    !selfHostedOnly &&
+    Number.isInteger(input.runAttempt) &&
+    input.runAttempt > 1
+  ) {
     return { result: hostedResult(hostedRunner, "rerun") };
   }
 
@@ -178,25 +193,42 @@ function preflight(input) {
     Number.isFinite(input.apiTimeoutSeconds) &&
     input.apiTimeoutSeconds >= 1 &&
     input.apiTimeoutSeconds <= 60;
+  if (!selfHostedOnly && input.policy !== "prefer-self-hosted") {
+    return { result: hostedResult(hostedRunner, "missing-config") };
+  }
+
   if (
-    input.policy !== "prefer-self-hosted" ||
     !exactNonEmptyString(input.hostedRunner) ||
-    !validScope ||
-    !exactNonEmptyString(input.managedRunnerPrefix) ||
-    !exactNonEmptyString(input.observerClientID) ||
-    !exactNonEmptyString(input.owner) ||
-    (input.scope === "repository" && !exactNonEmptyString(input.repository)) ||
-    // Attempts greater than one returned `rerun` above. Requiring exactly one
-    // here makes missing, zero, fractional, and NaN values fail as malformed
-    // configuration without misclassifying them as reruns.
-    input.runAttempt !== 1 ||
-    !validTimeout
+    !Number.isInteger(input.runAttempt) ||
+    input.runAttempt < 1
+  ) {
+    if (selfHostedOnly) {
+      throw new StrictRoutingError("missing-config");
+    }
+    return { result: hostedResult(hostedRunner, "missing-config") };
+  }
+
+  if (
+    !selfHostedOnly &&
+    (!validScope ||
+      !exactNonEmptyString(input.managedRunnerPrefix) ||
+      !exactNonEmptyString(input.observerClientID) ||
+      !exactNonEmptyString(input.owner) ||
+      (input.scope === "repository" &&
+        !exactNonEmptyString(input.repository)) ||
+      // Attempts greater than one returned `rerun` above. Requiring exactly
+      // one here keeps prefer-self-hosted reruns on the hosted route.
+      input.runAttempt !== 1 ||
+      !validTimeout)
   ) {
     return { result: hostedResult(hostedRunner, "missing-config") };
   }
 
   const candidates = parseCandidateLabels(input);
   if ("error" in candidates) {
+    if (selfHostedOnly) {
+      throw new StrictRoutingError(candidates.error);
+    }
     return { result: hostedResult(hostedRunner, candidates.error) };
   }
   if (
@@ -205,7 +237,26 @@ function preflight(input) {
       (label) => label.toLowerCase() === input.hostedRunner.toLowerCase(),
     )
   ) {
+    if (selfHostedOnly) {
+      throw new StrictRoutingError("invalid-response");
+    }
     return { result: hostedResult(hostedRunner, "invalid-response") };
+  }
+  if (selfHostedOnly) {
+    if (
+      candidates.labels.length !== 1 ||
+      !SELF_HOSTED_ONLY_LABELS.has(normalizedLabel(candidates.labels[0]))
+    ) {
+      throw new StrictRoutingError("unapproved-label");
+    }
+    return {
+      result: Object.freeze({
+        runner: candidates.labels[0],
+        route: "self-hosted",
+        reason: "self-hosted-only",
+        idleRunnerCount: 0,
+      }),
+    };
   }
   if (!input.hasObserverSecret) {
     return { result: hostedResult(hostedRunner, "missing-secret") };
@@ -529,6 +580,7 @@ async function runGitHubScript({ github, core, env }) {
 
 module.exports = Object.freeze({
   InvalidResponseError,
+  StrictRoutingError,
   inputsFromEnvironment,
   parseCandidateLabels,
   permitsLocalExecution,

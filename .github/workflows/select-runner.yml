@@ -1,13 +1,13 @@
 name: select-runner
 
-# Central, fail-closed-for-secrets/fail-open-for-execution runner selector.
+# Central, fail-closed-for-secrets, policy-driven runner selector.
 # Callers pass only configuration variables plus the one observer App key; this
 # workflow never receives a host/controller credential.
 on:
   workflow_call:
     inputs:
       policy:
-        description: 'Routing policy: prefer-self-hosted or hosted-only.'
+        description: 'Routing policy: self-hosted-only, prefer-self-hosted, or hosted-only.'
         type: string
         default: hosted-only
       self-hosted-label:
@@ -47,7 +47,7 @@ on:
         description: 'One runs-on label: the managed scale set or hosted runner.'
         value: ${{ jobs.select.outputs.runner }}
       route:
-        description: self-hosted or hosted.
+        description: self-hosted, hosted, or error when strict selection fails.
         value: ${{ jobs.select.outputs.route }}
       reason:
         description: Stable machine-readable routing reason.
@@ -66,12 +66,12 @@ jobs:
     env:
       HAS_OBSERVER_SECRET: ${{ secrets.observer-private-key != '' }}
     outputs:
-      # A failed continue-on-error step can retain outputs written before its
-      # failure. Trust them only when the pre-continue-on-error outcome is
-      # success; otherwise fail hosted even if a partial local label exists.
-      runner: ${{ steps.select.outcome == 'success' && steps.select.outputs.runner || 'ubuntu-24.04' }}
-      route: ${{ steps.select.outcome == 'success' && steps.select.outputs.route || 'hosted' }}
-      reason: ${{ steps.select.outcome == 'success' && steps.select.outputs.reason || 'api-error' }}
+      # A failed step can retain outputs written before failure. Trust them only
+      # when its outcome is success. Strict-mode failure emits an unroutable
+      # sentinel and fails this job; fail-open modes retain the hosted fallback.
+      runner: ${{ steps.select.outcome == 'success' && steps.select.outputs.runner || inputs.policy == 'self-hosted-only' && 'ci-runner-selection-failed' || 'ubuntu-24.04' }}
+      route: ${{ steps.select.outcome == 'success' && steps.select.outputs.route || inputs.policy == 'self-hosted-only' && 'error' || 'hosted' }}
+      reason: ${{ steps.select.outcome == 'success' && steps.select.outputs.reason || inputs.policy == 'self-hosted-only' && 'selector-error' || 'api-error' }}
       idle-runner-count: ${{ steps.select.outcome == 'success' && steps.select.outputs.idle-runner-count || '0' }}
     steps:
       - name: Mint read-only observer token
@@ -108,7 +108,7 @@ jobs:
 
       - name: Select runner
         id: select
-        continue-on-error: true
+        continue-on-error: ${{ inputs.policy != 'self-hosted-only' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           POLICY: ${{ inputs.policy }}
@@ -145,6 +145,7 @@ jobs:
               const GITHUB_API_VERSION = "2026-03-10";
               const PAGE_SIZE = 100;
               const V1_MANAGED_RUNNER_OSES = new Set(["linux", "unknown"]);
+              const SELF_HOSTED_ONLY_LABELS = new Set(["melodic-ubuntu-24.04-x64"]);
               const LOCAL_EVENT_ALLOWLIST = new Set([
                 "push",
                 "schedule",
@@ -166,6 +167,14 @@ jobs:
                 constructor(message) {
                   super(message);
                   this.name = "InvalidResponseError";
+                }
+              }
+
+              class StrictRoutingError extends Error {
+                constructor(reason) {
+                  super(`self-hosted-only selection failed: ${reason}`);
+                  this.name = "StrictRoutingError";
+                  this.reason = reason;
                 }
               }
 
@@ -296,7 +305,13 @@ jobs:
                   return { result: hostedResult(hostedRunner, "hosted-only") };
                 }
 
-                if (Number.isInteger(input.runAttempt) && input.runAttempt > 1) {
+                const selfHostedOnly = input.policy === "self-hosted-only";
+
+                if (
+                  !selfHostedOnly &&
+                  Number.isInteger(input.runAttempt) &&
+                  input.runAttempt > 1
+                ) {
                   return { result: hostedResult(hostedRunner, "rerun") };
                 }
 
@@ -318,25 +333,42 @@ jobs:
                   Number.isFinite(input.apiTimeoutSeconds) &&
                   input.apiTimeoutSeconds >= 1 &&
                   input.apiTimeoutSeconds <= 60;
+                if (!selfHostedOnly && input.policy !== "prefer-self-hosted") {
+                  return { result: hostedResult(hostedRunner, "missing-config") };
+                }
+
                 if (
-                  input.policy !== "prefer-self-hosted" ||
                   !exactNonEmptyString(input.hostedRunner) ||
-                  !validScope ||
-                  !exactNonEmptyString(input.managedRunnerPrefix) ||
-                  !exactNonEmptyString(input.observerClientID) ||
-                  !exactNonEmptyString(input.owner) ||
-                  (input.scope === "repository" && !exactNonEmptyString(input.repository)) ||
-                  // Attempts greater than one returned `rerun` above. Requiring exactly one
-                  // here makes missing, zero, fractional, and NaN values fail as malformed
-                  // configuration without misclassifying them as reruns.
-                  input.runAttempt !== 1 ||
-                  !validTimeout
+                  !Number.isInteger(input.runAttempt) ||
+                  input.runAttempt < 1
+                ) {
+                  if (selfHostedOnly) {
+                    throw new StrictRoutingError("missing-config");
+                  }
+                  return { result: hostedResult(hostedRunner, "missing-config") };
+                }
+
+                if (
+                  !selfHostedOnly &&
+                  (!validScope ||
+                    !exactNonEmptyString(input.managedRunnerPrefix) ||
+                    !exactNonEmptyString(input.observerClientID) ||
+                    !exactNonEmptyString(input.owner) ||
+                    (input.scope === "repository" &&
+                      !exactNonEmptyString(input.repository)) ||
+                    // Attempts greater than one returned `rerun` above. Requiring exactly
+                    // one here keeps prefer-self-hosted reruns on the hosted route.
+                    input.runAttempt !== 1 ||
+                    !validTimeout)
                 ) {
                   return { result: hostedResult(hostedRunner, "missing-config") };
                 }
 
                 const candidates = parseCandidateLabels(input);
                 if ("error" in candidates) {
+                  if (selfHostedOnly) {
+                    throw new StrictRoutingError(candidates.error);
+                  }
                   return { result: hostedResult(hostedRunner, candidates.error) };
                 }
                 if (
@@ -345,7 +377,26 @@ jobs:
                     (label) => label.toLowerCase() === input.hostedRunner.toLowerCase(),
                   )
                 ) {
+                  if (selfHostedOnly) {
+                    throw new StrictRoutingError("invalid-response");
+                  }
                   return { result: hostedResult(hostedRunner, "invalid-response") };
+                }
+                if (selfHostedOnly) {
+                  if (
+                    candidates.labels.length !== 1 ||
+                    !SELF_HOSTED_ONLY_LABELS.has(normalizedLabel(candidates.labels[0]))
+                  ) {
+                    throw new StrictRoutingError("unapproved-label");
+                  }
+                  return {
+                    result: Object.freeze({
+                      runner: candidates.labels[0],
+                      route: "self-hosted",
+                      reason: "self-hosted-only",
+                      idleRunnerCount: 0,
+                    }),
+                  };
                 }
                 if (!input.hasObserverSecret) {
                   return { result: hostedResult(hostedRunner, "missing-secret") };
@@ -669,6 +720,7 @@ jobs:
 
               module.exports = Object.freeze({
                 InvalidResponseError,
+                StrictRoutingError,
                 inputsFromEnvironment,
                 parseCandidateLabels,
                 permitsLocalExecution,
