@@ -197,6 +197,31 @@ GitHub continues the normal weekly patching of each hosted image generation.
   [caller's repository context][reusable-workflow-context]. A conformance check
   fails if the executable copy drifts.
 
+  A required reusable gate that declares `needs: select-runner` must execute
+  after every selector outcome. GitHub otherwise
+  [skips the dependent job][job-dependencies] after a prerequisite failure, and
+  a [skipped required job reports success][job-conditions]. Use the
+  semantic-title gate's fail-closed prerequisite contract:
+
+  ```yaml
+  pr-title:
+    needs: select-runner
+    if: ${{ always() }}
+    permissions:
+      pull-requests: read
+    uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
+    with:
+      runner: ${{ needs.select-runner.outputs.runner || 'ubuntu-24.04' }}
+      prerequisite-result: ${{ needs.select-runner.result }}
+  ```
+
+  Any prerequisite result other than exact `success` runs the same required
+  reusable job on `ubuntu-slim` and fails before title validation. The normal
+  success path still runs the existing `pr-title / pr-title` job only on the
+  selector-returned runner; there is no routine aggregator or extra hosted job.
+  The exceptional reporting job uses GitHub's
+  [least-expensive hosted Linux SKU][runner-pricing].
+
   `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
   When present it overrides `self-hosted-label`; malformed, empty, or duplicate
   candidate lists route hosted with `invalid-response`. Candidate priority is
@@ -550,9 +575,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   single lever that yields a Conventional-Commits history (no commit-msg hook
   needed). It is a **standalone required check named `pr-title`**, not a
   `ci-status` lane — title edits must not re-run the file-lint lanes. Inputs
-  (`types`, `scopes`, `require-scope`, `subject-pattern`, `subject-pattern-error`,
-  `validate-single-commit`, `ignore-labels`) have spec-aligned defaults documented
-  inline. Consume it from a thin caller that triggers on title-relevant events.
+  (`runner`, `prerequisite-result`, `types`, `scopes`, `require-scope`,
+  `subject-pattern`, `subject-pattern-error`, `validate-single-commit`,
+  `ignore-labels`) have spec-aligned defaults documented inline. Consume it from
+  a thin caller that triggers on title-relevant events. `prerequisite-result`
+  defaults to `success` for direct callers; selector-dependent required callers
+  must use the fail-closed pattern above.
   **Adopt the canonical block below** (not the in-repo `.github/workflows/pr-title.yml`,
   which intentionally still triggers on `pull_request` — see the note after the
   block). Note the emitted check context is `<caller job> / <reusable job>` — with
@@ -621,6 +649,8 @@ standards catalog.
 [github-container-digest]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pulling-container-images
 [dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
 [job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+[job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
+[job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
 [native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
 [osv-action-container-source]: https://github.com/google/osv-scanner/blob/b56b5191101d5f27d4787d5583d8d01e9518a7af/goreleaser-action.dockerfile
 [osv-installation]: https://google.github.io/osv-scanner/installation/
@@ -629,6 +659,7 @@ standards catalog.
 [pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
+[runner-pricing]: https://docs.github.com/en/billing/reference/actions-runner-pricing
 [runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
 [runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
 [runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml

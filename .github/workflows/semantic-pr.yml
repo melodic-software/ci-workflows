@@ -22,6 +22,13 @@ on:
         description: Runner label selected by the caller.
         type: string
         default: ubuntu-24.04
+      prerequisite-result:
+        description: >-
+          Result of an optional prerequisite job. Callers with `needs` must pass
+          its exact result and use `if: always()`; any value other than success
+          fails this required check before title validation.
+        type: string
+        default: success
       types:
         description: >-
           Allowed Conventional Commits types (newline-delimited regex patterns,
@@ -74,9 +81,21 @@ permissions:
 
 jobs:
   pr-title:
-    runs-on: ${{ inputs.runner }}
+    # A failed/skipped selector cannot supply a usable runner and must not make
+    # this required context disappear. Use the least-expensive hosted runner
+    # only to report that exceptional failure; successful calls still consume
+    # exactly the caller-selected runner and add no hosted validation job.
+    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 15
     steps:
+      - name: Reject failed prerequisite
+        if: ${{ inputs.prerequisite-result != 'success' }}
+        env:
+          PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
+        run: |
+          echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
+          exit 1
+
       - name: Validate PR title against Conventional Commits
         # Runs ONLY on the two PR-context events, `pull_request` AND
         # `pull_request_target`; skipped (job still green) on anything else. Both
@@ -92,7 +111,10 @@ jobs:
         # queue deadlocks) reaches this job with no PR context. The title was
         # already validated when the PR was opened/edited, so on `merge_group` this
         # step is skipped and the job succeeds, reporting the required check.
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+        if: >-
+          inputs.prerequisite-result == 'success' &&
+          (github.event_name == 'pull_request' ||
+          github.event_name == 'pull_request_target')
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ github.token }}
