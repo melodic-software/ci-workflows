@@ -44,11 +44,12 @@ on:
 
 permissions: {}
 
-# head_ref is only set on pull_request, so PR pushes cancel superseded runs
-# while main pushes and manual dispatches get a unique run_id group and always
-# run to completion.
+# The PR number is only set on pull_request, so PR pushes cancel superseded
+# runs while main pushes and manual dispatches get a unique run_id group and
+# always run to completion. Keying on the PR number (not head_ref) keeps fork
+# PRs that share a branch name from cancelling each other's required runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:

@@ -17,10 +17,11 @@ on:
 permissions:
   pull-requests: read
 
-# head_ref is always set here (pull_request-only triggers); run_id is a safety
-# fallback that never groups, so nothing outside a PR can be cancelled.
+# The PR number is always set here (pull_request-only triggers) and, unlike
+# head_ref, is unique per PR even across forks; run_id is a safety fallback
+# that never groups, so nothing outside a PR can be cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
