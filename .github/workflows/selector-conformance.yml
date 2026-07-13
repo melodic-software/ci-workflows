@@ -88,8 +88,8 @@ jobs:
       policy: hosted-only
       hosted-runner: ubuntu-24.04
 
-  public-guard-or-rerun:
-    name: Public guard or rerun
+  public-guard:
+    name: Public guard
     uses: ./.github/workflows/select-runner.yml
     with:
       policy: prefer-self-hosted
@@ -101,7 +101,7 @@ jobs:
 
   assert:
     name: Assert fail-open contract
-    needs: [selector-unit, hosted-only, public-guard-or-rerun]
+    needs: [selector-unit, hosted-only, public-guard]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -111,10 +111,12 @@ jobs:
           HOSTED_RUNNER: ${{ needs.hosted-only.outputs.runner }}
           HOSTED_ROUTE: ${{ needs.hosted-only.outputs.route }}
           HOSTED_REASON: ${{ needs.hosted-only.outputs.reason }}
-          GUARDED_RUNNER: ${{ needs.public-guard-or-rerun.outputs.runner }}
-          GUARDED_ROUTE: ${{ needs.public-guard-or-rerun.outputs.route }}
-          GUARDED_REASON: ${{ needs.public-guard-or-rerun.outputs.reason }}
-          EXPECTED_GUARDED_REASON: ${{ github.run_attempt > 1 && 'rerun' || 'hosted-only' }}
+          GUARDED_RUNNER: ${{ needs.public-guard.outputs.runner }}
+          GUARDED_ROUTE: ${{ needs.public-guard.outputs.route }}
+          GUARDED_REASON: ${{ needs.public-guard.outputs.reason }}
+          # The public-repository guard fires on every attempt; re-runs make a
+          # fresh liveness decision instead of forcing a hosted route.
+          EXPECTED_GUARDED_REASON: hosted-only
         run: |
           test "$HOSTED_RUNNER" = ubuntu-24.04
           test "$HOSTED_ROUTE" = hosted

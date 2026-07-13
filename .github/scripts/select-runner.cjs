@@ -43,7 +43,7 @@ function hostedResult(hostedRunner, reason) {
     runner: hostedRunner || DEFAULT_HOSTED_RUNNER,
     route: "hosted",
     reason,
-    idleRunnerCount: 0,
+    onlineRunnerCount: 0,
   });
 }
 
@@ -156,8 +156,8 @@ function permitsLocalExecution(input) {
 
 function preflight(input) {
   // The fallback is itself an untrusted operational value. Canonicalize it
-  // before every early return so hosted-only, rerun, and security guards can
-  // never be redirected to a generic or managed self-hosted label.
+  // before every early return so hosted-only and security guards can never
+  // be redirected to a generic or managed self-hosted label.
   const hosted = canonicalHostedRunner(input);
   const hostedRunner = hosted.runner;
 
@@ -166,14 +166,6 @@ function preflight(input) {
   }
 
   const selfHostedOnly = input.policy === "self-hosted-only";
-
-  if (
-    !selfHostedOnly &&
-    Number.isInteger(input.runAttempt) &&
-    input.runAttempt > 1
-  ) {
-    return { result: hostedResult(hostedRunner, "rerun") };
-  }
 
   // Public repositories do not save billed minutes. Only explicitly reviewed
   // caller event classes may route locally, and fork/Dependabot code must never
@@ -197,11 +189,7 @@ function preflight(input) {
     return { result: hostedResult(hostedRunner, "missing-config") };
   }
 
-  if (
-    !exactNonEmptyString(input.hostedRunner) ||
-    !Number.isInteger(input.runAttempt) ||
-    input.runAttempt < 1
-  ) {
+  if (!exactNonEmptyString(input.hostedRunner)) {
     if (selfHostedOnly) {
       throw new StrictRoutingError("missing-config");
     }
@@ -216,9 +204,6 @@ function preflight(input) {
       !exactNonEmptyString(input.owner) ||
       (input.scope === "repository" &&
         !exactNonEmptyString(input.repository)) ||
-      // Attempts greater than one returned `rerun` above. Requiring exactly
-      // one here keeps prefer-self-hosted reruns on the hosted route.
-      input.runAttempt !== 1 ||
       !validTimeout)
   ) {
     return { result: hostedResult(hostedRunner, "missing-config") };
@@ -254,7 +239,7 @@ function preflight(input) {
         runner: candidates.labels[0],
         route: "self-hosted",
         reason: "self-hosted-only",
-        idleRunnerCount: 0,
+        onlineRunnerCount: 0,
       }),
     };
   }
@@ -279,7 +264,6 @@ function validateRunner(runner) {
     typeof runner.name !== "string" ||
     !exactNonEmptyString(runner.os) ||
     typeof runner.status !== "string" ||
-    typeof runner.busy !== "boolean" ||
     (Object.hasOwn(runner, "ephemeral") &&
       typeof runner.ephemeral !== "boolean") ||
     !Array.isArray(runner.labels) ||
@@ -380,7 +364,7 @@ function throwIfAborted(signal) {
   }
 }
 
-function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
+function selectOnlineCandidate(runners, labels, managedRunnerPrefix) {
   // `runs-on` contains only the selected label, so GitHub may assign any
   // runner carrying it. Treat that case-insensitive label as contaminated
   // if even one bearer falls outside the managed namespace, reports itself
@@ -449,7 +433,10 @@ function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
   );
   const safeLabelKeys = new Set(safeLabels.map((candidate) => candidate.key));
 
-  const idleRunners = inventory.filter(({ runner, routingLabelKeys }) => {
+  // Liveness, not idleness: a busy online runner is proof the fleet is alive,
+  // and GitHub natively queues the job until a matching runner frees up. Only
+  // a fully offline fleet falls back to the hosted route.
+  const onlineRunners = inventory.filter(({ runner, routingLabelKeys }) => {
     // GitHub's 2026-03-10 OpenAPI makes `ephemeral` optional, and live list
     // responses can omit it. An explicit false is authoritative exclusion;
     // omission relies on the governed assumption that the exact prefix and
@@ -461,19 +448,18 @@ function selectIdleCandidate(runners, labels, managedRunnerPrefix) {
     return (
       runner.name.startsWith(managedRunnerPrefix) &&
       runner.status === "online" &&
-      runner.busy === false &&
       eligibleEphemeralState &&
       [...routingLabelKeys].some((labelKey) => safeLabelKeys.has(labelKey))
     );
   });
 
   const selectedLabel = safeLabels.find((candidate) =>
-    idleRunners.some(({ routingLabelKeys }) =>
+    onlineRunners.some(({ routingLabelKeys }) =>
       routingLabelKeys.has(candidate.key),
     ),
   );
   return {
-    idleRunnerCount: idleRunners.length,
+    onlineRunnerCount: onlineRunners.length,
     selectedLabel: selectedLabel?.label,
     labelNamespaceInvalid:
       contaminatedLabelKeys.size > 0 && safeLabels.length === 0,
@@ -521,22 +507,22 @@ async function selectRunner(input, dependencies = {}) {
       controller.signal,
     );
     throwIfAborted(controller.signal);
-    const idle = selectIdleCandidate(
+    const selection = selectOnlineCandidate(
       runners,
       prepared.labels,
       input.managedRunnerPrefix,
     );
-    if (idle.labelNamespaceInvalid) {
+    if (selection.labelNamespaceInvalid) {
       return hostedResult(prepared.hostedRunner, "invalid-response");
     }
-    if (!idle.selectedLabel) {
-      return hostedResult(prepared.hostedRunner, "no-idle-runner");
+    if (!selection.selectedLabel) {
+      return hostedResult(prepared.hostedRunner, "no-online-runner");
     }
     return Object.freeze({
-      runner: idle.selectedLabel,
+      runner: selection.selectedLabel,
       route: "self-hosted",
-      reason: "idle",
-      idleRunnerCount: idle.idleRunnerCount,
+      reason: "online",
+      onlineRunnerCount: selection.onlineRunnerCount,
     });
   } catch (error) {
     return errorResult(error, controller, prepared.hostedRunner);
@@ -556,7 +542,6 @@ function inputsFromEnvironment(env) {
     observerClientID: env.OBSERVER_CLIENT_ID,
     hasObserverSecret: env.HAS_OBSERVER_SECRET === "true",
     tokenOutcome: env.TOKEN_OUTCOME,
-    runAttempt: Number(env.RUN_ATTEMPT),
     owner: env.REPOSITORY_OWNER,
     repository: env.REPOSITORY_NAME,
     apiTimeoutSeconds: Number(env.API_TIMEOUT_SECONDS),
@@ -574,7 +559,7 @@ async function runGitHubScript({ github, core, env }) {
   core.setOutput("runner", result.runner);
   core.setOutput("route", result.route);
   core.setOutput("reason", result.reason);
-  core.setOutput("idle-runner-count", String(result.idleRunnerCount));
+  core.setOutput("online-runner-count", String(result.onlineRunnerCount));
   return result;
 }
 
@@ -586,6 +571,6 @@ module.exports = Object.freeze({
   permitsLocalExecution,
   preflight,
   runGitHubScript,
-  selectIdleCandidate,
+  selectOnlineCandidate,
   selectRunner,
 });
