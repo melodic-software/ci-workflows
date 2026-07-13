@@ -155,8 +155,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   idleness. GitHub natively [queues a job until a matching runner is
   available][runner-routing], failing it only after 24 hours queued, so a busy
   fleet absorbs bursts without spending hosted minutes; only a fully offline
-  fleet falls back to the hosted route. A re-run reuses the prior attempt's
-  successful selector output, so it follows the original routing decision.
+  fleet falls back to the hosted route. Re-running failed jobs reuses the
+  prior attempt's successful selector output; re-running all jobs makes a
+  fresh liveness decision. Neither forces the hosted route.
   `self-hosted-only` instead returns the configured exact managed
   label without inventory or observer credentials, so a
   trusted private workload queues until governed capacity is available. The
