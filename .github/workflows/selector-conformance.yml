@@ -75,8 +75,7 @@ jobs:
         # branches are deleted, so acquire only the exact commits under test.
         run: |
           git fetch --no-tags --no-write-fetch-head --depth=1 origin \
-            ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4 \
-            fdf0e6e5905e50be8e332f9bc522e24947a61b13
+            169e3a4287211a536eddcd3a757dd06132fb556e
       - name: Test selector implementation, generation, and immutable pins
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scanner exit-code policy
