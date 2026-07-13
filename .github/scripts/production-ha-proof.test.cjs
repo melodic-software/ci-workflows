@@ -42,7 +42,7 @@ const templateReadme = fs.readFileSync(
   path.join(templateRoot, "README.md"),
   "utf8",
 );
-const implementationSha = "fdf0e6e5905e50be8e332f9bc522e24947a61b13";
+const implementationSha = "169e3a4287211a536eddcd3a757dd06132fb556e";
 
 function jobBlock(jobId) {
   const start = workflow.indexOf(`  ${jobId}:\n`);
@@ -602,7 +602,7 @@ test("inventory and control stay hosted while execution consumes only selector o
   assert.match(workflow, /managed-runner-prefix: ci-runner-melo-/u);
   assert.match(
     workflow,
-    /select-runner\.yml@66e3e974e9c0132150cc982cdd76aca284df19de/u,
+    /select-runner\.yml@3415de3ff2fafee40e4d087eb6073d2f6952b595/u,
   );
 });
 
@@ -766,7 +766,7 @@ test("pinned reusable commit contains the exact caller and selector contracts", 
   assert.match(pinned.stdout, new RegExp(PROOF_CALLER_WORKFLOW, "u"));
   assert.match(
     pinned.stdout,
-    /select-runner\.yml@66e3e974e9c0132150cc982cdd76aca284df19de/u,
+    /select-runner\.yml@3415de3ff2fafee40e4d087eb6073d2f6952b595/u,
   );
   assert.match(
     pinned.stdout,
