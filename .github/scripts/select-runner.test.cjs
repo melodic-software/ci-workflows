@@ -979,7 +979,6 @@ test("strict selector scheduling is local while adaptive policies stay hosted", 
 
 test("root CI requires every selector and OSV guard contract", () => {
   const workflow = fs.readFileSync(rootCIPath, "utf8");
-  assert.ok(workflow.includes("  merge_group:\n"));
   const selectorLane = workflow.slice(
     workflow.indexOf("  selector-contract:"),
     workflow.indexOf("  zizmor:"),

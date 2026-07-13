@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded in-flight review when the PR gets a new push; head_ref is
+# always set here (pull_request-only triggers), run_id is a non-grouping fallback.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   review:
     permissions:
