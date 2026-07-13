@@ -49,16 +49,18 @@ const templateLfsPath = path.join(
   "canary.txt",
 );
 const templateBootstrapPath = path.join(templateRoot, "bootstrap.ps1");
-const currentSelectorSha = "66e3e974e9c0132150cc982cdd76aca284df19de";
+const currentSelectorSha = "3415de3ff2fafee40e4d087eb6073d2f6952b595";
 const supersededSelectorShas = [
   "4943b1c4ff6ae9624736ac95622d7ab748132c8d",
   "d94877932012972391b98dcea5ce92b804b74418",
   "257f584ea24f65824acd17a8d9bbfbe650d24033",
+  "66e3e974e9c0132150cc982cdd76aca284df19de",
 ];
-const currentCanarySha = "ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4";
+const currentCanarySha = "169e3a4287211a536eddcd3a757dd06132fb556e";
 const supersededCanaryShas = [
   "bb762391c41e9d12975fae25a06ac930050baba9",
   "2dfd2c97ea12e027d5b1067f35a7a391673b45a2",
+  "ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4",
 ];
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
@@ -180,7 +182,7 @@ test("canary is reusable-only and cannot route a public repository locally", () 
 test("immutable canary owns selector policy and direct routing outputs", () => {
   assert.doesNotMatch(
     workflow,
-    /^ {6}(?:expected-(?:repository|canary-label)|selected-(?:runner|route|reason|idle-runner-count)):/mu,
+    /^ {6}(?:expected-(?:repository|canary-label)|selected-(?:runner|route|reason|online-runner-count)):/mu,
   );
   assert.match(
     workflow,
@@ -207,14 +209,14 @@ test("immutable canary owns selector policy and direct routing outputs", () => {
   );
   assert.doesNotMatch(preflight, /observer-private-key/u);
   assert.match(workflow, /\[\[ "\$SELECTED_ROUTE" = self-hosted \]\]/u);
-  assert.match(workflow, /\[\[ "\$SELECTED_REASON" = idle \]\]/u);
+  assert.match(workflow, /\[\[ "\$SELECTED_REASON" = online \]\]/u);
   assert.match(
     workflow,
     /\[\[ "\$SELECTED_RUNNER" = melodic-canary-ubuntu-24\.04-x64 \]\]/u,
   );
   assert.match(
     workflow,
-    /\[\[ "\$IDLE_RUNNER_COUNT" =~ \^\[1-9\]\[0-9\]\*\$ \]\]/u,
+    /\[\[ "\$ONLINE_RUNNER_COUNT" =~ \^\[1-9\]\[0-9\]\*\$ \]\]/u,
   );
   assert.equal(
     [

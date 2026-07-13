@@ -588,14 +588,14 @@ async function runGitHubScript({ github, core, env, now = Date.now, sleep }) {
       runner: requiredEnvironment(env, "SELECTED_RUNNER"),
       route: requiredEnvironment(env, "SELECTED_ROUTE"),
       reason: requiredEnvironment(env, "SELECTED_REASON"),
-      idleRunnerCount: Number(
-        requiredEnvironment(env, "SELECTED_IDLE_COUNT", /^[1-9]\d*$/u),
+      onlineRunnerCount: Number(
+        requiredEnvironment(env, "SELECTED_ONLINE_COUNT", /^[1-9]\d*$/u),
       ),
     });
     if (
       selector.runner !== PRODUCTION_LABEL ||
       selector.route !== "self-hosted" ||
-      selector.reason !== "idle"
+      selector.reason !== "online"
     ) {
       throw new ProofError(
         "invalid-input",
@@ -629,7 +629,7 @@ async function runGitHubScript({ github, core, env, now = Date.now, sleep }) {
     appendSummary(summaryPath, [
       "### Hosted failover hold passed",
       "",
-      `- Selector completed first with \`${selector.runner}\` and ${selector.idleRunnerCount} idle runners.`,
+      `- Selector completed first with \`${selector.runner}\` and ${selector.onlineRunnerCount} online runners.`,
       "- Desktop then remained at zero online runners for two observations.",
       "- Laptop retained at least one online idle runner.",
       "- The next governed job must still assert the acquired laptop identity.",

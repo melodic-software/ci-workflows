@@ -334,8 +334,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   workflow owns the selector: it calls the already-reviewed central selector at
   a full SHA with the exact `melodic-canary-ubuntu-24.04-x64` label and
   `ci-runner-canary-` name prefix, then consumes only direct `needs` outputs.
-  The caller cannot claim a runner, route, reason, idle count, repository, label,
-  or prefix.
+  The caller cannot claim a runner, route, reason, online count, repository,
+  label, or prefix.
 
   Each selected job independently requires `runner.environment` to be
   `self-hosted`, checks the actual `runner.name` against the canary prefix, and

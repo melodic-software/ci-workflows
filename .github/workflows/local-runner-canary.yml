@@ -106,7 +106,7 @@ jobs:
           [[ "$REPOSITORY_PRIVATE" = true ]] || fail "canary caller must be private"
           [[ "$REPOSITORY" = "$EXPECTED_REPOSITORY" ]] || fail "unexpected canary repository"
           [[ "$SOURCE_REF" = refs/heads/main ]] || fail "canary must run from protected main"
-          [[ "$RUN_ATTEMPT" = 1 ]] || fail "reruns must route hosted; start a new dispatch"
+          [[ "$RUN_ATTEMPT" = 1 ]] || fail "canary evidence needs a fresh dispatch, not a rerun"
           [[ "$MODE" = full || "$MODE" = cancellation ]] || fail "invalid canary mode"
           [[ "$OBSERVER_CLIENT_ID" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || fail "invalid observer client ID"
           safe_path "$LFS_FIXTURE" || fail "unsafe Git LFS fixture path"
@@ -125,7 +125,7 @@ jobs:
     if: needs.preflight.result == 'success'
     needs: preflight
     permissions: {}
-    uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@66e3e974e9c0132150cc982cdd76aca284df19de # governed selector review
+    uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@3415de3ff2fafee40e4d087eb6073d2f6952b595 # governed selector review
     with:
       policy: prefer-self-hosted
       self-hosted-label: melodic-canary-ubuntu-24.04-x64
@@ -143,21 +143,21 @@ jobs:
     timeout-minutes: 2
     permissions: {}
     steps:
-      - name: Require an exact idle managed canary
+      - name: Require an exact online managed canary
         shell: bash
         env:
-          IDLE_RUNNER_COUNT: ${{ needs.select-runner.outputs.idle-runner-count }}
+          ONLINE_RUNNER_COUNT: ${{ needs.select-runner.outputs.online-runner-count }}
           SELECTED_REASON: ${{ needs.select-runner.outputs.reason }}
           SELECTED_ROUTE: ${{ needs.select-runner.outputs.route }}
           SELECTED_RUNNER: ${{ needs.select-runner.outputs.runner }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
           [[ "$SELECTED_ROUTE" = self-hosted ]] || fail "selector did not choose local"
-          [[ "$SELECTED_REASON" = idle ]] || fail "selector reason is not idle"
+          [[ "$SELECTED_REASON" = online ]] || fail "selector reason is not online"
           [[ "$SELECTED_RUNNER" = melodic-canary-ubuntu-24.04-x64 ]] || fail "selector returned another runner"
           [[ "$SELECTED_RUNNER" != self-hosted ]] || fail "generic self-hosted label is forbidden"
           [[ "$SELECTED_RUNNER" != ubuntu-24.04 ]] || fail "hosted fallback cannot satisfy canary proof"
-          [[ "$IDLE_RUNNER_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "selector reported no idle runner"
+          [[ "$ONLINE_RUNNER_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "selector reported no online runner"
 
   hosted-baseline:
     name: Hosted compatibility baseline
@@ -638,7 +638,7 @@ jobs:
         env:
           FIRST_RUNNER_HOST: ${{ needs.local-sentinel-seed.outputs.runner-host }}
           FIRST_RUNNER_NAME: ${{ needs.local-sentinel-seed.outputs.runner-name }}
-          IDLE_RUNNER_COUNT: ${{ needs.select-runner.outputs.idle-runner-count }}
+          ONLINE_RUNNER_COUNT: ${{ needs.select-runner.outputs.online-runner-count }}
           SECOND_RUNNER_HOST: ${{ needs.local-freshness.outputs.runner-host }}
           SECOND_RUNNER_NAME: ${{ needs.local-freshness.outputs.runner-name }}
         run: |
@@ -648,7 +648,7 @@ jobs:
             echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "- Attempt: ${GITHUB_RUN_ATTEMPT}"
             echo "- Selected label: melodic-canary-ubuntu-24.04-x64"
-            echo "- Selector idle count: ${IDLE_RUNNER_COUNT}"
+            echo "- Selector online count: ${ONLINE_RUNNER_COUNT}"
             echo "- Seed runner: ${FIRST_RUNNER_NAME} (${FIRST_RUNNER_HOST})"
             echo "- Fresh runner: ${SECOND_RUNNER_NAME} (${SECOND_RUNNER_HOST})"
             echo "- Fresh-container, toolchain, artifact, cache, and duration proofs passed."

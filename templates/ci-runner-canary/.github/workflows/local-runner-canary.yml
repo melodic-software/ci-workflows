@@ -20,7 +20,7 @@ jobs:
     name: Local runner canary
     permissions:
       contents: read
-    uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@ca3c19cbd946db3d7d9bc0a3782497ed9cecacb4 # reviewed canary contract
+    uses: melodic-software/ci-workflows/.github/workflows/local-runner-canary.yml@169e3a4287211a536eddcd3a757dd06132fb556e # reviewed canary contract
     with:
       mode: ${{ inputs.mode }}
       cache-epoch: ${{ vars.CI_CACHE_EPOCH }}
