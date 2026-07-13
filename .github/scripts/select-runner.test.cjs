@@ -46,7 +46,6 @@ function input(overrides = {}) {
     observerClientID: "Iv23observer",
     hasObserverSecret: true,
     tokenOutcome: "success",
-    runAttempt: 1,
     owner: "melodic-software",
     repository: "medley",
     apiTimeoutSeconds: 10,
@@ -93,7 +92,7 @@ test("hosted-only returns without an inventory request", async () => {
     runner: "ubuntu-24.04",
     route: "hosted",
     reason: "hosted-only",
-    idleRunnerCount: 0,
+    onlineRunnerCount: 0,
   });
 });
 
@@ -111,7 +110,6 @@ test("self-hosted-only queues the primary managed label without credentials or i
       owner: "",
       repository: "",
       apiTimeoutSeconds: Number.NaN,
-      runAttempt: 2,
     }),
     { request: requestMustNotRun },
   );
@@ -119,7 +117,7 @@ test("self-hosted-only queues the primary managed label without credentials or i
     runner: "melodic-ubuntu-24.04-x64",
     route: "self-hosted",
     reason: "self-hosted-only",
-    idleRunnerCount: 0,
+    onlineRunnerCount: 0,
   });
 });
 
@@ -139,7 +137,6 @@ for (const [name, overrides, reason] of [
     },
     "unapproved-label",
   ],
-  ["invalid run attempt", { runAttempt: 0 }, "missing-config"],
 ]) {
   test(`self-hosted-only rejects ${name} instead of spending hosted minutes`, async () => {
     await assert.rejects(
@@ -173,7 +170,6 @@ for (const [name, overrides] of [
 
 for (const [routeName, overrides, reason] of [
   ["hosted-only", { policy: "hosted-only" }, "hosted-only"],
-  ["rerun", { runAttempt: 2, tokenOutcome: "skipped" }, "rerun"],
   [
     "public guard",
     { repositoryPrivate: false, tokenOutcome: "skipped" },
@@ -216,7 +212,7 @@ for (const [routeName, overrides, reason] of [
         runner: "ubuntu-24.04",
         route: "hosted",
         reason,
-        idleRunnerCount: 0,
+        onlineRunnerCount: 0,
       });
     });
   }
@@ -245,7 +241,7 @@ for (const eventName of ALLOWED_LOCAL_EVENTS) {
       request: async () => response([runner()]),
     });
     assert.equal(result.route, "self-hosted");
-    assert.equal(result.reason, "idle");
+    assert.equal(result.reason, "online");
   });
 }
 
@@ -259,27 +255,6 @@ for (const eventName of BLOCKED_LOCAL_EVENTS) {
     );
     assert.equal(result.route, "hosted");
     assert.equal(result.reason, "hosted-only");
-  });
-}
-
-test("rerun attempt 2 routes hosted before authentication or inventory", async () => {
-  const result = await selectRunner(
-    input({ runAttempt: 2, tokenOutcome: "skipped" }),
-    {
-      request: requestMustNotRun,
-    },
-  );
-  assert.equal(result.route, "hosted");
-  assert.equal(result.reason, "rerun");
-});
-
-for (const runAttempt of [undefined, Number.NaN, 0, 1.5, -1]) {
-  test(`invalid run attempt ${String(runAttempt)} fails hosted as missing configuration`, async () => {
-    const result = await selectRunner(input({ runAttempt }), {
-      request: requestMustNotRun,
-    });
-    assert.equal(result.route, "hosted");
-    assert.equal(result.reason, "missing-config");
   });
 }
 
@@ -382,8 +357,8 @@ test("organization inventory success uses the exact API contract", async () => {
   assert.deepEqual(result, {
     runner: "melodic-ubuntu-24.04-x64",
     route: "self-hosted",
-    reason: "idle",
-    idleRunnerCount: 1,
+    reason: "online",
+    onlineRunnerCount: 1,
   });
 });
 
@@ -404,11 +379,10 @@ test("repository inventory success targets only the caller repository", async ()
   assert.equal(result.route, "self-hosted");
 });
 
-test("filter requires exact label, managed prefix, online, and idle", async () => {
+test("filter requires exact label, managed prefix, and online state", async () => {
   const inventory = [
     runner({ name: "unmanaged-1", labels: [{ name: "unrelated-label" }] }),
     runner({ status: "offline" }),
-    runner({ busy: true }),
     runner({ labels: [{ name: "melodic-ubuntu-24.04-x64-other" }] }),
     runner({ name: "ci-runner-melo-lap-001-1" }),
   ];
@@ -416,7 +390,19 @@ test("filter requires exact label, managed prefix, online, and idle", async () =
     request: async () => response(inventory),
   });
   assert.equal(result.route, "self-hosted");
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
+});
+
+test("a busy online runner keeps the self-hosted route so GitHub queues the job", async () => {
+  const result = await selectRunner(input(), {
+    request: async () => response([runner({ busy: true })]),
+  });
+  assert.deepEqual(result, {
+    runner: "melodic-ubuntu-24.04-x64",
+    route: "self-hosted",
+    reason: "online",
+    onlineRunnerCount: 1,
+  });
 });
 
 test("an unrelated runner with omitted optional ephemeral is valid but ineligible", async () => {
@@ -427,7 +413,7 @@ test("an unrelated runner with omitted optional ephemeral is valid but ineligibl
       ]),
   });
   assert.equal(result.route, "hosted");
-  assert.equal(result.reason, "no-idle-runner");
+  assert.equal(result.reason, "no-online-runner");
 });
 
 test("a matching managed runner remains eligible when optional ephemeral is omitted", async () => {
@@ -442,8 +428,8 @@ test("a matching managed runner remains eligible when optional ephemeral is omit
   assert.deepEqual(result, {
     runner: "melodic-ubuntu-24.04-x64",
     route: "self-hosted",
-    reason: "idle",
-    idleRunnerCount: 1,
+    reason: "online",
+    onlineRunnerCount: 1,
   });
 });
 
@@ -460,8 +446,8 @@ test("a single scale-set route selects a live managed runner with an empty REST 
   assert.deepEqual(result, {
     runner: "melodic-ubuntu-24.04-x64",
     route: "self-hosted",
-    reason: "idle",
-    idleRunnerCount: 1,
+    reason: "online",
+    onlineRunnerCount: 1,
   });
 });
 
@@ -480,8 +466,8 @@ test("an empty REST label list cannot be attributed across ordered scale-set rou
     },
   );
   assert.equal(result.route, "hosted");
-  assert.equal(result.reason, "no-idle-runner");
-  assert.equal(result.idleRunnerCount, 0);
+  assert.equal(result.reason, "no-online-runner");
+  assert.equal(result.onlineRunnerCount, 0);
 });
 
 for (const incompatible of [
@@ -511,11 +497,11 @@ for (const incompatible of [
     );
     assert.equal(result.route, "hosted");
     assert.equal(result.reason, "invalid-response");
-    assert.equal(result.idleRunnerCount, 0);
+    assert.equal(result.onlineRunnerCount, 0);
   });
 }
 
-test("empty-label scale-set inference still requires the managed prefix, online state, and idle state", async () => {
+test("empty-label scale-set inference still requires the managed prefix and online state", async () => {
   const result = await selectRunner(input(), {
     request: async () =>
       response([
@@ -529,6 +515,17 @@ test("empty-label scale-set inference still requires the managed prefix, online 
           os: "unknown",
           labels: [],
         }),
+      ]),
+  });
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "no-online-runner");
+  assert.equal(result.onlineRunnerCount, 0);
+});
+
+test("a busy empty-label scale-set runner keeps the inferred single route live", async () => {
+  const result = await selectRunner(input(), {
+    request: async () =>
+      response([
         runnerWithoutEphemeral({
           busy: true,
           os: "unknown",
@@ -536,9 +533,9 @@ test("empty-label scale-set inference still requires the managed prefix, online 
         }),
       ]),
   });
-  assert.equal(result.route, "hosted");
-  assert.equal(result.reason, "no-idle-runner");
-  assert.equal(result.idleRunnerCount, 0);
+  assert.equal(result.route, "self-hosted");
+  assert.equal(result.reason, "online");
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 for (const incompatible of [
@@ -557,7 +554,7 @@ for (const incompatible of [
     });
     assert.equal(result.route, "hosted");
     assert.equal(result.reason, "invalid-response");
-    assert.equal(result.idleRunnerCount, 0);
+    assert.equal(result.onlineRunnerCount, 0);
   });
 }
 
@@ -586,7 +583,6 @@ test("mixed live-shape inventory selects only the exact managed omitted-field ru
       labels: [{ name: "unrelated-label" }],
     }),
     runnerWithoutEphemeral({ status: "offline" }),
-    runnerWithoutEphemeral({ busy: true }),
     runnerWithoutEphemeral({ labels: [{ name: "unrelated-label" }] }),
     runnerWithoutEphemeral({ name: "ci-runner-melo-lap-001-1" }),
   ];
@@ -594,7 +590,7 @@ test("mixed live-shape inventory selects only the exact managed omitted-field ru
     request: async () => response(inventory),
   });
   assert.equal(result.route, "self-hosted");
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 test("same-label wrong-prefix sibling contaminates the complete label namespace", async () => {
@@ -610,7 +606,7 @@ test("same-label wrong-prefix sibling contaminates the complete label namespace"
   });
   assert.equal(result.route, "hosted");
   assert.equal(result.reason, "invalid-response");
-  assert.equal(result.idleRunnerCount, 0);
+  assert.equal(result.onlineRunnerCount, 0);
 });
 
 test("same-label explicit-false sibling contaminates the complete label namespace", async () => {
@@ -627,7 +623,7 @@ test("same-label explicit-false sibling contaminates the complete label namespac
   });
   assert.equal(result.route, "hosted");
   assert.equal(result.reason, "invalid-response");
-  assert.equal(result.idleRunnerCount, 0);
+  assert.equal(result.onlineRunnerCount, 0);
 });
 
 for (const os of ["unknown", "UNKNOWN", "LiNuX"]) {
@@ -672,7 +668,7 @@ for (const os of ["windows", "macOS"]) {
     );
     assert.equal(result.route, "hosted");
     assert.equal(result.reason, "invalid-response");
-    assert.equal(result.idleRunnerCount, 0);
+    assert.equal(result.onlineRunnerCount, 0);
   });
 }
 
@@ -688,7 +684,7 @@ test("an omitted-field runner on an unrelated label does not poison a good sibli
       ]),
   });
   assert.equal(result.route, "self-hosted");
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 test("a wrong-OS runner on an unrelated label does not poison the V1 namespace", async () => {
@@ -704,7 +700,7 @@ test("a wrong-OS runner on an unrelated label does not poison the V1 namespace",
       ]),
   });
   assert.equal(result.route, "self-hosted");
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 test("ordered candidates skip a contaminated label and select a clean lower priority", async () => {
@@ -730,7 +726,7 @@ test("ordered candidates skip a contaminated label and select a clean lower prio
   );
   assert.equal(result.route, "self-hosted");
   assert.equal(result.runner, labels[1]);
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 test("ordered candidates skip a wrong-OS label and preserve clean configured spelling", async () => {
@@ -757,7 +753,7 @@ test("ordered candidates skip a wrong-OS label and preserve clean configured spe
   );
   assert.equal(result.route, "self-hosted");
   assert.equal(result.runner, labels[1]);
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 test("runner label case variants dedupe while configured spelling is returned", async () => {
@@ -778,7 +774,7 @@ test("runner label case variants dedupe while configured spelling is returned", 
   );
   assert.equal(result.route, "self-hosted");
   assert.equal(result.runner, configuredLabel);
-  assert.equal(result.idleRunnerCount, 1);
+  assert.equal(result.onlineRunnerCount, 1);
 });
 
 test("ordered candidates win independent of API runner ordering", async () => {
@@ -798,15 +794,15 @@ test("ordered candidates win independent of API runner ordering", async () => {
     { request: async () => response(inventory) },
   );
   assert.equal(result.runner, labels[0]);
-  assert.equal(result.idleRunnerCount, 2);
+  assert.equal(result.onlineRunnerCount, 2);
 });
 
-test("stable saturation routes hosted", async () => {
+test("a fully offline fleet routes hosted", async () => {
   const result = await selectRunner(input(), {
-    request: async () => response([runner({ busy: true })]),
+    request: async () => response([runner({ status: "offline" })]),
   });
   assert.equal(result.route, "hosted");
-  assert.equal(result.reason, "no-idle-runner");
+  assert.equal(result.reason, "no-online-runner");
 });
 
 test("pagination reads every page before selecting", async () => {
@@ -1014,7 +1010,7 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   );
   assert.match(
     workflow,
-    /idle-runner-count: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.idle-runner-count \|\| '0' \}\}/u,
+    /online-runner-count: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.online-runner-count \|\| '0' \}\}/u,
   );
   assert.equal(
     [...workflow.matchAll(/steps\.select\.outcome == 'success'/gu)].length,
@@ -1060,7 +1056,6 @@ test("generated github-script bundle executes the tested adapter", async () => {
         OBSERVER_CLIENT_ID: "Iv23observer",
         HAS_OBSERVER_SECRET: "true",
         TOKEN_OUTCOME: "success",
-        RUN_ATTEMPT: "1",
         REPOSITORY_OWNER: "melodic-software",
         REPOSITORY_NAME: "medley",
         REPOSITORY_PRIVATE: "true",
@@ -1073,8 +1068,8 @@ test("generated github-script bundle executes the tested adapter", async () => {
   );
   assert.equal(outputs.get("runner"), "melodic-ubuntu-24.04-x64");
   assert.equal(outputs.get("route"), "self-hosted");
-  assert.equal(outputs.get("reason"), "idle");
-  assert.equal(outputs.get("idle-runner-count"), "1");
+  assert.equal(outputs.get("reason"), "online");
+  assert.equal(outputs.get("online-runner-count"), "1");
 });
 
 test("Docker-dependent OSV exception breadcrumb remains machine-readable", () => {
