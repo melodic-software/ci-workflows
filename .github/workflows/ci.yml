@@ -4,13 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
-  merge_group:
 
 permissions:
   contents: read
 
+# The PR number is only set on pull_request, so PR pushes cancel superseded
+# runs while main pushes get a unique run_id group and always run to
+# completion. Keying on the PR number (not head_ref) keeps fork PRs that share
+# a branch name from cancelling each other's required runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 # Dogfood: this repo is the first consumer of its own composite actions. Each

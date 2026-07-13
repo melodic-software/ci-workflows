@@ -15,6 +15,13 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded in-flight review when the PR gets a new push; the PR
+# number is always set here (pull_request-only triggers) and, unlike head_ref,
+# is unique per PR even across forks; run_id is a non-grouping fallback.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   review:
     permissions:

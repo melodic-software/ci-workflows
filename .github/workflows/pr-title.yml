@@ -5,22 +5,23 @@ name: pr-title
 # copy this thin caller verbatim (bumping the @sha) and require the resulting
 # `pr-title / pr-title` check in their ruleset. `edited` is required so re-titling
 # a PR re-runs the gate; `synchronize`/`reopened` keep the check fresh across
-# pushes and reopens. `merge_group` is required on any repo with a merge queue —
-# the queue gates on `pr-title / pr-title`, and without this trigger that required
-# check never reports and the queue deadlocks (semantic-pr passes on merge_group,
-# since the title was already validated at PR time). It is inert on repos with no
-# queue. A local (./) ref works here because the checkout IS this repo; consumers
-# reference melodic-software/ci-workflows/.github/workflows@<sha>.
+# pushes and reopens. A repo with a merge queue must also trigger on
+# `merge_group` (see the README's canonical consumer block); no melodic-software
+# repo has a queue today, so this dogfood caller omits it. A local (./) ref
+# works here because the checkout IS this repo; consumers reference
+# melodic-software/ci-workflows/.github/workflows@<sha>.
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
-  merge_group:
 
 permissions:
   pull-requests: read
 
+# The PR number is always set here (pull_request-only triggers) and, unlike
+# head_ref, is unique per PR even across forks; run_id is a safety fallback
+# that never groups, so nothing outside a PR can be cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
