@@ -140,9 +140,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   source-to-destination mapping. It never writes a downstream receipt and never
   copies components declared `locally-owned`.
 - `.github/workflows/select-runner.yml` — the single organization-approved
-  hosted/self-hosted selector. It runs on `ubuntu-slim` with a two-minute
-  timeout and returns one `runs-on` string. A downstream job has its own runner
-  and timeout; the selector's platform limit does not carry into that job.
+  hosted/self-hosted selector. With `self-hosted-only`, the selector itself
+  queues on the centrally allowlisted `melodic-ubuntu-24.04-x64` route; it does
+  not spend hosted minutes before returning that same managed label. The
+  `prefer-self-hosted` and `hosted-only` selector paths retain `ubuntu-slim` so
+  their adaptive and explicit hosted semantics remain available. Every selector
+  path has a two-minute timeout and returns one `runs-on` string. A downstream
+  job has its own runner and timeout; the selector's platform limit does not
+  carry into that job.
   `prefer-self-hosted` is deliberately fail-open to the configured hosted
   runner. It uses a read-only observer GitHub App and chooses local only when a
   governed scale-set route has a managed-prefix runner that is online, idle, and
