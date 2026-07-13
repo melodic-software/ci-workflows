@@ -965,6 +965,18 @@ test("token mint is statically guarded before the App action runs", () => {
   assert.match(selectStep, /EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
 });
 
+test("strict selector scheduling is local while adaptive policies stay hosted", () => {
+  const workflow = fs.readFileSync(workflowPath, "utf8");
+  assert.match(
+    workflow,
+    /runs-on: \$\{\{ inputs\.policy == 'self-hosted-only' && 'melodic-ubuntu-24\.04-x64' \|\| 'ubuntu-slim' \}\}/u,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /runs-on: \$\{\{[^\n]*(?:inputs\.self-hosted-label|inputs\.self-hosted-labels-json)/u,
+  );
+});
+
 test("root CI requires every selector and OSV guard contract", () => {
   const workflow = fs.readFileSync(rootCIPath, "utf8");
   assert.ok(workflow.includes("  merge_group:\n"));
