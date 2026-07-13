@@ -149,11 +149,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
   job has its own runner and timeout; the selector's platform limit does not
   carry into that job.
   `prefer-self-hosted` is deliberately fail-open to the configured hosted
-  runner. It uses a read-only observer GitHub App and chooses local only when a
-  governed scale-set route has a managed-prefix runner that is online, idle, and
-  not explicitly reported as non-ephemeral. Full reruns route hosted in that
-  mode. `self-hosted-only` instead returns the configured exact managed
-  label without inventory or observer credentials, including on reruns, so a
+  runner. It uses a read-only observer GitHub App and chooses local when a
+  governed scale-set route has a managed-prefix runner that is online and not
+  explicitly reported as non-ephemeral, regardless of busy state: liveness, not
+  idleness. GitHub natively [queues a job until a matching runner is
+  available][runner-routing], failing it only after 24 hours queued, so a busy
+  fleet absorbs bursts without spending hosted minutes; only a fully offline
+  fleet falls back to the hosted route. A re-run reuses the prior attempt's
+  successful selector output, so it follows the original routing decision.
+  `self-hosted-only` instead returns the configured exact managed
+  label without inventory or observer credentials, so a
   trusted private workload queues until governed capacity is available. The
   queue-only label must be the exact centrally allowlisted
   `melodic-ubuntu-24.04-x64` route; adding another route requires a reviewed
@@ -163,8 +168,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   repositories, fork pull requests, and Dependabot runs route hosted before the
   observer-token action can execute, following GitHub's
   [self-hosted runner security guidance][runner-security] and
-  [Dependabot secret boundary][dependabot-secrets]. Call it once per independently
-  schedulable workload:
+  [Dependabot secret boundary][dependabot-secrets]. Call it exactly once per
+  workflow and feed the single output to every lane's `runs-on`; per-lane
+  selector fan-out only multiplies identical preflight jobs:
 
   ```yaml
   jobs:
@@ -189,12 +195,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   Never use `secrets: inherit`; pass only the observer key. Stable output reasons
-  are `idle`, `self-hosted-only`, `hosted-only`, `rerun`, `no-idle-runner`,
+  are `online`, `self-hosted-only`, `hosted-only`, `no-online-runner`,
   `missing-config`, `missing-secret`, `auth-error`, `api-timeout`, `api-error`,
   `invalid-response`, and the strict infrastructure sentinel `selector-error`.
   The security eligibility guard also reports
   `hosted-only`. `selector-conformance.yml` runs the deterministic selector test
-  suite and proves the public, hosted-only, queue-only, and attempt-2 contracts
+  suite and proves the public, hosted-only, and queue-only contracts
   without accessing local capacity. The tested CommonJS source is generated
   into the workflow, so the reusable-workflow SHA pins the implementation
   without a second checkout/ref. This matters because actions inside a called
@@ -264,8 +270,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   reserved for the `ci-runner` controller's one-job JIT workers. The REST
   response does not attest that ownership or lifecycle. The selector rejects
   visible namespace conflicts, but credentials and configuration must prevent
-  another runner from satisfying the same prefix-and-route contract. Online and
-  idle state are still required in the returned inventory observation.
+  another runner from satisfying the same prefix-and-route contract. Online
+  state is still required in the returned inventory observation.
 
   V1 compute is Linux x64, but GitHub's official
   [JIT-configuration response][runner-jit-config] reports `os: unknown`, as can
@@ -279,7 +285,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   Because downstream `runs-on` contains only the returned route, namespace
   integrity is checked across every explicit case-insensitive bearer returned
-  by the paginated inventory—not only the idle runner observed by the selector.
+  by the paginated inventory—not only the online runner observed by the selector.
   A route is contaminated when an explicit bearer is outside the managed name
   prefix, reports `ephemeral: false`, or reports an OS outside the V1
   Linux/JIT-unknown contract; that route is never returned. For one configured
@@ -287,7 +293,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   multiple configured routes, a conforming empty-label managed runner is
   ineligible because it cannot be attributed, while a nonconforming one
   contaminates every candidate because its hidden route could be any of them.
-  An explicitly distinct clean lower-priority route remains eligible. Idle
+  An explicitly distinct clean lower-priority route remains eligible. Online
   counts include only eligible runners on clean routes. If every configured
   route is contaminated, selection fails hosted with `invalid-response`;
   omitted-field runners carrying unrelated explicit labels do not poison the
@@ -310,10 +316,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Inventory is an observation, not a reservation or snapshot. Pagination can
   race with registration and status changes between requests; stable
   `total_count` and unique runner IDs are fail-closed consistency checks, not
-  snapshot isolation. Several simultaneous selectors can observe the same idle
-  runner and select local; that burst can queue until capacity appears. Once all
-  matching runners report busy, later
-  selectors route hosted with `no-idle-runner`. Validation, authentication,
+  snapshot isolation. Several simultaneous selectors can observe the same
+  online runner and select local; GitHub queues that burst until capacity
+  appears. Only when no matching runner is online do later
+  selectors route hosted with `no-online-runner`. Validation, authentication,
   API, timeout, malformed-response, and github-script failures produce hosted
   outputs. A failure of the selector job or hosted runner before outputs exist
   cannot be converted by workflow expressions; dependent jobs remain blocked
@@ -668,6 +674,7 @@ standards catalog.
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
 [pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
+[runner-routing]: https://docs.github.com/en/actions/reference/runners/self-hosted-runners#routing-precedence-for-self-hosted-runners
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 [runner-pricing]: https://docs.github.com/en/billing/reference/actions-runner-pricing
 [runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
