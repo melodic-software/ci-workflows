@@ -12,7 +12,10 @@ write_results() {
   findings) printf '{"version":"2.1.0","runs":[{"results":[{"message":{"text":"unsafe%%value\\nnext"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/a:b.js"},"region":{"startLine":4}}}]}]}]}\n' >"$results" ;;
   invalid) printf '{not json}\n' >"$results" ;;
   absent) rm -f -- "$results" ;;
-  symlink) printf '{"version":"2.1.0","runs":[]}' >"$temporary_directory/target"; ln -s "$temporary_directory/target" "$results" ;;
+  symlink)
+    printf '{"version":"2.1.0","runs":[]}' >"$temporary_directory/target"
+    ln -s "$temporary_directory/target" "$results"
+    ;;
   *) return 2 ;;
   esac
 }

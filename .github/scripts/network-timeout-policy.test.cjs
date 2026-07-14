@@ -61,7 +61,10 @@ test("small JSON and release-discovery reads use their class budgets", () => {
 
 test("OSV native release downloads are bounded", () => {
   const workflow = read(".github/workflows/osv-scanner.yml");
-  assert.equal(occurrences(workflow, /--connect-timeout 10 --max-time 180/gu), 1);
+  assert.equal(
+    occurrences(workflow, /--connect-timeout 10 --max-time 180/gu),
+    1,
+  );
   assert.equal(occurrences(workflow, /--retry 2 --retry-max-time 360/gu), 1);
   assert.match(workflow, /download\(\)[\s\S]*?curl --fail/u);
   assert.doesNotMatch(workflow, /\bdocker\s+(?:run|pull|image|buildx)\b/iu);

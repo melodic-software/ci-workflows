@@ -2,6 +2,13 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+CONFIG="${CONFIG:-}"
+PATH_TO_SCAN="${PATH_TO_SCAN:-}"
+REDACT="${REDACT:-}"
+REPORT_FORMAT="${REPORT_FORMAT:-}"
+REPORT_PATH="${REPORT_PATH:-}"
+SCAN_MODE="${SCAN_MODE:-}"
+
 workspace="$(realpath -e -- "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}")" || {
   echo '::error::gitleaks: workspace cannot be resolved'
   exit 2
@@ -15,6 +22,7 @@ if [[ ! -f "$CONFIG" || -L "$CONFIG" ]]; then
   exit 2
 fi
 resolved_config="$(realpath -e -- "$CONFIG")"
+# shellcheck disable=SC2310 # within_workspace is a predicate with no fallible body commands.
 if ! within_workspace "$resolved_config"; then
   echo "::error::gitleaks: config must resolve inside GITHUB_WORKSPACE: $CONFIG"
   exit 2
@@ -24,6 +32,7 @@ if [[ ! -e "$PATH_TO_SCAN" || -L "$PATH_TO_SCAN" ]]; then
   exit 2
 fi
 resolved_scan="$(realpath -e -- "$PATH_TO_SCAN")"
+# shellcheck disable=SC2310 # within_workspace is a predicate with no fallible body commands.
 if ! within_workspace "$resolved_scan"; then
   echo "::error::gitleaks: scan path must resolve inside GITHUB_WORKSPACE: $PATH_TO_SCAN"
   exit 2
@@ -48,8 +57,8 @@ if [[ "$REDACT" == false ]]; then
   echo "::notice::gitleaks: redact=false is deprecated and ignored; secret values are always redacted."
 fi
 
-if [[ -n "${REPORT_FORMAT// }" || -n "${REPORT_PATH// }" ]]; then
-  if [[ -z "${REPORT_FORMAT// }" || -z "${REPORT_PATH// }" ]]; then
+if [[ -n "${REPORT_FORMAT// /}" || -n "${REPORT_PATH// /}" ]]; then
+  if [[ -z "${REPORT_FORMAT// /}" || -z "${REPORT_PATH// /}" ]]; then
     echo "::error::gitleaks: report-format and report-path must be supplied together"
     exit 2
   fi
@@ -73,6 +82,7 @@ if [[ -n "${REPORT_FORMAT// }" || -n "${REPORT_PATH// }" ]]; then
     echo "::error::gitleaks: report parent cannot be resolved: $REPORT_PATH"
     exit 2
   }
+  # shellcheck disable=SC2310 # within_workspace is a predicate with no fallible body commands.
   if ! within_workspace "$report_parent"; then
     echo "::error::gitleaks: report path must resolve inside GITHUB_WORKSPACE: $REPORT_PATH"
     exit 2
@@ -80,7 +90,7 @@ if [[ -n "${REPORT_FORMAT// }" || -n "${REPORT_PATH// }" ]]; then
 fi
 
 args=("$SCAN_MODE" "$PATH_TO_SCAN" --config "$CONFIG" --no-banner --redact)
-if [[ -n "${REPORT_FORMAT// }" ]]; then
+if [[ -n "${REPORT_FORMAT// /}" ]]; then
   args+=(--report-format "$REPORT_FORMAT" --report-path "$REPORT_PATH")
 fi
 
@@ -97,7 +107,7 @@ if ((status != 0 && status != 1)); then
   exit "$status"
 fi
 
-if [[ -n "${REPORT_PATH// }" ]]; then
+if [[ -n "${REPORT_PATH// /}" ]]; then
   if [[ ! -f "$REPORT_PATH" || -L "$REPORT_PATH" ]]; then
     echo "::error::gitleaks did not produce a regular report file: $REPORT_PATH"
     exit 2

@@ -104,15 +104,19 @@ if [[ "$(uname -s)" == Linux* || "$(uname -s)" == MINGW* ]]; then
   ln -s "$temporary_directory/report-target" "$temporary_directory/report-link"
   if [[ -L "$temporary_directory/config-link.toml" && -L "$temporary_directory/scan-link" && -L "$temporary_directory/report-link" ]]; then
     for contract in config scan report; do
-    config="$temporary_directory/config.toml"
-    scan="$temporary_directory"
-    format=''
-    report=''
-    case "$contract" in
+      config="$temporary_directory/config.toml"
+      scan="$temporary_directory"
+      format=''
+      report=''
+      case "$contract" in
       config) config="$temporary_directory/config-link.toml" ;;
       scan) scan="$temporary_directory/scan-link" ;;
-      report) format=json; report="$temporary_directory/report-link/result.json" ;;
-    esac
+      report)
+        format=json
+        report="$temporary_directory/report-link/result.json"
+        ;;
+      *) return 2 ;;
+      esac
       if CAPTURED_ARGS="$temporary_directory/args" CONFIG="$config" FAKE_MODE=clean GITHUB_WORKSPACE="$temporary_directory" PATH="$temporary_directory/bin:$PATH" PATH_TO_SCAN="$scan" SCAN_MODE=dir REPORT_FORMAT="$format" REPORT_PATH="$report" REDACT=true bash "$action_dir/scan.sh" >/dev/null 2>&1; then
         echo "$contract symlink unexpectedly passed" >&2
         exit 1

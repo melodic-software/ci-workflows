@@ -638,7 +638,6 @@ standards catalog.
 
 [dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
 [default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
-[github-container-digest]: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pulling-container-images
 [dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
 [job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions

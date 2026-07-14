@@ -148,5 +148,8 @@ test("documentation removes only the retired zizmor Docker exception", () => {
   assert.match(zizmorSection, /without Docker/u);
   assert.match(zizmorSection, /approved selector output/u);
   assert.doesNotMatch(readme, /#zizmor"\s*:\s*\{[\s\S]*?docker-socket/u);
-  assert.doesNotMatch(readme, /#osv-scanner"[\s\S]*?"reason": "docker-socket"/u);
+  assert.doesNotMatch(
+    readme,
+    /#osv-scanner"[\s\S]*?"reason": "docker-socket"/u,
+  );
 });

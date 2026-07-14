@@ -158,8 +158,16 @@ jobs:
           # shellcheck shell=bash
           set -euo pipefail
 
-          case "${FAIL_ON_VULN:-}" in true | false) ;; *) echo '::error::fail-on-vuln must resolve to true or false.'; exit 2 ;; esac
-          case "${ALLOW_NO_LOCKFILES:-}" in true | false) ;; *) echo '::error::allow-no-lockfiles must resolve to true or false.'; exit 2 ;; esac
+          case "${FAIL_ON_VULN:-}" in true | false) ;; *)
+            echo '::error::fail-on-vuln must resolve to true or false.'
+            exit 2
+            ;;
+          esac
+          case "${ALLOW_NO_LOCKFILES:-}" in true | false) ;; *)
+            echo '::error::allow-no-lockfiles must resolve to true or false.'
+            exit 2
+            ;;
+          esac
           if [[ ! "${SCAN_EXIT:-}" =~ ^[0-9]+$ ]]; then
             echo '::error::OSV-Scanner did not report a numeric exit code.'
             exit 2
@@ -173,8 +181,22 @@ jobs:
 
           annotate_findings() {
             local file line message
-            escape_property() { local v="$1"; v=${v//'%'/'%25'}; v=${v//$'\r'/'%0D'}; v=${v//$'\n'/'%0A'}; v=${v//':'/'%3A'}; v=${v//','/'%2C'}; printf '%s' "$v"; }
-            escape_data() { local v="$1"; v=${v//'%'/'%25'}; v=${v//$'\r'/'%0D'}; v=${v//$'\n'/'%0A'}; printf '%s' "$v"; }
+            escape_property() {
+              local v="$1"
+              v=${v//'%'/'%25'}
+              v=${v//$'\r'/'%0D'}
+              v=${v//$'\n'/'%0A'}
+              v=${v//':'/'%3A'}
+              v=${v//','/'%2C'}
+              printf '%s' "$v"
+            }
+            escape_data() {
+              local v="$1"
+              v=${v//'%'/'%25'}
+              v=${v//$'\r'/'%0D'}
+              v=${v//$'\n'/'%0A'}
+              printf '%s' "$v"
+            }
             while IFS=$'\t' read -r file line message; do
               [[ -z "$message" ]] && continue
               file="$(escape_property "$file")"
