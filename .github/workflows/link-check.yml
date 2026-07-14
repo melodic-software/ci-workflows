@@ -2,10 +2,11 @@ name: link-check
 
 # Online external-link checker — ADVISORY, not a ci-status gate. External link
 # health is inherently flaky (transient outages, anti-bot 403/429), so this runs
-# on a schedule with fail:false and files a rolling tracking issue instead of
-# breaking a build. Deterministic on-disk link integrity is the separate
-# lychee-offline action that feeds ci-status. Call this from a scheduled caller
-# workflow that grants issues: write.
+# on a schedule with fail:false and maintains a rolling tracking issue instead
+# of breaking a build. The issue is opened or updated while links are unhealthy
+# and closed after recovery. Deterministic on-disk link integrity is the
+# separate lychee-offline action that feeds ci-status. Call this from a scheduled
+# caller workflow that grants issues: write.
 on:
   workflow_call:
     inputs:
@@ -22,7 +23,7 @@ on:
           --config lychee.toml
           './**/*.md'
       issue-title:
-        description: Title of the single rolling tracking issue opened on failure.
+        description: Title of the rolling issue opened on failure and closed on recovery.
         type: string
         default: 'Link checker report'
 
@@ -75,7 +76,6 @@ jobs:
       # than filing a fresh one on every scheduled failure.
       - name: Find existing tracking issue
         id: tracking
-        if: steps.lychee.outputs.exit_code != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: ${{ inputs.issue-title }}
@@ -93,3 +93,13 @@ jobs:
           issue-number: ${{ steps.tracking.outputs.number }}
           content-filepath: lychee/out.md
           labels: automated, link-check
+
+      - name: Close recovered tracking issue
+        if: steps.lychee.outputs.exit_code == '0' && steps.tracking.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.tracking.outputs.number }}
+        run: >-
+          gh issue close "$NUMBER"
+          --reason completed
+          --comment "The scheduled link check is healthy again; closing this rolling report."
