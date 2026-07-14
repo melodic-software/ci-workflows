@@ -114,6 +114,24 @@ if [[ -n "${REPORT_PATH// }" ]]; then
       echo "::error::gitleaks produced invalid SARIF results."
       exit 2
     }
+    if ((status == 1)); then
+      jq -r '
+        def escape_property:
+          tostring
+          | gsub("%"; "%25")
+          | gsub("\\r"; "%0D")
+          | gsub("\\n"; "%0A")
+          | gsub(":"; "%3A")
+          | gsub(","; "%2C");
+        def escape_data:
+          tostring
+          | gsub("%"; "%25")
+          | gsub("\\r"; "%0D")
+          | gsub("\\n"; "%0A");
+        .runs[].results[]?
+        | "::error file=\((.locations[0].physicalLocation.artifactLocation.uri // "") | escape_property),line=\((.locations[0].physicalLocation.region.startLine // 1) | escape_property)::Secret detected by Gitleaks (rule: \((.ruleId // "unknown") | escape_data))."
+      ' "$REPORT_PATH"
+    fi
     ;;
   *)
     if [[ ! -s "$REPORT_PATH" ]]; then
