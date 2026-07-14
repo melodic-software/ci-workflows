@@ -18,7 +18,10 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
 
   assert.ok(findIndex >= 0, "tracking issue lookup is missing");
   assert.ok(updateIndex > findIndex, "failure update must follow issue lookup");
-  assert.ok(closeIndex > updateIndex, "recovery close must follow failure update");
+  assert.ok(
+    closeIndex > updateIndex,
+    "recovery close must follow failure update",
+  );
 
   const findStep = workflow.slice(findIndex, updateIndex);
   assert.doesNotMatch(
