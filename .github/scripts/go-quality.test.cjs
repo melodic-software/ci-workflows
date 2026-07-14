@@ -81,7 +81,7 @@ test("native Linux and Windows analyzer lanes use immutable verified binaries", 
 
 test("approved native tests and module hygiene stay blocking", () => {
   assert.match(workflow, /gofmt -l/u);
-  assert.match(workflow, /go mod tidy -modfile="\$alternate_mod"/u);
+  assert.match(workflow, /GOWORK=off go mod tidy -modfile="\$alternate_mod"/u);
   assert.match(workflow, /compare_snapshot go\.mod go\.mod/u);
   assert.match(workflow, /compare_snapshot go\.sum go\.sum/u);
   assert.doesNotMatch(workflow, /go mod tidy -diff/u);

@@ -16,6 +16,7 @@ cat >"$mock_bin/go" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ "${GOWORK:-}" == off ]] || exit 93
 [[ "${1:-}" == mod && "${2:-}" == tidy ]] || exit 90
 case "${3:-}" in
   -modfile=*) alternate_mod="${3#-modfile=}" ;;

@@ -28,7 +28,7 @@ if [[ -f go.sum ]]; then
 fi
 
 set +e
-go mod tidy -modfile="$alternate_mod"
+GOWORK=off go mod tidy -modfile="$alternate_mod"
 tidy_status=$?
 set -e
 if ((tidy_status != 0)); then
