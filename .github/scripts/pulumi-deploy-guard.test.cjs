@@ -22,7 +22,7 @@ const contract = JSON.parse(
       "actions",
       "pulumi-deploy-guard",
       "contracts",
-      "kyle-sexton-github-iac-v2.json",
+      "kyle-sexton-github-iac-v3.json",
     ),
     "utf8",
   ),
@@ -79,25 +79,21 @@ test("guard audits the complete personal allow set before exporting state", () =
   assert.doesNotMatch(guard, /set -x/u);
 });
 
-test("bundled OIDC contract is exact, wildcard-free, and covers both IaC repositories", () => {
+test("bundled OIDC contract is exact, wildcard-free, and covers the organization IaC repository", () => {
   assert.equal(contract.schemaVersion, 2);
   assert.equal(contract.organization, "kyle-sexton");
   assert.equal(
     contract.issuerUrl,
     "https://token.actions.githubusercontent.com",
   );
-  assert.equal(contract.personalAllowPolicies.length, 2);
+  assert.equal(contract.personalAllowPolicies.length, 1);
   assert.deepEqual(
     contract.personalAllowPolicies
       .map((policy) => policy.rules.repository)
       .sort(),
-    ["kyle-sexton/github-iac", "melodic-software/github-iac"],
+    ["melodic-software/github-iac"],
   );
   const identities = {
-    "kyle-sexton/github-iac": {
-      ownerId: "153232337",
-      repositoryId: "1277607417",
-    },
     "melodic-software/github-iac": {
       ownerId: "58273638",
       repositoryId: "1277417810",
@@ -137,7 +133,6 @@ test("bundled OIDC contract is exact, wildcard-free, and covers both IaC reposit
       ]),
     ),
     {
-      "kyle-sexton/github-iac": "1277607417",
       "melodic-software/github-iac": "1277417810",
     },
   );
