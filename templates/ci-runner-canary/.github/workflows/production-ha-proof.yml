@@ -29,7 +29,7 @@ jobs:
   proof:
     name: Production HA proof
     permissions: {}
-    uses: melodic-software/ci-workflows/.github/workflows/production-ha-proof.yml@169e3a4287211a536eddcd3a757dd06132fb556e # reviewed production HA contract
+    uses: melodic-software/ci-workflows/.github/workflows/production-ha-proof.yml@c2654182bc2d78f7909795df78304d482aa69226 # reviewed production HA contract
     with:
       mode: ${{ inputs.mode }}
       observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
