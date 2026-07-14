@@ -18,6 +18,8 @@ error) exit 7 ;;
 missing-report) exit 0 ;;
 invalid-json) printf '{not json}\n' >"$REPORT_PATH"; exit 0 ;;
 valid-json) printf '[]\n' >"$REPORT_PATH"; exit 0 ;;
+finding-json) printf '[{"RuleID":"test-rule"}]\n' >"$REPORT_PATH"; exit 1 ;;
+invalid-sarif) printf '{"version":"2.1.0","runs":"invalid"}\n' >"$REPORT_PATH"; exit 0 ;;
 finding-sarif)
   cat >"$REPORT_PATH" <<'SARIF'
 {"version":"2.1.0","runs":[{"results":[{"ruleId":"test,rule","locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/test:file.js"},"region":{"startLine":7}}}]}]}]}
@@ -30,7 +32,7 @@ FAKE
 chmod +x "$temporary_directory/bin/gitleaks"
 
 run_case() {
-  local name="$1" expected="$2" mode="$3" format="${4:-}" path="${5:-}"
+  local name="$1" expected="$2" mode="$3" format="${4:-}" path="${5:-}" redact="${6:-false}"
   local output status
   rm -f -- "$temporary_directory/report" "$temporary_directory/args"
   set +e
@@ -41,7 +43,7 @@ run_case() {
       GITHUB_WORKSPACE="$temporary_directory" \
       PATH="$temporary_directory/bin:$PATH" \
       PATH_TO_SCAN="$temporary_directory" \
-      REDACT=false \
+      REDACT="$redact" \
       REPORT_FORMAT="$format" \
       REPORT_PATH="$path" \
       SCAN_MODE=dir \
@@ -71,6 +73,9 @@ run_case 'operational error fails closed' 7 error
 run_case 'missing requested report fails closed' 2 missing-report json "$temporary_directory/report"
 run_case 'invalid requested report fails closed' 2 invalid-json json "$temporary_directory/report"
 run_case 'valid requested report preserves clean status' 0 valid-json json "$temporary_directory/report"
+run_case 'finding with valid JSON remains blocking' 1 finding-json json "$temporary_directory/report"
+run_case 'invalid SARIF fails closed' 2 invalid-sarif sarif "$temporary_directory/report"
+run_case 'explicit redaction remains clean' 0 clean '' '' true
 
 annotation_output="$(
   CAPTURED_ARGS="$temporary_directory/args" \
