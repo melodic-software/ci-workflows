@@ -7,12 +7,15 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
+const { workflowSha } = require("./fetch-immutable-workflow-pins.cjs");
+
 const {
   HOSTS,
   POLL_INTERVAL_MILLISECONDS,
   PRODUCTION_LABEL,
   PROOF_CALLER_WORKFLOW,
   PROOF_REPOSITORY,
+  REQUEST_TIMEOUT_MILLISECONDS,
   ProofError,
   assertMode,
   fetchTopology,
@@ -42,7 +45,14 @@ const templateReadme = fs.readFileSync(
   path.join(templateRoot, "README.md"),
   "utf8",
 );
-const implementationSha = "c18c3d73b996081729d1955b256d9f7d31626b0f";
+const implementationSha = workflowSha(
+  templateWorkflow,
+  "production-ha-proof.yml",
+  { sourceName: path.relative(repositoryRoot, templateWorkflowPath) },
+);
+const currentSelectorSha = workflowSha(workflow, "select-runner.yml", {
+  sourceName: path.relative(repositoryRoot, workflowPath),
+});
 
 function jobBlock(jobId) {
   const start = workflow.indexOf(`  ${jobId}:\n`);
@@ -254,6 +264,12 @@ test("inventory proves independent groups, identical private access, and both id
         parameters.headers["X-GitHub-Api-Version"] === "2026-03-10",
     ),
   );
+  assert.ok(
+    calls.every(
+      ({ parameters }) =>
+        parameters.request.timeout === REQUEST_TIMEOUT_MILLISECONDS,
+    ),
+  );
 });
 
 test("REST collection pagination is complete and versioned", async () => {
@@ -279,6 +295,12 @@ test("REST collection pagination is complete and versioned", async () => {
   assert.deepEqual(
     calls.map(({ parameters }) => parameters.page),
     [1, 2],
+  );
+  assert.ok(
+    calls.every(
+      ({ parameters }) =>
+        parameters.request.timeout === REQUEST_TIMEOUT_MILLISECONDS,
+    ),
   );
   assert.ok(
     calls.every(
@@ -766,7 +788,7 @@ test("pinned reusable commit contains the exact caller and selector contracts", 
   assert.match(pinned.stdout, new RegExp(PROOF_CALLER_WORKFLOW, "u"));
   assert.match(
     pinned.stdout,
-    /select-runner\.yml@3415de3ff2fafee40e4d087eb6073d2f6952b595/u,
+    new RegExp(`select-runner\\.yml@${currentSelectorSha}`, "u"),
   );
   assert.match(
     pinned.stdout,

@@ -9,6 +9,7 @@ const PROOF_CALLER_WORKFLOW =
   "melodic-software/ci-runner-canary/.github/workflows/production-ha-proof.yml@refs/heads/main";
 const PRODUCTION_LABEL = "melodic-ubuntu-24.04-x64";
 const PAGE_SIZE = 100;
+const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 const POLL_INTERVAL_MILLISECONDS = 15_000;
 const REQUIRED_STABLE_DRAIN_OBSERVATIONS = 2;
 const SAFE_NAME = /^[A-Za-z0-9._-]{1,128}$/u;
@@ -89,6 +90,7 @@ async function listAll(request, route, parameters, collectionKey) {
           accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": API_VERSION,
         },
+        request: { timeout: REQUEST_TIMEOUT_MILLISECONDS },
       });
     } catch (error) {
       throw apiFailure(error);
@@ -657,6 +659,7 @@ module.exports = Object.freeze({
   PRODUCTION_LABEL,
   PROOF_CALLER_WORKFLOW,
   PROOF_REPOSITORY,
+  REQUEST_TIMEOUT_MILLISECONDS,
   ProofError,
   assertMode,
   fetchTopology,

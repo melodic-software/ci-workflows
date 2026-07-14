@@ -12,6 +12,8 @@ on:
       - .github/osv-scanner-pin.json
       - .github/scripts/local-runner-canary.test.cjs
       - .github/scripts/local-runner-parity.sh
+      - .github/scripts/fetch-immutable-workflow-pins.cjs
+      - .github/scripts/fetch-immutable-workflow-pins.test.cjs
       - .github/scripts/osv-scanner-pin.test.cjs
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
@@ -32,6 +34,8 @@ on:
       - .github/osv-scanner-pin.json
       - .github/scripts/local-runner-canary.test.cjs
       - .github/scripts/local-runner-parity.sh
+      - .github/scripts/fetch-immutable-workflow-pins.cjs
+      - .github/scripts/fetch-immutable-workflow-pins.test.cjs
       - .github/scripts/osv-scanner-pin.test.cjs
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
@@ -70,6 +74,10 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24.18.0
+      - name: Fetch immutable workflow pins under test
+        # A full-history checkout excludes hidden PR refs after their source
+        # branches are deleted, so acquire only the exact commits under test.
+        run: node .github/scripts/fetch-immutable-workflow-pins.cjs
       - name: Test selector implementation, generation, and immutable pins
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scanner exit-code policy
