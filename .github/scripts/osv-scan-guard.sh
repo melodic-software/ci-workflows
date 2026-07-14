@@ -23,7 +23,7 @@ if [[ -f "${OSV_RESULTS:-}" && ! -L "${OSV_RESULTS:-}" ]] &&
 fi
 
 annotate_findings() {
-  local file line message
+  local file line message normalized_file
   escape_property() {
     local v="$1"
     v=${v//'%'/'%25'}
@@ -40,12 +40,67 @@ annotate_findings() {
     v=${v//$'\n'/'%0A'}
     printf '%s' "$v"
   }
+  normalize_sarif_uri() {
+    local uri="$1" encoded decoded='' remainder prefix hex byte
+    local workspace candidate resolved relative
+
+    [[ -n "$uri" && -n "${GITHUB_WORKSPACE:-}" ]] || return 1
+    workspace="$(realpath -e -- "$GITHUB_WORKSPACE" 2>/dev/null)" || return 1
+    [[ -d "$workspace" ]] || return 1
+
+    if [[ "$uri" == file:///* ]]; then
+      encoded="${uri#file://}"
+    elif [[ "$uri" == file://* || "$uri" =~ ^[A-Za-z][A-Za-z0-9+.-]*: ]]; then
+      return 1
+    elif [[ "$uri" == /* ]]; then
+      return 1
+    else
+      encoded="$uri"
+    fi
+    [[ -n "$encoded" && "$encoded" != *'?'* && "$encoded" != *'#'* ]] || return 1
+
+    remainder="$encoded"
+    while [[ "$remainder" == *%* ]]; do
+      prefix="${remainder%%\%*}"
+      remainder="${remainder#*\%}"
+      [[ "$remainder" =~ ^([0-9A-Fa-f]{2}) ]] || return 1
+      hex="${BASH_REMATCH[1]}"
+      if ((16#$hex < 32 || 16#$hex == 127)); then
+        return 1
+      fi
+      printf -v byte '%b' "\\x$hex"
+      decoded+="$prefix$byte"
+      remainder="${remainder:2}"
+    done
+    decoded+="$remainder"
+    [[ -n "$decoded" ]] || return 1
+
+    if [[ "$uri" == file:///* ]]; then
+      candidate="$decoded"
+    else
+      candidate="$workspace/$decoded"
+    fi
+    resolved="$(realpath -e -- "$candidate" 2>/dev/null)" || return 1
+    [[ "$resolved" == "$workspace" || "$resolved" == "$workspace/"* ]] || return 1
+    if [[ "$resolved" == "$workspace" ]]; then
+      relative='.'
+    else
+      relative="${resolved#"$workspace/"}"
+    fi
+    printf '%s' "$relative"
+  }
   while IFS=$'\t' read -r file line message; do
     [[ -z "$message" ]] && continue
-    file="$(escape_property "$file")"
-    line="$(escape_property "${line:-1}")"
     message="$(escape_data "$message")"
-    echo "::warning file=$file,line=$line::$message"
+    # shellcheck disable=SC2310 # normalization returns status; fallible body commands are checked.
+    if normalized_file="$(normalize_sarif_uri "$file")"; then
+      file="$(escape_property "$normalized_file")"
+      [[ "$line" =~ ^[1-9][0-9]*$ ]] || line=1
+      line="$(escape_property "$line")"
+      echo "::warning file=$file,line=$line::$message"
+    else
+      echo "::warning::$message"
+    fi
   done < <(jq -r '[.runs[].results[]?][:50][] | [(.locations[0].physicalLocation.artifactLocation.uri // ""), (.locations[0].physicalLocation.region.startLine // 1), (.message.text // "OSV vulnerability finding")] | @tsv' "$OSV_RESULTS")
 }
 
