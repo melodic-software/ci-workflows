@@ -1,0 +1,406 @@
+name: go-quality
+
+# Reusable blocking Go contract. Standards owns analyzer policy; this workflow
+# owns exact native installation and execution. Consume at job level with a full
+# commit SHA and pass the Standards-managed config path.
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: Path, relative to working-directory, to the Standards-managed golangci-lint v2 config.
+        required: true
+        type: string
+      working-directory:
+        description: Repository-relative Go module directory.
+        default: '.'
+        type: string
+      go-version-file:
+        description: Repository-relative file owning the exact Go patch version.
+        default: go.mod
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Go quality (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOLANGCI_LINT_VERSION: 2.12.2
+      GOLANGCI_LINT_SHA256: 8df580d2670fed8fa984aac0507099af8df275e665215f5c7a2ae3943893a553
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate caller paths
+        shell: bash
+        env:
+          CONFIG: ${{ inputs.config }}
+          GO_VERSION_FILE: ${{ inputs.go-version-file }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          validate_relative() {
+            local name="$1" value="$2"
+            if [[ -z "$value" || "$value" == /* || "$value" == *\\* ||
+              "$value" =~ (^|/)\.\.(/|$) ]]; then
+              echo "::error::$name must be a non-empty repository-relative path using forward slashes."
+              exit 2
+            fi
+          }
+          validate_relative working-directory "$WORKING_DIRECTORY"
+          validate_relative go-version-file "$GO_VERSION_FILE"
+          validate_relative config "$CONFIG"
+          [[ -d "$WORKING_DIRECTORY" ]] || { echo '::error::working-directory is missing.'; exit 2; }
+          [[ -f "$GO_VERSION_FILE" && ! -L "$GO_VERSION_FILE" ]] ||
+            { echo '::error::go-version-file must be a regular reviewed file.'; exit 2; }
+          [[ -f "$WORKING_DIRECTORY/$CONFIG" && ! -L "$WORKING_DIRECTORY/$CONFIG" ]] ||
+            { echo '::error::config must be a regular Standards-managed file.'; exit 2; }
+          [[ -f "$WORKING_DIRECTORY/go.mod" && ! -L "$WORKING_DIRECTORY/go.mod" ]] ||
+            { echo '::error::working-directory must contain a regular go.mod.'; exit 2; }
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - name: Install verified golangci-lint
+        id: install-golangci
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$GOLANGCI_LINT_VERSION"
+          archive_name="golangci-lint-${version}-linux-amd64.tar.gz"
+          member="golangci-lint-${version}-linux-amd64/golangci-lint"
+          url="https://github.com/golangci/golangci-lint/releases/download/v${version}/${archive_name}"
+          runtime_root="${RUNNER_TEMP:?}/ci-workflows/golangci-lint"
+          destination="$runtime_root/golangci-lint"
+          work="$(mktemp -d "$RUNNER_TEMP/golangci-lint.XXXXXXXX")"
+          trap 'rm -rf -- "$work"' EXIT
+          mkdir -p -- "$runtime_root"
+          curl -q --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 120 \
+            --retry 2 --retry-max-time 300 \
+            --output "$work/$archive_name" -- "$url"
+          printf '%s  %s\n' "$GOLANGCI_LINT_SHA256" "$work/$archive_name" |
+            sha256sum --check --strict -
+          tar -xzf "$work/$archive_name" -C "$work" -- "$member"
+          install -m 0755 -- "$work/$member" "$destination"
+          actual="$("$destination" version --short)"
+          [[ "$actual" == "$version" ]] ||
+            { echo "::error::Expected golangci-lint $version, got $actual."; exit 2; }
+          echo "binary=$destination" >>"$GITHUB_OUTPUT"
+
+      - name: Verify config and run golangci-lint
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CONFIG: ${{ inputs.config }}
+          GOLANGCI_LINT: ${{ steps.install-golangci.outputs.binary }}
+        run: |
+          set -euo pipefail
+          "$GOLANGCI_LINT" config verify --config "$CONFIG"
+          set +e
+          "$GOLANGCI_LINT" run --config "$CONFIG" --timeout=10m \
+            --issues-exit-code=42 --max-issues-per-linter=0 \
+            --max-same-issues=0 ./...
+          status=$?
+          set -e
+          case "$status" in
+            0) ;;
+            42) echo '::error::golangci-lint reported product findings.'; exit 1 ;;
+            *) echo "::error::golangci-lint execution failed with status $status; rerun after resolving infrastructure/configuration."; exit 2 ;;
+          esac
+
+      - name: Check Go formatting
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t files < <(git ls-files -z -- '*.go')
+          ((${#files[@]} > 0)) || { echo '::error::Go module contains no tracked .go files.'; exit 2; }
+          unformatted="$(gofmt -l "${files[@]}")"
+          [[ -z "$unformatted" ]] ||
+            { printf '::error::gofmt required for:\n%s\n' "$unformatted"; exit 1; }
+
+      - name: Check module tidiness
+        run: go mod tidy -diff
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Verify module cache
+        run: go mod verify
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Run race-enabled tests
+        run: go test -race -count=1 -timeout=10m ./...
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+  windows:
+    name: Go quality (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOLANGCI_LINT_VERSION: 2.12.2
+      GOLANGCI_LINT_SHA256: bd42e3ebc8cb4ececb86941983baaf1dc221bbb04d838e94ce63b49cc91e02bb
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate caller paths
+        shell: pwsh
+        env:
+          CONFIG: ${{ inputs.config }}
+          GO_VERSION_FILE: ${{ inputs.go-version-file }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert-RelativePath([string] $Name, [string] $Value) {
+            if ([string]::IsNullOrWhiteSpace($Value) -or
+                [IO.Path]::IsPathRooted($Value) -or
+                $Value.Contains('\') -or
+                (($Value -split '/') -contains '..')) {
+              throw "$Name must be a non-empty repository-relative path using forward slashes."
+            }
+          }
+          Assert-RelativePath 'working-directory' $env:WORKING_DIRECTORY
+          Assert-RelativePath 'go-version-file' $env:GO_VERSION_FILE
+          Assert-RelativePath 'config' $env:CONFIG
+          if (-not (Test-Path -LiteralPath $env:WORKING_DIRECTORY -PathType Container)) {
+            throw 'working-directory is missing.'
+          }
+          if (-not (Test-Path -LiteralPath $env:GO_VERSION_FILE -PathType Leaf)) {
+            throw 'go-version-file must be a regular reviewed file.'
+          }
+          $config = Join-Path $env:WORKING_DIRECTORY $env:CONFIG
+          if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+            throw 'config must be a regular Standards-managed file.'
+          }
+          $goMod = Join-Path $env:WORKING_DIRECTORY 'go.mod'
+          if (-not (Test-Path -LiteralPath $goMod -PathType Leaf)) {
+            throw 'working-directory must contain a regular go.mod.'
+          }
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - name: Install verified golangci-lint
+        id: install-golangci
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:GOLANGCI_LINT_VERSION
+          $archiveName = "golangci-lint-$version-windows-amd64.zip"
+          $memberRoot = "golangci-lint-$version-windows-amd64"
+          $url = "https://github.com/golangci/golangci-lint/releases/download/v$version/$archiveName"
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'ci-workflows\golangci-lint'
+          $destination = Join-Path $runtimeRoot 'golangci-lint.exe'
+          $work = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
+          New-Item -ItemType Directory -Path $runtimeRoot, $work -Force | Out-Null
+          try {
+            $archive = Join-Path $work $archiveName
+            & curl.exe -q --fail --silent --show-error --location `
+              --proto '=https' --proto-redir '=https' `
+              --connect-timeout 10 --max-time 120 `
+              --retry 2 --retry-max-time 300 `
+              --output $archive -- $url
+            if ($LASTEXITCODE -ne 0) { throw "curl failed with status $LASTEXITCODE" }
+            $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $env:GOLANGCI_LINT_SHA256) {
+              throw "golangci-lint checksum mismatch: $actualHash"
+            }
+            Expand-Archive -LiteralPath $archive -DestinationPath $work
+            $source = Join-Path $work "$memberRoot\golangci-lint.exe"
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw 'Verified archive is missing golangci-lint.exe.'
+            }
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+          } finally {
+            Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          $actual = (& $destination version --short).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $version) {
+            throw "Expected golangci-lint $version, got $actual."
+          }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "binary=$destination"
+
+      - name: Verify config and run golangci-lint
+        shell: pwsh
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CONFIG: ${{ inputs.config }}
+          GOLANGCI_LINT: ${{ steps.install-golangci.outputs.binary }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:GOLANGCI_LINT config verify --config $env:CONFIG
+          if ($LASTEXITCODE -ne 0) { throw 'golangci-lint config verification failed.' }
+          & $env:GOLANGCI_LINT run --config $env:CONFIG --timeout=10m `
+            --issues-exit-code=42 --max-issues-per-linter=0 `
+            --max-same-issues=0 ./...
+          $status = $LASTEXITCODE
+          if ($status -eq 42) { throw 'golangci-lint reported product findings.' }
+          if ($status -ne 0) {
+            throw "golangci-lint execution failed with status $status; rerun after resolving infrastructure/configuration."
+          }
+
+      - name: Run Windows tests
+        run: go test -count=1 -timeout=10m ./...
+        shell: pwsh
+        working-directory: ${{ inputs.working-directory }}
+
+  govulncheck:
+    name: Go vulnerability analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GOVULNCHECK_VERSION: 1.6.0
+      GOVULNCHECK_MODULE_SUM: h1:FeMO9Rm/HwyduOztbvKcOw+zvDEPr4I4aQNSfevFcKY=
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - name: Install authenticated govulncheck
+        id: install-govulncheck
+        shell: bash
+        env:
+          GONOSUMDB: ''
+          GOPRIVATE: ''
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+        run: |
+          set -euo pipefail
+          module="golang.org/x/vuln"
+          version="v${GOVULNCHECK_VERSION}"
+          tool_root="${RUNNER_TEMP:?}/ci-workflows/govulncheck"
+          mkdir -p -- "$tool_root"
+          metadata="$tool_root/module.json"
+          go mod download -json "${module}@${version}" >"$metadata"
+          jq -e --arg version "$version" --arg sum "$GOVULNCHECK_MODULE_SUM" \
+            '.Version == $version and .Sum == $sum and (.Error? == null)' \
+            "$metadata" >/dev/null ||
+            { echo '::error::govulncheck module identity/checksum verification failed.'; exit 2; }
+          GOBIN="$tool_root" go install "${module}/cmd/govulncheck@${version}"
+          binary="$tool_root/govulncheck"
+          go version -m "$binary" >"$tool_root/build-info.txt"
+          grep -F $'mod\tgolang.org/x/vuln\t'"$version"$'\t'"$GOVULNCHECK_MODULE_SUM" \
+            "$tool_root/build-info.txt" >/dev/null ||
+            { echo '::error::installed govulncheck binary does not match the authenticated module.'; exit 2; }
+          echo "binary=$binary" >>"$GITHUB_OUTPUT"
+
+      - name: Run govulncheck to SARIF
+        id: govulncheck
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          GOVULNCHECK: ${{ steps.install-govulncheck.outputs.binary }}
+        run: |
+          set -euo pipefail
+          sarif="${RUNNER_TEMP:?}/govulncheck.sarif"
+          set +e
+          timeout --signal=TERM --kill-after=30s 10m \
+            "$GOVULNCHECK" -db=https://vuln.go.dev -format=sarif ./... >"$sarif"
+          status=$?
+          set -e
+          echo "exit-code=$status" >>"$GITHUB_OUTPUT"
+          echo "sarif=$sarif" >>"$GITHUB_OUTPUT"
+
+      - name: Classify govulncheck result
+        shell: bash
+        env:
+          GOVULNCHECK_EXIT_CODE: ${{ steps.govulncheck.outputs.exit-code }}
+          GOVULNCHECK_SARIF: ${{ steps.govulncheck.outputs.sarif }}
+        run: |
+          # BEGIN GENERATED: govulncheck-sarif-guard.sh
+          set -euo pipefail
+
+          fail_infrastructure() {
+            printf '::error::govulncheck infrastructure failure: %s; rerun the job.\n' "$*" >&2
+            exit 2
+          }
+
+          : "${GOVULNCHECK_EXIT_CODE:?GOVULNCHECK_EXIT_CODE is required}"
+          : "${GOVULNCHECK_SARIF:?GOVULNCHECK_SARIF is required}"
+          : "${GOVULNCHECK_VERSION:?GOVULNCHECK_VERSION is required}"
+
+          [[ "$GOVULNCHECK_EXIT_CODE" =~ ^[0-9]+$ ]] ||
+            fail_infrastructure "process exit code is malformed"
+          ((GOVULNCHECK_EXIT_CODE == 0)) ||
+            fail_infrastructure "scanner exited $GOVULNCHECK_EXIT_CODE"
+          [[ -f "$GOVULNCHECK_SARIF" && ! -L "$GOVULNCHECK_SARIF" ]] ||
+            fail_infrastructure "SARIF output is missing or is not a regular file"
+
+          expected_version="v${GOVULNCHECK_VERSION#v}"
+          if ! jq -e --arg version "$expected_version" '
+            type == "object" and
+            .version == "2.1.0" and
+            (.runs | type == "array" and length == 1) and
+            (.runs[0].tool.driver | type == "object") and
+            .runs[0].tool.driver.name == "govulncheck" and
+            .runs[0].tool.driver.semanticVersion == $version and
+            (.runs[0].tool.driver.rules | type == "array") and
+            (.runs[0].tool.driver.properties | type == "object") and
+            .runs[0].tool.driver.properties.protocol_version == "v1.0.0" and
+            .runs[0].tool.driver.properties.scanner_name == "govulncheck" and
+            .runs[0].tool.driver.properties.scanner_version == $version and
+            .runs[0].tool.driver.properties.db == "https://vuln.go.dev" and
+            .runs[0].tool.driver.properties.scan_level == "symbol" and
+            .runs[0].tool.driver.properties.scan_mode == "source" and
+            ((.runs[0].tool.driver.properties.db_last_modified? // "") | type == "string") and
+            (.runs[0].results | type == "array") and
+            all(.runs[0].results[];
+              type == "object" and
+              (.ruleId | type == "string" and length > 0) and
+              (.level == "error" or .level == "warning" or .level == "note") and
+              (.message.text | type == "string" and length > 0)
+            )
+          ' "$GOVULNCHECK_SARIF" >/dev/null 2>&1; then
+            fail_infrastructure "SARIF is malformed or violates the pinned provenance schema"
+          fi
+
+          error_count="$(jq '[.runs[0].results[] | select(.level == "error")] | length' "$GOVULNCHECK_SARIF")"
+          warning_count="$(jq '[.runs[0].results[] | select(.level == "warning")] | length' "$GOVULNCHECK_SARIF")"
+          note_count="$(jq '[.runs[0].results[] | select(.level == "note")] | length' "$GOVULNCHECK_SARIF")"
+
+          if ((warning_count > 0 || note_count > 0)); then
+            printf '::notice::govulncheck reported %s imported-package warning(s) and %s vulnerable-module note(s); neither is a reachable symbol finding.\n' \
+              "$warning_count" "$note_count"
+          fi
+          if ((error_count > 0)); then
+            ids="$(jq -r '[.runs[0].results[] | select(.level == "error") | .ruleId] | unique | join(", ")' "$GOVULNCHECK_SARIF")"
+            printf '::error::govulncheck found %s reachable vulnerable-symbol result(s): %s\n' \
+              "$error_count" "$ids" >&2
+            exit 1
+          fi
+
+          printf 'govulncheck completed with no reachable vulnerable-symbol findings.\n'
+          # END GENERATED: govulncheck-sarif-guard.sh

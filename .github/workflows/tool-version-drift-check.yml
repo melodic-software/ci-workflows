@@ -267,6 +267,39 @@ jobs:
             echo "ok    OSV-Scanner action image: ${osv_current} (${osv_digest})"
           fi
 
+          # Go quality binaries are embedded in a reusable workflow rather than
+          # an action, so track their authoritative upstream release channels
+          # explicitly. Consumers receive reviewed bumps only through a new
+          # immutable ci-workflows commit.
+          go_quality_file=.github/workflows/go-quality.yml
+          golangci_current="$(yq '.jobs.linux.env.GOLANGCI_LINT_VERSION' "$go_quality_file")"
+          golangci_tag="$(
+            bounded_read 60 gh api repos/golangci/golangci-lint/releases/latest --jq '.tag_name'
+          )" || golangci_tag=''
+          golangci_latest="${golangci_tag#v}"
+          if [[ -z "$golangci_latest" ]]; then
+            echo "::warning::could not resolve latest golangci-lint release; skipping"
+          elif [[ "$golangci_current" != "$golangci_latest" ]]; then
+            drift_lines+="- **golangci-lint**: pinned \`${golangci_current}\`, upstream latest \`${golangci_latest}\`"$'\n'
+            echo "DRIFT golangci-lint: ${golangci_current} -> ${golangci_latest}"
+          else
+            echo "ok    golangci-lint: ${golangci_current}"
+          fi
+
+          govuln_current="$(yq '.jobs.govulncheck.env.GOVULNCHECK_VERSION' "$go_quality_file")"
+          govuln_latest="$(
+            curl_small_json https://proxy.golang.org/golang.org/x/vuln/@latest |
+              jq -er '.Version | ltrimstr("v")'
+          )" || govuln_latest=''
+          if [[ -z "$govuln_latest" ]]; then
+            echo "::warning::could not resolve latest golang.org/x/vuln module; skipping"
+          elif [[ "$govuln_current" != "$govuln_latest" ]]; then
+            drift_lines+="- **govulncheck** (\`golang.org/x/vuln\`): pinned \`${govuln_current}\`, upstream latest \`${govuln_latest}\`"$'\n'
+            echo "DRIFT govulncheck: ${govuln_current} -> ${govuln_latest}"
+          else
+            echo "ok    govulncheck: ${govuln_current}"
+          fi
+
           if [[ -z "$drift_lines" ]]; then
             echo "drift_detected=false" >> "$GITHUB_OUTPUT"
             echo "No drift — all tracked tool and image pins are current."
@@ -290,7 +323,11 @@ jobs:
             echo "checksum. For OSV, update \`.github/osv-scanner-pin.json\` only after reviewing"
             echo "the release, resolving the exact linux/amd64 manifest digest, verifying its OCI"
             echo "version/source-revision labels, and passing the canary. Consumers pick the new"
-            echo "default up when they re-pin this repository. For canary runtime drift, update the"
+            echo "default up when they re-pin this repository. For golangci-lint, verify both"
+            echo "official linux-amd64 and windows-amd64 archive checksums before changing the"
+            echo "embedded version and hashes. For govulncheck, verify the official Go proxy"
+            echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
+            echo "exact module pin. For canary runtime drift, update the"
             echo "matching workflow_call default only after reviewing the stable patch and run the"
             echo "full private canary on hosted and self-hosted. Never auto-merge these updates."
             echo
