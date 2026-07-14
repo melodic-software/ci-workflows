@@ -6,7 +6,7 @@ name: Tool Version Drift Check
 #
 # Dependabot cannot see these: its github-actions ecosystem updates only `uses:`
 # SHAs, and a tool version embedded in an action.yml input default, curl URL, or
-# shell-invoked OCI digest has no package manifest to track (see
+# shell-invoked release checksum has no package manifest to track (see
 # .github/dependabot.yml). The operator absorbs every flagged bump deliberately;
 # this workflow never rewrites or auto-merges a software/supply-chain pin.
 
@@ -216,55 +216,30 @@ jobs:
             fi
           done
 
-          # The OSV workflow invokes an OCI image from shell, so Dependabot
-          # cannot track it. Compare both the latest stable release and the
-          # linux/amd64 tag's current manifest digest. A same-version digest
-          # change is still drift and may indicate that the upstream tag moved.
+          # The OSV workflow installs an official native release asset from
+          # shell, so Dependabot cannot track it. Compare the latest stable
+          # release and GitHub's immutable digest for the reviewed Linux asset.
           osv_pin=.github/osv-scanner-pin.json
           osv_current="$(jq -er '.version' "$osv_pin")"
-          osv_repository="$(jq -er '.image.repository' "$osv_pin")"
-          osv_digest="$(jq -er '.image.digest' "$osv_pin")"
-          osv_platform="$(jq -er '.image.platform' "$osv_pin")"
-          osv_os="${osv_platform%%/*}"
-          osv_architecture="${osv_platform#*/}"
-          osv_tag="$(bounded_read 60 gh api repos/google/osv-scanner/releases/latest --jq '.tag_name')" || osv_tag=''
+          osv_asset="$(jq -er '.binary.asset' "$osv_pin")"
+          osv_digest="$(jq -er '.binary.sha256' "$osv_pin")"
+          osv_release="$(bounded_read 60 gh api repos/google/osv-scanner/releases/latest)" || osv_release=''
+          osv_tag="$(jq -r '.tag_name // empty' <<<"$osv_release")"
           osv_latest="${osv_tag#v}"
-          osv_latest_digest=''
-          if [[ -n "$osv_tag" ]]; then
-            osv_manifest="$(
-              bounded_read 90 docker buildx imagetools inspect "${osv_repository}:${osv_tag}" \
-                --format '{{json .Manifest}}'
-            )" || osv_manifest=''
-            if [[ -n "$osv_manifest" ]]; then
-              osv_latest_digest="$(
-                jq -er --arg os "$osv_os" --arg architecture "$osv_architecture" '
-                  if (.manifests? | type) == "array" then
-                    [.manifests[] | select(
-                      .platform.os == $os and
-                      .platform.architecture == $architecture and
-                      ((.platform.variant // "") == "")
-                    ) | .digest] |
-                    if length == 1 then .[0] else error("platform manifest is not unique") end
-                  else
-                    .digest
-                  end
-                ' <<< "$osv_manifest"
-              )" || osv_latest_digest=''
-            fi
-          fi
+          osv_latest_digest="$(jq -r --arg asset "$osv_asset" '[.assets[] | select(.name == $asset) | .digest] | if length == 1 then .[0] | sub("^sha256:"; "") else empty end' <<<"$osv_release")"
 
           if [[ -z "$osv_latest" ]]; then
             echo "::warning::could not resolve latest google/osv-scanner release; skipping OSV drift"
           elif [[ "$osv_current" != "$osv_latest" ]]; then
-            drift_lines+="- **OSV-Scanner action image**: pinned \`${osv_current}\` (\`${osv_digest}\`), upstream latest \`${osv_latest}\` (\`${osv_latest_digest:-unresolved}\`)"$'\n'
-            echo "DRIFT OSV-Scanner action image: ${osv_current} -> ${osv_latest}"
+            drift_lines+="- **OSV-Scanner native binary**: pinned \`${osv_current}\` (\`${osv_digest}\`), upstream latest \`${osv_latest}\` (\`${osv_latest_digest:-unresolved}\`)"$'\n'
+            echo "DRIFT OSV-Scanner native binary: ${osv_current} -> ${osv_latest}"
           elif [[ -z "$osv_latest_digest" ]]; then
-            echo "::warning::could not resolve ${osv_repository}:${osv_tag} digest; skipping OSV digest drift"
+            echo "::warning::could not resolve ${osv_asset} digest for ${osv_tag}; skipping OSV digest drift"
           elif [[ "$osv_digest" != "$osv_latest_digest" ]]; then
-            drift_lines+="- **OSV-Scanner action image**: release \`${osv_current}\` still current, but reviewed digest \`${osv_digest}\` differs from tag digest \`${osv_latest_digest}\`"$'\n'
-            echo "DRIFT OSV-Scanner action image digest: ${osv_digest} -> ${osv_latest_digest}"
+            drift_lines+="- **OSV-Scanner native binary**: release \`${osv_current}\` still current, but reviewed digest \`${osv_digest}\` differs from release digest \`${osv_latest_digest}\`"$'\n'
+            echo "DRIFT OSV-Scanner native binary digest: ${osv_digest} -> ${osv_latest_digest}"
           else
-            echo "ok    OSV-Scanner action image: ${osv_current} (${osv_digest})"
+            echo "ok    OSV-Scanner native binary: ${osv_current} (${osv_digest})"
           fi
 
           # Go quality binaries are embedded in a reusable workflow rather than
@@ -321,8 +296,8 @@ jobs:
             echo "the paired \`sha256:\` default from the new release asset. The uvx/npx lanes (ruff,"
             echo "pyright, check-jsonschema, markdown, biome, tsc) and PSScriptAnalyzer carry no"
             echo "checksum. For OSV, update \`.github/osv-scanner-pin.json\` only after reviewing"
-            echo "the release, resolving the exact linux/amd64 manifest digest, verifying its OCI"
-            echo "version/source-revision labels, and passing the canary. Consumers pick the new"
+            echo "the release, verifying the official Linux asset checksum and SLSA provenance,"
+            echo "updating the pinned verifier when required, and passing the canary. Consumers pick the new"
             echo "default up when they re-pin this repository. For golangci-lint, verify both"
             echo "official linux-amd64 and windows-amd64 archive checksums before changing the"
             echo "embedded version and hashes. For govulncheck, verify the official Go proxy"

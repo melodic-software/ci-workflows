@@ -69,8 +69,9 @@ checkout of this repo. (Public is required because a public consumer such as
 - `.github/actions/typos` — `typos` spell-check over source against a
   caller-supplied config.
 - `.github/actions/gitleaks` — gitleaks secret scan over a directory against a
-  caller-supplied config (installs a pinned, checksum-verified binary; optional
-  SARIF output + PR annotations).
+  caller-supplied config. It installs a pinned, checksum-verified binary,
+  unconditionally redacts secret values, validates requested reports, and fails
+  closed on missing, malformed, or operationally incomplete results.
 - `.github/actions/actionlint` — actionlint over the repo's GitHub Actions
   workflow files, with the canonical checksum-pinned ShellCheck release
   installed explicitly so embedded shell validation is identical on hosted and
@@ -464,7 +465,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   **Advisory for findings** (surfaces PR annotations without failing unless
   `fail-on-findings` is enabled); consumed via `uses:` at job level. The
   workflow downloads the official x86_64 GNU/Linux archive for the reviewed
-  [v1.26.1 release][zizmor-release-v1-26-1], verifies its committed SHA-256
+  [v1.27.0 release][zizmor-release-v1-27-0], verifies its committed SHA-256
   before extraction, and verifies the CLI-reported version before auditing.
   `latest` remains accepted for compatibility but resolves to that reviewed
   default rather than a mutable release. Installation and internal errors fail
@@ -476,19 +477,22 @@ GitHub continues the normal weekly patching of each hosted image generation.
   private, non-fork, non-Dependabot calls. SARIF upload and blocking promotion
   remain deferred opt-ins. Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
-  Google's official OSV-Scanner v2.4.0 action image, invoked directly by an
-  exact linux/amd64 OCI manifest digest. One JSON scan feeds the image's
-  reporter for GitHub annotations plus a SARIF artifact; the same full scan runs
-  on every event. **Advisory** (`fail-on-vuln` off by default). V2.4.0 scans
+  Google's official native OSV-Scanner v2.4.0 Linux X64 binary. The exact binary,
+  its provenance, and the SLSA verifier are checksum-pinned; the verifier then
+  attests the expected Google source repository and exact release tag before the
+  scanner runs. One native SARIF scan emits escaped GitHub annotations without
+  retaining or uploading an artifact. **Advisory for findings** (`fail-on-vuln`
+  off by default); supply-chain, scanner, and invalid-result errors always fail
+  closed. V2.4.0 scans
   supported manifests and lockfiles; .NET `.csproj`/`PackageReference` and
   Central Package Management are enabled by default. A committed
   `packages.lock.json` remains the reproducibility contract enforced by
   `dotnet-build`'s locked-mode restore, but is no longer the only .NET coverage
   path. An empty scan warns (advisory) or fails (blocking) unless the caller
   declares the repo genuinely dependency-less via `allow-no-lockfiles: true`.
-  The job remains explicitly hosted because it invokes Docker. Inputs are
-  documented inline. See the [official v2.4.0 release][osv-release-v2-4] and
-  [action-container build source][osv-action-container-source].
+  The caller must pass its approved selector output through `runner`; the native
+  lane needs no Docker socket or privileged worker. Inputs are documented inline.
+  See the [official v2.4.0 release][osv-release-v2-4].
 
   “Enabled by default” is not treated as proof that every MSBuild layout is
   covered. Each consumer canary must show nonzero package discovery for its
@@ -496,49 +500,20 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the empty-scan guard remain required until that proof passes. The scanner's
   documented exit contract is also enforced: only `0` (clean) and `1`
   (findings) can be completed scans, `128` follows the explicit no-packages
-  policy, and every other code warns in advisory mode or fails blocking mode.
-
-  The scanner receives the caller checkout read-only plus one fresh writable
-  output directory under the hosted runner's temporary directory. The reporter
-  receives only that output, with networking disabled. Neither container gets
-  host credentials, GitHub file-command directories, the Docker socket, added
-  capabilities, or permission to gain privileges. Host-side policy accepts JSON
-  and SARIF only as valid regular, non-symlink files inside that fresh directory;
-  error/partial output is neither reported nor uploaded.
-
-  Private consumers record these intentional hosted jobs in their
-  `.github/runner-policy.json`; replace the workflow path and job IDs with the
-  caller's actual keys:
-
-  ```json
-  {
-    "exceptions": {
-      ".github/workflows/ci.yml#osv-scanner": {
-        "reason": "docker-socket",
-        "justification": "The official OSV image is invoked by exact OCI digest through Docker; local workers expose no Docker socket."
-      }
-    }
-  }
-  ```
+  policy, and every other code fails closed. Completed exit codes must agree with
+  a regular, non-symlink SARIF file and its finding count. Workflow-command
+  properties and messages are escaped before annotations are emitted.
 
   The reviewed pin is machine-readable in `.github/osv-scanner-pin.json` and the
-  workflow verifies the pulled image's version and source-revision labels before
-  scanning. Deployment never references a mutable tag. The daily
-  `tool-version-drift-check` compares both Google's latest stable release and
-  its current action-image manifest digest, then opens or refreshes the existing
+  workflow verifies the downloaded asset's checksum, SLSA provenance, source,
+  release tag, and reported version before scanning. Deployment never references
+  a mutable release. The daily `tool-version-drift-check` compares Google's
+  latest stable release and the official asset digest, then refreshes the existing
   maintenance issue; it never rewrites or auto-merges the pin. Updating requires
-  release review, exact linux/amd64 platform-digest resolution, label/platform
-  verification, and a canary. GitHub documents that pulling by digest selects
-  the same immutable container image [across pulls][github-container-digest].
-  Google publishes SLSA provenance for the standalone scanner binaries, but the
-  prebuilt reporter is experimental and available only in the action image; the
-  digest-pinned image is the reviewed parity choice for one scan plus annotations
-  and SARIF. Revisit the binary path if Google publishes an equally supported,
-  provenance-verifiable reporter. See the [official installation and SLSA
-  guidance][osv-installation].
-  The optional `runner` inputs on `semantic-pr` and native `zizmor` preserve the
-  hosted default while permitting governed selection; Docker-dependent OSV does
-  not expose one.
+  release review, official asset/provenance checksum verification, exact source
+  and tag verification, and a canary. See the [official installation and SLSA
+  guidance][osv-installation]. Native OSV requires a governed `runner`; the
+  optional inputs on `semantic-pr` and native `zizmor` preserve compatibility.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
   `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
   and pushes the result back to the PR branch, covering the lock-file updates
@@ -669,7 +644,6 @@ standards catalog.
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
 [job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
 [native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
-[osv-action-container-source]: https://github.com/google/osv-scanner/blob/b56b5191101d5f27d4787d5583d8d01e9518a7af/goreleaser-action.dockerfile
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
@@ -688,4 +662,4 @@ standards catalog.
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
-[zizmor-release-v1-26-1]: https://github.com/zizmorcore/zizmor/releases/tag/v1.26.1
+[zizmor-release-v1-27-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.27.0

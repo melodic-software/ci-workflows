@@ -353,6 +353,8 @@ jobs:
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scan policy guard
         run: bash .github/scripts/osv-scan-guard.test.sh
+      - name: Test Gitleaks scan policy guard
+        run: bash .github/actions/gitleaks/scan.test.sh
       - name: Test Pulumi deployment guard
         run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
       - name: Test Pulumi version-drift lifecycle
@@ -376,6 +378,9 @@ jobs:
       contents: read
     uses: ./.github/workflows/osv-scanner.yml
     with:
+      # This public repository's hosted lane is free; private consumers must pass
+      # their strict selector output instead.
+      runner: ubuntu-24.04
       # This repo carries no dependency lockfiles, so declare it dependency-less
       # and let the empty scan pass: the dogfood proves the wrapper's wiring
       # (inputs forward, advisory posture holds) without inventing a fixture

@@ -27,10 +27,9 @@ inputs:
     default: ''
   redact:
     description: >-
-      Mask the secret in gitleaks' output and report (passes --redact). Default
-      false keeps gitleaks' raw output; set true so a finding never prints the
-      secret to the log or writes it into the report file.
-    default: 'false'
+      Deprecated compatibility input. Secret values are always redacted from
+      gitleaks output and reports; false is accepted but cannot disable redaction.
+    default: 'true'
   version:
     description: Exact gitleaks version to install.
     default: 8.30.1
@@ -62,21 +61,4 @@ runs:
         REPORT_FORMAT: ${{ inputs.report-format }}
         REPORT_PATH: ${{ inputs.report-path }}
         REDACT: ${{ inputs.redact }}
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$CONFIG" ]]; then
-          echo "::error::gitleaks: config file not found: $CONFIG"
-          exit 2
-        fi
-        # `dir` scans the working tree at the given path; `git` scans the commit
-        # history of the repo rooted at that path. Both take the path as the
-        # positional source argument.
-        case "$SCAN_MODE" in
-          dir | git) ;;
-          *) echo "::error::gitleaks: invalid scan-mode '$SCAN_MODE' (expected dir or git)"; exit 1 ;;
-        esac
-        args=("$SCAN_MODE" "$PATH_TO_SCAN" --config "$CONFIG" --no-banner)
-        if [[ "$REDACT" == "true" ]]; then args+=(--redact); fi
-        if [[ -n "${REPORT_FORMAT// }" ]]; then args+=(--report-format "$REPORT_FORMAT"); fi
-        if [[ -n "${REPORT_PATH// }" ]]; then args+=(--report-path "$REPORT_PATH"); fi
-        gitleaks "${args[@]}"
+      run: bash "$GITHUB_ACTION_PATH/scan.sh"

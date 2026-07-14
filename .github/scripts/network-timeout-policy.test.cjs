@@ -38,7 +38,7 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   }
 });
 
-test("small JSON and image-discovery reads use their class budgets", () => {
+test("small JSON and release-discovery reads use their class budgets", () => {
   const workflow = read(".github/workflows/tool-version-drift-check.yml");
 
   assert.match(workflow, /--connect-timeout 10 --max-time 30/u);
@@ -49,7 +49,6 @@ test("small JSON and image-discovery reads use their class budgets", () => {
     workflow,
     /bounded_read 60 gh api repos\/google\/osv-scanner\/releases\/latest/u,
   );
-  assert.match(workflow, /bounded_read 90 docker buildx imagetools inspect/u);
   assert.match(
     workflow,
     /bounded_read\(\)[\s\S]*?>"\$output"[\s\S]*?cat -- "\$output"/u,
@@ -60,19 +59,12 @@ test("small JSON and image-discovery reads use their class budgets", () => {
   );
 });
 
-test("OSV digest pull and local image inspections are bounded", () => {
+test("OSV native release downloads are bounded", () => {
   const workflow = read(".github/workflows/osv-scanner.yml");
-
-  assert.match(workflow, /bounded_docker_read 300 docker pull/u);
-  assert.equal(
-    occurrences(workflow, /bounded_docker_read 90 docker image inspect/gu),
-    3,
-  );
-  assert.match(workflow, /for attempt in 1 2/u);
-  assert.match(
-    workflow,
-    /bounded_docker_read\(\)[\s\S]*?>"\$output"[\s\S]*?cat -- "\$output"/u,
-  );
+  assert.equal(occurrences(workflow, /--connect-timeout 10 --max-time 180/gu), 1);
+  assert.equal(occurrences(workflow, /--retry 2 --retry-max-time 360/gu), 1);
+  assert.match(workflow, /download\(\)[\s\S]*?curl --fail/u);
+  assert.doesNotMatch(workflow, /\bdocker\s+(?:run|pull|image|buildx)\b/iu);
 });
 
 test("Pulumi reads and stack export have explicit freshness boundaries", () => {
