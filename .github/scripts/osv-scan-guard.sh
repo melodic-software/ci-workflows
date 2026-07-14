@@ -18,7 +18,12 @@ fi
 
 valid_sarif=false
 if [[ -f "${OSV_RESULTS:-}" && ! -L "${OSV_RESULTS:-}" ]] &&
-  jq -e '.version == "2.1.0" and (.runs | type == "array") and ([.runs[].results[]?] | type == "array")' "$OSV_RESULTS" >/dev/null 2>&1; then
+  jq -e '
+    .version == "2.1.0"
+    and ((.runs | type) == "array")
+    and ((.runs | length) > 0)
+    and all(.runs[]; (type == "object") and ((.results | type) == "array"))
+  ' "$OSV_RESULTS" >/dev/null 2>&1; then
   valid_sarif=true
 fi
 
@@ -119,7 +124,7 @@ annotate_findings() {
       echo "::warning::$message"
     fi
   done < <(jq -r '
-    [.runs[].results[]?][:50][]
+    [.runs[].results[]][:50][]
     | (.locations[0].physicalLocation.artifactLocation.uri // "") as $uri
     | (.message.text // "OSV vulnerability finding") as $message
     | [
@@ -139,7 +144,7 @@ case "$SCAN_EXIT" in
     echo "::error::OSV-Scanner exited $SCAN_EXIT without a valid regular SARIF result."
     exit 2
   fi
-  finding_count="$(jq '[.runs[].results[]?] | length' "$OSV_RESULTS")"
+  finding_count="$(jq '[.runs[].results[]] | length' "$OSV_RESULTS")"
   if [[ "$SCAN_EXIT" == 0 && "$finding_count" != 0 ]] || [[ "$SCAN_EXIT" == 1 && "$finding_count" == 0 ]]; then
     echo "::error::OSV-Scanner exit $SCAN_EXIT disagrees with SARIF finding count $finding_count."
     exit 2

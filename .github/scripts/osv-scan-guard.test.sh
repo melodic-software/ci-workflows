@@ -30,6 +30,9 @@ write_finding() {
 write_results() {
   case "$1" in
   clean) printf '{"version":"2.1.0","runs":[{"results":[]}]}\n' >"$results" ;;
+  string-results) printf '{"version":"2.1.0","runs":[{"results":"not an array"}]}\n' >"$results" ;;
+  missing-results) printf '{"version":"2.1.0","runs":[{}]}\n' >"$results" ;;
+  empty-runs) printf '{"version":"2.1.0","runs":[]}\n' >"$results" ;;
   findings) write_finding 'src/a:b.js' ;;
   encoded-file) write_finding "file://${workspace}/src/encoded%20space.lock" ;;
   malformed-uri) write_finding 'src/uri-sentinel-malformed%2G.lock' ;;
@@ -120,6 +123,9 @@ run_case 'unsafe raw message becomes a generic warning' 0 1 false false unsafe-m
 run_case 'operational error always fails closed' 7 7 false false absent
 run_case 'missing result always fails closed' 2 0 false false absent
 run_case 'invalid result always fails closed' 2 0 false false invalid
+run_case 'string results fail closed' 2 0 false false string-results
+run_case 'missing results fail closed' 2 0 false false missing-results
+run_case 'empty runs fail closed' 2 0 false false empty-runs
 run_case 'exit and result mismatch fails closed' 2 0 false false findings
 run_case 'advisory empty scan warns' 0 128 false false absent
 run_case 'blocking empty scan fails' 1 128 false true absent
