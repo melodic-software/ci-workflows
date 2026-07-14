@@ -2,7 +2,7 @@
 set -euo pipefail
 
 action_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-contract="$action_path/contracts/kyle-sexton-github-iac-v3.json"
+contract="$action_path/contracts/kyle-sexton-github-iac.json"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
@@ -71,7 +71,7 @@ run_guard() {
     MOCK_POLICY="$policy" \
     MOCK_STATE="$state" \
     OPERATIONAL_RESOURCE_URNS_JSON="$requested_urns" \
-    POLICY_CONTRACT='kyle-sexton-github-iac-v3' \
+    POLICY_CONTRACT='kyle-sexton-github-iac' \
     PULUMI_BIN="$mock_pulumi" \
     STACK_NAME="${TEST_STACK_NAME:-kyle-sexton/project/production}" \
     bash "$action_path/guard.sh" >"$stdout" 2>"$stderr"
@@ -137,7 +137,7 @@ mkdir -p "$invalid_action_path/contracts"
 for operator in '*' '?' '.'; do
   jq --arg operator "$operator" \
     '.personalAllowPolicies[0].rules.workflow += $operator' \
-    "$contract" >"$invalid_action_path/contracts/kyle-sexton-github-iac-v3.json"
+    "$contract" >"$invalid_action_path/contracts/kyle-sexton-github-iac.json"
   reset_valid_fixtures
   TEST_ACTION_PATH="$invalid_action_path" \
     expect_failure "bundled contract rejects Pulumi '$operator' matcher semantics"

@@ -22,7 +22,7 @@ const contract = JSON.parse(
       "actions",
       "pulumi-deploy-guard",
       "contracts",
-      "kyle-sexton-github-iac-v3.json",
+      "kyle-sexton-github-iac.json",
     ),
     "utf8",
   ),
