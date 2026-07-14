@@ -345,12 +345,6 @@ jobs:
         with:
           node-version: 24.18.0
           package-manager-cache: false
-      - name: Fetch immutable workflow pins under test
-        # A full-history checkout excludes hidden PR refs after their source
-        # branches are deleted, so acquire only the exact commits under test.
-        run: |
-          git fetch --no-tags --no-write-fetch-head --depth=1 origin \
-            169e3a4287211a536eddcd3a757dd06132fb556e
       - name: Test selector and generated workflow contracts
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scan policy guard
