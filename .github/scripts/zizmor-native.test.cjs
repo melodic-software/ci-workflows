@@ -82,7 +82,10 @@ test("native zizmor verifies the exact release before executing it", () => {
   );
   assert.match(step, /--proto '=https'/u);
   assert.match(step, /--proto-redir '=https' --tlsv1\.2/u);
-  assert.match(step, /--retry 3 --retry-all-errors/u);
+  assert.match(step, /--connect-timeout 10 --max-time 120/u);
+  assert.match(step, /--retry 2 --retry-max-time 300/u);
+  assert.doesNotMatch(step, /--retry-delay/u);
+  assert.doesNotMatch(step, /--retry-all-errors/u);
   assert.match(step, /sha256sum --check --strict -/u);
   assert.match(step, /--no-same-owner zizmor/u);
   assert.match(step, /mkdir -- "\$work_dir\/cache"/u);

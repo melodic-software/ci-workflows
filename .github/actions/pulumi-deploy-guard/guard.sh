@@ -24,6 +24,7 @@ write_multiline_output() {
 
 require_command jq
 require_command sha256sum
+require_command timeout
 
 : "${ACTION_PATH:?ACTION_PATH is required}"
 : "${POLICY_CONTRACT:?POLICY_CONTRACT is required}"
@@ -117,8 +118,24 @@ pulumi_bin="${PULUMI_BIN:-pulumi}"
 [[ -x "$pulumi_bin" ]] || command -v "$pulumi_bin" >/dev/null 2>&1 ||
   fail "Pulumi CLI is unavailable: $pulumi_bin"
 
+pulumi_api_read() {
+  local endpoint="$1" output="$2" error_message="$3" attempt
+  for attempt in 1 2; do
+    if timeout --signal=TERM --kill-after=5s 60s \
+      "$pulumi_bin" api "$endpoint" >"$output"; then
+      return 0
+    fi
+    if ((attempt == 1)); then
+      printf '::warning::Pulumi read failed; retrying once.\n' >&2
+      sleep 1
+    fi
+  done
+  fail "$error_message"
+}
+
 issuers="$temporary_directory/issuers.json"
-"$pulumi_bin" api "/api/orgs/$organization/oidc/issuers" >"$issuers"
+pulumi_api_read "/api/orgs/$organization/oidc/issuers" "$issuers" \
+  "Pulumi issuer read failed after one bounded retry"
 issuer_id="$(jq -er --arg url "$issuer_url" '
   if type != "object" or (.oidcIssuers | type) != "array" then
     error("invalid issuer response")
@@ -131,7 +148,8 @@ issuer_id="$(jq -er --arg url "$issuer_url" '
   fail "Pulumi returned an invalid GitHub OIDC issuer ID"
 
 policy="$temporary_directory/policy.json"
-"$pulumi_bin" api "/api/orgs/$organization/auth/policies/oidcissuers/$issuer_id" >"$policy"
+pulumi_api_read "/api/orgs/$organization/auth/policies/oidcissuers/$issuer_id" "$policy" \
+  "Pulumi OIDC policy read failed after one bounded retry"
 jq -e '
   type == "object" and
   (.version | type == "number" and floor == .) and
@@ -150,7 +168,10 @@ if ! cmp -s "$expected_policies" "$actual_policies"; then
 fi
 
 state="$temporary_directory/stack-state.json"
-"$pulumi_bin" stack export --non-interactive --stack "$STACK_NAME" --file "$state"
+# Stack export can be expensive but is not retried: a fresh second export could
+# observe a different deployment and invalidate the proof's single-state view.
+timeout --signal=TERM --kill-after=5s 300s \
+  "$pulumi_bin" stack export --non-interactive --stack "$STACK_NAME" --file "$state"
 jq -e '
   type == "object" and
   (.deployment | type == "object") and

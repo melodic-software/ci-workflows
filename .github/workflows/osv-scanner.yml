@@ -78,6 +78,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bounded_docker_read() {
+            local limit_seconds="$1" attempt output status
+            shift
+            output="$(mktemp "$RUNNER_TEMP/bounded-docker-read.XXXXXXXX")"
+            for attempt in 1 2; do
+              if timeout --signal=TERM --kill-after=5s "${limit_seconds}s" "$@" >"$output"; then
+                cat -- "$output"
+                rm -f -- "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::Docker read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            rm -f -- "$output"
+            return "$status"
+          }
+
           if [[ "$OSV_IMAGE_REPOSITORY" != ghcr.io/google/osv-scanner-action || "$OSV_IMAGE_PLATFORM" != linux/amd64 ]]; then
             echo "::error::Invalid OSV image pin identity or platform."
             exit 1
@@ -88,10 +109,10 @@ jobs:
           fi
 
           image="${OSV_IMAGE_REPOSITORY}@${OSV_IMAGE_DIGEST}"
-          docker pull --platform "$OSV_IMAGE_PLATFORM" "$image"
-          actual_version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")"
-          actual_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
-          actual_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+          bounded_docker_read 300 docker pull --platform "$OSV_IMAGE_PLATFORM" "$image"
+          actual_version="$(bounded_docker_read 90 docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")"
+          actual_revision="$(bounded_docker_read 90 docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+          actual_platform="$(bounded_docker_read 90 docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
           if [[ "$actual_version" != "$OSV_VERSION" || "$actual_revision" != "$OSV_SOURCE_REVISION" || "$actual_platform" != "$OSV_IMAGE_PLATFORM" ]]; then
             echo "::error::Pinned OSV image labels or platform do not match the reviewed release manifest."
             exit 1

@@ -174,13 +174,13 @@ test("Pulumi drift workflow is reusable-only and rejects untrusted refs before c
     driftScript,
     /ci-workflows:pulumi-cli-version-drift:v1:resolved/u,
   );
-  assert.match(driftScript, /gh api --paginate --slurp/u);
+  assert.match(driftScript, /gh_read api --paginate --slurp/u);
   assert.match(driftScript, /issues\?state=all&per_page=100/u);
   assert.match(driftScript, /select\(\.pull_request\? == null\)/u);
   assert.match(driftScript, /incident_count > 1/u);
-  assert.match(driftScript, /gh issue reopen/u);
-  assert.match(driftScript, /gh issue close/u);
-  assert.match(driftScript, /gh issue edit "\$issue_number" --title/u);
+  assert.match(driftScript, /gh_mutate issue reopen/u);
+  assert.match(driftScript, /gh_mutate issue close/u);
+  assert.match(driftScript, /gh_mutate issue edit "\$issue_number" --title/u);
   assert.match(driftScript, /\.\[0\]\.created_at/u);
   assert.doesNotMatch(driftScript, /gh issue view/u);
   assert.doesNotMatch(driftScript, /head -n 1/u);

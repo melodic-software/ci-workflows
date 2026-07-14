@@ -13,9 +13,42 @@ require_command() {
 require_command date
 require_command gh
 require_command jq
+require_command mktemp
+require_command timeout
+
+: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+
+gh_read() {
+  local attempt output status
+  for attempt in 1 2; do
+    output="$(mktemp "$RUNNER_TEMP/pulumi-gh-read.XXXXXX")"
+    if timeout --signal=TERM --kill-after=5s 60s gh "$@" >"$output"; then
+      if cat -- "$output"; then
+        status=0
+      else
+        status=$?
+      fi
+      rm -f -- "$output"
+      return "$status"
+    else
+      status=$?
+    fi
+    rm -f -- "$output"
+    if ((attempt == 1)); then
+      printf '::warning::GitHub read failed; retrying once.\n' >&2
+      sleep 1
+    fi
+  done
+  return "$status"
+}
+
+gh_mutate() {
+  # Mutations are bounded but never retried: a timed-out request may already
+  # have succeeded server-side, and a rerun can reconcile observed state.
+  timeout --signal=TERM --kill-after=5s 60s gh "$@"
+}
 
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 
 issue_title="${ISSUE_TITLE:-[Maintenance] Pulumi CLI version drift}"
 version_file="${PULUMI_VERSION_FILE:-.pulumi.version}"
@@ -30,7 +63,7 @@ if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   fail "$version_file must contain one exact stable SemVer; got '$current'"
 fi
 
-latest_tag="$(gh api repos/pulumi/pulumi/releases/latest --jq '
+latest_tag="$(gh_read api repos/pulumi/pulumi/releases/latest --jq '
   if (.draft == false and .prerelease == false) then .tag_name
   else error("latest release is not stable") end
 ')"
@@ -40,7 +73,7 @@ if [[ ! "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 find_active_incidents() {
-  gh api --paginate --slurp \
+  gh_read api --paginate --slurp \
     "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" |
     jq -ce --arg marker "$active_marker" '
       [
@@ -70,7 +103,7 @@ if [[ "$current" == "$latest" ]]; then
     issue_number="$(jq -r '.[0].number' <<<"$active_incidents")"
     issue_state="$(jq -r '.[0].state' <<<"$active_incidents")"
     if [[ "$issue_state" == 'open' ]]; then
-      gh issue close "$issue_number" \
+      gh_mutate issue close "$issue_number" \
         --comment "Resolved: reviewed pin is now current at \`$current\`."
     fi
     cat >"$RUNNER_TEMP/pulumi-drift-resolved.md" <<EOF
@@ -81,7 +114,7 @@ Resolved: the reviewed Pulumi CLI pin is current at \`$current\`.
 This closes the prior drift incident. A future release starts a new
 independently aged incident; this resolved record is never reused.
 EOF
-    gh issue edit "$issue_number" --title "$issue_title" \
+    gh_mutate issue edit "$issue_number" --title "$issue_title" \
       --body-file "$RUNNER_TEMP/pulumi-drift-resolved.md"
   fi
   exit 0
@@ -105,7 +138,7 @@ This issue is refreshed daily and the scheduled workflow hard-fails after
 EOF
 
 if ((incident_count == 0)); then
-  gh issue create --title "$issue_title" \
+  gh_mutate issue create --title "$issue_title" \
     --body-file "$RUNNER_TEMP/pulumi-drift.md"
   active_incidents="$(find_active_incidents)"
   incident_count="$(jq -r 'length' <<<"$active_incidents")"
@@ -118,10 +151,10 @@ issue_number="$(jq -r '.[0].number' <<<"$active_incidents")"
 issue_state="$(jq -r '.[0].state' <<<"$active_incidents")"
 created_at="$(jq -r '.[0].created_at' <<<"$active_incidents")"
 if [[ "$issue_state" == 'closed' ]]; then
-  gh issue reopen "$issue_number" \
+  gh_mutate issue reopen "$issue_number" \
     --comment 'Reopened automatically because the pinned version still drifts.'
 fi
-gh issue edit "$issue_number" --title "$issue_title" \
+gh_mutate issue edit "$issue_number" --title "$issue_title" \
   --body-file "$RUNNER_TEMP/pulumi-drift.md"
 
 created_epoch="$(date -u -d "$created_at" +%s)" ||

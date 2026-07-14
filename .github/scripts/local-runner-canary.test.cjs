@@ -8,6 +8,8 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const { workflowSha } = require("./fetch-immutable-workflow-pins.cjs");
+
 const repositoryRoot = path.join(__dirname, "..", "..");
 const workflowPath = path.join(
   repositoryRoot,
@@ -49,14 +51,12 @@ const templateLfsPath = path.join(
   "canary.txt",
 );
 const templateBootstrapPath = path.join(templateRoot, "bootstrap.ps1");
-const currentSelectorSha = "3415de3ff2fafee40e4d087eb6073d2f6952b595";
 const supersededSelectorShas = [
   "4943b1c4ff6ae9624736ac95622d7ab748132c8d",
   "d94877932012972391b98dcea5ce92b804b74418",
   "257f584ea24f65824acd17a8d9bbfbe650d24033",
   "66e3e974e9c0132150cc982cdd76aca284df19de",
 ];
-const currentCanarySha = "c18c3d73b996081729d1955b256d9f7d31626b0f";
 const supersededCanaryShas = [
   "bb762391c41e9d12975fae25a06ac930050baba9",
   "2dfd2c97ea12e027d5b1067f35a7a391673b45a2",
@@ -70,6 +70,14 @@ const driftWorkflow = fs.readFileSync(driftWorkflowPath, "utf8");
 const rootCi = fs.readFileSync(rootCiPath, "utf8");
 const selectorConformance = fs.readFileSync(selectorConformancePath, "utf8");
 const templateWorkflow = fs.readFileSync(templateWorkflowPath, "utf8");
+const currentSelectorSha = workflowSha(workflow, "select-runner.yml", {
+  sourceName: path.relative(repositoryRoot, workflowPath),
+});
+const currentCanarySha = workflowSha(
+  templateWorkflow,
+  "local-runner-canary.yml",
+  { sourceName: path.relative(repositoryRoot, templateWorkflowPath) },
+);
 
 const runnerAssertionScripts = [
   ...workflow.matchAll(

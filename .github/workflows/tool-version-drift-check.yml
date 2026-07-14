@@ -54,6 +54,36 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Registry/API discovery is read-only. Bound every attempt, and retry
+          # at most once; a rerun is always safer than an indefinitely hung
+          # maintenance job.
+          bounded_read() {
+            local limit_seconds="$1" attempt output status
+            shift
+            output="$(mktemp "$RUNNER_TEMP/bounded-read.XXXXXXXX")"
+            for attempt in 1 2; do
+              if timeout --signal=TERM --kill-after=5s "${limit_seconds}s" "$@" >"$output"; then
+                cat -- "$output"
+                rm -f -- "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::Read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            rm -f -- "$output"
+            return "$status"
+          }
+
+          curl_small_json() {
+            curl --fail --silent --show-error --location --proto '=https' \
+              --connect-timeout 10 --max-time 30 \
+              --retry 2 --retry-max-time 90 "$@"
+          }
+
           # Manifest: "<action-dir>:<version-input-key>:<source>:<upstream-id>".
           # The action.yml version default is the single source of truth for the
           # current pin; <source> selects the registry to query for latest stable.
@@ -83,16 +113,16 @@ jobs:
           # preinstalled on ubuntu-24.04). The quoted key handles the hyphen in
           # analyzer-version; a missing key yields the literal "null".
           # $2: tag prefix to strip (default "v"; e.g. "lychee-v").
-          latest_github() { gh api "repos/$1/releases/latest" --jq '.tag_name' | sed "s/^${2:-v}//"; }
-          latest_pypi() { curl -fsSL "https://pypi.org/pypi/$1/json" | jq -r '.info.version'; }
+          latest_github() { bounded_read 60 gh api "repos/$1/releases/latest" --jq '.tag_name' | sed "s/^${2:-v}//"; }
+          latest_pypi() { curl_small_json "https://pypi.org/pypi/$1/json" | jq -r '.info.version'; }
           latest_npm() {
             # URL-encode a scoped package's leading @ and / (e.g. @biomejs/biome).
             local enc="${1//@/%40}"; enc="${enc//\//%2F}"
-            curl -fsSL "https://registry.npmjs.org/$enc/latest" | jq -r '.version'
+            curl_small_json "https://registry.npmjs.org/$enc/latest" | jq -r '.version'
           }
           latest_dotnet_sdk() {
             local channel="${1%%.*}.0"
-            curl -fsSL https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json |
+            curl_small_json https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json |
               jq -er --arg channel "$channel" '
                 .["releases-index"][] |
                 select(.["channel-version"] == $channel) |
@@ -101,7 +131,7 @@ jobs:
           }
           latest_node_runtime() {
             local prefix="v${1%%.*}."
-            curl -fsSL https://nodejs.org/dist/index.json |
+            curl_small_json https://nodejs.org/dist/index.json |
               jq -er --arg prefix "$prefix" '
                 [.[] | select(.lts != false and (.version | startswith($prefix)))] |
                 sort_by(.version[1:] | split(".") | map(tonumber)) |
@@ -110,7 +140,7 @@ jobs:
           }
           latest_python_runtime() {
             local prefix="${1%.*}."
-            curl -fsSL https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json |
+            curl_small_json https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json |
               jq -er --arg prefix "$prefix" '
                 [.[] | select(.stable == true and (.version | startswith($prefix)))] |
                 sort_by(.version | split(".") | map(tonumber)) |
@@ -197,12 +227,12 @@ jobs:
           osv_platform="$(jq -er '.image.platform' "$osv_pin")"
           osv_os="${osv_platform%%/*}"
           osv_architecture="${osv_platform#*/}"
-          osv_tag="$(gh api repos/google/osv-scanner/releases/latest --jq '.tag_name')" || osv_tag=''
+          osv_tag="$(bounded_read 60 gh api repos/google/osv-scanner/releases/latest --jq '.tag_name')" || osv_tag=''
           osv_latest="${osv_tag#v}"
           osv_latest_digest=''
           if [[ -n "$osv_tag" ]]; then
             osv_manifest="$(
-              docker buildx imagetools inspect "${osv_repository}:${osv_tag}" \
+              bounded_read 90 docker buildx imagetools inspect "${osv_repository}:${osv_tag}" \
                 --format '{{json .Manifest}}'
             )" || osv_manifest=''
             if [[ -n "$osv_manifest" ]]; then
@@ -237,6 +267,39 @@ jobs:
             echo "ok    OSV-Scanner action image: ${osv_current} (${osv_digest})"
           fi
 
+          # Go quality binaries are embedded in a reusable workflow rather than
+          # an action, so track their authoritative upstream release channels
+          # explicitly. Consumers receive reviewed bumps only through a new
+          # immutable ci-workflows commit.
+          go_quality_file=.github/workflows/go-quality.yml
+          golangci_current="$(yq '.jobs.linux.env.GOLANGCI_LINT_VERSION' "$go_quality_file")"
+          golangci_tag="$(
+            bounded_read 60 gh api repos/golangci/golangci-lint/releases/latest --jq '.tag_name'
+          )" || golangci_tag=''
+          golangci_latest="${golangci_tag#v}"
+          if [[ -z "$golangci_latest" ]]; then
+            echo "::warning::could not resolve latest golangci-lint release; skipping"
+          elif [[ "$golangci_current" != "$golangci_latest" ]]; then
+            drift_lines+="- **golangci-lint**: pinned \`${golangci_current}\`, upstream latest \`${golangci_latest}\`"$'\n'
+            echo "DRIFT golangci-lint: ${golangci_current} -> ${golangci_latest}"
+          else
+            echo "ok    golangci-lint: ${golangci_current}"
+          fi
+
+          govuln_current="$(yq '.jobs.govulncheck.env.GOVULNCHECK_VERSION' "$go_quality_file")"
+          govuln_latest="$(
+            curl_small_json https://proxy.golang.org/golang.org/x/vuln/@latest |
+              jq -er '.Version | ltrimstr("v")'
+          )" || govuln_latest=''
+          if [[ -z "$govuln_latest" ]]; then
+            echo "::warning::could not resolve latest golang.org/x/vuln module; skipping"
+          elif [[ "$govuln_current" != "$govuln_latest" ]]; then
+            drift_lines+="- **govulncheck** (\`golang.org/x/vuln\`): pinned \`${govuln_current}\`, upstream latest \`${govuln_latest}\`"$'\n'
+            echo "DRIFT govulncheck: ${govuln_current} -> ${govuln_latest}"
+          else
+            echo "ok    govulncheck: ${govuln_current}"
+          fi
+
           if [[ -z "$drift_lines" ]]; then
             echo "drift_detected=false" >> "$GITHUB_OUTPUT"
             echo "No drift — all tracked tool and image pins are current."
@@ -260,7 +323,11 @@ jobs:
             echo "checksum. For OSV, update \`.github/osv-scanner-pin.json\` only after reviewing"
             echo "the release, resolving the exact linux/amd64 manifest digest, verifying its OCI"
             echo "version/source-revision labels, and passing the canary. Consumers pick the new"
-            echo "default up when they re-pin this repository. For canary runtime drift, update the"
+            echo "default up when they re-pin this repository. For golangci-lint, verify both"
+            echo "official linux-amd64 and windows-amd64 archive checksums before changing the"
+            echo "embedded version and hashes. For govulncheck, verify the official Go proxy"
+            echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
+            echo "exact module pin. For canary runtime drift, update the"
             echo "matching workflow_call default only after reviewing the stable patch and run the"
             echo "full private canary on hosted and self-hosted. Never auto-merge these updates."
             echo
@@ -284,7 +351,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          existing="$(gh issue list --state open \
+          set -euo pipefail
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+          existing="$(gh_read issue list --state open \
             --search 'in:title "[Maintenance] Tool-version drift"' \
             --json number,title \
             --jq '.[] | select(.title == "[Maintenance] Tool-version drift") | .number' | head -1)"

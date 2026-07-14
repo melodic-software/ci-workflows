@@ -13,6 +13,7 @@ runner_temp="$temporary_directory/runner-temp"
 stdout="$temporary_directory/stdout"
 stderr="$temporary_directory/stderr"
 close_failure="$temporary_directory/fail-close-once"
+release_read_failure="$temporary_directory/fail-release-read-once"
 mkdir -p "$mock_bin" "$runner_temp"
 
 cat >"$mock_bin/gh" <<'MOCK'
@@ -30,6 +31,11 @@ case "${1:-}" in
   api)
     shift
     if [[ "${1:-}" == 'repos/pulumi/pulumi/releases/latest' ]]; then
+      if [[ -n "${MOCK_FAIL_RELEASE_READ_ONCE_FILE:-}" && -f "$MOCK_FAIL_RELEASE_READ_ONCE_FILE" ]]; then
+        rm -f -- "$MOCK_FAIL_RELEASE_READ_ONCE_FILE"
+        printf 'v999.'
+        exit 96
+      fi
       printf 'v%s\n' "${MOCK_LATEST:?MOCK_LATEST is required}"
       exit 0
     fi
@@ -118,12 +124,14 @@ reset_fixtures() {
   : >"$stdout"
   : >"$stderr"
   rm -f -- "$close_failure"
+  rm -f -- "$release_read_failure"
 }
 
 run_drift() {
   GITHUB_REPOSITORY='example/repository' \
     ISSUE_TITLE='[Maintenance] Pulumi CLI version drift' \
     MOCK_FAIL_CLOSE_ONCE_FILE="$close_failure" \
+    MOCK_FAIL_RELEASE_READ_ONCE_FILE="$release_read_failure" \
     MOCK_GH_STATE="$state" \
     MOCK_LATEST="${TEST_LATEST:-2.0.0}" \
     PATH="$mock_bin:$PATH" \
@@ -152,6 +160,17 @@ resolved_marker='ci-workflows:pulumi-cli-version-drift:v1:resolved'
 reset_fixtures
 printf '1.0\n.0\n' >"$version_file"
 expect_failure 'split SemVer fails without whitespace normalization'
+
+reset_fixtures
+: >"$release_read_failure"
+MOCK_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" run_drift
+jq -e --arg marker "$active_marker" '
+  length == 1 and
+  .[0].state == "open" and
+  (.[0].body | contains($marker))
+' "$state" >/dev/null
+grep -F 'GitHub read failed; retrying once.' "$stderr" >/dev/null
+printf 'PASS: failed read output cannot contaminate the successful retry\n'
 
 reset_fixtures
 MOCK_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" run_drift
