@@ -13,16 +13,27 @@ require_command() {
 require_command date
 require_command gh
 require_command jq
+require_command mktemp
 require_command timeout
 
+: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+
 gh_read() {
-  local attempt status
+  local attempt output status
   for attempt in 1 2; do
-    if timeout --signal=TERM --kill-after=5s 60s gh "$@"; then
-      return 0
+    output="$(mktemp "$RUNNER_TEMP/pulumi-gh-read.XXXXXX")"
+    if timeout --signal=TERM --kill-after=5s 60s gh "$@" >"$output"; then
+      if cat -- "$output"; then
+        status=0
+      else
+        status=$?
+      fi
+      rm -f -- "$output"
+      return "$status"
     else
       status=$?
     fi
+    rm -f -- "$output"
     if ((attempt == 1)); then
       printf '::warning::GitHub read failed; retrying once.\n' >&2
       sleep 1
@@ -38,7 +49,6 @@ gh_mutate() {
 }
 
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
-: "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 
 issue_title="${ISSUE_TITLE:-[Maintenance] Pulumi CLI version drift}"
 version_file="${PULUMI_VERSION_FILE:-.pulumi.version}"

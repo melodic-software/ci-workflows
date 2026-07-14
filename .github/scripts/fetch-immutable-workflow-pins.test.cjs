@@ -35,6 +35,10 @@ jobs:
     { sha: firstSha, workflow: "alpha.yaml" },
   ]);
   assert.equal(workflowSha(source, "alpha.yaml"), firstSha);
+  assert.throws(
+    () => workflowSha(source, "zeta.yml"),
+    /expected exactly one canonical zeta\.yml use; found 2/u,
+  );
 });
 
 for (const ref of [

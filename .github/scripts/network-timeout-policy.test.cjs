@@ -82,11 +82,11 @@ test("Pulumi reads and stack export have explicit freshness boundaries", () => {
   assert.match(guard, /for attempt in 1 2/u);
   assert.match(
     guard,
-    /timeout --signal=TERM --kill-after=5s 60s[\s\\]+\n\s+"\$pulumi_bin" api/u,
+    /timeout --signal=TERM --kill-after=5s 60s(?:[ \t]+|[ \t]*\\\r?\n[ \t]*)"\$pulumi_bin" api/u,
   );
   assert.match(
     guard,
-    /timeout --signal=TERM --kill-after=5s 300s[\s\\]+\n\s+"\$pulumi_bin" stack export/u,
+    /timeout --signal=TERM --kill-after=5s 300s(?:[ \t]+|[ \t]*\\\r?\n[ \t]*)"\$pulumi_bin" stack export/u,
   );
   assert.match(drift, /gh_read\(\)[\s\S]*?for attempt in 1 2/u);
   assert.match(
