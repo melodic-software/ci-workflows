@@ -223,23 +223,33 @@ jobs:
           osv_current="$(jq -er '.version' "$osv_pin")"
           osv_asset="$(jq -er '.binary.asset' "$osv_pin")"
           osv_digest="$(jq -er '.binary.sha256' "$osv_pin")"
+          osv_provenance_asset="$(jq -er '.provenance.asset' "$osv_pin")"
+          osv_provenance_digest="$(jq -er '.provenance.sha256' "$osv_pin")"
           osv_release="$(bounded_read 60 gh api repos/google/osv-scanner/releases/latest)" || osv_release=''
-          osv_tag="$(jq -r '.tag_name // empty' <<<"$osv_release")"
+          osv_tag="$(jq -r '.tag_name // empty' <<<"$osv_release" 2>/dev/null)" || osv_tag=''
           osv_latest="${osv_tag#v}"
-          osv_latest_digest="$(jq -r --arg asset "$osv_asset" '[.assets[] | select(.name == $asset) | .digest] | if length == 1 then .[0] | sub("^sha256:"; "") else empty end' <<<"$osv_release")"
+          osv_latest_digest="$(printf '%s' "$osv_release" | bash .github/scripts/osv-release-digest.sh "$osv_asset")"
+          osv_latest_provenance_digest="$(printf '%s' "$osv_release" | bash .github/scripts/osv-release-digest.sh "$osv_provenance_asset")"
 
           if [[ -z "$osv_latest" ]]; then
             echo "::warning::could not resolve latest google/osv-scanner release; skipping OSV drift"
           elif [[ "$osv_current" != "$osv_latest" ]]; then
-            drift_lines+="- **OSV-Scanner native binary**: pinned \`${osv_current}\` (\`${osv_digest}\`), upstream latest \`${osv_latest}\` (\`${osv_latest_digest:-unresolved}\`)"$'\n'
-            echo "DRIFT OSV-Scanner native binary: ${osv_current} -> ${osv_latest}"
-          elif [[ -z "$osv_latest_digest" ]]; then
-            echo "::warning::could not resolve ${osv_asset} digest for ${osv_tag}; skipping OSV digest drift"
-          elif [[ "$osv_digest" != "$osv_latest_digest" ]]; then
-            drift_lines+="- **OSV-Scanner native binary**: release \`${osv_current}\` still current, but reviewed digest \`${osv_digest}\` differs from release digest \`${osv_latest_digest}\`"$'\n'
-            echo "DRIFT OSV-Scanner native binary digest: ${osv_digest} -> ${osv_latest_digest}"
+            drift_lines+="- **OSV-Scanner native release**: pinned \`${osv_current}\` (binary \`${osv_digest}\`, provenance \`${osv_provenance_digest}\`), upstream latest \`${osv_latest}\` (binary \`${osv_latest_digest:-unresolved}\`, provenance \`${osv_latest_provenance_digest:-unresolved}\`)"$'\n'
+            echo "DRIFT OSV-Scanner native release: ${osv_current} -> ${osv_latest}"
           else
-            echo "ok    OSV-Scanner native binary: ${osv_current} (${osv_digest})"
+            for artifact in \
+              "binary:${osv_asset}:${osv_digest}:${osv_latest_digest}" \
+              "provenance:${osv_provenance_asset}:${osv_provenance_digest}:${osv_latest_provenance_digest}"; do
+              IFS=: read -r kind asset pinned latest <<<"$artifact"
+              if [[ -z "$latest" ]]; then
+                echo "::warning::could not resolve ${asset} digest for ${osv_tag}; skipping OSV ${kind} digest drift"
+              elif [[ "$pinned" != "$latest" ]]; then
+                drift_lines+="- **OSV-Scanner ${kind}**: release \`${osv_current}\` still current, but reviewed digest \`${pinned}\` differs from release digest \`${latest}\`"$'\n'
+                echo "DRIFT OSV-Scanner ${kind} digest: ${pinned} -> ${latest}"
+              else
+                echo "ok    OSV-Scanner ${kind}: ${osv_current} (${pinned})"
+              fi
+            done
           fi
 
           # Go quality binaries are embedded in a reusable workflow rather than

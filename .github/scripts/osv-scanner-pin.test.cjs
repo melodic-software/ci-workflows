@@ -99,9 +99,13 @@ test("OSV result handling is generated from the tested fail-closed guard", () =>
   assert.doesNotMatch(workflow, /retention-days|Upload SARIF artifact/u);
 });
 
-test("scheduled drift check tracks the native release asset digest", () => {
+test("scheduled drift check tracks both native release asset digests fail-soft", () => {
   assert.match(driftWorkflow, /\.binary\.asset/u);
   assert.match(driftWorkflow, /\.binary\.sha256/u);
+  assert.match(driftWorkflow, /\.provenance\.asset/u);
+  assert.match(driftWorkflow, /\.provenance\.sha256/u);
+  assert.match(driftWorkflow, /osv-release-digest\.sh/u);
+  assert.match(driftWorkflow, /2>\/dev\/null\)" \|\| osv_tag=''/u);
   assert.match(driftWorkflow, /releases\/latest/u);
   assert.doesNotMatch(driftWorkflow, /docker buildx imagetools inspect/u);
 });

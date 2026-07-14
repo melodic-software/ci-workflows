@@ -22,7 +22,7 @@ finding-json) printf '[{"RuleID":"test-rule"}]\n' >"$REPORT_PATH"; exit 1 ;;
 invalid-sarif) printf '{"version":"2.1.0","runs":"invalid"}\n' >"$REPORT_PATH"; exit 0 ;;
 finding-sarif)
   cat >"$REPORT_PATH" <<'SARIF'
-{"version":"2.1.0","runs":[{"results":[{"ruleId":"test,rule","locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/test:file.js"},"region":{"startLine":7}}}]}]}]}
+{"version":"2.1.0","runs":[{"results":[{"ruleId":"test,rule","message":{"text":"raw-test-secret"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/test:file.js"},"region":{"startLine":7}}}]}]}]}
 SARIF
   exit 1
   ;;

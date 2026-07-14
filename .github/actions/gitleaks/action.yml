@@ -17,8 +17,9 @@ inputs:
   report-format:
     description: >-
       Report format to emit: json, csv, junit, sarif, or template. Empty emits
-      no report file. Use sarif together with report-path to feed GitHub code
-      scanning; the caller uploads it (security-events: write, if: always()).
+      no report file. SARIF enables safe local annotations without uploading an
+      artifact. Private callers must not upload it to GitHub code scanning unless
+      they have intentionally purchased the required Code Security entitlement.
     default: ''
   report-path:
     description: >-

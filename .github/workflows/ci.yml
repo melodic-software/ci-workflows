@@ -353,6 +353,8 @@ jobs:
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scan policy guard
         run: bash .github/scripts/osv-scan-guard.test.sh
+      - name: Test OSV release digest parsing
+        run: bash .github/scripts/osv-release-digest.test.sh
       - name: Test Gitleaks scan policy guard
         run: bash .github/actions/gitleaks/scan.test.sh
       - name: Test Pulumi deployment guard
