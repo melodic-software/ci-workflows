@@ -91,8 +91,22 @@ test("template discovery uses only tracked workflow files", () => {
   assert.deepEqual(calls[0].args, ["ls-files", "-z", "--", "templates"]);
   assert.equal(calls[0].options.shell, false);
   assert.deepEqual(files, [
-    path.join("/repo", "templates", "example", ".github", "workflows", "ci.yaml"),
-    path.join("/repo", "templates", "example", ".github", "workflows", "ci.yml"),
+    path.join(
+      "/repo",
+      "templates",
+      "example",
+      ".github",
+      "workflows",
+      "ci.yaml",
+    ),
+    path.join(
+      "/repo",
+      "templates",
+      "example",
+      ".github",
+      "workflows",
+      "ci.yml",
+    ),
   ]);
 });
 
@@ -140,11 +154,7 @@ test("fetch uses fixed origin, discrete arguments, bounded retry, and verifies c
   ]);
   assert.deepEqual(calls[1].args, calls[0].args);
   assert.deepEqual(calls[2].args, ["cat-file", "-e", `${firstSha}^{commit}`]);
-  assert.deepEqual(calls[3].args, [
-    "cat-file",
-    "-e",
-    `${secondSha}^{commit}`,
-  ]);
+  assert.deepEqual(calls[3].args, ["cat-file", "-e", `${secondSha}^{commit}`]);
 });
 
 test("fetch failure is bounded and does not verify missing commits", () => {

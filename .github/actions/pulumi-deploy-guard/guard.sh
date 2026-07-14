@@ -119,25 +119,23 @@ pulumi_bin="${PULUMI_BIN:-pulumi}"
   fail "Pulumi CLI is unavailable: $pulumi_bin"
 
 pulumi_api_read() {
-  local endpoint="$1" output="$2" attempt status
+  local endpoint="$1" output="$2" error_message="$3" attempt
   for attempt in 1 2; do
     if timeout --signal=TERM --kill-after=5s 60s \
       "$pulumi_bin" api "$endpoint" >"$output"; then
       return 0
-    else
-      status=$?
     fi
     if ((attempt == 1)); then
       printf '::warning::Pulumi read failed; retrying once.\n' >&2
       sleep 1
     fi
   done
-  return "$status"
+  fail "$error_message"
 }
 
 issuers="$temporary_directory/issuers.json"
-pulumi_api_read "/api/orgs/$organization/oidc/issuers" "$issuers" ||
-  fail "Pulumi issuer read failed after one bounded retry"
+pulumi_api_read "/api/orgs/$organization/oidc/issuers" "$issuers" \
+  "Pulumi issuer read failed after one bounded retry"
 issuer_id="$(jq -er --arg url "$issuer_url" '
   if type != "object" or (.oidcIssuers | type) != "array" then
     error("invalid issuer response")
@@ -150,8 +148,8 @@ issuer_id="$(jq -er --arg url "$issuer_url" '
   fail "Pulumi returned an invalid GitHub OIDC issuer ID"
 
 policy="$temporary_directory/policy.json"
-pulumi_api_read "/api/orgs/$organization/auth/policies/oidcissuers/$issuer_id" "$policy" ||
-  fail "Pulumi OIDC policy read failed after one bounded retry"
+pulumi_api_read "/api/orgs/$organization/auth/policies/oidcissuers/$issuer_id" "$policy" \
+  "Pulumi OIDC policy read failed after one bounded retry"
 jq -e '
   type == "object" and
   (.version | type == "number" and floor == .) and

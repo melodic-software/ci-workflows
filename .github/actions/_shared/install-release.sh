@@ -35,6 +35,7 @@ case "$BIN" in
     echo "install-release: BIN must be a filename, not a path" >&2
     exit 2
     ;;
+  *) ;;
 esac
 if [[ ! "$strip" =~ ^[0-9]+$ ]]; then
   echo "install-release: STRIP_COMPONENTS must be a non-negative integer" >&2
@@ -46,6 +47,7 @@ if [[ -n "$member" ]]; then
       echo "install-release: ARCHIVE_MEMBER must be a relative path without '..'" >&2
       exit 2
       ;;
+    *) ;;
   esac
 fi
 

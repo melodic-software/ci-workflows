@@ -101,7 +101,9 @@ function immutableTemplatePins(repositoryRoot) {
       sourceName: path.relative(repositoryRoot, file),
     }),
   );
-  const pins = [...new Set(references.map((reference) => reference.sha))].sort();
+  const pins = [
+    ...new Set(references.map((reference) => reference.sha)),
+  ].sort();
   if (pins.length === 0) {
     throw new Error("no immutable template workflow pins found");
   }
