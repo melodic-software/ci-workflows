@@ -23,7 +23,7 @@ if [[ -f "${OSV_RESULTS:-}" && ! -L "${OSV_RESULTS:-}" ]] &&
 fi
 
 annotate_findings() {
-  local file line message normalized_file
+  local file line message normalized_file uri_safe uri_base64 message_safe message_base64
   escape_property() {
     local v="$1"
     v=${v//'%'/'%25'}
@@ -39,6 +39,15 @@ annotate_findings() {
     v=${v//$'\r'/'%0D'}
     v=${v//$'\n'/'%0A'}
     printf '%s' "$v"
+  }
+  decode_base64_field() {
+    local encoded="$1" target="$2" decoded
+    decoded="$(
+      printf '%s' "$encoded" | base64 --decode 2>/dev/null
+      printf '\036'
+    )"
+    decoded="${decoded%$'\036'}"
+    printf -v "$target" '%s' "$decoded"
   }
   normalize_sarif_uri() {
     local uri="$1" encoded decoded='' remainder prefix hex byte
@@ -58,6 +67,7 @@ annotate_findings() {
       encoded="$uri"
     fi
     [[ -n "$encoded" && "$encoded" != *'?'* && "$encoded" != *'#'* ]] || return 1
+    [[ "${encoded,,}" != *'%00'* ]] || return 1
 
     remainder="$encoded"
     while [[ "$remainder" == *%* ]]; do
@@ -73,7 +83,10 @@ annotate_findings() {
       remainder="${remainder:2}"
     done
     decoded+="$remainder"
-    [[ -n "$decoded" ]] || return 1
+    [[ -n "$decoded" && "$decoded" != *\\* ]] || return 1
+    if printf '%s' "$decoded" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+      return 1
+    fi
 
     if [[ "$uri" == file:///* ]]; then
       candidate="$decoded"
@@ -89,11 +102,15 @@ annotate_findings() {
     fi
     printf '%s' "$relative"
   }
-  while IFS=$'\t' read -r file line message; do
-    [[ -z "$message" ]] && continue
+  while IFS=$'\t' read -r uri_safe uri_base64 line message_safe message_base64; do
+    if [[ "$message_safe" == true ]]; then
+      decode_base64_field "$message_base64" message
+    else
+      message='OSV vulnerability finding'
+    fi
     message="$(escape_data "$message")"
     # shellcheck disable=SC2310 # normalization returns status; fallible body commands are checked.
-    if normalized_file="$(normalize_sarif_uri "$file")"; then
+    if [[ "$uri_safe" == true ]] && decode_base64_field "$uri_base64" file && normalized_file="$(normalize_sarif_uri "$file")"; then
       file="$(escape_property "$normalized_file")"
       [[ "$line" =~ ^[1-9][0-9]*$ ]] || line=1
       line="$(escape_property "$line")"
@@ -101,7 +118,19 @@ annotate_findings() {
     else
       echo "::warning::$message"
     fi
-  done < <(jq -r '[.runs[].results[]?][:50][] | [(.locations[0].physicalLocation.artifactLocation.uri // ""), (.locations[0].physicalLocation.region.startLine // 1), (.message.text // "OSV vulnerability finding")] | @tsv' "$OSV_RESULTS")
+  done < <(jq -r '
+    [.runs[].results[]?][:50][]
+    | (.locations[0].physicalLocation.artifactLocation.uri // "") as $uri
+    | (.message.text // "OSV vulnerability finding") as $message
+    | [
+        (if ($uri | type) == "string" then ($uri | explode | all(. >= 32 and . != 127)) else false end),
+        ($uri | if type == "string" then @base64 else "" end),
+        (.locations[0].physicalLocation.region.startLine // 1 | if type == "number" and . >= 1 and . == floor then tostring else "1" end),
+        (if ($message | type) == "string" then ($message | explode | all((. >= 32 or . == 9 or . == 10 or . == 13) and . != 127)) else false end),
+        ($message | if type == "string" then @base64 else ("OSV vulnerability finding" | @base64) end)
+      ]
+    | @tsv
+  ' "$OSV_RESULTS")
 }
 
 case "$SCAN_EXIT" in

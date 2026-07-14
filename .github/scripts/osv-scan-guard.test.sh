@@ -10,7 +10,8 @@ mkdir -p -- "$workspace/src"
 touch -- "$workspace/src/a:b.js" "$workspace/src/encoded space.lock" "$temporary_directory/uri-sentinel-outside.lock"
 
 write_finding() {
-  jq -n --arg uri "$1" --arg message $'unsafe%value\n::error::raw-message' '
+  local message="${2-$'unsafe%value\n::error::raw-message'}"
+  jq -n --arg uri "$1" --arg message "$message" '
     {
       version: "2.1.0",
       runs: [{
@@ -33,9 +34,19 @@ write_results() {
   encoded-file) write_finding "file://${workspace}/src/encoded%20space.lock" ;;
   malformed-uri) write_finding 'src/uri-sentinel-malformed%2G.lock' ;;
   nul-uri) write_finding 'src/uri-sentinel-nul%00.lock' ;;
+  encoded-control) write_finding 'src/uri-sentinel-control%1B.lock' ;;
+  encoded-del) write_finding 'src/uri-sentinel-del%7F.lock' ;;
+  raw-control) write_finding $'src/uri-sentinel-control\e.lock' ;;
+  raw-del) write_finding $'src/uri-sentinel-del\x7f.lock' ;;
+  raw-backslash) write_finding 'src\uri-sentinel-backslash.lock' ;;
+  query-uri) write_finding 'src/a:b.js?uri-sentinel-query' ;;
+  fragment-uri) write_finding 'src/a:b.js#uri-sentinel-fragment' ;;
+  traversal-uri) write_finding '../uri-sentinel-outside.lock' ;;
+  symlink-outside) write_finding 'src/uri-sentinel-outside-link.lock' ;;
   outside-uri) write_finding "file://${temporary_directory}/uri-sentinel-outside.lock" ;;
   foreign-scheme) write_finding 'https://example.invalid/uri-sentinel-foreign.lock' ;;
   foreign-host) write_finding 'file://example.invalid/uri-sentinel-host.lock' ;;
+  unsafe-message) write_finding 'src/a:b.js' $'message-sentinel\evalue' ;;
   invalid) printf '{not json}\n' >"$results" ;;
   absent) rm -f -- "$results" ;;
   symlink)
@@ -64,10 +75,17 @@ run_case() {
     case "$shape" in
     findings) grep -F '::warning file=src/a%3Ab.js,line=4::unsafe%25value' <<<"$output" >/dev/null ;;
     encoded-file) grep -F '::warning file=src/encoded space.lock,line=4::unsafe%25value' <<<"$output" >/dev/null ;;
-    malformed-uri | nul-uri | outside-uri | foreign-scheme | foreign-host)
+    malformed-uri | nul-uri | encoded-control | encoded-del | raw-control | raw-del | raw-backslash | query-uri | fragment-uri | traversal-uri | symlink-outside | outside-uri | foreign-scheme | foreign-host)
       grep -F '::warning::unsafe%25value' <<<"$output" >/dev/null
       if grep -F 'file=' <<<"$output" >/dev/null || grep -F 'uri-sentinel' <<<"$output" >/dev/null; then
         echo "$name: unsafe URI leaked into annotation output" >&2
+        return 1
+      fi
+      ;;
+    unsafe-message)
+      grep -F '::warning file=src/a%3Ab.js,line=4::OSV vulnerability finding' <<<"$output" >/dev/null
+      if grep -F 'message-sentinel' <<<"$output" >/dev/null; then
+        echo "$name: unsafe raw message leaked into annotation output" >&2
         return 1
       fi
       ;;
@@ -87,9 +105,18 @@ run_case 'blocking findings fail' 1 1 false true findings
 run_case 'encoded local file URI becomes a repository path' 0 1 false false encoded-file
 run_case 'malformed URI keeps warning without a file' 0 1 false false malformed-uri
 run_case 'encoded NUL keeps warning without a file' 0 1 false false nul-uri
+run_case 'encoded ESC keeps warning without a file' 0 1 false false encoded-control
+run_case 'encoded DEL keeps warning without a file' 0 1 false false encoded-del
+run_case 'raw ESC keeps warning without a file' 0 1 false false raw-control
+run_case 'raw DEL keeps warning without a file' 0 1 false false raw-del
+run_case 'raw backslash keeps warning without a file' 0 1 false false raw-backslash
+run_case 'query URI keeps warning without a file' 0 1 false false query-uri
+run_case 'fragment URI keeps warning without a file' 0 1 false false fragment-uri
+run_case 'traversal URI keeps warning without a file' 0 1 false false traversal-uri
 run_case 'outside file URI keeps warning without a file' 0 1 false false outside-uri
 run_case 'foreign scheme keeps warning without a file' 0 1 false false foreign-scheme
 run_case 'foreign file host keeps warning without a file' 0 1 false false foreign-host
+run_case 'unsafe raw message becomes a generic warning' 0 1 false false unsafe-message
 run_case 'operational error always fails closed' 7 7 false false absent
 run_case 'missing result always fails closed' 2 0 false false absent
 run_case 'invalid result always fails closed' 2 0 false false invalid
@@ -98,5 +125,7 @@ run_case 'advisory empty scan warns' 0 128 false false absent
 run_case 'blocking empty scan fails' 1 128 false true absent
 run_case 'declared dependency-less empty scan passes' 0 128 true true absent
 if [[ "$(uname -s)" == Linux ]]; then
+  ln -s -- "$temporary_directory/uri-sentinel-outside.lock" "$workspace/src/uri-sentinel-outside-link.lock"
+  run_case 'outside symlink keeps warning without a file' 0 1 false false symlink-outside
   run_case 'symlink result fails closed' 2 0 false false symlink
 fi
