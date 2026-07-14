@@ -14,6 +14,10 @@ const guard = fs.readFileSync(
   path.join(root, ".github", "scripts", "govulncheck-sarif-guard.sh"),
   "utf8",
 );
+const tidyCheck = fs.readFileSync(
+  path.join(root, ".github", "scripts", "go-mod-tidy-check.sh"),
+  "utf8",
+);
 const drift = fs.readFileSync(
   path.join(root, ".github", "workflows", "tool-version-drift-check.yml"),
   "utf8",
@@ -77,10 +81,36 @@ test("native Linux and Windows analyzer lanes use immutable verified binaries", 
 
 test("approved native tests and module hygiene stay blocking", () => {
   assert.match(workflow, /gofmt -l/u);
-  assert.match(workflow, /go mod tidy -diff/u);
+  assert.match(workflow, /go mod tidy -modfile="\$alternate_mod"/u);
+  assert.match(workflow, /compare_snapshot go\.mod go\.mod/u);
+  assert.match(workflow, /compare_snapshot go\.sum go\.sum/u);
+  assert.doesNotMatch(workflow, /go mod tidy -diff/u);
   assert.match(workflow, /go mod verify/u);
   assert.match(workflow, /go test -race -count=1 -timeout=10m \.\/\.\.\./u);
   assert.match(workflow, /go test -count=1 -timeout=10m \.\/\.\.\./u);
+});
+
+test("generated tidy check matches the behavioral source", () => {
+  const indentation = "          ";
+  const begin = `${indentation}# BEGIN GENERATED: go-mod-tidy-check.sh\n`;
+  const end = `${indentation}# END GENERATED: go-mod-tidy-check.sh`;
+  const start = workflow.indexOf(begin);
+  const finish = workflow.indexOf(end);
+  assert.ok(start >= 0 && finish > start, "missing generated tidy check");
+
+  const embedded = workflow
+    .slice(start + begin.length, finish)
+    .split("\n")
+    .map((line) => {
+      assert.ok(
+        line === "" || line.startsWith(indentation),
+        `generated line lost indentation: ${line}`,
+      );
+      return line.slice(indentation.length);
+    })
+    .join("\n");
+  const source = tidyCheck.replace(/^#!\/usr\/bin\/env bash\r?\n/u, "");
+  assert.equal(embedded, source);
 });
 
 test("govulncheck is authenticated, bounded, structured, and separate", () => {
