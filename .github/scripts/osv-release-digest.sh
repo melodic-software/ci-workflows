@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Extract one GitHub release-asset SHA-256 digest. Unavailable, malformed,
-# duplicate, or mutable-looking metadata is advisory and produces no output.
+# Extract one GitHub-reported release-asset SHA-256 digest. Unavailable,
+# malformed, duplicate, or unsupported digest metadata is advisory and
+# produces no output.
 set -euo pipefail
 
 asset="${1:?release asset name is required}"

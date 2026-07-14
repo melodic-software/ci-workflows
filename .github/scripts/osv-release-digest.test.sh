@@ -17,4 +17,4 @@ extract() {
 [[ -z "$(extract '{"assets":[{"name":"osv-scanner_linux_amd64","digest":"sha256:ABC"}]}')" ]]
 [[ -z "$(extract "{\"assets\":[{\"name\":\"osv-scanner_linux_amd64\",\"digest\":\"sha256:${digest}\"},{\"name\":\"osv-scanner_linux_amd64\",\"digest\":\"sha256:${digest}\"}]}")" ]]
 
-echo 'ok: OSV release digest parsing fails soft on unavailable or untrusted metadata'
+echo 'ok: OSV release digest parsing fails soft on unavailable, malformed, duplicate, or unsupported metadata'

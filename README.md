@@ -506,10 +506,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   The reviewed pin is machine-readable in `.github/osv-scanner-pin.json` and the
   workflow verifies the downloaded asset's checksum, SLSA provenance, source,
-  release tag, and reported version before scanning. Deployment never references
-  a mutable release. The daily `tool-version-drift-check` compares Google's
-  latest stable release and the official asset digest, then refreshes the existing
-  maintenance issue; it never rewrites or auto-merges the pin. Updating requires
+  release tag, and reported version before scanning. The release download is
+  accepted only when it matches the reviewed checksum. The daily
+  `tool-version-drift-check` compares Google's latest stable release and the
+  GitHub-reported asset digests, then refreshes the existing maintenance issue;
+  it never rewrites or auto-merges the pin. Updating requires
   release review, official asset/provenance checksum verification, exact source
   and tag verification, and a canary. See the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the

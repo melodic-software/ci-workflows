@@ -24,6 +24,8 @@ on:
       - '.github/actions/actionlint/action.yml'
       - '.github/actions/shellcheck/action.yml'
       - '.github/scripts/actionlint-shellcheck-pin.test.cjs'
+      - '.github/scripts/osv-release-digest.sh'
+      - '.github/scripts/osv-release-digest.test.sh'
   workflow_dispatch:
 
 concurrency:
@@ -218,7 +220,7 @@ jobs:
 
           # The OSV workflow installs an official native release asset from
           # shell, so Dependabot cannot track it. Compare the latest stable
-          # release and GitHub's immutable digest for the reviewed Linux asset.
+          # release and GitHub-reported digests for the reviewed release assets.
           osv_pin=.github/osv-scanner-pin.json
           osv_current="$(jq -er '.version' "$osv_pin")"
           osv_asset="$(jq -er '.binary.asset' "$osv_pin")"

@@ -26,6 +26,10 @@ const driftWorkflow = fs.readFileSync(
   ),
   "utf8",
 );
+const selectorWorkflow = fs.readFileSync(
+  path.join(repositoryRoot, ".github", "workflows", "selector-conformance.yml"),
+  "utf8",
+);
 
 test("OSV pin is a complete native release and provenance contract", () => {
   assert.equal(pin.schemaVersion, 2);
@@ -108,4 +112,25 @@ test("scheduled drift check tracks both native release asset digests fail-soft",
   assert.match(driftWorkflow, /2>\/dev\/null\)" \|\| osv_tag=''/u);
   assert.match(driftWorkflow, /releases\/latest/u);
   assert.doesNotMatch(driftWorkflow, /docker buildx imagetools inspect/u);
+});
+
+test("digest helper changes trigger every directly dependent workflow", () => {
+  for (const script of [
+    "osv-release-digest.sh",
+    "osv-release-digest.test.sh",
+  ]) {
+    const selectorPath = `- .github/scripts/${script}`;
+    assert.equal(
+      selectorWorkflow.split(selectorPath).length - 1,
+      2,
+      `${script} must trigger selector conformance on pull requests and pushes`,
+    );
+
+    const driftPath = `- '.github/scripts/${script}'`;
+    assert.equal(
+      driftWorkflow.split(driftPath).length - 1,
+      1,
+      `${script} must trigger the drift check on pushes`,
+    );
+  }
 });
