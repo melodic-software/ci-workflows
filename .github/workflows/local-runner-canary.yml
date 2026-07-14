@@ -229,17 +229,21 @@ jobs:
           bash .ci-workflows-contract/.github/scripts/local-runner-parity.sh
           "$LFS_FIXTURE" "$LFS_FIXTURE_SHA256" "$DOTNET_VERSION"
           "$NODE_VERSION" "$PYTHON_VERSION" "$OUTPUT"
+      # A cache entry's version hashes the path input and the compression tool,
+      # so the cross-environment cache proofs must use a workspace-relative path
+      # and both environments must offer the same compressor (zstd), or hosted
+      # and self-hosted can never exchange entries.
       - name: Create nonsecret hosted cache payload
         shell: bash
         env:
-          CACHE_PATH: ${{ runner.temp }}/hosted-to-self-cache
+          CACHE_PATH: .canary-cache/hosted-to-self
         run: |
           mkdir -p "$CACHE_PATH"
           printf 'hosted-to-self:%s:%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$CACHE_PATH/payload"
       - name: Save hosted-to-self cache
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/hosted-to-self-cache
+          path: .canary-cache/hosted-to-self
           key: >-
             ci-runner-canary-h2s-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
             inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
@@ -455,7 +459,7 @@ jobs:
         id: hosted-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/hosted-to-self-cache
+          path: .canary-cache/hosted-to-self
           key: >-
             ci-runner-canary-h2s-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
             inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
@@ -465,7 +469,7 @@ jobs:
         shell: bash
         env:
           CACHE_HIT: ${{ steps.hosted-cache.outputs.cache-hit }}
-          CACHE_PATH: ${{ runner.temp }}/hosted-to-self-cache
+          CACHE_PATH: .canary-cache/hosted-to-self
         run: |
           test "$CACHE_HIT" = true
           test "$(<"$CACHE_PATH/payload")" = "hosted-to-self:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
@@ -502,14 +506,14 @@ jobs:
       - name: Create nonsecret self-to-hosted cache payload
         shell: bash
         env:
-          CACHE_PATH: ${{ runner.temp }}/self-to-hosted-cache
+          CACHE_PATH: .canary-cache/self-to-hosted
         run: |
           mkdir -p "$CACHE_PATH"
           printf 'self-to-hosted:%s:%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$CACHE_PATH/payload"
       - name: Save self-to-hosted cache
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/self-to-hosted-cache
+          path: .canary-cache/self-to-hosted
           key: >-
             ci-runner-canary-s2h-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
             inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
@@ -545,7 +549,7 @@ jobs:
         id: self-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/self-to-hosted-cache
+          path: .canary-cache/self-to-hosted
           key: >-
             ci-runner-canary-s2h-${{ runner.os }}-${{ runner.arch }}-dotnet-${{
             inputs.dotnet-version }}-${{ hashFiles(inputs.cache-key-file) }}-${{
@@ -555,7 +559,7 @@ jobs:
         shell: bash
         env:
           CACHE_HIT: ${{ steps.self-cache.outputs.cache-hit }}
-          CACHE_PATH: ${{ runner.temp }}/self-to-hosted-cache
+          CACHE_PATH: .canary-cache/self-to-hosted
         run: |
           test "$CACHE_HIT" = true
           test "$(<"$CACHE_PATH/payload")" = "self-to-hosted:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
