@@ -56,7 +56,7 @@ const supersededSelectorShas = [
   "257f584ea24f65824acd17a8d9bbfbe650d24033",
   "66e3e974e9c0132150cc982cdd76aca284df19de",
 ];
-const currentCanarySha = "169e3a4287211a536eddcd3a757dd06132fb556e";
+const currentCanarySha = "c18c3d73b996081729d1955b256d9f7d31626b0f";
 const supersededCanaryShas = [
   "bb762391c41e9d12975fae25a06ac930050baba9",
   "2dfd2c97ea12e027d5b1067f35a7a391673b45a2",

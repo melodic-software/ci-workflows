@@ -42,7 +42,7 @@ const templateReadme = fs.readFileSync(
   path.join(templateRoot, "README.md"),
   "utf8",
 );
-const implementationSha = "169e3a4287211a536eddcd3a757dd06132fb556e";
+const implementationSha = "c18c3d73b996081729d1955b256d9f7d31626b0f";
 
 function jobBlock(jobId) {
   const start = workflow.indexOf(`  ${jobId}:\n`);
