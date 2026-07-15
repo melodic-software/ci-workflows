@@ -58,13 +58,17 @@ async function runAttestation({
   env = {},
   installation = {},
   metadataData,
+  metadataJsonError,
+  metadataRequestError,
+  metadataStatus = 200,
   pages,
   snapshots,
-  requestError,
   repositoryRequestError,
 } = {}) {
   const originalEnvironment = { ...process.env };
   const calls = [];
+  const metadataCalls = [];
+  const abortTimeouts = [];
   const secrets = [];
   const info = [];
   let repositoryObservation = -1;
@@ -86,31 +90,27 @@ async function runAttestation({
     EXPECTED_INSTALLATION_ID: "144867070",
     EXPECTED_OWNER: "melodic-software",
     EXPECTED_REPOSITORIES: JSON.stringify(expected),
+    GITHUB_API_URL: "https://api.github.com",
     INSTALLATION_ID: "144867070",
     ...env,
   });
   try {
     const github = {
       request: async (route, options) => {
-        calls.push({ route, options });
-        if (requestError) throw requestError;
-        if (route === "GET /app/installations/{installation_id}") {
-          return {
-            data:
-              metadataData === undefined
-                ? {
-                    id: 144867070,
-                    app_slug: "melodic-standards-sync",
-                    repository_selection: "selected",
-                    target_type: "Organization",
-                    account: { login: "melodic-software" },
-                    suspended_at: null,
-                    ...installation,
-                  }
-                : metadataData,
-          };
-        }
         assert.equal(route, "GET /installation/repositories");
+        assert.equal(
+          options.headers.authorization,
+          undefined,
+          "inventory must rely on the Octokit installation-token auth hook",
+        );
+        const authenticatedOptions = {
+          ...options,
+          headers: {
+            ...options.headers,
+            authorization: "token installation-auth-hook",
+          },
+        };
+        calls.push({ route, options: authenticatedOptions });
         if (repositoryRequestError) throw repositoryRequestError;
         if (options.page === 1) repositoryObservation += 1;
         const snapshotPages =
@@ -118,6 +118,33 @@ async function runAttestation({
         const page = snapshotPages[options.page - 1];
         assert.notEqual(page, undefined, `unexpected page ${options.page}`);
         return { data: page };
+      },
+    };
+    const fetchMetadata = async (url, options) => {
+      metadataCalls.push({ url, options });
+      if (metadataRequestError) throw metadataRequestError;
+      return {
+        json: async () => {
+          if (metadataJsonError) throw metadataJsonError;
+          return metadataData === undefined
+            ? {
+                id: 144867070,
+                app_slug: "melodic-standards-sync",
+                repository_selection: "selected",
+                target_type: "Organization",
+                account: { login: "melodic-software" },
+                suspended_at: null,
+                ...installation,
+              }
+            : metadataData;
+        },
+        status: metadataStatus,
+      };
+    };
+    const abortSignal = {
+      timeout: (milliseconds) => {
+        abortTimeouts.push(milliseconds);
+        return { milliseconds };
       },
     };
     const core = {
@@ -129,10 +156,12 @@ async function runAttestation({
       "core",
       "require",
       "Buffer",
+      "fetch",
+      "AbortSignal",
       attestationScript,
     );
-    await execute(github, core, require, Buffer);
-    return { calls, info, secrets };
+    await execute(github, core, require, Buffer, fetchMetadata, abortSignal);
+    return { abortTimeouts, calls, info, metadataCalls, secrets };
   } finally {
     for (const name of Object.keys(process.env)) {
       if (!(name in originalEnvironment)) delete process.env[name];
@@ -145,13 +174,18 @@ test("attests JWT metadata and one exact repository page", async () => {
   const before = Math.floor(Date.now() / 1000);
   const result = await runAttestation();
   const after = Math.floor(Date.now() / 1000);
-  assert.equal(result.calls.length, 3);
-  const jwt = result.calls[0].options.headers.authorization.replace(
+  assert.equal(result.metadataCalls.length, 1);
+  assert.equal(result.calls.length, 2);
+  assert.equal(
+    result.metadataCalls[0].url,
+    "https://api.github.com/app/installations/144867070",
+  );
+  const jwt = result.metadataCalls[0].options.headers.authorization.replace(
     /^Bearer /u,
     "",
   );
   assert.match(
-    result.calls[0].options.headers.authorization,
+    result.metadataCalls[0].options.headers.authorization,
     /^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u,
   );
   const [encodedHeader, encodedPayload] = jwt.split(".");
@@ -165,18 +199,37 @@ test("attests JWT metadata and one exact repository page", async () => {
   assert.equal(payload.iss, "Iv23standards");
   assert.equal(payload.exp - payload.iat, 600);
   assert.ok(payload.iat >= before - 60 && payload.iat <= after - 60);
-  assert.equal(result.calls[0].options.headers.authorization, `Bearer ${jwt}`);
-  assert.deepEqual(result.calls[0].options.request, { timeout: 30_000 });
   assert.equal(
-    result.calls[0].options.headers["x-github-api-version"],
+    result.metadataCalls[0].options.headers.authorization,
+    `Bearer ${jwt}`,
+  );
+  assert.equal(
+    result.metadataCalls[0].options.headers["user-agent"],
+    "standards-sync-attestation",
+  );
+  assert.equal(
+    result.metadataCalls[0].options.headers.accept,
+    "application/vnd.github+json",
+  );
+  assert.equal(
+    result.metadataCalls[0].options.headers["x-github-api-version"],
     "2026-03-10",
   );
-  assert.deepEqual(result.calls[1].options.page, 1);
-  assert.deepEqual(result.calls[1].options.per_page, 100);
-  assert.deepEqual(result.calls[1].options.request, { timeout: 30_000 });
-  assert.equal(result.calls[1].options.headers.authorization, undefined);
+  assert.deepEqual(result.abortTimeouts, [30_000]);
+  assert.equal(result.metadataCalls[0].options.method, "GET");
+  assert.equal(result.metadataCalls[0].options.redirect, "error");
+  assert.deepEqual(result.metadataCalls[0].options.signal, {
+    milliseconds: 30_000,
+  });
+  assert.deepEqual(result.calls[0].options.page, 1);
+  assert.deepEqual(result.calls[0].options.per_page, 100);
+  assert.deepEqual(result.calls[0].options.request, { timeout: 30_000 });
   assert.equal(
-    result.calls[1].options.headers["x-github-api-version"],
+    result.calls[0].options.headers.authorization,
+    "token installation-auth-hook",
+  );
+  assert.equal(
+    result.calls[0].options.headers["x-github-api-version"],
     "2026-03-10",
   );
   assert.equal(result.secrets.length, 1, "derived JWT must be masked");
@@ -207,7 +260,8 @@ test("paginates a full exact repository set", async () => {
       { total_count: 101, repositories: secondPage },
     ],
   });
-  assert.equal(result.calls.length, 5);
+  assert.equal(result.metadataCalls.length, 1);
+  assert.equal(result.calls.length, 4);
 });
 
 test("accepts the escaped-newline private-key form used by the token action", async () => {
@@ -221,7 +275,7 @@ for (const [name, options, pattern] of [
     "missing private key before API access",
     {
       env: { APP_PRIVATE_KEY: "" },
-      requestError: new Error("network must not run"),
+      metadataRequestError: new Error("network must not run"),
     },
     /APP_PRIVATE_KEY is missing/u,
   ],
@@ -231,10 +285,26 @@ for (const [name, options, pattern] of [
     /metadata response is malformed/u,
   ],
   [
+    "non-success metadata response",
+    {
+      metadataStatus: 403,
+      repositoryRequestError: new Error("inventory must not run"),
+    },
+    /metadata request failed with HTTP 403/u,
+  ],
+  [
+    "invalid metadata JSON",
+    {
+      metadataJsonError: new Error("invalid JSON"),
+      repositoryRequestError: new Error("inventory must not run"),
+    },
+    /metadata response is not valid JSON: invalid JSON/u,
+  ],
+  [
     "wrong App slug before API access",
     {
       env: { APP_SLUG: "wrong-app" },
-      requestError: new Error("network must not run"),
+      metadataRequestError: new Error("network must not run"),
     },
     /token App slug/u,
   ],
@@ -242,7 +312,7 @@ for (const [name, options, pattern] of [
     "wrong installation before API access",
     {
       env: { INSTALLATION_ID: "1" },
-      requestError: new Error("network must not run"),
+      metadataRequestError: new Error("network must not run"),
     },
     /token installation/u,
   ],
@@ -486,10 +556,13 @@ test("fails closed on an incomplete page", async () => {
   );
 });
 
-test("propagates GitHub API failures", async () => {
+test("fails closed on metadata API failures", async () => {
   await assert.rejects(
-    runAttestation({ requestError: new Error("API unavailable") }),
-    /API unavailable/u,
+    runAttestation({
+      metadataRequestError: new Error("API unavailable"),
+      repositoryRequestError: new Error("inventory must not run"),
+    }),
+    /metadata request failed: API unavailable/u,
   );
 });
 
@@ -526,6 +599,12 @@ test("workflow gates every target mutation behind full-manifest attestation", ()
   assert.match(attest, /owner: melodic-software/u);
   assert.match(attest, /permission-metadata: read/u);
   assert.doesNotMatch(attest, /permission-contents:/u);
+  assert.match(attest, /await fetch\(/u);
+  assert.match(attest, /AbortSignal\.timeout\(REQUEST_TIMEOUT_MILLISECONDS\)/u);
+  assert.doesNotMatch(
+    attest,
+    /github\.request\(\s*['"]GET \/app\/installations/u,
+  );
   assert.doesNotMatch(attest, /^\s+repositories:/mu);
   assert.doesNotMatch(
     attest,

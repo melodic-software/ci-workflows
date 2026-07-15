@@ -108,7 +108,14 @@ test("Standards App attestation uses bounded fresh API reads", () => {
       workflow,
       /request: \{ timeout: REQUEST_TIMEOUT_MILLISECONDS \}/gu,
     ),
-    2,
+    1,
+  );
+  assert.equal(
+    occurrences(
+      workflow,
+      /AbortSignal\.timeout\(REQUEST_TIMEOUT_MILLISECONDS\)/gu,
+    ),
+    1,
   );
   assert.doesNotMatch(
     workflow,

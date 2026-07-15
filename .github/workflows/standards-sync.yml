@@ -159,6 +159,7 @@ jobs:
           EXPECTED_INSTALLATION_ID: '144867070'
           EXPECTED_OWNER: melodic-software
           EXPECTED_REPOSITORIES: ${{ needs.plan.outputs.expected-repositories }}
+          GITHUB_API_URL: ${{ github.api_url }}
           INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
         with:
           github-token: ${{ steps.token.outputs.token }}
@@ -232,19 +233,35 @@ jobs:
               .toString('base64url')}`;
             core.setSecret(jwt);
 
-            const appResponse = await github.request(
-              'GET /app/installations/{installation_id}',
-              {
-                installation_id: Number(expectedInstallationId),
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  authorization: `Bearer ${jwt}`,
-                  'x-github-api-version': '2026-03-10',
+            const apiUrl = required('GITHUB_API_URL').replace(/\/+$/g, '');
+            let appResponse;
+            try {
+              appResponse = await fetch(
+                `${apiUrl}/app/installations/${encodeURIComponent(expectedInstallationId)}`,
+                {
+                  headers: {
+                    accept: 'application/vnd.github+json',
+                    authorization: `Bearer ${jwt}`,
+                    'user-agent': 'standards-sync-attestation',
+                    'x-github-api-version': '2026-03-10',
+                  },
+                  method: 'GET',
+                  redirect: 'error',
+                  signal: AbortSignal.timeout(REQUEST_TIMEOUT_MILLISECONDS),
                 },
-                request: { timeout: REQUEST_TIMEOUT_MILLISECONDS },
-              },
-            );
-            const installation = appResponse?.data;
+              );
+            } catch (error) {
+              fail(`installation metadata request failed: ${error.message}`);
+            }
+            if (appResponse.status !== 200) {
+              fail(`installation metadata request failed with HTTP ${appResponse.status}`);
+            }
+            let installation;
+            try {
+              installation = await appResponse.json();
+            } catch (error) {
+              fail(`installation metadata response is not valid JSON: ${error.message}`);
+            }
             if (!installation || typeof installation !== 'object' || Array.isArray(installation)) {
               fail('installation metadata response is malformed');
             }
