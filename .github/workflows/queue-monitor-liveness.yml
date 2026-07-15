@@ -1,0 +1,167 @@
+name: Queue Monitor Liveness
+
+# External liveness check for the managed-runner queue monitor that lives in
+# melodic-software/ci-runner (queued-job-monitor.yml). The monitor alerts by
+# failing its own scheduled run, which leaves three silent death modes it
+# cannot report itself: GitHub disables a schedule after 60 days of repository
+# inactivity, the scheduler can delay or drop firings outright (observed
+# 2026-07-15: ~1 of 4 crons per hour fired), and an infrastructure step such as
+# the observer-App token mint can fail on every run while the queue goes
+# unwatched (observed 2026-07-15: installation grants lagged a repo transfer
+# and every run 03:42-07:23Z died at the mint step). This workflow runs in a
+# different repository on a different schedule and fails — with a rolling
+# tracking issue — when any of those modes is live, so a dead watchdog becomes
+# an alert instead of silence. It deliberately does NOT re-check queue depth;
+# queue alerting stays the monitor's job.
+
+on:
+  schedule:
+    # Four spot-checks a day; the monitor itself attempts four runs an hour,
+    # so one healthy completion inside each six-hour window is a generous
+    # floor that still alerts the same day the monitor goes dark.
+    - cron: '41 */6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/queue-monitor-liveness.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: queue-monitor-liveness-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MONITOR_REPOSITORY: melodic-software/ci-runner
+  MONITOR_WORKFLOW: queued-job-monitor.yml
+  # The only step of the monitor allowed to fail while the monitor still
+  # counts as healthy: a failure there IS the queue alert. A failure in any
+  # other step (checkout, token mint) means the monitor is broken, not
+  # alerting.
+  MONITOR_AUDIT_STEP: Inspect queued jobs
+  FRESHNESS_WINDOW_HOURS: '6'
+
+jobs:
+  liveness:
+    name: Prove the queue monitor is alive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # Rolling tracking issue via create-issue-from-file.
+    steps:
+      - name: Check monitor state, freshness, and failure shape
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+
+          problems=""
+
+          state="$(gh_read api "repos/${MONITOR_REPOSITORY}/actions/workflows/${MONITOR_WORKFLOW}" --jq '.state')"
+          if [[ "$state" != "active" ]]; then
+            problems+="- Monitor workflow state is \`${state}\` (expected \`active\`); GitHub has disabled its schedule."$'\n'
+          fi
+
+          since="$(date -u -d "-${FRESHNESS_WINDOW_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
+          completed="$(gh_read api \
+            "repos/${MONITOR_REPOSITORY}/actions/workflows/${MONITOR_WORKFLOW}/runs?status=completed&created=>=${since}&per_page=1" \
+            --jq '.total_count')"
+          if [[ "$completed" -eq 0 ]]; then
+            problems+="- No completed monitor run since ${since} (window ${FRESHNESS_WINDOW_HOURS}h); the scheduler is not delivering it."$'\n'
+          else
+            latest="$(gh_read api \
+              "repos/${MONITOR_REPOSITORY}/actions/workflows/${MONITOR_WORKFLOW}/runs?status=completed&per_page=1" \
+              --jq '.workflow_runs[0]')"
+            conclusion="$(jq -r '.conclusion' <<<"$latest")"
+            run_id="$(jq -r '.id' <<<"$latest")"
+            if [[ "$conclusion" == "failure" ]]; then
+              # A failure confined to the audit step is the monitor doing its
+              # job (queued-job alert). Any other failed step is breakage.
+              broken_steps="$(gh_read api "repos/${MONITOR_REPOSITORY}/actions/runs/${run_id}/jobs" \
+                --jq '[.jobs[].steps[] | select(.conclusion == "failure") | .name] | unique | .[]')"
+              unexpected="$(grep -Fxv "$MONITOR_AUDIT_STEP" <<<"$broken_steps" || true)"
+              if [[ -n "$unexpected" ]]; then
+                problems+="- Latest monitor run ${run_id} failed outside the audit step (failed: $(tr '\n' ',' <<<"$unexpected" | sed 's/,$//')); the monitor is broken, not alerting."$'\n'
+              else
+                echo "Latest monitor run ${run_id} failed only at '${MONITOR_AUDIT_STEP}' — that is a live queue alert, not a liveness problem."
+              fi
+            fi
+          fi
+
+          if [[ -z "$problems" ]]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "Monitor is active and reported within the last ${FRESHNESS_WINDOW_HOURS}h."
+            exit 0
+          fi
+
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Queue monitor liveness failure"
+            echo
+            echo "The managed-runner queue monitor in \`${MONITOR_REPOSITORY}\` is not provably alive:"
+            echo
+            printf '%s' "$problems"
+            echo
+            echo "### Recover"
+            echo
+            echo "1. Open the monitor: https://github.com/${MONITOR_REPOSITORY}/actions/workflows/${MONITOR_WORKFLOW}"
+            echo "2. If the schedule was disabled, re-enable the workflow."
+            echo "3. If runs fail before the audit step, check the observer App"
+            echo "   installation grants against \`CI_RUNNER_MONITOR_TARGETS_JSON\`"
+            echo "   (every listed repository must be granted to the installation)"
+            echo "   and re-run with workflow_dispatch to verify."
+            echo "4. While the monitor is down, queued self-hosted jobs alert nobody;"
+            echo "   check the fleet before trusting a quiet queue."
+            echo
+            echo "---"
+            echo "*Updated automatically by \`.github/workflows/queue-monitor-liveness.yml\`."
+            echo "Closing this issue without restoring the monitor reopens it on the next run.*"
+          } > liveness.md
+
+      - name: Find existing tracking issue
+        id: find-issue
+        if: steps.check.outputs.healthy == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing="$(gh issue list --state open \
+            --search 'in:title "[Alert] Queue monitor liveness"' \
+            --json number,title \
+            --jq '.[] | select(.title == "[Alert] Queue monitor liveness") | .number' | head -1)"
+          echo "issue-number=${existing}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update tracking issue
+        if: steps.check.outputs.healthy == 'false'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          issue-number: ${{ steps.find-issue.outputs.issue-number }}
+          title: '[Alert] Queue monitor liveness'
+          content-filepath: ./liveness.md
+
+      - name: Fail so the scheduled run notifies
+        if: steps.check.outputs.healthy == 'false'
+        run: |
+          echo '::error::Queue monitor liveness check failed; see the tracking issue.'
+          exit 1
