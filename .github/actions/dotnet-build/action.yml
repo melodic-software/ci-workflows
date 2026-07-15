@@ -18,7 +18,11 @@ inputs:
       .NET SDK version to install. The strict analyzer + code-style ruleset is
       supplied by the caller's MSBuild policy, which MSBuild discovers by
       walking the tree; this action only provisions the SDK and runs the build.
-    default: 10.0.301
+      Left empty (the default), `actions/setup-dotnet` falls back to reading
+      the caller's own global.json, so the installed SDK always matches what
+      the caller's repo declares instead of a version hardcoded here. Pass an
+      explicit value to override that.
+    default: ''
   locked-mode:
     description: >-
       Restore in NuGet locked mode (RestoreLockedMode=true): a committed

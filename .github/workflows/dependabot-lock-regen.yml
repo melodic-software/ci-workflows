@@ -47,8 +47,13 @@ on:
         default: ''
         type: string
       dotnet-version:
-        description: .NET SDK version to install.
-        default: 10.0.301
+        description: >-
+          .NET SDK version to install. Left empty (the default),
+          `actions/setup-dotnet` falls back to reading the caller's own
+          global.json, so the installed SDK always matches what the caller's
+          repo declares instead of a version hardcoded here. Pass an explicit
+          value to override that.
+        default: ''
         type: string
       commit-message:
         description: >-
