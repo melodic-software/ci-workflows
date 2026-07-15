@@ -40,6 +40,10 @@ name: claude-review
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label selected by the caller's governed selector.
+        type: string
+        default: ubuntu-24.04
       prompt:
         description: >-
           The review-criteria body. A REPO / PR NUMBER / HEAD SHA header and
@@ -113,7 +117,7 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
