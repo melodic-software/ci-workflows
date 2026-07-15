@@ -168,14 +168,13 @@ function preflight(input) {
   const selfHostedOnly = input.policy === "self-hosted-only";
 
   // Public repositories do not save billed minutes. Only explicitly reviewed
-  // caller event classes may route locally, and fork/Dependabot code must never
-  // receive the observer credential. This guard is duplicated on the token-
-  // minting step so these cases are rejected before that action runs.
-  if (
-    input.repositoryPrivate !== true ||
-    !permitsLocalExecution(input) ||
-    input.isDependabot
-  ) {
+  // caller event classes may route locally, and fork code must never receive
+  // the observer credential. This guard is duplicated on the token-minting
+  // step so these cases are rejected before that action runs. Same-repository
+  // Dependabot branches are a reviewed local class: their lane code runs in
+  // ephemeral one-job workers, and the observer key stays inside the selector
+  // job, sourced from the Dependabot secrets store on Dependabot events.
+  if (input.repositoryPrivate !== true || !permitsLocalExecution(input)) {
     return { result: hostedResult(hostedRunner, "hosted-only") };
   }
 
@@ -548,7 +547,6 @@ function inputsFromEnvironment(env) {
     repositoryPrivate: env.REPOSITORY_PRIVATE === "true",
     eventName: env.EVENT_NAME,
     isForkPullRequest: env.IS_FORK_PULL_REQUEST === "true",
-    isDependabot: env.IS_DEPENDABOT === "true",
   };
 }
 

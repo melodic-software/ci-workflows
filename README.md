@@ -180,10 +180,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   immutable selector revision. Invalid queue-only configuration and selector
   infrastructure faults fail the selector job instead of falling back to paid
   hosted execution. Public
-  repositories, fork pull requests, and Dependabot runs route hosted before the
-  observer-token action can execute, following GitHub's
-  [self-hosted runner security guidance][runner-security] and
-  [Dependabot secret boundary][dependabot-secrets]. Call it exactly once per
+  repositories and fork pull requests route hosted before the observer-token
+  action can execute, following GitHub's
+  [self-hosted runner security guidance][runner-security]. Same-repository
+  Dependabot runs route like any push: their lane code executes in ephemeral
+  one-job workers, and the selector sources the observer key from the
+  [Dependabot secrets store][dependabot-secrets] on Dependabot events, so the
+  org mirrors `CI_RUNNER_OBSERVER_PRIVATE_KEY` there. Call it exactly once per
   workflow and feed the single output to every lane's `runs-on`; per-lane
   selector fan-out only multiplies identical preflight jobs:
 
@@ -487,7 +490,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   directory with a per-job cache and without Docker, a job/service container,
   or an installer-time privilege escalation. `runner` defaults to
   `ubuntu-24.04` and can consume the approved selector output for eligible
-  private, non-fork, non-Dependabot calls. SARIF upload and blocking promotion
+  private, non-fork calls. SARIF upload and blocking promotion
   remain deferred opt-ins. Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
   Google's official native OSV-Scanner v2.4.0 Linux X64 binary. The exact binary,
