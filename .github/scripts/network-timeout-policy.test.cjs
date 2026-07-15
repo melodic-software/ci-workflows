@@ -59,6 +59,18 @@ test("small JSON and release-discovery reads use their class budgets", () => {
   );
 });
 
+test("link-check tracking lookup routes through a bounded gh_read", () => {
+  const workflow = read(".github/workflows/link-check.yml");
+  assert.match(
+    workflow,
+    /gh_read\(\)[\s\S]*?timeout --signal=TERM --kill-after=5s 60s gh "\$@"/u,
+  );
+  assert.match(
+    workflow,
+    /Find existing tracking issue[\s\S]*?matches="\$\(gh_read api --paginate/u,
+  );
+});
+
 test("OSV native release downloads are bounded", () => {
   const workflow = read(".github/workflows/osv-scanner.yml");
   assert.equal(

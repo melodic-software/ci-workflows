@@ -83,7 +83,23 @@ jobs:
           MARKER: '<!-- ci-workflows:link-check:v1:active -->'
         run: |
           set -euo pipefail
-          matches="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" |
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+          matches="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" |
             jq -ce --arg marker "$MARKER" '
               [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
             ')"
