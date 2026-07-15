@@ -40,9 +40,26 @@ runs:
   using: composite
   steps:
     - name: Set up .NET
+      id: setup-dotnet
       uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Set up .NET (fallback — no version or global.json found)
+      # setup-dotnet leaves its `dotnet-version` output unset (empty string
+      # here) when the `dotnet-version` input is empty AND it can't find a
+      # global.json anywhere in the caller's tree: it logs "nothing will be
+      # installed" and exits 0 without provisioning an SDK, so `dotnet build`
+      # below would otherwise fall through to whatever (if anything) happens
+      # to be preinstalled on the runner. Re-run pinned to the same SDK this
+      # repo's own root global.json and local-runner-canary.yml's
+      # dotnet-version default track, so a caller that never declared a
+      # version keeps the exact behaviour it had before dotnet-version's
+      # default changed here — bump this value in lockstep with those two.
+      if: steps.setup-dotnet.outputs.dotnet-version == ''
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+      with:
+        dotnet-version: 10.0.301
 
     - name: Build
       shell: bash
