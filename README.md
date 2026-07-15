@@ -143,10 +143,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
 - `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
-  resolves one immutable standards SHA, scopes a GitHub App token to each target,
-  and opens a signed, human-reviewed PR enumerating every managed
-  source-to-destination mapping. It never writes a downstream receipt and never
-  copies components declared `locally-owned`.
+  resolves one immutable standards SHA, then blocks every write lane until a
+  separate metadata-only credential proves the expected App identity, active
+  selected-repository installation metadata, and two consecutive exact views of
+  the full unfiltered manifest's repository set. A caller's `targets` filter
+  limits materialization only; it never weakens this installation-scope
+  attestation. After that barrier, the workflow scopes a different GitHub App
+  token to each target and opens a signed, human-reviewed PR enumerating every
+  managed source-to-destination mapping. It never writes a downstream receipt
+  and never copies components declared `locally-owned`; the owner-scoped
+  attestation token is never passed to checkout or PR mutation.
 - `.github/workflows/select-runner.yml` — the single organization-approved
   hosted/self-hosted selector. With `self-hosted-only`, the selector itself
   queues on the centrally allowlisted `melodic-ubuntu-24.04-x64` route; it does

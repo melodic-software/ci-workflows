@@ -51,6 +51,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      expected-repositories: ${{ steps.build.outputs.expected-repositories }}
       matrix: ${{ steps.build.outputs.matrix }}
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
@@ -93,6 +94,19 @@ jobs:
               --manifest "$MANIFEST" \
               --targets "$TARGETS"
           )"
+          full_matrix="$(
+            bash distribution/sync-manifest.sh matrix \
+              --source-root . \
+              --manifest "$MANIFEST"
+          )"
+          expected_repositories="$(
+            jq --compact-output --exit-status '
+              [.include[].repo]
+              | if length == 0 then error("manifest contains no targets") else . end
+              | if length == (unique | length) then sort else error("manifest contains duplicate targets") end
+            ' <<< "$full_matrix"
+          )"
+          echo "expected-repositories=$expected_repositories" >> "$GITHUB_OUTPUT"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       - name: Log distribution plan
@@ -108,8 +122,233 @@ jobs:
             --manifest "$MANIFEST" \
             --targets "$TARGETS"
 
-  sync:
+  attest:
     needs: plan
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Require App credentials
+        env:
+          APP_CLIENT_ID: ${{ secrets.app-client-id }}
+          APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+        run: |
+          if [[ -z "$APP_CLIENT_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error::app-client-id and app-private-key are required when dry-run is false"
+            exit 1
+          fi
+
+      - name: Mint read-only App token for installation attestation
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: melodic-software
+          permission-metadata: read
+
+      - name: Attest App identity and exact repository access
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APP_CLIENT_ID: ${{ secrets.app-client-id }}
+          APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+          EXPECTED_APP_SLUG: melodic-standards-sync
+          EXPECTED_INSTALLATION_ID: '144867070'
+          EXPECTED_OWNER: melodic-software
+          EXPECTED_REPOSITORIES: ${{ needs.plan.outputs.expected-repositories }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: |
+            const { createSign } = require('node:crypto');
+            const REQUEST_TIMEOUT_MILLISECONDS = 30_000;
+
+            const fail = (message) => {
+              throw new Error(`Standards sync App attestation failed: ${message}`);
+            };
+            const required = (name) => {
+              const value = process.env[name];
+              if (typeof value !== 'string' || value.length === 0) {
+                fail(`${name} is missing`);
+              }
+              return value;
+            };
+            const expectedSlug = required('EXPECTED_APP_SLUG');
+            const expectedInstallationId = required('EXPECTED_INSTALLATION_ID');
+            const expectedOwner = required('EXPECTED_OWNER');
+            const actualSlug = required('APP_SLUG');
+            const actualInstallationId = required('INSTALLATION_ID');
+            const privateKey = required('APP_PRIVATE_KEY');
+            if (actualSlug !== expectedSlug) {
+              fail(`token App slug ${actualSlug} does not equal ${expectedSlug}`);
+            }
+            if (actualInstallationId !== expectedInstallationId) {
+              fail(`token installation ${actualInstallationId} does not equal ${expectedInstallationId}`);
+            }
+
+            let expected;
+            try {
+              expected = JSON.parse(required('EXPECTED_REPOSITORIES'));
+            } catch (error) {
+              fail(`EXPECTED_REPOSITORIES is not valid JSON: ${error.message}`);
+            }
+            if (!Array.isArray(expected) || expected.length === 0) {
+              fail('expected repository set must be a non-empty array');
+            }
+            const repositoryNamePattern = new RegExp(
+              `^${expectedOwner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/[A-Za-z0-9_.-]+$`,
+            );
+            const expectedSet = new Set();
+            for (const repository of expected) {
+              if (typeof repository !== 'string' ||
+                  !repositoryNamePattern.test(repository)) {
+                fail(`invalid expected repository: ${String(repository)}`);
+              }
+              if (expectedSet.has(repository)) {
+                fail(`duplicate expected repository: ${repository}`);
+              }
+              expectedSet.add(repository);
+            }
+
+            const base64url = (value) =>
+              Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+            const now = Math.floor(Date.now() / 1000);
+            const unsignedJwt = `${base64url({ alg: 'RS256', typ: 'JWT' })}.${base64url({
+              iat: now - 60,
+              exp: now + 540,
+              iss: required('APP_CLIENT_ID'),
+            })}`;
+            const signer = createSign('RSA-SHA256');
+            signer.update(unsignedJwt);
+            signer.end();
+            const normalizedPrivateKey = privateKey.includes('\n')
+              ? privateKey
+              : privateKey.replace(/\\n/g, '\n');
+            const jwt = `${unsignedJwt}.${signer
+              .sign(normalizedPrivateKey)
+              .toString('base64url')}`;
+            core.setSecret(jwt);
+
+            const apiUrl = required('GITHUB_API_URL').replace(/\/+$/g, '');
+            let appResponse;
+            try {
+              appResponse = await fetch(
+                `${apiUrl}/app/installations/${encodeURIComponent(expectedInstallationId)}`,
+                {
+                  headers: {
+                    accept: 'application/vnd.github+json',
+                    authorization: `Bearer ${jwt}`,
+                    'user-agent': 'standards-sync-attestation',
+                    'x-github-api-version': '2026-03-10',
+                  },
+                  method: 'GET',
+                  redirect: 'error',
+                  signal: AbortSignal.timeout(REQUEST_TIMEOUT_MILLISECONDS),
+                },
+              );
+            } catch (error) {
+              fail(`installation metadata request failed: ${error.message}`);
+            }
+            if (appResponse.status !== 200) {
+              fail(`installation metadata request failed with HTTP ${appResponse.status}`);
+            }
+            let installation;
+            try {
+              installation = await appResponse.json();
+            } catch (error) {
+              fail(`installation metadata response is not valid JSON: ${error.message}`);
+            }
+            if (!installation || typeof installation !== 'object' || Array.isArray(installation)) {
+              fail('installation metadata response is malformed');
+            }
+            if (String(installation.id) !== expectedInstallationId ||
+                installation.app_slug !== expectedSlug ||
+                installation.repository_selection !== 'selected' ||
+                installation.target_type !== 'Organization' ||
+                installation.account?.login !== expectedOwner ||
+                installation.suspended_at !== null) {
+              fail('installation metadata does not match the approved active selected-repository App');
+            }
+
+            const readRepositorySnapshot = async () => {
+              const seenIds = new Set();
+              const snapshot = new Set();
+              let totalCount;
+              // The exact total and unique 100-entry non-final pages make this bound exhaustive.
+              const maximumPages = Math.max(1, Math.ceil(expectedSet.size / 100));
+              for (let page = 1; page <= maximumPages; page += 1) {
+                const response = await github.request('GET /installation/repositories', {
+                  page,
+                  per_page: 100,
+                  headers: {
+                    accept: 'application/vnd.github+json',
+                    'x-github-api-version': '2026-03-10',
+                  },
+                  request: { timeout: REQUEST_TIMEOUT_MILLISECONDS },
+                });
+                const data = response?.data;
+                if (!data || typeof data !== 'object' || Array.isArray(data) ||
+                    !Number.isSafeInteger(data.total_count) || data.total_count < 0 ||
+                    !Array.isArray(data.repositories) || data.repositories.length > 100) {
+                  fail(`repository page ${page} is malformed`);
+                }
+                if (totalCount === undefined) {
+                  totalCount = data.total_count;
+                  if (totalCount !== expectedSet.size) {
+                    fail(`installation reports ${totalCount} repositories; expected ${expectedSet.size}`);
+                  }
+                } else if (data.total_count !== totalCount) {
+                  fail(`repository total_count changed on page ${page}`);
+                }
+                if (data.repositories.length === 0 && snapshot.size < totalCount) {
+                  fail(`repository pagination ended early on page ${page}`);
+                }
+                for (const repository of data.repositories) {
+                  const id = repository?.id;
+                  const fullName = repository?.full_name;
+                  if (!Number.isSafeInteger(id) || id <= 0 || typeof fullName !== 'string' ||
+                      !repositoryNamePattern.test(fullName) ||
+                      repository?.owner?.login !== expectedOwner) {
+                    fail(`repository page ${page} contains a malformed or foreign entry`);
+                  }
+                  if (seenIds.has(id) || snapshot.has(fullName)) {
+                    fail(`repository page ${page} contains a duplicate entry`);
+                  }
+                  seenIds.add(id);
+                  snapshot.add(fullName);
+                }
+                if (snapshot.size > totalCount) {
+                  fail(`repository pagination exceeded total_count on page ${page}`);
+                }
+                if (snapshot.size === totalCount) {
+                  break;
+                }
+                if (data.repositories.length < 100) {
+                  fail(`repository page ${page} is incomplete`);
+                }
+              }
+              return [...snapshot].sort();
+            };
+
+            const firstSnapshot = await readRepositorySnapshot();
+            const secondSnapshot = await readRepositorySnapshot();
+            if (JSON.stringify(firstSnapshot) !== JSON.stringify(secondSnapshot)) {
+              fail('repository access changed between consecutive observations');
+            }
+            const actualSet = new Set(secondSnapshot);
+            const missing = [...expectedSet].filter((repository) => !actualSet.has(repository));
+            const excess = [...actualSet].filter((repository) => !expectedSet.has(repository));
+            if (missing.length > 0 || excess.length > 0) {
+              fail(`repository access differs (missing: ${missing.join(', ') || 'none'}; excess: ${excess.join(', ') || 'none'})`);
+            }
+            core.info(`Attested ${actualSet.size} selected repositories for ${expectedSlug}.`);
+
+  sync:
+    needs: [plan, attest]
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
