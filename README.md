@@ -693,6 +693,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
   every merge group is single-PR. Until one of those lands, treat `merge_group`
   label coverage as best-effort, not exhaustive, on repos that allow batching.
 
+  **Adoption precondition — single-PR merge groups.** This workflow does not
+  itself detect or assert the queue's batch size; that only exists as the gap
+  above. Coverage on `merge_group` runs is exhaustive **only** when a merge
+  group contains exactly one PR. Before requiring `do-not-merge / do-not-merge`
+  on a repo with a merge queue, confirm the queue actually produces single-PR
+  groups — today that means the ruleset's merge-queue **maximum group size is
+  1**; a repo that instead relies on batch enumeration must first have that
+  enumeration implemented and validated here, which does not exist yet. Making
+  the check required on a queued repo without satisfying this precondition
+  does not fail loudly: it keeps reporting green while under-enforcing on
+  non-tip batch members. Re-verify this precondition whenever the repo's
+  merge-queue configuration changes.
+
   Then require the `do-not-merge / do-not-merge` check in the repo's ruleset
   (governed via `github-iac`) — but only **after** the caller is merged and
   emitting the check, or open PRs block on a check that never runs.

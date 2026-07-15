@@ -91,6 +91,12 @@ jobs:
         # size to 1 at the ruleset layer (github-iac) so every merge group is
         # single-PR and this check is exhaustive. Tracked as an open gap, not
         # silently accepted.
+        #
+        # ADOPTION PRECONDITION: this job does not detect or assert the
+        # caller repo's merge-queue batch size — see the "Adoption
+        # precondition — single-PR merge groups" note in the README's
+        # `do-not-merge-gate.yml` section before requiring this check on any
+        # repo with a merge queue.
         if: >-
           inputs.prerequisite-result == 'success' &&
           (github.event_name == 'pull_request' ||
