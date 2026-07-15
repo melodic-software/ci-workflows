@@ -361,7 +361,7 @@ jobs:
             done
             return "$status"
           }
-          matches="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=all&per_page=100" |
+          matches="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" |
             jq -ce --arg marker "$MARKER" '
               [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
             ')"

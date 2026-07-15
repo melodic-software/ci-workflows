@@ -159,7 +159,7 @@ jobs:
           MARKER: '<!-- ci-workflows:queue-monitor-liveness:v1:active -->'
         run: |
           set -euo pipefail
-          matches="$(gh api --paginate --slurp "repos/${GH_REPO}/issues?state=all&per_page=100" |
+          matches="$(gh api --paginate --slurp "repos/${GH_REPO}/issues?state=open&per_page=100" |
             jq -ce --arg marker "$MARKER" '
               [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
             ')"
