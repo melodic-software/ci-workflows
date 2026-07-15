@@ -53,6 +53,15 @@ jobs:
         # `pull_request_target`, AND on `merge_group`; skipped (job still
         # green) on anything else.
         #
+        # Every branch re-fetches the PR's CURRENT labels via the API rather
+        # than trusting the triggering event's payload. That matters even for
+        # `pull_request`/`pull_request_target`: a same-repo automation that
+        # applies the blocking label with the default `GITHUB_TOKEN` (e.g. a
+        # policy job labeling the PR right before this gate runs) causes
+        # GitHub to suppress the follow-up `labeled` run, so a run already in
+        # flight would otherwise still hold the stale pre-label payload and
+        # could report success despite the PR now carrying the label.
+        #
         # `merge_group` is NOT skipped here, unlike the sibling `semantic-pr`
         # workflow's title check: a label is mutable state that can change
         # after the PR's own `pull_request`/`pull_request_target` run last
@@ -65,8 +74,8 @@ jobs:
         # `merge_group` this step recovers a PR number from the merge queue's
         # temporary ref (refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha>,
         # the only PR linkage `github.event.merge_group` carries — there is no
-        # `pull_request` object on this event) and re-fetches that PR's
-        # current labels via the API.
+        # `pull_request` object on this event) before doing the same live
+        # label fetch.
         #
         # KNOWN GAP — batched merge groups: GitHub's merge queue batches
         # multiple PRs into one merge group by default (max group size 5); the
@@ -90,7 +99,7 @@ jobs:
         env:
           BLOCKING_LABEL: ${{ inputs.label }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -101,9 +110,11 @@ jobs:
               echo "::error::Could not parse a PR number from merge_group head_ref '${MERGE_GROUP_HEAD_REF}'."
               exit 1
             fi
-            PR_LABELS_JSON="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.labels[].name]')"
+          else
+            pr_number="$PR_NUMBER"
           fi
-          if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$PR_LABELS_JSON" >/dev/null; then
+          pr_labels_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.labels[].name]')"
+          if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$pr_labels_json" >/dev/null; then
             echo "::error::This PR carries the '${BLOCKING_LABEL}' label; remove it to merge."
             exit 1
           fi
