@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  assertPinsReachable,
   fetchImmutablePins,
   immutableTemplatePins,
   parseCanonicalWorkflowUses,
@@ -199,4 +200,54 @@ test("fetch validates pins before invoking Git", () => {
     /pins must contain immutable lowercase commit SHAs/u,
   );
   assert.equal(invoked, false);
+});
+
+test("reachability asserts each deduplicated pin against origin/main", () => {
+  const calls = [];
+  assertPinsReachable({
+    cwd: repositoryRoot,
+    pins: [secondSha, firstSha, firstSha],
+    run: (command, args, options) => {
+      calls.push({ args, command, options });
+      return { status: 0, stderr: "" };
+    },
+  });
+  assert.deepEqual(
+    calls.map((call) => call.args),
+    [
+      ["merge-base", "--is-ancestor", firstSha, "origin/main"],
+      ["merge-base", "--is-ancestor", secondSha, "origin/main"],
+    ],
+  );
+  for (const call of calls) {
+    assert.equal(call.command, "git");
+    assert.equal(call.options.shell, false);
+  }
+});
+
+test("an unreachable pin fails with repin guidance, not a command failure", () => {
+  assert.throws(
+    () =>
+      assertPinsReachable({
+        cwd: repositoryRoot,
+        pins: [firstSha],
+        run: () => ({ status: 1, stderr: "" }),
+      }),
+    new RegExp(
+      `template pin ${firstSha} is not reachable from origin/main.*repin to the merged main commit`,
+      "su",
+    ),
+  );
+});
+
+test("a git failure during the reachability probe is reported as such", () => {
+  assert.throws(
+    () =>
+      assertPinsReachable({
+        cwd: repositoryRoot,
+        pins: [firstSha],
+        run: () => ({ status: 128, stderr: "fatal: bad object" }),
+      }),
+    /merge-base --is-ancestor .* failed with status 128: fatal: bad object/u,
+  );
 });

@@ -178,10 +178,40 @@ function fetchImmutablePins({
   }
 }
 
+function assertPinsReachable({
+  cwd,
+  mainRef = "origin/main",
+  pins,
+  run = spawnSync,
+  timeoutMilliseconds = DEFAULT_TIMEOUT_MILLISECONDS,
+}) {
+  for (const pin of [...new Set(pins)].sort()) {
+    const ancestorArgs = ["merge-base", "--is-ancestor", pin, mainRef];
+    const result = run("git", ancestorArgs, {
+      cwd,
+      encoding: "utf8",
+      shell: false,
+      timeout: timeoutMilliseconds,
+    });
+    if (result.status === 1) {
+      throw new Error(
+        `template pin ${pin} is not reachable from ${mainRef}: a ` +
+          "squash-orphaned PR-branch head still fetches and passes content " +
+          "checks, but GitHub refuses reusable-workflow resolution at " +
+          "dispatch; repin to the merged main commit",
+      );
+    }
+    if (result.status !== 0) {
+      throw commandFailure("git", ancestorArgs, result);
+    }
+  }
+}
+
 function main() {
   const repositoryRoot = path.resolve(__dirname, "..", "..");
   const pins = immutableTemplatePins(repositoryRoot);
   fetchImmutablePins({ cwd: repositoryRoot, pins });
+  assertPinsReachable({ cwd: repositoryRoot, pins });
 }
 
 if (require.main === module) {
@@ -195,6 +225,7 @@ if (require.main === module) {
 
 module.exports = {
   CANONICAL_WORKFLOW_PREFIX,
+  assertPinsReachable,
   fetchImmutablePins,
   immutableTemplatePins,
   parseCanonicalWorkflowUses,
