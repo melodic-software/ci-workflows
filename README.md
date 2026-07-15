@@ -68,8 +68,15 @@ checkout of this repo. (Public is required because a public consumer such as
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a
   caller-supplied config.
-- `.github/actions/gitleaks` — gitleaks secret scan over a directory against a
-  caller-supplied config. It installs a pinned, checksum-verified binary,
+- `.github/actions/gitleaks` — gitleaks secret scan over a directory or local
+  Git history against a caller-supplied config. Git mode requires a valid,
+  non-shallow local worktree or repository and explicitly scans commits
+  reachable from `HEAD` and every locally present ref under `refs/` (`--all`),
+  including refs the remote advertised and the caller fetched into the checkout.
+  Callers must use `fetch-depth: 0` for advertised branch and tag history and
+  fetch every other intended ref because hidden, unadvertised, or unfetched
+  remote refs are absent locally and cannot be scanned. The action installs a
+  pinned, checksum-verified binary,
   unconditionally redacts secret values, validates requested reports, and fails
   closed on missing, malformed, or operationally incomplete results.
 - `.github/actions/actionlint` — actionlint over the repo's GitHub Actions

@@ -7,9 +7,14 @@ inputs:
     default: '.'
   scan-mode:
     description: >-
-      What to scan: `dir` (the working tree, the default) or `git` (the full
-      commit history). History mode catches secrets that were committed and
-      later removed, and requires the caller to check out with fetch-depth: 0.
+      What to scan: `dir` (the working tree, the default) or `git` (all commits
+      reachable from HEAD and every ref under refs/ present locally, including
+      refs advertised by the remote and fetched into the checkout, via an
+      explicit --all revision set). Git mode requires a valid, non-shallow local
+      worktree or repository. Callers must check out with fetch-depth: 0 for
+      advertised branch and tag history and fetch every other intended ref;
+      hidden, unadvertised, or unfetched remote refs are absent locally and
+      cannot be scanned.
     default: dir
   config:
     description: Path to the gitleaks config (.gitleaks.toml) in the caller repo.
