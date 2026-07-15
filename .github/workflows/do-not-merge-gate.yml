@@ -92,6 +92,30 @@ jobs:
         # single-PR and this check is exhaustive. Tracked as an open gap, not
         # silently accepted.
         #
+        # KNOWN LIMITATION — GITHUB_TOKEN-authored labeling AFTER this gate
+        # already passed: the live refetch above only helps while a run of
+        # THIS workflow is executing. GitHub does not start a new workflow
+        # run at all for `labeled`/`unlabeled` events produced by the default
+        # `GITHUB_TOKEN` — that is a documented recursive-run guard, not a
+        # missing trigger type here (see
+        # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
+        # So if a same-repo automation job labels the PR with the default
+        # `GITHUB_TOKEN` after this gate already reported success on the PR's
+        # HEAD SHA, the caller's `labeled`/`unlabeled` trigger types (see
+        # README) never fire for that event — no run happens, live-refetch or
+        # otherwise — and the earlier green check-run is never invalidated.
+        # Adding trigger types to the caller cannot fix this: the gap is that
+        # GitHub never starts a run to begin with. Closing it requires the
+        # labeling automation itself to stop using the default `GITHUB_TOKEN`
+        # — see the ADOPTION REQUIREMENT below and the README's "Known
+        # limitation — GITHUB_TOKEN-authored label changes" note.
+        #
+        # ADOPTION REQUIREMENT: any same-repo automation that applies (or
+        # removes) this gate's blocking label MUST authenticate with a GitHub
+        # App installation token or a PAT, never the default `GITHUB_TOKEN` —
+        # only a non-GITHUB_TOKEN-authored label change creates the
+        # `labeled`/`unlabeled` workflow run that re-evaluates this gate.
+        #
         # ADOPTION PRECONDITION: this job does not detect or assert the
         # caller repo's merge-queue batch size — see the "Adoption
         # precondition — single-PR merge groups" note in the README's

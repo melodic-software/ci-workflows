@@ -679,7 +679,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   to this file cannot bypass the gate (safe here since the check reads PR label
   metadata only — it checks out and runs no head code). `labeled`/`unlabeled`
   are required — without them, adding the label after the check already passed
-  would not re-trigger it, and the merge would never actually be blocked;
+  would not re-trigger it, and the merge would never actually be blocked. Even
+  with them present, a same-repo automation that labels using the default
+  `GITHUB_TOKEN` still does not re-trigger this gate — see the "Known
+  limitation — GITHUB_TOKEN-authored label changes" note below.
   `opened`/`reopened`/`synchronize` cover the check reporting on every other PR
   lifecycle event a ruleset's required-status-check needs to see. `merge_group`
   is required on any repo with a merge queue, both for the never-reports/deadlock
@@ -690,6 +693,31 @@ GitHub continues the normal weekly patching of each hosted image generation.
   added after the PR's own `pull_request_target` run last passed, e.g. while
   the PR already sits in the queue, so trusting that earlier result would let
   a labeled PR merge through.
+
+  **Known limitation — GITHUB_TOKEN-authored label changes.** The
+  `labeled`/`unlabeled` triggers above only re-evaluate the gate when GitHub
+  actually starts a new workflow run for that event. GitHub does not start a
+  run at all for `labeled`/`unlabeled` events produced by the default
+  `GITHUB_TOKEN` — that is a platform-level recursive-run guard
+  ([triggering-a-workflow-from-a-workflow]), not a gap in the trigger list
+  above. So if a same-repo automation job (e.g. a labeling policy workflow)
+  applies this gate's blocking label using the default `GITHUB_TOKEN`
+  **after** the check already reported success on the PR's HEAD SHA, no run —
+  live-refetch or otherwise — is ever triggered, and the earlier green
+  check-run stays on that SHA until a genuinely new qualifying event occurs
+  (e.g. `synchronize` from a subsequent push, or a non-default-token
+  `labeled`/`unlabeled` event). No trigger-list change can close this; the
+  gap is that GitHub never starts a run.
+
+  **Adoption requirement — label-setting automation must not use the default
+  `GITHUB_TOKEN`.** Any same-repo workflow that applies or removes this
+  gate's blocking label must authenticate with a GitHub App installation
+  token or a personal access token instead of `${{ secrets.GITHUB_TOKEN }}` /
+  `${{ github.token }}`. Only a label change authored by a non-default token
+  creates the `labeled`/`unlabeled` run that re-evaluates this gate; a
+  default-token label change leaves an already-green check silently
+  unenforced. Verify this for every same-repo labeling automation before
+  requiring `do-not-merge / do-not-merge` on that repo.
 
   **Known gap with batched merge queues:** GitHub's merge queue batches
   multiple PRs into one merge group by default (max group size 5), and the
@@ -759,6 +787,7 @@ standards catalog.
 [runner-group-rest]: https://docs.github.com/en/rest/actions/self-hosted-runner-groups?apiVersion=2026-03-10
 [runner-scale-set-ha]: https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
+[triggering-a-workflow-from-a-workflow]: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
 [workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
