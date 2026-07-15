@@ -672,11 +672,30 @@ GitHub continues the normal weekly patching of each hosted image generation.
   would not re-trigger it, and the merge would never actually be blocked;
   `opened`/`reopened`/`synchronize` cover the check reporting on every other PR
   lifecycle event a ruleset's required-status-check needs to see. `merge_group`
-  is required on any repo with a merge queue, for the same never-reports/deadlock
-  reason documented under `semantic-pr` above. Then require the
-  `do-not-merge / do-not-merge` check in the repo's ruleset (governed via
-  `github-iac`) — but only **after** the caller is merged and emitting the
-  check, or open PRs block on a check that never runs.
+  is required on any repo with a merge queue, both for the never-reports/deadlock
+  reason documented under `semantic-pr` above **and** because the reusable
+  workflow re-evaluates the label on `merge_group` itself (looking the
+  PR named in the merge group's temporary ref up and re-checking its current
+  labels via the API) — unlike `semantic-pr`'s immutable title, a label can be
+  added after the PR's own `pull_request_target` run last passed, e.g. while
+  the PR already sits in the queue, so trusting that earlier result would let
+  a labeled PR merge through.
+
+  **Known gap with batched merge queues:** GitHub's merge queue batches
+  multiple PRs into one merge group by default (max group size 5), and the
+  batch's temporary ref/SHA is named for only the *last* PR in the batch (a
+  `[#1, #2]` batch runs as `pr-2`). The reusable workflow's `merge_group`
+  handling re-checks only that named PR's labels, so a PR that isn't last in
+  its batch is not individually re-evaluated at merge-queue time. Closing this
+  fully needs either a validated way to enumerate every PR in a batch from a
+  `merge_group` run (no such API is documented; unverified), or setting merge
+  queue **maximum group size to 1** in the repo's ruleset (`github-iac`) so
+  every merge group is single-PR. Until one of those lands, treat `merge_group`
+  label coverage as best-effort, not exhaustive, on repos that allow batching.
+
+  Then require the `do-not-merge / do-not-merge` check in the repo's ruleset
+  (governed via `github-iac`) — but only **after** the caller is merged and
+  emitting the check, or open PRs block on a check that never runs.
 
 ## Policy ownership and action inputs
 

@@ -49,19 +49,60 @@ jobs:
           exit 1
 
       - name: Reject a blocking label
-        # Runs ONLY on the two PR-context events, `pull_request` AND
-        # `pull_request_target`; skipped (job still green) on anything else,
-        # including `merge_group` — the label was already evaluated when the PR
-        # last changed, so this step is inert there and reports success instead
-        # of erroring on missing PR context.
+        # Runs on the two PR-context events, `pull_request` AND
+        # `pull_request_target`, AND on `merge_group`; skipped (job still
+        # green) on anything else.
+        #
+        # `merge_group` is NOT skipped here, unlike the sibling `semantic-pr`
+        # workflow's title check: a label is mutable state that can change
+        # after the PR's own `pull_request`/`pull_request_target` run last
+        # reported success (e.g. added while the PR already sits in the merge
+        # queue), whereas a PR title only changes via `edited`, which
+        # re-triggers that same check. Trusting the stale pre-queue result for
+        # labels would let a PR merge through the queue while carrying the
+        # blocking label — the required check would report success on the
+        # merge-group SHA without ever re-reading current label state. So on
+        # `merge_group` this step recovers a PR number from the merge queue's
+        # temporary ref (refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha>,
+        # the only PR linkage `github.event.merge_group` carries — there is no
+        # `pull_request` object on this event) and re-fetches that PR's
+        # current labels via the API.
+        #
+        # KNOWN GAP — batched merge groups: GitHub's merge queue batches
+        # multiple PRs into one merge group by default (max group size 5); the
+        # temp ref/SHA is named only for the LAST PR in the batch, e.g. a
+        # [#1, #2] batch runs as `pr-2`. This step therefore checks only that
+        # named PR's labels — PR #1's label state in that example is NOT
+        # re-evaluated here, so a PR labeled after entering a multi-PR batch
+        # can still ride the batch's passing check through to merge. There is
+        # no verified way to enumerate every PR in a batch from inside a
+        # `merge_group` run (no documented merge_group-to-batch-membership API);
+        # closing this fully needs either a validated enumeration method
+        # against a live batched queue, or forcing merge-queue maximum group
+        # size to 1 at the ruleset layer (github-iac) so every merge group is
+        # single-PR and this check is exhaustive. Tracked as an open gap, not
+        # silently accepted.
         if: >-
           inputs.prerequisite-result == 'success' &&
           (github.event_name == 'pull_request' ||
-          github.event_name == 'pull_request_target')
+          github.event_name == 'pull_request_target' ||
+          github.event_name == 'merge_group')
         env:
           BLOCKING_LABEL: ${{ inputs.label }}
+          EVENT_NAME: ${{ github.event_name }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            pr_number="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -nE 's#.*/pr-([0-9]+)-[0-9a-f]+$#\1#p')"
+            if [[ -z "$pr_number" ]]; then
+              echo "::error::Could not parse a PR number from merge_group head_ref '${MERGE_GROUP_HEAD_REF}'."
+              exit 1
+            fi
+            PR_LABELS_JSON="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.labels[].name]')"
+          fi
           if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$PR_LABELS_JSON" >/dev/null; then
             echo "::error::This PR carries the '${BLOCKING_LABEL}' label; remove it to merge."
             exit 1
