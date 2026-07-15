@@ -46,11 +46,14 @@ annotate_findings() {
     printf '%s' "$v"
   }
   decode_base64_field() {
-    local encoded="$1" target="$2" decoded
+    local encoded="$1" target="$2" decoded status
     decoded="$(
-      printf '%s' "$encoded" | base64 --decode 2>/dev/null
+      set +e
+      jq -jnr --arg encoded "$encoded" '$encoded | @base64d' 2>/dev/null
+      status=$?
       printf '\036'
-    )"
+      exit "$status"
+    )" || return 1
     decoded="${decoded%$'\036'}"
     printf -v "$target" '%s' "$decoded"
   }
@@ -107,9 +110,13 @@ annotate_findings() {
     fi
     printf '%s' "$relative"
   }
-  while IFS=$'\t' read -r uri_safe uri_base64 line message_safe message_base64; do
+  while IFS='|' read -r uri_safe uri_base64 line message_safe message_base64; do
+    message_base64="${message_base64%$'\r'}"
     if [[ "$message_safe" == true ]]; then
-      decode_base64_field "$message_base64" message
+      # shellcheck disable=SC2310 # decoder status selects a safe fallback explicitly.
+      if ! decode_base64_field "$message_base64" message; then
+        message='OSV vulnerability finding'
+      fi
     else
       message='OSV vulnerability finding'
     fi
@@ -134,7 +141,7 @@ annotate_findings() {
         (if ($message | type) == "string" then ($message | explode | all((. >= 32 or . == 9 or . == 10 or . == 13) and . != 127)) else false end),
         ($message | if type == "string" then @base64 else ("OSV vulnerability finding" | @base64) end)
       ]
-    | @tsv
+    | join("|")
   ' "$OSV_RESULTS")
 }
 

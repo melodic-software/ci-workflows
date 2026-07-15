@@ -50,6 +50,19 @@ write_results() {
   foreign-scheme) write_finding 'https://example.invalid/uri-sentinel-foreign.lock' ;;
   foreign-host) write_finding 'file://example.invalid/uri-sentinel-host.lock' ;;
   unsafe-message) write_finding 'src/a:b.js' $'message-sentinel\evalue' ;;
+  locationless)
+    jq -n --arg message $'locationless%secret\n::error::injected' '
+      {version: "2.1.0", runs: [{results: [{message: {text: $message}}]}]}
+    ' >"$results"
+    ;;
+  non-string-uri)
+    jq -n --arg message $'locationless%secret\n::error::injected' '
+      {version: "2.1.0", runs: [{results: [{
+        message: {text: $message},
+        locations: [{physicalLocation: {artifactLocation: {uri: {secret: "uri-sentinel"}}}}]
+      }]}]}
+    ' >"$results"
+    ;;
   invalid) printf '{not json}\n' >"$results" ;;
   absent) rm -f -- "$results" ;;
   symlink)
@@ -92,6 +105,13 @@ run_case() {
         return 1
       fi
       ;;
+    locationless | non-string-uri)
+      grep -E '::warning::locationless%25secret(%0D)?%0A::error::injected' <<<"$output" >/dev/null
+      if grep -E '(^|[ ,])(file|line)=' <<<"$output" >/dev/null || grep -F 'locationless%secret' <<<"$output" >/dev/null || grep -F 'uri-sentinel' <<<"$output" >/dev/null || grep -Fx '::error::injected' <<<"$output" >/dev/null; then
+        echo "$name: empty or non-string location leaked or shifted framed fields" >&2
+        return 1
+      fi
+      ;;
     *) return 2 ;;
     esac
     if grep -F 'unsafe%value' <<<"$output" >/dev/null || grep -Fx '::error::raw-message' <<<"$output" >/dev/null; then
@@ -120,6 +140,8 @@ run_case 'outside file URI keeps warning without a file' 0 1 false false outside
 run_case 'foreign scheme keeps warning without a file' 0 1 false false foreign-scheme
 run_case 'foreign file host keeps warning without a file' 0 1 false false foreign-host
 run_case 'unsafe raw message becomes a generic warning' 0 1 false false unsafe-message
+run_case 'locationless finding keeps its escaped message without metadata' 0 1 false false locationless
+run_case 'non-string URI keeps its escaped message without metadata' 0 1 false false non-string-uri
 run_case 'operational error always fails closed' 7 7 false false absent
 run_case 'missing result always fails closed' 2 0 false false absent
 run_case 'invalid result always fails closed' 2 0 false false invalid
