@@ -32,7 +32,7 @@ permissions:
   pull-requests: read
 
 jobs:
-  do-not-merge-gate:
+  do-not-merge:
     # A failed/skipped selector cannot supply a usable runner and must not make
     # this required context disappear. Use the least-expensive hosted runner
     # only to report that exceptional failure; successful calls still consume
