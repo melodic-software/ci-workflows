@@ -46,6 +46,24 @@ dir | git) ;;
   ;;
 esac
 
+if [[ "$SCAN_MODE" == git ]]; then
+  if ! shallow_repository="$(git -C "$resolved_scan" rev-parse --is-shallow-repository)"; then
+    echo '::error::gitleaks: git scan path must be a valid, inspectable Git worktree or repository'
+    exit 2
+  fi
+  case "$shallow_repository" in
+  false) ;;
+  true)
+    echo '::error::gitleaks: git scan requires a non-shallow local repository; check out with fetch-depth: 0'
+    exit 2
+    ;;
+  *)
+    echo '::error::gitleaks: Git returned an unexpected shallow-repository result'
+    exit 2
+    ;;
+  esac
+fi
+
 case "$REDACT" in
 true | false) ;;
 *)
@@ -89,7 +107,11 @@ if [[ -n "${REPORT_FORMAT// /}" || -n "${REPORT_PATH// /}" ]]; then
   fi
 fi
 
-args=("$SCAN_MODE" "$PATH_TO_SCAN" --config "$CONFIG" --no-banner --redact)
+args=("$SCAN_MODE" "$PATH_TO_SCAN")
+if [[ "$SCAN_MODE" == git ]]; then
+  args+=(--log-opts=--all)
+fi
+args+=(--config "$CONFIG" --no-banner --redact)
 if [[ -n "${REPORT_FORMAT// /}" ]]; then
   args+=(--report-format "$REPORT_FORMAT" --report-path "$REPORT_PATH")
 fi
