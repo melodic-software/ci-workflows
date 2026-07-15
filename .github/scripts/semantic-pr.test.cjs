@@ -12,7 +12,7 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
-test("semantic PR required check fails closed after every prerequisite outcome", () => {
+test("semantic PR required check fails closed after every delivered prerequisite outcome", () => {
   const prerequisiteInput = workflow.match(
     / {6}prerequisite-result:\n([\s\S]*?)(?= {6}[a-z][a-z-]+:\n|\npermissions:)/u,
   );
@@ -25,6 +25,7 @@ test("semantic PR required check fails closed after every prerequisite outcome",
     requiredJob,
     /runs-on: \$\{\{ inputs\.prerequisite-result == 'success' && inputs\.runner \|\| 'ubuntu-slim' \}\}/u,
   );
+  assert.doesNotMatch(requiredJob, /Note cancelled prerequisite/u);
   assert.match(
     requiredJob,
     /- name: Reject failed prerequisite\n\s+if: \$\{\{ inputs\.prerequisite-result != 'success' \}\}[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?exit 1/u,
@@ -34,11 +35,12 @@ test("semantic PR required check fails closed after every prerequisite outcome",
     /- name: Validate PR title against Conventional Commits[\s\S]*?if: >-\n\s+inputs\.prerequisite-result == 'success' &&\n\s+\(github\.event_name == 'pull_request' \|\|\n\s+github\.event_name == 'pull_request_target'\)/u,
   );
 
+  const rejectIndex = requiredJob.indexOf("- name: Reject failed prerequisite");
   const validationIndex = requiredJob.indexOf(
     "- name: Validate PR title against Conventional Commits",
   );
   assert.ok(
-    requiredJob.indexOf("- name: Reject failed prerequisite") < validationIndex,
+    rejectIndex < validationIndex,
     "prerequisite rejection must precede title validation",
   );
 
@@ -54,15 +56,34 @@ test("semantic PR required check fails closed after every prerequisite outcome",
       "ubuntu-slim",
     );
   }
+
+  // A delivered cancellation is not proof of a successor run, so every
+  // non-success value remains fail-closed.
+  const dispatch = (result) => {
+    if (result !== "success") return "fail";
+    return "validate";
+  };
+  assert.equal(dispatch("success"), "validate");
+  assert.equal(dispatch("cancelled"), "fail");
+  assert.equal(dispatch("failure"), "fail");
+  assert.equal(dispatch("skipped"), "fail");
 });
 
 test("documented selector composition preserves the one required check context", () => {
   assert.match(
     readme,
-    /pr-title:\n\s+needs: select-runner\n\s+if: \$\{\{ always\(\) \}\}[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/semantic-pr\.yml@<sha>[\s\S]*?runner: \$\{\{ needs\.select-runner\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}\n\s+prerequisite-result: \$\{\{ needs\.select-runner\.result \}\}/u,
+    /pr-title:\n\s+needs: select-runner\n\s+if: \$\{\{ !cancelled\(\) \}\}[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/semantic-pr\.yml@<sha>[\s\S]*?runner: \$\{\{ needs\.select-runner\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}\n\s+prerequisite-result: \$\{\{ needs\.select-runner\.result \}\}/u,
   );
   assert.match(
     readme,
     /The normal\s+success path still runs the existing `pr-title \/ pr-title` job\s+only on the\s+selector-returned runner/u,
+  );
+  assert.match(
+    readme,
+    /An explicitly delivered `cancelled` result remains\s+fail-closed/u,
+  );
+  assert.match(
+    readme,
+    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?workflow itself is cancelled/u,
   );
 });
