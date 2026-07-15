@@ -55,7 +55,7 @@ test("small JSON and release-discovery reads use their class budgets", () => {
   );
   assert.match(
     workflow,
-    /Find existing tracking issue[\s\S]*?set -euo pipefail[\s\S]*?existing="\$\(gh_read issue list/u,
+    /Find existing tracking issue[\s\S]*?set -euo pipefail[\s\S]*?matches="\$\(gh_read api --paginate/u,
   );
 });
 

@@ -23,9 +23,12 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
     "recovery close must follow failure update",
   );
 
-  const findStep = workflow.slice(findIndex, updateIndex);
+  const lookupStep = workflow.slice(
+    findIndex,
+    findIndex + workflow.slice(findIndex).indexOf("\n      - name:"),
+  );
   assert.doesNotMatch(
-    findStep,
+    lookupStep,
     /\n\s+if:/u,
     "issue lookup must run on healthy checks so recovery can close the issue",
   );
@@ -34,17 +37,17 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
   assert.match(updateStep, /if: steps\.lychee\.outputs\.exit_code != '0'/u);
   assert.match(
     updateStep,
-    /issue-number: \$\{\{ steps\.tracking\.outputs\.number \}\}/u,
+    /issue-number: \$\{\{ steps\.tracking\.outputs\.issue-number \}\}/u,
   );
 
   const closeStep = workflow.slice(closeIndex);
   assert.match(
     closeStep,
-    /if: steps\.lychee\.outputs\.exit_code == '0' && steps\.tracking\.outputs\.number != ''/u,
+    /if: steps\.lychee\.outputs\.exit_code == '0' && steps\.tracking\.outputs\.issue-number != ''/u,
   );
   assert.match(
     closeStep,
-    /NUMBER: \$\{\{ steps\.tracking\.outputs\.number \}\}/u,
+    /NUMBER: \$\{\{ steps\.tracking\.outputs\.issue-number \}\}/u,
   );
   assert.match(closeStep, /gh issue close "\$NUMBER"/u);
   assert.match(closeStep, /--reason completed/u);
