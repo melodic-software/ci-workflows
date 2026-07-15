@@ -227,15 +227,18 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fails if the executable copy drifts.
 
   A required reusable gate that declares `needs: select-runner` must execute
-  after every selector outcome. GitHub otherwise
+  after selector failures and skips. GitHub otherwise
   [skips the dependent job][job-dependencies] after a prerequisite failure, and
-  a [skipped required job reports success][job-conditions]. Use the
+  a [skipped required job reports success][job-conditions]. It must also remain
+  cancellable: GitHub documents that `always()` is true during cancellation and
+  [recommends `!cancelled()` instead of `always()`][workflow-troubleshooting]
+  when a job should stop if the workflow itself is cancelled. Use the
   semantic-title gate's fail-closed prerequisite contract:
 
   ```yaml
   pr-title:
     needs: select-runner
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     permissions:
       pull-requests: read
     uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
@@ -244,13 +247,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
       prerequisite-result: ${{ needs.select-runner.result }}
   ```
 
-  Any prerequisite result other than exact `success` runs the same required
-  reusable job on `ubuntu-slim` instead of the selector-returned runner.
-  `cancelled` (the prerequisite superseded by this workflow's own
-  `concurrency: cancel-in-progress: true` dedup on a fast re-push/retitle) is a
-  no-op — it does not fail the check; the superseding run's own result is what
-  gets checked. Any other non-success result (`failure`, `skipped`) still fails
-  before title validation.
+  When the caller workflow is active, any prerequisite result other than exact
+  `success` runs the same required reusable job on `ubuntu-slim` and fails
+  before title validation. An explicitly delivered `cancelled` result remains
+  fail-closed because the result alone does not prove that a successor run will
+  cover the same required check. If the caller workflow is cancelled manually
+  or by `concurrency.cancel-in-progress`, `!cancelled()` prevents this reporting
+  job from resisting that cancellation; a superseding run must report its own
+  result.
 
   The normal success path still runs the existing `pr-title / pr-title` job
   only on the selector-returned runner; there is no routine aggregator or extra
@@ -684,4 +688,5 @@ standards catalog.
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
+[workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
 [zizmor-release-v1-27-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.27.0

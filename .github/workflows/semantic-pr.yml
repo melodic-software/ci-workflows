@@ -25,10 +25,10 @@ on:
       prerequisite-result:
         description: >-
           Result of an optional prerequisite job. Callers with `needs` must pass
-          its exact result and use `if: always()`. `cancelled` is a no-op (the
-          prerequisite was superseded by this workflow's own concurrency
-          cancel-in-progress dedup, not a real failure); any other non-success
-          value fails this required check before title validation.
+          its exact result and use `if: !cancelled()` so failures and skips reach
+          this gate without resisting workflow cancellation. Any value other
+          than success, including an unverified cancelled result, fails this
+          required check before title validation.
         type: string
         default: success
       types:
@@ -83,28 +83,17 @@ permissions:
 
 jobs:
   pr-title:
-    # A failed/skipped/cancelled selector cannot supply a usable runner and
-    # must not make this required context disappear. Use the least-expensive
-    # hosted runner only to report that non-success outcome; successful calls
-    # still consume exactly the caller-selected runner and add no hosted
-    # validation job.
+    # A failed/skipped/cancelled selector cannot supply a usable runner and must
+    # not make this required context disappear. Use the least-expensive hosted
+    # runner only to report that non-success outcome; successful calls still
+    # consume exactly the caller-selected runner and add no hosted validation
+    # job. The caller's `if: !cancelled()` lets whole-workflow cancellation stop
+    # this job before dispatch while preserving fail-closed prerequisite results.
     runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 15
     steps:
-      - name: Note cancelled prerequisite
-        # `cancelled` happens routinely: a fast re-push/retitle triggers this
-        # workflow's own `concurrency: cancel-in-progress: true` group,
-        # superseding an in-flight run whose prerequisite job is reported
-        # `cancelled` as a result. That is normal dedup, not a broken PR title
-        # gate — the superseding run reports its own result for this required
-        # check. Treat it as a no-op instead of a hard failure.
-        if: ${{ inputs.prerequisite-result == 'cancelled' }}
-        env:
-          PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
-        run: echo "::notice::Prerequisite was ${PREREQUISITE_RESULT} (superseded by a newer run); not failing this required check."
-
       - name: Reject failed prerequisite
-        if: ${{ inputs.prerequisite-result != 'success' && inputs.prerequisite-result != 'cancelled' }}
+        if: ${{ inputs.prerequisite-result != 'success' }}
         env:
           PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
         run: |
