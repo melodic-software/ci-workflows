@@ -245,10 +245,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   Any prerequisite result other than exact `success` runs the same required
-  reusable job on `ubuntu-slim` and fails before title validation. The normal
-  success path still runs the existing `pr-title / pr-title` job only on the
-  selector-returned runner; there is no routine aggregator or extra hosted job.
-  The exceptional reporting job uses GitHub's
+  reusable job on `ubuntu-slim` instead of the selector-returned runner.
+  `cancelled` (the prerequisite superseded by this workflow's own
+  `concurrency: cancel-in-progress: true` dedup on a fast re-push/retitle) is a
+  no-op — it does not fail the check; the superseding run's own result is what
+  gets checked. Any other non-success result (`failure`, `skipped`) still fails
+  before title validation.
+
+  The normal success path still runs the existing `pr-title / pr-title` job
+  only on the selector-returned runner; there is no routine aggregator or extra
+  hosted job. The exceptional reporting job uses GitHub's
   [least-expensive hosted Linux SKU][runner-pricing].
 
   `self-hosted-labels-json` is an optional ordered JSON array of exact labels.

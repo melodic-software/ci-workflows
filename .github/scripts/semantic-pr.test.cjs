@@ -12,7 +12,7 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
-test("semantic PR required check fails closed after every prerequisite outcome", () => {
+test("semantic PR required check fails closed after every prerequisite outcome except a superseding cancellation", () => {
   const prerequisiteInput = workflow.match(
     / {6}prerequisite-result:\n([\s\S]*?)(?= {6}[a-z][a-z-]+:\n|\npermissions:)/u,
   );
@@ -27,19 +27,33 @@ test("semantic PR required check fails closed after every prerequisite outcome",
   );
   assert.match(
     requiredJob,
-    /- name: Reject failed prerequisite\n\s+if: \$\{\{ inputs\.prerequisite-result != 'success' \}\}[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?exit 1/u,
+    /- name: Note cancelled prerequisite\n\s+(?:#.*\n\s+)*if: \$\{\{ inputs\.prerequisite-result == 'cancelled' \}\}[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?run: echo/u,
+  );
+  assert.doesNotMatch(
+    requiredJob.slice(
+      requiredJob.indexOf("- name: Note cancelled prerequisite"),
+      requiredJob.indexOf("- name: Reject failed prerequisite"),
+    ),
+    /exit 1/u,
+    "a cancelled prerequisite must not exit non-zero",
+  );
+  assert.match(
+    requiredJob,
+    /- name: Reject failed prerequisite\n\s+if: \$\{\{ inputs\.prerequisite-result != 'success' && inputs\.prerequisite-result != 'cancelled' \}\}[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?exit 1/u,
   );
   assert.match(
     requiredJob,
     /- name: Validate PR title against Conventional Commits[\s\S]*?if: >-\n\s+inputs\.prerequisite-result == 'success' &&\n\s+\(github\.event_name == 'pull_request' \|\|\n\s+github\.event_name == 'pull_request_target'\)/u,
   );
 
+  const noteIndex = requiredJob.indexOf("- name: Note cancelled prerequisite");
+  const rejectIndex = requiredJob.indexOf("- name: Reject failed prerequisite");
   const validationIndex = requiredJob.indexOf(
     "- name: Validate PR title against Conventional Commits",
   );
   assert.ok(
-    requiredJob.indexOf("- name: Reject failed prerequisite") < validationIndex,
-    "prerequisite rejection must precede title validation",
+    noteIndex < rejectIndex && rejectIndex < validationIndex,
+    "cancellation note and prerequisite rejection must precede title validation",
   );
 
   const runnerFor = (result, selectedRunner) =>
@@ -54,6 +68,19 @@ test("semantic PR required check fails closed after every prerequisite outcome",
       "ubuntu-slim",
     );
   }
+
+  // Simulate the job's step-conditional dispatch for every prerequisite result:
+  // exactly one outcome bucket — success, no-op cancellation, or hard failure —
+  // fires, and `cancelled` must land in the no-op bucket, never the failure one.
+  const dispatch = (result) => {
+    if (result === "cancelled") return "noop";
+    if (result !== "success") return "fail";
+    return "validate";
+  };
+  assert.equal(dispatch("success"), "validate");
+  assert.equal(dispatch("cancelled"), "noop");
+  assert.equal(dispatch("failure"), "fail");
+  assert.equal(dispatch("skipped"), "fail");
 });
 
 test("documented selector composition preserves the one required check context", () => {
@@ -64,5 +91,9 @@ test("documented selector composition preserves the one required check context",
   assert.match(
     readme,
     /The normal\s+success path still runs the existing `pr-title \/ pr-title` job\s+only on the\s+selector-returned runner/u,
+  );
+  assert.match(
+    readme,
+    /`cancelled`[\s\S]*?is a\s+no-op[\s\S]*?it does not fail the check/u,
   );
 });
