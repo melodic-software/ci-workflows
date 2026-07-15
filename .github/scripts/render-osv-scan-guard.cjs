@@ -11,45 +11,31 @@ const workflowPath = path.join(
   "workflows",
   "osv-scanner.yml",
 );
-const generatedBlocks = ["SCAN", "SARIF"];
+const startMarker = "          # BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT";
+const endMarker = "          # END GENERATED OSV SCAN GUARD";
 
-function markers(block) {
-  return {
-    start: `          # BEGIN GENERATED OSV ${block} GUARD - DO NOT EDIT`,
-    end: `          # END GENERATED OSV ${block} GUARD`,
-  };
-}
-
-function bundledScript(source, block) {
+function bundledScript(source) {
   return [
-    `# BEGIN GENERATED OSV ${block} GUARD - DO NOT EDIT`,
+    "# BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT",
     "# Source: .github/scripts/osv-scan-guard.sh",
     ...source.trimEnd().split(/\r?\n/u),
-    `# END GENERATED OSV ${block} GUARD`,
+    "# END GENERATED OSV SCAN GUARD",
   ]
     .map((line) => (line.length === 0 ? "" : `          ${line}`))
     .join("\n");
 }
 
 function render(workflow, source) {
-  return generatedBlocks.reduce((rendered, block) => {
-    const { start: startMarker, end: endMarker } = markers(block);
-    const start = rendered.indexOf(startMarker);
-    const end = rendered.indexOf(endMarker);
-    if (start < 0 || end < start) {
-      throw new Error(
-        `osv-scanner.yml does not contain the generated ${block} guard markers`,
-      );
-    }
-    const afterEnd = end + endMarker.length;
-    return `${rendered.slice(0, start)}${bundledScript(source, block)}${rendered.slice(afterEnd)}`;
-  }, workflow);
+  const start = workflow.indexOf(startMarker);
+  const end = workflow.indexOf(endMarker);
+  if (start < 0 || end < start)
+    throw new Error("osv-scanner.yml is missing generated guard markers");
+  return `${workflow.slice(0, start)}${bundledScript(source)}${workflow.slice(end + endMarker.length)}`;
 }
 
 const current = fs.readFileSync(workflowPath, "utf8");
 const source = fs.readFileSync(sourcePath, "utf8");
 const expected = render(current, source);
-
 if (process.argv.includes("--check")) {
   if (current !== expected) {
     process.stderr.write(

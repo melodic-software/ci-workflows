@@ -1,14 +1,26 @@
 {
-  "schemaVersion": 1,
-  "component": "google/osv-scanner-action",
+  "schemaVersion": 2,
+  "component": "google/osv-scanner",
   "version": "2.4.0",
   "sourceRevision": "b56b5191101d5f27d4787d5583d8d01e9518a7af",
   "sourceUrl": "https://github.com/google/osv-scanner",
   "releaseUrl": "https://github.com/google/osv-scanner/releases/tag/v2.4.0",
-  "image": {
-    "repository": "ghcr.io/google/osv-scanner-action",
+  "binary": {
+    "asset": "osv-scanner_linux_amd64",
     "platform": "linux/amd64",
-    "digest": "sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868"
+    "sha256": "15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0"
+  },
+  "provenance": {
+    "asset": "multiple.intoto.jsonl",
+    "sha256": "9ef16324e97bec3b915e93acfa9ad38673333452bb28299ab7317a3c14847d0b",
+    "sourceUri": "github.com/google/osv-scanner",
+    "sourceTag": "v2.4.0"
+  },
+  "verifier": {
+    "repository": "slsa-framework/slsa-verifier",
+    "version": "2.7.1",
+    "asset": "slsa-verifier-linux-amd64",
+    "sha256": "946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339"
   },
   "update": {
     "releaseApi": "https://api.github.com/repos/google/osv-scanner/releases/latest",

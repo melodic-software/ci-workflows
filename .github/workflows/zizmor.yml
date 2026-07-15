@@ -26,13 +26,13 @@ on:
           Exact zizmor CLI version. 'latest' is a compatibility alias for the
           workflow's reviewed default, never a mutable download.
         type: string
-        default: v1.26.1
+        default: v1.27.0
       sha256:
         description: >-
           SHA-256 of the x86_64-unknown-linux-gnu release archive. Change
           together with version.
         type: string
-        default: 8556289a64e7aaf2400cd516f61a471aa91c5902cc56ad96a82fd12f90c2ef73
+        default: 277f2bd8fd37cf60c42ab7afca6faa884e65440fa31e02b44bdaae60f62a358f
       online-audits:
         description: Run online audits (uses the workflow token).
         type: boolean
@@ -71,7 +71,7 @@ jobs:
           PERSONA: ${{ inputs.persona }}
           FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
           ZIZMOR_TOKEN: ${{ github.token }}
-          PINNED_VERSION: 1.26.1
+          PINNED_VERSION: 1.27.0
           ASSET_NAME: zizmor-x86_64-unknown-linux-gnu.tar.gz
         run: |
           set -euo pipefail

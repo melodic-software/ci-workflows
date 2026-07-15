@@ -1071,17 +1071,14 @@ test("generated github-script bundle executes the tested adapter", async () => {
   assert.equal(outputs.get("online-runner-count"), "1");
 });
 
-test("Docker-dependent OSV exception breadcrumb remains machine-readable", () => {
+test("native security workflows expose governed runners without Docker exceptions", () => {
   const osv = fs.readFileSync(
     path.join(__dirname, "..", "workflows", "osv-scanner.yml"),
     "utf8",
   );
-  const match = osv.match(/# runner-policy-exception-template:\n# (\{.*\})/u);
-  assert.ok(match, "osv-scanner.yml");
-  const exception = JSON.parse(match[1]);
-  assert.equal(exception.reason, "docker-socket");
-  assert.equal(typeof exception.justification, "string");
-  assert.notEqual(exception.justification.trim(), "");
+  assert.match(osv, /runs-on: \$\{\{ inputs\.runner \}\}/u);
+  assert.doesNotMatch(osv, /runner-policy-exception-template/u);
+  assert.doesNotMatch(osv, /\bdocker\s+(?:run|pull|image|buildx)\b/iu);
 
   const zizmor = fs.readFileSync(
     path.join(__dirname, "..", "workflows", "zizmor.yml"),

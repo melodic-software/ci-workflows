@@ -12,9 +12,9 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
-const pinnedVersion = "1.26.1";
+const pinnedVersion = "1.27.0";
 const pinnedSha256 =
-  "8556289a64e7aaf2400cd516f61a471aa91c5902cc56ad96a82fd12f90c2ef73";
+  "277f2bd8fd37cf60c42ab7afca6faa884e65440fa31e02b44bdaae60f62a358f";
 const assetName = "zizmor-x86_64-unknown-linux-gnu.tar.gz";
 
 function inputDefault(inputName) {
@@ -148,5 +148,8 @@ test("documentation removes only the retired zizmor Docker exception", () => {
   assert.match(zizmorSection, /without Docker/u);
   assert.match(zizmorSection, /approved selector output/u);
   assert.doesNotMatch(readme, /#zizmor"\s*:\s*\{[\s\S]*?docker-socket/u);
-  assert.match(readme, /#osv-scanner"[\s\S]*?"reason": "docker-socket"/u);
+  assert.doesNotMatch(
+    readme,
+    /#osv-scanner"[\s\S]*?"reason": "docker-socket"/u,
+  );
 });

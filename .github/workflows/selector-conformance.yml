@@ -15,6 +15,8 @@ on:
       - .github/scripts/fetch-immutable-workflow-pins.cjs
       - .github/scripts/fetch-immutable-workflow-pins.test.cjs
       - .github/scripts/osv-scanner-pin.test.cjs
+      - .github/scripts/osv-release-digest.sh
+      - .github/scripts/osv-release-digest.test.sh
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
       - .github/scripts/render-osv-scan-guard.cjs
@@ -37,6 +39,8 @@ on:
       - .github/scripts/fetch-immutable-workflow-pins.cjs
       - .github/scripts/fetch-immutable-workflow-pins.test.cjs
       - .github/scripts/osv-scanner-pin.test.cjs
+      - .github/scripts/osv-release-digest.sh
+      - .github/scripts/osv-release-digest.test.sh
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
       - .github/scripts/render-osv-scan-guard.cjs
@@ -82,6 +86,8 @@ jobs:
         run: node --test .github/scripts/*.test.cjs
       - name: Test OSV scanner exit-code policy
         run: bash .github/scripts/osv-scan-guard.test.sh
+      - name: Test OSV release digest parsing
+        run: bash .github/scripts/osv-release-digest.test.sh
 
   hosted-only:
     name: Hosted-only policy
