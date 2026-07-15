@@ -98,3 +98,20 @@ test("Octokit inventory pages time out without freshness retries", () => {
   assert.match(source, /request: \{ timeout: REQUEST_TIMEOUT_MILLISECONDS \}/u);
   assert.doesNotMatch(source, /retryCount|requestWithRetry|for \(.*retry/iu);
 });
+
+test("Standards App attestation uses bounded fresh API reads", () => {
+  const workflow = read(".github/workflows/standards-sync.yml");
+
+  assert.match(workflow, /const REQUEST_TIMEOUT_MILLISECONDS = 30_000;/u);
+  assert.equal(
+    occurrences(
+      workflow,
+      /request: \{ timeout: REQUEST_TIMEOUT_MILLISECONDS \}/gu,
+    ),
+    2,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /attest:[\s\S]*?(?:retryCount|requestWithRetry)/iu,
+  );
+});
