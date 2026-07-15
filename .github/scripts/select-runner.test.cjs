@@ -52,7 +52,6 @@ function input(overrides = {}) {
     repositoryPrivate: true,
     eventName: "push",
     isForkPullRequest: false,
-    isDependabot: false,
     ...overrides,
   };
 }
@@ -151,7 +150,6 @@ for (const [name, overrides, reason] of [
 for (const [name, overrides] of [
   ["public repository", { repositoryPrivate: false }],
   ["fork pull request", { eventName: "pull_request", isForkPullRequest: true }],
-  ["Dependabot", { isDependabot: true }],
   ["blocked event", { eventName: "pull_request_target" }],
 ]) {
   test(`self-hosted-only keeps ${name} on the hosted security route`, async () => {
@@ -221,7 +219,6 @@ for (const [routeName, overrides, reason] of [
 for (const [name, overrides] of [
   ["public repository", { repositoryPrivate: false }],
   ["fork pull request", { eventName: "pull_request", isForkPullRequest: true }],
-  ["Dependabot", { isDependabot: true }],
 ]) {
   test(`${name} routes hosted before authentication or inventory`, async () => {
     const result = await selectRunner(
@@ -938,8 +935,6 @@ test("token mint is statically guarded before the App action runs", () => {
     "github.event_name == 'workflow_dispatch'",
     "github.event_name == 'pull_request'",
     "github.event.repository.private == true",
-    "github.actor != 'dependabot[bot]'",
-    "github.secret_source != 'Dependabot'",
     "github.event.pull_request.head.repo.full_name == github.repository",
   ]) {
     assert.ok(tokenStep.includes(requiredGuard), requiredGuard);
@@ -1060,7 +1055,6 @@ test("generated github-script bundle executes the tested adapter", async () => {
         REPOSITORY_PRIVATE: "true",
         EVENT_NAME: "push",
         IS_FORK_PULL_REQUEST: "false",
-        IS_DEPENDABOT: "false",
         API_TIMEOUT_SECONDS: "10",
       },
     },
