@@ -20,6 +20,11 @@ invalid-json) printf '{not json}\n' >"$REPORT_PATH"; exit 0 ;;
 valid-json) printf '[]\n' >"$REPORT_PATH"; exit 0 ;;
 finding-json) printf '[{"RuleID":"test-rule"}]\n' >"$REPORT_PATH"; exit 1 ;;
 invalid-sarif) printf '{"version":"2.1.0","runs":"invalid"}\n' >"$REPORT_PATH"; exit 0 ;;
+valid-sarif) printf '{"version":"2.1.0","runs":[{"results":[]}]}\n' >"$REPORT_PATH"; exit 0 ;;
+string-sarif-results) printf '{"version":"2.1.0","runs":[{"results":"invalid"}]}\n' >"$REPORT_PATH"; exit 0 ;;
+object-sarif-results) printf '{"version":"2.1.0","runs":[{"results":{}}]}\n' >"$REPORT_PATH"; exit 0 ;;
+missing-sarif-results) printf '{"version":"2.1.0","runs":[{}]}\n' >"$REPORT_PATH"; exit 0 ;;
+empty-sarif-runs) printf '{"version":"2.1.0","runs":[]}\n' >"$REPORT_PATH"; exit 0 ;;
 finding-sarif)
   cat >"$REPORT_PATH" <<'SARIF'
 {"version":"2.1.0","runs":[{"results":[{"ruleId":"test,rule","message":{"text":"raw-test-secret"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/test:file.js"},"region":{"startLine":7}}}]}]}]}
@@ -75,6 +80,11 @@ run_case 'invalid requested report fails closed' 2 invalid-json json "$temporary
 run_case 'valid requested report preserves clean status' 0 valid-json json "$temporary_directory/report"
 run_case 'finding with valid JSON remains blocking' 1 finding-json json "$temporary_directory/report"
 run_case 'invalid SARIF fails closed' 2 invalid-sarif sarif "$temporary_directory/report"
+run_case 'valid empty SARIF remains clean' 0 valid-sarif sarif "$temporary_directory/report"
+run_case 'string SARIF results fail closed' 2 string-sarif-results sarif "$temporary_directory/report"
+run_case 'object SARIF results fail closed' 2 object-sarif-results sarif "$temporary_directory/report"
+run_case 'missing SARIF results fail closed' 2 missing-sarif-results sarif "$temporary_directory/report"
+run_case 'empty SARIF runs fail closed' 2 empty-sarif-runs sarif "$temporary_directory/report"
 run_case 'explicit redaction remains clean' 0 clean '' '' true
 
 annotation_output="$(

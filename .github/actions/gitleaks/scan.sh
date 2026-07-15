@@ -120,7 +120,12 @@ if [[ -n "${REPORT_PATH// /}" ]]; then
     }
     ;;
   sarif)
-    jq -e '.version == "2.1.0" and (.runs | type == "array")' "$REPORT_PATH" >/dev/null 2>&1 || {
+    jq -e '
+      .version == "2.1.0"
+      and ((.runs | type) == "array")
+      and ((.runs | length) > 0)
+      and all(.runs[]; (type == "object") and ((.results | type) == "array"))
+    ' "$REPORT_PATH" >/dev/null 2>&1 || {
       echo "::error::gitleaks produced invalid SARIF results."
       exit 2
     }
@@ -138,7 +143,7 @@ if [[ -n "${REPORT_PATH// /}" ]]; then
           | gsub("%"; "%25")
           | gsub("\\r"; "%0D")
           | gsub("\\n"; "%0A");
-        .runs[].results[]?
+        .runs[].results[]
         | "::error file=\((.locations[0].physicalLocation.artifactLocation.uri // "") | escape_property),line=\((.locations[0].physicalLocation.region.startLine // 1) | escape_property)::Secret detected by Gitleaks (rule: \((.ruleId // "unknown") | escape_data))."
       ' "$REPORT_PATH"
     fi
