@@ -32,7 +32,12 @@ permissions:
   pull-requests: read
 
 jobs:
-  do-not-merge-gate:
+  # Job id, not the file-level `name:` above, is what forms the check context
+  # together with the caller's job id (`<caller job id> / <this job id>`). Kept
+  # equal to the caller's own job id (`do-not-merge`, see README) so the
+  # emitted context is `do-not-merge / do-not-merge`, matching the convention
+  # semantic-pr / pr-title.yml already established.
+  do-not-merge:
     # A failed/skipped selector cannot supply a usable runner and must not make
     # this required context disappear. Use the least-expensive hosted runner
     # only to report that exceptional failure; successful calls still consume
