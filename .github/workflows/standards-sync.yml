@@ -181,6 +181,7 @@ jobs:
             const expectedOwner = required('EXPECTED_OWNER');
             const actualSlug = required('APP_SLUG');
             const actualInstallationId = required('INSTALLATION_ID');
+            const privateKey = required('APP_PRIVATE_KEY');
             if (actualSlug !== expectedSlug) {
               fail(`token App slug ${actualSlug} does not equal ${expectedSlug}`);
             }
@@ -223,7 +224,6 @@ jobs:
             const signer = createSign('RSA-SHA256');
             signer.update(unsignedJwt);
             signer.end();
-            const privateKey = required('APP_PRIVATE_KEY');
             const normalizedPrivateKey = privateKey.includes('\n')
               ? privateKey
               : privateKey.replace(/\\n/g, '\n');

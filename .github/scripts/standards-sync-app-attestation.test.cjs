@@ -218,6 +218,14 @@ test("accepts the escaped-newline private-key form used by the token action", as
 
 for (const [name, options, pattern] of [
   [
+    "missing private key before API access",
+    {
+      env: { APP_PRIVATE_KEY: "" },
+      requestError: new Error("network must not run"),
+    },
+    /APP_PRIVATE_KEY is missing/u,
+  ],
+  [
     "malformed metadata envelope",
     { metadataData: null },
     /metadata response is malformed/u,
