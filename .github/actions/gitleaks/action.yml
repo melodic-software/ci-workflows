@@ -1,9 +1,11 @@
 name: gitleaks
-description: Scan a directory for secrets with gitleaks against a caller-supplied config.
+description: Scan a file, directory, or local Git history with gitleaks against a caller-supplied config.
 
 inputs:
   path:
-    description: Directory or file to scan (relative to the caller repo).
+    description: >-
+      File or directory to scan (relative to the caller repo). Git mode requires
+      a directory within a valid local Git worktree or repository.
     default: '.'
   scan-mode:
     description: >-
