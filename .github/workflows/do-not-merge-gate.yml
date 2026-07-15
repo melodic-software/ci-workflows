@@ -1,0 +1,69 @@
+name: do-not-merge-gate
+
+# Reusable workflow — fails the job while the calling PR carries a configured
+# "do not merge" label. GATING by design: a caller that requires this check
+# blocks the merge until the label is removed.
+#
+# The caller owns the triggers and MUST include `labeled` and `unlabeled` so
+# adding or removing the label re-evaluates the gate — a status check binds to
+# a SHA, so without those two event types a check that passed before the label
+# was applied stays green and the merge is never actually blocked. See the
+# consumer-side caller example in the README.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        default: ubuntu-24.04
+      prerequisite-result:
+        description: >-
+          Result of an optional prerequisite job. Callers with `needs` must pass
+          its exact result and use `if: always()`; any value other than success
+          fails this required check before the label is evaluated.
+        type: string
+        default: success
+      label:
+        description: Label whose presence blocks the merge.
+        type: string
+        default: do-not-merge
+
+permissions:
+  pull-requests: read
+
+jobs:
+  do-not-merge-gate:
+    # A failed/skipped selector cannot supply a usable runner and must not make
+    # this required context disappear. Use the least-expensive hosted runner
+    # only to report that exceptional failure; successful calls still consume
+    # exactly the caller-selected runner and add no hosted validation job.
+    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
+    timeout-minutes: 15
+    steps:
+      - name: Reject failed prerequisite
+        if: ${{ inputs.prerequisite-result != 'success' }}
+        env:
+          PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
+        run: |
+          echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
+          exit 1
+
+      - name: Reject a blocking label
+        # Runs ONLY on the two PR-context events, `pull_request` AND
+        # `pull_request_target`; skipped (job still green) on anything else,
+        # including `merge_group` — the label was already evaluated when the PR
+        # last changed, so this step is inert there and reports success instead
+        # of erroring on missing PR context.
+        if: >-
+          inputs.prerequisite-result == 'success' &&
+          (github.event_name == 'pull_request' ||
+          github.event_name == 'pull_request_target')
+        env:
+          BLOCKING_LABEL: ${{ inputs.label }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$PR_LABELS_JSON" >/dev/null; then
+            echo "::error::This PR carries the '${BLOCKING_LABEL}' label; remove it to merge."
+            exit 1
+          fi
+          echo "No blocking label present."

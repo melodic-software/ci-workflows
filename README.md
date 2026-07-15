@@ -637,6 +637,46 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pr-title / pr-title` check in the repo's ruleset (governed via `github-iac`) —
   but only **after** the caller is merged and emitting the check, or open PRs
   block on a check that never runs.
+- `.github/workflows/do-not-merge-gate.yml` — fails the job while the calling PR
+  carries a configured label (default `do-not-merge`). **Gating**: the label's
+  presence fails the job; a caller that requires this check blocks the merge
+  until the label is removed. It is a **standalone required check named
+  `do-not-merge`**, not a `ci-status` lane. Inputs (`runner`,
+  `prerequisite-result`, `label`) mirror `semantic-pr`'s fail-closed pattern.
+  **Adopt the canonical block below.** Note the emitted check context is
+  `<caller job> / <reusable job>` — with the caller below it is
+  **`do-not-merge / do-not-merge`** (the name a ruleset must require, not bare
+  `do-not-merge`):
+
+  ```yaml
+  on:
+    pull_request_target:
+      types: [opened, reopened, synchronize, labeled, unlabeled]
+    merge_group:
+  permissions:
+    pull-requests: read
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+  jobs:
+    do-not-merge:
+      permissions:
+        pull-requests: read
+      uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
+  ```
+
+  `pull_request_target` runs the base-branch definition, so a head-branch edit
+  to this file cannot bypass the gate (safe here since the check reads PR label
+  metadata only — it checks out and runs no head code). `labeled`/`unlabeled`
+  are required — without them, adding the label after the check already passed
+  would not re-trigger it, and the merge would never actually be blocked;
+  `opened`/`reopened`/`synchronize` cover the check reporting on every other PR
+  lifecycle event a ruleset's required-status-check needs to see. `merge_group`
+  is required on any repo with a merge queue, for the same never-reports/deadlock
+  reason documented under `semantic-pr` above. Then require the
+  `do-not-merge / do-not-merge` check in the repo's ruleset (governed via
+  `github-iac`) — but only **after** the caller is merged and emitting the
+  check, or open PRs block on a check that never runs.
 
 ## Policy ownership and action inputs
 
