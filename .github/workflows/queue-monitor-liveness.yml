@@ -106,6 +106,10 @@ jobs:
               else
                 echo "Latest monitor run ${run_id} failed only at '${MONITOR_AUDIT_STEP}' — that is a live queue alert, not a liveness problem."
               fi
+            elif [[ "$conclusion" != "success" ]]; then
+              # cancelled / timed_out / action_required / stale never proved
+              # queue liveness — the audit step may never have executed.
+              problems+="- Latest monitor run ${run_id} completed as \`${conclusion}\` without reaching a verdict; the monitor is not provably watching the queue."$'\n'
             fi
           fi
 
@@ -144,6 +148,9 @@ jobs:
         if: steps.check.outputs.healthy == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout in this job, so gh cannot infer the repository from a
+          # local git remote; pin it explicitly.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           existing="$(gh issue list --state open \
