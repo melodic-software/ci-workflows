@@ -294,6 +294,8 @@ jobs:
           fi
 
           {
+            echo "<!-- ci-workflows:tool-version-drift:v1:active -->"
+            echo
             echo "## Tool-version drift detected"
             echo
             echo "One or more reviewed tool or image pins differ from upstream stable."
@@ -332,11 +334,15 @@ jobs:
 
           echo "drift_detected=true" >> "$GITHUB_OUTPUT"
 
+      # A marker embedded in the body (not a title search) is exact and
+      # survives a retitle, and matches the mechanism
+      # pulumi-version-drift-check.yml already uses.
       - name: Find existing tracking issue
         id: find-issue
         if: steps.drift.outputs.drift_detected == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKER: '<!-- ci-workflows:tool-version-drift:v1:active -->'
         run: |
           set -euo pipefail
           gh_read() {
@@ -355,11 +361,16 @@ jobs:
             done
             return "$status"
           }
-          existing="$(gh_read issue list --state open \
-            --search 'in:title "[Maintenance] Tool-version drift"' \
-            --json number,title \
-            --jq '.[] | select(.title == "[Maintenance] Tool-version drift") | .number' | head -1)"
-          echo "issue-number=${existing}" >> "$GITHUB_OUTPUT"
+          matches="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=all&per_page=100" |
+            jq -ce --arg marker "$MARKER" '
+              [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
+            ')"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
+            exit 1
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >> "$GITHUB_OUTPUT"
 
       - name: Open or update tracking issue
         if: steps.drift.outputs.drift_detected == 'true'

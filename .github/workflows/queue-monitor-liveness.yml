@@ -121,6 +121,8 @@ jobs:
 
           echo "healthy=false" >> "$GITHUB_OUTPUT"
           {
+            echo "<!-- ci-workflows:queue-monitor-liveness:v1:active -->"
+            echo
             echo "## Queue monitor liveness failure"
             echo
             echo "The managed-runner queue monitor in \`${MONITOR_REPOSITORY}\` is not provably alive:"
@@ -143,6 +145,9 @@ jobs:
             echo "Closing this issue without restoring the monitor reopens it on the next run.*"
           } > liveness.md
 
+      # A marker embedded in the body (not a title search) is exact and
+      # survives a retitle, and matches the mechanism
+      # pulumi-version-drift-check.yml already uses.
       - name: Find existing tracking issue
         id: find-issue
         if: steps.check.outputs.healthy == 'false'
@@ -151,13 +156,19 @@ jobs:
           # No checkout in this job, so gh cannot infer the repository from a
           # local git remote; pin it explicitly.
           GH_REPO: ${{ github.repository }}
+          MARKER: '<!-- ci-workflows:queue-monitor-liveness:v1:active -->'
         run: |
           set -euo pipefail
-          existing="$(gh issue list --state open \
-            --search 'in:title "[Alert] Queue monitor liveness"' \
-            --json number,title \
-            --jq '.[] | select(.title == "[Alert] Queue monitor liveness") | .number' | head -1)"
-          echo "issue-number=${existing}" >> "$GITHUB_OUTPUT"
+          matches="$(gh api --paginate --slurp "repos/${GH_REPO}/issues?state=all&per_page=100" |
+            jq -ce --arg marker "$MARKER" '
+              [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
+            ')"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
+            exit 1
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >> "$GITHUB_OUTPUT"
 
       - name: Open or update tracking issue
         if: steps.check.outputs.healthy == 'false'

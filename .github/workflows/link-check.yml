@@ -73,32 +73,49 @@ jobs:
       # create-issue-from-file does not deduplicate by title: with no issue-number
       # it always opens a NEW issue. Resolve the existing open tracking issue
       # first so the next step UPDATES it, keeping a single rolling issue rather
-      # than filing a fresh one on every scheduled failure.
+      # than filing a fresh one on every scheduled failure. A marker embedded in
+      # the body (not a title search) is exact and survives a retitle, and
+      # matches the mechanism pulumi-version-drift-check.yml already uses.
       - name: Find existing tracking issue
         id: tracking
         env:
           GH_TOKEN: ${{ github.token }}
-          TITLE: ${{ inputs.issue-title }}
+          MARKER: '<!-- ci-workflows:link-check:v1:active -->'
         run: |
-          number=$(gh issue list --state open --label link-check \
-            --search "in:title \"$TITLE\"" --json number,title \
-            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n1)
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          matches="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=all&per_page=100" |
+            jq -ce --arg marker "$MARKER" '
+              [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
+            ')"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
+            exit 1
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >> "$GITHUB_OUTPUT"
+
+      - name: Embed the marker in the lychee report
+        if: steps.lychee.outputs.exit_code != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          { echo '<!-- ci-workflows:link-check:v1:active -->'; echo; cat lychee/out.md; } \
+            > "$RUNNER_TEMP/link-check-report.md"
 
       - name: Open or update tracking issue
         if: steps.lychee.outputs.exit_code != '0'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           title: ${{ inputs.issue-title }}
-          issue-number: ${{ steps.tracking.outputs.number }}
-          content-filepath: lychee/out.md
+          issue-number: ${{ steps.tracking.outputs.issue-number }}
+          content-filepath: ${{ runner.temp }}/link-check-report.md
           labels: automated, link-check
 
       - name: Close recovered tracking issue
-        if: steps.lychee.outputs.exit_code == '0' && steps.tracking.outputs.number != ''
+        if: steps.lychee.outputs.exit_code == '0' && steps.tracking.outputs.issue-number != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          NUMBER: ${{ steps.tracking.outputs.number }}
+          NUMBER: ${{ steps.tracking.outputs.issue-number }}
         run: >-
           gh issue close "$NUMBER"
           --reason completed
