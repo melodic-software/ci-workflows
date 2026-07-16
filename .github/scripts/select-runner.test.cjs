@@ -120,6 +120,48 @@ test("self-hosted-only queues the primary managed label without credentials or i
   });
 });
 
+test("self-hosted-only queues the capped review tier label without credentials or inventory", async () => {
+  const result = await selectRunner(
+    input({
+      policy: "self-hosted-only",
+      selfHostedLabel: "melodic-review-ubuntu-24.04-x64",
+      scope: "",
+      managedRunnerPrefix: "",
+      observerClientID: "",
+      hasObserverSecret: false,
+      tokenOutcome: "skipped",
+      owner: "",
+      repository: "",
+      apiTimeoutSeconds: Number.NaN,
+    }),
+    { request: requestMustNotRun },
+  );
+  assert.deepEqual(result, {
+    runner: "melodic-review-ubuntu-24.04-x64",
+    route: "self-hosted",
+    reason: "self-hosted-only",
+    onlineRunnerCount: 0,
+  });
+});
+
+test("self-hosted-only rejects a provisioned-but-unadmitted tier label instead of spending hosted minutes", async () => {
+  // The dormant build tier matches the broad managed-label namespace yet is
+  // not admitted here: exact-set admission, not the broad namespace, is the
+  // strict-routing boundary.
+  await assert.rejects(
+    selectRunner(
+      input({
+        policy: "self-hosted-only",
+        selfHostedLabel: "melodic-build-ubuntu-24.04-x64",
+      }),
+      { request: requestMustNotRun },
+    ),
+    (error) =>
+      error.name === "StrictRoutingError" &&
+      error.reason === "unapproved-label",
+  );
+});
+
 for (const [name, overrides, reason] of [
   ["missing label", { selfHostedLabel: "" }, "missing-config"],
   [

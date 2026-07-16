@@ -5,7 +5,13 @@ const APPROVED_HOSTED_RUNNERS = new Set([DEFAULT_HOSTED_RUNNER]);
 const GITHUB_API_VERSION = "2026-03-10";
 const PAGE_SIZE = 100;
 const V1_MANAGED_RUNNER_OSES = new Set(["linux", "unknown"]);
-const SELF_HOSTED_ONLY_LABELS = new Set(["melodic-ubuntu-24.04-x64"]);
+// Strict routing admits the always-on default fleet tier and the dedicated
+// capped review tier. The selector job itself still runs on the default tier,
+// so selecting a review job never consumes the review tier's small capacity.
+const SELF_HOSTED_ONLY_LABELS = new Set([
+  "melodic-ubuntu-24.04-x64",
+  "melodic-review-ubuntu-24.04-x64",
+]);
 const LOCAL_EVENT_ALLOWLIST = new Set([
   "push",
   "schedule",
