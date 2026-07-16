@@ -19,8 +19,10 @@ on:
       prerequisite-result:
         description: >-
           Result of an optional prerequisite job. Callers with `needs` must pass
-          its exact result and use `if: always()`; any value other than success
-          fails this required check before the label is evaluated.
+          its exact result and use `if: !cancelled()` so failures and skips reach
+          this gate without resisting workflow cancellation. Any value other
+          than success, including an unverified cancelled result, fails this
+          required check before the label is evaluated.
         type: string
         default: success
       label:
