@@ -1,13 +1,14 @@
 name: pr-issue-linkage
 
 # Reusable workflow — requires the PR body to carry a native GitHub closing
-# keyword (Closes/Fixes/Resolves #N, or the literal "No linked issue" when the
-# PR closes nothing) AND a manual "## Related" section with content. GATING by
-# design: a caller that requires this check blocks the merge until the body
-# is fixed. Generalizes melodic-software/provisioning's pr-body.yml (decisions
-# #58/#59) into a shared reusable workflow, mirroring pr-title.yml's own
-# shape (a repo-specific implementation first, then a shared reusable
-# workflow consumers call).
+# keyword (Closes/Fixes/Resolves #N, or the literal "No linked issue" / "No
+# related issue:" when the PR closes nothing) AND a manual "## Related"
+# section with content. GATING by design: a caller that requires this check
+# blocks the merge until the body is fixed. Generalizes
+# melodic-software/provisioning's pr-body.yml (decisions #58/#59) into a
+# shared reusable workflow, mirroring pr-title.yml's own shape (a
+# repo-specific implementation first, then a shared reusable workflow
+# consumers call).
 #
 # The caller must use `pull_request_target` (not `pull_request`): this runs
 # the workflow definition from the base branch, not the PR head, so a
