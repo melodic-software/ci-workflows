@@ -696,14 +696,11 @@ standards catalog.
 
 [dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
 [default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
-[dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
-[job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
 [lefthook-config]: https://lefthook.dev/usage/envs/LEFTHOOK_CONFIG/
 [lefthook-extends]: https://lefthook.dev/configuration/extends/
 [lefthook-validate]: https://lefthook.dev/usage/commands/validate/
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
 [job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
-[native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
@@ -717,11 +714,7 @@ standards catalog.
 [runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
 [runner-scale-sets]: https://docs.github.com/en/actions/concepts/runners/runner-scale-sets
 [runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
-[runner-group-rest]: https://docs.github.com/en/rest/actions/self-hosted-runner-groups?apiVersion=2026-03-10
-[runner-scale-set-ha]: https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [triggering-a-workflow-from-a-workflow]: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
-[workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
-[workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
 [workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
 [zizmor-release-v1-27-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.27.0
