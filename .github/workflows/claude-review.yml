@@ -204,9 +204,21 @@ jobs:
           # #1495, fixed in #1496) — this branch was effectively dead. Bumping
           # past the fix makes REVIEW_OUTCOME finally reflect real failures, so
           # this now needs to actually surface them instead of just logging.
+          #
+          # This is a public repo, so the raw SDKResultMessage is NOT safe to
+          # publish as-is: its `result` field is model-authored free text (per
+          # the Claude Agent SDK message schema) and CLAUDE.md keeps
+          # display_report/show_full_output off for exactly this leak risk.
+          # Project only the safe, structured metadata fields — never the last
+          # message wholesale.
           detail="(no execution file was produced)"
           if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
-            detail=$(jq -c '.[-1] // empty' "$EXECUTION_FILE" 2>/dev/null || true)
+            detail=$(jq -c '
+              (.[-1] // empty) as $last
+              | if $last == null then empty
+                else $last | {subtype, is_error, num_turns, duration_ms, total_cost_usd}
+                end
+            ' "$EXECUTION_FILE" 2>/dev/null || true)
             [ -n "$detail" ] || detail="(execution file present but unparsable)"
           fi
 
@@ -218,20 +230,30 @@ jobs:
           echo "review_failed=true" >> "$GITHUB_OUTPUT"
           echo "review_detail=$detail" >> "$GITHUB_OUTPUT"
 
-      # Runs only on a genuine infra failure (never on a clean review, and
-      # never twice for the same head SHA thanks to --edit-last) so a stuck
-      # placeholder comment from track_progress is never mistaken for "no
-      # findings" — this is the failure mode this whole change exists to fix.
+      # Runs only on a genuine infra failure (never on a clean review) and only
+      # when the token can write: fork-triggered pull_request runs get a
+      # read-only GITHUB_TOKEN and no secrets by design (CLAUDE.md), so
+      # gh pr comment would just fail there — skip rather than error.
+      # Targets the marker comment by ID (never --edit-last, which edits the
+      # PR's last comment from ANY author) so a stuck placeholder comment from
+      # track_progress is never mistaken for "no findings" and an unrelated
+      # bot comment is never clobbered — this is the failure mode this whole
+      # change exists to fix.
       - name: Comment on genuine review failure
-        if: always() && steps.review-outcome.outputs.review_failed == 'true' && github.event.pull_request.number != ''
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'true' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_DETAIL: ${{ steps.review-outcome.outputs.review_detail }}
         run: |
+          marker="<!-- claude-review-infra-status -->"
           body=$(printf '%s\n' \
-            "<!-- claude-review-infra-status -->" \
+            "$marker" \
             "> [!WARNING]" \
             "> **Automated review did not complete** — this is an infrastructure failure, not a review verdict." \
             ">" \
@@ -241,7 +263,47 @@ jobs:
             "> - Last SDK result: \`$REVIEW_DETAIL\`" \
             ">" \
             "> Re-running the job, or pushing a new commit, will retry the review.")
-          gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body "$body"
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X PATCH -f "body=$body" --silent
+          else
+            gh pr comment "$PR_NUMBER" --body "$body"
+          fi
+
+      # Symmetric counterpart to the failure step above: a transient infra
+      # failure (e.g. an OIDC blip) can leave the marker comment behind on the
+      # PR, and the failure-only condition previously meant no later code path
+      # ever touched it again. Once a retry (rerun or new push) succeeds, clear
+      # that stale warning so it is not mistaken for a still-open problem.
+      # Same fork guard and marker lookup as the failure step — never
+      # --edit-last, for the same clobbering risk.
+      - name: Clear stale failure comment after successful review
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'false' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- claude-review-infra-status -->"
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X DELETE --silent
+          fi
 
       # Clears a stale warning from an earlier failed run once a later run on
       # the same PR succeeds, so the marker comment never outlives the
