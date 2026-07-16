@@ -313,6 +313,8 @@ jobs:
           persist-credentials: false
       - name: Lint shell scripts
         uses: ./.github/actions/shellcheck
+      - name: Test ShellCheck discovery and scoped exclusions
+        run: bash .github/actions/shellcheck/run.test.sh
 
   shfmt:
     runs-on: ubuntu-24.04
