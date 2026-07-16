@@ -23,9 +23,12 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
     "recovery close must follow failure update",
   );
 
-  const findStep = workflow.slice(findIndex, updateIndex);
+  const lookupStep = workflow.slice(
+    findIndex,
+    findIndex + workflow.slice(findIndex).indexOf("\n      - name:"),
+  );
   assert.doesNotMatch(
-    findStep,
+    lookupStep,
     /\n\s+if:/u,
     "issue lookup must run on healthy checks so recovery can close the issue",
   );
@@ -34,18 +37,52 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
   assert.match(updateStep, /if: steps\.lychee\.outputs\.exit_code != '0'/u);
   assert.match(
     updateStep,
-    /issue-number: \$\{\{ steps\.tracking\.outputs\.number \}\}/u,
+    /issue-number: \$\{\{ steps\.tracking\.outputs\.issue-number \}\}/u,
   );
 
   const closeStep = workflow.slice(closeIndex);
   assert.match(
     closeStep,
-    /if: steps\.lychee\.outputs\.exit_code == '0' && steps\.tracking\.outputs\.number != ''/u,
+    /if: steps\.lychee\.outputs\.exit_code == '0' && steps\.tracking\.outputs\.issue-number != ''/u,
   );
   assert.match(
     closeStep,
-    /NUMBER: \$\{\{ steps\.tracking\.outputs\.number \}\}/u,
+    /NUMBER: \$\{\{ steps\.tracking\.outputs\.issue-number \}\}/u,
   );
   assert.match(closeStep, /gh issue close "\$NUMBER"/u);
   assert.match(closeStep, /--reason completed/u);
+});
+
+test("the tracking marker is scoped per configured report", () => {
+  const findIndex = workflow.indexOf("- name: Find existing tracking issue");
+  const embedIndex = workflow.indexOf(
+    "- name: Embed the marker in the lychee report",
+  );
+  assert.ok(findIndex >= 0 && embedIndex > findIndex);
+
+  const lookupStep = workflow.slice(findIndex, embedIndex);
+  assert.match(
+    lookupStep,
+    /ISSUE_TITLE: \$\{\{ inputs\.issue-title \}\}/u,
+    "the marker must be derived from the caller-configured report title so " +
+      "a caller invoking this reusable workflow more than once gets a " +
+      "distinct marker per report",
+  );
+  assert.match(
+    lookupStep,
+    /report_key="\$\(printf '%s' "\$ISSUE_TITLE" \| sha256sum \| cut -c1-12\)"/u,
+  );
+  assert.match(
+    lookupStep,
+    /marker="<!-- ci-workflows:link-check:v1:active:\$\{report_key\} -->"/u,
+  );
+  assert.match(lookupStep, /echo "marker=\$\{marker\}" >> "\$GITHUB_OUTPUT"/u);
+
+  const embedStep = workflow.slice(embedIndex);
+  assert.match(
+    embedStep,
+    /MARKER: \$\{\{ steps\.tracking\.outputs\.marker \}\}/u,
+    "the report must be stamped with the same scoped marker the lookup " +
+      "step computed, not a hardcoded constant",
+  );
 });

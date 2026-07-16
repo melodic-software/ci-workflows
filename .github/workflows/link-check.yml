@@ -73,32 +73,102 @@ jobs:
       # create-issue-from-file does not deduplicate by title: with no issue-number
       # it always opens a NEW issue. Resolve the existing open tracking issue
       # first so the next step UPDATES it, keeping a single rolling issue rather
-      # than filing a fresh one on every scheduled failure.
+      # than filing a fresh one on every scheduled failure. A marker embedded in
+      # the body (not a title search) is exact and survives a retitle, and
+      # matches the mechanism pulumi-version-drift-check.yml already uses.
+      #
+      # This is a reusable workflow: a caller can invoke it more than once with
+      # different inputs.issue-title/args to track separate reports (e.g. docs
+      # links vs. site links). The marker is scoped with a hash of issue-title
+      # -- the same key the pre-marker, title-search lookup used -- so a
+      # healthy invocation can't close, or overwrite, a different report's
+      # still-failing tracking issue.
       - name: Find existing tracking issue
         id: tracking
         env:
           GH_TOKEN: ${{ github.token }}
-          TITLE: ${{ inputs.issue-title }}
+          ISSUE_TITLE: ${{ inputs.issue-title }}
         run: |
-          number=$(gh issue list --state open --label link-check \
-            --search "in:title \"$TITLE\"" --json number,title \
-            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n1)
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+          report_key="$(printf '%s' "$ISSUE_TITLE" | sha256sum | cut -c1-12)"
+          marker="<!-- ci-workflows:link-check:v1:active:${report_key} -->"
+          echo "marker=${marker}" >> "$GITHUB_OUTPUT"
+          # labels=link-check restores the same-owned-report constraint the
+          # pre-marker workflow enforced via `gh issue list --label
+          # link-check`: without it, in any repo where issue creation isn't
+          # maintainer-only, an issue whose body or title happens to match by
+          # coincidence (or is crafted to match) could be adopted, then
+          # overwritten or closed by this automation. The label is applied by
+          # every version of the "Open or update tracking issue" step below,
+          # so it covers both the marker match and the title-fallback match.
+          open_issues="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&labels=link-check&per_page=100")"
+          matches="$(jq -ce --arg marker "$marker" '
+            [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
+          ' <<<"$open_issues")"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${marker}'; reconcile them manually."
+            exit 1
+          fi
+          if ((count == 0)); then
+            # One-time migration fallback: a still-open issue created by the
+            # pre-marker, title-search version of this workflow has no marker
+            # yet, so the search above can't find it. Adopt it by exact title
+            # match so the update/close steps below reuse (and marker-backfill)
+            # that issue instead of orphaning it behind a newly opened
+            # duplicate. Once adopted, its body carries the marker and this
+            # fallback no longer applies to it.
+            matches="$(jq -ce --arg title "$ISSUE_TITLE" '
+              [.[][] | select(.pull_request? == null) | select(.title == $title) | .number]
+            ' <<<"$open_issues")"
+            count="$(jq -r 'length' <<<"$matches")"
+            if ((count > 1)); then
+              echo "::error::found ${count} pre-marker issues titled '${ISSUE_TITLE}'; reconcile them manually."
+              exit 1
+            fi
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >> "$GITHUB_OUTPUT"
+
+      - name: Embed the marker in the lychee report
+        if: steps.lychee.outputs.exit_code != '0'
+        shell: bash
+        env:
+          MARKER: ${{ steps.tracking.outputs.marker }}
+        run: |
+          set -euo pipefail
+          { printf '%s\n\n' "$MARKER"; cat lychee/out.md; } \
+            > "$RUNNER_TEMP/link-check-report.md"
 
       - name: Open or update tracking issue
         if: steps.lychee.outputs.exit_code != '0'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           title: ${{ inputs.issue-title }}
-          issue-number: ${{ steps.tracking.outputs.number }}
-          content-filepath: lychee/out.md
+          issue-number: ${{ steps.tracking.outputs.issue-number }}
+          content-filepath: ${{ runner.temp }}/link-check-report.md
           labels: automated, link-check
 
       - name: Close recovered tracking issue
-        if: steps.lychee.outputs.exit_code == '0' && steps.tracking.outputs.number != ''
+        if: steps.lychee.outputs.exit_code == '0' && steps.tracking.outputs.issue-number != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          NUMBER: ${{ steps.tracking.outputs.number }}
+          NUMBER: ${{ steps.tracking.outputs.issue-number }}
         run: >-
           gh issue close "$NUMBER"
           --reason completed
