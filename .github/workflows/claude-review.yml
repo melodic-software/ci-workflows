@@ -208,6 +208,12 @@ jobs:
           owner: melodic-software
           repositories: standards
 
+      # persist-credentials:false keeps the standards App token out of
+      # .standards-ref/.git/config, where the Claude step below (which mounts
+      # this directory via --add-dir over PR-controlled context) could be
+      # induced to read and exfiltrate it. Safe here — unlike the main checkout
+      # above, this read-only reference mount runs no later authenticated git
+      # commands, so it is not subject to the #1236 constraint.
       - name: Check out standards (native-reference mount)
         if: inputs.standards-ref != ''
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -216,6 +222,7 @@ jobs:
           ref: ${{ inputs.standards-ref }}
           token: ${{ steps.standards-token.outputs.token }}
           path: .standards-ref
+          persist-credentials: false
           filter: blob:none
 
       # Composed in a plain shell step, not a GitHub Actions expression
@@ -231,7 +238,15 @@ jobs:
           if [ -n "$STANDARDS_REF" ]; then
             args="$args --add-dir $MOUNT_PATH"
           fi
-          echo "args=$args" >> "$GITHUB_OUTPUT"
+          # claude-args may be multiline (callers can pass YAML `|`), so emit it
+          # with the heredoc output form and a random delimiter — a single-line
+          # `args=$args` write corrupts $GITHUB_OUTPUT on any newline.
+          delimiter="gha_${RANDOM}${RANDOM}_EOF"
+          {
+            echo "args<<$delimiter"
+            printf '%s\n' "$args"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Claude review
         id: claude-review
