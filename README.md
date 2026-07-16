@@ -167,8 +167,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   attestation token is never passed to checkout or PR mutation.
 - `.github/workflows/select-runner.yml` — the single organization-approved
   hosted/self-hosted selector. With `self-hosted-only`, the selector itself
-  queues on the centrally allowlisted `melodic-ubuntu-24.04-x64` route; it does
-  not spend hosted minutes before returning that same managed label. The
+  queues on the always-on default `melodic-ubuntu-24.04-x64` route so it never
+  spends hosted minutes before returning the caller's admitted managed label —
+  the default tier or the capped review tier — and never runs its own selection
+  on the review tier's small capacity. The
   `prefer-self-hosted` and `hosted-only` selector paths retain `ubuntu-slim` so
   their adaptive and explicit hosted semantics remain available. Every selector
   path has a two-minute timeout and returns one `runs-on` string. A downstream
@@ -187,8 +189,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `self-hosted-only` instead returns the configured exact managed
   label without inventory or observer credentials, so a
   trusted private workload queues until governed capacity is available. The
-  queue-only label must be the exact centrally allowlisted
-  `melodic-ubuntu-24.04-x64` route; adding another route requires a reviewed
+  queue-only label must be one of the centrally allowlisted routes — the default
+  `melodic-ubuntu-24.04-x64` tier or the capped `melodic-review-ubuntu-24.04-x64`
+  review tier; adding another route requires a reviewed
   immutable selector revision. Invalid queue-only configuration and selector
   infrastructure faults fail the selector job instead of falling back to paid
   hosted execution. Public
