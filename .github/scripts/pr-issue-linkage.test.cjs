@@ -68,6 +68,13 @@ test('"No linked issue" satisfies the closing-keyword requirement', () => {
   assert.equal(failedWith, null);
 });
 
+test('"No related issue:" (claude-code-plugins pull-request skill convention) also satisfies the closing-keyword requirement', () => {
+  const failedWith = runScript(
+    "No related issue: refactor, nothing to link.\n\n## Related\n\nn/a",
+  );
+  assert.equal(failedWith, null);
+});
+
 test("missing both a closing keyword and a Related section fails with both messages", () => {
   const failedWith = runScript("Just a description, nothing else.");
   assert.ok(failedWith, "expected a failure");

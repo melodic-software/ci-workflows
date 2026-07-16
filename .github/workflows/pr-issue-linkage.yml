@@ -94,11 +94,15 @@ jobs:
 
             const CLOSING_KEYWORD =
               /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#\d+\b/i;
-            const NO_ISSUE_MARKER = /\bno linked issue\b/i;
+            // Accepts both phrasings: provisioning/pr-body.yml's original "No linked issue"
+            // and claude-code-plugins/source-control:pull-request's independently-evolved
+            // "No related issue:" opt-out marker (reference/create.md). Widened, not narrowed,
+            // so this reusable workflow works as a caller for either repo's existing convention.
+            const NO_ISSUE_MARKER = /\bno (?:linked|related) issue\b/i;
             if (!CLOSING_KEYWORD.test(body) && !NO_ISSUE_MARKER.test(body)) {
               errors.push(
                 "Missing a native closing keyword (Closes/Fixes/Resolves #N). If this PR " +
-                  'closes no GitHub issue, state "No linked issue" in the body instead.'
+                  'closes no GitHub issue, state "No linked issue" (or "No related issue:") in the body instead.'
               );
             }
 
