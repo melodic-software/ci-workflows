@@ -132,3 +132,14 @@ test("an unterminated HTML comment hides the rest of the body instead of leaking
   assert.match(failedWith, /Related/);
   assert.match(failedWith, /closing keyword/);
 });
+
+test("a nested subsection under ## Related counts as content, not a section boundary", () => {
+  const failedWith = runScript(
+    "Closes #1\n\n## Related\n\n### Issues\n\n- #123",
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "a ### subsection nested under ## Related must not empty the section",
+  );
+});

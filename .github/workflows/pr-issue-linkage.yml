@@ -84,8 +84,15 @@ jobs:
               const lines = text.split(/\r?\n/);
               const start = lines.findIndex((l) => headingRe.test(l.trim()));
               if (start === -1) return null;
+              // Only a heading at the same or higher level (fewer or equal #'s)
+              // ends the section, so a nested subsection (more #'s) counts as
+              // this section's content instead of prematurely closing it.
+              const level = lines[start].trim().match(/^(#{1,6})\s+\S/)[1].length;
               const rest = lines.slice(start + 1);
-              const end = rest.findIndex((l) => /^#{1,6}\s+\S/.test(l.trim()));
+              const end = rest.findIndex((l) => {
+                const heading = /^(#{1,6})\s+\S/.exec(l.trim());
+                return heading !== null && heading[1].length <= level;
+              });
               return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
             }
 
