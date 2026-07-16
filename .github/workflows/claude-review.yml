@@ -164,7 +164,7 @@ jobs:
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
         continue-on-error: true
-        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1.0.166
+        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: ${{ inputs.track-progress }}
@@ -187,17 +187,61 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       - name: Report review outcome
+        id: review-outcome
         if: always()
         env:
           REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
         run: |
           if [ "$REVIEW_OUTCOME" = "success" ]; then
             echo "Claude review completed. Findings (if any) are in the PR comments."
-          else
-            echo "::warning::Claude review exited with: $REVIEW_OUTCOME" \
-              "(infrastructure error, not a code-quality signal — e.g. usage limit," \
-              "OIDC failure, SDK crash, or max-turns exhaustion)."
+            echo "review_failed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # Prior to claude-code-action v1.0.172, the action reported `success`
+          # even when the underlying SDK result had is_error:true (upstream
+          # #1495, fixed in #1496) — this branch was effectively dead. Bumping
+          # past the fix makes REVIEW_OUTCOME finally reflect real failures, so
+          # this now needs to actually surface them instead of just logging.
+          detail="(no execution file was produced)"
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
+            detail=$(jq -c '.[-1] // empty' "$EXECUTION_FILE" 2>/dev/null || true)
+            [ -n "$detail" ] || detail="(execution file present but unparsable)"
+          fi
+
+          echo "::error::Claude review exited with: $REVIEW_OUTCOME" \
+            "(infrastructure error, not a code-quality signal — e.g. usage limit," \
+            "OIDC failure, SDK crash, is_error result, or max-turns exhaustion)." \
+            "Last SDK result: $detail"
+
+          echo "review_failed=true" >> "$GITHUB_OUTPUT"
+          echo "review_detail=$detail" >> "$GITHUB_OUTPUT"
+
+      # Runs only on a genuine infra failure (never on a clean review, and
+      # never twice for the same head SHA thanks to --edit-last) so a stuck
+      # placeholder comment from track_progress is never mistaken for "no
+      # findings" — this is the failure mode this whole change exists to fix.
+      - name: Comment on genuine review failure
+        if: always() && steps.review-outcome.outputs.review_failed == 'true' && github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEW_DETAIL: ${{ steps.review-outcome.outputs.review_detail }}
+        run: |
+          body=$(printf '%s\n' \
+            "<!-- claude-review-infra-status -->" \
+            "> [!WARNING]" \
+            "> **Automated review did not complete** — this is an infrastructure failure, not a review verdict." \
+            ">" \
+            "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"" \
+            ">" \
+            "> - Run: $RUN_URL" \
+            "> - Last SDK result: \`$REVIEW_DETAIL\`" \
+            ">" \
+            "> Re-running the job, or pushing a new commit, will retry the review.")
+          gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body "$body"
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once
