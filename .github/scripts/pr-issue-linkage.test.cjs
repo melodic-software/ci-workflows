@@ -124,9 +124,7 @@ test("case-insensitive heading and keyword matching", () => {
 });
 
 test("an unterminated HTML comment hides the rest of the body instead of leaking it live", () => {
-  const failedWith = runScript(
-    "<!-- Closes #1\n\n## Related\n\nn/a",
-  );
+  const failedWith = runScript("<!-- Closes #1\n\n## Related\n\nn/a");
   assert.ok(
     failedWith,
     "an unclosed comment must not let closing-keyword/Related text leak through as live content",
