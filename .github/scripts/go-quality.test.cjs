@@ -87,10 +87,7 @@ test("approved native tests and module hygiene stay blocking", () => {
   assert.doesNotMatch(workflow, /go mod tidy -diff/u);
   assert.match(workflow, /go mod verify/u);
   assert.equal(
-    occurrences(
-      workflow,
-      /go test -race -count=1 -timeout=10m \.\/\.\.\./gu,
-    ),
+    occurrences(workflow, /go test -race -count=1 -timeout=10m \.\/\.\.\./gu),
     2,
   );
   assert.match(workflow, /--print-file-name libsynchronization\.a/u);
