@@ -67,7 +67,7 @@ test("link-check tracking lookup routes through a bounded gh_read", () => {
   );
   assert.match(
     workflow,
-    /Find existing tracking issue[\s\S]*?matches="\$\(gh_read api --paginate/u,
+    /Find existing tracking issue[\s\S]*?open_issues="\$\(gh_read api --paginate/u,
   );
 });
 
