@@ -43,16 +43,24 @@ function runScript(body) {
 }
 
 test("a body with a closing keyword and a filled Related section passes", () => {
-  const failedWith = runScript(
-    "Closes #42\n\n## Related\n\nSee also #40.",
-  );
+  const failedWith = runScript("Closes #42\n\n## Related\n\nSee also #40.");
   assert.equal(failedWith, null);
 });
 
 test("Fixes/Resolves and the plural/past-tense forms are all recognized", () => {
-  for (const kw of ["Fixes #1", "Fix #1", "Resolves #1", "Resolved #1", "Closed #1"]) {
+  for (const kw of [
+    "Fixes #1",
+    "Fix #1",
+    "Resolves #1",
+    "Resolved #1",
+    "Closed #1",
+  ]) {
     const failedWith = runScript(`${kw}\n\n## Related\n\nn/a`);
-    assert.equal(failedWith, null, `expected "${kw}" to satisfy the closing-keyword check`);
+    assert.equal(
+      failedWith,
+      null,
+      `expected "${kw}" to satisfy the closing-keyword check`,
+    );
   }
 });
 
@@ -83,7 +91,9 @@ test("missing both a closing keyword and a Related section fails with both messa
 });
 
 test("a Related heading present but empty still fails", () => {
-  const failedWith = runScript("Closes #1\n\n## Related\n\n## Next Heading\nsomething");
+  const failedWith = runScript(
+    "Closes #1\n\n## Related\n\n## Next Heading\nsomething",
+  );
   assert.ok(failedWith, "expected a failure");
   assert.match(failedWith, /Related.*empty/);
 });
@@ -101,7 +111,10 @@ test("an unedited PR template passes vacuously ONLY if the instructional prose i
 
 test("a closing keyword inside an HTML comment does not count (comment-stripping applies before the keyword check too)", () => {
   const failedWith = runScript("<!-- Closes #1 -->\n\n## Related\n\nn/a");
-  assert.ok(failedWith, "a commented-out closing keyword must not satisfy the check");
+  assert.ok(
+    failedWith,
+    "a commented-out closing keyword must not satisfy the check",
+  );
   assert.match(failedWith, /closing keyword/);
 });
 
