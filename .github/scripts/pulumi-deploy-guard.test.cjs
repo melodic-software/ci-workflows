@@ -149,7 +149,11 @@ test("Pulumi drift workflow is reusable-only and rejects untrusted refs before c
     drift,
     /^concurrency:\n {2}group: pulumi-cli-version-drift-\$\{\{ github\.repository \}\}\n {2}cancel-in-progress: false$/mu,
   );
-  assert.match(drift, /^ {4}runs-on: ubuntu-24\.04$/mu);
+  assert.match(
+    drift,
+    /^ {4}inputs:\n {6}runner:\n {8}description: [^\n]+\n {8}type: string\n {8}default: ubuntu-24\.04$/mu,
+  );
+  assert.match(drift, /^ {4}runs-on: \$\{\{ inputs\.runner \}\}$/mu);
   assert.match(drift, /^ {6}issues: write/mu);
   const guardOffset = drift.indexOf(
     "Require a trusted default-branch maintenance event",
