@@ -204,9 +204,21 @@ jobs:
           # #1495, fixed in #1496) — this branch was effectively dead. Bumping
           # past the fix makes REVIEW_OUTCOME finally reflect real failures, so
           # this now needs to actually surface them instead of just logging.
+          #
+          # This is a public repo, so the raw SDKResultMessage is NOT safe to
+          # publish as-is: its `result` field is model-authored free text (per
+          # the Claude Agent SDK message schema) and CLAUDE.md keeps
+          # display_report/show_full_output off for exactly this leak risk.
+          # Project only the safe, structured metadata fields — never the last
+          # message wholesale.
           detail="(no execution file was produced)"
           if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
-            detail=$(jq -c '.[-1] // empty' "$EXECUTION_FILE" 2>/dev/null || true)
+            detail=$(jq -c '
+              (.[-1] // empty) as $last
+              | if $last == null then empty
+                else $last | {subtype, is_error, num_turns, duration_ms, total_cost_usd}
+                end
+            ' "$EXECUTION_FILE" 2>/dev/null || true)
             [ -n "$detail" ] || detail="(execution file present but unparsable)"
           fi
 
