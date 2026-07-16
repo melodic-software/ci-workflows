@@ -2,7 +2,7 @@ name: Tool Version Drift Check
 
 # Advisory — NOT in any ci-status gate; never blocks a merge. Surfaces a rolling
 # tracking issue when an upstream tool releases a stable version past a reviewed
-# composite-action default or shell-invoked image pin.
+# composite-action default, runtime input default, or shell-invoked image pin.
 #
 # Dependabot cannot see these: its github-actions ecosystem updates only `uses:`
 # SHAs, and a tool version embedded in an action.yml input default, curl URL, or
@@ -19,6 +19,7 @@ on:
     paths:
       - '.github/workflows/tool-version-drift-check.yml'
       - '.github/workflows/osv-scanner.yml'
+      - 'global.json'
       - '.github/osv-scanner-pin.json'
       - '.github/actions/actionlint/action.yml'
       - '.github/actions/lefthook-validate/action.yml'
@@ -154,6 +155,97 @@ jobs:
             fi
           done
 
+          # The composite actions still ship exact language runtimes as input
+          # defaults (and the repo's root global.json pins its own .NET SDK,
+          # which the dotnet actions' fallback steps track in lockstep).
+          # Dependabot cannot update input defaults, so watch the current
+          # stable patch within each reviewed major/minor line through the
+          # upstream first-party release indexes, and require every family's
+          # pins to agree before comparing.
+          latest_dotnet_sdk() {
+            local channel="${1%%.*}.0"
+            curl_small_json https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json |
+              jq -er --arg channel "$channel" '
+                .["releases-index"][] |
+                select(.["channel-version"] == $channel) |
+                .["latest-sdk"]
+              '
+          }
+          latest_node_runtime() {
+            local prefix="v${1%%.*}."
+            curl_small_json https://nodejs.org/dist/index.json |
+              jq -er --arg prefix "$prefix" '
+                [.[] | select(.lts != false and (.version | startswith($prefix)))] |
+                sort_by(.version[1:] | split(".") | map(tonumber)) |
+                last.version[1:]
+              '
+          }
+          latest_python_runtime() {
+            local prefix="${1%.*}."
+            curl_small_json https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json |
+              jq -er --arg prefix "$prefix" '
+                [.[] | select(.stable == true and (.version | startswith($prefix)))] |
+                sort_by(.version | split(".") | map(tonumber)) |
+                last.version
+              '
+          }
+
+          dotnet_current="$(jq -er '.sdk.version' global.json)"
+          node_current="$(yq '.inputs."node-version".default' .github/actions/markdown/action.yml)"
+          python_current="$(yq '.inputs."python-version".default' .github/actions/ruff/action.yml)"
+          for value in "$dotnet_current" "$node_current" "$python_current"; do
+            if [[ -z "$value" || "$value" == "null" ]]; then
+              echo "::error::could not read a runtime pin (dotnet=$dotnet_current node=$node_current python=$python_current)"
+              exit 1
+            fi
+          done
+          for file in .github/actions/biome/action.yml .github/actions/tsc/action.yml; do
+            sibling="$(yq '.inputs."node-version".default' "$file")"
+            if [[ "$sibling" != "$node_current" ]]; then
+              echo "::error::node-version defaults diverge: ${file} pins ${sibling}, markdown pins ${node_current}"
+              exit 1
+            fi
+          done
+          for file in .github/actions/pyright/action.yml .github/actions/check-jsonschema/action.yml; do
+            sibling="$(yq '.inputs."python-version".default' "$file")"
+            if [[ "$sibling" != "$python_current" ]]; then
+              echo "::error::python-version defaults diverge: ${file} pins ${sibling}, ruff pins ${python_current}"
+              exit 1
+            fi
+          done
+          for file in .github/actions/dotnet-build/action.yml .github/actions/dotnet-format/action.yml .github/workflows/dependabot-lock-regen.yml; do
+            if ! grep -q "dotnet-version: ${dotnet_current}$" "$file"; then
+              echo "::error::${file} fallback SDK pin diverges from global.json (${dotnet_current})"
+              exit 1
+            fi
+          done
+
+          runtimes=(
+            "dotnet:.NET SDK:$dotnet_current"
+            "node:Node.js:$node_current"
+            "python:Python:$python_current"
+          )
+          for entry in "${runtimes[@]}"; do
+            IFS=: read -r source label current <<<"$entry"
+            case "$source" in
+              dotnet) latest="$(latest_dotnet_sdk "$current")" || latest='' ;;
+              node) latest="$(latest_node_runtime "$current")" || latest='' ;;
+              python) latest="$(latest_python_runtime "$current")" || latest='' ;;
+              *) echo "::error::unknown runtime source '${source}'"; exit 1 ;;
+            esac
+            if [[ -z "$latest" || "$latest" == "null" ]]; then
+              echo "::warning::could not resolve latest ${label}; skipping"
+              continue
+            fi
+            lowest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | head -1)"
+            if [[ "$lowest" == "$current" && "$current" != "$latest" ]]; then
+              drift_lines+="- **Runtime ${label}**: pinned \`${current}\`, reviewed line latest \`${latest}\`"$'\n'
+              echo "DRIFT runtime ${label}: ${current} -> ${latest}"
+            else
+              echo "ok    runtime ${label}: ${current} (line latest ${latest})"
+            fi
+          done
+
           # The OSV workflow installs an official native release asset from
           # shell, so Dependabot cannot track it. Compare the latest stable
           # release and GitHub-reported digests for the reviewed release assets.
@@ -253,7 +345,10 @@ jobs:
             echo "official linux-amd64 and windows-amd64 archive checksums before changing the"
             echo "embedded version and hashes. For govulncheck, verify the official Go proxy"
             echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
-            echo "exact module pin. Never auto-merge these updates."
+            echo "exact module pin. For runtime drift, update every action's matching"
+            echo "input default (and the root global.json plus the dotnet actions' fallback"
+            echo "pins together) only after reviewing the stable patch. Never auto-merge these"
+            echo "updates."
             echo
             echo "### Why advisory"
             echo
