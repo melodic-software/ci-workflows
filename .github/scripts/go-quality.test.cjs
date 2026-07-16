@@ -86,8 +86,17 @@ test("approved native tests and module hygiene stay blocking", () => {
   assert.match(workflow, /compare_snapshot go\.sum go\.sum/u);
   assert.doesNotMatch(workflow, /go mod tidy -diff/u);
   assert.match(workflow, /go mod verify/u);
-  assert.match(workflow, /go test -race -count=1 -timeout=10m \.\/\.\.\./u);
-  assert.match(workflow, /go test -count=1 -timeout=10m \.\/\.\.\./u);
+  assert.equal(
+    occurrences(
+      workflow,
+      /go test -race -count=1 -timeout=10m \.\/\.\.\./gu,
+    ),
+    2,
+  );
+  assert.match(workflow, /--print-file-name libsynchronization\.a/u);
+  assert.match(workflow, /CC: gcc/u);
+  assert.match(workflow, /CGO_ENABLED: '1'/u);
+  assert.doesNotMatch(workflow, /go test -count=1/u);
 });
 
 test("generated tidy check matches the behavioral source", () => {
