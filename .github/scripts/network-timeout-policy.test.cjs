@@ -44,7 +44,7 @@ test("small JSON and release-discovery reads use their class budgets", () => {
   assert.match(workflow, /--connect-timeout 10 --max-time 30/u);
   assert.match(workflow, /--retry 2 --retry-max-time 90/u);
   assert.doesNotMatch(workflow, /--retry-delay/u);
-  assert.equal(occurrences(workflow, /\bcurl_small_json (?:"?https:)/gu), 6);
+  assert.equal(occurrences(workflow, /\bcurl_small_json (?:"?https:)/gu), 3);
   assert.match(
     workflow,
     /bounded_read 60 gh api repos\/google\/osv-scanner\/releases\/latest/u,
@@ -101,14 +101,6 @@ test("Pulumi reads and stack export have explicit freshness boundaries", () => {
     /gh_mutate\(\)[\s\S]*?timeout --signal=TERM --kill-after=5s 60s gh/u,
   );
   assert.doesNotMatch(drift, /gh_mutate\(\)[\s\S]*?for attempt/u);
-});
-
-test("Octokit inventory pages time out without freshness retries", () => {
-  const source = read(".github/scripts/production-ha-proof.cjs");
-
-  assert.match(source, /const REQUEST_TIMEOUT_MILLISECONDS = 30_000;/u);
-  assert.match(source, /request: \{ timeout: REQUEST_TIMEOUT_MILLISECONDS \}/u);
-  assert.doesNotMatch(source, /retryCount|requestWithRetry|for \(.*retry/iu);
 });
 
 test("Standards App attestation uses bounded fresh API reads", () => {

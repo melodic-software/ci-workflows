@@ -1,3 +1,0 @@
-* text=auto eol=lf
-fixtures/cache/canary.lock text eol=lf diff
-fixtures/lfs/canary.txt filter=lfs diff=lfs merge=lfs -text
