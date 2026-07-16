@@ -83,6 +83,15 @@ checkout of this repo. (Public is required because a public consumer such as
   workflow files, with the canonical checksum-pinned ShellCheck release
   installed explicitly so embedded shell validation is identical on hosted and
   self-hosted workers.
+- `.github/actions/lefthook-validate` — installs a checksum-pinned Lefthook
+  binary and runs its official
+  [`validate` command][lefthook-validate] against the caller's fully loaded
+  config. Native discovery is the default; `config-file` selects an explicit
+  main config through Lefthook's documented [`LEFTHOOK_CONFIG` override][lefthook-config].
+  [`extends` fragments][lefthook-extends], remotes, and the matching local config
+  are still loaded. The version and checksum inputs let a caller align the gate
+  with an older consumer pin when necessary. This is a composed schema/load
+  gate; Lefthook does not define it as a command or glob behavior test.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
@@ -668,6 +677,9 @@ standards catalog.
 [default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
 [dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
 [job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+[lefthook-config]: https://lefthook.dev/usage/envs/LEFTHOOK_CONFIG/
+[lefthook-extends]: https://lefthook.dev/configuration/extends/
+[lefthook-validate]: https://lefthook.dev/usage/commands/validate/
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
 [job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
 [native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/

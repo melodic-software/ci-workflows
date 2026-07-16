@@ -1,0 +1,7 @@
+extends:
+  - .github/actions/lefthook-validate/fixtures/good/fragments/base.yml
+
+pre-commit:
+  commands:
+    fixture-local:
+      run: echo fixture-local

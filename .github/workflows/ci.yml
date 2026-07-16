@@ -221,6 +221,21 @@ jobs:
           grep -F '[shellcheck]' "$output"
           grep -F 'SC2086' "$output"
 
+  lefthook-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Validate composed Lefthook config
+        uses: ./.github/actions/lefthook-validate
+        with:
+          config-file: .github/actions/lefthook-validate/fixtures/good/lefthook.yml
+      - name: Prove invalid extended fragments fail
+        run: bash .github/scripts/lefthook-validate.test.sh
+
   jsonschema:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -401,13 +416,13 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, zizmor, osv-scanner]
+    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Aggregate lane results
         env:
-          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          RESULTS: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
         run: |
           read -ra results <<< "$RESULTS"
           for r in "${results[@]}"; do
