@@ -321,10 +321,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   live JIT inventory. The selector therefore accepts case-insensitive `linux`
   or `unknown` only. `unknown` is not an OS attestation; it is accepted solely
   under the same governed prefix-and-route/JIT trust assumption. Any explicit
-  bearer of a candidate route reporting another OS contaminates that route. The
-  canary separately requires the official [runner context][runner-context] values
-  `runner.os == Linux` and `runner.arch == X64` before substantive work, then
-  executes its Linux x64 compatibility proof.
+  bearer of a candidate route reporting another OS contaminates that route.
+  Selected jobs separately assert the official [runner context][runner-context]
+  values `runner.os == Linux` and `runner.arch == X64` before substantive work.
 
   Because downstream `runs-on` contains only the returned route, namespace
   integrity is checked across every explicit case-insensitive bearer returned
@@ -368,132 +367,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   cannot be converted by workflow expressions; dependent jobs remain blocked
   and must be rerun. This boundary is intentionally not described as atomic
   fallback.
-- `.github/workflows/local-runner-canary.yml` — a reusable-only acceptance
-  contract bound to the private `melodic-software/ci-runner-canary` repository.
-  It has no executable trigger in this public repository. A hosted preflight
-  requires that exact private caller, `workflow_dispatch`, protected `main`, and
-  attempt 1 before any job receives the observer key. The immutable reusable
-  workflow owns the selector: it calls the already-reviewed central selector at
-  a full SHA with the exact `melodic-canary-ubuntu-24.04-x64` label and
-  `ci-runner-canary-` name prefix, then consumes only direct `needs` outputs.
-  The caller cannot claim a runner, route, reason, online count, repository,
-  label, or prefix.
-
-  Each selected job independently requires `runner.environment` to be
-  `self-hosted`, checks the actual `runner.name` against the canary prefix, and
-  derives only `melo-desk-001` or `melo-lap-001`. Static executable tests reject
-  GitHub-hosted identity, a hosted label presented as a name, and the production
-  fleet prefix. The seed and freshness jobs must derive the same host while
-  reporting different container IDs and no surviving sentinels across home,
-  `_work`, temp, tool cache, `/tmp`, and a privileged path.
-
-  The canonical private-repository seed is under
-  `templates/ci-runner-canary/`. Its caller delegates selection to this reusable
-  workflow and explicitly passes only
-  `CI_RUNNER_OBSERVER_PRIVATE_KEY`; it never inherits secrets. The seed also owns
-  `.gitattributes`, a real Git LFS fixture, and a nonsecret cache-key fixture.
-  IaC creates the empty selected-access repository; the reviewed seed is then
-  pushed as its initial content before the workflow is enabled.
-
-  `full` mode runs the same immutable compatibility probe on explicit
-  `ubuntu-24.04` and the selector-returned local worker: Git LFS checkout, exact
-  setup actions for .NET, Node.js, and Python, PowerShell, passwordless `sudo`,
-  custom certificate trust, and Linux x64 Native AOT. It compares deterministic
-  outputs, transfers artifacts in both directions, and restores nonsecret
-  hosted-to-self and self-to-hosted caches. GitHub stores self-hosted caches in
-  GitHub-owned cloud storage and restored caches are untrusted, so canary caches
-  contain only fixed text and run IDs. [GitHub's cache guidance][dependency-cache]
-  and [artifact guidance][workflow-artifacts] define those boundaries. The last
-  selected job runs for at least 16 minutes after selection, proving the
-  selector's separate timeout does not limit downstream work. Native AOT uses
-  Microsoft's documented Ubuntu `clang` and zlib prerequisites.
-  [Native AOT deployment][native-aot] The hosted and local jobs resolve their
-  single shared probe from the exact reusable-workflow repository and SHA via
-  GitHub's documented [job workflow context][job-workflow-context].
-
-  Live acceptance is two sequential single-host proofs, not a two-host proof:
-
-  1. Advertise canary capacity only from `melo-desk-001`; verify the laptop
-     listener reports capacity zero. Dispatch `full` and record the workflow/job
-     IDs, both runner names, their derived desktop host, both container IDs, and
-     the controller diagnostic archives proving each completed container was
-     deleted.
-  2. Drain desktop canary capacity to zero. Advertise canary capacity only from
-     `melo-lap-001`, repeat `full`, and correlate the same evidence to the laptop
-     controller diagnostics.
-  3. Do not infer distribution or high availability from these runs. The
-     production two-host failover proof is a separate rollout gate.
-
-  Cancellation is a separate two-dispatch observation on one isolated host.
-  Dispatch `cancellation`, record the run, runner, host, container, controller
-  job record, and diagnostic archive, then use GitHub's **Cancel workflow**
-  control while the probe waits. Verify cancellation and container deletion in
-  controller diagnostics. The workflow never calls the cancellation API.
-  [Workflow cancellation][workflow-cancellation] Do not rerun that attempt:
-  attempt 2 is intentionally hosted. Start a new `full` dispatch and record its
-  fresh identities and diagnostics.
-
-  Static gates cannot substitute for assignment, JIT registration, LFS object
-  transfer, cache/artifact transport, cancellation delivery, or deletion
-  diagnostics. All are required promotion evidence. The daily drift workflow
-  monitors the exact .NET, Node.js, and Python patch lines and opens review
-  evidence without editing or auto-merging a pin.
-- `.github/workflows/production-ha-proof.yml` — the executable production
-  two-host rollout gate, separate from compatibility canarying. It is
-  reusable-only and accepts only a first-attempt manual dispatch from the exact
-  private protected-main caller
-  `melodic-software/ci-runner-canary/.github/workflows/production-ha-proof.yml`.
-  The caller supplies no runner label or prefix and passes only the read-only
-  observer key explicitly. Every inventory, validation, and operator-hold job is
-  explicitly GitHub-hosted. Production execution consumes only the central
-  selector's direct output, so hosted fallback and attempt-2 routing semantics
-  remain owned by the selector; a fallback cannot be mistaken for a passing
-  self-hosted proof.
-
-  The hosted inventory reads the official organization runner-group,
-  selected-repository, and group-runner endpoints with **Self-hosted runners:
-  read**. It requires unique independent groups
-  `ci-local-melo-desk-001` and `ci-local-melo-lap-001`, selected visibility,
-  public access disabled, identical all-private repository sets containing the
-  proof repository, and exact host-specific runner-name namespaces bearing
-  `melodic-ubuntu-24.04-x64`. [GitHub's runner-group REST API][runner-group-rest]
-  defines those public fields and the read permission. Its group `id` identifies
-  a runner-group resource; the response contains no scale-set ID. The evidence
-  therefore records that limitation instead of claiming the REST inventory can
-  map the controller's persistent scale-set ID. Controller status and logs own
-  that separate proof.
-
-  Manual modes are deliberately small, observable gates:
-
-  1. `inventory` requires an online idle production runner in each independent
-     group.
-  2. `desktop-only` and `laptop-only` require the other group to have zero online
-     runners, then assert the acquired `runner.name`, `runner.os == Linux`, and
-     `runner.arch == X64`. Those values are GitHub's documented
-     [runner context][runner-context].
-  3. `failover` first proves both groups idle and completes selection. A hosted
-     hold then asks the operator to drain the desktop and waits read-only for
-     two stable observations of desktop-zero/laptop-idle before releasing the
-     governed job, which must acquire the laptop. It never reserves a runner,
-     changes capacity, cancels, or replays a run. This exercises GitHub's
-     documented active-active topology: same scale-set name in different runner
-     groups, arbitrary assignment while both are online, and continued
-     acquisition by the surviving set. [High availability and automatic
-     failover][runner-scale-set-ha]
-  4. `laptop-power` acquires the laptop while the desktop is drained and records
-     UTC heartbeats for 10-30 minutes. The heartbeat artifact proves only that
-     the already-running job survived across those timestamps. Promotion also
-     requires externally captured controller status/logs and Windows power
-     evidence for unplug, zero advertised new capacity, retained busy work,
-     stable AC recovery, and fresh logon while already on battery. A workflow
-     cannot prove the negative condition in which no runner is allowed to start,
-     and REST runner inventory does not report controller `maxCapacity`.
-
-  Evidence is sanitized JSON/JSONL retained as normal workflow artifacts. It
-  includes REST group IDs, repository access, runner identities, observations,
-  run correlation, and explicit limitations—never an App token, private key,
-  JIT configuration, controller credential, or raw API response. GitHub's
-  [artifact contract][workflow-artifacts] supplies the review/download boundary.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -537,8 +410,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   See the [official v2.4.0 release][osv-release-v2-4].
 
   “Enabled by default” is not treated as proof that every MSBuild layout is
-  covered. Each consumer canary must show nonzero package discovery for its
-  actual `.csproj`/Central Package Management layout; committed lockfiles and
+  covered. Each consumer's verification run must show nonzero package discovery
+  for its actual `.csproj`/Central Package Management layout; committed lockfiles and
   the empty-scan guard remain required until that proof passes. The scanner's
   documented exit contract is also enforced: only `0` (clean) and `1`
   (findings) can be completed scans, `128` follows the explicit no-packages
@@ -554,7 +427,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   GitHub-reported asset digests, then refreshes the existing maintenance issue;
   it never rewrites or auto-merges the pin. Updating requires
   release review, official asset/provenance checksum verification, exact source
-  and tag verification, and a canary. See the [official installation and SLSA
+  and tag verification, and a verification run in a consuming repository. See
+  the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
   optional inputs on `semantic-pr` and native `zizmor` preserve compatibility.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet

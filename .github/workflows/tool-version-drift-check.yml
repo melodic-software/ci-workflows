@@ -2,7 +2,7 @@ name: Tool Version Drift Check
 
 # Advisory — NOT in any ci-status gate; never blocks a merge. Surfaces a rolling
 # tracking issue when an upstream tool releases a stable version past a reviewed
-# composite-action default, canary runtime default, or shell-invoked image pin.
+# composite-action default or shell-invoked image pin.
 #
 # Dependabot cannot see these: its github-actions ecosystem updates only `uses:`
 # SHAs, and a tool version embedded in an action.yml input default, curl URL, or
@@ -18,7 +18,6 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/tool-version-drift-check.yml'
-      - '.github/workflows/local-runner-canary.yml'
       - '.github/workflows/osv-scanner.yml'
       - '.github/osv-scanner-pin.json'
       - '.github/actions/actionlint/action.yml'
@@ -124,34 +123,6 @@ jobs:
             local enc="${1//@/%40}"; enc="${enc//\//%2F}"
             curl_small_json "https://registry.npmjs.org/$enc/latest" | jq -r '.version'
           }
-          latest_dotnet_sdk() {
-            local channel="${1%%.*}.0"
-            curl_small_json https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json |
-              jq -er --arg channel "$channel" '
-                .["releases-index"][] |
-                select(.["channel-version"] == $channel) |
-                .["latest-sdk"]
-              '
-          }
-          latest_node_runtime() {
-            local prefix="v${1%%.*}."
-            curl_small_json https://nodejs.org/dist/index.json |
-              jq -er --arg prefix "$prefix" '
-                [.[] | select(.lts != false and (.version | startswith($prefix)))] |
-                sort_by(.version[1:] | split(".") | map(tonumber)) |
-                last.version[1:]
-              '
-          }
-          latest_python_runtime() {
-            local prefix="${1%.*}."
-            curl_small_json https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json |
-              jq -er --arg prefix "$prefix" '
-                [.[] | select(.stable == true and (.version | startswith($prefix)))] |
-                sort_by(.version | split(".") | map(tonumber)) |
-                last.version
-              '
-          }
-
           drift_lines=""
           for entry in "${tools[@]}"; do
             IFS=: read -r dir key source id strip <<<"$entry"
@@ -180,43 +151,6 @@ jobs:
               echo "DRIFT ${dir}: ${current} -> ${latest}"
             else
               echo "ok    ${dir}: ${current} (latest ${latest})"
-            fi
-          done
-
-          # The canary pins exact representative language runtimes so hosted and
-          # self-hosted execute the same setup-action contract. Dependabot cannot
-          # update workflow_call input defaults, so watch the current stable patch
-          # within each reviewed major/minor line through the upstream first-party
-          # release indexes used by .NET, Node.js, and setup-python.
-          canary_file=.github/workflows/local-runner-canary.yml
-          canary_runtimes=(
-            "dotnet-version:dotnet:.NET SDK"
-            "node-version:node:Node.js"
-            "python-version:python:Python"
-          )
-          for entry in "${canary_runtimes[@]}"; do
-            IFS=: read -r key source label <<<"$entry"
-            current="$(yq ".on.workflow_call.inputs.\"${key}\".default" "$canary_file")"
-            if [[ -z "$current" || "$current" == "null" ]]; then
-              echo "::error::could not read ${key} default from ${canary_file}"
-              exit 1
-            fi
-            case "$source" in
-              dotnet) latest="$(latest_dotnet_sdk "$current")" || latest='' ;;
-              node) latest="$(latest_node_runtime "$current")" || latest='' ;;
-              python) latest="$(latest_python_runtime "$current")" || latest='' ;;
-              *) echo "::error::unknown canary runtime source '${source}'"; exit 1 ;;
-            esac
-            if [[ -z "$latest" || "$latest" == "null" ]]; then
-              echo "::warning::could not resolve latest ${label}; skipping"
-              continue
-            fi
-            lowest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | head -1)"
-            if [[ "$lowest" == "$current" && "$current" != "$latest" ]]; then
-              drift_lines+="- **Canary ${label}**: pinned \`${current}\`, reviewed line latest \`${latest}\`"$'\n'
-              echo "DRIFT canary ${label}: ${current} -> ${latest}"
-            else
-              echo "ok    canary ${label}: ${current} (line latest ${latest})"
             fi
           done
 
@@ -314,14 +248,12 @@ jobs:
             echo "pyright, check-jsonschema, markdown, biome, tsc) and PSScriptAnalyzer carry no"
             echo "checksum. For OSV, update \`.github/osv-scanner-pin.json\` only after reviewing"
             echo "the release, verifying the official Linux asset checksum and SLSA provenance,"
-            echo "updating the pinned verifier when required, and passing the canary. Consumers pick the new"
+            echo "and updating the pinned verifier when required. Consumers pick the new"
             echo "default up when they re-pin this repository. For golangci-lint, verify both"
             echo "official linux-amd64 and windows-amd64 archive checksums before changing the"
             echo "embedded version and hashes. For govulncheck, verify the official Go proxy"
             echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
-            echo "exact module pin. For canary runtime drift, update the"
-            echo "matching workflow_call default only after reviewing the stable patch and run the"
-            echo "full private canary on hosted and self-hosted. Never auto-merge these updates."
+            echo "exact module pin. Never auto-merge these updates."
             echo
             echo "### Why advisory"
             echo
