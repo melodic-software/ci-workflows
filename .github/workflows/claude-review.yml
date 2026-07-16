@@ -208,6 +208,17 @@ jobs:
           owner: melodic-software
           repositories: standards
 
+      # The reviewed PR's own tree is checked out at the workspace root, so it
+      # could ship a `.standards-ref` entry (e.g. a symlink to `.`). Clear it
+      # first: without a trailing slash `rm` unlinks the symlink itself instead
+      # of following it, so the checkout below cannot be redirected to delete the
+      # main workspace. Keeps the reference mount off a PR-controlled path.
+      - name: Clear PR-supplied reference-mount path
+        if: inputs.standards-ref != ''
+        env:
+          MOUNT_PATH: ${{ github.workspace }}/.standards-ref
+        run: rm -rf -- "$MOUNT_PATH"
+
       # persist-credentials:false keeps the standards App token out of
       # .standards-ref/.git/config, where the Claude step below (which mounts
       # this directory via --add-dir over PR-controlled context) could be
