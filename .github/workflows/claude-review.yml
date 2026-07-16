@@ -26,6 +26,11 @@ name: claude-review
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
+#   A PRIVATE consumer that wants REVIEW.md's native-reference depth tier
+#   additionally passes standards-ref plus the two STANDARDS_REVIEW_APP_*
+#   secrets (see standards-ref's own description below). A PUBLIC consumer
+#   must never pass any of the three.
+#
 # SECURITY MODEL (see CLAUDE.md for the full rationale):
 #   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
 #     secrets — privileged context + untrusted fork code = token exfiltration).
@@ -36,6 +41,11 @@ name: claude-review
 #   - The action gates triggering on the actor's write access; bots are blocked
 #     unless named in `allowed-bots`.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
+#   - The standards-ref mount is opt-in and unenforced HERE by design (see the
+#     CONSUMER CONTRACT note above): this workflow has no reliable way to know
+#     a calling repo's own visibility from within a reusable-workflow context,
+#     so the restriction is a documented caller obligation, not a runtime
+#     check. standards/distribution/REVIEW-CREDENTIAL.md is the SSOT for why.
 
 on:
   workflow_call:
@@ -104,6 +114,21 @@ on:
         description: Job timeout.
         type: number
         default: 30
+      standards-ref:
+        description: >-
+          Pinned commit SHA of melodic-software/standards to mount for
+          REVIEW.md's native-reference cites (see standards/REVIEW.md's
+          "Depth" section and standards/distribution/REVIEW-CREDENTIAL.md).
+          Empty (default) skips the mount entirely, which is the required
+          value for any PUBLIC calling repo — this reusable workflow does
+          not enforce that restriction itself, so a public caller must
+          simply never set this input and never pass the two credential
+          secrets below. See distribution/REVIEW-CREDENTIAL.md in standards
+          for the full trust-boundary rationale (mounting private standards
+          content into a review agent whose output lands in public Actions
+          logs is a prompt-injection exfiltration path).
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
@@ -111,6 +136,18 @@ on:
           same-org organization secret scoped to selected repositories and pass
           this named secret explicitly from the caller.
         required: true
+      STANDARDS_REVIEW_APP_ID:
+        description: >-
+          GitHub App client ID for the dedicated, read-only credential
+          scoped to standards, documented in
+          standards/distribution/REVIEW-CREDENTIAL.md. Required only when
+          standards-ref is set; unused (and must not be supplied) otherwise.
+        required: false
+      STANDARDS_REVIEW_APP_PRIVATE_KEY:
+        description: >-
+          Private key for the same App as STANDARDS_REVIEW_APP_ID. Required
+          only when standards-ref is set.
+        required: false
 
 permissions:
   contents: read
@@ -158,6 +195,44 @@ jobs:
         with:
           filter: blob:none
 
+      # Native-reference mount (standards/REVIEW.md's "Depth" tier). Only runs
+      # when the caller supplied standards-ref, which a public calling repo
+      # must never do (see the input's own description above).
+      - name: Generate standards-read token
+        id: standards-token
+        if: inputs.standards-ref != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.STANDARDS_REVIEW_APP_ID }}
+          private-key: ${{ secrets.STANDARDS_REVIEW_APP_PRIVATE_KEY }}
+          owner: melodic-software
+          repositories: standards
+
+      - name: Check out standards (native-reference mount)
+        if: inputs.standards-ref != ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: melodic-software/standards
+          ref: ${{ inputs.standards-ref }}
+          token: ${{ steps.standards-token.outputs.token }}
+          path: .standards-ref
+          filter: blob:none
+
+      # Composed in a plain shell step, not a GitHub Actions expression
+      # ternary, so the conditional is testable and reads like ordinary code.
+      - name: Compose Claude CLI arguments
+        id: compose-args
+        env:
+          BASE_ARGS: ${{ inputs.claude-args }}
+          STANDARDS_REF: ${{ inputs.standards-ref }}
+          MOUNT_PATH: ${{ github.workspace }}/.standards-ref
+        run: |
+          args="$BASE_ARGS"
+          if [ -n "$STANDARDS_REF" ]; then
+            args="$args --add-dir $MOUNT_PATH"
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
       - name: Claude review
         id: claude-review
         # claude-code-action exits non-zero only on infrastructure errors; review
@@ -171,7 +246,7 @@ jobs:
           display_report: ${{ inputs.display-report }}
           allowed_bots: ${{ inputs.allowed-bots }}
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
-          claude_args: ${{ inputs.claude-args }}
+          claude_args: ${{ steps.compose-args.outputs.args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
           # header + permalink guidance live here and wrap the consumer's body.
