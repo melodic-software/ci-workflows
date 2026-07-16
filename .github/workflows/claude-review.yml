@@ -276,6 +276,35 @@ jobs:
             gh pr comment "$PR_NUMBER" --body "$body"
           fi
 
+      # Symmetric counterpart to the failure step above: a transient infra
+      # failure (e.g. an OIDC blip) can leave the marker comment behind on the
+      # PR, and the failure-only condition previously meant no later code path
+      # ever touched it again. Once a retry (rerun or new push) succeeds, clear
+      # that stale warning so it is not mistaken for a still-open problem.
+      # Same fork guard and marker lookup as the failure step — never
+      # --edit-last, for the same clobbering risk.
+      - name: Clear stale failure comment after successful review
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'false' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- claude-review-infra-status -->"
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X DELETE --silent
+          fi
+
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once
       # the checkout step can use persist-credentials:false again.
