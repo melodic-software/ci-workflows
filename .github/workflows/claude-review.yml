@@ -243,6 +243,27 @@ jobs:
             "> Re-running the job, or pushing a new commit, will retry the review.")
           gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body "$body"
 
+      # Clears a stale warning from an earlier failed run once a later run on
+      # the same PR succeeds, so the marker comment never outlives the
+      # condition it describes (e.g. a transient account-side outage that
+      # resolves itself between pushes).
+      - name: Clear stale review-failure comment
+        if: steps.review-outcome.outputs.review_failed == 'false' && github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '[.[] | select(.body | startswith("<!-- claude-review-infra-status -->"))] | last | .id // empty')
+          if [ -n "$comment_id" ]; then
+            body=$(printf '%s\n' \
+              "<!-- claude-review-infra-status -->" \
+              "> [!NOTE]" \
+              "> The infrastructure failure noted above is stale — a later run on this PR completed successfully. Findings (if any) are in the PR comments.")
+            gh api -X PATCH "repos/$REPO/issues/comments/$comment_id" -f body="$body" >/dev/null
+          fi
+
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once
       # the checkout step can use persist-credentials:false again.
