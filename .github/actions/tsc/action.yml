@@ -10,7 +10,7 @@ inputs:
     default: tsconfig.json
   version:
     description: Exact TypeScript version to run.
-    default: 6.0.3
+    default: 7.0.2
   node-version:
     description: Node.js version to set up.
     default: 24.18.0

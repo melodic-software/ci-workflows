@@ -26,6 +26,11 @@ name: claude-review
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
+#   A PRIVATE consumer that wants REVIEW.md's native-reference depth tier
+#   additionally passes standards-ref plus the two STANDARDS_REVIEW_APP_*
+#   secrets (see standards-ref's own description below). A PUBLIC consumer
+#   must never pass any of the three.
+#
 # SECURITY MODEL (see CLAUDE.md for the full rationale):
 #   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
 #     secrets — privileged context + untrusted fork code = token exfiltration).
@@ -36,6 +41,11 @@ name: claude-review
 #   - The action gates triggering on the actor's write access; bots are blocked
 #     unless named in `allowed-bots`.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
+#   - The standards-ref mount is opt-in and unenforced HERE by design (see the
+#     CONSUMER CONTRACT note above): this workflow has no reliable way to know
+#     a calling repo's own visibility from within a reusable-workflow context,
+#     so the restriction is a documented caller obligation, not a runtime
+#     check. standards/distribution/REVIEW-CREDENTIAL.md is the SSOT for why.
 
 on:
   workflow_call:
@@ -104,6 +114,21 @@ on:
         description: Job timeout.
         type: number
         default: 30
+      standards-ref:
+        description: >-
+          Pinned commit SHA of melodic-software/standards to mount for
+          REVIEW.md's native-reference cites (see standards/REVIEW.md's
+          "Depth" section and standards/distribution/REVIEW-CREDENTIAL.md).
+          Empty (default) skips the mount entirely, which is the required
+          value for any PUBLIC calling repo — this reusable workflow does
+          not enforce that restriction itself, so a public caller must
+          simply never set this input and never pass the two credential
+          secrets below. See distribution/REVIEW-CREDENTIAL.md in standards
+          for the full trust-boundary rationale (mounting private standards
+          content into a review agent whose output lands in public Actions
+          logs is a prompt-injection exfiltration path).
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
@@ -111,6 +136,18 @@ on:
           same-org organization secret scoped to selected repositories and pass
           this named secret explicitly from the caller.
         required: true
+      STANDARDS_REVIEW_APP_ID:
+        description: >-
+          GitHub App client ID for the dedicated, read-only credential
+          scoped to standards, documented in
+          standards/distribution/REVIEW-CREDENTIAL.md. Required only when
+          standards-ref is set; unused (and must not be supplied) otherwise.
+        required: false
+      STANDARDS_REVIEW_APP_PRIVATE_KEY:
+        description: >-
+          Private key for the same App as STANDARDS_REVIEW_APP_ID. Required
+          only when standards-ref is set.
+        required: false
 
 permissions:
   contents: read
@@ -158,20 +195,84 @@ jobs:
         with:
           filter: blob:none
 
+      # Native-reference mount (standards/REVIEW.md's "Depth" tier). Only runs
+      # when the caller supplied standards-ref, which a public calling repo
+      # must never do (see the input's own description above).
+      - name: Generate standards-read token
+        id: standards-token
+        if: inputs.standards-ref != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.STANDARDS_REVIEW_APP_ID }}
+          private-key: ${{ secrets.STANDARDS_REVIEW_APP_PRIVATE_KEY }}
+          owner: melodic-software
+          repositories: standards
+
+      # The reviewed PR's own tree is checked out at the workspace root, so it
+      # could ship a `.standards-ref` entry (e.g. a symlink to `.`). Clear it
+      # first: without a trailing slash `rm` unlinks the symlink itself instead
+      # of following it, so the checkout below cannot be redirected to delete the
+      # main workspace. Keeps the reference mount off a PR-controlled path.
+      - name: Clear PR-supplied reference-mount path
+        if: inputs.standards-ref != ''
+        env:
+          MOUNT_PATH: ${{ github.workspace }}/.standards-ref
+        run: rm -rf -- "$MOUNT_PATH"
+
+      # persist-credentials:false keeps the standards App token out of
+      # .standards-ref/.git/config, where the Claude step below (which mounts
+      # this directory via --add-dir over PR-controlled context) could be
+      # induced to read and exfiltrate it. Safe here — unlike the main checkout
+      # above, this read-only reference mount runs no later authenticated git
+      # commands, so it is not subject to the #1236 constraint.
+      - name: Check out standards (native-reference mount)
+        if: inputs.standards-ref != ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: melodic-software/standards
+          ref: ${{ inputs.standards-ref }}
+          token: ${{ steps.standards-token.outputs.token }}
+          path: .standards-ref
+          persist-credentials: false
+          filter: blob:none
+
+      # Composed in a plain shell step, not a GitHub Actions expression
+      # ternary, so the conditional is testable and reads like ordinary code.
+      - name: Compose Claude CLI arguments
+        id: compose-args
+        env:
+          BASE_ARGS: ${{ inputs.claude-args }}
+          STANDARDS_REF: ${{ inputs.standards-ref }}
+          MOUNT_PATH: ${{ github.workspace }}/.standards-ref
+        run: |
+          args="$BASE_ARGS"
+          if [ -n "$STANDARDS_REF" ]; then
+            args="$args --add-dir $MOUNT_PATH"
+          fi
+          # claude-args may be multiline (callers can pass YAML `|`), so emit it
+          # with the heredoc output form and a random delimiter — a single-line
+          # `args=$args` write corrupts $GITHUB_OUTPUT on any newline.
+          delimiter="gha_${RANDOM}${RANDOM}_EOF"
+          {
+            echo "args<<$delimiter"
+            printf '%s\n' "$args"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Claude review
         id: claude-review
         # claude-code-action exits non-zero only on infrastructure errors; review
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
         continue-on-error: true
-        uses: anthropics/claude-code-action@f87768c6d25f92ae6efa7175e223ef77d4cbf97f # v1.0.166
+        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: ${{ inputs.track-progress }}
           display_report: ${{ inputs.display-report }}
           allowed_bots: ${{ inputs.allowed-bots }}
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
-          claude_args: ${{ inputs.claude-args }}
+          claude_args: ${{ steps.compose-args.outputs.args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
           # header + permalink guidance live here and wrap the consumer's body.
@@ -187,16 +288,122 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       - name: Report review outcome
+        id: review-outcome
         if: always()
         env:
           REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
         run: |
           if [ "$REVIEW_OUTCOME" = "success" ]; then
             echo "Claude review completed. Findings (if any) are in the PR comments."
+            echo "review_failed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Prior to claude-code-action v1.0.172, the action reported `success`
+          # even when the underlying SDK result had is_error:true (upstream
+          # #1495, fixed in #1496) — this branch was effectively dead. Bumping
+          # past the fix makes REVIEW_OUTCOME finally reflect real failures, so
+          # this now needs to actually surface them instead of just logging.
+          #
+          # This is a public repo, so the raw SDKResultMessage is NOT safe to
+          # publish as-is: its `result` field is model-authored free text (per
+          # the Claude Agent SDK message schema) and CLAUDE.md keeps
+          # display_report/show_full_output off for exactly this leak risk.
+          # Project only the safe, structured metadata fields — never the last
+          # message wholesale.
+          detail="(no execution file was produced)"
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
+            detail=$(jq -c '
+              (.[-1] // empty) as $last
+              | if $last == null then empty
+                else $last | {subtype, is_error, num_turns, duration_ms, total_cost_usd}
+                end
+            ' "$EXECUTION_FILE" 2>/dev/null || true)
+            [ -n "$detail" ] || detail="(execution file present but unparsable)"
+          fi
+
+          echo "::error::Claude review exited with: $REVIEW_OUTCOME" \
+            "(infrastructure error, not a code-quality signal — e.g. usage limit," \
+            "OIDC failure, SDK crash, is_error result, or max-turns exhaustion)." \
+            "Last SDK result: $detail"
+
+          echo "review_failed=true" >> "$GITHUB_OUTPUT"
+          echo "review_detail=$detail" >> "$GITHUB_OUTPUT"
+
+      # Runs only on a genuine infra failure (never on a clean review) and only
+      # when the token can write: fork-triggered pull_request runs get a
+      # read-only GITHUB_TOKEN and no secrets by design (CLAUDE.md), so
+      # gh pr comment would just fail there — skip rather than error.
+      # Targets the marker comment by ID (never --edit-last, which edits the
+      # PR's last comment from ANY author) so a stuck placeholder comment from
+      # track_progress is never mistaken for "no findings" and an unrelated
+      # bot comment is never clobbered — this is the failure mode this whole
+      # change exists to fix.
+      - name: Comment on genuine review failure
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'true' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEW_DETAIL: ${{ steps.review-outcome.outputs.review_detail }}
+        run: |
+          marker="<!-- claude-review-infra-status -->"
+          body=$(printf '%s\n' \
+            "$marker" \
+            "> [!WARNING]" \
+            "> **Automated review did not complete** — this is an infrastructure failure, not a review verdict." \
+            ">" \
+            "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"" \
+            ">" \
+            "> - Run: $RUN_URL" \
+            "> - Last SDK result: \`$REVIEW_DETAIL\`" \
+            ">" \
+            "> Re-running the job, or pushing a new commit, will retry the review.")
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X PATCH -f "body=$body" --silent
           else
-            echo "::warning::Claude review exited with: $REVIEW_OUTCOME" \
-              "(infrastructure error, not a code-quality signal — e.g. usage limit," \
-              "OIDC failure, SDK crash, or max-turns exhaustion)."
+            gh pr comment "$PR_NUMBER" --body "$body"
+          fi
+
+      # Symmetric counterpart to the failure step above: a transient infra
+      # failure (e.g. an OIDC blip) can leave the marker comment behind on the
+      # PR, and the failure-only condition previously meant no later code path
+      # ever touched it again. Once a retry (rerun or new push) succeeds, clear
+      # that stale warning so it is not mistaken for a still-open problem.
+      # Same fork guard and marker lookup as the failure step — never
+      # --edit-last, for the same clobbering risk.
+      - name: Clear stale failure comment after successful review
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'false' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- claude-review-infra-status -->"
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X DELETE --silent
           fi
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout

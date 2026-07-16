@@ -33,7 +33,7 @@ on:
       dotnet-version:
         description: Exact stable .NET SDK exercised on hosted and self-hosted.
         type: string
-        default: 10.0.301
+        default: 10.0.302
       node-version:
         description: Exact LTS Node.js runtime exercised on hosted and self-hosted.
         type: string
