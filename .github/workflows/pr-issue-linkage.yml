@@ -71,7 +71,13 @@ jobs:
             // instructional prose inside comments -- without stripping, an unedited template
             // (which contains the literal phrase in its instructions) would pass vacuously.
             const rawBody = process.env.PR_BODY || "";
-            const body = rawBody.replace(/<!--[\s\S]*?-->/g, "");
+            // An unterminated `<!--` (template edited mid-comment, or the closing
+            // `-->` accidentally deleted) hides everything after it from GitHub's
+            // renderer too, so treat it as commenting out the rest of the body
+            // rather than leaving that text live for the checks below.
+            const body = rawBody
+              .replace(/<!--[\s\S]*?-->/g, "")
+              .replace(/<!--[\s\S]*$/, "");
             const errors = [];
 
             function extractSection(text, headingRe) {

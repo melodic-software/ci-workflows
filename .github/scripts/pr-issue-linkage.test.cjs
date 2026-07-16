@@ -122,3 +122,15 @@ test("case-insensitive heading and keyword matching", () => {
   const failedWith = runScript("fixes #1\n\n## related\n\nsomething");
   assert.equal(failedWith, null);
 });
+
+test("an unterminated HTML comment hides the rest of the body instead of leaking it live", () => {
+  const failedWith = runScript(
+    "<!-- Closes #1\n\n## Related\n\nn/a",
+  );
+  assert.ok(
+    failedWith,
+    "an unclosed comment must not let closing-keyword/Related text leak through as live content",
+  );
+  assert.match(failedWith, /Related/);
+  assert.match(failedWith, /closing keyword/);
+});
