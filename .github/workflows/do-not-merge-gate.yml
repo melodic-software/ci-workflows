@@ -136,6 +136,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
+          set -euo pipefail
           if [[ "$EVENT_NAME" == "merge_group" ]]; then
             pr_number="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -nE 's#.*/pr-([0-9]+)-[0-9a-f]+$#\1#p')"
             if [[ -z "$pr_number" ]]; then
@@ -144,6 +145,10 @@ jobs:
             fi
           else
             pr_number="$PR_NUMBER"
+            if [[ -z "$pr_number" ]]; then
+              echo "::error::PR number is empty for a pull_request/pull_request_target event."
+              exit 1
+            fi
           fi
           pr_labels_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.labels[].name]')"
           if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$pr_labels_json" >/dev/null; then
