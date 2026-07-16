@@ -45,7 +45,10 @@ checkout of this repo. (Public is required because a public consumer such as
 
 - `.github/actions/markdown` — markdownlint-cli2 over the repo's markdown.
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
-  (installs a pinned, checksum-verified binary).
+  (installs a pinned, checksum-verified binary). Its default discovery remains
+  tracked `*.sh`/`*.bash`; `extra-globs` adds tracked extensionless inputs as
+  newline-delimited Git pathspecs, with optional `extra-exclude-codes` scoped
+  only to that extra lane so ordinary scripts keep the stricter result.
 - `.github/actions/shfmt` — shfmt formatting check over the repo's shell
   scripts, driven by the caller's `.editorconfig` (installs a pinned,
   checksum-verified binary).
@@ -83,6 +86,15 @@ checkout of this repo. (Public is required because a public consumer such as
   workflow files, with the canonical checksum-pinned ShellCheck release
   installed explicitly so embedded shell validation is identical on hosted and
   self-hosted workers.
+- `.github/actions/lefthook-validate` — installs a checksum-pinned Lefthook
+  binary and runs its official
+  [`validate` command][lefthook-validate] against the caller's fully loaded
+  config. Native discovery is the default; `config-file` selects an explicit
+  main config through Lefthook's documented [`LEFTHOOK_CONFIG` override][lefthook-config].
+  [`extends` fragments][lefthook-extends], remotes, and the matching local config
+  are still loaded. The version and checksum inputs let a caller align the gate
+  with an older consumer pin when necessary. This is a composed schema/load
+  gate; Lefthook does not define it as a command or glob behavior test.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
@@ -647,6 +659,47 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pr-title / pr-title` check in the repo's ruleset (governed via `github-iac`) —
   but only **after** the caller is merged and emitting the check, or open PRs
   block on a check that never runs.
+- `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
+  a native closing keyword (`Closes`/`Fixes`/`Resolves #N`, including
+  `owner/repo#N`, or the literal `No linked issue` when the PR closes nothing)
+  and a non-empty `## Related` section. **Gating**: a non-conforming body fails
+  the job. HTML comments are stripped before either check, so an unedited PR
+  template (whose instructional prose lives in comments) fails rather than
+  passing vacuously. Generalizes
+  [`melodic-software/provisioning`'s `pr-body.yml`](https://github.com/melodic-software/provisioning/blob/main/.github/workflows/pr-body.yml)
+  into a shared reusable workflow — provisioning's own caller predates this
+  workflow and is not required to switch. It is a **standalone required check
+  named `pr-issue-linkage`**, not a `ci-status` lane — body edits must not
+  re-run the file-lint lanes. Inputs (`runner`, `prerequisite-result`) match
+  `do-not-merge-gate.yml`'s shape. Consume it from a thin caller that triggers
+  on body-relevant events; note the emitted check context is
+  **`pr-issue-linkage / pr-issue-linkage`** (the name a ruleset must require):
+
+  ```yaml
+  on:
+    pull_request_target:
+      types: [opened, edited, reopened, synchronize]
+    merge_group:
+  permissions: {}
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+  jobs:
+    pr-issue-linkage:
+      permissions: {}
+      uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
+  ```
+
+  `pull_request_target` runs the base-branch definition, so a head-branch edit
+  cannot bypass the gate (safe here because the check reads PR body metadata
+  only — it checks out and runs no head code). `edited` is required so a body
+  edit re-validates. `merge_group` is required on any repo with a merge
+  queue, for the same reason `pr-title.yml` needs it (the check passes on
+  `merge_group` since the body was validated at PR time; inert where no queue
+  exists). Then require the `pr-issue-linkage / pr-issue-linkage` check in the
+  repo's ruleset (governed via `github-iac`) — but only **after** the caller
+  is merged and emitting the check, or open PRs block on a check that never
+  runs.
 - `.github/workflows/do-not-merge-gate.yml` — fails the job while the calling PR
   carries a configured label (default `do-not-merge`). **Gating**: the label's
   presence fails the job; a caller that requires this check blocks the merge
@@ -768,6 +821,9 @@ standards catalog.
 [default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
 [dependency-cache]: https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching
 [job-workflow-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+[lefthook-config]: https://lefthook.dev/usage/envs/LEFTHOOK_CONFIG/
+[lefthook-extends]: https://lefthook.dev/configuration/extends/
+[lefthook-validate]: https://lefthook.dev/usage/commands/validate/
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
 [job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
 [native-aot]: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/

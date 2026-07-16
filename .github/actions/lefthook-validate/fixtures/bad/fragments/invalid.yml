@@ -1,0 +1,5 @@
+pre-commit:
+  commands:
+    inherited:
+      run: echo inherited
+      not-a-lefthook-option: true

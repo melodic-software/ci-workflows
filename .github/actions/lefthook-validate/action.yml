@@ -1,0 +1,48 @@
+name: lefthook-validate
+description: Validate the caller's composed Lefthook configuration.
+
+inputs:
+  config-file:
+    description: >-
+      Path to the caller's main Lefthook config. Empty (default) uses
+      Lefthook's native config discovery. Extends, remotes, and the matching
+      lefthook-local config remain part of the composed validation input.
+    default: ''
+  version:
+    description: >-
+      Exact Lefthook version to install. Keep this aligned with the version
+      used by the standards-managed consumer toolchain.
+    default: 2.1.10
+  sha256:
+    description: >-
+      SHA-256 of the Linux_x86_64 release binary for `version`. Change
+      together with `version`.
+    default: f1de34ea0572363a525a2000d40f5a646733893ad28c924b34ac98304518073f
+
+runs:
+  using: composite
+  steps:
+    - name: Install Lefthook
+      shell: bash
+      env:
+        URL: https://github.com/evilmartians/lefthook/releases/download/v${{ inputs.version }}/lefthook_${{ inputs.version }}_Linux_x86_64
+        SHA256: ${{ inputs.sha256 }}
+        BIN: lefthook
+      run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
+
+    - name: Validate composed Lefthook config
+      shell: bash
+      env:
+        CONFIG_FILE: ${{ inputs.config-file }}
+      run: |
+        set -euo pipefail
+        if [[ -n "${CONFIG_FILE// }" ]]; then
+          if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo "::error::lefthook-validate: config file not found: $CONFIG_FILE"
+            exit 2
+          fi
+          export LEFTHOOK_CONFIG="$CONFIG_FILE"
+        else
+          unset LEFTHOOK_CONFIG
+        fi
+        lefthook validate

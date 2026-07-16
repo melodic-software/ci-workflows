@@ -1,0 +1,5 @@
+pre-commit:
+  commands:
+    inherited:
+      glob: "*.md"
+      run: echo inherited
