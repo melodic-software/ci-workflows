@@ -7,6 +7,10 @@ name: standards-sync
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label selected by the caller's governed selector.
+        type: string
+        default: ubuntu-24.04
       manifest:
         description: Repository-relative manifest path in the standards checkout.
         type: string
@@ -46,7 +50,7 @@ concurrency:
 
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -125,7 +129,7 @@ jobs:
   attest:
     needs: plan
     if: ${{ !inputs.dry-run }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -350,7 +354,7 @@ jobs:
   sync:
     needs: [plan, attest]
     if: ${{ !inputs.dry-run }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read

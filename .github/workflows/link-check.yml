@@ -10,6 +10,10 @@ name: link-check
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label selected by the caller's governed selector.
+        type: string
+        default: ubuntu-24.04
       args:
         description: >-
           lychee arguments (flags + globs). Defaults tune for CI: persisted
@@ -33,7 +37,7 @@ permissions:
 
 jobs:
   link-check:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Check out
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
