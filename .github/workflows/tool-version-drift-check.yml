@@ -22,6 +22,7 @@ on:
       - '.github/workflows/osv-scanner.yml'
       - '.github/osv-scanner-pin.json'
       - '.github/actions/actionlint/action.yml'
+      - '.github/actions/lefthook-validate/action.yml'
       - '.github/actions/shellcheck/action.yml'
       - '.github/scripts/actionlint-shellcheck-pin.test.cjs'
       - '.github/scripts/osv-release-digest.sh'
@@ -101,6 +102,7 @@ jobs:
             "editorconfig:version:github:editorconfig-checker/editorconfig-checker"
             "gitleaks:version:github:gitleaks/gitleaks"
             "actionlint:version:github:rhysd/actionlint"
+            "lefthook-validate:version:github:evilmartians/lefthook"
             "lychee-offline:version:github:lycheeverse/lychee:lychee-v"
             "ruff:version:github:astral-sh/ruff"
             "powershell:analyzer-version:github:PowerShell/PSScriptAnalyzer"
@@ -306,7 +308,8 @@ jobs:
             echo
             echo "Bump the \`version:\` (or \`analyzer-version:\`) default in the listed"
             echo "\`.github/actions/<name>/action.yml\`. For binary-install lanes (shellcheck,"
-            echo "shfmt, typos, editorconfig, gitleaks, actionlint, lychee-offline) ALSO recompute"
+            echo "shfmt, typos, editorconfig, gitleaks, actionlint, lefthook-validate,"
+            echo "lychee-offline) ALSO recompute"
             echo "the paired \`sha256:\` default from the new release asset. The uvx/npx lanes (ruff,"
             echo "pyright, check-jsonschema, markdown, biome, tsc) and PSScriptAnalyzer carry no"
             echo "checksum. For OSV, update \`.github/osv-scanner-pin.json\` only after reviewing"
