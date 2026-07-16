@@ -399,9 +399,22 @@ jobs:
     with:
       run: Invoke-Pester -Path fixtures/pester -CI
 
+  go-quality-dogfood:
+    permissions:
+      contents: read
+    # A local reusable-workflow reference executes the workflow from this exact
+    # commit. The fixture includes a Windows-only assertion that the test binary
+    # was built with the race detector, so this is behavioral hosted-runner
+    # evidence rather than a source-text contract alone.
+    uses: ./.github/workflows/go-quality.yml
+    with:
+      config: .golangci.yml
+      working-directory: fixtures/go/windows-race
+      go-version-file: fixtures/go/windows-race/go.mod
+
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, zizmor, osv-scanner]
+    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
