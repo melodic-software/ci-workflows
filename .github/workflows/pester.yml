@@ -28,7 +28,7 @@ on:
         type: string
       pester-version:
         description: Exact Pester version to install and import.
-        default: 5.7.1
+        default: 6.0.0
         type: string
       working-directory:
         description: Directory to run the suite from.
@@ -72,7 +72,11 @@ jobs:
         run: |
           Install-PSResource -Name Pester -Version $env:PESTER_VERSION -Scope CurrentUser -TrustRepository
           Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
-          Write-Output "Pester $((Get-Module Pester).Version) on pwsh $($PSVersionTable.PSVersion)"
+          $actualVersion = (Get-Module Pester -ErrorAction Stop).Version.ToString()
+          if ($actualVersion -ne $env:PESTER_VERSION) {
+              throw "Expected Pester $env:PESTER_VERSION, imported $actualVersion."
+          }
+          Write-Output "Pester $actualVersion on pwsh $($PSVersionTable.PSVersion)"
 
       - name: Run Pester
         shell: pwsh
