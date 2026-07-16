@@ -1,0 +1,158 @@
+name: do-not-merge-gate
+
+# Reusable workflow — fails the job while the calling PR carries a configured
+# "do not merge" label. GATING by design: a caller that requires this check
+# blocks the merge until the label is removed.
+#
+# The caller owns the triggers and MUST include `labeled` and `unlabeled` so
+# adding or removing the label re-evaluates the gate — a status check binds to
+# a SHA, so without those two event types a check that passed before the label
+# was applied stays green and the merge is never actually blocked. See the
+# consumer-side caller example in the README.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        default: ubuntu-24.04
+      prerequisite-result:
+        description: >-
+          Result of an optional prerequisite job. Callers with `needs` must pass
+          its exact result and use `if: !cancelled()` so failures and skips reach
+          this gate without resisting workflow cancellation. Any value other
+          than success, including an unverified cancelled result, fails this
+          required check before the label is evaluated.
+        type: string
+        default: success
+      label:
+        description: Label whose presence blocks the merge.
+        type: string
+        default: do-not-merge
+
+permissions:
+  pull-requests: read
+
+jobs:
+  do-not-merge:
+    # A failed/skipped selector cannot supply a usable runner and must not make
+    # this required context disappear. Use the least-expensive hosted runner
+    # only to report that exceptional failure; successful calls still consume
+    # exactly the caller-selected runner and add no hosted validation job.
+    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
+    timeout-minutes: 15
+    steps:
+      - name: Reject failed prerequisite
+        if: ${{ inputs.prerequisite-result != 'success' }}
+        env:
+          PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
+        run: |
+          echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
+          exit 1
+
+      - name: Reject a blocking label
+        # Runs on the two PR-context events, `pull_request` AND
+        # `pull_request_target`, AND on `merge_group`; skipped (job still
+        # green) on anything else.
+        #
+        # Every branch re-fetches the PR's CURRENT labels via the API rather
+        # than trusting the triggering event's payload. That matters even for
+        # `pull_request`/`pull_request_target`: a same-repo automation that
+        # applies the blocking label with the default `GITHUB_TOKEN` (e.g. a
+        # policy job labeling the PR right before this gate runs) causes
+        # GitHub to suppress the follow-up `labeled` run, so a run already in
+        # flight would otherwise still hold the stale pre-label payload and
+        # could report success despite the PR now carrying the label.
+        #
+        # `merge_group` is NOT skipped here, unlike the sibling `semantic-pr`
+        # workflow's title check: a label is mutable state that can change
+        # after the PR's own `pull_request`/`pull_request_target` run last
+        # reported success (e.g. added while the PR already sits in the merge
+        # queue), whereas a PR title only changes via `edited`, which
+        # re-triggers that same check. Trusting the stale pre-queue result for
+        # labels would let a PR merge through the queue while carrying the
+        # blocking label — the required check would report success on the
+        # merge-group SHA without ever re-reading current label state. So on
+        # `merge_group` this step recovers a PR number from the merge queue's
+        # temporary ref (refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha>,
+        # the only PR linkage `github.event.merge_group` carries — there is no
+        # `pull_request` object on this event) before doing the same live
+        # label fetch.
+        #
+        # KNOWN GAP — batched merge groups: GitHub's merge queue batches
+        # multiple PRs into one merge group by default (max group size 5); the
+        # temp ref/SHA is named only for the LAST PR in the batch, e.g. a
+        # [#1, #2] batch runs as `pr-2`. This step therefore checks only that
+        # named PR's labels — PR #1's label state in that example is NOT
+        # re-evaluated here, so a PR labeled after entering a multi-PR batch
+        # can still ride the batch's passing check through to merge. There is
+        # no verified way to enumerate every PR in a batch from inside a
+        # `merge_group` run (no documented merge_group-to-batch-membership API);
+        # closing this fully needs either a validated enumeration method
+        # against a live batched queue, or forcing merge-queue maximum group
+        # size to 1 at the ruleset layer (github-iac) so every merge group is
+        # single-PR and this check is exhaustive. Tracked as an open gap, not
+        # silently accepted.
+        #
+        # KNOWN LIMITATION — GITHUB_TOKEN-authored labeling AFTER this gate
+        # already passed: the live refetch above only helps while a run of
+        # THIS workflow is executing. GitHub does not start a new workflow
+        # run at all for `labeled`/`unlabeled` events produced by the default
+        # `GITHUB_TOKEN` — that is a documented recursive-run guard, not a
+        # missing trigger type here (see
+        # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
+        # So if a same-repo automation job labels the PR with the default
+        # `GITHUB_TOKEN` after this gate already reported success on the PR's
+        # HEAD SHA, the caller's `labeled`/`unlabeled` trigger types (see
+        # README) never fire for that event — no run happens, live-refetch or
+        # otherwise — and the earlier green check-run is never invalidated.
+        # Adding trigger types to the caller cannot fix this: the gap is that
+        # GitHub never starts a run to begin with. Closing it requires the
+        # labeling automation itself to stop using the default `GITHUB_TOKEN`
+        # — see the ADOPTION REQUIREMENT below and the README's "Known
+        # limitation — GITHUB_TOKEN-authored label changes" note.
+        #
+        # ADOPTION REQUIREMENT: any same-repo automation that applies (or
+        # removes) this gate's blocking label MUST authenticate with a GitHub
+        # App installation token or a PAT, never the default `GITHUB_TOKEN` —
+        # only a non-GITHUB_TOKEN-authored label change creates the
+        # `labeled`/`unlabeled` workflow run that re-evaluates this gate.
+        #
+        # ADOPTION PRECONDITION: this job does not detect or assert the
+        # caller repo's merge-queue batch size — see the "Adoption
+        # precondition — single-PR merge groups" note in the README's
+        # `do-not-merge-gate.yml` section before requiring this check on any
+        # repo with a merge queue.
+        if: >-
+          inputs.prerequisite-result == 'success' &&
+          (github.event_name == 'pull_request' ||
+          github.event_name == 'pull_request_target' ||
+          github.event_name == 'merge_group')
+        env:
+          BLOCKING_LABEL: ${{ inputs.label }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            pr_number="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -nE 's#.*/pr-([0-9]+)-[0-9a-f]+$#\1#p')"
+            if [[ -z "$pr_number" ]]; then
+              echo "::error::Could not parse a PR number from merge_group head_ref '${MERGE_GROUP_HEAD_REF}'."
+              exit 1
+            fi
+          else
+            pr_number="$PR_NUMBER"
+            if [[ -z "$pr_number" ]]; then
+              echo "::error::PR number is empty for a pull_request/pull_request_target event."
+              exit 1
+            fi
+          fi
+          pr_labels_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.labels[].name]')"
+          if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$pr_labels_json" >/dev/null; then
+            echo "::error::This PR carries the '${BLOCKING_LABEL}' label; remove it to merge."
+            exit 1
+          fi
+          echo "No blocking label present."

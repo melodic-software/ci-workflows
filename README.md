@@ -700,6 +700,106 @@ GitHub continues the normal weekly patching of each hosted image generation.
   repo's ruleset (governed via `github-iac`) — but only **after** the caller
   is merged and emitting the check, or open PRs block on a check that never
   runs.
+- `.github/workflows/do-not-merge-gate.yml` — fails the job while the calling PR
+  carries a configured label (default `do-not-merge`). **Gating**: the label's
+  presence fails the job; a caller that requires this check blocks the merge
+  until the label is removed. It is a **standalone required check named
+  `do-not-merge`**, not a `ci-status` lane. Inputs (`runner`,
+  `prerequisite-result`, `label`) mirror `semantic-pr`'s fail-closed pattern.
+  **Adopt the canonical block below.** Note the emitted check context is
+  `<caller job> / <reusable job>` — with the caller below it is
+  **`do-not-merge / do-not-merge`** (the name a ruleset must require, not bare
+  `do-not-merge`):
+
+  ```yaml
+  on:
+    pull_request_target:
+      types: [opened, reopened, synchronize, labeled, unlabeled]
+    merge_group:
+  permissions:
+    pull-requests: read
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+  jobs:
+    do-not-merge:
+      permissions:
+        pull-requests: read
+      uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
+  ```
+
+  `pull_request_target` runs the base-branch definition, so a head-branch edit
+  to this file cannot bypass the gate (safe here since the check reads PR label
+  metadata only — it checks out and runs no head code). `labeled`/`unlabeled`
+  are required — without them, adding the label after the check already passed
+  would not re-trigger it, and the merge would never actually be blocked. Even
+  with them present, a same-repo automation that labels using the default
+  `GITHUB_TOKEN` still does not re-trigger this gate — see the "Known
+  limitation — GITHUB_TOKEN-authored label changes" note below.
+  `opened`/`reopened`/`synchronize` cover the check reporting on every other PR
+  lifecycle event a ruleset's required-status-check needs to see. `merge_group`
+  is required on any repo with a merge queue, both for the never-reports/deadlock
+  reason documented under `semantic-pr` above **and** because the reusable
+  workflow re-evaluates the label on `merge_group` itself (looking the
+  PR named in the merge group's temporary ref up and re-checking its current
+  labels via the API) — unlike `semantic-pr`'s immutable title, a label can be
+  added after the PR's own `pull_request_target` run last passed, e.g. while
+  the PR already sits in the queue, so trusting that earlier result would let
+  a labeled PR merge through.
+
+  **Known limitation — GITHUB_TOKEN-authored label changes.** The
+  `labeled`/`unlabeled` triggers above only re-evaluate the gate when GitHub
+  actually starts a new workflow run for that event. GitHub does not start a
+  run at all for `labeled`/`unlabeled` events produced by the default
+  `GITHUB_TOKEN` — that is a platform-level recursive-run guard
+  ([triggering-a-workflow-from-a-workflow]), not a gap in the trigger list
+  above. So if a same-repo automation job (e.g. a labeling policy workflow)
+  applies this gate's blocking label using the default `GITHUB_TOKEN`
+  **after** the check already reported success on the PR's HEAD SHA, no run —
+  live-refetch or otherwise — is ever triggered, and the earlier green
+  check-run stays on that SHA until a genuinely new qualifying event occurs
+  (e.g. `synchronize` from a subsequent push, or a non-default-token
+  `labeled`/`unlabeled` event). No trigger-list change can close this; the
+  gap is that GitHub never starts a run.
+
+  **Adoption requirement — label-setting automation must not use the default
+  `GITHUB_TOKEN`.** Any same-repo workflow that applies or removes this
+  gate's blocking label must authenticate with a GitHub App installation
+  token or a personal access token instead of `${{ secrets.GITHUB_TOKEN }}` /
+  `${{ github.token }}`. Only a label change authored by a non-default token
+  creates the `labeled`/`unlabeled` run that re-evaluates this gate; a
+  default-token label change leaves an already-green check silently
+  unenforced. Verify this for every same-repo labeling automation before
+  requiring `do-not-merge / do-not-merge` on that repo.
+
+  **Known gap with batched merge queues:** GitHub's merge queue batches
+  multiple PRs into one merge group by default (max group size 5), and the
+  batch's temporary ref/SHA is named for only the *last* PR in the batch (a
+  `[#1, #2]` batch runs as `pr-2`). The reusable workflow's `merge_group`
+  handling re-checks only that named PR's labels, so a PR that isn't last in
+  its batch is not individually re-evaluated at merge-queue time. Closing this
+  fully needs either a validated way to enumerate every PR in a batch from a
+  `merge_group` run (no such API is documented; unverified), or setting merge
+  queue **maximum group size to 1** in the repo's ruleset (`github-iac`) so
+  every merge group is single-PR. Until one of those lands, treat `merge_group`
+  label coverage as best-effort, not exhaustive, on repos that allow batching.
+
+  **Adoption precondition — single-PR merge groups.** This workflow does not
+  itself detect or assert the queue's batch size; that only exists as the gap
+  above. Coverage on `merge_group` runs is exhaustive **only** when a merge
+  group contains exactly one PR. Before requiring `do-not-merge / do-not-merge`
+  on a repo with a merge queue, confirm the queue actually produces single-PR
+  groups — today that means the ruleset's merge-queue **maximum group size is
+  1**; a repo that instead relies on batch enumeration must first have that
+  enumeration implemented and validated here, which does not exist yet. Making
+  the check required on a queued repo without satisfying this precondition
+  does not fail loudly: it keeps reporting green while under-enforcing on
+  non-tip batch members. Re-verify this precondition whenever the repo's
+  merge-queue configuration changes.
+
+  Then require the `do-not-merge / do-not-merge` check in the repo's ruleset
+  (governed via `github-iac`) — but only **after** the caller is merged and
+  emitting the check, or open PRs block on a check that never runs.
 
 ## Policy ownership and action inputs
 
@@ -743,6 +843,7 @@ standards catalog.
 [runner-group-rest]: https://docs.github.com/en/rest/actions/self-hosted-runner-groups?apiVersion=2026-03-10
 [runner-scale-set-ha]: https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets#high-availability-and-automatic-failover
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
+[triggering-a-workflow-from-a-workflow]: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
 [workflow-artifacts]: https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts
 [workflow-cancellation]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/cancel-a-workflow-run
 [workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
