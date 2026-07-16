@@ -44,7 +44,7 @@ test("small JSON and release-discovery reads use their class budgets", () => {
   assert.match(workflow, /--connect-timeout 10 --max-time 30/u);
   assert.match(workflow, /--retry 2 --retry-max-time 90/u);
   assert.doesNotMatch(workflow, /--retry-delay/u);
-  assert.equal(occurrences(workflow, /\bcurl_small_json (?:"?https:)/gu), 6);
+  assert.equal(occurrences(workflow, /\bcurl_small_json (?:"?https:)/gu), 3);
   assert.match(
     workflow,
     /bounded_read 60 gh api repos\/google\/osv-scanner\/releases\/latest/u,
