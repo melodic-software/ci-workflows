@@ -12,6 +12,21 @@ inputs:
       that does NOT consult .gitignore — checking exactly what is found under
       those roots, including untracked files.
     default: ''
+  extra-globs:
+    description: >-
+      Additional tracked shell inputs, one Git pathspec per line. Use this for
+      extensionless sourced files that the default *.sh/*.bash discovery cannot
+      see (for example, `dot_bash*`). Blank by default. Matches are always read
+      from Git's index, even when `paths` opts the primary discovery into a raw
+      filesystem walk, so ignored or generated files are not pulled in silently.
+    default: ''
+  extra-exclude-codes:
+    description: >-
+      Optional comma-separated ShellCheck codes to suppress only while checking
+      files selected by `extra-globs` (for example, SC1090,SC1091). This keeps a
+      sourced extensionless-file exception from weakening the ordinary
+      *.sh/*.bash lane. Requires at least one non-blank `extra-globs` entry.
+    default: ''
   rcfile:
     description: Path to the .shellcheckrc ruleset in the caller repo.
     default: .shellcheckrc
@@ -52,47 +67,9 @@ runs:
       shell: bash
       env:
         PATHS: ${{ inputs.paths }}
+        EXTRA_GLOBS: ${{ inputs.extra-globs }}
+        EXTRA_EXCLUDE_CODES: ${{ inputs.extra-exclude-codes }}
         RCFILE: ${{ inputs.rcfile }}
         EXCLUDE: ${{ inputs.exclude }}
         SEVERITY: ${{ inputs.severity }}
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$RCFILE" ]]; then
-          echo "::error::shellcheck: rcfile not found: $RCFILE"
-          exit 2
-        fi
-        if [[ -z "${PATHS// }" ]]; then
-          # Git-tracked discovery (default): tracked *.sh/*.bash only, so ignored
-          # or generated scripts in a dirty tree are never gated. NUL-delimited so
-          # any path is safe; ls-files output is already sorted.
-          mapfile -d '' -t files < <(git ls-files -z -- '*.sh' '*.bash')
-        else
-          # $PATHS unquoted so multiple roots word-split. Explicit roots opt into
-          # a raw filesystem walk that does not consult .gitignore.
-          mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
-        fi
-        # Keep only on-disk files: a sparse checkout leaves tracked-but-absent
-        # (skip-worktree) entries that ShellCheck cannot open.
-        present=()
-        for f in ${files[@]+"${files[@]}"}; do [[ -f "$f" ]] && present+=("$f"); done
-        files=(${present[@]+"${present[@]}"})
-        # Drop excluded substrings (space-separated, fixed-string match). The
-        # outer guard plus the per-iteration break keep an emptied list from
-        # feeding printf a lone newline, which grep -vF would pass back as a
-        # spurious empty-string element (length 1, not 0).
-        if [[ ${#files[@]} -gt 0 ]]; then
-          for sub in $EXCLUDE; do
-            mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
-            [[ ${#files[@]} -eq 0 ]] && break
-          done
-        fi
-        if [[ ${#files[@]} -eq 0 ]]; then
-          echo 'No shell scripts to check.'
-          exit 0
-        fi
-        printf 'Checking %d file(s):\n' "${#files[@]}"
-        printf '  %s\n' "${files[@]}"
-        args=(--rcfile="$RCFILE")
-        # Empty severity omits the flag, leaving ShellCheck's own default (style).
-        if [[ -n "${SEVERITY// }" ]]; then args+=(--severity="$SEVERITY"); fi
-        shellcheck "${args[@]}" "${files[@]}"
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

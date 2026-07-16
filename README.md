@@ -45,7 +45,10 @@ checkout of this repo. (Public is required because a public consumer such as
 
 - `.github/actions/markdown` — markdownlint-cli2 over the repo's markdown.
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
-  (installs a pinned, checksum-verified binary).
+  (installs a pinned, checksum-verified binary). Its default discovery remains
+  tracked `*.sh`/`*.bash`; `extra-globs` adds tracked extensionless inputs as
+  newline-delimited Git pathspecs, with optional `extra-exclude-codes` scoped
+  only to that extra lane so ordinary scripts keep the stricter result.
 - `.github/actions/shfmt` — shfmt formatting check over the repo's shell
   scripts, driven by the caller's `.editorconfig` (installs a pinned,
   checksum-verified binary).
