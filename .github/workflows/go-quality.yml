@@ -339,10 +339,25 @@ jobs:
             throw "golangci-lint execution failed with status $status; rerun after resolving infrastructure/configuration."
           }
 
-      - name: Run Windows tests
-        run: go test -count=1 -timeout=10m ./...
+      - name: Verify Windows race detector toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compiler = (Get-Command gcc.exe -ErrorAction Stop).Source
+          $runtimeLibrary = (& $compiler --print-file-name libsynchronization.a).Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $runtimeLibrary -eq 'libsynchronization.a' -or
+              -not (Test-Path -LiteralPath $runtimeLibrary -PathType Leaf)) {
+            throw 'The Windows race detector requires GCC with mingw-w64 runtime libraries version 8 or later.'
+          }
+
+      - name: Run Windows race-enabled tests
+        run: go test -race -count=1 -timeout=10m ./...
         shell: pwsh
         working-directory: ${{ inputs.working-directory }}
+        env:
+          CC: gcc
+          CGO_ENABLED: '1'
 
   govulncheck:
     name: Go vulnerability analysis

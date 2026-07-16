@@ -10,6 +10,14 @@ const workflow = fs.readFileSync(
   path.join(root, ".github", "workflows", "go-quality.yml"),
   "utf8",
 );
+const ciWorkflow = fs.readFileSync(
+  path.join(root, ".github", "workflows", "ci.yml"),
+  "utf8",
+);
+const windowsFixtureTest = fs.readFileSync(
+  path.join(root, "fixtures", "go", "windows-race", "windows_race_test.go"),
+  "utf8",
+);
 const guard = fs.readFileSync(
   path.join(root, ".github", "scripts", "govulncheck-sarif-guard.sh"),
   "utf8",
@@ -86,8 +94,28 @@ test("approved native tests and module hygiene stay blocking", () => {
   assert.match(workflow, /compare_snapshot go\.sum go\.sum/u);
   assert.doesNotMatch(workflow, /go mod tidy -diff/u);
   assert.match(workflow, /go mod verify/u);
-  assert.match(workflow, /go test -race -count=1 -timeout=10m \.\/\.\.\./u);
-  assert.match(workflow, /go test -count=1 -timeout=10m \.\/\.\.\./u);
+  assert.equal(
+    occurrences(workflow, /go test -race -count=1 -timeout=10m \.\/\.\.\./gu),
+    2,
+  );
+  assert.match(workflow, /--print-file-name libsynchronization\.a/u);
+  assert.match(workflow, /CC: gcc/u);
+  assert.match(workflow, /CGO_ENABLED: '1'/u);
+  assert.doesNotMatch(workflow, /go test -count=1/u);
+});
+
+test("this exact workflow head is behaviorally dogfooded on native Windows", () => {
+  assert.match(
+    ciWorkflow,
+    /^ {2}go-quality-dogfood:[\s\S]*?uses: \.\/\.github\/workflows\/go-quality\.yml[\s\S]*?working-directory: fixtures\/go\/windows-race/mu,
+  );
+  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*go-quality-dogfood[^\n]*\]$/mu);
+  assert.match(
+    ciWorkflow,
+    /^ {10}RESULTS: [^\n]*\$\{\{ needs\.go-quality-dogfood\.result \}\}[^\n]*$/mu,
+  );
+  assert.match(windowsFixtureTest, /^\/\/go:build windows$/mu);
+  assert.match(windowsFixtureTest, /if !raceDetectorEnabled/u);
 });
 
 test("generated tidy check matches the behavioral source", () => {
