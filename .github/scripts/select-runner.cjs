@@ -12,12 +12,20 @@ const SELF_HOSTED_ONLY_LABELS = new Set([
   "melodic-ubuntu-24.04-x64",
   "melodic-review-ubuntu-24.04-x64",
 ]);
+// Reviewed local event classes. merge_group and pull_request_target are
+// admitted for metadata-only gates: merge_group has no fork variant and only
+// write-access users can enqueue one, and pull_request_target executes the
+// trusted base-ref definition. The fork guard below still keeps every
+// fork-origin pull-request context off the managed fleet on both PR events.
 const LOCAL_EVENT_ALLOWLIST = new Set([
   "push",
   "schedule",
   "workflow_dispatch",
+  "merge_group",
   "pull_request",
+  "pull_request_target",
 ]);
+const FORK_GUARDED_EVENTS = new Set(["pull_request", "pull_request_target"]);
 const RESERVED_SELF_HOSTED_LABELS = new Set([
   "self-hosted",
   "linux",
@@ -156,7 +164,8 @@ function permitsLocalExecution(input) {
     return false;
   }
   return (
-    input.eventName !== "pull_request" || input.isForkPullRequest === false
+    !FORK_GUARDED_EVENTS.has(input.eventName) ||
+    input.isForkPullRequest === false
   );
 }
 

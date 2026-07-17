@@ -93,7 +93,9 @@ jobs:
           (github.event_name == 'push' ||
           github.event_name == 'schedule' ||
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' &&
+          github.event_name == 'merge_group' ||
+          ((github.event_name == 'pull_request' ||
+          github.event_name == 'pull_request_target') &&
           github.event.pull_request.head.repo.full_name == github.repository)) &&
           env.HAS_OBSERVER_SECRET == 'true' &&
           github.event.repository.private == true
@@ -126,7 +128,8 @@ jobs:
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           EVENT_NAME: ${{ github.event_name }}
           IS_FORK_PULL_REQUEST: >-
-            ${{ github.event_name == 'pull_request' &&
+            ${{ (github.event_name == 'pull_request' ||
+            github.event_name == 'pull_request_target') &&
             github.event.pull_request.head.repo.full_name != github.repository }}
           API_TIMEOUT_SECONDS: ${{ inputs.api-timeout-seconds }}
         with:
@@ -150,12 +153,20 @@ jobs:
                 "melodic-ubuntu-24.04-x64",
                 "melodic-review-ubuntu-24.04-x64",
               ]);
+              // Reviewed local event classes. merge_group and pull_request_target are
+              // admitted for metadata-only gates: merge_group has no fork variant and only
+              // write-access users can enqueue one, and pull_request_target executes the
+              // trusted base-ref definition. The fork guard below still keeps every
+              // fork-origin pull-request context off the managed fleet on both PR events.
               const LOCAL_EVENT_ALLOWLIST = new Set([
                 "push",
                 "schedule",
                 "workflow_dispatch",
+                "merge_group",
                 "pull_request",
+                "pull_request_target",
               ]);
+              const FORK_GUARDED_EVENTS = new Set(["pull_request", "pull_request_target"]);
               const RESERVED_SELF_HOSTED_LABELS = new Set([
                 "self-hosted",
                 "linux",
@@ -294,7 +305,8 @@ jobs:
                   return false;
                 }
                 return (
-                  input.eventName !== "pull_request" || input.isForkPullRequest === false
+                  !FORK_GUARDED_EVENTS.has(input.eventName) ||
+                  input.isForkPullRequest === false
                 );
               }
 

@@ -19,10 +19,11 @@ const ALLOWED_LOCAL_EVENTS = [
   "push",
   "schedule",
   "workflow_dispatch",
+  "merge_group",
   "pull_request",
+  "pull_request_target",
 ];
 const BLOCKED_LOCAL_EVENTS = [
-  "pull_request_target",
   "workflow_run",
   "issue_comment",
   "commit_comment",
@@ -30,7 +31,6 @@ const BLOCKED_LOCAL_EVENTS = [
   "pull_request_review",
   "pull_request_review_comment",
   "repository_dispatch",
-  "merge_group",
   "unknown-event",
 ];
 let nextRunnerID = 1;
@@ -192,7 +192,11 @@ for (const [name, overrides, reason] of [
 for (const [name, overrides] of [
   ["public repository", { repositoryPrivate: false }],
   ["fork pull request", { eventName: "pull_request", isForkPullRequest: true }],
-  ["blocked event", { eventName: "pull_request_target" }],
+  [
+    "fork pull_request_target",
+    { eventName: "pull_request_target", isForkPullRequest: true },
+  ],
+  ["blocked event", { eventName: "workflow_run" }],
 ]) {
   test(`self-hosted-only keeps ${name} on the hosted security route`, async () => {
     const result = await selectRunner(
@@ -261,6 +265,10 @@ for (const [routeName, overrides, reason] of [
 for (const [name, overrides] of [
   ["public repository", { repositoryPrivate: false }],
   ["fork pull request", { eventName: "pull_request", isForkPullRequest: true }],
+  [
+    "fork pull_request_target",
+    { eventName: "pull_request_target", isForkPullRequest: true },
+  ],
 ]) {
   test(`${name} routes hosted before authentication or inventory`, async () => {
     const result = await selectRunner(
