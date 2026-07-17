@@ -169,7 +169,19 @@ jobs:
       # Job-level (not workflow-level): a workflow-level group would cancel
       # before the `if` above evaluates, so a skipped actor could cancel an
       # in-progress review.
-      group: claude-review-${{ github.event.pull_request.number || github.sha }}
+      #
+      # Keyed per (PR, head SHA), not per PR: GitHub orders a concurrency
+      # group by when jobs start WAITING on it, not by event time, and callers
+      # gate this job behind a runner-selector job whose queue delay varies
+      # per run. Under a shared per-PR group, an older run whose selector was
+      # delayed could enter the group AFTER the newer head's review had
+      # started, cancel it, and review an obsolete head. Runs for different
+      # heads therefore never share a group; the superseded-head guard step
+      # below is what retires a stale run instead. Same-head duplicates
+      # (reopen, ready_for_review, reruns) still supersede each other — there
+      # the entry order is harmless because every member reviews identical
+      # content. Non-PR events degrade to a per-commit group via the fallbacks.
+      group: claude-review-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.head.sha || github.sha }}
       cancel-in-progress: true
     steps:
       # Tripwire: this workflow handles secrets, so it must never run in a
@@ -184,6 +196,34 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
+      # A stale run must retire itself, not rely on being cancelled: with the
+      # per-head concurrency key above, nothing cancels a run whose head was
+      # superseded while it sat in a queue. Ask the live API whether this
+      # event's head is still the PR's head; when it is not, a newer run owns
+      # the review, so every runner-consuming step below skips (posting
+      # feedback for an obsolete head is worse than doing nothing, and the
+      # newer run also owns the marker-comment lifecycle). Fails open — the
+      # `!= 'true'` step gates treat a missing output as fresh, and only a
+      # response shaped like a commit SHA may retire the run (a degenerate
+      # success such as jq's literal `null` must not) — so an API anomaly
+      # degrades to reviewing a possibly-stale head, never to silence.
+      - name: Check whether this head is still current
+        id: freshness
+        if: github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
+          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
+            echo "::notice::Skipping review: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns the review."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
       # `git fetch origin <ref>` BEFORE configuring git auth, so
@@ -191,6 +231,7 @@ jobs:
       # tracking comment. The final strip step below scrubs the persisted token
       # to restore zizmor `artipacked` compliance. Reversible when #1236 lands.
       - name: Check out
+        if: steps.freshness.outputs.superseded != 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           filter: blob:none
@@ -200,7 +241,7 @@ jobs:
       # must never do (see the input's own description above).
       - name: Generate standards-read token
         id: standards-token
-        if: inputs.standards-ref != ''
+        if: inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.STANDARDS_REVIEW_APP_ID }}
@@ -214,7 +255,7 @@ jobs:
       # of following it, so the checkout below cannot be redirected to delete the
       # main workspace. Keeps the reference mount off a PR-controlled path.
       - name: Clear PR-supplied reference-mount path
-        if: inputs.standards-ref != ''
+        if: inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true'
         env:
           MOUNT_PATH: ${{ github.workspace }}/.standards-ref
         run: rm -rf -- "$MOUNT_PATH"
@@ -226,7 +267,7 @@ jobs:
       # above, this read-only reference mount runs no later authenticated git
       # commands, so it is not subject to the #1236 constraint.
       - name: Check out standards (native-reference mount)
-        if: inputs.standards-ref != ''
+        if: inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: melodic-software/standards
@@ -240,6 +281,7 @@ jobs:
       # ternary, so the conditional is testable and reads like ordinary code.
       - name: Compose Claude CLI arguments
         id: compose-args
+        if: steps.freshness.outputs.superseded != 'true'
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
           STANDARDS_REF: ${{ inputs.standards-ref }}
@@ -261,6 +303,7 @@ jobs:
 
       - name: Claude review
         id: claude-review
+        if: steps.freshness.outputs.superseded != 'true'
         # claude-code-action exits non-zero only on infrastructure errors; review
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
@@ -287,9 +330,13 @@ jobs:
             commit blob (not the PR) using a permalink with line numbers:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
+      # Also gated on the guard: a superseded run has no outcome to report, and
+      # skipping this step leaves review_failed empty so both marker-comment
+      # steps below skip too — a retired run must not touch the newer run's PR
+      # comment state.
       - name: Report review outcome
         id: review-outcome
-        if: always()
+        if: always() && steps.freshness.outputs.superseded != 'true'
         env:
           REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
