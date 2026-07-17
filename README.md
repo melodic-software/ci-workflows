@@ -244,16 +244,21 @@ GitHub continues the normal weekly patching of each hosted image generation.
   A required reusable gate that declares `needs: select-runner` must execute
   after selector failures and skips. GitHub otherwise
   [skips the dependent job][job-dependencies] after a prerequisite failure, and
-  a [skipped required job reports success][job-conditions]. It must also remain
-  cancellable: GitHub documents that `always()` is true during cancellation and
+  a [skipped required job reports success][job-conditions]. It must also report
+  on every outcome: the standards runner-policy validator requires
+  selector-result reporters to declare exactly `if: ${{ always() }}` so every
+  prerequisite outcome — including cancellation — still materializes the
+  required check. GitHub generally
   [recommends `!cancelled()` instead of `always()`][workflow-troubleshooting]
-  when a job should stop if the workflow itself is cancelled. Use the
-  semantic-title gate's fail-closed prerequisite contract:
+  for jobs that should stop with a cancelled workflow; this contract
+  deliberately trades that for fail-closed reporting, and the cost is bounded
+  to one `ubuntu-slim` reporter run on cancellation. Use the semantic-title
+  gate's fail-closed prerequisite contract:
 
   ```yaml
   pr-title:
     needs: select-runner
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     permissions:
       pull-requests: read
     uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
@@ -267,9 +272,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   before title validation. An explicitly delivered `cancelled` result remains
   fail-closed because the result alone does not prove that a successor run will
   cover the same required check. If the caller workflow is cancelled manually
-  or by `concurrency.cancel-in-progress`, `!cancelled()` prevents this reporting
-  job from resisting that cancellation; a superseding run must report its own
-  result.
+  or by `concurrency.cancel-in-progress`, the `always()` reporter still runs
+  and reports for its own, now-superseded run; the superseding run reports its
+  own result, and a stale failure left by a superseded run clears on re-run.
 
   The normal success path still runs the existing `pr-title / pr-title` job
   only on the selector-returned runner; there is no routine aggregator or extra
