@@ -72,7 +72,7 @@ test("semantic PR required check fails closed after every delivered prerequisite
 test("documented selector composition preserves the one required check context", () => {
   assert.match(
     readme,
-    /pr-title:\n\s+needs: select-runner\n\s+if: \$\{\{ !cancelled\(\) \}\}[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/semantic-pr\.yml@<sha>[\s\S]*?runner: \$\{\{ needs\.select-runner\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}\n\s+prerequisite-result: \$\{\{ needs\.select-runner\.result \}\}/u,
+    /pr-title:\n\s+needs: select-runner\n\s+if: \$\{\{ always\(\) \}\}[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/semantic-pr\.yml@<sha>[\s\S]*?runner: \$\{\{ needs\.select-runner\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}\n\s+prerequisite-result: \$\{\{ needs\.select-runner\.result \}\}/u,
   );
   assert.match(
     readme,
@@ -84,6 +84,6 @@ test("documented selector composition preserves the one required check context",
   );
   assert.match(
     readme,
-    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?workflow itself is cancelled/u,
+    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?deliberately trades that for fail-closed reporting/u,
   );
 });
