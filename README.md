@@ -376,7 +376,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
   maintains a rolling tracking issue rather than gating a build—opening or
-  updating it on failure and closing it after the next clean run. (A whole
+  updating it on failure and, by default, closing it after the next clean run.
+  Inputs (documented inline) let a caller shape the rolling issue — title,
+  labels, native issue type, and the auto-close toggle — so a repo with an
+  established issue scheme adopts the workflow without behavior change. (A whole
   scheduled job with issue maintenance is a reusable-workflow concern, not a
   composite action; the deterministic on-disk counterpart is the
   `lychee-offline` action above, which feeds `ci-status`.)

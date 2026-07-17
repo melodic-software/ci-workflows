@@ -43,7 +43,8 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
   const closeStep = workflow.slice(closeIndex);
   assert.match(
     closeStep,
-    /if: steps\.lychee\.outputs\.exit_code == '0' && steps\.tracking\.outputs\.issue-number != ''/u,
+    /if: steps\.lychee\.outputs\.exit_code == '0' && steps\.tracking\.outputs\.issue-number != '' && inputs\.auto-close/u,
+    "recovery close must be gated on the auto-close toggle",
   );
   assert.match(
     closeStep,
@@ -84,5 +85,107 @@ test("the tracking marker is scoped per configured report", () => {
     /MARKER: \$\{\{ steps\.tracking\.outputs\.marker \}\}/u,
     "the report must be stamped with the same scoped marker the lookup " +
       "step computed, not a hardcoded constant",
+  );
+});
+
+test("behavior-shaping inputs default to the established rolling-issue behavior", () => {
+  const inputBlock = (name) => {
+    const match = workflow.match(
+      new RegExp(`\\n {6}${name}:\\n(?: {8}.*\\n)+`, "u"),
+    );
+    assert.ok(match, `workflow_call input '${name}' is missing`);
+    return match[0];
+  };
+
+  assert.match(inputBlock("issue-title"), /default: 'Link checker report'/u);
+  assert.match(
+    inputBlock("issue-labels"),
+    /default: 'automated, link-check'/u,
+    "existing callers must keep the historical label set",
+  );
+  assert.match(
+    inputBlock("issue-type"),
+    /default: ''/u,
+    "existing callers must keep their rolling issue untyped",
+  );
+  const autoClose = inputBlock("auto-close");
+  assert.match(autoClose, /type: boolean/u);
+  assert.match(
+    autoClose,
+    /default: true/u,
+    "existing callers must keep close-on-recovery",
+  );
+});
+
+test("the tracking lookup filters on the same labels the update step applies", () => {
+  const findIndex = workflow.indexOf("- name: Find existing tracking issue");
+  const embedIndex = workflow.indexOf(
+    "- name: Embed the marker in the lychee report",
+  );
+  assert.ok(findIndex >= 0 && embedIndex > findIndex);
+  const lookupStep = workflow.slice(findIndex, embedIndex);
+
+  assert.match(
+    lookupStep,
+    /ISSUE_LABELS: \$\{\{ inputs\.issue-labels \}\}/u,
+    "the lookup must derive its label filter from the caller-configured set",
+  );
+  assert.match(
+    lookupStep,
+    /labels_query="\$\(jq -rn --arg labels "\$ISSUE_LABELS"/u,
+  );
+  assert.match(
+    lookupStep,
+    /map\(@uri\) \| join\(","\)/u,
+    "each label must be percent-encoded individually so label text cannot " +
+      "split or terminate the query",
+  );
+  assert.match(
+    lookupStep,
+    /if \[\[ -z "\$labels_query" \]\]; then[\s\S]*?exit 1/u,
+    "an empty label set must fail closed, not silently drop the " +
+      "owned-report constraint",
+  );
+  assert.match(
+    lookupStep,
+    /labels=\$\{labels_query\}/u,
+    "the issues query must filter on the caller-configured labels",
+  );
+
+  const updateIndex = workflow.indexOf("- name: Open or update tracking issue");
+  const typeIndex = workflow.indexOf("- name: Assert native issue type");
+  assert.ok(updateIndex >= 0 && typeIndex > updateIndex);
+  const updateStep = workflow.slice(updateIndex, typeIndex);
+  assert.match(
+    updateStep,
+    /labels: \$\{\{ inputs\.issue-labels \}\}/u,
+    "the update step must apply exactly the configured label set",
+  );
+});
+
+test("the native issue type is asserted from input, after create or update", () => {
+  const updateIndex = workflow.indexOf("- name: Open or update tracking issue");
+  const typeIndex = workflow.indexOf("- name: Assert native issue type");
+  const closeIndex = workflow.indexOf("- name: Close recovered tracking issue");
+  assert.ok(
+    typeIndex > updateIndex,
+    "type assertion must follow the create/update step whose issue number " +
+      "it targets",
+  );
+  assert.ok(closeIndex > typeIndex);
+
+  const typeStep = workflow.slice(typeIndex, closeIndex);
+  assert.match(
+    typeStep,
+    /if: steps\.lychee\.outputs\.exit_code != '0' && inputs\.issue-type != ''/u,
+    "an empty issue-type must skip type assignment (the pre-input behavior)",
+  );
+  assert.match(
+    typeStep,
+    /NUMBER: \$\{\{ steps\.issue\.outputs\.issue-number \}\}/u,
+  );
+  assert.match(
+    typeStep,
+    /gh issue edit "\$NUMBER" --repo "\$GITHUB_REPOSITORY" --type "\$ISSUE_TYPE"/u,
   );
 });
