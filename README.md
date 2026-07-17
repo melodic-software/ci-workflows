@@ -195,9 +195,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
   immutable selector revision. Invalid queue-only configuration and selector
   infrastructure faults fail the selector job instead of falling back to paid
   hosted execution. Public
-  repositories and fork pull requests route hosted before the observer-token
+  repositories and fork pull requests — on `pull_request` and
+  `pull_request_target` alike — route hosted before the observer-token
   action can execute, following GitHub's
   [self-hosted runner security guidance][runner-security]. Same-repository
+  `pull_request_target` and `merge_group` runs are reviewed local event
+  classes: `pull_request_target` executes only the trusted base-branch
+  definition, and a merge group can be enqueued only by a write-access user
+  after required checks pass, so metadata-only gates on those events reach
+  governed capacity. Same-repository
   Dependabot runs route like any push: their lane code executes in ephemeral
   one-job workers, and the selector sources the observer key from the
   [Dependabot secrets store][dependabot-secrets] on Dependabot events, so the
