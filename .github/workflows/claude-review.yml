@@ -203,8 +203,10 @@ jobs:
       # the review, so every runner-consuming step below skips (posting
       # feedback for an obsolete head is worse than doing nothing, and the
       # newer run also owns the marker-comment lifecycle). Fails open — the
-      # `!= 'true'` step gates treat a missing output as fresh — so an API
-      # error degrades to reviewing a possibly-stale head, never to silence.
+      # `!= 'true'` step gates treat a missing output as fresh, and only a
+      # response shaped like a commit SHA may retire the run (a degenerate
+      # success such as jq's literal `null` must not) — so an API anomaly
+      # degrades to reviewing a possibly-stale head, never to silence.
       - name: Check whether this head is still current
         id: freshness
         if: github.event.pull_request.number != ''
@@ -215,7 +217,7 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
-          if [ -n "$live_head" ] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
+          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
             echo "::notice::Skipping review: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns the review."
             echo "superseded=true" >> "$GITHUB_OUTPUT"
           else
