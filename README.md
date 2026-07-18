@@ -171,8 +171,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   spends hosted minutes before returning the caller's admitted managed label —
   the default tier or the capped review tier — and never runs its own selection
   on the review tier's small capacity. The
-  `prefer-self-hosted` and `hosted-only` selector paths retain `ubuntu-slim` so
-  their adaptive and explicit hosted semantics remain available. Every selector
+  `prefer-self-hosted` and `hosted-only` selector paths run on the standard
+  `ubuntu-24.04` hosted runner (free on public repos, quota-covered on private)
+  so their adaptive and explicit hosted semantics remain available. Every selector
   path has a two-minute timeout and returns one `runs-on` string. A downstream
   job has its own runner and timeout; the selector's platform limit does not
   carry into that job.
@@ -258,7 +259,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   [recommends `!cancelled()` instead of `always()`][workflow-troubleshooting]
   for jobs that should stop with a cancelled workflow; this contract
   deliberately trades that for fail-closed reporting, and the cost is bounded
-  to one `ubuntu-slim` reporter run on cancellation. Use the semantic-title
+  to one `ubuntu-24.04` reporter run on cancellation. Use the semantic-title
   gate's fail-closed prerequisite contract:
 
   ```yaml
@@ -274,7 +275,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   When the caller workflow is active, any prerequisite result other than exact
-  `success` runs the same required reusable job on `ubuntu-slim` and fails
+  `success` runs the same required reusable job on `ubuntu-24.04` and fails
   before title validation. An explicitly delivered `cancelled` result remains
   fail-closed because the result alone does not prove that a successor run will
   cover the same required check. If the caller workflow is cancelled manually

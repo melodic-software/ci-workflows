@@ -43,7 +43,7 @@ jobs:
   # convention semantic-pr / pr-title.yml and do-not-merge-gate already
   # established.
   pr-issue-linkage:
-    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
+    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite
