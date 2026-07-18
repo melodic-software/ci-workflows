@@ -128,31 +128,45 @@ jobs:
           (github.event_name == 'pull_request' ||
           github.event_name == 'pull_request_target' ||
           github.event_name == 'merge_group')
+        # actions/github-script rather than a `gh api` run step: the gate runs
+        # on whatever runner the caller selected, and a self-hosted image is
+        # not guaranteed to ship the gh CLI (observed: exit 127 `gh: command
+        # not found` on a self-hosted runner, which failed this required check
+        # with no label present). github-script executes on the action's own
+        # bundled Node runtime, so the live label refetch has no runner-image
+        # dependency. The sibling pr-issue-linkage reusable already uses the
+        # same mechanism on the same runners.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BLOCKING_LABEL: ${{ inputs.label }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == "merge_group" ]]; then
-            pr_number="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -nE 's#.*/pr-([0-9]+)-[0-9a-f]+$#\1#p')"
-            if [[ -z "$pr_number" ]]; then
-              echo "::error::Could not parse a PR number from merge_group head_ref '${MERGE_GROUP_HEAD_REF}'."
-              exit 1
-            fi
-          else
-            pr_number="$PR_NUMBER"
-            if [[ -z "$pr_number" ]]; then
-              echo "::error::PR number is empty for a pull_request/pull_request_target event."
-              exit 1
-            fi
-          fi
-          pr_labels_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '[.labels[].name]')"
-          if jq -e --arg label "$BLOCKING_LABEL" 'any(. == $label)' <<<"$pr_labels_json" >/dev/null; then
-            echo "::error::This PR carries the '${BLOCKING_LABEL}' label; remove it to merge."
-            exit 1
-          fi
-          echo "No blocking label present."
+        with:
+          script: |
+            const blockingLabel = process.env.BLOCKING_LABEL;
+            let prNumber;
+            if (context.eventName === "merge_group") {
+              const headRef = process.env.MERGE_GROUP_HEAD_REF ?? "";
+              const match = /\/pr-(\d+)-[0-9a-f]+$/.exec(headRef);
+              if (!match) {
+                core.setFailed(`Could not parse a PR number from merge_group head_ref '${headRef}'.`);
+                return;
+              }
+              prNumber = Number(match[1]);
+            } else {
+              prNumber = context.payload.pull_request?.number;
+              if (!prNumber) {
+                core.setFailed("PR number is empty for a pull_request/pull_request_target event.");
+                return;
+              }
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const labels = pr.labels.map((label) => label.name);
+            if (labels.includes(blockingLabel)) {
+              core.setFailed(`This PR carries the '${blockingLabel}' label; remove it to merge.`);
+              return;
+            }
+            core.info("No blocking label present.");
