@@ -23,7 +23,7 @@ test("semantic PR required check fails closed after every delivered prerequisite
   const requiredJob = workflow.slice(workflow.indexOf("  pr-title:\n"));
   assert.match(
     requiredJob,
-    /runs-on: \$\{\{ inputs\.prerequisite-result == 'success' && inputs\.runner \|\| 'ubuntu-slim' \}\}/u,
+    /runs-on: \$\{\{ inputs\.prerequisite-result == 'success' && inputs\.runner \|\| 'ubuntu-24\.04' \}\}/u,
   );
   assert.doesNotMatch(requiredJob, /Note cancelled prerequisite/u);
   assert.match(
@@ -45,7 +45,7 @@ test("semantic PR required check fails closed after every delivered prerequisite
   );
 
   const runnerFor = (result, selectedRunner) =>
-    result === "success" && selectedRunner ? selectedRunner : "ubuntu-slim";
+    result === "success" && selectedRunner ? selectedRunner : "ubuntu-24.04";
   assert.equal(
     runnerFor("success", "melodic-ubuntu-24.04-x64"),
     "melodic-ubuntu-24.04-x64",
@@ -53,7 +53,7 @@ test("semantic PR required check fails closed after every delivered prerequisite
   for (const result of ["failure", "cancelled", "skipped", ""]) {
     assert.equal(
       runnerFor(result, "ci-runner-selection-failed"),
-      "ubuntu-slim",
+      "ubuntu-24.04",
     );
   }
 

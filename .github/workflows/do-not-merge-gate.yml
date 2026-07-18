@@ -35,10 +35,11 @@ permissions:
 jobs:
   do-not-merge:
     # A failed/skipped selector cannot supply a usable runner and must not make
-    # this required context disappear. Use the least-expensive hosted runner
-    # only to report that exceptional failure; successful calls still consume
-    # exactly the caller-selected runner and add no hosted validation job.
-    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
+    # this required context disappear. Use the standard ubuntu-24.04 hosted
+    # runner (free on public repos) only to report that exceptional failure;
+    # successful calls still consume exactly the caller-selected runner and add
+    # no hosted validation job.
+    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite

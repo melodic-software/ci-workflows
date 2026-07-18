@@ -1010,7 +1010,7 @@ test("strict selector scheduling is local while adaptive policies stay hosted", 
   const workflow = fs.readFileSync(workflowPath, "utf8");
   assert.match(
     workflow,
-    /runs-on: \$\{\{ inputs\.policy == 'self-hosted-only' && 'melodic-ubuntu-24\.04-x64' \|\| 'ubuntu-slim' \}\}/u,
+    /runs-on: \$\{\{ inputs\.policy == 'self-hosted-only' && 'melodic-ubuntu-24\.04-x64' \|\| 'ubuntu-24\.04' \}\}/u,
   );
   assert.doesNotMatch(
     workflow,

@@ -64,8 +64,9 @@ jobs:
     # Strict queue-only routing must not spend hosted minutes before it returns
     # the managed label. Keep this allowlisted route independent of caller input:
     # malformed strict configuration still queues locally and then fails closed.
-    # Adaptive and hosted-only policies retain the inexpensive hosted selector.
-    runs-on: ${{ inputs.policy == 'self-hosted-only' && 'melodic-ubuntu-24.04-x64' || 'ubuntu-slim' }}
+    # Adaptive and hosted-only policies run the selector on the standard
+    # ubuntu-24.04 hosted runner, which is free on public repos.
+    runs-on: ${{ inputs.policy == 'self-hosted-only' && 'melodic-ubuntu-24.04-x64' || 'ubuntu-24.04' }}
     timeout-minutes: 2
     env:
       HAS_OBSERVER_SECRET: ${{ secrets.observer-private-key != '' }}

@@ -84,12 +84,13 @@ permissions:
 jobs:
   pr-title:
     # A failed/skipped/cancelled selector cannot supply a usable runner and must
-    # not make this required context disappear. Use the least-expensive hosted
-    # runner only to report that non-success outcome; successful calls still
-    # consume exactly the caller-selected runner and add no hosted validation
-    # job. The caller's `if: !cancelled()` lets whole-workflow cancellation stop
-    # this job before dispatch while preserving fail-closed prerequisite results.
-    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-slim' }}
+    # not make this required context disappear. Use the standard ubuntu-24.04
+    # hosted runner (free on public repos) only to report that non-success
+    # outcome; successful calls still consume exactly the caller-selected runner
+    # and add no hosted validation job. The caller's `if: !cancelled()` lets
+    # whole-workflow cancellation stop this job before dispatch while preserving
+    # fail-closed prerequisite results.
+    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite
