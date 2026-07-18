@@ -8,31 +8,18 @@
 # grep lacks it).
 set -euo pipefail
 
-# Per-OS machine-path regex BODIES. DEFINE single-quoted, EXPAND double-quoted
-# ("$WIN_USER_BODY"): a double-quoted definition would collapse the escaped-repo
-# body's doubled backslashes and silently change what grep matches.
-#
-# The Windows bodies match the separator as single-backslash, forward-slash, OR
-# doubled-backslash (JSON-escaped) at every position — (/|\\\\?) is fwd-slash or
-# one-to-two backslashes — and accept an 8.3 short-name segment ending ~<digit>
-# (e.g. ALICE~1) via the optional (~[0-9]+). The negative class still excludes a
-# bare ~ so a tilde-shorthand segment stays clean. macOS/Linux bodies carry the
-# drive-letter / leading-slash anchor differently, so they get the PATH_BOUNDARY
-# prefix below; the Windows bodies are self-anchored by `[A-Za-z]:`.
-WIN_USER_BODY='[A-Za-z]:(/|\\\\?)Users(/|\\\\?)[^/\\$<{~]+(~[0-9]+)?(/|\\\\?)'
-MACOS_USER_BODY='/Users/[^/$<{~]+/'
-LINUX_USER_BODY='/home/[^/$<{~]+/'
-WIN_REPO_BODY='[A-Za-z]:(/|\\\\?)repos(/|\\\\?)[^/\\$<{~]+(~[0-9]+)?(/|\\\\?)'
-# SC1003 false positive: the trailing \\\\ is a deliberate literal-backslash ERE
-# (matches a JSON-escaped path separator), not a botched single-quote escape.
-# shellcheck disable=SC1003
-ESCAPED_WIN_REPO_BODY='[A-Za-z]:\\\\repos\\\\[^\\$<{~]+(~[0-9]+)?\\\\'
+# The per-OS regex BODIES (HPP_*) live in machine-path-patterns.sh — the
+# org-shared, standards-managed materialization — so a pattern change lands
+# upstream once and reaches every scan driver in lockstep. This driver keeps
+# only its own wrapping (the PATH_BOUNDARY prefix and git-grep execution).
+# shellcheck source=machine-path-patterns.sh
+source "${BASH_SOURCE[0]%/*}/machine-path-patterns.sh"
 
 # Boundary for the slash-rooted macOS/Linux bodies so a substring like
 # "doc/Users/guide" inside a longer word does not false-match.
 PATH_BOUNDARY="(^|[[:space:]\"'\`(=]|file://)"
-MACOS_PATTERN="${PATH_BOUNDARY}${MACOS_USER_BODY}"
-LINUX_PATTERN="${PATH_BOUNDARY}${LINUX_USER_BODY}"
+MACOS_PATTERN="${PATH_BOUNDARY}${HPP_MACOS_USER_BODY}"
+LINUX_PATTERN="${PATH_BOUNDARY}${HPP_LINUX_USER_BODY}"
 
 read -ra scan_paths <<<"${EXTENSIONS:-}"
 read -ra excludes <<<"${EXCLUDE:-}"
@@ -59,13 +46,13 @@ run_check() {
 }
 
 # OS home paths (placeholders excluded by the character class).
-run_check "Windows user path" "$WIN_USER_BODY"
+run_check "Windows user path" "$HPP_WIN_USER_BODY"
 run_check "macOS user path" "$MACOS_PATTERN"
 run_check "Linux user path" "$LINUX_PATTERN"
 
 # Repo checkout roots (plain and escaped backslash forms).
-run_check "Windows repo path" "$WIN_REPO_BODY"
-run_check "Escaped Windows repo path" "$ESCAPED_WIN_REPO_BODY"
+run_check "Windows repo path" "$HPP_WIN_REPO_BODY"
+run_check "Escaped Windows repo path" "$HPP_ESCAPED_WIN_REPO_BODY"
 
 if [[ "$failed" -ne 0 ]]; then
   echo "Use portable placeholders (<repo-root>, <user>) or relative paths." >&2
