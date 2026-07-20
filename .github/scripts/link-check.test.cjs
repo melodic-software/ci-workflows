@@ -81,9 +81,9 @@ test("the tracking marker is scoped per configured report", () => {
   );
   assert.match(
     lookupStep,
-    /marker="<!-- ci-workflows:link-check:v1:active:\$\{report_key\} -->"/u,
+    /MARKER="<!-- ci-workflows:link-check:v1:active:\$\{report_key\} -->"/u,
   );
-  assert.match(lookupStep, /echo "marker=\$\{marker\}" >> "\$GITHUB_OUTPUT"/u);
+  assert.match(lookupStep, /echo "marker=\$\{MARKER\}" >> "\$GITHUB_OUTPUT"/u);
 
   const embedStep = workflow.slice(embedIndex);
   assert.match(
