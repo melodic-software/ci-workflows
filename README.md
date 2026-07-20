@@ -39,7 +39,9 @@ checkout of this repo. (Public is required because a public consumer such as
   consumer job. The required-check contract is a single check named `ci-status`,
   produced by a thin gateway job the consumer keeps local so the required-check
   name stays un-nested. The gateway `needs:` the lane jobs and fails if any
-  failed or was cancelled; a skipped job is allowed.
+  failed or was cancelled. Whether a skipped lane passes is the consumer's
+  policy via the `ci-status` action's `treat-skipped-as` input — see that
+  action below for when a skip must block rather than pass.
 
 ## Actions
 
