@@ -52,7 +52,7 @@ name: claude-e2e-verify
 #   - Fork PRs receive no secrets and a read-only token by design, so the agent
 #     degrades to a no-op warning — fork PRs are simply not verified. That is
 #     correct, not a gap to "fix".
-#   - One named secret (CLAUDE_CODE_OAUTH_TOKEN), never `secrets: inherit`.
+#   - One named secret (CLAUDE_CODE_OAUTH_TOKEN); broad secret inheritance is never used.
 #   - Least privilege, re-declared on the job so an over-granting caller is still
 #     narrowed here: contents:read + pull-requests:write + id-token:write.
 #   - `display_report` / `show_full_output` stay off (public-repo log-leak risk);
