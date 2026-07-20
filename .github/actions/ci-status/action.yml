@@ -1,7 +1,7 @@
 name: ci-status
 description: >-
-  Aggregate lane results into one pass/fail gate. Passes when every result is
-  success or skipped; fails naming the first result that is neither.
+  Aggregate lane results into one pass/fail gate. Fails naming the first result
+  that does not pass; whether `skipped` passes is the caller's policy.
 
 inputs:
   results:
@@ -10,6 +10,13 @@ inputs:
       builds this from `needs.<lane>.result`. Empty fails: a gate with nothing
       to aggregate is a miswired `needs` list, not a pass.
     required: true
+  treat-skipped-as:
+    description: >-
+      Whether a `skipped` lane passes the gate: `pass` or `fail`. Defaults to
+      `pass`. Use `fail` where a skip means a lane that should have run did not
+      — for example a runner selector that fell back and left downstream lanes
+      skipped, which must go red rather than green.
+    default: pass
 
 runs:
   using: composite
@@ -18,8 +25,16 @@ runs:
       shell: bash
       env:
         RESULTS: ${{ inputs.results }}
+        TREAT_SKIPPED_AS: ${{ inputs.treat-skipped-as }}
       run: |
         set -euo pipefail
+        # Reject an unrecognised policy rather than silently defaulting: a typo
+        # such as `Fail` would otherwise resolve to the laxer branch and quietly
+        # weaken the gate it was written to tighten.
+        case "$TREAT_SKIPPED_AS" in
+          pass|fail) ;;
+          *) echo "::error::treat-skipped-as must be 'pass' or 'fail', got: ${TREAT_SKIPPED_AS}"; exit 1 ;;
+        esac
         # Unquoted expansion word-splits on all of IFS (space, tab, newline), so
         # a YAML block scalar spanning lines is parsed in full. `read` would stop
         # at the first newline and silently skip every later lane.
@@ -32,8 +47,17 @@ runs:
         fi
         for r in "${results[@]}"; do
           case "$r" in
-            success|skipped) ;;
+            success) ;;
+            skipped)
+              if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
+                echo "A lane did not pass (result: $r)."; exit 1
+              fi
+              ;;
             *) echo "A lane did not pass (result: $r)."; exit 1 ;;
           esac
         done
-        echo "All lanes passed or were skipped."
+        if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
+          echo "All lanes passed."
+        else
+          echo "All lanes passed or were skipped."
+        fi
