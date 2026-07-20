@@ -62,6 +62,23 @@ name: claude-e2e-verify
 #     `run:` steps only through env vars, never inlined into a shell command
 #     (template-injection discipline). github-context and input expressions
 #     appear directly only in `with:`/env, where they are not shell-evaluated.
+#   - PERSISTED-CREDENTIAL COEXISTENCE (accepted, not mitigated in-job):
+#     actions/checkout persists the GITHUB_TOKEN into .git/config, and this lane
+#     then runs PR-controlled code (the app build/serve) in the SAME job — so
+#     that process can read the token from .git/config and, via same-uid /proc,
+#     a later step's environment. This exposure is accepted because: the lane is
+#     `pull_request`-only (the tripwire above); fork PRs receive no secrets and
+#     the agent skips entirely; and a same-repository author already holds write,
+#     so the token grants them nothing they lack. The final `Strip persisted git
+#     credentials` step scrubs .git/config at job end. The strip is NOT moved
+#     ahead of the app (which would isolate the app from the token) because
+#     claude-code-action's setupBranch fetches origin BEFORE it configures auth
+#     (claude-code-action#1236, open; its fix PR reorders rather than catches),
+#     so an earlier strip makes that fetch throw and aborts verification on
+#     private consumers while a public dogfood stays green and masks it. Reversal
+#     is recorded against #1236. Full in-job isolation would require running the
+#     app in a SEPARATE UNPRIVILEGED JOB — the recorded hardening direction if
+#     this lane's scope ever widens.
 #
 # PIN NOTE: PLAYWRIGHT_VERSION below is an in-workflow tool pin with no package
 # manifest, so Dependabot cannot see it (it bumps only `uses:` SHAs). The
@@ -146,10 +163,16 @@ jobs:
       pull-requests: write
       id-token: write
     concurrency:
-      # Per-PR, cancel superseded runs. Job-level (not workflow-level) so the
-      # group is evaluated with the job. Non-PR events degrade to a per-commit
-      # group via the fallback.
-      group: claude-e2e-verify-${{ github.event.pull_request.number || github.sha }}
+      # Keyed per (PR, head SHA), not per PR: a run whose head was superseded
+      # while it sat in a queue is not cancelled under a shared per-PR group
+      # (GitHub orders a group by when runs start WAITING on it, not by event
+      # time), so an older run could otherwise enter the group after the newer
+      # head's verification started and cancel it. Runs for different heads
+      # therefore never share a group; the freshness guard below retires a stale
+      # run instead. Same-head duplicates (reopen, reruns) still supersede each
+      # other harmlessly (identical content). Non-PR events degrade to a
+      # per-commit group via the fallbacks.
+      group: claude-e2e-verify-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.head.sha || github.sha }}
       cancel-in-progress: true
     steps:
       # Tripwire: this workflow handles secrets AND executes PR code, so it must
@@ -164,6 +187,32 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
+      # A stale run must retire itself, not rely on being cancelled: with the
+      # per-head concurrency key above, nothing cancels a run whose head was
+      # superseded while it queued. Ask the live API whether this event's head is
+      # still the PR's head; when it is not, a newer run owns the verification, so
+      # every runner-consuming step below skips (building/serving/driving an
+      # obsolete head and commenting on it is worse than doing nothing). Fails
+      # open — the `!= 'true'` gates treat a missing output as fresh, and only a
+      # 40-hex commit SHA may retire the run — so an API anomaly degrades to
+      # verifying a possibly-stale head, never to silence.
+      - name: Check whether this head is still current
+        id: freshness
+        if: github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
+          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
+            echo "::notice::Skipping verification: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns it."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
       # `git fetch origin <ref>` BEFORE configuring git auth, so
@@ -171,12 +220,13 @@ jobs:
       # below scrubs the persisted token to restore zizmor `artipacked`
       # compliance. Reversible when #1236 lands.
       - name: Check out
+        if: steps.freshness.outputs.superseded != 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           filter: blob:none
 
       - name: Install application dependencies
-        if: inputs.setup-command != ''
+        if: inputs.setup-command != '' && steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
           # Caller string via env (never inlined) — template-injection discipline.
@@ -186,6 +236,7 @@ jobs:
           eval "$SETUP_COMMAND"
 
       - name: Install pinned Playwright browsers
+        if: steps.freshness.outputs.superseded != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -197,6 +248,7 @@ jobs:
           echo "NODE_PATH=$(npm root --global)" >> "$GITHUB_ENV"
 
       - name: Start the application under test
+        if: steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
           # Caller string via env (never inlined) — template-injection discipline.
@@ -211,6 +263,7 @@ jobs:
           echo "APP_LOG=$app_log" >> "$GITHUB_ENV"
 
       - name: Wait for the application to become healthy
+        if: steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
           # Caller string via env (never inlined) — template-injection discipline.
@@ -231,8 +284,43 @@ jobs:
           tail -n 200 "${APP_LOG:-/dev/null}" || true
           exit 1
 
+      # The comment delivery path needs a PR to comment on. On workflow_dispatch
+      # (or any event without a pull_request) there is none, so `gh pr comment`
+      # would run with an empty number. Compose the reporting instruction to
+      # match the context: post a PR comment when a PR number exists, otherwise
+      # annotate the run's step summary. A shell step (not an inline expression
+      # ternary) keeps the branch readable, mirroring claude-review's discipline.
+      - name: Compose the reporting instruction
+        id: report-instruction
+        if: steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          {
+            echo "REPORT_INSTRUCTION<<REPORT_INSTRUCTION_EOF"
+            if [ -n "$PR_NUMBER" ]; then
+              printf '%s\n' \
+                "Post your findings as a single PR comment — this is the only" \
+                "delivery path, so you must post it yourself:" \
+                "" \
+                "  gh pr comment $PR_NUMBER --body \"<summary>\"" \
+                "" \
+                "The \`gh\` CLI is already authenticated in this environment."
+            else
+              printf '%s\n' \
+                "This run has no associated pull request (it was triggered" \
+                "manually), so there is nowhere to post a PR comment. Instead," \
+                "append your findings as markdown to the GitHub step summary file" \
+                "referenced by the GITHUB_STEP_SUMMARY environment variable."
+            fi
+            echo "REPORT_INSTRUCTION_EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Claude end-to-end verification
         id: claude-e2e
+        if: steps.freshness.outputs.superseded != 'true'
         # The action exits non-zero only on infrastructure errors; verification
         # findings go to the PR comment, not the exit code. continue-on-error
         # keeps an OIDC/usage-limit/SDK blip (or a fork's missing token) from
@@ -272,14 +360,12 @@ jobs:
 
             ${{ inputs.e2e-spec }}
 
-            Exercise each journey against the URL above, then post your findings
-            as a single PR comment — this is the only delivery path, so you must
-            post it yourself:
+            Exercise each journey against the URL above, then report your
+            findings as instructed here:
 
-              gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"
+            ${{ env.REPORT_INSTRUCTION }}
 
-            The `gh` CLI is already authenticated in this environment. The
-            summary must cover: the journeys you confirmed as passing, each
+            The findings must cover: the journeys you confirmed as passing, each
             failure with concrete reproduction steps, and a severity for each
             failure. Use advisory, non-merge-blocking wording throughout.
 
@@ -289,7 +375,7 @@ jobs:
       # model-authored free text. Project only the safe, structured metadata
       # fields, mirroring claude-review's failure reporting.
       - name: Report verification outcome
-        if: always()
+        if: always() && steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
           VERIFY_OUTCOME: ${{ steps.claude-e2e.outcome }}
@@ -316,7 +402,7 @@ jobs:
             "Last SDK result: $detail"
 
       - name: Stop the application under test
-        if: always()
+        if: always() && steps.freshness.outputs.superseded != 'true'
         shell: bash
         run: |
           set -uo pipefail

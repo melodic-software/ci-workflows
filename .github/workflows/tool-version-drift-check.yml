@@ -19,6 +19,7 @@ on:
     paths:
       - '.github/workflows/tool-version-drift-check.yml'
       - '.github/workflows/osv-scanner.yml'
+      - '.github/workflows/claude-e2e-verify.yml'
       - 'global.json'
       - '.github/osv-scanner-pin.json'
       - '.github/actions/actionlint/action.yml'
@@ -315,6 +316,29 @@ jobs:
             echo "ok    govulncheck: ${govuln_current}"
           fi
 
+          # The e2e verification lane pins its Playwright CLI as a workflow-level
+          # env value (no action.yml, so it is not in the tools[] manifest above
+          # and Dependabot cannot see it). Track npm's current stable playwright,
+          # the same registry the browser toolchain installs from.
+          playwright_file=.github/workflows/claude-e2e-verify.yml
+          playwright_current="$(yq '.env.PLAYWRIGHT_VERSION' "$playwright_file")"
+          if [[ -z "$playwright_current" || "$playwright_current" == "null" ]]; then
+            echo "::error::could not read PLAYWRIGHT_VERSION from ${playwright_file}"
+            exit 1
+          fi
+          playwright_latest="$(latest_npm playwright)" || playwright_latest=''
+          if [[ -z "$playwright_latest" || "$playwright_latest" == "null" ]]; then
+            echo "::warning::could not resolve latest playwright (npm); skipping"
+          else
+            playwright_lowest="$(printf '%s\n%s\n' "$playwright_current" "$playwright_latest" | sort -V | head -1)"
+            if [[ "$playwright_lowest" == "$playwright_current" && "$playwright_current" != "$playwright_latest" ]]; then
+              drift_lines+="- **Playwright CLI** (\`playwright\`, e2e lane): pinned \`${playwright_current}\`, upstream latest \`${playwright_latest}\`"$'\n'
+              echo "DRIFT playwright: ${playwright_current} -> ${playwright_latest}"
+            else
+              echo "ok    playwright: ${playwright_current} (latest ${playwright_latest})"
+            fi
+          fi
+
           if [[ -z "$drift_lines" ]]; then
             echo "drift_detected=false" >> "$GITHUB_OUTPUT"
             echo "No drift — all tracked tool and image pins are current."
@@ -345,7 +369,9 @@ jobs:
             echo "official linux-amd64 and windows-amd64 archive checksums before changing the"
             echo "embedded version and hashes. For govulncheck, verify the official Go proxy"
             echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
-            echo "exact module pin. For runtime drift, update every action's matching"
+            echo "exact module pin. For Playwright, bump the \`PLAYWRIGHT_VERSION\` env value in"
+            echo "\`.github/workflows/claude-e2e-verify.yml\` (an npm lane, no checksum)."
+            echo "For runtime drift, update every action's matching"
             echo "input default (and the root global.json plus the dotnet actions' fallback"
             echo "pins together) only after reviewing the stable patch. Never auto-merge these"
             echo "updates."
