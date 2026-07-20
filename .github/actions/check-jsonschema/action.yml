@@ -7,7 +7,9 @@ inputs:
   files:
     description: >-
       Space-separated files or shell globs to validate (relative to the caller
-      repo).
+      repo). A glob matching nothing is dropped, so patterns may be listed
+      defensively (e.g. both *.yml and *.yaml); the step fails if the whole
+      list expands to no files.
     required: true
   builtin-schema:
     description: >-
@@ -68,4 +70,14 @@ runs:
         if [[ "$NO_CACHE" == "true" ]]; then args+=(--no-cache); fi
         if [[ -n "${OUTPUT_FORMAT// }" ]]; then args+=(--output-format "$OUTPUT_FORMAT"); fi
         # $FILES unquoted so multiple targets word-split and shell globs expand.
-        uvx "check-jsonschema@${VERSION}" "${args[@]}" $FILES
+        # nullglob drops non-matching patterns instead of passing them through as
+        # literal filenames; the empty-expansion guard below keeps that from
+        # degrading into a zero-file invocation, which would exit 0 (false green).
+        shopt -s nullglob
+        # shellcheck disable=SC2206
+        targets=($FILES)
+        shopt -u nullglob
+        if [[ ${#targets[@]} -eq 0 ]]; then
+          echo "::error::files expanded to no existing paths: ${FILES}"; exit 1
+        fi
+        uvx "check-jsonschema@${VERSION}" "${args[@]}" "${targets[@]}"
