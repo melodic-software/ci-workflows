@@ -579,6 +579,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
+  This check reads PR title metadata only — it checks out and runs no head code.
+
   This block is the canonical pattern to copy. The in-repo
   `.github/workflows/pr-title.yml` dogfood caller deliberately stays on
   `pull_request` for now: this repo is already gated on its own `pr-title / pr-title`
