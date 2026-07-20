@@ -20,10 +20,16 @@ runs:
         RESULTS: ${{ inputs.results }}
       run: |
         set -euo pipefail
-        if [[ -z "${RESULTS// }" ]]; then
+        # Unquoted expansion word-splits on all of IFS (space, tab, newline), so
+        # a YAML block scalar spanning lines is parsed in full. `read` would stop
+        # at the first newline and silently skip every later lane.
+        # shellcheck disable=SC2206
+        results=($RESULTS)
+        # Checked after splitting: whitespace-only input yields no elements, and
+        # an empty loop would otherwise report success with nothing aggregated.
+        if [[ ${#results[@]} -eq 0 ]]; then
           echo '::error::results is required.'; exit 1
         fi
-        read -ra results <<< "$RESULTS"
         for r in "${results[@]}"; do
           case "$r" in
             success|skipped) ;;
