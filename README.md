@@ -98,10 +98,13 @@ checkout of this repo. (Public is required because a public consumer such as
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
 - `.github/actions/ci-status` — aggregates a caller-built `needs.*.result` string
-  into the single required gate check: `success`/`skipped` pass, anything else
-  fails naming the offending result. Empty input fails closed. GitHub offers no
-  "all other jobs" selector, so the `needs` list and the matching results string
-  stay caller-owned.
+  into the single required gate check: `success` passes, anything else fails
+  naming the offending result. `treat-skipped-as` is the caller's policy for
+  `skipped` — `pass` (default) or `fail` for repos where a skipped lane means one
+  that should have run did not, such as a runner selector falling back. An
+  unrecognised policy value fails rather than defaulting. Empty input fails
+  closed. GitHub offers no "all other jobs" selector, so the `needs` list and the
+  matching results string stay caller-owned.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network).
 - `.github/actions/reference-integrity` — resolves `file.md` "Anchor" prose
