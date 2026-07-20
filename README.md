@@ -690,6 +690,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
   repo's ruleset (governed via `github-iac`) — but only **after** the caller
   is merged and emitting the check, or open PRs block on a check that never
   runs.
+
+  Optional input `exempt-authors` (comma-separated exact PR-author logins,
+  default empty) skips body validation for the listed authors — matched by
+  exact equality against `github.event.pull_request.user.login`, never a
+  `*[bot]` pattern, so no unknown future bot is silently skipped on the gate.
+  It is **fail-closed**: the empty default exempts no one, so bumping the
+  pinned SHA changes nothing until a caller opts in. Use it for bots whose
+  generated PR bodies cannot carry the closing-keyword + `## Related` markers
+  (dependabot/renovate); the caller passes
+  `exempt-authors: 'dependabot[bot]'` alongside the `uses:` line.
 - `.github/workflows/do-not-merge-gate.yml` — fails the job while the calling PR
   carries a configured label (default `do-not-merge`). **Gating**: the label's
   presence fails the job; a caller that requires this check blocks the merge

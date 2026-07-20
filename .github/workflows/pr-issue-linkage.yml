@@ -32,6 +32,17 @@ on:
           fails this required check before body validation.
         type: string
         default: success
+      exempt-authors:
+        description: >-
+          Comma-separated exact PR-author logins that skip body validation
+          (e.g. `dependabot[bot]`). Matched by exact equality against
+          `github.event.pull_request.user.login` — never a `*[bot]` pattern, so
+          an unknown future bot is not silently skipped. Fail-closed: the default
+          empty string exempts no one, preserving current behavior for every
+          existing consumer. Opt in per repo by listing the bots whose generated
+          PR bodies cannot carry the closing-keyword + `## Related` markers.
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -64,62 +75,87 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          # Env-passed, never spliced into the script text -- matching PR_BODY's
+          # untrusted-input handling. The login is GitHub-issued (not
+          # author-editable), but keeping the same shape avoids a second pattern.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
         with:
           script: |
-            // Strip HTML comments before any check: GitHub's own closing-keyword parser and
-            // rendered Markdown both ignore commented-out text, and a PR template ships its
-            // instructional prose inside comments -- without stripping, an unedited template
-            // (which contains the literal phrase in its instructions) would pass vacuously.
-            const rawBody = process.env.PR_BODY || "";
-            // An unterminated `<!--` (template edited mid-comment, or the closing
-            // `-->` accidentally deleted) hides everything after it from GitHub's
-            // renderer too, so treat it as commenting out the rest of the body
-            // rather than leaving that text live for the checks below.
-            const body = rawBody
-              .replace(/<!--[\s\S]*?-->/g, "")
-              .replace(/<!--[\s\S]*$/, "");
-            const errors = [];
+            // Exempt-author short-circuit, evaluated before any body parsing: a
+            // caller opts specific bot logins out of validation because their
+            // generated PR bodies cannot carry the closing-keyword + `## Related`
+            // markers (dependabot/renovate). Exact-login equality only -- never a
+            // `*[bot]` pattern -- so an unknown future bot is not silently skipped
+            // on this merge gate. An empty list (the default) exempts no one:
+            // fail-closed, identical behavior to before for existing consumers.
+            const prAuthor = process.env.PR_AUTHOR || "";
+            const exemptAuthors = (process.env.EXEMPT_AUTHORS || "")
+              .split(",")
+              .map((login) => login.trim())
+              .filter((login) => login.length > 0);
 
-            function extractSection(text, headingRe) {
-              const lines = text.split(/\r?\n/);
-              const start = lines.findIndex((l) => headingRe.test(l.trim()));
-              if (start === -1) return null;
-              // Only a heading at the same or higher level (fewer or equal #'s)
-              // ends the section, so a nested subsection (more #'s) counts as
-              // this section's content instead of prematurely closing it.
-              const level = lines[start].trim().match(/^(#{1,6})\s+\S/)[1].length;
-              const rest = lines.slice(start + 1);
-              const end = rest.findIndex((l) => {
-                const heading = /^(#{1,6})\s+\S/.exec(l.trim());
-                return heading !== null && heading[1].length <= level;
-              });
-              return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
-            }
-
-            const related = extractSection(body, /^##\s+related$/i);
-            if (related === null) {
-              errors.push(
-                'Missing a "## Related" section. List related PRs, ADRs, or decision-log ' +
-                  "entries this PR does not close."
+            if (exemptAuthors.includes(prAuthor)) {
+              core.info(
+                `PR author "${prAuthor}" matches an exempt-authors entry; ` +
+                  "skipping closing-keyword + Related body validation."
               );
-            } else if (related.length === 0) {
-              errors.push('The "## Related" section is empty.');
-            }
+            } else {
+              // Strip HTML comments before any check: GitHub's own closing-keyword parser and
+              // rendered Markdown both ignore commented-out text, and a PR template ships its
+              // instructional prose inside comments -- without stripping, an unedited template
+              // (which contains the literal phrase in its instructions) would pass vacuously.
+              const rawBody = process.env.PR_BODY || "";
+              // An unterminated `<!--` (template edited mid-comment, or the closing
+              // `-->` accidentally deleted) hides everything after it from GitHub's
+              // renderer too, so treat it as commenting out the rest of the body
+              // rather than leaving that text live for the checks below.
+              const body = rawBody
+                .replace(/<!--[\s\S]*?-->/g, "")
+                .replace(/<!--[\s\S]*$/, "");
+              const errors = [];
 
-            const CLOSING_KEYWORD =
-              /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#\d+\b/i;
-            // Accepts both phrasings: provisioning/pr-body.yml's original "No linked issue"
-            // and claude-code-plugins/source-control:pull-request's independently-evolved
-            // "No related issue:" opt-out marker (reference/create.md). Widened, not narrowed,
-            // so this reusable workflow works as a caller for either repo's existing convention.
-            const NO_ISSUE_MARKER = /\bno (?:linked|related) issue\b/i;
-            if (!CLOSING_KEYWORD.test(body) && !NO_ISSUE_MARKER.test(body)) {
-              errors.push(
-                "Missing a native closing keyword (Closes/Fixes/Resolves #N). If this PR " +
-                  'closes no GitHub issue, state "No linked issue" (or "No related issue:") in the body instead.'
-              );
-            }
+              function extractSection(text, headingRe) {
+                const lines = text.split(/\r?\n/);
+                const start = lines.findIndex((l) => headingRe.test(l.trim()));
+                if (start === -1) return null;
+                // Only a heading at the same or higher level (fewer or equal #'s)
+                // ends the section, so a nested subsection (more #'s) counts as
+                // this section's content instead of prematurely closing it.
+                const level = lines[start].trim().match(/^(#{1,6})\s+\S/)[1].length;
+                const rest = lines.slice(start + 1);
+                const end = rest.findIndex((l) => {
+                  const heading = /^(#{1,6})\s+\S/.exec(l.trim());
+                  return heading !== null && heading[1].length <= level;
+                });
+                return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
+              }
 
-            if (errors.length > 0) {
-              core.setFailed(errors.join("\n\n"));
+              const related = extractSection(body, /^##\s+related$/i);
+              if (related === null) {
+                errors.push(
+                  'Missing a "## Related" section. List related PRs, ADRs, or decision-log ' +
+                    "entries this PR does not close."
+                );
+              } else if (related.length === 0) {
+                errors.push('The "## Related" section is empty.');
+              }
+
+              const CLOSING_KEYWORD =
+                /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#\d+\b/i;
+              // Accepts both phrasings: provisioning/pr-body.yml's original "No linked issue"
+              // and claude-code-plugins/source-control:pull-request's independently-evolved
+              // "No related issue:" opt-out marker (reference/create.md). Widened, not narrowed,
+              // so this reusable workflow works as a caller for either repo's existing convention.
+              const NO_ISSUE_MARKER = /\bno (?:linked|related) issue\b/i;
+              if (!CLOSING_KEYWORD.test(body) && !NO_ISSUE_MARKER.test(body)) {
+                errors.push(
+                  "Missing a native closing keyword (Closes/Fixes/Resolves #N). If this PR " +
+                    'closes no GitHub issue, state "No linked issue" (or "No related issue:") in the body instead.'
+                );
+              }
+
+              if (errors.length > 0) {
+                core.setFailed(errors.join("\n\n"));
+              }
             }
