@@ -491,6 +491,55 @@ GitHub continues the normal weekly patching of each hosted image generation.
   parent secret. Fork PRs receive no
   secrets by design and are not reviewed. Security rules live in
   [CLAUDE.md](CLAUDE.md).
+- `.github/workflows/claude-security-review.yml` — a dedicated LLM
+  **security-review** pass with `anthropics/claude-code-action`, sibling of
+  `claude-review.yml` with the same secrets interface and safe-handling model
+  but a security-only prompt. It reviews the PR's changed files for the
+  vulnerabilities static analysis misses — logic flaws, authorization gaps,
+  injection surfaces, token/secret handling, dangerous workflow patterns
+  (`pull_request_target`, script injection via the `github` context),
+  permission-widening config changes, supply-chain pin loosening — and reports
+  findings as a PR review with severity (CRITICAL/IMPORTANT/SUGGESTION) and a
+  confidence axis, security only. **Advisory** (posts review comments, never
+  gates `ci-status`); the intended promotion path is to flip to blocking on
+  CRITICAL findings once the lane's precision is proven over a sustained window
+  — an earned promotion (trust-before-scale). **Path-triggered by design:** the
+  reusable workflow does not filter paths, because a security pass on every PR
+  is noise in a doc-heavy repo where most PRs are prose. The caller owns the
+  filter through its own `on.pull_request.paths` over security-sensitive
+  surfaces (workflow files, permission/settings configs, hook and shell scripts,
+  auth/token-touching code, network-call sites) — path filtering is how the
+  default-on discipline scopes itself. Inputs (`runner`, `prompt`,
+  `claude-args`, `skip-actors`) have public-safe defaults documented inline.
+  Consume it from a `pull_request` caller that scopes those paths:
+
+  ```yaml
+  on:
+    pull_request:
+      types: [opened, synchronize, ready_for_review, reopened]
+      paths:
+        - '.github/workflows/**'
+        - '.github/actions/**'
+        - '**/*.sh'
+        - '**/*.ps1'
+        - '**/settings.json'
+        # plus the caller's own auth/token and network-call source paths
+  jobs:
+    security-review:
+      permissions:
+        contents: read
+        pull-requests: write
+        id-token: write
+      uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
+      secrets:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  ```
+
+  The caller's job must grant those three permissions (a called workflow can only
+  downgrade, not elevate) and the consumer repo must be in the
+  `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
+  secret explicitly rather than `secrets: inherit`. Fork PRs receive no secrets
+  by design and are not reviewed. Security rules live in [CLAUDE.md](CLAUDE.md).
 - `.github/workflows/semantic-pr.yml` — validates the PR **title** against the
   Conventional Commits spec (wraps the SHA-pinned
   `amannn/action-semantic-pull-request`). **Gating**: a non-conforming title

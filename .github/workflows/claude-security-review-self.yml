@@ -1,0 +1,46 @@
+name: Claude Security Review
+
+# Dogfood caller: this repo is the first consumer of its own
+# claude-security-review reusable workflow, exercising the exact pattern
+# downstream consumers use (caller owns `on:` + `paths:` + permissions; reusable
+# workflow owns the action pin and safe handling). Local `./` ref works because
+# the checkout IS this repo.
+#
+# The `paths:` filter is the load-bearing difference from the plain review
+# caller: the reusable workflow is path-agnostic by design, so scoping the
+# security pass to this repo's security-sensitive surfaces is the caller's job.
+# A prose-only PR never triggers it (a security review of docs is noise).
+#
+# Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
+# "selected repositories" scope (UI-managed); without it, fork PRs and an
+# unscoped run get no token and the review degrades to a warning (no leak).
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '**/*.sh'
+      - '**/*.ps1'
+
+permissions:
+  contents: read
+
+# Cancel a superseded in-flight review when the PR gets a new push; the PR
+# number is always set here (pull_request-only triggers) and, unlike head_ref,
+# is unique per PR even across forks; run_id is a non-grouping fallback.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  security-review:
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/claude-security-review.yml
+    # Pass only the one named secret (least privilege) rather than `secrets:
+    # inherit`, which would forward every parent secret to the called workflow.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
