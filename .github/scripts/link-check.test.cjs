@@ -11,6 +11,15 @@ const workflow = fs.readFileSync(
   "utf8",
 );
 
+function lookupStepSlice() {
+  const findIndex = workflow.indexOf("- name: Find existing tracking issue");
+  const embedIndex = workflow.indexOf(
+    "- name: Embed the marker in the lychee report",
+  );
+  assert.ok(findIndex >= 0 && embedIndex > findIndex);
+  return workflow.slice(findIndex, embedIndex);
+}
+
 test("link-check keeps one rolling issue and closes it after recovery", () => {
   const findIndex = workflow.indexOf("- name: Find existing tracking issue");
   const updateIndex = workflow.indexOf("- name: Open or update tracking issue");
@@ -55,13 +64,10 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
 });
 
 test("the tracking marker is scoped per configured report", () => {
-  const findIndex = workflow.indexOf("- name: Find existing tracking issue");
   const embedIndex = workflow.indexOf(
     "- name: Embed the marker in the lychee report",
   );
-  assert.ok(findIndex >= 0 && embedIndex > findIndex);
-
-  const lookupStep = workflow.slice(findIndex, embedIndex);
+  const lookupStep = lookupStepSlice();
   assert.match(
     lookupStep,
     /ISSUE_TITLE: \$\{\{ inputs\.issue-title \}\}/u,
@@ -118,12 +124,7 @@ test("behavior-shaping inputs default to the established rolling-issue behavior"
 });
 
 test("the tracking lookup filters on the same labels the update step applies", () => {
-  const findIndex = workflow.indexOf("- name: Find existing tracking issue");
-  const embedIndex = workflow.indexOf(
-    "- name: Embed the marker in the lychee report",
-  );
-  assert.ok(findIndex >= 0 && embedIndex > findIndex);
-  const lookupStep = workflow.slice(findIndex, embedIndex);
+  const lookupStep = lookupStepSlice();
 
   assert.match(
     lookupStep,

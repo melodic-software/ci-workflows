@@ -42,8 +42,8 @@ runs:
       env:
         PATHS: ${{ inputs.paths }}
         CONFIG: ${{ inputs.config }}
-        VERSION: ${{ inputs.version }}
         WARNINGS_AS_ERRORS: ${{ inputs.warnings-as-errors }}
+        VERSION: ${{ inputs.version }}
         # Pin the pyright-python wrapper to the requested build exactly. Its
         # "new version available" notice (stderr, exit stays 0) is benign and
         # left unsuppressed so a genuine toolchain change stays visible.

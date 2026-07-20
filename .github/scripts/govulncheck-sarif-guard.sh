@@ -45,9 +45,13 @@ if ! jq -e --arg version "$expected_version" '
   fail_infrastructure "SARIF is malformed or violates the pinned provenance schema"
 fi
 
-error_count="$(jq '[.runs[0].results[] | select(.level == "error")] | length' "$GOVULNCHECK_SARIF")"
-warning_count="$(jq '[.runs[0].results[] | select(.level == "warning")] | length' "$GOVULNCHECK_SARIF")"
-note_count="$(jq '[.runs[0].results[] | select(.level == "note")] | length' "$GOVULNCHECK_SARIF")"
+read -r error_count warning_count note_count < <(jq -r '
+  [
+    ([.runs[0].results[] | select(.level == "error")] | length),
+    ([.runs[0].results[] | select(.level == "warning")] | length),
+    ([.runs[0].results[] | select(.level == "note")] | length)
+  ] | @tsv
+' "$GOVULNCHECK_SARIF")
 
 if ((warning_count > 0 || note_count > 0)); then
   printf '::notice::govulncheck reported %s imported-package warning(s) and %s vulnerable-module note(s); neither is a reachable symbol finding.\n' \

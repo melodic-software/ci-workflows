@@ -149,7 +149,7 @@ function normanchor(s) {
   sub(/\.$/, "", s)
   return s
 }
-function extract_cites(path, lineno, line,   work, m, t, q1, a) {
+function extract_cites(path, lineno, line,   work, m, t) {
   work = line
   while (match(work, CITE_RE)) {
     m = substr(work, RSTART, RLENGTH)
@@ -157,19 +157,10 @@ function extract_cites(path, lineno, line,   work, m, t, q1, a) {
     t = substr(m, 2)
     t = substr(t, 1, index(t, "`") - 1)
     sub(/^\//, "", t)
-    q1 = index(m, "\"")
-    add_cite(path, lineno, t, substr(m, q1 + 1, length(m) - q1 - 1))
-    # Chained continuation anchors: `file.md` "A" + "B" [+ "C" ...] — each
-    # anchor verified against the same target.
-    while (match(work, /^ \+ "[^"]+"/)) {
-      m = substr(work, RSTART, RLENGTH)
-      work = substr(work, RSTART + RLENGTH)
-      q1 = index(m, "\"")
-      add_cite(path, lineno, t, substr(m, q1 + 1, length(m) - q1 - 1))
-    }
+    work = add_cite_from_match(path, lineno, t, m, work)
   }
 }
-function extract_prose_cites(path, lineno, line,   work, m, t, q1, sp, url_pos) {
+function extract_prose_cites(path, lineno, line,   work, m, t, sp, url_pos) {
   work = line
   while (match(work, PROSE_CITE_RE)) {
     if (RSTART > 1 && substr(work, RSTART - 1, 1) == "`") {
@@ -188,15 +179,28 @@ function extract_prose_cites(path, lineno, line,   work, m, t, q1, sp, url_pos) 
     if (url_pos > 3 && substr(line, url_pos - 3, 3) == "://") {
       continue
     }
+    work = add_cite_from_match(path, lineno, t, m, work)
+  }
+}
+# Record the cite carried by the current match, then continue scanning any
+# chained anchor continuations. Shared by extract_cites and
+# extract_prose_cites, which differ only in how they derive `t` (the target)
+# and `m` (the matched text) before calling in.
+function add_cite_from_match(path, lineno, t, m, work,   q1) {
+  q1 = index(m, "\"")
+  add_cite(path, lineno, t, substr(m, q1 + 1, length(m) - q1 - 1))
+  return extract_chained(path, lineno, t, work)
+}
+# Chained continuation anchors: `file.md` "A" + "B" [+ "C" ...] — each anchor
+# verified against the same target.
+function extract_chained(path, lineno, t, work,   m, q1) {
+  while (match(work, /^ \+ "[^"]+"/)) {
+    m = substr(work, RSTART, RLENGTH)
+    work = substr(work, RSTART + RLENGTH)
     q1 = index(m, "\"")
     add_cite(path, lineno, t, substr(m, q1 + 1, length(m) - q1 - 1))
-    while (match(work, /^ \+ "[^"]+"/)) {
-      m = substr(work, RSTART, RLENGTH)
-      work = substr(work, RSTART + RLENGTH)
-      q1 = index(m, "\"")
-      add_cite(path, lineno, t, substr(m, q1 + 1, length(m) - q1 - 1))
-    }
   }
+  return work
 }
 function add_cite(path, lineno, t, a) {
   if (substr(t, 1, 1) == "<") return
