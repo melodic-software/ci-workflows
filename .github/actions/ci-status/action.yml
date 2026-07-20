@@ -1,0 +1,33 @@
+name: ci-status
+description: >-
+  Aggregate lane results into one pass/fail gate. Passes when every result is
+  success or skipped; fails naming the first result that is neither.
+
+inputs:
+  results:
+    description: >-
+      Whitespace-separated job results, one per aggregated lane — the caller
+      builds this from `needs.<lane>.result`. Empty fails: a gate with nothing
+      to aggregate is a miswired `needs` list, not a pass.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Aggregate lane results
+      shell: bash
+      env:
+        RESULTS: ${{ inputs.results }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${RESULTS// }" ]]; then
+          echo '::error::results is required.'; exit 1
+        fi
+        read -ra results <<< "$RESULTS"
+        for r in "${results[@]}"; do
+          case "$r" in
+            success|skipped) ;;
+            *) echo "A lane did not pass (result: $r)."; exit 1 ;;
+          esac
+        done
+        echo "All lanes passed or were skipped."
