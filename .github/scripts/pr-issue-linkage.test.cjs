@@ -17,7 +17,7 @@ const workflow = fs.readFileSync(
 // issue-labeling.yml) and runs it in a sandbox with a stub `core`/`process`,
 // so the actual closing-keyword/Related parsing logic is exercised directly
 // rather than only checked for structural presence in the YAML text.
-function runScript(body) {
+function runScript(body, prAuthor = "", exemptAuthors = "") {
   const scriptStart = workflow.indexOf("script: |") + "script: |".length;
   const lines = workflow.slice(scriptStart).split("\n").slice(1);
   const scriptLines = [];
@@ -34,8 +34,14 @@ function runScript(body) {
 
   let failedWith = null;
   const sandbox = {
-    process: { env: { PR_BODY: body } },
-    core: { setFailed: (message) => (failedWith = message) },
+    process: {
+      env: {
+        PR_BODY: body,
+        PR_AUTHOR: prAuthor,
+        EXEMPT_AUTHORS: exemptAuthors,
+      },
+    },
+    core: { setFailed: (message) => (failedWith = message), info: () => {} },
   };
   vm.createContext(sandbox);
   vm.runInContext(scriptLines.join("\n"), sandbox);
@@ -141,5 +147,71 @@ test("a nested subsection under ## Related counts as content, not a section boun
     failedWith,
     null,
     "a ### subsection nested under ## Related must not empty the section",
+  );
+});
+
+test("an exempt author passes with no closing keyword and no Related section", () => {
+  const failedWith = runScript(
+    "Bumps a dependency, no linkage markers.",
+    "dependabot[bot]",
+    "dependabot[bot]",
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "a login listed in exempt-authors must skip body validation",
+  );
+});
+
+test("fail-closed: a bot author with an empty exempt-authors list still fails", () => {
+  const failedWith = runScript(
+    "Bumps a dependency, no linkage markers.",
+    "dependabot[bot]",
+    "",
+  );
+  assert.ok(
+    failedWith,
+    "the default empty exempt-authors must exempt no one (opt-in, no behavior change)",
+  );
+  assert.match(failedWith, /Related/);
+  assert.match(failedWith, /closing keyword/);
+});
+
+test("a human author not in a non-empty exempt-authors list still fails", () => {
+  const failedWith = runScript(
+    "Just a description, nothing else.",
+    "octocat",
+    "dependabot[bot],renovate[bot]",
+  );
+  assert.ok(
+    failedWith,
+    "a non-exempt author must still be validated even when others are exempted",
+  );
+  assert.match(failedWith, /Related/);
+  assert.match(failedWith, /closing keyword/);
+});
+
+test("exempt-authors matching is exact-login, not a [bot]-suffix pattern", () => {
+  const failedWith = runScript(
+    "Bumps a dependency, no linkage markers.",
+    "some-unknown[bot]",
+    "dependabot[bot]",
+  );
+  assert.ok(
+    failedWith,
+    "an unlisted bot login must not be silently skipped by a pattern match",
+  );
+});
+
+test("exempt-authors tolerates surrounding whitespace in the comma-separated list", () => {
+  const failedWith = runScript(
+    "Bumps a dependency, no linkage markers.",
+    "renovate[bot]",
+    " dependabot[bot] , renovate[bot] ",
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "whitespace around list entries must not defeat the exact-login match",
   );
 });
