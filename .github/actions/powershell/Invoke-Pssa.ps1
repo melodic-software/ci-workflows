@@ -25,11 +25,6 @@
     -Settings explicitly. The fallback default only resolves if a ruleset sits
     next to this script.
 
-.PARAMETER AnalyzerVersion
-    Required exact PSScriptAnalyzer version. Default 1.25.0, which resolves an
-    Import-Module assembly-version mismatch on newer pwsh 7.4.x
-    (PSScriptAnalyzer issue #2106 / PR #2107).
-
 .PARAMETER ExcludePath
     Path substrings to skip (matched against forward-slash-normalized full
     paths). The .git directory is always skipped.
@@ -38,6 +33,11 @@
     When set, exit 1 if no .ps1/.psm1 files are found, instead of exit 0. A
     tripwire for sparse-checkout/path mistakes that would otherwise pass the
     gate on zero files. Only takes effect when the analyzer is installed.
+
+.PARAMETER AnalyzerVersion
+    Required exact PSScriptAnalyzer version. Default 1.25.0, which resolves an
+    Import-Module assembly-version mismatch on newer pwsh 7.4.x
+    (PSScriptAnalyzer issue #2106 / PR #2107).
 
 .OUTPUTS
     Exit 0: no findings (or PSScriptAnalyzer not installed — see note below),
@@ -57,9 +57,9 @@ param(
     [Parameter(Position = 0)]
     [string[]]$Path = @(),
     [string]$Settings = (Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'),
-    [string]$AnalyzerVersion = '1.25.0',
     [string[]]$ExcludePath = @(),
-    [switch]$FailOnNoFiles
+    [switch]$FailOnNoFiles,
+    [string]$AnalyzerVersion = '1.25.0'
 )
 
 Set-StrictMode -Version 3.0

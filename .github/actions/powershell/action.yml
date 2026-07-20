@@ -57,8 +57,8 @@ runs:
         PATHS: ${{ inputs.paths }}
         SETTINGS: ${{ inputs.settings }}
         EXCLUDE: ${{ inputs.exclude }}
-        REQUIRED: ${{ inputs.analyzer-version }}
         FAIL_ON_NO_FILES: ${{ inputs.fail-on-no-files }}
+        REQUIRED: ${{ inputs.analyzer-version }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         if (-not (Test-Path -LiteralPath $env:SETTINGS -PathType Leaf)) {
@@ -70,5 +70,5 @@ runs:
         $paths = @($env:PATHS -split '\s+' | Where-Object { $_ })
         $exclude = @($env:EXCLUDE -split '\s+' | Where-Object { $_ })
         $failOnNoFiles = $env:FAIL_ON_NO_FILES -eq 'true'
-        & "$env:ACTION_PATH/Invoke-Pssa.ps1" -Path $paths -Settings $env:SETTINGS -AnalyzerVersion $env:REQUIRED -ExcludePath $exclude -FailOnNoFiles:$failOnNoFiles
+        & "$env:ACTION_PATH/Invoke-Pssa.ps1" -Path $paths -Settings $env:SETTINGS -ExcludePath $exclude -FailOnNoFiles:$failOnNoFiles -AnalyzerVersion $env:REQUIRED
         exit $LASTEXITCODE

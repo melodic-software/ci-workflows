@@ -10,12 +10,6 @@ inputs:
   config:
     description: Path to the markdownlint-cli2 config file in the caller repo.
     default: .markdownlint-cli2.jsonc
-  version:
-    description: Exact markdownlint-cli2 version to run.
-    default: 0.23.0
-  node-version:
-    description: Node.js version to set up.
-    default: 24.18.0
   annotations:
     description: >-
       Register a problem matcher so each finding renders as a GitHub inline
@@ -23,6 +17,12 @@ inputs:
       matcher parses its `file:line:col … MD### …` output). Self-contained — no
       change to the caller's config. Set false for summary output only.
     default: 'true'
+  version:
+    description: Exact markdownlint-cli2 version to run.
+    default: 0.23.0
+  node-version:
+    description: Node.js version to set up.
+    default: 24.18.0
 
 runs:
   using: composite
@@ -34,10 +34,10 @@ runs:
     - name: Lint markdown
       shell: bash
       env:
-        CONFIG: ${{ inputs.config }}
-        VERSION: ${{ inputs.version }}
         GLOBS: ${{ inputs.globs }}
+        CONFIG: ${{ inputs.config }}
         ANNOTATIONS: ${{ inputs.annotations }}
+        VERSION: ${{ inputs.version }}
         MATCHER: ${{ github.action_path }}/markdownlint-problem-matcher.json
       run: |
         if [[ ! -f "$CONFIG" ]]; then

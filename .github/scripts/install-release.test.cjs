@@ -135,9 +135,16 @@ printf '${label} %s\\n' "\${1:-}"
 `;
 }
 
-test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
+// Each fixture() creates its own temp root; register its removal once so
+// every test cleans up regardless of how it exits.
+function fixtureWithCleanup(t) {
   const state = fixture();
   t.after(() => fs.rmSync(state.root, { recursive: true, force: true }));
+  return state;
+}
+
+test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
+  const state = fixtureWithCleanup(t);
   const source = path.join(state.root, "raw-tool");
   writeExecutable(source, toolSource("raw"));
   const env = baseEnv(state, source);
@@ -202,8 +209,7 @@ test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
 });
 
 test("checksummed tar members support stripping before installation", (t) => {
-  const state = fixture();
-  t.after(() => fs.rmSync(state.root, { recursive: true, force: true }));
+  const state = fixtureWithCleanup(t);
   const tree = path.join(state.root, "tree");
   fs.mkdirSync(path.join(tree, "package"), { recursive: true });
   writeExecutable(
@@ -238,8 +244,7 @@ test("checksummed tar members support stripping before installation", (t) => {
 });
 
 test("a checksum failure stops before extraction or installation", (t) => {
-  const state = fixture();
-  t.after(() => fs.rmSync(state.root, { recursive: true, force: true }));
+  const state = fixtureWithCleanup(t);
   const source = path.join(state.root, "not-an-archive");
   fs.writeFileSync(source, "corrupt");
   const result = run({
@@ -260,8 +265,7 @@ test("a checksum failure stops before extraction or installation", (t) => {
 });
 
 test("unsupported runners fail before network access", (t) => {
-  const state = fixture();
-  t.after(() => fs.rmSync(state.root, { recursive: true, force: true }));
+  const state = fixtureWithCleanup(t);
   const source = path.join(state.root, "raw-tool");
   writeExecutable(source, toolSource("raw"));
 

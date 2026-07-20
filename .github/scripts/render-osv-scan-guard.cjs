@@ -28,8 +28,9 @@ function bundledScript(source) {
 function render(workflow, source) {
   const start = workflow.indexOf(startMarker);
   const end = workflow.indexOf(endMarker);
-  if (start < 0 || end < start)
+  if (start < 0 || end < start) {
     throw new Error("osv-scanner.yml is missing generated guard markers");
+  }
   return `${workflow.slice(0, start)}${bundledScript(source)}${workflow.slice(end + endMarker.length)}`;
 }
 

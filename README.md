@@ -470,37 +470,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   passes a `run` command and owns discovery/reporting/exit; this supplies the
   hosted runner, pinned Pester, and checkout. Inputs are documented inline.
 - `.github/workflows/claude-review.yml` — automated PR code review with
-  `anthropics/claude-code-action`. **Advisory** (posts review comments, never
-  gates `ci-status`). A whole-job concern (job permissions + a secrets
-  interface), so a reusable workflow. The caller owns the triggers and the
-  permission grant; this workflow owns the SHA-pinned action and the safe
-  handling. Inputs (`prompt`, `claude-args`, `track-progress`, `display-report`,
-  `allowed-bots`, `exclude-comments-by-actor`, `skip-actors`, `timeout-minutes`)
-  have public-safe defaults documented inline. Consume it from a `pull_request`
-  caller:
-
-  ```yaml
-  on:
-    pull_request:
-      types: [opened, synchronize, ready_for_review, reopened]
-  jobs:
-    review:
-      permissions:
-        contents: read
-        pull-requests: write
-        id-token: write
-      uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@<sha>
-      secrets:
-        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-  ```
-
-  The caller's job must grant those three permissions (a called workflow can only
-  downgrade, not elevate) and the consumer repo must be in the
-  `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
-  secret explicitly (above) rather than `secrets: inherit`, which forwards every
-  parent secret. Fork PRs receive no
-  secrets by design and are not reviewed. Security rules live in
-  [CLAUDE.md](CLAUDE.md).
+  `anthropics/claude-code-action`. Inputs (`prompt`, `claude-args`,
+  `track-progress`, `display-report`, `allowed-bots`,
+  `exclude-comments-by-actor`, `skip-actors`, `timeout-minutes`) have
+  public-safe defaults documented inline. Consume it per the [Claude lanes —
+  shared consumption contract](#claude-lanes--shared-consumption-contract)
+  below.
 - `.github/workflows/claude-security-review.yml` — a dedicated LLM
   **security-review** pass with `anthropics/claude-code-action`, sibling of
   `claude-review.yml` with the same secrets interface and safe-handling model
@@ -510,18 +485,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`pull_request_target`, script injection via the `github` context),
   permission-widening config changes, supply-chain pin loosening — and reports
   findings as a PR review with severity (CRITICAL/IMPORTANT/SUGGESTION) and a
-  confidence axis, security only. **Advisory** (posts review comments, never
-  gates `ci-status`); the intended promotion path is to flip to blocking on
-  CRITICAL findings once the lane's precision is proven over a sustained window
-  — an earned promotion (trust-before-scale). **Path-triggered by design:** the
-  reusable workflow does not filter paths, because a security pass on every PR
-  is noise in a doc-heavy repo where most PRs are prose. The caller owns the
-  filter through its own `on.pull_request.paths` over security-sensitive
-  surfaces (workflow files, permission/settings configs, hook and shell scripts,
-  auth/token-touching code, network-call sites) — path filtering is how the
-  default-on discipline scopes itself. Inputs (`runner`, `prompt`,
-  `claude-args`, `skip-actors`) have public-safe defaults documented inline.
-  Consume it from a `pull_request` caller that scopes those paths:
+  confidence axis, security only. The intended promotion path is to flip to
+  blocking on CRITICAL findings once the lane's precision is proven over a
+  sustained window — an earned promotion (trust-before-scale).
+  **Path-triggered by design:** the reusable workflow does not filter paths,
+  because a security pass on every PR is noise in a doc-heavy repo where most
+  PRs are prose. The caller owns the filter through its own
+  `on.pull_request.paths` over security-sensitive surfaces (workflow files,
+  permission/settings configs, hook and shell scripts, auth/token-touching
+  code, network-call sites) — path filtering is how the default-on discipline
+  scopes itself. Inputs (`runner`, `prompt`, `claude-args`, `skip-actors`)
+  have public-safe defaults documented inline. Consume it per the [Claude
+  lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
+  below, with the caller additionally scoping paths:
 
   ```yaml
   on:
@@ -534,66 +510,35 @@ GitHub continues the normal weekly patching of each hosted image generation.
         - '**/*.ps1'
         - '**/settings.json'
         # plus the caller's own auth/token and network-call source paths
-  jobs:
-    security-review:
-      permissions:
-        contents: read
-        pull-requests: write
-        id-token: write
-      uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
-      secrets:
-        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   ```
 
-  The caller's job must grant those three permissions (a called workflow can only
-  downgrade, not elevate) and the consumer repo must be in the
-  `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
-  secret explicitly rather than `secrets: inherit`. Fork PRs receive no secrets
-  by design and are not reviewed. Security rules live in [CLAUDE.md](CLAUDE.md).
 - `.github/workflows/claude-e2e-verify.yml` — Claude-powered end-to-end
   verification of a PR with `anthropics/claude-code-action`. The caller passes a
   command that builds and serves its app plus the URL it listens on; the workflow
   provisions a pinned Playwright/Chromium toolchain, waits for the app to become
   healthy, then has the agent drive the running app through the caller's journeys
-  and post its findings as a PR comment. **Advisory** (the agent step runs
-  `continue-on-error`; findings are a PR comment, never a gating `ci-status`
-  lane). A whole-job concern (job permissions + a secrets interface), so a
-  reusable workflow. The caller owns the triggers and permission grant; this
-  workflow owns the SHA-pinned action, the pinned browser toolchain, and the safe
-  handling. Inputs (`runner`, `app-start-command`, `app-url`, `e2e-spec`,
+  and post its findings as a PR comment (the agent step runs
+  `continue-on-error`). This workflow additionally owns the pinned browser
+  toolchain. Inputs (`runner`, `app-start-command`, `app-url`, `e2e-spec`,
   `claude-args`, `setup-command`, `timeout-minutes`) are documented inline.
-  Consume it from a `pull_request` caller:
+  Consume it per the [Claude lanes — shared consumption
+  contract](#claude-lanes--shared-consumption-contract) below, with the caller
+  additionally passing:
 
   ```yaml
-  on:
-    pull_request:
-      types: [opened, synchronize, ready_for_review, reopened]
-  jobs:
-    e2e:
-      permissions:
-        contents: read
-        pull-requests: write
-        id-token: write
-      uses: melodic-software/ci-workflows/.github/workflows/claude-e2e-verify.yml@<sha>
       with:
         app-start-command: npm ci && npm run build && npm run start
         app-url: http://localhost:3000
-      secrets:
-        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   ```
 
-  The caller's job must grant those three permissions (a called workflow can only
-  downgrade, not elevate) and the consumer repo must be in the
-  `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
-  secret explicitly rather than `secrets: inherit`. This lane builds, serves, and
-  browser-drives the PR head — it executes PR-authored code — so it is
-  `pull_request`-only for the same reason review is: a fork gets no secrets and a
-  read-only token, so that execution has nothing to exfiltrate. Fork PRs are not
-  verified by design. The Playwright CLI version is an in-workflow pin watched by
-  `tool-version-drift-check`, not Dependabot. Security rules live in
-  [CLAUDE.md](CLAUDE.md). Promotion: flip to a selector-coupled required gate when
-  the lane's findings prove precision over a sustained window — an earned
-  promotion, mirroring the review lane's discipline.
+  This lane builds, serves, and browser-drives the PR head — it executes
+  PR-authored code — so the fork-PR safety guarantee in the shared contract is
+  what makes it safe: a fork gets no secrets and a read-only token, so that
+  execution has nothing to exfiltrate. The Playwright CLI version is an
+  in-workflow pin watched by `tool-version-drift-check`, not Dependabot.
+  Promotion: flip to a selector-coupled required gate when the lane's findings
+  prove precision over a sustained window — an earned promotion, mirroring the
+  review lane's discipline.
 - `.github/workflows/semantic-pr.yml` — validates the PR **title** against the
   Conventional Commits spec (wraps the SHA-pinned
   `amannn/action-semantic-pull-request`). **Gating**: a non-conforming title
@@ -601,18 +546,21 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `PR_TITLE`, the PR title becomes the default-branch subject line, so this is the
   single lever that yields a Conventional-Commits history (no commit-msg hook
   needed). It is a **standalone required check named `pr-title`**, not a
-  `ci-status` lane — title edits must not re-run the file-lint lanes. Inputs
+  `ci-status` lane — title edits must not re-run the file-lint lanes; with the
+  caller below the check a ruleset must require is **`pr-title / pr-title`**
+  per the [shared adoption
+  contract](#standalone-gate-checks--shared-adoption-contract). Inputs
   (`runner`, `prerequisite-result`, `types`, `scopes`, `require-scope`,
   `subject-pattern`, `subject-pattern-error`, `validate-single-commit`,
   `ignore-labels`) have spec-aligned defaults documented inline. Consume it from
   a thin caller that triggers on title-relevant events. `prerequisite-result`
   defaults to `success` for direct callers; selector-dependent required callers
-  must use the fail-closed pattern above.
+  must use the fail-closed pattern above. `edited` is required so re-titling
+  re-validates; the gate passes on `merge_group` since the title was validated
+  at PR time.
   **Adopt the canonical block below** (not the in-repo `.github/workflows/pr-title.yml`,
   which intentionally still triggers on `pull_request` — see the note after the
-  block). Note the emitted check context is `<caller job> / <reusable job>` — with
-  the caller below it is **`pr-title / pr-title`** (the name a ruleset must
-  require, not bare `pr-title`):
+  block):
 
   ```yaml
   on:
@@ -631,6 +579,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
+  This check reads PR title metadata only — it checks out and runs no head code.
+
   This block is the canonical pattern to copy. The in-repo
   `.github/workflows/pr-title.yml` dogfood caller deliberately stays on
   `pull_request` for now: this repo is already gated on its own `pr-title / pr-title`
@@ -638,22 +588,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   required check run the base-branch (still-`pull_request`) definition and block
   the flip. The self-flip is therefore deferred; consumers should follow this
   documented block rather than copying the dogfood file.
-
-  `pull_request_target` runs the base-branch definition, so a head-branch edit to
-  this file cannot bypass the gate (safe here because semantic-pr reads PR title
-  metadata only — it checks out and runs no head code). Under
-  `pull_request_target` `github.ref` is the base branch, so the concurrency group
-  keys on `github.event.pull_request.number` (falling back to `github.ref` for
-  `merge_group`) — a `github.ref` key would collapse all PRs into one group and
-  let one PR's run cancel another's required check. `edited` is required so
-  re-titling re-validates. `merge_group` is required on
-  any repo with a merge queue — the queue gates on `pr-title / pr-title`, and
-  without it that required check never reports and the queue deadlocks
-  (semantic-pr passes on `merge_group` since the title was validated at PR time);
-  it is inert where no queue exists. Then require the
-  `pr-title / pr-title` check in the repo's ruleset (governed via `github-iac`) —
-  but only **after** the caller is merged and emitting the check, or open PRs
-  block on a check that never runs.
 - `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
   a native closing keyword (`Closes`/`Fixes`/`Resolves #N`, including
   `owner/repo#N`, or the literal `No linked issue` when the PR closes nothing)
@@ -665,10 +599,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   into a shared reusable workflow — provisioning's own caller predates this
   workflow and is not required to switch. It is a **standalone required check
   named `pr-issue-linkage`**, not a `ci-status` lane — body edits must not
-  re-run the file-lint lanes. Inputs (`runner`, `prerequisite-result`) match
-  `do-not-merge-gate.yml`'s shape. Consume it from a thin caller that triggers
-  on body-relevant events; note the emitted check context is
-  **`pr-issue-linkage / pr-issue-linkage`** (the name a ruleset must require):
+  re-run the file-lint lanes; with the caller below the check a ruleset must
+  require is **`pr-issue-linkage / pr-issue-linkage`** per the [shared adoption
+  contract](#standalone-gate-checks--shared-adoption-contract). Inputs
+  (`runner`, `prerequisite-result`) match `do-not-merge-gate.yml`'s shape.
+  `edited` is required so a body edit re-validates; the gate passes on
+  `merge_group` since the body was validated at PR time. Consume it from a thin
+  caller that triggers on body-relevant events:
 
   ```yaml
   on:
@@ -685,16 +622,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
       uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
   ```
 
-  `pull_request_target` runs the base-branch definition, so a head-branch edit
-  cannot bypass the gate (safe here because the check reads PR body metadata
-  only — it checks out and runs no head code). `edited` is required so a body
-  edit re-validates. `merge_group` is required on any repo with a merge
-  queue, for the same reason `pr-title.yml` needs it (the check passes on
-  `merge_group` since the body was validated at PR time; inert where no queue
-  exists). Then require the `pr-issue-linkage / pr-issue-linkage` check in the
-  repo's ruleset (governed via `github-iac`) — but only **after** the caller
-  is merged and emitting the check, or open PRs block on a check that never
-  runs.
+  This check reads PR body metadata only — it checks out and runs no head code.
 
   Optional input `exempt-authors` (comma-separated exact PR-author logins,
   default empty) skips body validation for the listed authors — matched by
@@ -709,12 +637,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   carries a configured label (default `do-not-merge`). **Gating**: the label's
   presence fails the job; a caller that requires this check blocks the merge
   until the label is removed. It is a **standalone required check named
-  `do-not-merge`**, not a `ci-status` lane. Inputs (`runner`,
-  `prerequisite-result`, `label`) mirror `semantic-pr`'s fail-closed pattern.
-  **Adopt the canonical block below.** Note the emitted check context is
-  `<caller job> / <reusable job>` — with the caller below it is
-  **`do-not-merge / do-not-merge`** (the name a ruleset must require, not bare
-  `do-not-merge`):
+  `do-not-merge`**, not a `ci-status` lane; with the caller below the check a
+  ruleset must require is **`do-not-merge / do-not-merge`** per the [shared
+  adoption contract](#standalone-gate-checks--shared-adoption-contract). Inputs
+  (`runner`, `prerequisite-result`, `label`) mirror `semantic-pr`'s fail-closed
+  pattern. **Adopt the canonical block below:**
 
   ```yaml
   on:
@@ -733,24 +660,21 @@ GitHub continues the normal weekly patching of each hosted image generation.
       uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
   ```
 
-  `pull_request_target` runs the base-branch definition, so a head-branch edit
-  to this file cannot bypass the gate (safe here since the check reads PR label
-  metadata only — it checks out and runs no head code). `labeled`/`unlabeled`
-  are required — without them, adding the label after the check already passed
-  would not re-trigger it, and the merge would never actually be blocked. Even
-  with them present, a same-repo automation that labels using the default
-  `GITHUB_TOKEN` still does not re-trigger this gate — see the "Known
-  limitation — GITHUB_TOKEN-authored label changes" note below.
-  `opened`/`reopened`/`synchronize` cover the check reporting on every other PR
-  lifecycle event a ruleset's required-status-check needs to see. `merge_group`
-  is required on any repo with a merge queue, both for the never-reports/deadlock
-  reason documented under `semantic-pr` above **and** because the reusable
-  workflow re-evaluates the label on `merge_group` itself (looking the
-  PR named in the merge group's temporary ref up and re-checking its current
-  labels via the API) — unlike `semantic-pr`'s immutable title, a label can be
-  added after the PR's own `pull_request_target` run last passed, e.g. while
-  the PR already sits in the queue, so trusting that earlier result would let
-  a labeled PR merge through.
+  This check reads PR label metadata only — it checks out and runs no head
+  code. `labeled`/`unlabeled` are required — without them, adding the label
+  after the check already passed would not re-trigger it, and the merge would
+  never actually be blocked. Even with them present, a same-repo automation
+  that labels using the default `GITHUB_TOKEN` still does not re-trigger this
+  gate — see the "Known limitation — GITHUB_TOKEN-authored label changes" note
+  below. `opened`/`reopened`/`synchronize` cover the check reporting on every
+  other PR lifecycle event a ruleset's required-status-check needs to see.
+  Unlike the other two gates, this one re-evaluates the label on
+  `merge_group` itself (looking up the PR named in the merge group's temporary
+  ref and re-checking its current labels via the API): a label — unlike
+  `semantic-pr`'s title or `pr-issue-linkage`'s body — can be added after the
+  PR's own `pull_request_target` run last passed, e.g. while the PR already
+  sits in the queue, so trusting that earlier result would let a labeled PR
+  merge through.
 
   **Known limitation — GITHUB_TOKEN-authored label changes.** The
   `labeled`/`unlabeled` triggers above only re-evaluate the gate when GitHub
@@ -802,9 +726,59 @@ GitHub continues the normal weekly patching of each hosted image generation.
   non-tip batch members. Re-verify this precondition whenever the repo's
   merge-queue configuration changes.
 
-  Then require the `do-not-merge / do-not-merge` check in the repo's ruleset
-  (governed via `github-iac`) — but only **after** the caller is merged and
-  emitting the check, or open PRs block on a check that never runs.
+## Claude lanes — shared consumption contract
+
+`claude-review.yml`, `claude-security-review.yml`, and `claude-e2e-verify.yml`
+share one consumption shape. Each is **advisory**: it posts PR comments and
+never gates `ci-status`. Each is a whole-job concern (job `permissions:` plus a
+`secrets:` interface), which is why each is a reusable workflow rather than a
+composite action — the caller owns the triggers and the permission grant, and
+the workflow owns the SHA-pinned `anthropics/claude-code-action` and the safe
+handling. Security rules live in [CLAUDE.md](CLAUDE.md).
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+jobs:
+  <lane>:
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: melodic-software/ci-workflows/.github/workflows/<lane>.yml@<sha>
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+The caller's job must grant those three permissions (a called workflow can only
+downgrade, not elevate) and the consumer repo must be in the
+`CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
+secret explicitly rather than `secrets: inherit`, which forwards every parent
+secret. Fork PRs receive no secrets by design and are not reviewed.
+
+## Standalone gate checks — shared adoption contract
+
+`semantic-pr.yml`, `pr-issue-linkage.yml`, and `do-not-merge-gate.yml` are
+standalone required checks rather than `ci-status` lanes, and share one
+adoption shape. The emitted check context is `<caller job> / <reusable job>`,
+so a ruleset must require the doubled name (`pr-title / pr-title`, not bare
+`pr-title`) — and only **after** the caller is merged and emitting the check,
+or open PRs block on a check that never runs. Rulesets are governed via
+`github-iac`.
+
+Each canonical caller triggers on `pull_request_target`, which runs the
+base-branch definition — a head-branch edit to the caller cannot bypass the
+gate. That is safe for all three because each reads PR metadata only and checks
+out no head code; the per-workflow entry above names which metadata. Under
+`pull_request_target` `github.ref` is the base branch, so the concurrency group
+keys on `github.event.pull_request.number` (falling back to `github.ref` for
+`merge_group`) — a `github.ref` key would collapse all PRs into one group and
+let one PR's run cancel another's required check.
+
+`merge_group` is required on any repo with a merge queue: the queue gates on
+the check, and without the trigger that required check never reports and the
+queue deadlocks. It is inert where no queue exists.
 
 ## Policy ownership and action inputs
 

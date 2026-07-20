@@ -53,6 +53,14 @@ function expectedRepositories(count = 2) {
   );
 }
 
+function repositoriesFrom(names) {
+  return names.map((fullName, index) => ({
+    id: index + 1,
+    full_name: fullName,
+    owner: { login: "melodic-software" },
+  }));
+}
+
 async function runAttestation({
   expected = expectedRepositories(),
   env = {},
@@ -75,11 +83,7 @@ async function runAttestation({
   const defaultPages = [
     {
       total_count: expected.length,
-      repositories: expected.map((fullName, index) => ({
-        id: index + 1,
-        full_name: fullName,
-        owner: { login: "melodic-software" },
-      })),
+      repositories: repositoriesFrom(expected),
     },
   ];
   Object.assign(process.env, {
@@ -241,11 +245,7 @@ test("attests JWT metadata and one exact repository page", async () => {
 
 test("paginates a full exact repository set", async () => {
   const expected = expectedRepositories(101);
-  const firstPage = expected.slice(0, 100).map((fullName, index) => ({
-    id: index + 1,
-    full_name: fullName,
-    owner: { login: "melodic-software" },
-  }));
+  const firstPage = repositoriesFrom(expected.slice(0, 100));
   const secondPage = [
     {
       id: 101,
@@ -428,11 +428,7 @@ for (const [name, options, pattern] of [
 
 test("fails closed on duplicate entries across pages", async () => {
   const expected = expectedRepositories(101);
-  const firstPage = expected.slice(0, 100).map((fullName, index) => ({
-    id: index + 1,
-    full_name: fullName,
-    owner: { login: "melodic-software" },
-  }));
+  const firstPage = repositoriesFrom(expected.slice(0, 100));
   await assert.rejects(
     runAttestation({
       expected,
@@ -465,11 +461,7 @@ for (const [name, duplicate] of [
 ]) {
   test(`fails closed on a duplicate ${name}`, async () => {
     const expected = expectedRepositories(101);
-    const firstPage = expected.slice(0, 100).map((fullName, index) => ({
-      id: index + 1,
-      full_name: fullName,
-      owner: { login: "melodic-software" },
-    }));
+    const firstPage = repositoriesFrom(expected.slice(0, 100));
     await assert.rejects(
       runAttestation({
         expected,
@@ -485,11 +477,7 @@ for (const [name, duplicate] of [
 
 test("fails closed when total_count changes", async () => {
   const expected = expectedRepositories(101);
-  const firstPage = expected.slice(0, 100).map((fullName, index) => ({
-    id: index + 1,
-    full_name: fullName,
-    owner: { login: "melodic-software" },
-  }));
+  const firstPage = repositoriesFrom(expected.slice(0, 100));
   await assert.rejects(
     runAttestation({
       expected,
@@ -544,11 +532,7 @@ test("fails closed on an incomplete page", async () => {
       pages: [
         {
           total_count: 101,
-          repositories: expected.slice(0, 99).map((fullName, index) => ({
-            id: index + 1,
-            full_name: fullName,
-            owner: { login: "melodic-software" },
-          })),
+          repositories: repositoriesFrom(expected.slice(0, 99)),
         },
       ],
     }),
