@@ -540,6 +540,50 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
   secret explicitly rather than `secrets: inherit`. Fork PRs receive no secrets
   by design and are not reviewed. Security rules live in [CLAUDE.md](CLAUDE.md).
+- `.github/workflows/claude-e2e-verify.yml` — Claude-powered end-to-end
+  verification of a PR with `anthropics/claude-code-action`. The caller passes a
+  command that builds and serves its app plus the URL it listens on; the workflow
+  provisions a pinned Playwright/Chromium toolchain, waits for the app to become
+  healthy, then has the agent drive the running app through the caller's journeys
+  and post its findings as a PR comment. **Advisory** (the agent step runs
+  `continue-on-error`; findings are a PR comment, never a gating `ci-status`
+  lane). A whole-job concern (job permissions + a secrets interface), so a
+  reusable workflow. The caller owns the triggers and permission grant; this
+  workflow owns the SHA-pinned action, the pinned browser toolchain, and the safe
+  handling. Inputs (`runner`, `app-start-command`, `app-url`, `e2e-spec`,
+  `claude-args`, `setup-command`, `timeout-minutes`) are documented inline.
+  Consume it from a `pull_request` caller:
+
+  ```yaml
+  on:
+    pull_request:
+      types: [opened, synchronize, ready_for_review, reopened]
+  jobs:
+    e2e:
+      permissions:
+        contents: read
+        pull-requests: write
+        id-token: write
+      uses: melodic-software/ci-workflows/.github/workflows/claude-e2e-verify.yml@<sha>
+      with:
+        app-start-command: npm ci && npm run build && npm run start
+        app-url: http://localhost:3000
+      secrets:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  ```
+
+  The caller's job must grant those three permissions (a called workflow can only
+  downgrade, not elevate) and the consumer repo must be in the
+  `CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
+  secret explicitly rather than `secrets: inherit`. This lane builds, serves, and
+  browser-drives the PR head — it executes PR-authored code — so it is
+  `pull_request`-only for the same reason review is: a fork gets no secrets and a
+  read-only token, so that execution has nothing to exfiltrate. Fork PRs are not
+  verified by design. The Playwright CLI version is an in-workflow pin watched by
+  `tool-version-drift-check`, not Dependabot. Security rules live in
+  [CLAUDE.md](CLAUDE.md). Promotion: flip to a selector-coupled required gate when
+  the lane's findings prove precision over a sustained window — an earned
+  promotion, mirroring the review lane's discipline.
 - `.github/workflows/semantic-pr.yml` — validates the PR **title** against the
   Conventional Commits spec (wraps the SHA-pinned
   `amannn/action-semantic-pull-request`). **Gating**: a non-conforming title

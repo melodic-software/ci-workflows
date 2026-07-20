@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>ci-workflows e2e demo</title>
+    </head>
+    <body>
+        <h1 id="heading">End-to-end verification demo</h1>
+        <p id="status">Not toggled yet</p>
+        <button id="toggle" type="button">Toggle status</button>
+        <script>
+            (function () {
+                var button = document.getElementById("toggle");
+                var status = document.getElementById("status");
+                var toggled = false;
+                button.addEventListener("click", function () {
+                    toggled = !toggled;
+                    status.textContent = toggled ? "Toggled on" : "Toggled off";
+                });
+            })();
+        </script>
+    </body>
+</html>

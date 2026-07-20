@@ -1,0 +1,425 @@
+name: claude-e2e-verify
+
+# Reusable workflow — Claude-powered end-to-end verification of a PR. The caller
+# supplies a command that builds and serves its app; this workflow provisions a
+# pinned Playwright browser toolchain, waits for the app to become healthy, then
+# runs anthropics/claude-code-action to drive the running app through the
+# caller's verification journeys and post its findings as a PR comment. A
+# whole-job concern (own job permissions + a secrets interface), so a reusable
+# workflow, not a composite action — mirrors claude-review.yml.
+#
+# ADVISORY posture: the verification agent step runs continue-on-error and posts
+# findings as a PR comment; this lane is never wired into a gating ci-status
+# check. Promotion path: flip to a selector-coupled required gate when the lane's
+# findings prove precision over a sustained window — an earned promotion,
+# mirroring the review lane's discipline.
+#
+# CONSUMER CONTRACT (the caller owns these — they are NOT set here):
+#   The triggers and the GITHUB_TOKEN permission grant live in each consumer's
+#   thin caller, because a reusable workflow's `on:` is `workflow_call` and the
+#   caller's own `on:` decides which events invoke it; and because a called
+#   workflow can only DOWNGRADE the caller's permission grant, never elevate it.
+#   Canonical caller:
+#
+#     on:
+#       pull_request:
+#         types: [opened, synchronize, ready_for_review, reopened]
+#     jobs:
+#       e2e:
+#         permissions:
+#           contents: read         # checkout the PR head to build + serve it
+#           pull-requests: write   # post the verification comment
+#           id-token: write        # OIDC — mints the Claude GitHub App token
+#                                  # (required even with an OAuth/API-key credential)
+#         uses: melodic-software/ci-workflows/.github/workflows/claude-e2e-verify.yml@<sha>
+#         with:
+#           app-start-command: npm ci && npm run build && npm run start
+#           app-url: http://localhost:3000
+#         secrets:
+#           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# SECURITY MODEL (see CLAUDE.md for the full rationale; copied in spirit from
+# claude-review.yml):
+#   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
+#     secrets — privileged context + untrusted fork code = token exfiltration).
+#     The `reject-privileged-triggers` step is a tripwire that hard-fails those
+#     two events; every other event is allowed (the consumer keeps flexibility).
+#     This lane is MORE sensitive to that boundary than review: it BUILDS, SERVES,
+#     and browser-drives the PR head, i.e. it executes PR-authored code on the
+#     runner. Under `pull_request` a fork gets no secrets and a read-only token,
+#     so that execution has nothing to exfiltrate; under a privileged trigger it
+#     would. Keep it `pull_request`-only.
+#   - Fork PRs receive no secrets and a read-only token by design, so the agent
+#     degrades to a no-op warning — fork PRs are simply not verified. That is
+#     correct, not a gap to "fix".
+#   - One named secret (CLAUDE_CODE_OAUTH_TOKEN); broad secret inheritance is never used.
+#   - Least privilege, re-declared on the job so an over-granting caller is still
+#     narrowed here: contents:read + pull-requests:write + id-token:write.
+#   - `display_report` / `show_full_output` stay off (public-repo log-leak risk);
+#     failure reporting projects only structured SDK metadata fields, never the
+#     model-authored last message.
+#   - Caller-supplied strings (app-start-command, app-url, setup-command) reach
+#     `run:` steps only through env vars, never inlined into a shell command
+#     (template-injection discipline). github-context and input expressions
+#     appear directly only in `with:`/env, where they are not shell-evaluated.
+#   - PERSISTED-CREDENTIAL COEXISTENCE (accepted, not mitigated in-job):
+#     actions/checkout persists the GITHUB_TOKEN into .git/config, and this lane
+#     then runs PR-controlled code (the app build/serve) in the SAME job — so
+#     that process can read the token from .git/config and, via same-uid /proc,
+#     a later step's environment. This exposure is accepted because: the lane is
+#     `pull_request`-only (the tripwire above); fork PRs receive no secrets and
+#     the agent skips entirely; and a same-repository author already holds write,
+#     so the token grants them nothing they lack. The final `Strip persisted git
+#     credentials` step scrubs .git/config at job end. The strip is NOT moved
+#     ahead of the app (which would isolate the app from the token) because
+#     claude-code-action's setupBranch fetches origin BEFORE it configures auth
+#     (claude-code-action#1236, open; its fix PR reorders rather than catches),
+#     so an earlier strip makes that fetch throw and aborts verification on
+#     private consumers while a public dogfood stays green and masks it. Reversal
+#     is recorded against #1236. Full in-job isolation would require running the
+#     app in a SEPARATE UNPRIVILEGED JOB — the recorded hardening direction if
+#     this lane's scope ever widens.
+#
+# PIN NOTE: PLAYWRIGHT_VERSION below is an in-workflow tool pin with no package
+# manifest, so Dependabot cannot see it (it bumps only `uses:` SHAs). The
+# tool-version-drift-check conventions apply: such pins are watched by advisory
+# tooling and the operator absorbs each bump deliberately.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller (defaults to the hosted image).
+        type: string
+        default: ubuntu-24.04
+      app-start-command:
+        description: >-
+          Command that builds and serves the app under test. Run in the
+          background through an env var (never inlined), so a multi-line block
+          works. Must start a server that listens at `app-url`.
+        type: string
+        required: true
+      app-url:
+        description: >-
+          URL the served app listens on. Health-checked (polled) before
+          verification begins; the agent drives the app through this URL.
+        type: string
+        required: true
+      e2e-spec:
+        description: >-
+          The verification instructions — the user journeys to drive. Default
+          asks the agent to discover and smoke-test the primary journeys implied
+          by the PR diff.
+        type: string
+        default: >-
+          No explicit journeys were supplied. Inspect the PR diff (use
+          `gh pr diff`) to infer the primary user journeys this change affects,
+          then smoke-test those journeys against the running application. Prefer
+          a few high-value end-to-end paths over exhaustive coverage.
+      claude-args:
+        description: >-
+          Passed through to the Claude CLI (model, turn budget, allowed tools,
+          system prompt, MCP config all ride here). Defaults mirror claude-review.
+        type: string
+        default: --model claude-sonnet-4-6 --max-turns 75
+      setup-command:
+        description: >-
+          Optional dependency-install command, run before the browser toolchain
+          and the app start. Empty (default) skips it. Passed through an env var.
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Timeout for the verification agent step.
+        type: number
+        default: 20
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: >-
+          Claude Code OAuth token (from `claude setup-token`). Supply as a
+          same-org organization secret scoped to selected repositories and pass
+          this named secret explicitly from the caller.
+        required: true
+
+permissions:
+  contents: read
+
+# Pinned Playwright CLI version. Installed globally so the `playwright` CLI is on
+# PATH and NODE_PATH resolves the same install for agent-authored Node scripts,
+# keeping the library version and its browser build revision in lockstep. See the
+# PIN NOTE in the header for the drift-watch convention.
+env:
+  PLAYWRIGHT_VERSION: 1.61.1
+
+jobs:
+  e2e-verify:
+    runs-on: ${{ inputs.runner }}
+    # Outer safety ceiling for the whole job (browser install + build + serve +
+    # health poll + agent). The agent step carries its own inputs.timeout-minutes
+    # below; keep this comfortably above it so the job ceiling never undercuts the
+    # agent's own timeout.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    concurrency:
+      # Keyed per (PR, head SHA), not per PR: a run whose head was superseded
+      # while it sat in a queue is not cancelled under a shared per-PR group
+      # (GitHub orders a group by when runs start WAITING on it, not by event
+      # time), so an older run could otherwise enter the group after the newer
+      # head's verification started and cancel it. Runs for different heads
+      # therefore never share a group; the freshness guard below retires a stale
+      # run instead. Same-head duplicates (reopen, reruns) still supersede each
+      # other harmlessly (identical content). Non-PR events degrade to a
+      # per-commit group via the fallbacks.
+      group: claude-e2e-verify-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.head.sha || github.sha }}
+      cancel-in-progress: true
+    steps:
+      # Tripwire: this workflow handles secrets AND executes PR code, so it must
+      # never run in a privileged-context trigger that also exposes untrusted
+      # fork code. We do not whitelist `pull_request` (a consumer may legitimately
+      # use workflow_dispatch); we only hard-fail the two dangerous ones.
+      - name: Reject privileged triggers
+        if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_run'
+        run: |
+          echo "::error::claude-e2e-verify must not be called from '${{ github.event_name }}'." \
+            "Call it from a 'pull_request' workflow. pull_request_target/workflow_run run" \
+            "with base-repo secrets over untrusted code (token exfiltration risk)."
+          exit 1
+
+      # A stale run must retire itself, not rely on being cancelled: with the
+      # per-head concurrency key above, nothing cancels a run whose head was
+      # superseded while it queued. Ask the live API whether this event's head is
+      # still the PR's head; when it is not, a newer run owns the verification, so
+      # every runner-consuming step below skips (building/serving/driving an
+      # obsolete head and commenting on it is worse than doing nothing). Fails
+      # open — the `!= 'true'` gates treat a missing output as fresh, and only a
+      # 40-hex commit SHA may retire the run — so an API anomaly degrades to
+      # verifying a possibly-stale head, never to silence.
+      - name: Check whether this head is still current
+        id: freshness
+        if: github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
+          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
+            echo "::notice::Skipping verification: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns it."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # persist-credentials stays at its default (true) until upstream
+      # claude-code-action#1236 ships: the action's setupBranch runs
+      # `git fetch origin <ref>` BEFORE configuring git auth, so
+      # persist-credentials:false makes that fetch fail. The final strip step
+      # below scrubs the persisted token to restore zizmor `artipacked`
+      # compliance. Reversible when #1236 lands.
+      - name: Check out
+        if: steps.freshness.outputs.superseded != 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          filter: blob:none
+
+      - name: Install application dependencies
+        if: inputs.setup-command != '' && steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          # Caller string via env (never inlined) — template-injection discipline.
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: |
+          set -euo pipefail
+          eval "$SETUP_COMMAND"
+
+      - name: Install pinned Playwright browsers
+        if: steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "playwright@${PLAYWRIGHT_VERSION}"
+          playwright install --with-deps chromium
+          # Let agent-authored Node scripts `require('playwright')` against the
+          # global install, so the library and its installed browser revision
+          # never diverge from a different repo-local copy.
+          echo "NODE_PATH=$(npm root --global)" >> "$GITHUB_ENV"
+
+      - name: Start the application under test
+        if: steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          # Caller string via env (never inlined) — template-injection discipline.
+          APP_START_COMMAND: ${{ inputs.app-start-command }}
+        run: |
+          set -euo pipefail
+          app_log="$RUNNER_TEMP/app-under-test.log"
+          # New session (setsid) so the whole served process tree can be signalled
+          # on teardown, not just the top-level shell.
+          setsid bash -c "$APP_START_COMMAND" >"$app_log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/app-under-test.pid"
+          echo "APP_LOG=$app_log" >> "$GITHUB_ENV"
+
+      - name: Wait for the application to become healthy
+        if: steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          # Caller string via env (never inlined) — template-injection discipline.
+          APP_URL: ${{ inputs.app-url }}
+        run: |
+          set -uo pipefail
+          # Bounded to ~5 minutes: app-start-command builds *then* serves, so the
+          # server may not bind until its build finishes. Well under the job ceiling.
+          for _ in $(seq 1 150); do
+            if curl --fail --silent --show-error --output /dev/null --max-time 5 "$APP_URL"; then
+              echo "Application is responding at the configured URL."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::The application under test did not respond at $APP_URL within the health-check window."
+          echo "----- application log (last 200 lines) -----"
+          tail -n 200 "${APP_LOG:-/dev/null}" || true
+          exit 1
+
+      # The comment delivery path needs a PR to comment on. On workflow_dispatch
+      # (or any event without a pull_request) there is none, so `gh pr comment`
+      # would run with an empty number. Compose the reporting instruction to
+      # match the context: post a PR comment when a PR number exists, otherwise
+      # annotate the run's step summary. A shell step (not an inline expression
+      # ternary) keeps the branch readable, mirroring claude-review's discipline.
+      - name: Compose the reporting instruction
+        id: report-instruction
+        if: steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          {
+            echo "REPORT_INSTRUCTION<<REPORT_INSTRUCTION_EOF"
+            if [ -n "$PR_NUMBER" ]; then
+              printf '%s\n' \
+                "Post your findings as a single PR comment — this is the only" \
+                "delivery path, so you must post it yourself:" \
+                "" \
+                "  gh pr comment $PR_NUMBER --body \"<summary>\"" \
+                "" \
+                "The \`gh\` CLI is already authenticated in this environment."
+            else
+              printf '%s\n' \
+                "This run has no associated pull request (it was triggered" \
+                "manually), so there is nowhere to post a PR comment. Instead," \
+                "append your findings as markdown to the GitHub step summary file" \
+                "referenced by the GITHUB_STEP_SUMMARY environment variable."
+            fi
+            echo "REPORT_INSTRUCTION_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Claude end-to-end verification
+        id: claude-e2e
+        if: steps.freshness.outputs.superseded != 'true'
+        # The action exits non-zero only on infrastructure errors; verification
+        # findings go to the PR comment, not the exit code. continue-on-error
+        # keeps an OIDC/usage-limit/SDK blip (or a fork's missing token) from
+        # showing as a red check — this lane is advisory.
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.timeout-minutes }}
+        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: ${{ inputs.claude-args }}
+          # input/github-context expressions appear directly here (a `with:`
+          # value is an action input, not a shell context), mirroring how
+          # claude-review passes its consumer prompt body.
+          prompt: |
+            This is an automated, ADVISORY end-to-end verification pass for a
+            pull request. Your findings are informational — never describe them
+            as merge-blocking.
+
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            The application under test has already been built and started by this
+            workflow and is responding at:
+
+              ${{ inputs.app-url }}
+
+            A Playwright CLI (version ${{ env.PLAYWRIGHT_VERSION }}) with Chromium
+            is installed globally and on PATH, and NODE_PATH points at the global
+            module root so Node scripts you author can `require('playwright')`
+            against that same pinned install. Drive the running application with
+            it — author and run Playwright scripts (via `node`) or use the
+            `playwright` CLI directly. Do not install a different Playwright
+            version; its browsers would not be provisioned.
+
+            Verification journeys to drive:
+
+            ${{ inputs.e2e-spec }}
+
+            Exercise each journey against the URL above, then report your
+            findings as instructed here:
+
+            ${{ env.REPORT_INSTRUCTION }}
+
+            The findings must cover: the journeys you confirmed as passing, each
+            failure with concrete reproduction steps, and a severity for each
+            failure. Use advisory, non-merge-blocking wording throughout.
+
+      # Advisory: annotate an infrastructure failure without failing the job (the
+      # agent step is continue-on-error and this step exits 0). A public repo, so
+      # the raw SDKResultMessage is NOT safe to publish — its `result` field is
+      # model-authored free text. Project only the safe, structured metadata
+      # fields, mirroring claude-review's failure reporting.
+      - name: Report verification outcome
+        if: always() && steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          VERIFY_OUTCOME: ${{ steps.claude-e2e.outcome }}
+          EXECUTION_FILE: ${{ steps.claude-e2e.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          if [ "$VERIFY_OUTCOME" = "success" ]; then
+            echo "End-to-end verification completed. Findings (if any) are in the PR comments."
+            exit 0
+          fi
+          detail="(no execution file was produced)"
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
+            detail=$(jq -c '
+              (.[-1] // empty) as $last
+              | if $last == null then empty
+                else $last | {subtype, is_error, num_turns, duration_ms, total_cost_usd}
+                end
+            ' "$EXECUTION_FILE" 2>/dev/null || true)
+            [ -n "$detail" ] || detail="(execution file present but unparsable)"
+          fi
+          echo "::error::Claude end-to-end verification exited with: $VERIFY_OUTCOME" \
+            "(infrastructure error, not a verification verdict — e.g. usage limit," \
+            "OIDC failure, SDK crash, is_error result, or max-turns exhaustion)." \
+            "Last SDK result: $detail"
+
+      - name: Stop the application under test
+        if: always() && steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          pid_file="$RUNNER_TEMP/app-under-test.pid"
+          if [ -f "$pid_file" ]; then
+            pid=$(cat "$pid_file")
+            if [ -n "$pid" ]; then
+              # Negative PID signals the whole process group; the app was started
+              # in its own session, so its child server processes are torn down
+              # too. Fall back to the single PID if the group signal fails.
+              kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+            fi
+          fi
+
+      # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
+      # persisted into .git/config (forced on by #1236, above). Drop this once
+      # the checkout step can use persist-credentials:false again.
+      - name: Strip persisted git credentials
+        if: always()
+        run: git config --unset-all http.https://github.com/.extraheader || true
