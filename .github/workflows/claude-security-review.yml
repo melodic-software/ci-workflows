@@ -1,0 +1,370 @@
+name: claude-security-review
+
+# Reusable workflow — dedicated LLM security-review pass with
+# anthropics/claude-code-action. A sibling of claude-review.yml: same secrets
+# interface and same safe-handling model, but a security-only prompt and an
+# ADVISORY posture. A whole-job concern (own job permissions + secrets
+# interface), so a reusable workflow, not a composite action.
+#
+# POSTURE — advisory, not gating:
+#   This lane POSTS a security review as PR comments; it never fails ci-status
+#   and is not a required check. The Claude step is continue-on-error so an
+#   OIDC/usage-limit/SDK blip does not show as a red check. The intended
+#   promotion path: flip to blocking on CRITICAL findings once the lane's
+#   precision is proven over a sustained window — an earned promotion
+#   (trust-before-scale), mirroring the guardrail-matrix verification-promotion
+#   discipline. Until then it stays advisory.
+#
+# PATH-TRIGGERED BY DESIGN — the CALLER owns path filtering:
+#   Unlike claude-review (which reviews every PR), a security pass on every PR
+#   is noise in a doc-heavy repo where most PRs are prose. This reusable
+#   workflow deliberately does NOT filter paths itself — it has no path input.
+#   The caller scopes it to security-sensitive surfaces via its own
+#   `on.pull_request.paths`, the same "documented caller obligation, not a
+#   runtime check" pattern the rest of this workflow's contract uses.
+#
+# CONSUMER CONTRACT (the caller owns these — they are NOT set here):
+#   The triggers, the path filter, and the GITHUB_TOKEN permission grant live in
+#   each consumer's thin caller, because a reusable workflow's `on:` is
+#   `workflow_call` and the caller's own `on:` decides which events (and which
+#   changed paths) invoke it; and because a called workflow can only DOWNGRADE
+#   the caller's permission grant, never elevate it. Canonical caller — note the
+#   `paths:` filter over security-sensitive surfaces, which is the load-bearing
+#   difference from claude-review's caller:
+#
+#     on:
+#       pull_request:
+#         types: [opened, synchronize, ready_for_review, reopened]
+#         paths:
+#           - '.github/workflows/**'   # workflow definitions
+#           - '.github/actions/**'     # composite actions
+#           - '**/*.sh'                # shell / hook scripts
+#           - '**/*.ps1'
+#           - '**/settings.json'       # permission / settings config
+#           # plus the caller's own auth/token-touching source and
+#           # network-call sites, mapped to that repo's actual paths (these
+#           # do not glob cleanly, so the caller enumerates them explicitly)
+#     jobs:
+#       security-review:
+#         permissions:
+#           contents: read         # checkout + read the diff
+#           pull-requests: write   # post the security review + tracking comment
+#           id-token: write        # OIDC — mints the Claude GitHub App token
+#                                  # (required even with an OAuth/API-key credential)
+#         uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
+#         secrets:
+#           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# SECURITY MODEL (see CLAUDE.md for the full rationale — identical to
+# claude-review's, because both run an AI agent with an org credential on a
+# public repo):
+#   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
+#     secrets — privileged context + untrusted fork code = token exfiltration).
+#     The `reject-privileged-triggers` step is a tripwire that hard-fails those
+#     two events; every other event is allowed (the consumer keeps flexibility).
+#   - Fork PRs receive no secrets and a read-only token by design, so they are
+#     simply not reviewed — that is correct, not a gap to "fix".
+#   - The action gates triggering on the actor's write access; bots are blocked
+#     unless named in `allowed_bots`.
+#   - `display_report` / `show_full_output` stay off (public-repo log-leak risk).
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller's governed selector.
+        type: string
+        default: ubuntu-24.04
+      prompt:
+        description: >-
+          The security-review-criteria body. A REPO / PR NUMBER / HEAD SHA
+          header and commit-permalink guidance are prepended automatically, so
+          this input is just the instructions for what to look for.
+        type: string
+        default: >-
+          Perform a security review of THIS pull request. Review ONLY the files
+          changed in this PR: use `gh pr diff` to see what changed, then read
+          those files. Do not audit unrelated parts of the codebase.
+
+
+          Hunt for vulnerabilities that static analysis misses: logic flaws,
+          authorization and access-control gaps, injection surfaces (command,
+          SQL, path, template), unsafe handling of tokens / secrets /
+          credentials, and dangerous GitHub Actions patterns —
+          `pull_request_target` or `workflow_run` used with secrets over
+          untrusted code, script injection through the `github` context inside
+          `run:` blocks, permission-widening changes to a workflow's
+          `permissions:` or to settings / config, and supply-chain risk from
+          loosened or unpinned action / dependency pins.
+
+
+          Report findings as a pull request review. Tag each finding with a
+          severity (CRITICAL / IMPORTANT / SUGGESTION) and, separately, a
+          confidence level (how sure you are the finding is real and
+          exploitable). Report security issues only — no style, formatting,
+          naming, test-coverage, or general code-quality commentary. If you find
+          no security issues, say so plainly.
+      claude-args:
+        description: >-
+          Passed through to the Claude CLI. The universal extension point: model,
+          turn budget, allowed tools, system prompt, MCP config all ride here
+          (the standalone model / max_turns / allowed_tools action inputs are
+          deprecated upstream).
+        type: string
+        default: --model claude-sonnet-4-6 --max-turns 75
+      skip-actors:
+        description: >-
+          Comma-separated actors (no spaces) for whom the job skips entirely, to
+          save runner minutes on PRs that never need review. Empty reviews all.
+        type: string
+        default: dependabot[bot]
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: >-
+          Claude Code OAuth token (from `claude setup-token`). Supply as a
+          same-org organization secret scoped to selected repositories and pass
+          this named secret explicitly from the caller.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  security-review:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    # Skip configured bot/automation actors (saves runner minutes). The action's
+    # own write-access gate is the security control; this is just an optimization.
+    # Comma-wrap both sides so a substring of one actor can't match another.
+    if: >-
+      ${{ !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor)) }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    concurrency:
+      # Job-level (not workflow-level): a workflow-level group would cancel
+      # before the `if` above evaluates, so a skipped actor could cancel an
+      # in-progress review.
+      #
+      # Keyed per (PR, head SHA), not per PR: GitHub orders a concurrency
+      # group by when jobs start WAITING on it, not by event time, and callers
+      # gate this job behind a runner-selector job whose queue delay varies
+      # per run. Under a shared per-PR group, an older run whose selector was
+      # delayed could enter the group AFTER the newer head's review had
+      # started, cancel it, and review an obsolete head. Runs for different
+      # heads therefore never share a group; the superseded-head guard step
+      # below is what retires a stale run instead. Same-head duplicates
+      # (reopen, ready_for_review, reruns) still supersede each other — there
+      # the entry order is harmless because every member reviews identical
+      # content. Non-PR events degrade to a per-commit group via the fallbacks.
+      group: claude-security-review-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.head.sha || github.sha }}
+      cancel-in-progress: true
+    steps:
+      # Tripwire: this workflow handles secrets, so it must never run in a
+      # privileged-context trigger that also exposes untrusted fork code. We do
+      # not whitelist `pull_request` (a consumer may legitimately use
+      # workflow_dispatch / schedule); we only hard-fail the two dangerous ones.
+      - name: Reject privileged triggers
+        if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_run'
+        run: |
+          echo "::error::claude-security-review must not be called from '${{ github.event_name }}'." \
+            "Call it from a 'pull_request' workflow. pull_request_target/workflow_run run" \
+            "with base-repo secrets over untrusted code (token exfiltration risk)."
+          exit 1
+
+      # A stale run must retire itself, not rely on being cancelled: with the
+      # per-head concurrency key above, nothing cancels a run whose head was
+      # superseded while it sat in a queue. Ask the live API whether this
+      # event's head is still the PR's head; when it is not, a newer run owns
+      # the review, so every runner-consuming step below skips (posting
+      # feedback for an obsolete head is worse than doing nothing, and the
+      # newer run also owns the marker-comment lifecycle). Fails open — the
+      # `!= 'true'` step gates treat a missing output as fresh, and only a
+      # response shaped like a commit SHA may retire the run (a degenerate
+      # success such as jq's literal `null` must not) — so an API anomaly
+      # degrades to reviewing a possibly-stale head, never to silence.
+      - name: Check whether this head is still current
+        id: freshness
+        if: github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
+          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
+            echo "::notice::Skipping review: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns the review."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # persist-credentials stays at its default (true) until upstream
+      # claude-code-action#1236 ships: the action's setupBranch runs
+      # `git fetch origin <ref>` BEFORE configuring git auth, so
+      # persist-credentials:false makes that fetch fail and leaves an orphan
+      # tracking comment. The final strip step below scrubs the persisted token
+      # to restore zizmor `artipacked` compliance. Reversible when #1236 lands.
+      - name: Check out
+        if: steps.freshness.outputs.superseded != 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          filter: blob:none
+
+      - name: Claude security review
+        id: claude-review
+        if: steps.freshness.outputs.superseded != 'true'
+        # claude-code-action exits non-zero only on infrastructure errors; review
+        # findings go to PR comments, not the exit code. continue-on-error keeps
+        # an OIDC/usage-limit/SDK blip from showing as a red check.
+        continue-on-error: true
+        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A clean security pass otherwise produces no visible output (upstream
+          # #1071); the tracking comment guarantees a "no findings" signal.
+          track_progress: true
+          # Off on this public lane (log-leak risk); hardcoded, not a flippable
+          # input, so a consumer cannot turn it on.
+          display_report: false
+          allowed_bots: dependabot[bot]
+          exclude_comments_by_actor: dependabot[bot]
+          claude_args: ${{ inputs.claude-args }}
+          # github-context expressions must appear directly in the step (a value
+          # carried in via inputs.prompt is NOT re-evaluated), so the structural
+          # header + permalink guidance live here and wrap the consumer's body.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            ${{ inputs.prompt }}
+
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+      # Also gated on the guard: a superseded run has no outcome to report, and
+      # skipping this step leaves review_failed empty so both marker-comment
+      # steps below skip too — a retired run must not touch the newer run's PR
+      # comment state.
+      - name: Report review outcome
+        id: review-outcome
+        if: always() && steps.freshness.outputs.superseded != 'true'
+        env:
+          REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          if [ "$REVIEW_OUTCOME" = "success" ]; then
+            echo "Claude security review completed. Findings (if any) are in the PR comments."
+            echo "review_failed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # This is a public repo, so the raw SDKResultMessage is NOT safe to
+          # publish as-is: its `result` field is model-authored free text (per
+          # the Claude Agent SDK message schema) and CLAUDE.md keeps
+          # display_report/show_full_output off for exactly this leak risk.
+          # Project only the safe, structured metadata fields — never the last
+          # message wholesale.
+          detail="(no execution file was produced)"
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -f "$EXECUTION_FILE" ]; then
+            detail=$(jq -c '
+              (.[-1] // empty) as $last
+              | if $last == null then empty
+                else $last | {subtype, is_error, num_turns, duration_ms, total_cost_usd}
+                end
+            ' "$EXECUTION_FILE" 2>/dev/null || true)
+            [ -n "$detail" ] || detail="(execution file present but unparsable)"
+          fi
+
+          echo "::error::Claude security review exited with: $REVIEW_OUTCOME" \
+            "(infrastructure error, not a security signal — e.g. usage limit," \
+            "OIDC failure, SDK crash, is_error result, or max-turns exhaustion)." \
+            "Last SDK result: $detail"
+
+          echo "review_failed=true" >> "$GITHUB_OUTPUT"
+          echo "review_detail=$detail" >> "$GITHUB_OUTPUT"
+
+      # Runs only on a genuine infra failure (never on a clean review) and only
+      # when the token can write: fork-triggered pull_request runs get a
+      # read-only GITHUB_TOKEN and no secrets by design (CLAUDE.md), so
+      # gh pr comment would just fail there — skip rather than error.
+      # Targets the marker comment by ID (never --edit-last, which edits the
+      # PR's last comment from ANY author) so a stuck placeholder comment from
+      # track_progress is never mistaken for "no findings" and an unrelated
+      # bot comment is never clobbered.
+      - name: Comment on genuine review failure
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'true' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEW_DETAIL: ${{ steps.review-outcome.outputs.review_detail }}
+        run: |
+          marker="<!-- claude-security-review-infra-status -->"
+          body=$(printf '%s\n' \
+            "$marker" \
+            "> [!WARNING]" \
+            "> **Automated security review did not complete** — this is an infrastructure failure, not a review verdict." \
+            ">" \
+            "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"" \
+            ">" \
+            "> - Run: $RUN_URL" \
+            "> - Last SDK result: \`$REVIEW_DETAIL\`" \
+            ">" \
+            "> Re-running the job, or pushing a new commit, will retry the review.")
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X PATCH -f "body=$body" --silent
+          else
+            gh pr comment "$PR_NUMBER" --body "$body"
+          fi
+
+      # Symmetric counterpart to the failure step above: a transient infra
+      # failure (e.g. an OIDC blip) can leave the marker comment behind on the
+      # PR, and the failure-only condition previously meant no later code path
+      # ever touched it again. Once a retry (rerun or new push) succeeds, clear
+      # that stale warning so it is not mistaken for a still-open problem.
+      # Same fork guard and marker lookup as the failure step — never
+      # --edit-last, for the same clobbering risk.
+      - name: Clear stale failure comment after successful review
+        if: >-
+          always() && steps.review-outcome.outputs.review_failed == 'false' &&
+          github.event.pull_request.number != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- claude-security-review-infra-status -->"
+
+          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
+            jq -r --arg marker "$marker" '
+              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
+              | last | .id // empty
+            ')
+
+          if [ -n "$comment_id" ]; then
+            gh api "repos/$REPO/issues/comments/$comment_id" -X DELETE --silent
+          fi
+
+      # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
+      # persisted into .git/config (forced on by #1236, above). Drop this once
+      # the checkout step can use persist-credentials:false again.
+      - name: Strip persisted git credentials
+        if: always()
+        run: git config --unset-all http.https://github.com/.extraheader || true
