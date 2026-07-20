@@ -402,20 +402,25 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `lychee-offline` action above, which feeds `ci-status`.)
 - `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
-  **Advisory for findings** (surfaces PR annotations without failing unless
-  `fail-on-findings` is enabled); consumed via `uses:` at job level. The
+  **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
+  without failing); consumed via `uses:` at job level. The
   workflow downloads the official x86_64 GNU/Linux archive for the reviewed
   [v1.27.0 release][zizmor-release-v1-27-0], verifies its committed SHA-256
   before extraction, and verifies the CLI-reported version before auditing.
   `latest` remains accepted for compatibility but resolves to that reviewed
-  default rather than a mutable release. Installation and internal errors fail
-  closed even in advisory mode; only zizmor's documented finding codes 11-14
-  are suppressed. The verified binary runs from a fresh runner-temporary
-  directory with a per-job cache and without Docker, a job/service container,
-  or an installer-time privilege escalation. `runner` defaults to
-  `ubuntu-24.04` and can consume the approved selector output for eligible
-  private, non-fork calls. SARIF upload and blocking promotion
-  remain deferred opt-ins. Inputs are documented inline.
+  default rather than a mutable release. zizmor runs in SARIF mode; a bundled
+  guard pins the SARIF provenance, emits a GitHub annotation for every finding,
+  and gates on severity. Callers
+  opt into blocking by raising `fail-on-severity` to `low`, `medium`, or `high`
+  (mapped to the SARIF note/warning/error levels); the legacy `fail-on-findings`
+  boolean stays a back-compat alias for `low`. Installation, argument, and
+  malformed-SARIF errors fail closed even in advisory mode. The verified binary
+  runs from a fresh runner-temporary directory with a per-job cache and
+  without Docker, a job/service container, or an installer-time privilege
+  escalation.
+  `runner` defaults to `ubuntu-24.04` and can consume the
+  approved selector output for eligible private, non-fork calls. SARIF upload
+  to the Security tab remains a deferred opt-in. Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
   Google's official native OSV-Scanner v2.4.0 Linux X64 binary. The exact binary,
   its provenance, and the SLSA verifier are checksum-pinned; the verifier then
