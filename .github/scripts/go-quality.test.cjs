@@ -112,7 +112,7 @@ test("this exact workflow head is behaviorally dogfooded on native Windows", () 
   assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*go-quality-dogfood[^\n]*\]$/mu);
   assert.match(
     ciWorkflow,
-    /^ {10}RESULTS: [^\n]*\$\{\{ needs\.go-quality-dogfood\.result \}\}[^\n]*$/mu,
+    /^ {10}results: [^\n]*\$\{\{ needs\.go-quality-dogfood\.result \}\}[^\n]*$/mu,
   );
   assert.match(windowsFixtureTest, /^\/\/go:build windows$/mu);
   assert.match(windowsFixtureTest, /if !raceDetectorEnabled/u);
