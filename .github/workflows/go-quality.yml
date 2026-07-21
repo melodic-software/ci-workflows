@@ -143,6 +143,10 @@ jobs:
             exit 2
           }
 
+          if [[ -e go.sum || -L go.sum ]]; then
+            [[ -f go.sum && ! -L go.sum ]] || fail "go.sum must be a regular reviewed file when present"
+          fi
+
           set +e
           diff_output="$(GOWORK=off go mod tidy -diff)"
           status=$?

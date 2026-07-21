@@ -85,6 +85,10 @@ test("native Linux and Windows analyzer lanes use immutable verified binaries", 
 
 test("approved native tests and module hygiene stay blocking", () => {
   assert.match(workflow, /gofmt -l/u);
+  assert.match(
+    workflow,
+    /go\.sum must be a regular reviewed file when present/u,
+  );
   assert.match(workflow, /GOWORK=off go mod tidy -diff/u);
   assert.match(
     workflow,
