@@ -25,10 +25,9 @@ on:
       prerequisite-result:
         description: >-
           Result of an optional prerequisite job. Callers with `needs` must pass
-          its exact result and use `if: !cancelled()` so failures and skips reach
-          this gate without resisting workflow cancellation. Any value other
-          than success, including an unverified cancelled result, fails this
-          required check before title validation.
+          its exact result and use `if: always()`; any value other than success,
+          including an unverified cancelled result, fails this required check
+          before title validation.
         type: string
         default: success
       types:
@@ -87,9 +86,11 @@ jobs:
     # not make this required context disappear. Use the standard ubuntu-24.04
     # hosted runner (free on public repos) only to report that non-success
     # outcome; successful calls still consume exactly the caller-selected runner
-    # and add no hosted validation job. The caller's `if: !cancelled()` lets
-    # whole-workflow cancellation stop this job before dispatch while preserving
-    # fail-closed prerequisite results.
+    # and add no hosted validation job. The caller's `if: always()` deliberately
+    # keeps this reporter eligible after every prerequisite outcome, including
+    # cancellation, so the required context materializes and any delivered
+    # non-success result fails closed. That bounded hosted reporter run is the
+    # accepted cancellation tradeoff; a superseding run reports its own result.
     runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:

@@ -12,6 +12,31 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
+test("semantic PR documents the validator-required fail-closed caller shape", () => {
+  const prerequisiteInput = workflow.match(
+    / {6}prerequisite-result:\n([\s\S]*?)(?= {6}[a-z][a-z-]+:\n|\npermissions:)/u,
+  );
+  assert.ok(prerequisiteInput, "prerequisite-result input is missing");
+  assert.match(
+    prerequisiteInput[1],
+    /Callers with `needs` must pass\s+its exact result and use `if: always\(\)`; any value other than success,\s+including an unverified cancelled result, fails this required check\s+before title validation\./u,
+  );
+  assert.doesNotMatch(prerequisiteInput[1], /!cancelled\(\)/u);
+
+  const jobStart = workflow.indexOf("  pr-title:\n");
+  const runsOn = workflow.indexOf("    runs-on:", jobStart);
+  assert.ok(
+    jobStart >= 0 && runsOn > jobStart,
+    "pr-title job preamble is missing",
+  );
+  const jobContract = workflow.slice(jobStart, runsOn);
+  assert.match(
+    jobContract,
+    /caller's `if: always\(\)`[\s\S]*?after every prerequisite outcome,[\s\S]*?including[\s\S]*?cancellation,[\s\S]*?required context materializes[\s\S]*?non-success result fails closed/u,
+  );
+  assert.doesNotMatch(jobContract, /!cancelled\(\)/u);
+});
+
 test("semantic PR required check fails closed after every delivered prerequisite outcome", () => {
   const prerequisiteInput = workflow.match(
     / {6}prerequisite-result:\n([\s\S]*?)(?= {6}[a-z][a-z-]+:\n|\npermissions:)/u,
