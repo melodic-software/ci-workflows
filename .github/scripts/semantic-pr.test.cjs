@@ -101,7 +101,7 @@ test("documented selector composition preserves the one required check context",
   );
   assert.match(
     readme,
-    /public fallback shown above and the reusable's omitted-input default both\s+preserve `ubuntu-24\.04`[\s\S]*?private self-hosted-only caller can instead supply\s+its allowlisted managed label/u,
+    /public fallback shown above and the reusable's omitted-input default both\s+preserve `ubuntu-24\.04`[\s\S]*?private self-hosted-only caller cannot reuse the\s+public[\s\S]*?ci-runner-selection-failed[\s\S]*?needs\.select-runner\.result == 'success'/u,
   );
   assert.match(
     readme,

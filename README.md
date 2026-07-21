@@ -335,11 +335,22 @@ GitHub continues the normal weekly patching of each hosted image generation.
   result, and a stale failure left by a superseded run clears on re-run.
 
   The public fallback shown above and the reusable's omitted-input default both
-  preserve `ubuntu-24.04`. A private self-hosted-only caller can instead supply
-  its allowlisted managed label in the same fallback expression; the reusable
-  does not replace it after a selector failure. Both success and reporting paths
-  remain the existing single `pr-title / pr-title` job on the resolved runner;
-  there is no routine aggregator or extra hosted job. GitHub documents that
+  preserve `ubuntu-24.04`. A private self-hosted-only caller cannot reuse the
+  public `outputs.runner || 'label'` form: on a strict-selector failure
+  `select-runner` publishes the non-empty unroutable sentinel
+  `ci-runner-selection-failed`, which a `||` fallback passes straight through
+  instead of replacing. Gate the fallback on the selector result so the sentinel
+  is ignored:
+
+  ```yaml
+      runner: ${{ needs.select-runner.result == 'success' && needs.select-runner.outputs.runner || 'melodic-ubuntu-24.04-x64' }}
+  ```
+
+  The fallback label must itself be routable when selection fails; otherwise the
+  required reporter job never starts and the non-success result cannot fail
+  closed. Both success and reporting paths remain the existing single
+  `pr-title / pr-title` job on the resolved runner; there is no routine
+  aggregator or extra hosted job. GitHub documents that
   [`runs-on` accepts an input-backed runner value][job-runs-on].
 
   `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
