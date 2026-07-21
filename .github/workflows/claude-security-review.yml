@@ -3,47 +3,47 @@ name: claude-security-review
 # Reusable workflow — dedicated LLM security-review pass with
 # anthropics/claude-code-action. A sibling of claude-review.yml: same secrets
 # interface and same safe-handling model, but a security-only prompt and an
-# ADVISORY posture. A whole-job concern (own job permissions + secrets
+# ADVISORY VERDICT. A whole-job concern (own job permissions + secrets
 # interface), so a reusable workflow, not a composite action.
 #
-# POSTURE — advisory, not gating:
-#   This lane POSTS a security review as PR comments; it never fails ci-status
-#   and is not a required check. The Claude step is continue-on-error so an
-#   OIDC/usage-limit/SDK blip does not show as a red check. The intended
-#   promotion path: flip to blocking on CRITICAL findings once the lane's
-#   precision is proven over a sustained window — an earned promotion
-#   (trust-before-scale), mirroring the guardrail-matrix verification-promotion
-#   discipline. Until then it stays advisory.
+# POSTURE — advisory VERDICT, name-stable EXECUTION check:
+#   This lane POSTS a security review as PR comments; the Claude step is
+#   continue-on-error so an OIDC/usage-limit/SDK blip does not show as a red
+#   check, and findings never fail ci-status. The VERDICT (what the review says)
+#   stays advisory. What a consumer CAN gate is EXECUTION EVIDENCE: a ruleset
+#   may make the `security-review` check REQUIRED, so every protected-branch PR
+#   carries proof a security pass ran — or was judged not-applicable. The
+#   intended promotion path for the verdict itself: flip to blocking on CRITICAL
+#   findings once the lane's precision is proven over a sustained window — an
+#   earned promotion (trust-before-scale), mirroring the guardrail-matrix
+#   verification-promotion discipline. Until then the verdict stays advisory.
 #
-# PATH-TRIGGERED BY DESIGN — the CALLER owns path filtering:
-#   Unlike claude-review (which reviews every PR), a security pass on every PR
-#   is noise in a doc-heavy repo where most PRs are prose. This reusable
-#   workflow deliberately does NOT filter paths itself — it has no path input.
-#   The caller scopes it to security-sensitive surfaces via its own
-#   `on.pull_request.paths`, the same "documented caller obligation, not a
-#   runtime check" pattern the rest of this workflow's contract uses.
+# ALWAYS-REPORT SHAPE — the caller does NOT path-filter at workflow level:
+#   A security pass on every PR is noise in a doc-heavy repo where most PRs are
+#   prose, so this lane scopes itself to security-sensitive surfaces. A consumer
+#   whose ruleset REQUIRES the execution check must NOT express that scope with
+#   the caller's `on.pull_request.paths`: a workflow-level path miss leaves the
+#   required check Pending forever and wedges every prose PR. Instead the caller
+#   triggers on ALL pull_request events and passes the `paths` input; the
+#   `changes` job evaluates it with a job-level conditional, so a not-applicable
+#   PR yields a name-stable SKIPPED `security-review` job — which a ruleset reads
+#   as success, satisfying the required check. The check context is
+#   `<caller-job-id> / security-review`. Empty `paths` (the default) means
+#   "every call is relevant", so a consumer that passes nothing is unaffected.
 #
 # CONSUMER CONTRACT (the caller owns these — they are NOT set here):
-#   The triggers, the path filter, and the GITHUB_TOKEN permission grant live in
-#   each consumer's thin caller, because a reusable workflow's `on:` is
-#   `workflow_call` and the caller's own `on:` decides which events (and which
-#   changed paths) invoke it; and because a called workflow can only DOWNGRADE
-#   the caller's permission grant, never elevate it. Canonical caller — note the
-#   `paths:` filter over security-sensitive surfaces, which is the load-bearing
-#   difference from claude-review's caller:
+#   The triggers and the GITHUB_TOKEN permission grant live in each consumer's
+#   thin caller, because a reusable workflow's `on:` is `workflow_call` and the
+#   caller's own `on:` decides which events invoke it; and because a called
+#   workflow can only DOWNGRADE the caller's permission grant, never elevate it.
+#   Canonical caller — trigger on all PR events (NO workflow-level `paths:`) and
+#   pass the security-sensitive surfaces as the `paths` input:
 #
 #     on:
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
-#         paths:
-#           - '.github/workflows/**'   # workflow definitions
-#           - '.github/actions/**'     # composite actions
-#           - '**/*.sh'                # shell / hook scripts
-#           - '**/*.ps1'
-#           - '**/settings.json'       # permission / settings config
-#           # plus the caller's own auth/token-touching source and
-#           # network-call sites, mapped to that repo's actual paths (these
-#           # do not glob cleanly, so the caller enumerates them explicitly)
+#       merge_group:   # ONLY if the consumer runs a merge queue — without it
+#                      # the required check never reports for queued PRs
 #     jobs:
 #       security-review:
 #         permissions:
@@ -52,6 +52,18 @@ name: claude-security-review
 #           id-token: write        # OIDC — mints the Claude GitHub App token
 #                                  # (required even with an OAuth/API-key credential)
 #         uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
+#         with:
+#           # Security-sensitive surfaces in Actions `paths:` syntax, one per
+#           # line (use a `|` literal block). Empty (default) reviews every PR;
+#           # a PR matching none yields a name-stable skipped check. `#` comment
+#           # and blank lines are ignored.
+#           paths: |
+#             .github/**
+#             scripts/**
+#             **/*.sh
+#             **/*.ps1
+#             # plus the caller's own auth/token-touching source and
+#             # network-call sites, mapped to that repo's actual paths
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -75,6 +87,19 @@ on:
         description: Runner label selected by the caller's governed selector.
         type: string
         default: ubuntu-24.04
+      paths:
+        description: >-
+          Newline-separated path patterns, in GitHub Actions `paths:` filter
+          syntax, naming this consumer's security-sensitive surfaces (use a `|`
+          literal block to preserve newlines). When a PR changes at least one
+          matching file the review runs; when it matches none, the
+          `security-review` job skips — a name-stable check verdict a
+          required-check ruleset reads as success. Blank lines and `#` comments
+          are ignored. Empty (the default) means no filtering — every call is
+          relevant, so a consumer that passes nothing is unaffected. Consulted
+          only on `pull_request` events; other events are always relevant.
+        type: string
+        default: ''
       prompt:
         description: >-
           The security-review-criteria body. A REPO / PR NUMBER / HEAD SHA
@@ -130,14 +155,116 @@ permissions:
   contents: read
 
 jobs:
+  # Relevance gate for the ALWAYS-REPORT SHAPE (see header): decides whether
+  # this PR touches a security-sensitive surface, so `security-review` can skip
+  # and still report a name-stable check — instead of the caller path-filtering
+  # at workflow level, which would wedge a required check Pending. Empty `paths`
+  # or any non-pull_request event is always relevant.
+  changes:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    # Only the PR file listing is needed; no checkout, so no contents grant.
+    permissions:
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - name: Determine security relevance
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          PATHS: ${{ inputs.paths }}
+        run: |
+          set -euo pipefail
+
+          # No filter, or a non-PR event, means every call is relevant — the
+          # backward-compatible default for a consumer that passes no `paths`.
+          if [ "$EVENT_NAME" != pull_request ] || [ -z "$(printf '%s' "$PATHS" | tr -d '[:space:]')" ]; then
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Build a root-anchored gitignore matcher in a throwaway repo — no
+          # checkout of the caller's code. Actions `paths:` patterns are
+          # root-anchored; gitignore patterns without a leading slash match at
+          # any depth, so anchor each pattern with a leading '/'.
+          scratch="$(mktemp -d)"
+          # Persistent self-hosted runners accumulate /tmp; clean up on any exit.
+          # Single quotes defer expansion to trap time (avoids SC2064).
+          trap 'rm -rf "$scratch"' EXIT
+          ignore="$scratch/.gitignore"
+          git init -q "$scratch"
+          : >"$ignore"
+          printf '%s\n' "$PATHS" | while IFS= read -r pattern; do
+            pattern="${pattern%$'\r'}"
+            pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+            pattern="${pattern%"${pattern##*[![:space:]]}"}"
+            [ -n "$pattern" ] || continue
+            case "$pattern" in
+              \#*) continue ;;
+              '!'*) printf '!/%s\n' "${pattern#!}" >>"$ignore" ;;
+              /*) printf '%s\n' "$pattern" >>"$ignore" ;;
+              *) printf '/%s\n' "$pattern" >>"$ignore" ;;
+            esac
+          done
+
+          # Every line was blank or a `#` comment, so the filter is effectively
+          # empty — fail OPEN rather than skip every PR on a vacuous filter.
+          if [ ! -s "$ignore" ]; then
+            echo "::warning::paths filter has no usable patterns; treating PR as security-relevant."
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # List every changed file, both sides of any rename. A listing failure
+          # must not read as "no security-relevant change": fail OPEN to relevant.
+          files="$scratch/files.txt"
+          if ! gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' >"$files"; then
+            echo "::warning::Could not list PR files; treating PR as security-relevant."
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # check-ignore prints matching paths; exit 0 = at least one match,
+          # 1 = none, >1 = fatal. A fatal error fails OPEN, never reads as "no
+          # match", so a matcher fault cannot silently skip the review.
+          matches="$(git -C "$scratch" check-ignore --stdin --no-index <"$files")" && rc=0 || rc=$?
+          if [ "$rc" -gt 1 ]; then
+            echo "::warning::check-ignore failed (rc=$rc); treating PR as security-relevant."
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$matches" ]; then
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >>"$GITHUB_OUTPUT"
+          fi
+
   security-review:
+    needs: changes
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
+    #
+    # `!cancelled() && needs.changes.outputs.relevant != 'false'` is the
+    # always-report gate: relevant=false (no security-sensitive path changed)
+    # skips this job, and a skipped required check reads as success — the
+    # name-stable not-applicable verdict. It FAILS OPEN: a failed/errored
+    # `changes` job leaves relevant unset (''), which is not 'false', so the
+    # review still runs. A silent skip would let unreviewed security-relevant
+    # changes merge, so paying for a run beats a silent evidence gap. always()
+    # is deliberately avoided — a cancelled workflow should still stop.
     if: >-
-      ${{ !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor)) }}
+      ${{ !cancelled()
+          && needs.changes.outputs.relevant != 'false'
+          && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor)) }}
     permissions:
       contents: read
       pull-requests: write

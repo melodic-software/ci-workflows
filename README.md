@@ -490,31 +490,34 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`pull_request_target`, script injection via the `github` context),
   permission-widening config changes, supply-chain pin loosening — and reports
   findings as a PR review with severity (CRITICAL/IMPORTANT/SUGGESTION) and a
-  confidence axis, security only. The intended promotion path is to flip to
-  blocking on CRITICAL findings once the lane's precision is proven over a
-  sustained window — an earned promotion (trust-before-scale).
-  **Path-triggered by design:** the reusable workflow does not filter paths,
-  because a security pass on every PR is noise in a doc-heavy repo where most
-  PRs are prose. The caller owns the filter through its own
-  `on.pull_request.paths` over security-sensitive surfaces (workflow files,
-  permission/settings configs, hook and shell scripts, auth/token-touching
-  code, network-call sites) — path filtering is how the default-on discipline
-  scopes itself. Inputs (`runner`, `prompt`, `claude-args`, `skip-actors`)
+  confidence axis, security only. The intended promotion path for the VERDICT
+  is to flip to blocking on CRITICAL findings once the lane's precision is
+  proven over a sustained window — an earned promotion (trust-before-scale).
+  **Always-report shape:** a security pass on every PR is noise in a doc-heavy
+  repo, so the lane scopes itself to security-sensitive surfaces — but the
+  caller must NOT express that scope with a workflow-level `on.pull_request.paths`
+  filter, because a path miss leaves a required check Pending forever and wedges
+  every prose PR. Instead the caller triggers on all PR events and passes the
+  `paths` input (security-sensitive surfaces in Actions `paths:` syntax:
+  workflow files, permission/settings configs, hook and shell scripts,
+  auth/token-touching code, network-call sites); the workflow's `changes` job
+  evaluates it and a not-applicable PR yields a name-stable skipped
+  `security-review` check. A consumer's ruleset may make that EXECUTION check
+  required (check context `<caller job> / security-review`); the VERDICT stays
+  advisory. Inputs (`runner`, `paths`, `prompt`, `claude-args`, `skip-actors`)
   have public-safe defaults documented inline. Consume it per the [Claude
   lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
-  below, with the caller additionally scoping paths:
+  below, triggering on all PR events (no workflow-level `paths:`) and passing
+  the `paths` input in the job:
 
   ```yaml
-  on:
-    pull_request:
-      types: [opened, synchronize, ready_for_review, reopened]
-      paths:
-        - '.github/workflows/**'
-        - '.github/actions/**'
-        - '**/*.sh'
-        - '**/*.ps1'
-        - '**/settings.json'
-        # plus the caller's own auth/token and network-call source paths
+  with:
+    paths: |
+      .github/workflows/**
+      .github/actions/**
+      **/*.sh
+      **/*.ps1
+      # plus the caller's own auth/token and network-call source paths
   ```
 
 - `.github/workflows/claude-e2e-verify.yml` — Claude-powered end-to-end
@@ -735,7 +738,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
 `claude-review.yml`, `claude-security-review.yml`, and `claude-e2e-verify.yml`
 share one consumption shape. Each is **advisory**: it posts PR comments and
-never gates `ci-status`. Each is a whole-job concern (job `permissions:` plus a
+never gates `ci-status`. (The advisory verdict is separate from execution
+evidence: `claude-security-review.yml` additionally takes a `paths` input and
+its name-stable `security-review` check may be made a required status check —
+see its entry above.) Each is a whole-job concern (job `permissions:` plus a
 `secrets:` interface), which is why each is a reusable workflow rather than a
 composite action — the caller owns the triggers and the permission grant, and
 the workflow owns the SHA-pinned `anthropics/claude-code-action` and the safe
