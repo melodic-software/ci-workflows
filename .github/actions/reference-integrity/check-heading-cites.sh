@@ -317,7 +317,7 @@ main() {
 
   local tmpdir
   tmpdir="$(mktemp -d)"
-  # shellcheck disable=SC2064
+  # shellcheck disable=SC2064  # expand $tmpdir now, not at EXIT time; it never changes after this point
   trap "rm -rf '$tmpdir'" EXIT
 
   local corpus="${corpus_file:-$tmpdir/corpus.txt}"
