@@ -15,7 +15,10 @@ on:
       runner:
         description: >-
           Runner label selected by the caller for every prerequisite outcome.
-          Direct callers that omit it use the public hosted default.
+          Direct callers that omit it use the public hosted default. A caller
+          passing a dynamic expression must ensure it resolves to a non-empty
+          label; the reusable applies no implicit fallback, so an empty value
+          fails runner allocation.
         type: string
         default: ubuntu-24.04
       prerequisite-result:
