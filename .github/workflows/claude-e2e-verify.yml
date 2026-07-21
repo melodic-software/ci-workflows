@@ -66,19 +66,30 @@ name: claude-e2e-verify
 #     actions/checkout persists the GITHUB_TOKEN into .git/config, and this lane
 #     then runs PR-controlled code (the app build/serve) in the SAME job — so
 #     that process can read the token from .git/config and, via same-uid /proc,
-#     a later step's environment. This exposure is accepted because: the lane is
-#     `pull_request`-only (the tripwire above); fork PRs receive no secrets and
-#     the agent skips entirely; and a same-repository author already holds write,
-#     so the token grants them nothing they lack. The final `Strip persisted git
-#     credentials` step scrubs .git/config at job end. The strip is NOT moved
-#     ahead of the app (which would isolate the app from the token) because
-#     claude-code-action's setupBranch fetches origin BEFORE it configures auth
-#     (claude-code-action#1236, open; its fix PR reorders rather than catches),
-#     so an earlier strip makes that fetch throw and aborts verification on
-#     private consumers while a public dogfood stays green and masks it. Reversal
-#     is recorded against #1236. Full in-job isolation would require running the
-#     app in a SEPARATE UNPRIVILEGED JOB — the recorded hardening direction if
-#     this lane's scope ever widens.
+#     the environment of a later step, including the claude-code-action process
+#     that holds CLAUDE_CODE_OAUTH_TOKEN. The residual differs by credential and
+#     the "author already holds write" argument covers only the first:
+#       * GITHUB_TOKEN (contents:read + pull-requests:write): a same-repository
+#         author already holds write, so reading it grants them nothing they
+#         lack — low impact.
+#       * CLAUDE_CODE_OAUTH_TOKEN: an org credential scoped to selected repos in
+#         the UI, NOT otherwise held by a branch author. Reading it from the
+#         action step's /proc environ would uniquely elevate a malicious
+#         same-repository branch to an org Claude API credential it was never
+#         granted directly — a strictly higher residual than the write token.
+#     Both residuals are accepted at present because the lane is `pull_request`-
+#     only (the tripwire above) and fork PRs receive no secrets and skip the
+#     agent entirely, so the exposure is bounded to same-repository branches;
+#     the final `Strip persisted git credentials` step also scrubs .git/config
+#     at job end. The strip is NOT moved ahead of the app (which would isolate
+#     the app from the token) because claude-code-action's setupBranch fetches
+#     origin BEFORE it configures auth (claude-code-action#1236, open; its fix
+#     PR reorders rather than catches), so an earlier strip makes that fetch
+#     throw and aborts verification on private consumers while a public dogfood
+#     stays green and masks it. Reversal is recorded against #1236. Full in-job
+#     isolation of BOTH residuals would require running the app in a SEPARATE
+#     UNPRIVILEGED JOB — the recorded hardening direction if this lane's scope
+#     ever widens.
 #
 # PIN NOTE: PLAYWRIGHT_VERSION below is an in-workflow tool pin with no package
 # manifest, so Dependabot cannot see it (it bumps only `uses:` SHAs). The
@@ -181,8 +192,13 @@ jobs:
       # use workflow_dispatch); we only hard-fail the two dangerous ones.
       - name: Reject privileged triggers
         if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_run'
+        env:
+          # Kept out of the run: shell per the template-injection discipline
+          # above — even though github.event_name is an infra-controlled enum,
+          # inlining a context expression in run: is the pattern to avoid.
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          echo "::error::claude-e2e-verify must not be called from '${{ github.event_name }}'." \
+          echo "::error::claude-e2e-verify must not be called from '${EVENT_NAME}'." \
             "Call it from a 'pull_request' workflow. pull_request_target/workflow_run run" \
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
