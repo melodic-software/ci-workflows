@@ -107,6 +107,23 @@ test("native zizmor verifies the exact release before executing it", () => {
   assert.doesNotMatch(step, /\bdocker\b/iu);
   assert.doesNotMatch(step, /\bsudo\b/u);
   assert.doesNotMatch(step, /releases\/latest/u);
+
+  // --format=github requires zizmor >= 1.6.0; a caller-pinned older version
+  // must be rejected before the download, not left to fail argument parsing.
+  assert.match(
+    step,
+    /IFS='\.' read -r zizmor_major zizmor_minor _ <<<"\$resolved_version"/u,
+  );
+  assert.match(
+    step,
+    /if \(\(zizmor_major < 1 \|\| \(zizmor_major == 1 && zizmor_minor < 6\)\)\); then/u,
+  );
+  const versionGuard = step.indexOf("zizmor_major < 1");
+  const download = step.indexOf("curl --fail");
+  assert.ok(
+    versionGuard >= 0 && versionGuard < download,
+    "minimum-version guard must precede the download",
+  );
 });
 
 test("native zizmor limits token exposure and fails closed outside findings", () => {

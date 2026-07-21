@@ -30,8 +30,10 @@ on:
         default: .github/workflows
       version:
         description: >-
-          Exact zizmor CLI version. 'latest' is a compatibility alias for the
-          workflow's reviewed default, never a mutable download.
+          Exact zizmor CLI version, 1.6.0 or newer (this workflow's
+          --format=github invocation requires it). 'latest' is a
+          compatibility alias for the workflow's reviewed default, never a
+          mutable download.
         type: string
         default: v1.27.0
       sha256:
@@ -116,6 +118,14 @@ jobs:
               fi
               ;;
           esac
+          # --format=github was added in zizmor v1.6.0; a caller-pinned older
+          # version would otherwise fail argument parsing well past this
+          # point, so reject it here with a clear reason.
+          IFS='.' read -r zizmor_major zizmor_minor _ <<<"$resolved_version"
+          if ((zizmor_major < 1 || (zizmor_major == 1 && zizmor_minor < 6))); then
+            echo "::error::zizmor version must be 1.6.0 or newer (this workflow requires --format=github, added in v1.6.0)."
+            exit 2
+          fi
           if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
             echo '::error::zizmor sha256 must be exactly 64 lowercase hexadecimal characters.'
             exit 2
