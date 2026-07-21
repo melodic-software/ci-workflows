@@ -36,15 +36,16 @@ runs:
       # global.json anywhere in the caller's tree: it logs "nothing will be
       # installed" and exits 0 without provisioning an SDK, so the `dotnet
       # format` steps below would otherwise fall through to whatever (if
-      # anything) happens to be preinstalled on the runner. Re-run pinned to
-      # the same SDK this repo's own root global.json tracks, so a caller
-      # that never declared a version keeps the exact behaviour it had before
-      # dotnet-version's default changed here — bump this value in lockstep
-      # with it.
+      # anything) happens to be preinstalled on the runner. Re-run pointed at
+      # this action's own repo root global.json via `github.action_path` (a
+      # caller with none of its own has nothing else to fall back to), so a
+      # caller that never declared a version keeps the exact behaviour it had
+      # before dotnet-version's default changed here — this always tracks
+      # global.json directly, so there is no separate pin to keep in lockstep.
       if: steps.setup-dotnet.outputs.dotnet-version == ''
       uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
       with:
-        dotnet-version: 10.0.302
+        global-json-file: ${{ github.action_path }}/../../../global.json
 
     - name: Verify whitespace
       shell: bash

@@ -214,12 +214,24 @@ jobs:
               exit 1
             fi
           done
-          for file in .github/actions/dotnet-build/action.yml .github/actions/dotnet-format/action.yml .github/workflows/dependabot-lock-regen.yml; do
-            if ! grep -q "dotnet-version: ${dotnet_current}$" "$file"; then
-              echo "::error::${file} fallback SDK pin diverges from global.json (${dotnet_current})"
+          # dotnet-build and dotnet-format resolve their fallback SDK version
+          # by pointing setup-dotnet's global-json-file input at this repo's
+          # own root global.json (via github.action_path), so they can never
+          # drift from it — this only guards against a regression back to a
+          # hardcoded literal. dependabot-lock-regen.yml has no equivalent
+          # action_path to reach a bundled global.json (its first step checks
+          # out the *caller's* PR head, not this repo), so it still carries a
+          # literal fallback pin that must be checked against global.json.
+          for file in .github/actions/dotnet-build/action.yml .github/actions/dotnet-format/action.yml; do
+            if ! grep -q 'global-json-file: ${{ github.action_path }}/../../../global.json' "$file"; then
+              echo "::error::${file} no longer resolves its .NET fallback from global.json"
               exit 1
             fi
           done
+          if ! grep -q "dotnet-version: ${dotnet_current}$" .github/workflows/dependabot-lock-regen.yml; then
+            echo "::error::.github/workflows/dependabot-lock-regen.yml fallback SDK pin diverges from global.json (${dotnet_current})"
+            exit 1
+          fi
 
           runtimes=(
             "dotnet:.NET SDK:$dotnet_current"
