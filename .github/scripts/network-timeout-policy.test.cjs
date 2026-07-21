@@ -21,7 +21,10 @@ test("immutable release assets have a bounded exponential retry budget", () => {
 
   for (const [name, content, expected] of [
     ["zizmor", zizmor, 1],
-    ["standards sync", standards, 2],
+    // The yq install step is defined once (as a YAML anchor) and reused via
+    // an alias in the sync job, so the literal curl budget text appears once
+    // even though both jobs run it.
+    ["standards sync", standards, 1],
   ]) {
     assert.equal(
       occurrences(content, /--connect-timeout 10 --max-time 120/gu),
