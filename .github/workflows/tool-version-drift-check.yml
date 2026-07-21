@@ -222,8 +222,15 @@ jobs:
           # action_path to reach a bundled global.json (its first step checks
           # out the *caller's* PR head, not this repo), so it still carries a
           # literal fallback pin that must be checked against global.json.
+          # Matched as a split regex, deliberately never spelling out a
+          # complete double-curly expression anywhere below (not even in this
+          # comment): this whole run: script is substituted by the GitHub
+          # Actions engine as plain text before Bash ever sees it, so a
+          # literal double-curly github.action_path reference here would be
+          # evaluated in *this* workflow's context (where it's undefined
+          # outside a composite action) instead of reaching grep intact.
           for file in .github/actions/dotnet-build/action.yml .github/actions/dotnet-format/action.yml; do
-            if ! grep -q 'global-json-file: ${{ github.action_path }}/../../../global.json' "$file"; then
+            if ! grep -q 'global-json-file:.*github\.action_path.*\.\./\.\./\.\./global\.json' "$file"; then
               echo "::error::${file} no longer resolves its .NET fallback from global.json"
               exit 1
             fi
