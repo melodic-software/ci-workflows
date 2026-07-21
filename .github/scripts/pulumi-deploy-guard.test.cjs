@@ -109,7 +109,7 @@ test("bundled OIDC contract is exact, wildcard-free, and covers the organization
     assert.equal(policy.rules.ref_type, "branch");
     assert.equal(policy.rules.environment, "github-iac-production");
     assert.equal(policy.rules.event_name, "workflow_dispatch");
-    assert.equal(policy.rules.runner_environment, "github-hosted");
+    assert.equal(policy.rules.runner_environment, "self-hosted");
     assert.equal(policy.rules.repository_visibility, "private");
     assert.equal(policy.rules.repository_owner_id, identity.ownerId);
     assert.equal(policy.rules.repository_id, identity.repositoryId);
