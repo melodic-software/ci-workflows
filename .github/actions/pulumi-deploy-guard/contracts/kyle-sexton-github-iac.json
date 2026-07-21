@@ -20,7 +20,7 @@
         "environment": "github-iac-production",
         "event_name": "workflow_dispatch",
         "workflow": "github-iac-production-deploy-v1",
-        "runner_environment": "github-hosted",
+        "runner_environment": "self-hosted",
         "actor_id": "153232337",
         "run_attempt": "1"
       }

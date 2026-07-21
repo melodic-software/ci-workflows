@@ -17,7 +17,7 @@ It fails closed unless:
 
 Contract v2 uses GitHub's immutable owner/repository-ID subject and additional
 exact claims for the private repository, owner ID, actor ID, protected
-environment, main ref, manual event, first run attempt, hosted runner, and
+environment, main ref, manual event, first run attempt, self-hosted runner, and
 reserved workflow name. Pulumi treats `*`, `?`, and `.` as pattern operators,
 so the validator rejects all three from every rule value. The workflow claim is
 a GitHub workflow **name**, not a file identity; each caller must reserve
@@ -25,8 +25,8 @@ a GitHub workflow **name**, not a file identity; each caller must reserve
 and enforce that uniqueness in its repository tests.
 
 Existing operational resources are emitted as newline-delimited refresh targets.
-Absent resources are the explicit first-apply path and must be created with a
-reviewed hosted-only default. Duplicate state, malformed responses, wildcard or
+Absent resources are the explicit first-apply path and must be created with
+their reviewed defaults. Duplicate state, malformed responses, wildcard or
 extra policies, unknown contracts, API failures, and authentication failures all
 stop the apply. The action never prints tokens or requests plaintext stack
 secrets; its temporary state export is deleted on exit.
