@@ -3,17 +3,23 @@ name: selector-conformance
 on:
   pull_request:
     paths:
+      - .github/workflows/link-check.yml
+      - .github/workflows/queue-monitor-liveness.yml
       - .github/workflows/select-runner.yml
       - .github/workflows/selector-conformance.yml
       - .github/workflows/zizmor.yml
       - .github/workflows/osv-scanner.yml
       - .github/workflows/tool-version-drift-check.yml
       - .github/osv-scanner-pin.json
+      - .github/scripts/find-tracking-issue-render.test.cjs
+      - .github/scripts/find-tracking-issue.sh
+      - .github/scripts/find-tracking-issue.test.sh
       - .github/scripts/osv-scanner-pin.test.cjs
       - .github/scripts/osv-release-digest.sh
       - .github/scripts/osv-release-digest.test.sh
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
+      - .github/scripts/render-find-tracking-issue.cjs
       - .github/scripts/render-osv-scan-guard.cjs
       - .github/scripts/zizmor-sarif-guard.sh
       - .github/scripts/zizmor-sarif-guard.test.sh
@@ -25,17 +31,23 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/workflows/link-check.yml
+      - .github/workflows/queue-monitor-liveness.yml
       - .github/workflows/select-runner.yml
       - .github/workflows/selector-conformance.yml
       - .github/workflows/zizmor.yml
       - .github/workflows/osv-scanner.yml
       - .github/workflows/tool-version-drift-check.yml
       - .github/osv-scanner-pin.json
+      - .github/scripts/find-tracking-issue-render.test.cjs
+      - .github/scripts/find-tracking-issue.sh
+      - .github/scripts/find-tracking-issue.test.sh
       - .github/scripts/osv-scanner-pin.test.cjs
       - .github/scripts/osv-release-digest.sh
       - .github/scripts/osv-release-digest.test.sh
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
+      - .github/scripts/render-find-tracking-issue.cjs
       - .github/scripts/render-osv-scan-guard.cjs
       - .github/scripts/zizmor-sarif-guard.sh
       - .github/scripts/zizmor-sarif-guard.test.sh
@@ -76,6 +88,8 @@ jobs:
           node-version: 24.18.0
       - name: Test selector implementation and generation
         run: node --test .github/scripts/*.test.cjs
+      - name: Test tracking-issue resolver
+        run: bash .github/scripts/find-tracking-issue.test.sh
       - name: Test OSV scanner exit-code policy
         run: bash .github/scripts/osv-scan-guard.test.sh
       - name: Test zizmor SARIF severity guard
