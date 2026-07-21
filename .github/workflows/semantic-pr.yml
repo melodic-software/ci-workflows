@@ -19,7 +19,9 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Runner label selected by the caller.
+        description: >-
+          Runner label selected by the caller for every prerequisite outcome.
+          Direct callers that omit it use the public hosted default.
         type: string
         default: ubuntu-24.04
       prerequisite-result:
@@ -82,16 +84,13 @@ permissions:
 
 jobs:
   pr-title:
-    # A failed/skipped/cancelled selector cannot supply a usable runner and must
-    # not make this required context disappear. Use the standard ubuntu-24.04
-    # hosted runner (free on public repos) only to report that non-success
-    # outcome; successful calls still consume exactly the caller-selected runner
-    # and add no hosted validation job. The caller's `if: always()` deliberately
-    # keeps this reporter eligible after every prerequisite outcome, including
-    # cancellation, so the required context materializes and any delivered
-    # non-success result fails closed. That bounded hosted reporter run is the
-    # accepted cancellation tradeoff; a superseding run reports its own result.
-    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-24.04' }}
+    # Always honor the caller-selected runner, including for a failed, skipped,
+    # cancelled, or empty prerequisite result. The caller owns any recovery
+    # fallback passed through `runner`; direct callers that omit it retain the
+    # public `ubuntu-24.04` default above. The caller's `if: always()` keeps this
+    # reporter eligible after every prerequisite outcome so the required context
+    # materializes, then the first step fails closed before title validation.
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite
