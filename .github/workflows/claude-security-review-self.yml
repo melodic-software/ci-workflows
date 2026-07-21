@@ -1,15 +1,18 @@
 name: Claude Security Review
 
 # Dogfood caller: this repo is the first consumer of its own
-# claude-security-review reusable workflow, exercising the exact pattern
-# downstream consumers use (caller owns `on:` + `paths:` + permissions; reusable
-# workflow owns the action pin and safe handling). Local `./` ref works because
-# the checkout IS this repo.
+# claude-security-review reusable workflow, exercising the exact ALWAYS-REPORT
+# shape downstream consumers use. The caller owns `on:` + permissions and passes
+# its security-sensitive surfaces as the `paths` INPUT; the reusable workflow
+# owns the action pin, the safe handling, and the job-level relevance gate.
+# Local `./` ref works because the checkout IS this repo.
 #
-# The `paths:` filter is the load-bearing difference from the plain review
-# caller: the reusable workflow is path-agnostic by design, so scoping the
-# security pass to this repo's security-sensitive surfaces is the caller's job.
-# A prose-only PR never triggers it (a security review of docs is noise).
+# No workflow-level `paths:` filter by design: filtering there would leave the
+# `security-review` check Pending on a prose-only PR and wedge a required-check
+# ruleset. Triggering on every PR instead lets the reusable workflow's `changes`
+# job skip `security-review` for a prose PR, yielding a name-stable check.
+# (Like the pr-title dogfood, this caller stays pull_request-only; add
+# merge_group only when the repo actually runs a merge queue.)
 #
 # Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
 # "selected repositories" scope (UI-managed); without it, fork PRs and an
@@ -17,11 +20,6 @@ name: Claude Security Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    paths:
-      - '.github/workflows/**'
-      - '.github/actions/**'
-      - '**/*.sh'
-      - '**/*.ps1'
 
 permissions:
   contents: read
@@ -40,6 +38,14 @@ jobs:
       pull-requests: write
       id-token: write
     uses: ./.github/workflows/claude-security-review.yml
+    with:
+      # This repo's security-sensitive surfaces (see the reusable workflow's
+      # header). A prose-only PR matches none and the review job skips.
+      paths: |
+        .github/workflows/**
+        .github/actions/**
+        **/*.sh
+        **/*.ps1
     # Pass only the one named secret (least privilege) rather than `secrets:
     # inherit`, which would forward every parent secret to the called workflow.
     secrets:
