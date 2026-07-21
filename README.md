@@ -162,6 +162,44 @@ GitHub continues the normal weekly patching of each hosted image generation.
   shell source is generated inline because reusable-workflow checkout resolves
   to the caller repository; an equality test prevents drift and callers never
   copy the implementation. Per-caller concurrency serializes issue mutation.
+- `.github/workflows/issue-triage-label.yml` — applies a configured floor label
+  (default `priority: needs-triage`) to an issue opened or reopened with no
+  label matching a configured prefix (default `priority:`). **Non-gating**:
+  never fails a PR or blocks a merge; it only guarantees new issues don't
+  silently drop out of the triage queue for lack of a label. The guard is a
+  label-**set** membership check (any label starting with `label-prefix`), not
+  a title/body content match, so an explicit priority label at creation always
+  wins. **Fail-closed on a missing label**: the raw add-labels endpoint
+  auto-creates an unknown label name instead of failing, so this workflow
+  first calls `GET /repos/{owner}/{repo}/labels/{name}` and hard-fails the job
+  if that 404s, rather than ever letting a bare, undefined label get created.
+  Label taxonomy stays github-iac-managed; this workflow only applies an
+  existing label. Settled mechanism per
+  [`claude-code-plugins`#506](https://github.com/melodic-software/claude-code-plugins/issues/506)'s
+  research-resolution comment. The caller owns the trigger and **must**
+  include `reopened` alongside `opened` so an issue reopened after its tier
+  was cleared re-acquires the floor:
+
+  ```yaml
+  on:
+    issues:
+      types: [opened, reopened]
+  permissions: {}
+  jobs:
+    issue-triage-label:
+      permissions:
+        issues: write
+      uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@<sha>
+  ```
+
+  Loop-safe by construction: adding a label emits `issues.labeled`, never
+  `opened`/`reopened`, and GitHub does not start new workflow runs at all for
+  `GITHUB_TOKEN`-authored events (except `workflow_dispatch`/
+  `repository_dispatch`), so this cannot re-trigger itself. Idempotent: a
+  re-run is a no-op once the target label or any other tier-prefixed label is
+  present. A human triager assigning a real tier after this workflow ran is
+  expected to remove the floor label as part of that transition — this
+  workflow only guarantees a floor and does not police tier assignment.
 - `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow

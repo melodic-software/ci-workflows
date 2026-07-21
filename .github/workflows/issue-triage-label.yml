@@ -1,0 +1,134 @@
+name: issue-triage-label
+
+# Reusable workflow — applies a configured floor label (default `priority:
+# needs-triage`) to an issue that carries no label matching a configured
+# prefix (default `priority:`). NON-GATING: this never fails a PR or blocks a
+# merge; it is a best-effort intake guarantee so a forgotten priority label
+# does not silently drop an issue out of the triage queue. Settled mechanism
+# per melodic-software/claude-code-plugins#506's 2026-07-20 Class-B
+# research-resolution comment, filed as melodic-software/ci-workflows#155.
+#
+# The caller owns the trigger and MUST use `on: issues: types: [opened,
+# reopened]` — `reopened` re-acquires the floor if the tier was cleared while
+# the issue was closed. Explicit labels at creation win: the guard below is a
+# label-SET membership check (any label starting with `label-prefix`), not a
+# content/regex match, so `github/issue-labeler` and the regex-labeler family
+# are the wrong primitive here.
+#
+# FAIL-CLOSED ON A MISSING LABEL, VERIFIED EMPIRICALLY. The raw `POST
+# .../issues/{n}/labels` endpoint does NOT 404 on an unknown label name — it
+# silently auto-creates a bare label (default gray, no description) and
+# succeeds. Relying on that call to fail naturally would defeat the "never
+# creates a label" contract, so this workflow calls `GET
+# .../labels/{name}` first and hard-fails the job if that 404s, before ever
+# calling addLabels. Label taxonomy is github-iac-managed; this workflow only
+# APPLIES an existing label.
+#
+# LOOP SAFETY (no risk, two independent reasons): (1) adding a label emits
+# `issues.labeled`, never `issues.opened`/`reopened`, so this cannot
+# re-trigger itself; (2) except for `workflow_dispatch`/`repository_dispatch`,
+# GITHUB_TOKEN-authored events do not start new workflow runs at all
+# (https://docs.github.com/en/actions/reference/events-that-trigger-workflows).
+#
+# IDEMPOTENT: `addLabels` is a no-op when the label is already present, and
+# the guard skips once any tier-prefixed label exists — including a tier a
+# human triager applies after this workflow ran, which the triager (not this
+# workflow) is responsible for reconciling with `label` (see README).
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        default: ubuntu-24.04
+      label:
+        description: >-
+          Floor label applied when the issue carries no label matching
+          label-prefix. Must already exist in the caller's repository — this
+          workflow fails the job rather than create it.
+        type: string
+        default: 'priority: needs-triage'
+      label-prefix:
+        description: >-
+          Prefix defining the label set this workflow treats as "a priority
+          tier is already present". Any existing label starting with this
+          exact string (case-sensitive) skips application. Must be non-empty:
+          an empty prefix would match trivially and the guard would never
+          fire.
+        type: string
+        default: 'priority:'
+
+permissions: {}
+
+jobs:
+  issue-triage-label:
+    name: Apply floor label when no priority tier is present
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    permissions:
+      issues: write # Read the issue's current labels and add the floor label.
+    steps:
+      - name: Apply the floor label when no priority tier is present
+        # Defensive guard: the caller is required to trigger only on
+        # `issues: opened`/`reopened` (see README), but this keeps the job a
+        # clean no-op rather than misbehaving if a caller's trigger matrix is
+        # ever broadened to include other issue activity types.
+        if: >-
+          github.event_name == 'issues' &&
+          (github.event.action == 'opened' || github.event.action == 'reopened')
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TARGET_LABEL: ${{ inputs.label }}
+          LABEL_PREFIX: ${{ inputs.label-prefix }}
+        with:
+          script: |
+            const targetLabel = process.env.TARGET_LABEL || "";
+            const labelPrefix = process.env.LABEL_PREFIX || "";
+
+            if (targetLabel.length === 0) {
+              core.setFailed("The 'label' input must be non-empty.");
+              return;
+            }
+            if (labelPrefix.length === 0) {
+              core.setFailed(
+                "The 'label-prefix' input must be non-empty -- an empty prefix " +
+                  "would match every issue and the guard would never apply the floor label."
+              );
+              return;
+            }
+
+            const existingLabels = (context.payload.issue?.labels ?? []).map((l) => l.name);
+            if (existingLabels.some((name) => name.startsWith(labelPrefix))) {
+              core.info(
+                `Issue #${context.payload.issue.number} already carries a label matching ` +
+                  `prefix '${labelPrefix}'; skipping.`
+              );
+              return;
+            }
+
+            // Verify the target label exists before ever calling addLabels: that
+            // endpoint auto-creates an unknown label name (bare, default color, no
+            // description) instead of failing, which would silently violate the
+            // "never define a label" contract. getLabel 404s on a genuinely missing
+            // label -- verified against the live API -- so treat that as fail-closed
+            // and any other error as an infrastructure failure, not a green skip.
+            try {
+              await github.rest.issues.getLabel({ ...context.repo, name: targetLabel });
+            } catch (error) {
+              if (error.status === 404) {
+                core.setFailed(
+                  `Label '${targetLabel}' does not exist in ${context.repo.owner}/${context.repo.repo}. ` +
+                    "Label taxonomy is github-iac-managed; this workflow only applies an " +
+                    "existing label and never creates one -- create it there first."
+                );
+                return;
+              }
+              throw error;
+            }
+
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: context.payload.issue.number,
+              labels: [targetLabel],
+            });
+            core.info(`Applied '${targetLabel}' to issue #${context.payload.issue.number}.`);
