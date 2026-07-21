@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -48,6 +49,7 @@ test("native zizmor preserves the reusable interface and read-only boundary", ()
   assert.equal(inputDefault("sha256"), pinnedSha256);
   assert.equal(inputDefault("online-audits"), "true");
   assert.equal(inputDefault("persona"), "regular");
+  assert.equal(inputDefault("fail-on-severity"), "never");
   assert.equal(inputDefault("fail-on-findings"), "false");
 
   for (const existingInput of [
@@ -55,6 +57,7 @@ test("native zizmor preserves the reusable interface and read-only boundary", ()
     "version",
     "online-audits",
     "persona",
+    "fail-on-severity",
     "fail-on-findings",
   ]) {
     assert.match(workflow, new RegExp(`^ {6}${existingInput}:$`, "mu"));
@@ -115,28 +118,54 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.ok(unsetToken >= 0 && unsetToken < download);
   assert.ok(download < verifiedExecution);
 
-  assert.match(step, /--format=github/u);
+  assert.match(step, /--format=sarif/u);
+  assert.doesNotMatch(step, /--format=github/u);
   assert.match(step, /--cache-dir=\$work_dir\/cache/u);
   assert.match(step, /args\+=\(--no-online-audits\)/u);
+  // zizmor writes SARIF to stdout (no --output flag); the report is redirected
+  // to a file for the guard to validate.
   assert.match(
     step,
-    /GH_TOKEN="\$token" "\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}"/u,
+    /GH_TOKEN="\$token" "\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}" >"\$sarif"/u,
   );
+  assert.doesNotMatch(step, /"\$binary"[^\n]*--output/u);
   assert.doesNotMatch(
     step,
     /^\s*"\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}"$/mu,
   );
   assert.doesNotMatch(step, /continue-on-error/u);
-  assert.match(step, /^ {12}11\|12\|13\|14\)$/mu);
+  assert.doesNotMatch(step, /11\|12\|13\|14/u);
+
+  // fail-on-severity wins above 'never'; fail-on-findings is the legacy alias
+  // that resolves to the 'low' threshold.
+  assert.match(step, /if \[\[ "\$FAIL_ON_SEVERITY" != never \]\]; then/u);
+  assert.match(step, /effective_severity=\$FAIL_ON_SEVERITY/u);
   assert.match(
     step,
-    /if \[\[ "\$FAIL_ON_FINDINGS" == false \]\]; then[\s\S]*?exit 0/u,
+    /elif \[\[ "\$FAIL_ON_FINDINGS" == true \]\]; then\s*\n\s*effective_severity=low/u,
   );
-  assert.match(
-    step,
-    /zizmor failed before completing a valid advisory audit \(exit \$status\)/u,
+  assert.match(step, /ZIZMOR_EXIT_CODE=\$status/u);
+  assert.match(step, /ZIZMOR_SARIF=\$sarif/u);
+  assert.match(step, /ZIZMOR_VERSION=\$resolved_version/u);
+  assert.match(step, /FAIL_ON_SEVERITY=\$effective_severity/u);
+});
+
+test("zizmor result handling is generated from the tested SARIF guard", () => {
+  const renderer = path.join(__dirname, "render-zizmor-sarif-guard.cjs");
+  const result = spawnSync(process.execPath, [renderer, "--check"], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+  assert.match(workflow, /# BEGIN GENERATED ZIZMOR SARIF GUARD - DO NOT EDIT/u);
+  assert.match(workflow, /# END GENERATED ZIZMOR SARIF GUARD/u);
+  assert.equal(
+    workflow.match(/Source: \.github\/scripts\/zizmor-sarif-guard\.sh/gu)
+      ?.length,
+    1,
   );
-  assert.match(step, /exit "\$status"/u);
+  assert.match(workflow, /in SARIF mode; results are not trusted/u);
+  assert.match(workflow, /at or above severity \$FAIL_ON_SEVERITY/u);
 });
 
 test("documentation removes only the retired zizmor Docker exception", () => {
