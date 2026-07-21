@@ -192,6 +192,9 @@ jobs:
           # root-anchored; gitignore patterns without a leading slash match at
           # any depth, so anchor each pattern with a leading '/'.
           scratch="$(mktemp -d)"
+          # Persistent self-hosted runners accumulate /tmp; clean up on any exit.
+          # Single quotes defer expansion to trap time (avoids SC2064).
+          trap 'rm -rf "$scratch"' EXIT
           ignore="$scratch/.gitignore"
           git init -q "$scratch"
           : >"$ignore"
@@ -207,6 +210,14 @@ jobs:
               *) printf '/%s\n' "$pattern" >>"$ignore" ;;
             esac
           done
+
+          # Every line was blank or a `#` comment, so the filter is effectively
+          # empty — fail OPEN rather than skip every PR on a vacuous filter.
+          if [ ! -s "$ignore" ]; then
+            echo "::warning::paths filter has no usable patterns; treating PR as security-relevant."
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # List every changed file, both sides of any rename. A listing failure
           # must not read as "no security-relevant change": fail OPEN to relevant.

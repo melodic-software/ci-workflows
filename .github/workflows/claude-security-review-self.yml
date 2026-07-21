@@ -46,6 +46,7 @@ jobs:
         .github/actions/**
         **/*.sh
         **/*.ps1
+        CLAUDE.md
     # Pass only the one named secret (least privilege) rather than `secrets:
     # inherit`, which would forward every parent secret to the called workflow.
     secrets:
