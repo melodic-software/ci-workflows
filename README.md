@@ -408,13 +408,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   [v1.27.0 release][zizmor-release-v1-27-0], verifies its committed SHA-256
   before extraction, and verifies the CLI-reported version before auditing.
   `latest` remains accepted for compatibility but resolves to that reviewed
-  default rather than a mutable release. zizmor runs in SARIF mode; a bundled
-  guard pins the SARIF provenance, emits a GitHub annotation for every finding,
-  and gates on severity. Callers
-  opt into blocking by raising `fail-on-severity` to `low`, `medium`, or `high`
-  (mapped to the SARIF note/warning/error levels); the legacy `fail-on-findings`
-  boolean stays a back-compat alias for `low`. Installation, argument, and
-  malformed-SARIF errors fail closed even in advisory mode. The verified binary
+  default rather than a mutable release. zizmor runs in its own native
+  `--format=github` mode, emitting a GitHub annotation for every finding
+  directly and gating on severity via zizmor's own graduated exit codes
+  (informational/low/medium/high) — no SARIF intermediate, no hand-rolled
+  parser. Callers opt into blocking by raising `fail-on-severity` to `low`,
+  `medium`, or `high`; the legacy `fail-on-findings` boolean stays a
+  back-compat alias for `low`. Installation, argument, and collection errors
+  fail closed even in advisory mode. The verified binary
   runs from a fresh runner-temporary directory with a per-job cache and
   without Docker, a job/service container, or an installer-time privilege
   escalation.

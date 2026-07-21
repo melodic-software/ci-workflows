@@ -1,7 +1,6 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -118,23 +117,27 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.ok(unsetToken >= 0 && unsetToken < download);
   assert.ok(download < verifiedExecution);
 
-  assert.match(step, /--format=sarif/u);
-  assert.doesNotMatch(step, /--format=github/u);
+  assert.match(step, /--format=github/u);
+  assert.doesNotMatch(step, /--format=sarif/u);
   assert.match(step, /--cache-dir=\$work_dir\/cache/u);
   assert.match(step, /args\+=\(--no-online-audits\)/u);
-  // zizmor writes SARIF to stdout (no --output flag); the report is redirected
-  // to a file for the guard to validate.
+  // zizmor's --format=github renderer emits annotations to stdout; the run
+  // must stream through tee (not a redirect) so the runner still parses them
+  // as workflow commands, with a captured copy for the summary count.
   assert.match(
     step,
-    /GH_TOKEN="\$token" "\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}" >"\$sarif"/u,
+    /GH_TOKEN="\$token" "\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}" \| tee -- "\$annotations"/u,
   );
+  assert.match(step, /status=\$\{PIPESTATUS\[0\]\}/u);
   assert.doesNotMatch(step, /"\$binary"[^\n]*--output/u);
-  assert.doesNotMatch(
-    step,
-    /^\s*"\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}"$/mu,
-  );
   assert.doesNotMatch(step, /continue-on-error/u);
-  assert.doesNotMatch(step, /11\|12\|13\|14/u);
+
+  // zizmor's own graduated exit codes (11-14) drive gating directly; no
+  // SARIF, no jq, no hand-rolled parser.
+  assert.match(step, /case "\$status" in/u);
+  assert.match(step, /0 \| 11 \| 12 \| 13 \| 14\) ;;/u);
+  assert.doesNotMatch(step, /\bjq\b/u);
+  assert.doesNotMatch(step, /ZIZMOR_SARIF/u);
 
   // fail-on-severity wins above 'never'; fail-on-findings is the legacy alias
   // that resolves to the 'low' threshold.
@@ -144,28 +147,25 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
     step,
     /elif \[\[ "\$FAIL_ON_FINDINGS" == true \]\]; then\s*\n\s*effective_severity=low/u,
   );
-  assert.match(step, /ZIZMOR_EXIT_CODE=\$status/u);
-  assert.match(step, /ZIZMOR_SARIF=\$sarif/u);
-  assert.match(step, /ZIZMOR_VERSION=\$resolved_version/u);
-  assert.match(step, /FAIL_ON_SEVERITY=\$effective_severity/u);
+
+  // 'low' blocks on any finding (status >= 11), preserving the legacy
+  // fail-on-findings alias contract; 'medium' blocks at 13+, 'high' at 14.
+  assert.match(step, /if \(\(status >= 11\)\); then blocking=true; fi/u);
+  assert.match(step, /if \(\(status >= 13\)\); then blocking=true; fi/u);
+  assert.match(step, /if \(\(status == 14\)\); then blocking=true; fi/u);
 });
 
-test("zizmor result handling is generated from the tested SARIF guard", () => {
-  const renderer = path.join(__dirname, "render-zizmor-sarif-guard.cjs");
-  const result = spawnSync(process.execPath, [renderer, "--check"], {
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-
-  assert.match(workflow, /# BEGIN GENERATED ZIZMOR SARIF GUARD - DO NOT EDIT/u);
-  assert.match(workflow, /# END GENERATED ZIZMOR SARIF GUARD/u);
+test("zizmor no longer bundles a generated SARIF guard", () => {
+  assert.doesNotMatch(workflow, /BEGIN GENERATED ZIZMOR SARIF GUARD/u);
+  assert.doesNotMatch(workflow, /zizmor-sarif-guard\.sh/u);
   assert.equal(
-    workflow.match(/Source: \.github\/scripts\/zizmor-sarif-guard\.sh/gu)
-      ?.length,
-    1,
+    fs.existsSync(path.join(__dirname, "zizmor-sarif-guard.sh")),
+    false,
   );
-  assert.match(workflow, /in SARIF mode; results are not trusted/u);
-  assert.match(workflow, /at or above severity \$FAIL_ON_SEVERITY/u);
+  assert.equal(
+    fs.existsSync(path.join(__dirname, "render-zizmor-sarif-guard.cjs")),
+    false,
+  );
 });
 
 test("documentation removes only the retired zizmor Docker exception", () => {

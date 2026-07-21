@@ -380,8 +380,6 @@ jobs:
         run: bash .github/scripts/go-mod-tidy-check.test.sh
       - name: Test govulncheck SARIF classification
         run: bash .github/scripts/govulncheck-sarif-guard.test.sh
-      - name: Test zizmor SARIF severity guard
-        run: bash .github/scripts/zizmor-sarif-guard.test.sh
 
   zizmor:
     permissions:
