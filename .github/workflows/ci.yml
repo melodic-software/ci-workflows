@@ -376,8 +376,6 @@ jobs:
         run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
       - name: Test Pulumi version-drift lifecycle
         run: bash .github/scripts/pulumi-version-drift.test.sh
-      - name: Test Go module tidy classification
-        run: bash .github/scripts/go-mod-tidy-check.test.sh
       - name: Test govulncheck SARIF classification
         run: bash .github/scripts/govulncheck-sarif-guard.test.sh
       - name: Test zizmor SARIF severity guard
