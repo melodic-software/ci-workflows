@@ -21,9 +21,6 @@ on:
       - .github/scripts/osv-scan-guard.test.sh
       - .github/scripts/render-find-tracking-issue.cjs
       - .github/scripts/render-osv-scan-guard.cjs
-      - .github/scripts/zizmor-sarif-guard.sh
-      - .github/scripts/zizmor-sarif-guard.test.sh
-      - .github/scripts/render-zizmor-sarif-guard.cjs
       - .github/scripts/zizmor-native.test.cjs
       - .github/scripts/select-runner.cjs
       - .github/scripts/select-runner.test.cjs
@@ -49,9 +46,6 @@ on:
       - .github/scripts/osv-scan-guard.test.sh
       - .github/scripts/render-find-tracking-issue.cjs
       - .github/scripts/render-osv-scan-guard.cjs
-      - .github/scripts/zizmor-sarif-guard.sh
-      - .github/scripts/zizmor-sarif-guard.test.sh
-      - .github/scripts/render-zizmor-sarif-guard.cjs
       - .github/scripts/zizmor-native.test.cjs
       - .github/scripts/select-runner.cjs
       - .github/scripts/select-runner.test.cjs
@@ -92,8 +86,6 @@ jobs:
         run: bash .github/scripts/find-tracking-issue.test.sh
       - name: Test OSV scanner exit-code policy
         run: bash .github/scripts/osv-scan-guard.test.sh
-      - name: Test zizmor SARIF severity guard
-        run: bash .github/scripts/zizmor-sarif-guard.test.sh
       - name: Test OSV release digest parsing
         run: bash .github/scripts/osv-release-digest.test.sh
 
