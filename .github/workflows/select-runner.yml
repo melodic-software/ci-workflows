@@ -38,6 +38,21 @@ on:
         description: Total runner-inventory request budget (1-60 seconds).
         type: number
         default: 10
+      admits-comment-events:
+        description: >-
+          Opt the caller's issue_comment, pull_request_review, and
+          pull_request_review_comment jobs into local routing. Setting this
+          true is the caller's declaration that its comment/review-triggered
+          job performs NO checkout of PR/issue content -- these events carry
+          no fork-origin guard because the selector's fork protection exists
+          to keep untrusted checked-out code off the managed fleet, and a
+          job with no checkout has nothing for that guard to protect. Leave
+          false (default) for any comment/review-triggered job that checks
+          out repository content or otherwise executes PR/issue-controlled
+          input; that job must stay on the hosted fallback regardless of
+          policy.
+        type: boolean
+        default: false
     secrets:
       observer-private-key:
         description: Private key for the read-only observer GitHub App.
@@ -97,7 +112,11 @@ jobs:
           github.event_name == 'merge_group' ||
           ((github.event_name == 'pull_request' ||
           github.event_name == 'pull_request_target') &&
-          github.event.pull_request.head.repo.full_name == github.repository)) &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+          (inputs.admits-comment-events == true &&
+          (github.event_name == 'issue_comment' ||
+          github.event_name == 'pull_request_review' ||
+          github.event_name == 'pull_request_review_comment'))) &&
           env.HAS_OBSERVER_SECRET == 'true' &&
           github.event.repository.private == true
         continue-on-error: true
@@ -133,6 +152,7 @@ jobs:
             github.event_name == 'pull_request_target') &&
             github.event.pull_request.head.repo.full_name != github.repository }}
           API_TIMEOUT_SECONDS: ${{ inputs.api-timeout-seconds }}
+          ADMITS_COMMENT_EVENTS: ${{ inputs.admits-comment-events }}
         with:
           github-token: ${{ steps.observer-token.outputs.token || github.token }}
           script: |
@@ -168,6 +188,20 @@ jobs:
                 "pull_request_target",
               ]);
               const FORK_GUARDED_EVENTS = new Set(["pull_request", "pull_request_target"]);
+              // Comment/review event classes are NOT unconditionally reviewed like
+              // LOCAL_EVENT_ALLOWLIST above: their eligibility depends entirely on what the
+              // triggered job does, not on the event class itself. A caller opts a
+              // specific job into local routing by setting admits-comment-events, and that
+              // is the caller's declaration that its comment/review-triggered job performs
+              // NO checkout of PR/issue content -- see the workflow input's doc for the
+              // caller obligation this rests on. permitsLocalExecution treats this set as
+              // per-caller opt-in, never an automatic local route the way the classes
+              // above are.
+              const COMMENT_REVIEW_EVENTS = new Set([
+                "issue_comment",
+                "pull_request_review",
+                "pull_request_review_comment",
+              ]);
               const RESERVED_SELF_HOSTED_LABELS = new Set([
                 "self-hosted",
                 "linux",
@@ -302,13 +336,16 @@ jobs:
               }
 
               function permitsLocalExecution(input) {
-                if (!LOCAL_EVENT_ALLOWLIST.has(input.eventName)) {
-                  return false;
+                if (LOCAL_EVENT_ALLOWLIST.has(input.eventName)) {
+                  return (
+                    !FORK_GUARDED_EVENTS.has(input.eventName) ||
+                    input.isForkPullRequest === false
+                  );
                 }
-                return (
-                  !FORK_GUARDED_EVENTS.has(input.eventName) ||
-                  input.isForkPullRequest === false
-                );
+                if (COMMENT_REVIEW_EVENTS.has(input.eventName)) {
+                  return input.admitsCommentEvents === true;
+                }
+                return false;
               }
 
               function preflight(input) {
@@ -704,6 +741,7 @@ jobs:
                   repositoryPrivate: env.REPOSITORY_PRIVATE === "true",
                   eventName: env.EVENT_NAME,
                   isForkPullRequest: env.IS_FORK_PULL_REQUEST === "true",
+                  admitsCommentEvents: env.ADMITS_COMMENT_EVENTS === "true",
                 };
               }
 

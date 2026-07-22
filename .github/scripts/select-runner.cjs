@@ -26,6 +26,20 @@ const LOCAL_EVENT_ALLOWLIST = new Set([
   "pull_request_target",
 ]);
 const FORK_GUARDED_EVENTS = new Set(["pull_request", "pull_request_target"]);
+// Comment/review event classes are NOT unconditionally reviewed like
+// LOCAL_EVENT_ALLOWLIST above: their eligibility depends entirely on what the
+// triggered job does, not on the event class itself. A caller opts a
+// specific job into local routing by setting admits-comment-events, and that
+// is the caller's declaration that its comment/review-triggered job performs
+// NO checkout of PR/issue content -- see the workflow input's doc for the
+// caller obligation this rests on. permitsLocalExecution treats this set as
+// per-caller opt-in, never an automatic local route the way the classes
+// above are.
+const COMMENT_REVIEW_EVENTS = new Set([
+  "issue_comment",
+  "pull_request_review",
+  "pull_request_review_comment",
+]);
 const RESERVED_SELF_HOSTED_LABELS = new Set([
   "self-hosted",
   "linux",
@@ -160,13 +174,16 @@ function parseCandidateLabels(input) {
 }
 
 function permitsLocalExecution(input) {
-  if (!LOCAL_EVENT_ALLOWLIST.has(input.eventName)) {
-    return false;
+  if (LOCAL_EVENT_ALLOWLIST.has(input.eventName)) {
+    return (
+      !FORK_GUARDED_EVENTS.has(input.eventName) ||
+      input.isForkPullRequest === false
+    );
   }
-  return (
-    !FORK_GUARDED_EVENTS.has(input.eventName) ||
-    input.isForkPullRequest === false
-  );
+  if (COMMENT_REVIEW_EVENTS.has(input.eventName)) {
+    return input.admitsCommentEvents === true;
+  }
+  return false;
 }
 
 function preflight(input) {
@@ -562,6 +579,7 @@ function inputsFromEnvironment(env) {
     repositoryPrivate: env.REPOSITORY_PRIVATE === "true",
     eventName: env.EVENT_NAME,
     isForkPullRequest: env.IS_FORK_PULL_REQUEST === "true",
+    admitsCommentEvents: env.ADMITS_COMMENT_EVENTS === "true",
   };
 }
 

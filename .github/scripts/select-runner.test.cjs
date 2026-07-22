@@ -23,13 +23,17 @@ const ALLOWED_LOCAL_EVENTS = [
   "pull_request",
   "pull_request_target",
 ];
-const BLOCKED_LOCAL_EVENTS = [
-  "workflow_run",
+// Opt-in only: local routing depends on admits-comment-events, not on the
+// event class alone. See the admits-comment-events-parametrized tests below.
+const COMMENT_REVIEW_EVENTS = [
   "issue_comment",
-  "commit_comment",
-  "discussion_comment",
   "pull_request_review",
   "pull_request_review_comment",
+];
+const BLOCKED_LOCAL_EVENTS = [
+  "workflow_run",
+  "commit_comment",
+  "discussion_comment",
   "repository_dispatch",
   "unknown-event",
 ];
@@ -52,6 +56,7 @@ function input(overrides = {}) {
     repositoryPrivate: true,
     eventName: "push",
     isForkPullRequest: false,
+    admitsCommentEvents: false,
     ...overrides,
   };
 }
@@ -304,6 +309,71 @@ for (const eventName of BLOCKED_LOCAL_EVENTS) {
     assert.equal(result.reason, "hosted-only");
   });
 }
+
+for (const eventName of COMMENT_REVIEW_EVENTS) {
+  test(`${eventName} routes hosted without admits-comment-events (prefer-self-hosted)`, async () => {
+    const result = await selectRunner(
+      input({ eventName, admitsCommentEvents: false, tokenOutcome: "skipped" }),
+      { request: requestMustNotRun },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "hosted-only");
+  });
+
+  test(`${eventName} routes hosted without admits-comment-events (self-hosted-only)`, async () => {
+    const result = await selectRunner(
+      input({
+        policy: "self-hosted-only",
+        eventName,
+        admitsCommentEvents: false,
+        tokenOutcome: "skipped",
+      }),
+      { request: requestMustNotRun },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "hosted-only");
+  });
+
+  test(`${eventName} selects local capacity with admits-comment-events (prefer-self-hosted)`, async () => {
+    const result = await selectRunner(
+      input({ eventName, admitsCommentEvents: true }),
+      { request: async () => response([runner()]) },
+    );
+    assert.equal(result.route, "self-hosted");
+    assert.equal(result.reason, "online");
+  });
+
+  test(`${eventName} queues the strict label with admits-comment-events (self-hosted-only)`, async () => {
+    const result = await selectRunner(
+      input({
+        policy: "self-hosted-only",
+        eventName,
+        admitsCommentEvents: true,
+        tokenOutcome: "skipped",
+      }),
+      { request: requestMustNotRun },
+    );
+    assert.deepEqual(result, {
+      runner: "melodic-ubuntu-24.04-x64",
+      route: "self-hosted",
+      reason: "self-hosted-only",
+      onlineRunnerCount: 0,
+    });
+  });
+}
+
+test("admits-comment-events does not widen eligibility for an unreviewed event class", async () => {
+  const result = await selectRunner(
+    input({
+      eventName: "workflow_run",
+      admitsCommentEvents: true,
+      tokenOutcome: "skipped",
+    }),
+    { request: requestMustNotRun },
+  );
+  assert.equal(result.route, "hosted");
+  assert.equal(result.reason, "hosted-only");
+});
 
 test("invalid scope fails hosted without an inventory request", async () => {
   const result = await selectRunner(input({ scope: "enterprise" }), {
@@ -986,13 +1056,28 @@ test("token mint is statically guarded before the App action runs", () => {
     "github.event_name == 'pull_request'",
     "github.event.repository.private == true",
     "github.event.pull_request.head.repo.full_name == github.repository",
+    "inputs.admits-comment-events == true",
   ]) {
     assert.ok(tokenStep.includes(requiredGuard), requiredGuard);
   }
   const comparedEvents = [
     ...tokenStep.matchAll(/github\.event_name == '([^']+)'/gu),
   ].map((match) => match[1]);
-  assert.deepEqual(comparedEvents, ALLOWED_LOCAL_EVENTS);
+  assert.deepEqual(comparedEvents, [
+    ...ALLOWED_LOCAL_EVENTS,
+    ...COMMENT_REVIEW_EVENTS,
+  ]);
+  // The three comment events must appear ONLY inside the
+  // admits-comment-events-gated clause, not as unconditional local routes.
+  const admitsClauseStart = tokenStep.indexOf(
+    "(inputs.admits-comment-events == true &&",
+  );
+  assert.notEqual(admitsClauseStart, -1);
+  for (const eventName of COMMENT_REVIEW_EVENTS) {
+    const eventIndex = tokenStep.indexOf(`github.event_name == '${eventName}'`);
+    assert.notEqual(eventIndex, -1, eventName);
+    assert.ok(eventIndex > admitsClauseStart, eventName);
+  }
   assert.doesNotMatch(tokenStep, /inputs\.scope\s*!=\s*''/u);
   assert.doesNotMatch(tokenStep, /github\.event_name\s*!=/u);
   for (const eventName of BLOCKED_LOCAL_EVENTS) {
