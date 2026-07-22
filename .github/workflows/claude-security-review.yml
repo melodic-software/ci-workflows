@@ -127,8 +127,13 @@ on:
           severity (CRITICAL / IMPORTANT / SUGGESTION) and, separately, a
           confidence level (how sure you are the finding is real and
           exploitable). Report security issues only — no style, formatting,
-          naming, test-coverage, or general code-quality commentary. If you find
-          no security issues, say so plainly.
+          naming, test-coverage, or general code-quality commentary. Also defer
+          to zizmor's advisory lane for what it already covers statically —
+          supply-chain / unpinned-action risk, dangerous trigger patterns,
+          excessive permissions, and template injection: do not re-report those
+          findings here. This lane's value is the logic, architecture,
+          data-flow, and trust-boundary security reasoning static analysis
+          cannot reach. If you find no security issues, say so plainly.
       claude-args:
         description: >-
           Passed through to the Claude CLI. The universal extension point: model,
