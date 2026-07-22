@@ -19,7 +19,7 @@ inputs:
     default: 'true'
   version:
     description: Exact markdownlint-cli2 version to run.
-    default: 0.23.0
+    default: 0.23.1
   node-version:
     description: Node.js version to set up.
     default: 24.18.0
