@@ -43,6 +43,71 @@ checkout of this repo. (Public is required because a public consumer such as
   policy via the `ci-status` action's `treat-skipped-as` input — see that
   action below for when a skip must block rather than pass.
 
+## Versioning
+
+Every tag is full SemVer (`vX.Y.Z`). A release is cut whenever `main` changes
+by something worth pinning to — `release.yml`'s manual `workflow_dispatch`
+(patch/minor/major) makes each release a deliberate act, and cutting one after
+every meaningful change keeps `main` at the latest tag so Dependabot's
+`github-actions` group bumps consumers to a tagged SHA instead of tracking
+`main` HEAD by drift. There is no calendar cadence; GitHub's own guidance is
+silent on release frequency, and a tag-per-change policy is a closer fit for a
+repository whose only "release" event is "a consumer might need to pin to
+this." GitHub's reusable-workflow reference guidance treats a SHA, a release
+tag, and a branch as equally valid `{ref}` forms and states plainly that
+"Using the commit SHA is the safest option for stability and security"
+([Reuse workflows][reuse-workflows]) — this repo's tag-per-change practice and
+every consumer's SHA pin both sit inside that guidance, not around it.
+
+**No floating major tag (`v1`).** GitHub's action-release guidance recommends
+"keeping major (`v1`) and minor (`v1.1`) tags current to the latest
+appropriate commit" so a consumer written as `uses: owner/action@v1` keeps
+receiving non-breaking updates automatically
+([Releasing and maintaining actions][releasing-actions]). That guidance is
+scoped to actions consumed by a floating tag resolved at Actions runtime, and
+its own reusable-workflow reference page makes no equivalent recommendation.
+Neither the letter nor the premise of that guidance applies here: every
+consumer of this repository pins by 40-character commit SHA — the
+runner-policy allowlist requires it fleet-wide — so no consumer's workflow run
+ever resolves `@v1`, and a floating major tag would exist only as a label
+nothing at runtime reads. It would also actively conflict with the
+pin-comment convention consumers now follow
+(`melodic-software/standards#248`): that convention's primary form,
+`# vX.Y.Z`, asserts the comment names *the* release the pinned SHA
+corresponds to, a claim a moving tag cannot keep true once it moves. This is
+declined outright, not deferred by oversight; the trigger for revisiting it is
+this repository ever moving consumers onto tag-resolved-at-runtime references,
+which the current SHA-pin governance model gives no reason to expect.
+
+**`v0.x` carries no stability guarantee.** Per SemVer's own terms, "Major
+version zero (0.y.z) is for initial development. Anything MAY change at any
+time. The public API SHOULD NOT be considered stable" ([SemVer, item
+4][semver]). This repository is `v0.7.0` at the time of writing: a release may
+still ship a change a post-1.0 line would have to treat as its own
+minor/patch distinction. Committing to `v1.0.0` — SemVer's "defines the public
+API" milestone ([SemVer, item 5][semver]) — is a deliberate, separate decision
+this document defers rather than resolves; nothing here should be read as an
+implicit 1.0 commitment or a timeline toward one.
+
+**A caller's SHA pin does not cascade.** Pinning this repository by SHA proves
+only that the one referenced file's bytes are fixed at that commit; GitHub
+resolves a reusable workflow's own nested calls to further reusable workflows
+or actions independently, at their own `{ref}`
+([Reusing workflow configurations][reusing-workflow-configurations]). GitHub's
+docs do not call this out directly, but it follows structurally from that
+per-reference resolution model, and it is exactly the gap reported in a
+[community discussion][nested-pin-discussion] about a workflow whose nested
+composite actions kept tracking a branch after the caller pinned the calling
+workflow file to a commit. This repository closes that gap on its own side,
+not the consumer's: every external reference its own actions and workflows
+make — third-party actions such as `astral-sh/setup-uv`,
+`anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
+itself pinned to a full commit SHA with the same dual-form trailing comment
+consumers use (`melodic-software/standards#248`). A consumer's pin on this
+repository is only as trustworthy as this repository's own pins one level
+down, and this repository keeps that chain closed rather than asking every
+consumer to audit it.
+
 ## Actions
 
 - `.github/actions/markdown` — markdownlint-cli2 over the repo's markdown.
@@ -896,11 +961,15 @@ standards catalog.
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
 [job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
 [job-runs-on]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job
+[nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
 [pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
+[releasing-actions]: https://docs.github.com/en/actions/creating-actions/releasing-and-maintaining-actions
+[reuse-workflows]: https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+[reusing-workflow-configurations]: https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
 [runner-routing]: https://docs.github.com/en/actions/reference/runners/self-hosted-runners#routing-precedence-for-self-hosted-runners
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
 [runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
@@ -909,6 +978,7 @@ standards catalog.
 [runner-scale-sets]: https://docs.github.com/en/actions/concepts/runners/runner-scale-sets
 [runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
 [reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
+[semver]: https://semver.org/
 [triggering-a-workflow-from-a-workflow]: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
 [workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
 [zizmor-release-v1-27-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.27.0
