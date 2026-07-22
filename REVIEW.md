@@ -70,10 +70,6 @@ criterion; a citation here never substitutes prose that isn't needed, per
   rename, a constraint, or a compensation step — spanning them; an
   interruption between steps must not leave state no code path expects
   (`conventions/review/error-handling.md#atomicity`).
-- A reusable-workflow step that shells out to a CLI (`gh`, `jq`, …) on a
-  caller-selected runner uses `actions/github-script` (bundled Node) or
-  carries an explicit, justified availability guard
-  (`conventions/review/cross-platform.md#tools-processes-and-committed-artifacts`).
 
 ## Do not report
 
