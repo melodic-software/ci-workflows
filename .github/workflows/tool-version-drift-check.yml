@@ -23,9 +23,15 @@ on:
       - 'global.json'
       - '.github/osv-scanner-pin.json'
       - '.github/actions/actionlint/action.yml'
+      - '.github/actions/check-jsonschema/action.yml'
       - '.github/actions/lefthook-validate/action.yml'
+      - '.github/actions/markdown/action.yml'
+      - '.github/actions/pyright/action.yml'
+      - '.github/actions/ruff/action.yml'
       - '.github/actions/shellcheck/action.yml'
       - '.github/scripts/actionlint-shellcheck-pin.test.cjs'
+      - '.github/scripts/tool-version-drift-contract.test.cjs'
+      - '.markdownlint-cli2.jsonc'
       - '.github/scripts/osv-release-digest.sh'
       - '.github/scripts/osv-release-digest.test.sh'
   workflow_dispatch:
@@ -200,6 +206,13 @@ jobs:
               exit 1
             fi
           done
+          for entry in "dotnet:${dotnet_current}" "node:${node_current}" "python:${python_current}"; do
+            IFS=: read -r runtime value <<<"$entry"
+            if [[ ! "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::${runtime} runtime default must be an exact major.minor.patch version, got ${value}"
+              exit 1
+            fi
+          done
           for file in .github/actions/biome/action.yml .github/actions/tsc/action.yml; do
             sibling="$(yq '.inputs."node-version".default' "$file")"
             if [[ "$sibling" != "$node_current" ]]; then
@@ -214,6 +227,14 @@ jobs:
               exit 1
             fi
           done
+          markdown_current="$(yq '.inputs.version.default' .github/actions/markdown/action.yml)"
+          markdown_schema_version="$(
+            sed -nE '/"\$schema"/ s#.*markdownlint-cli2/v([^/]+)/schema/.*#\1#p' .markdownlint-cli2.jsonc
+          )"
+          if [[ -z "$markdown_schema_version" || "$markdown_schema_version" != "$markdown_current" ]]; then
+            echo "::error::markdownlint schema version (${markdown_schema_version:-unresolved}) diverges from action default (${markdown_current})"
+            exit 1
+          fi
           # dotnet-build and dotnet-format resolve their fallback SDK version
           # by pointing setup-dotnet's global-json-file input at this repo's
           # own root global.json (via github.action_path), so they can never
@@ -390,7 +411,7 @@ jobs:
             echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
             echo "exact module pin. For Playwright, bump the \`PLAYWRIGHT_VERSION\` env value in"
             echo "\`.github/workflows/claude-e2e-verify.yml\` (an npm lane, no checksum)."
-            echo "For runtime drift, update every action's matching"
+            echo "For runtime drift, update every action's matching exact-patch"
             echo "input default (and the root global.json plus the dotnet actions' fallback"
             echo "pins together) only after reviewing the stable patch. Never auto-merge these"
             echo "updates."

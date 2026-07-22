@@ -18,10 +18,10 @@ inputs:
     default: ''
   version:
     description: Exact Ruff version to run.
-    default: 0.15.21
+    default: 0.15.22
   python-version:
-    description: Python version uv provisions for the ephemeral tool environment.
-    default: '3.14'
+    description: Exact Python patch version uv provisions for the ephemeral tool environment.
+    default: '3.14.6'
 
 runs:
   using: composite
