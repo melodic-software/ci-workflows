@@ -229,7 +229,7 @@ jobs:
           done
           markdown_current="$(yq '.inputs.version.default' .github/actions/markdown/action.yml)"
           markdown_schema_version="$(
-            sed -nE '/"\$schema"/ s#.*markdownlint-cli2/v([^/]+)/schema/.*#\1#p' .markdownlint-cli2.jsonc
+            sed -nE '/"[$]schema"/ s#.*markdownlint-cli2/v([^/]+)/schema/.*#\1#p' .markdownlint-cli2.jsonc
           )"
           if [[ -z "$markdown_schema_version" || "$markdown_schema_version" != "$markdown_current" ]]; then
             echo "::error::markdownlint schema version (${markdown_schema_version:-unresolved}) diverges from action default (${markdown_current})"
