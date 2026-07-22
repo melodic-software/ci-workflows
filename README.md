@@ -280,7 +280,24 @@ GitHub continues the normal weekly patching of each hosted image generation.
   token to each target and opens a signed, human-reviewed PR enumerating every
   managed source-to-destination mapping. It never writes a downstream receipt
   and never copies components declared `locally-owned`; the owner-scoped
-  attestation token is never passed to checkout or PR mutation.
+  attestation token is never passed to checkout or PR mutation. On PR
+  *creation* only (never a later update, so a reviewer who deliberately
+  disarmed a PR is not overridden), it also arms GitHub auto-merge (squash) via
+  the same target-scoped token — unless the manifest opts that target out with
+  `automerge: false`. A rejected arm attempt (for example an already-mergeable
+  PR) is logged and does not fail the sync. See
+  `standards-sync-stuck-automerge-alert.yml` for the companion watchdog over
+  PRs that stay armed but blocked.
+- `.github/workflows/standards-sync-stuck-automerge-alert.yml` — scans the
+  standards-sync target repositories, read from the standards manifest at run
+  time (never hardcoded), for open PRs authored by the standards-sync App with
+  auto-merge armed and GraphQL `mergeStateStatus: BLOCKED` for longer than
+  `threshold-hours` (default 4). Consumed via `uses:` at job level from a
+  *scheduled* caller that grants `issues: write`; the tracking issue lands in
+  the caller's own repository (a marker-deduped rolling report, the same
+  mechanism `link-check.yml` and `queue-monitor-liveness.yml` use), and the run
+  fails when it finds any — a stuck armed PR is an actionable condition, not a
+  flaky one, so this is intentionally not advisory.
 - `.github/workflows/select-runner.yml` — the single organization-approved
   hosted/self-hosted selector. With `self-hosted-only`, the selector itself
   queues on the always-on default `melodic-ubuntu-24.04-x64` route so it never
