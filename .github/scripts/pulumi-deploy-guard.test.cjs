@@ -178,7 +178,15 @@ test("Pulumi drift workflow is reusable-only and rejects untrusted refs before c
 
   assert.match(
     driftStep,
-    /current = fs\.readFileSync\(versionFile, "utf8"\)\.trim\(\)/u,
+    /current = fs\.readFileSync\(versionFile, "utf8"\)\.replace\(\/\\n\+\$\/, ""\)/u,
+  );
+  // A plain .trim() would strip leading/trailing spaces and tabs too, which
+  // the shell's `$(<file)` command substitution never did — that would
+  // silently accept a whitespace-padded pin the strict SemVer regex below is
+  // meant to reject.
+  assert.doesNotMatch(
+    driftStep,
+    /readFileSync\(versionFile, "utf8"\)\.trim\(\)/u,
   );
   assert.match(driftStep, /ci-workflows:pulumi-cli-version-drift:v1:active/u);
   assert.match(driftStep, /ci-workflows:pulumi-cli-version-drift:v1:resolved/u);
@@ -195,6 +203,26 @@ test("Pulumi drift workflow is reusable-only and rejects untrusted refs before c
   assert.match(driftStep, /github\.rest\.issues\.update\(/u);
   assert.match(driftStep, /incident\.created_at/u);
   assert.match(driftStep, /14 \* 24 \* 60 \* 60/u);
+});
+
+test("the version-file read strips only trailing newlines, matching bash $(<file) semantics", () => {
+  // Same operation the workflow step runs, extracted here to prove the
+  // actual behavior — not just that the source text is present. Bash
+  // command substitution strips trailing newline(s) only; every other kind
+  // of surrounding whitespace must still fail the strict SemVer regex.
+  const readVersion = (raw) => raw.replace(/\n+$/, "");
+  const semver = /^\d+\.\d+\.\d+$/;
+
+  for (const clean of ["1.2.3\n", "1.2.3\n\n", "1.2.3"]) {
+    assert.match(readVersion(clean), semver, `'${clean}' should be accepted`);
+  }
+  for (const padded of [" 1.2.3\n", "1.2.3 \n", "\t1.2.3\n", "1.2.3\r\n"]) {
+    assert.doesNotMatch(
+      readVersion(padded),
+      semver,
+      `whitespace-padded '${JSON.stringify(padded)}' must still be rejected`,
+    );
+  }
 });
 
 test("drift detection reproduces the retired bash helper's bounded-read, single-retry semantics", () => {

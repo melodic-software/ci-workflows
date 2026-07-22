@@ -88,7 +88,13 @@ jobs:
               core.setFailed(`${versionFile} must be a regular reviewed file`);
               return;
             }
-            const current = fs.readFileSync(versionFile, "utf8").trim();
+            // Mirrors bash `$(<file)` command substitution, not a general
+            // trim: that strips only trailing newline(s), leaving any other
+            // whitespace (leading spaces/tabs, a trailing space, a stray \r)
+            // intact for the strict SemVer regex below to reject. A plain
+            // .trim() would silently accept a whitespace-padded pin the prior
+            // shell implementation rejected as not-exact-SemVer.
+            const current = fs.readFileSync(versionFile, "utf8").replace(/\n+$/, "");
             if (!/^\d+\.\d+\.\d+$/.test(current)) {
               core.setFailed(`${versionFile} must contain one exact stable SemVer; got '${current}'`);
               return;
