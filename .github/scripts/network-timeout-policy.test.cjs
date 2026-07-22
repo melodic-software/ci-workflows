@@ -62,16 +62,19 @@ test("small JSON and release-discovery reads use their class budgets", () => {
   );
 });
 
-test("link-check tracking lookup routes through a bounded gh_read", () => {
+test("link-check tracking lookup runs on github-script, not a bare gh CLI call", () => {
   const workflow = read(".github/workflows/link-check.yml");
   assert.match(
     workflow,
-    /gh_read\(\)[\s\S]*?timeout --signal=TERM --kill-after=5s 60s gh "\$@"/u,
+    /Find existing tracking issue[\s\S]*?uses: actions\/github-script@/u,
   );
   assert.match(
     workflow,
-    /Find existing tracking issue[\s\S]*?open_issues="\$\(gh_read api --paginate/u,
+    /github\.paginate\(github\.rest\.issues\.listForRepo/u,
   );
+  // link-check.test.cjs asserts, per step, that the executable script (not
+  // the surrounding explanatory prose, which may name the gh CLI) contains
+  // no actual invocation.
 });
 
 test("OSV native release downloads are bounded", () => {
@@ -85,9 +88,8 @@ test("OSV native release downloads are bounded", () => {
   assert.doesNotMatch(workflow, /\bdocker\s+(?:run|pull|image|buildx)\b/iu);
 });
 
-test("Pulumi reads and stack export have explicit freshness boundaries", () => {
+test("Pulumi stack export has an explicit freshness boundary", () => {
   const guard = read(".github/actions/pulumi-deploy-guard/guard.sh");
-  const drift = read(".github/scripts/pulumi-version-drift.sh");
 
   assert.match(guard, /for attempt in 1 2/u);
   assert.match(
@@ -98,12 +100,23 @@ test("Pulumi reads and stack export have explicit freshness boundaries", () => {
     guard,
     /timeout --signal=TERM --kill-after=5s 300s(?:[ \t]+|[ \t]*\\\r?\n[ \t]*)"\$pulumi_bin" stack export/u,
   );
-  assert.match(drift, /gh_read\(\)[\s\S]*?for attempt in 1 2/u);
+});
+
+test("Pulumi drift reads have an explicit freshness boundary and a single retry", () => {
+  const drift = read(".github/workflows/pulumi-version-drift-check.yml");
+
+  assert.match(drift, /READ_TIMEOUT_MILLISECONDS = 60_000/u);
+  assert.match(drift, /request: \{ timeout: READ_TIMEOUT_MILLISECONDS \}/u);
   assert.match(
     drift,
-    /gh_mutate\(\)[\s\S]*?timeout --signal=TERM --kill-after=5s 60s gh/u,
+    /async function boundedRead\(operation\) \{[\s\S]*?retrying once/u,
   );
-  assert.doesNotMatch(drift, /gh_mutate\(\)[\s\S]*?for attempt/u);
+  // Mutations are never retried: a timed-out mutation may already have
+  // applied server-side, and a rerun reconciles observed state.
+  assert.doesNotMatch(
+    drift,
+    /boundedRead\(\(\) =>\s*\n?\s*github\.rest\.issues\.(create|update|createComment)/u,
+  );
 });
 
 test("Standards App attestation uses bounded fresh API reads", () => {

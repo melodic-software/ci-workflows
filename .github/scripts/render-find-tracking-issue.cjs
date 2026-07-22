@@ -6,10 +6,12 @@ const path = require("node:path");
 const scriptsDirectory = __dirname;
 const sourcePath = path.join(scriptsDirectory, "find-tracking-issue.sh");
 const workflowsDirectory = path.join(scriptsDirectory, "..", "workflows");
+// link-check.yml is not a consumer: it runs on a caller-selected runner and
+// was ported to actions/github-script instead of embedding this gh/jq-driven
+// source. Only fixed-hosted-runner consumers stay here.
 const workflowFiles = [
   "queue-monitor-liveness.yml",
   "tool-version-drift-check.yml",
-  "link-check.yml",
 ];
 const startMarker =
   "          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT";

@@ -29,7 +29,7 @@ test("the review concurrency group is keyed per head, not per PR", () => {
 test("the superseded-head guard compares the event head to the live PR head", () => {
   assert.match(
     workflowSource,
-    /id: freshness[\s\S]*?gh api "repos\/\$REPO\/pulls\/\$PR_NUMBER" --jq \.head\.sha/u,
+    /id: freshness[\s\S]*?uses: actions\/github-script@[\s\S]*?github\.rest\.pulls\.get\(/u,
   );
 });
 

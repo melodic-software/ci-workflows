@@ -212,22 +212,37 @@ jobs:
       # open — the `!= 'true'` gates treat a missing output as fresh, and only a
       # 40-hex commit SHA may retire the run — so an API anomaly degrades to
       # verifying a possibly-stale head, never to silence.
+      # actions/github-script rather than a `gh api` run step: this reusable
+      # runs on whatever runner the caller selected, and a self-hosted image
+      # is not guaranteed to ship the gh CLI. github-script executes on the
+      # action's own bundled Node runtime, so the live freshness check has no
+      # runner-image dependency (same pattern as do-not-merge-gate.yml).
       - name: Check whether this head is still current
         id: freshness
         if: github.event.pull_request.number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
-          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
-            echo "::notice::Skipping verification: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns it."
-            echo "superseded=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "superseded=false" >> "$GITHUB_OUTPUT"
-          fi
+        with:
+          script: |
+            let liveHead = "";
+            try {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+              liveHead = pr.head.sha;
+            } catch (error) {
+              core.warning(`Could not refetch the PR head; treating this run as fresh: ${error.message}`);
+            }
+            const eventHeadSha = process.env.EVENT_HEAD_SHA ?? "";
+            if (/^[0-9a-f]{40}$/.test(liveHead) && liveHead !== eventHeadSha) {
+              core.notice(`Skipping verification: the PR head moved from ${eventHeadSha} to ${liveHead}, so a newer run owns it.`);
+              core.setOutput("superseded", "true");
+            } else {
+              core.setOutput("superseded", "false");
+            }
 
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
