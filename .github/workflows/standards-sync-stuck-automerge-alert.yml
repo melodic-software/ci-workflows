@@ -1,0 +1,297 @@
+name: standards-sync-stuck-automerge-alert
+
+# Reusable workflow: scans the standards-sync target repos (read from the
+# standards manifest at run time — never hardcoded) for open, App-authored
+# standards-sync pull requests that have auto-merge armed but whose GraphQL
+# `mergeStateStatus` is BLOCKED for longer than a threshold. standards-sync.yml
+# arms auto-merge at PR creation on a body that is gate-compliant by
+# construction; this workflow is the second half of that contract — the
+# watchdog for when arming a PR was not enough to get it merged (observed:
+# melodic-software/medley#1619, an armed sync PR silently blocked for hours by
+# an unrelated pre-existing ci-status failure, with nothing watching).
+#
+# The target repo list is derived by checking out standards and running its
+# own sync-manifest.sh interpreter, the same way standards-sync.yml's plan job
+# does — never a second, hand-maintained inventory. The tracking issue is
+# opened in the CALLING repository (this workflow's own issues:write grant),
+# not in any scanned target: a scheduled caller in melodic-software/medley
+# gets the alert filed in medley, not scattered across the 8 targets.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller's governed selector.
+        type: string
+        default: ubuntu-24.04
+      manifest:
+        description: Repository-relative manifest path in the standards checkout.
+        type: string
+        default: distribution/sync-manifest.yml
+      standards-ref:
+        description: Ref (branch, tag, or SHA) of standards whose manifest names the scanned targets.
+        type: string
+        default: main
+      threshold-hours:
+        description: Minimum hours an armed PR must have been BLOCKED before it is reported as stuck.
+        type: number
+        default: 4
+    secrets:
+      app-client-id:
+        description: GitHub App client ID for cross-repository pull-request reads.
+        required: true
+      app-private-key:
+        description: GitHub App private key for cross-repository pull-request reads.
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  YQ_VERSION: v4.53.3
+  YQ_LINUX_AMD64_SHA256: fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
+  # The one App identity standards-sync.yml opens sync PRs as. GraphQL's
+  # `author.login` omits the REST-only `[bot]` suffix; `__typename` is the
+  # authoritative bot-vs-human discriminator, so both are checked together.
+  BOT_LOGIN: melodic-standards-sync
+
+jobs:
+  detect-stuck-armed-prs:
+    name: Detect stuck standards-sync auto-merge PRs
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write # Rolling tracking issue via create-issue-from-file.
+    steps:
+      - name: Check out standards
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: melodic-software/standards
+          ref: ${{ inputs.standards-ref }}
+          persist-credentials: false
+
+      - name: Install checksum-verified yq
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/standards-sync-alert-bin"
+          install -d "$install_dir"
+          curl --fail --location --proto '=https' --silent --show-error \
+            --connect-timeout 10 --max-time 120 \
+            --retry 2 --retry-max-time 300 \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            --output "$install_dir/yq"
+          printf '%s  %s\n' "$YQ_LINUX_AMD64_SHA256" "$install_dir/yq" \
+            | sha256sum --check --strict -
+          chmod 0755 "$install_dir/yq"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Read target repositories from the manifest
+        id: targets
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          matrix="$(bash distribution/sync-manifest.sh matrix --source-root . --manifest "$MANIFEST")"
+          repo_names="$(jq -r '[.include[].repo_name] | join(",")' <<<"$matrix")"
+          echo "repo-names=${repo_names}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint read-only App token scoped to every target
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: melodic-software
+          repositories: ${{ steps.targets.outputs.repo-names }}
+          permission-pull-requests: read
+
+      - name: Scan targets for stuck armed pull requests
+        id: scan
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REPO_NAMES: ${{ steps.targets.outputs.repo-names }}
+          THRESHOLD_HOURS: ${{ inputs.threshold-hours }}
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: |
+            const owner = 'melodic-software';
+            const botLogin = process.env.BOT_LOGIN;
+            const thresholdHours = Number(process.env.THRESHOLD_HOURS);
+            const repoNames = process.env.REPO_NAMES.split(',').filter((name) => name.length > 0);
+
+            const isStuck = (pullRequest) => {
+              if (pullRequest.author?.__typename !== 'Bot') return false;
+              if (pullRequest.author?.login !== botLogin) return false;
+              const armedAt = pullRequest.autoMergeRequest?.enabledAt;
+              if (!armedAt) return false;
+              if (pullRequest.mergeStateStatus !== 'BLOCKED') return false;
+              const armedHoursAgo = (Date.now() - Date.parse(armedAt)) / 3_600_000;
+              return armedHoursAgo >= thresholdHours;
+            };
+
+            const query = `
+              query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequests(states: OPEN, first: 20, orderBy: {field: CREATED_AT, direction: ASC}) {
+                    nodes {
+                      number
+                      url
+                      author { login __typename }
+                      autoMergeRequest { enabledAt }
+                      mergeStateStatus
+                    }
+                  }
+                }
+              }`;
+
+            const stuck = [];
+            for (const repo of repoNames) {
+              const result = await github.graphql(query, { owner, repo });
+              const nodes = result.repository?.pullRequests?.nodes ?? [];
+              for (const pullRequest of nodes) {
+                if (isStuck(pullRequest)) {
+                  const armedHoursAgo = Math.floor(
+                    (Date.now() - Date.parse(pullRequest.autoMergeRequest.enabledAt)) / 3_600_000,
+                  );
+                  stuck.push({ repo, number: pullRequest.number, url: pullRequest.url, armedHoursAgo });
+                }
+              }
+            }
+
+            core.setOutput('stuck-count', String(stuck.length));
+            if (stuck.length === 0) {
+              core.info('No stuck armed standards-sync pull requests found.');
+              return;
+            }
+
+            const marker = '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->';
+            const rows = stuck
+              .map((entry) => `| \`${entry.repo}\` | [#${entry.number}](${entry.url}) | ${entry.armedHoursAgo}h |`)
+              .join('\n');
+            const body = [
+              marker,
+              '',
+              '## standards-sync stuck auto-merge pull request(s)',
+              '',
+              `${stuck.length} pull request(s) opened by \`${botLogin}[bot]\` have had auto-merge armed for at`,
+              `least ${thresholdHours}h while GraphQL reports \`mergeStateStatus: BLOCKED\` — auto-merge cannot`,
+              'complete until whatever is blocking it (a failing required check, a missing required review, an',
+              'out-of-date branch) is resolved.',
+              '',
+              '| Repository | Pull request | Armed for |',
+              '| --- | --- | --- |',
+              rows,
+              '',
+              '### Recover',
+              '',
+              '1. Open the pull request and read its checks tab for the specific blocking reason.',
+              '2. Resolve it (push a fix, re-run the failing check, request the missing review) or close the PR',
+              '   if the sync is no longer wanted; the next scheduled sync recreates and re-arms it.',
+              '',
+              '---',
+              '*Updated automatically by `standards-sync-stuck-automerge-alert.yml`. Closing this issue without',
+              'resolving the underlying block reopens it on the next scheduled scan.*',
+            ].join('\n');
+
+            require('node:fs').writeFileSync(process.env.GITHUB_WORKSPACE + '/.stuck-automerge-report.md', body);
+
+      # A marker embedded in the body (not a title search) is exact and
+      # survives a retitle, and matches the mechanism pulumi-version-drift-
+      # check.yml, link-check.yml, and queue-monitor-liveness.yml already use.
+      - name: Find existing tracking issue
+        id: tracking
+        if: steps.scan.outputs.stuck-count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
+          ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
+        run: |
+          set -euo pipefail
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+          open_issues="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100")"
+          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT
+          # Source: .github/scripts/find-tracking-issue.sh
+          # Resolve the one open tracking issue this workflow owns into issue-number
+          # (empty if none), given open_issues (gh api --slurp JSON), MARKER, ISSUE_TITLE.
+          # More than one match is never auto-resolvable, so it fails closed.
+          #
+          # All three inputs are required: an unset MARKER would match every issue body
+          # (an empty needle), so assert them up front to keep the fail-closed posture
+          # set -u gave the pre-extraction inline blocks.
+          : "${MARKER:?MARKER is required}"
+          : "${ISSUE_TITLE:?ISSUE_TITLE is required}"
+          : "${open_issues:?open_issues is required}"
+          matches="$(jq -ce --arg marker "$MARKER" '
+            [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
+          ' <<<"$open_issues")"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
+            exit 1
+          fi
+          if ((count == 0)); then
+            # One-time migration fallback: a still-open issue created by the pre-marker,
+            # title-search version of this workflow has no marker yet, so the search above
+            # can't find it. Adopt it by exact title match so the update step below reuses
+            # (and marker-backfills) that issue instead of orphaning it behind a newly
+            # opened duplicate.
+            matches="$(jq -ce --arg title "$ISSUE_TITLE" '
+              [.[][] | select(.pull_request? == null) | select(.title == $title) | .number]
+            ' <<<"$open_issues")"
+            count="$(jq -r 'length' <<<"$matches")"
+            if ((count > 1)); then
+              echo "::error::found ${count} pre-marker issues titled '${ISSUE_TITLE}'; reconcile them manually."
+              exit 1
+            fi
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >>"${GITHUB_OUTPUT:?}"
+          # END GENERATED FIND TRACKING ISSUE
+
+      - name: Open or update tracking issue
+        id: issue
+        if: steps.scan.outputs.stuck-count != '0'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          title: '[Alert] standards-sync stuck auto-merge PR(s)'
+          issue-number: ${{ steps.tracking.outputs.issue-number }}
+          content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
+
+      - name: Close recovered tracking issue
+        if: steps.scan.outputs.stuck-count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
+          ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
+        run: |
+          set -euo pipefail
+          open_issues="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100")"
+          number="$(jq -r --arg marker "$MARKER" '
+            [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number] | .[0] // empty
+          ' <<<"$open_issues")"
+          if [[ -n "$number" ]]; then
+            gh issue close "$number" --reason completed \
+              --comment "No standards-sync pull request is currently armed and blocked past the threshold; closing this rolling report."
+          fi
+
+      - name: Fail so the scheduled run notifies
+        if: steps.scan.outputs.stuck-count != '0'
+        env:
+          STUCK_COUNT: ${{ steps.scan.outputs.stuck-count }}
+        run: |
+          echo "::error::${STUCK_COUNT} standards-sync pull request(s) are armed and stuck; see the tracking issue."
+          exit 1

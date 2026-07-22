@@ -3,7 +3,10 @@ name: standards-sync
 # Reusable workflow for exact-file standards distribution. The standards
 # checkout owns the schema-v2 manifest and its interpreter; this workflow owns
 # GitHub orchestration only: resolve one immutable source SHA, mint a narrowly
-# scoped App token, materialize each target, and open a reviewed signed PR.
+# scoped App token, materialize each target, open a reviewed signed PR, and
+# (unless the manifest opts a target out via `automerge: false`) arm auto-merge
+# on it at creation. A sync PR left armed but blocked past a threshold is a
+# separate concern: see standards-sync-stuck-automerge-alert.yml.
 on:
   workflow_call:
     inputs:
@@ -442,6 +445,7 @@ jobs:
           } > "$PR_BODY"
 
       - name: Open or update reviewed sync PR
+        id: cpr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: .target
@@ -454,3 +458,50 @@ jobs:
           title: "chore: sync standards components"
           body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync
+
+      # Arm auto-merge only at PR creation, never on a later update: the body
+      # is gate-compliant by construction (the App identity that opened it is
+      # the whole risk gate), but re-arming on every update would fight a
+      # reviewer who deliberately disabled auto-merge to hold a PR back. Every
+      # target repo has allow_auto_merge=true and required ci-status/pr-title
+      # checks on main, so a fresh PR is never immediately mergeable — except
+      # the rare case GitHub's mutation itself rejects, handled below.
+      - name: Arm auto-merge on the newly created sync PR
+        if: steps.cpr.outputs.pull-request-operation == 'created' && matrix.automerge
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OWNER: ${{ matrix.repo_owner }}
+          PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
+          REPO: ${{ matrix.repo_name }}
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: |
+            const owner = process.env.OWNER;
+            const repo = process.env.REPO;
+            const pull_number = Number(process.env.PR_NUMBER);
+
+            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number });
+
+            try {
+              await github.graphql(
+                `mutation($pullRequestId: ID!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $pullRequestId
+                    mergeMethod: SQUASH
+                  }) {
+                    pullRequest { autoMergeRequest { enabledAt } }
+                  }
+                }`,
+                { pullRequestId: pull.node_id },
+              );
+              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number}.`);
+            } catch (error) {
+              // Known rejection: a PR that is already immediately mergeable
+              // (GraphQL mergeStateStatus CLEAN) has nothing to wait for, and
+              // GitHub's mutation errors instead of no-op succeeding. Any
+              // other transient rejection is handled the same way: log and
+              // let the sync continue, never fail the run over arming.
+              core.warning(
+                `Could not arm auto-merge on ${owner}/${repo}#${pull_number}: ${error.message}`,
+              );
+            }
