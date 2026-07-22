@@ -53,6 +53,16 @@ env:
   # `author.login` omits the REST-only `[bot]` suffix; `__typename` is the
   # authoritative bot-vs-human discriminator, so both are checked together.
   BOT_LOGIN: melodic-standards-sync
+  # The identity that opens/updates/closes this workflow's own tracking issue:
+  # the default GITHUB_TOKEN's REST-created content is authored by this exact
+  # bot (verified against a real tracking issue this repo already has:
+  # #218, opened by tool-version-drift-check.yml). The marker and title
+  # strings embedded in this workflow are public — restricting adoption to
+  # this author (not just marker/title text) is what stops a non-maintainer
+  # in a caller repo from opening a decoy issue that gets adopted, silently
+  # closed on the next healthy run, or — worse — used to fail the lookup
+  # closed (two decoys both carrying the marker) and suppress a real alert.
+  ISSUE_AUTHOR_LOGIN: github-actions[bot]
 
 jobs:
   detect-stuck-armed-prs:
@@ -129,10 +139,22 @@ jobs:
               return armedHoursAgo >= thresholdHours;
             };
 
+            // @actions/github bundles @octokit/plugin-paginate-rest but not a
+            // GraphQL pagination plugin (verified: its package.json lists no
+            // @octokit/plugin-paginate-graphql dependency), so github.paginate
+            // cannot walk this query — the cursor loop is manual. A silently
+            // truncated single page would make the watchdog itself unsound: a
+            // stuck PR sorted past the page boundary is invisible, and an
+            // empty/false "all clear" result on this scan closes the existing
+            // tracking issue, so under-paginating can convert a real incident
+            // into a false recovery signal. MAX_PAGES bounds the loop so a
+            // pathological repo cannot hang this workflow indefinitely.
+            const PAGE_SIZE = 50;
+            const MAX_PAGES = 50;
             const query = `
-              query($owner: String!, $repo: String!) {
+              query($owner: String!, $repo: String!, $after: String) {
                 repository(owner: $owner, name: $repo) {
-                  pullRequests(states: OPEN, first: 20, orderBy: {field: CREATED_AT, direction: ASC}) {
+                  pullRequests(states: OPEN, first: ${PAGE_SIZE}, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
                     nodes {
                       number
                       url
@@ -140,21 +162,35 @@ jobs:
                       autoMergeRequest { enabledAt }
                       mergeStateStatus
                     }
+                    pageInfo { hasNextPage endCursor }
                   }
                 }
               }`;
 
             const stuck = [];
             for (const repo of repoNames) {
-              const result = await github.graphql(query, { owner, repo });
-              const nodes = result.repository?.pullRequests?.nodes ?? [];
-              for (const pullRequest of nodes) {
-                if (isStuck(pullRequest)) {
-                  const armedHoursAgo = Math.floor(
-                    (Date.now() - Date.parse(pullRequest.autoMergeRequest.enabledAt)) / 3_600_000,
-                  );
-                  stuck.push({ repo, number: pullRequest.number, url: pullRequest.url, armedHoursAgo });
+              let after = null;
+              let hasNextPage = true;
+              let page = 0;
+              while (hasNextPage) {
+                page += 1;
+                if (page > MAX_PAGES) {
+                  core.setFailed(`${repo} has more than ${MAX_PAGES * PAGE_SIZE} open pull requests; refusing to scan an unbounded number of pages.`);
+                  return;
                 }
+                const result = await github.graphql(query, { owner, repo, after });
+                const pullRequests = result.repository?.pullRequests;
+                const nodes = pullRequests?.nodes ?? [];
+                for (const pullRequest of nodes) {
+                  if (isStuck(pullRequest)) {
+                    const armedHoursAgo = Math.floor(
+                      (Date.now() - Date.parse(pullRequest.autoMergeRequest.enabledAt)) / 3_600_000,
+                    );
+                    stuck.push({ repo, number: pullRequest.number, url: pullRequest.url, armedHoursAgo });
+                  }
+                }
+                hasNextPage = pullRequests?.pageInfo?.hasNextPage ?? false;
+                after = pullRequests?.pageInfo?.endCursor ?? null;
               }
             }
 
@@ -216,6 +252,7 @@ jobs:
           script: |
             const marker = process.env.MARKER;
             const issueTitle = process.env.ISSUE_TITLE;
+            const issueAuthorLogin = process.env.ISSUE_AUTHOR_LOGIN;
 
             const openIssues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
@@ -223,7 +260,15 @@ jobs:
               state: 'open',
               per_page: 100,
             });
-            const candidates = openIssues.filter((issue) => !issue.pull_request);
+            // The marker and title strings are public (embedded verbatim in
+            // this workflow file), so matching on them alone would let anyone
+            // with issue-creation permission in the caller repo craft a decoy
+            // this automation adopts. Restricting to issues this workflow's
+            // own identity authored closes that: an attacker's issue is never
+            // a candidate at all, no matter what text it carries.
+            const candidates = openIssues.filter(
+              (issue) => !issue.pull_request && issue.user?.login === issueAuthorLogin && issue.user?.type === 'Bot',
+            );
 
             let matches = candidates.filter((issue) => (issue.body ?? '').includes(marker));
             if (matches.length > 1) {
@@ -264,13 +309,22 @@ jobs:
         with:
           script: |
             const marker = process.env.MARKER;
+            const issueAuthorLogin = process.env.ISSUE_AUTHOR_LOGIN;
             const openIssues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               per_page: 100,
             });
-            const match = openIssues.find((issue) => !issue.pull_request && (issue.body ?? '').includes(marker));
+            // Same author restriction as the lookup step: only ever act on an
+            // issue this workflow's own identity opened, never a decoy.
+            const match = openIssues.find(
+              (issue) =>
+                !issue.pull_request &&
+                issue.user?.login === issueAuthorLogin &&
+                issue.user?.type === 'Bot' &&
+                (issue.body ?? '').includes(marker),
+            );
             if (!match) return;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
