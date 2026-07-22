@@ -164,6 +164,38 @@ test("a human author impersonating the bot's login string is ignored (__typename
   assert.equal(outputs["stuck-count"], "0");
 });
 
+// Same structural check ci-workflows#212 added for link-check.yml's
+// equivalent tracking-issue steps: this reusable also runs on whatever
+// runner the caller selected, so its issue lookup/close steps must not
+// assume the gh CLI is on PATH (a self-hosted image is not guaranteed to
+// ship it) — they run on actions/github-script instead.
+test("the tracking-issue lookup and close steps run on github-script, not the gh CLI", () => {
+  for (const name of ["Find existing tracking issue", "Close recovered tracking issue"]) {
+    const stepIndex = workflow.indexOf(`- name: ${name}`);
+    assert.ok(stepIndex >= 0, `step '${name}' is missing`);
+    const nextStepOffset = workflow
+      .slice(stepIndex + 1)
+      .search(/\n\s*(?:#[^\n]*\n\s*)*- name:/u);
+    const step =
+      nextStepOffset >= 0
+        ? workflow.slice(stepIndex, stepIndex + 1 + nextStepOffset)
+        : workflow.slice(stepIndex);
+    assert.match(
+      step,
+      /uses: actions\/github-script@/u,
+      `'${name}' must run on github-script, not shell out to the gh CLI`,
+    );
+    // Scoped to the executable script, not the whole step: surrounding
+    // explanatory comments may name the gh CLI in prose without invoking it.
+    const scriptBody = step.slice(step.indexOf("script: |"));
+    assert.doesNotMatch(
+      scriptBody,
+      /\bgh (api|issue|pr)\b/u,
+      `'${name}' must not shell out to the gh CLI`,
+    );
+  }
+});
+
 test("multiple stuck PRs across repos are all reported", async () => {
   const staleArmed = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString();
   const { outputs, report } = await runScan({

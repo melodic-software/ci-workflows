@@ -198,69 +198,52 @@ jobs:
       # A marker embedded in the body (not a title search) is exact and
       # survives a retitle, and matches the mechanism pulumi-version-drift-
       # check.yml, link-check.yml, and queue-monitor-liveness.yml already use.
+      #
+      # actions/github-script rather than a `gh api` run step: this reusable
+      # runs on whatever runner the caller selected, and a self-hosted image
+      # is not guaranteed to ship the gh CLI (the same reason link-check.yml
+      # was ported off the shared find-tracking-issue.sh bash block — that
+      # block stays a generated consumer only for the two workflows that run
+      # on a fixed hosted runner).
       - name: Find existing tracking issue
         id: tracking
         if: steps.scan.outputs.stuck-count != '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
           ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
-        run: |
-          set -euo pipefail
-          gh_read() {
-            local attempt output status
-            for attempt in 1 2; do
-              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
-                printf '%s\n' "$output"
-                return 0
-              else
-                status=$?
-              fi
-              if ((attempt == 1)); then
-                echo '::warning::GitHub read failed; retrying once.' >&2
-                sleep 1
-              fi
-            done
-            return "$status"
-          }
-          open_issues="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100")"
-          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT
-          # Source: .github/scripts/find-tracking-issue.sh
-          # Resolve the one open tracking issue this workflow owns into issue-number
-          # (empty if none), given open_issues (gh api --slurp JSON), MARKER, ISSUE_TITLE.
-          # More than one match is never auto-resolvable, so it fails closed.
-          #
-          # All three inputs are required: an unset MARKER would match every issue body
-          # (an empty needle), so assert them up front to keep the fail-closed posture
-          # set -u gave the pre-extraction inline blocks.
-          : "${MARKER:?MARKER is required}"
-          : "${ISSUE_TITLE:?ISSUE_TITLE is required}"
-          : "${open_issues:?open_issues is required}"
-          matches="$(jq -ce --arg marker "$MARKER" '
-            [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
-          ' <<<"$open_issues")"
-          count="$(jq -r 'length' <<<"$matches")"
-          if ((count > 1)); then
-            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
-            exit 1
-          fi
-          if ((count == 0)); then
-            # One-time migration fallback: a still-open issue created by the pre-marker,
-            # title-search version of this workflow has no marker yet, so the search above
-            # can't find it. Adopt it by exact title match so the update step below reuses
-            # (and marker-backfills) that issue instead of orphaning it behind a newly
-            # opened duplicate.
-            matches="$(jq -ce --arg title "$ISSUE_TITLE" '
-              [.[][] | select(.pull_request? == null) | select(.title == $title) | .number]
-            ' <<<"$open_issues")"
-            count="$(jq -r 'length' <<<"$matches")"
-            if ((count > 1)); then
-              echo "::error::found ${count} pre-marker issues titled '${ISSUE_TITLE}'; reconcile them manually."
-              exit 1
-            fi
-          fi
-          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >>"${GITHUB_OUTPUT:?}"
-          # END GENERATED FIND TRACKING ISSUE
+        with:
+          script: |
+            const marker = process.env.MARKER;
+            const issueTitle = process.env.ISSUE_TITLE;
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const candidates = openIssues.filter((issue) => !issue.pull_request);
+
+            let matches = candidates.filter((issue) => (issue.body ?? '').includes(marker));
+            if (matches.length > 1) {
+              core.setFailed(`found ${matches.length} issues carrying marker '${marker}'; reconcile them manually.`);
+              return;
+            }
+            if (matches.length === 0) {
+              // One-time migration fallback: a still-open issue created by an
+              // earlier, pre-marker version of this workflow has no marker
+              // yet, so the search above can't find it. Adopt it by exact
+              // title match so the update step below reuses (and
+              // marker-backfills) that issue instead of orphaning it behind
+              // a newly opened duplicate.
+              matches = candidates.filter((issue) => issue.title === issueTitle);
+              if (matches.length > 1) {
+                core.setFailed(`found ${matches.length} pre-marker issues titled '${issueTitle}'; reconcile them manually.`);
+                return;
+              }
+            }
+            core.setOutput('issue-number', matches.length === 1 ? String(matches[0].number) : '');
 
       - name: Open or update tracking issue
         id: issue
@@ -271,22 +254,37 @@ jobs:
           issue-number: ${{ steps.tracking.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
 
+      # actions/github-script rather than a `gh issue close` run step, for
+      # the same runner-tool-availability reason as the lookup step above.
       - name: Close recovered tracking issue
         if: steps.scan.outputs.stuck-count == '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
-          ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
-        run: |
-          set -euo pipefail
-          open_issues="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100")"
-          number="$(jq -r --arg marker "$MARKER" '
-            [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number] | .[0] // empty
-          ' <<<"$open_issues")"
-          if [[ -n "$number" ]]; then
-            gh issue close "$number" --reason completed \
-              --comment "No standards-sync pull request is currently armed and blocked past the threshold; closing this rolling report."
-          fi
+        with:
+          script: |
+            const marker = process.env.MARKER;
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const match = openIssues.find((issue) => !issue.pull_request && (issue.body ?? '').includes(marker));
+            if (!match) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: match.number,
+              body: 'No standards-sync pull request is currently armed and blocked past the threshold; closing this rolling report.',
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: match.number,
+              state: 'closed',
+              state_reason: 'completed',
+            });
 
       - name: Fail so the scheduled run notifies
         if: steps.scan.outputs.stuck-count != '0'
