@@ -22,7 +22,12 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Runner label selected by the caller.
+        description: >-
+          Runner label selected by the caller for every prerequisite outcome.
+          Direct callers that omit it use the public hosted default. A caller
+          passing a dynamic expression must ensure it resolves to a non-empty
+          label; the reusable applies no implicit fallback, so an empty value
+          fails runner allocation.
         type: string
         default: ubuntu-24.04
       prerequisite-result:
@@ -54,7 +59,12 @@ jobs:
   # convention semantic-pr / pr-title.yml and do-not-merge-gate already
   # established.
   pr-issue-linkage:
-    runs-on: ${{ inputs.prerequisite-result == 'success' && inputs.runner || 'ubuntu-24.04' }}
+    # Always honor the caller-selected runner, including for a failed, skipped,
+    # cancelled, or empty prerequisite result. The caller owns any recovery
+    # fallback passed through `runner`; direct callers that omit it retain the
+    # public `ubuntu-24.04` default above. The rejection step remains first so a
+    # non-success prerequisite fails closed before body validation.
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite

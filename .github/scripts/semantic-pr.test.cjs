@@ -32,12 +32,12 @@ test("semantic PR documents the validator-required fail-closed caller shape", ()
   const jobContract = workflow.slice(jobStart, runsOn);
   assert.match(
     jobContract,
-    /caller's `if: always\(\)`[\s\S]*?after every prerequisite outcome,[\s\S]*?including[\s\S]*?cancellation,[\s\S]*?required context materializes[\s\S]*?non-success result fails closed/u,
+    /Always honor the caller-selected runner,[\s\S]*?failed, skipped,[\s\S]*?cancelled, or empty prerequisite result[\s\S]*?caller owns any recovery[\s\S]*?public `ubuntu-24\.04` default[\s\S]*?caller's `if: always\(\)`[\s\S]*?after every prerequisite outcome[\s\S]*?required context[\s\S]*?fails closed before title validation/u,
   );
   assert.doesNotMatch(jobContract, /!cancelled\(\)/u);
 });
 
-test("semantic PR required check fails closed after every delivered prerequisite outcome", () => {
+test("semantic PR preserves caller routing and fails closed after every delivered prerequisite outcome", () => {
   const prerequisiteInput = workflow.match(
     / {6}prerequisite-result:\n([\s\S]*?)(?= {6}[a-z][a-z-]+:\n|\npermissions:)/u,
   );
@@ -46,10 +46,8 @@ test("semantic PR required check fails closed after every delivered prerequisite
   assert.match(prerequisiteInput[1], / {8}default: success\n/u);
 
   const requiredJob = workflow.slice(workflow.indexOf("  pr-title:\n"));
-  assert.match(
-    requiredJob,
-    /runs-on: \$\{\{ inputs\.prerequisite-result == 'success' && inputs\.runner \|\| 'ubuntu-24\.04' \}\}/u,
-  );
+  assert.match(requiredJob, /^ {4}runs-on: \$\{\{ inputs\.runner \}\}$/mu);
+  assert.doesNotMatch(requiredJob, /runs-on:[^\n]*prerequisite-result/u);
   assert.doesNotMatch(requiredJob, /Note cancelled prerequisite/u);
   assert.match(
     requiredJob,
@@ -69,18 +67,15 @@ test("semantic PR required check fails closed after every delivered prerequisite
     "prerequisite rejection must precede title validation",
   );
 
-  const runnerFor = (result, selectedRunner) =>
-    result === "success" && selectedRunner ? selectedRunner : "ubuntu-24.04";
-  assert.equal(
-    runnerFor("success", "melodic-ubuntu-24.04-x64"),
-    "melodic-ubuntu-24.04-x64",
-  );
-  for (const result of ["failure", "cancelled", "skipped", ""]) {
+  const runnerFor = (_result, selectedRunner = "ubuntu-24.04") =>
+    selectedRunner;
+  for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
     assert.equal(
-      runnerFor(result, "ci-runner-selection-failed"),
-      "ubuntu-24.04",
+      runnerFor(result, "melodic-ubuntu-24.04-x64"),
+      "melodic-ubuntu-24.04-x64",
     );
   }
+  assert.equal(runnerFor("failure"), "ubuntu-24.04");
 
   // A delivered cancellation is not proof of a successor run, so every
   // non-success value remains fail-closed.
@@ -92,6 +87,7 @@ test("semantic PR required check fails closed after every delivered prerequisite
   assert.equal(dispatch("cancelled"), "fail");
   assert.equal(dispatch("failure"), "fail");
   assert.equal(dispatch("skipped"), "fail");
+  assert.equal(dispatch(""), "fail");
 });
 
 test("documented selector composition preserves the one required check context", () => {
@@ -101,11 +97,11 @@ test("documented selector composition preserves the one required check context",
   );
   assert.match(
     readme,
-    /The normal\s+success path still runs the existing `pr-title \/ pr-title` job\s+only on the\s+selector-returned runner/u,
+    /uses the caller's resolved\s+`runner` value unchanged for `success`, `failure`, `cancelled`, `skipped`, and\s+empty prerequisite results/u,
   );
   assert.match(
     readme,
-    /An explicitly delivered `cancelled` result remains\s+fail-closed/u,
+    /public fallback shown above and the reusable's omitted-input default both\s+preserve `ubuntu-24\.04`[\s\S]*?private self-hosted-only caller cannot reuse the\s+public[\s\S]*?ci-runner-selection-failed[\s\S]*?needs\.select-runner\.result == 'success'/u,
   );
   assert.match(
     readme,

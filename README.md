@@ -306,9 +306,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   required check. GitHub generally
   [recommends `!cancelled()` instead of `always()`][workflow-troubleshooting]
   for jobs that should stop with a cancelled workflow; this contract
-  deliberately trades that for fail-closed reporting, and the cost is bounded
-  to one `ubuntu-24.04` reporter run on cancellation. Use the semantic-title
-  gate's fail-closed prerequisite contract:
+  deliberately trades that for fail-closed reporting. The reusable gate uses
+  its `runner` input for every prerequisite outcome, so the caller also owns the
+  recovery route; the cost is bounded to one caller-selected reporter run on
+  cancellation. Use the semantic-title gate's fail-closed prerequisite contract
+  (this public-repository example intentionally falls back to hosted Ubuntu):
 
   ```yaml
   pr-title:
@@ -322,19 +324,34 @@ GitHub continues the normal weekly patching of each hosted image generation.
       prerequisite-result: ${{ needs.select-runner.result }}
   ```
 
-  When the caller workflow is active, any prerequisite result other than exact
-  `success` runs the same required reusable job on `ubuntu-24.04` and fails
+  When the caller workflow is active, the reusable uses the caller's resolved
+  `runner` value unchanged for `success`, `failure`, `cancelled`, `skipped`, and
+  empty prerequisite results. Any result other than exact `success` then fails
   before title validation. An explicitly delivered `cancelled` result remains
   fail-closed because the result alone does not prove that a successor run will
   cover the same required check. If the caller workflow is cancelled manually
-  or by `concurrency.cancel-in-progress`, the `always()` reporter still runs
-  and reports for its own, now-superseded run; the superseding run reports its
-  own result, and a stale failure left by a superseded run clears on re-run.
+  or by `concurrency.cancel-in-progress`, the `always()` reporter still runs and
+  reports for its own, now-superseded run; the superseding run reports its own
+  result, and a stale failure left by a superseded run clears on re-run.
 
-  The normal success path still runs the existing `pr-title / pr-title` job
-  only on the selector-returned runner; there is no routine aggregator or extra
-  hosted job. The exceptional reporting job uses GitHub's
-  [least-expensive hosted Linux SKU][runner-pricing].
+  The public fallback shown above and the reusable's omitted-input default both
+  preserve `ubuntu-24.04`. A private self-hosted-only caller cannot reuse the
+  public `outputs.runner || 'label'` form: on a strict-selector failure
+  `select-runner` publishes the non-empty unroutable sentinel
+  `ci-runner-selection-failed`, which a `||` fallback passes straight through
+  instead of replacing. Gate the fallback on the selector result so the sentinel
+  is ignored:
+
+  ```yaml
+      runner: ${{ needs.select-runner.result == 'success' && needs.select-runner.outputs.runner || 'melodic-ubuntu-24.04-x64' }}
+  ```
+
+  The fallback label must itself be routable when selection fails; otherwise the
+  required reporter job never starts and the non-success result cannot fail
+  closed. Both success and reporting paths remain the existing single
+  `pr-title / pr-title` job on the resolved runner; there is no routine
+  aggregator or extra hosted job. GitHub documents that
+  [`runs-on` accepts an input-backed runner value][job-runs-on].
 
   `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
   When present it overrides `self-hosted-label`; malformed, empty, or duplicate
@@ -853,6 +870,7 @@ standards catalog.
 [lefthook-validate]: https://lefthook.dev/usage/commands/validate/
 [job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
 [job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
+[job-runs-on]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-4]: https://github.com/google/osv-scanner/releases/tag/v2.4.0
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
@@ -860,7 +878,6 @@ standards catalog.
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/
 [runner-routing]: https://docs.github.com/en/actions/reference/runners/self-hosted-runners#routing-precedence-for-self-hosted-runners
 [runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
-[runner-pricing]: https://docs.github.com/en/billing/reference/actions-runner-pricing
 [runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
 [runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
 [runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
