@@ -55,10 +55,23 @@ function pullRequest({
   };
 }
 
-async function runScan({ repoNames = ["dotfiles"], thresholdHours = 4, nodesByRepo = {}, workspace } = {}) {
-  const keys = ["BOT_LOGIN", "REPO_NAMES", "THRESHOLD_HOURS", "GITHUB_WORKSPACE"];
-  const originalValues = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  const effectiveWorkspace = workspace ?? fs.mkdtempSync(path.join(os.tmpdir(), "stuck-alert-"));
+async function runScan({
+  repoNames = ["dotfiles"],
+  thresholdHours = 4,
+  nodesByRepo = {},
+  workspace,
+} = {}) {
+  const keys = [
+    "BOT_LOGIN",
+    "REPO_NAMES",
+    "THRESHOLD_HOURS",
+    "GITHUB_WORKSPACE",
+  ];
+  const originalValues = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]]),
+  );
+  const effectiveWorkspace =
+    workspace ?? fs.mkdtempSync(path.join(os.tmpdir(), "stuck-alert-"));
   Object.assign(process.env, {
     BOT_LOGIN: "melodic-standards-sync",
     REPO_NAMES: repoNames.join(","),
@@ -83,10 +96,21 @@ async function runScan({ repoNames = ["dotfiles"], thresholdHours = 4, nodesByRe
       setOutput: (key, value) => (outputs[key] = value),
       info: (message) => infos.push(message),
     };
-    const execute = new AsyncFunction("github", "core", "require", "process", scanScript);
+    const execute = new AsyncFunction(
+      "github",
+      "core",
+      "require",
+      "process",
+      scanScript,
+    );
     await execute(github, core, require, process);
-    const reportPath = path.join(effectiveWorkspace, ".stuck-automerge-report.md");
-    const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : null;
+    const reportPath = path.join(
+      effectiveWorkspace,
+      ".stuck-automerge-report.md",
+    );
+    const report = fs.existsSync(reportPath)
+      ? fs.readFileSync(reportPath, "utf8")
+      : null;
     return { graphqlCalls, outputs, infos, report };
   } finally {
     for (const key of keys) {
@@ -97,17 +121,24 @@ async function runScan({ repoNames = ["dotfiles"], thresholdHours = 4, nodesByRe
 }
 
 test("queries every manifest-derived target repository, not a hardcoded subset", async () => {
-  const { graphqlCalls } = await runScan({ repoNames: ["dotfiles", "medley", "ci-runner"] });
-  assert.deepEqual(
-    graphqlCalls.map((call) => call.variables.repo).sort(),
-    ["ci-runner", "dotfiles", "medley"],
+  const { graphqlCalls } = await runScan({
+    repoNames: ["dotfiles", "medley", "ci-runner"],
+  });
+  assert.deepEqual(graphqlCalls.map((call) => call.variables.repo).sort(), [
+    "ci-runner",
+    "dotfiles",
+    "medley",
+  ]);
+  assert.ok(
+    graphqlCalls.every((call) => call.variables.owner === "melodic-software"),
   );
-  assert.ok(graphqlCalls.every((call) => call.variables.owner === "melodic-software"));
 });
 
 test("a PR with no auto-merge armed is not reported, regardless of merge state", async () => {
   const { outputs, report } = await runScan({
-    nodesByRepo: { dotfiles: [pullRequest({ enabledAt: null, mergeStateStatus: "BLOCKED" })] },
+    nodesByRepo: {
+      dotfiles: [pullRequest({ enabledAt: null, mergeStateStatus: "BLOCKED" })],
+    },
   });
   assert.equal(outputs["stuck-count"], "0");
   assert.equal(report, null);
@@ -115,7 +146,14 @@ test("a PR with no auto-merge armed is not reported, regardless of merge state",
 
 test("an armed PR that is CLEAN (not BLOCKED) is not reported", async () => {
   const { outputs } = await runScan({
-    nodesByRepo: { dotfiles: [pullRequest({ enabledAt: "2020-01-01T00:00:00Z", mergeStateStatus: "CLEAN" })] },
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          enabledAt: "2020-01-01T00:00:00Z",
+          mergeStateStatus: "CLEAN",
+        }),
+      ],
+    },
   });
   assert.equal(outputs["stuck-count"], "0");
 });
@@ -124,7 +162,11 @@ test("an armed, BLOCKED PR younger than the threshold is not reported", async ()
   const recentlyArmed = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
   const { outputs } = await runScan({
     thresholdHours: 4,
-    nodesByRepo: { dotfiles: [pullRequest({ enabledAt: recentlyArmed, mergeStateStatus: "BLOCKED" })] },
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({ enabledAt: recentlyArmed, mergeStateStatus: "BLOCKED" }),
+      ],
+    },
   });
   assert.equal(outputs["stuck-count"], "0");
 });
@@ -134,10 +176,21 @@ test("an armed, BLOCKED PR past the threshold is reported with a marker and a re
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
-    nodesByRepo: { dotfiles: [pullRequest({ number: 7, enabledAt: staleArmed, mergeStateStatus: "BLOCKED" })] },
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 7,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
   });
   assert.equal(outputs["stuck-count"], "1");
-  assert.match(report, /<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->/u);
+  assert.match(
+    report,
+    /<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->/u,
+  );
   assert.match(report, /#7/u);
   assert.match(report, /### Recover/u);
 });
@@ -146,7 +199,13 @@ test("a bot-shaped author with an unrelated login is ignored (exact-login match,
   const staleArmed = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
   const { outputs } = await runScan({
     nodesByRepo: {
-      dotfiles: [pullRequest({ login: "some-other-app", enabledAt: staleArmed, mergeStateStatus: "BLOCKED" })],
+      dotfiles: [
+        pullRequest({
+          login: "some-other-app",
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
     },
   });
   assert.equal(outputs["stuck-count"], "0");
@@ -157,7 +216,12 @@ test("a human author impersonating the bot's login string is ignored (__typename
   const { outputs } = await runScan({
     nodesByRepo: {
       dotfiles: [
-        pullRequest({ login: "melodic-standards-sync", typename: "User", enabledAt: staleArmed, mergeStateStatus: "BLOCKED" }),
+        pullRequest({
+          login: "melodic-standards-sync",
+          typename: "User",
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
       ],
     },
   });
@@ -170,7 +234,10 @@ test("a human author impersonating the bot's login string is ignored (__typename
 // assume the gh CLI is on PATH (a self-hosted image is not guaranteed to
 // ship it) — they run on actions/github-script instead.
 test("the tracking-issue lookup and close steps run on github-script, not the gh CLI", () => {
-  for (const name of ["Find existing tracking issue", "Close recovered tracking issue"]) {
+  for (const name of [
+    "Find existing tracking issue",
+    "Close recovered tracking issue",
+  ]) {
     const stepIndex = workflow.indexOf(`- name: ${name}`);
     assert.ok(stepIndex >= 0, `step '${name}' is missing`);
     const nextStepOffset = workflow
@@ -201,8 +268,20 @@ test("multiple stuck PRs across repos are all reported", async () => {
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles", "medley"],
     nodesByRepo: {
-      dotfiles: [pullRequest({ number: 3, enabledAt: staleArmed, mergeStateStatus: "BLOCKED" })],
-      medley: [pullRequest({ number: 9, enabledAt: staleArmed, mergeStateStatus: "BLOCKED" })],
+      dotfiles: [
+        pullRequest({
+          number: 3,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+      medley: [
+        pullRequest({
+          number: 9,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
     },
   });
   assert.equal(outputs["stuck-count"], "2");

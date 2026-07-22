@@ -55,14 +55,32 @@ test("the arming step uses the target-scoped App token, not the caller's default
     .findIndex((line) =>
       line.includes("- name: Arm auto-merge on the newly created sync PR"),
     );
-  const block = workflow.split(/\r?\n/u).slice(stepIndex, stepIndex + 10).join("\n");
-  assert.match(block, /github-token: \$\{\{ steps\.token\.outputs\.token \}\}/u);
+  const block = workflow
+    .split(/\r?\n/u)
+    .slice(stepIndex, stepIndex + 10)
+    .join("\n");
+  assert.match(
+    block,
+    /github-token: \$\{\{ steps\.token\.outputs\.token \}\}/u,
+  );
 });
 
-async function runArming({ owner = "melodic-software", repo = "dotfiles", prNumber = 42, nodeId = "PR_kwFoo", graphqlError } = {}) {
+async function runArming({
+  owner = "melodic-software",
+  repo = "dotfiles",
+  prNumber = 42,
+  nodeId = "PR_kwFoo",
+  graphqlError,
+} = {}) {
   const keys = ["OWNER", "REPO", "PR_NUMBER"];
-  const originalValues = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  Object.assign(process.env, { OWNER: owner, REPO: repo, PR_NUMBER: String(prNumber) });
+  const originalValues = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, {
+    OWNER: owner,
+    REPO: repo,
+    PR_NUMBER: String(prNumber),
+  });
   const graphqlCalls = [];
   const warnings = [];
   const infos = [];
@@ -70,7 +88,11 @@ async function runArming({ owner = "melodic-software", repo = "dotfiles", prNumb
     const github = {
       rest: {
         pulls: {
-          get: async ({ owner: calledOwner, repo: calledRepo, pull_number }) => {
+          get: async ({
+            owner: calledOwner,
+            repo: calledRepo,
+            pull_number,
+          }) => {
             assert.equal(calledOwner, owner);
             assert.equal(calledRepo, repo);
             assert.equal(pull_number, prNumber);
@@ -81,14 +103,25 @@ async function runArming({ owner = "melodic-software", repo = "dotfiles", prNumb
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
         if (graphqlError) throw graphqlError;
-        return { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } } } };
+        return {
+          enablePullRequestAutoMerge: {
+            pullRequest: {
+              autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" },
+            },
+          },
+        };
       },
     };
     const core = {
       info: (message) => infos.push(message),
       warning: (message) => warnings.push(message),
     };
-    const execute = new AsyncFunction("github", "core", "require", armingScript);
+    const execute = new AsyncFunction(
+      "github",
+      "core",
+      "require",
+      armingScript,
+    );
     await execute(github, core, require);
     return { graphqlCalls, warnings, infos };
   } finally {
