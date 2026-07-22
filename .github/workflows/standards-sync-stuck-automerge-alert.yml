@@ -13,9 +13,11 @@ name: standards-sync-stuck-automerge-alert
 # The target repo list is derived by checking out standards and running its
 # own sync-manifest.sh interpreter, the same way standards-sync.yml's plan job
 # does — never a second, hand-maintained inventory. The tracking issue is
-# opened in the CALLING repository (this workflow's own issues:write grant),
-# not in any scanned target: a scheduled caller in melodic-software/medley
-# gets the alert filed in medley, not scattered across the 8 targets.
+# opened in the CALLING repository, authored by a second App token this
+# workflow mints for itself (scoped to issues:write on that repo only — see
+# the "Mint App token for this repository's tracking issue" step), not in any
+# scanned target: a scheduled caller in melodic-software/medley gets the
+# alert filed in medley, not scattered across the 8 targets.
 on:
   workflow_call:
     inputs:
@@ -53,16 +55,23 @@ env:
   # `author.login` omits the REST-only `[bot]` suffix; `__typename` is the
   # authoritative bot-vs-human discriminator, so both are checked together.
   BOT_LOGIN: melodic-standards-sync
-  # The identity that opens/updates/closes this workflow's own tracking issue:
-  # the default GITHUB_TOKEN's REST-created content is authored by this exact
-  # bot (verified against a real tracking issue this repo already has:
-  # #218, opened by tool-version-drift-check.yml). The marker and title
-  # strings embedded in this workflow are public — restricting adoption to
-  # this author (not just marker/title text) is what stops a non-maintainer
-  # in a caller repo from opening a decoy issue that gets adopted, silently
-  # closed on the next healthy run, or — worse — used to fail the lookup
-  # closed (two decoys both carrying the marker) and suppress a real alert.
-  ISSUE_AUTHOR_LOGIN: github-actions[bot]
+  # The identity that opens/updates/closes this workflow's own tracking
+  # issue: a second App token (minted below, scoped to issues:write on only
+  # the calling repository) authors every REST write this workflow makes, so
+  # its bot login is the adoption filter — not the ambient GITHUB_TOKEN's
+  # shared github-actions[bot] identity every workflow in a repo can author
+  # as. App authorship is strictly tighter decoy resistance: a decoy from any
+  # other workflow in the caller repo no longer qualifies. It also drops the
+  # caller's need to grant issues:write to the ambient token at all, which
+  # resolves a runner-policy contract conflict in melodic-software/standards
+  # (components/runner-policy): a contract with a write allowedCallerPermissions
+  # entry must map its secrets as an exact identity passthrough
+  # `${{ secrets.<name> }}`, which this reusable's kebab-case App-secret
+  # inputs (app-client-id/app-private-key) can never satisfy. Login format
+  # (`<app-slug>[bot]`, type Bot) is empirically verified: `gh api
+  # users/melodic-standards-sync%5Bbot%5D` returns login
+  # "melodic-standards-sync[bot]", type "Bot".
+  ISSUE_AUTHOR_LOGIN: melodic-standards-sync[bot]
 
 jobs:
   detect-stuck-armed-prs:
@@ -70,8 +79,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
-      contents: read
-      issues: write # Rolling tracking issue via create-issue-from-file.
+      contents: read # The ambient token no longer authors any issue write; see ISSUE_AUTHOR_LOGIN above.
     steps:
       - name: Check out standards
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -231,6 +239,19 @@ jobs:
 
             require('node:fs').writeFileSync(process.env.GITHUB_WORKSPACE + '/.stuck-automerge-report.md', body);
 
+      # owner/repositories intentionally omitted: create-github-app-token
+      # defaults both to the current (calling) repository when unset — the
+      # exact narrow scope this token needs, distinct from the read-only
+      # every-target token minted above. Runs unconditionally: both the
+      # open/update and close branches below need it.
+      - name: Mint App token for this repository's tracking issue
+        id: issue-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-issues: write
+
       # A marker embedded in the body (not a title search) is exact and
       # survives a retitle, and matches the mechanism pulumi-version-drift-
       # check.yml, link-check.yml, and queue-monitor-liveness.yml already use.
@@ -249,6 +270,7 @@ jobs:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
           ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
         with:
+          github-token: ${{ steps.issue-token.outputs.token }}
           script: |
             const marker = process.env.MARKER;
             const issueTitle = process.env.ISSUE_TITLE;
@@ -295,6 +317,7 @@ jobs:
         if: steps.scan.outputs.stuck-count != '0'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
+          token: ${{ steps.issue-token.outputs.token }}
           title: '[Alert] standards-sync stuck auto-merge PR(s)'
           issue-number: ${{ steps.tracking.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
@@ -307,6 +330,7 @@ jobs:
         env:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
         with:
+          github-token: ${{ steps.issue-token.outputs.token }}
           script: |
             const marker = process.env.MARKER;
             const issueAuthorLogin = process.env.ISSUE_AUTHOR_LOGIN;
