@@ -207,22 +207,37 @@ jobs:
       # response shaped like a commit SHA may retire the run (a degenerate
       # success such as jq's literal `null` must not) — so an API anomaly
       # degrades to reviewing a possibly-stale head, never to silence.
+      # actions/github-script rather than a `gh api` run step: this reusable
+      # runs on whatever runner the caller selected, and a self-hosted image
+      # is not guaranteed to ship the gh CLI. github-script executes on the
+      # action's own bundled Node runtime, so the live freshness check has no
+      # runner-image dependency (same pattern as do-not-merge-gate.yml).
       - name: Check whether this head is still current
         id: freshness
         if: github.event.pull_request.number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          live_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha) || live_head=""
-          if [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] && [ "$live_head" != "$EVENT_HEAD_SHA" ]; then
-            echo "::notice::Skipping review: the PR head moved from $EVENT_HEAD_SHA to $live_head, so a newer run owns the review."
-            echo "superseded=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "superseded=false" >> "$GITHUB_OUTPUT"
-          fi
+        with:
+          script: |
+            let liveHead = "";
+            try {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+              liveHead = pr.head.sha;
+            } catch (error) {
+              core.warning(`Could not refetch the PR head; treating this run as fresh: ${error.message}`);
+            }
+            const eventHeadSha = process.env.EVENT_HEAD_SHA ?? "";
+            if (/^[0-9a-f]{40}$/.test(liveHead) && liveHead !== eventHeadSha) {
+              core.notice(`Skipping review: the PR head moved from ${eventHeadSha} to ${liveHead}, so a newer run owns the review.`);
+              core.setOutput("superseded", "true");
+            } else {
+              core.setOutput("superseded", "false");
+            }
 
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
@@ -387,42 +402,59 @@ jobs:
       # track_progress is never mistaken for "no findings" and an unrelated
       # bot comment is never clobbered — this is the failure mode this whole
       # change exists to fix.
+      # actions/github-script rather than `gh api`/`gh pr comment` run steps:
+      # this reusable runs on whatever runner the caller selected, and a
+      # self-hosted image is not guaranteed to ship the gh CLI.
       - name: Comment on genuine review failure
         if: >-
           always() && steps.review-outcome.outputs.review_failed == 'true' &&
           github.event.pull_request.number != '' &&
           github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_DETAIL: ${{ steps.review-outcome.outputs.review_detail }}
-        run: |
-          marker="<!-- claude-review-infra-status -->"
-          body=$(printf '%s\n' \
-            "$marker" \
-            "> [!WARNING]" \
-            "> **Automated review did not complete** — this is an infrastructure failure, not a review verdict." \
-            ">" \
-            "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"" \
-            ">" \
-            "> - Run: $RUN_URL" \
-            "> - Last SDK result: \`$REVIEW_DETAIL\`" \
-            ">" \
-            "> Re-running the job, or pushing a new commit, will retry the review.")
+        with:
+          script: |
+            const marker = "<!-- claude-review-infra-status -->";
+            const body = [
+              marker,
+              "> [!WARNING]",
+              "> **Automated review did not complete** — this is an infrastructure failure, not a review verdict.",
+              ">",
+              "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"",
+              ">",
+              `> - Run: ${process.env.RUN_URL}`,
+              `> - Last SDK result: \`${process.env.REVIEW_DETAIL}\``,
+              ">",
+              "> Re-running the job, or pushing a new commit, will retry the review.",
+            ].join("\n");
 
-          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
-            jq -r --arg marker "$marker" '
-              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
-              | last | .id // empty
-            ')
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+            const marked = comments.filter(
+              (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker),
+            );
+            const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
 
-          if [ -n "$comment_id" ]; then
-            gh api "repos/$REPO/issues/comments/$comment_id" -X PATCH -f "body=$body" --silent
-          else
-            gh pr comment "$PR_NUMBER" --body "$body"
-          fi
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body,
+              });
+            }
 
       # Symmetric counterpart to the failure step above: a transient infra
       # failure (e.g. an OIDC blip) can leave the marker comment behind on the
@@ -431,27 +463,33 @@ jobs:
       # that stale warning so it is not mistaken for a still-open problem.
       # Same fork guard and marker lookup as the failure step — never
       # --edit-last, for the same clobbering risk.
+      # actions/github-script rather than a `gh api` run step, for the same
+      # runner-tool-availability reason as the failure-comment step above.
       - name: Clear stale failure comment after successful review
         if: >-
           always() && steps.review-outcome.outputs.review_failed == 'false' &&
           github.event.pull_request.number != '' &&
           github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          marker="<!-- claude-review-infra-status -->"
-
-          comment_id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate |
-            jq -r --arg marker "$marker" '
-              [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
-              | last | .id // empty
-            ')
-
-          if [ -n "$comment_id" ]; then
-            gh api "repos/$REPO/issues/comments/$comment_id" -X DELETE --silent
-          fi
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const marker = "<!-- claude-review-infra-status -->";
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+            const marked = comments.filter(
+              (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker),
+            );
+            const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
+            if (existing) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+              });
+            }
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once

@@ -7,11 +7,10 @@ const path = require("node:path");
 const test = require("node:test");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
-const consumers = [
-  "queue-monitor-liveness.yml",
-  "tool-version-drift-check.yml",
-  "link-check.yml",
-];
+// link-check.yml was ported to actions/github-script (issue #209) and is no
+// longer a consumer of this generated bash block; the other two still run on
+// a fixed hosted runner and keep it.
+const consumers = ["queue-monitor-liveness.yml", "tool-version-drift-check.yml"];
 
 test("every consumer embeds the tracking-issue core generated from one source", () => {
   const renderer = path.join(__dirname, "render-find-tracking-issue.cjs");

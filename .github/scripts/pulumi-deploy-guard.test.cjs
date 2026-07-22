@@ -31,10 +31,6 @@ const drift = fs.readFileSync(
   path.join(root, ".github", "workflows", "pulumi-version-drift-check.yml"),
   "utf8",
 );
-const driftScript = fs.readFileSync(
-  path.join(root, ".github", "scripts", "pulumi-version-drift.sh"),
-  "utf8",
-);
 
 test("deployment guard exposes only reviewed state-adoption outputs", () => {
   for (const input of [
@@ -159,53 +155,65 @@ test("Pulumi drift workflow is reusable-only and rejects untrusted refs before c
     "Require a trusted default-branch maintenance event",
   );
   const checkoutOffset = drift.indexOf("Check out reviewed caller state");
-  assert.ok(guardOffset >= 0 && checkoutOffset > guardOffset);
+  const driftDetectOffset = drift.indexOf(
+    "Detect and record stable-version drift",
+  );
+  assert.ok(
+    guardOffset >= 0 &&
+      checkoutOffset > guardOffset &&
+      driftDetectOffset > checkoutOffset,
+  );
   assert.match(drift, /push\|schedule\|workflow_dispatch/u);
   assert.match(drift, /refs\/heads\/main/u);
-  assert.doesNotMatch(
-    drift,
-    /run: bash \.github\/scripts\/pulumi-version-drift\.sh/u,
-  );
-  assert.match(driftScript, /current="\$\(<"\$version_file"\)"/u);
-  assert.doesNotMatch(driftScript, /tr -d/u);
-  assert.match(driftScript, /ci-workflows:pulumi-cli-version-drift:v1:active/u);
+
+  const driftStep = drift.slice(driftDetectOffset);
+  assert.match(driftStep, /uses: actions\/github-script@/u);
+  // Ported to actions/github-script (issue #209): this reusable runs on a
+  // caller-selected runner, and a self-hosted image is not guaranteed to
+  // ship the gh CLI or jq. The step's executable script (not the surrounding
+  // explanatory comments, which may name either tool in prose) must not
+  // shell out to either.
+  const driftScriptBody = driftStep.slice(driftStep.indexOf("script: |"));
+  assert.doesNotMatch(driftScriptBody, /\bgh (api|issue)\b/u);
+  assert.doesNotMatch(driftScriptBody, /\bjq\b/u);
+
+  assert.match(driftStep, /current = fs\.readFileSync\(versionFile, "utf8"\)\.trim\(\)/u);
+  assert.match(driftStep, /ci-workflows:pulumi-cli-version-drift:v1:active/u);
+  assert.match(driftStep, /ci-workflows:pulumi-cli-version-drift:v1:resolved/u);
   assert.match(
-    driftScript,
-    /ci-workflows:pulumi-cli-version-drift:v1:resolved/u,
+    driftStep,
+    /github\.paginate\(github\.rest\.issues\.listForRepo, \{/u,
   );
-  assert.match(driftScript, /gh_read api --paginate --slurp/u);
-  assert.match(driftScript, /issues\?state=all&per_page=100/u);
-  assert.match(driftScript, /select\(\.pull_request\? == null\)/u);
-  assert.match(driftScript, /incident_count > 1/u);
-  assert.match(driftScript, /gh_mutate issue reopen/u);
-  assert.match(driftScript, /gh_mutate issue close/u);
-  assert.match(driftScript, /gh_mutate issue edit "\$issue_number" --title/u);
-  assert.match(driftScript, /\.\[0\]\.created_at/u);
-  assert.doesNotMatch(driftScript, /gh issue view/u);
-  assert.doesNotMatch(driftScript, /head -n 1/u);
-  assert.match(driftScript, /14 \* 24 \* 60 \* 60/u);
+  assert.match(driftStep, /state: "all"/u);
+  assert.match(driftStep, /!issue\.pull_request/u);
+  assert.match(driftStep, /activeIncidents\.length > 1/u);
+  assert.match(driftStep, /state: "open"/u);
+  assert.match(driftStep, /state_reason: "completed"/u);
+  assert.match(driftStep, /github\.rest\.issues\.create\(/u);
+  assert.match(driftStep, /github\.rest\.issues\.update\(/u);
+  assert.match(driftStep, /incident\.created_at/u);
+  assert.match(driftStep, /14 \* 24 \* 60 \* 60/u);
 });
 
-test("reusable drift workflow embeds the exact tested implementation", () => {
-  const indentation = "          ";
-  const begin = `${indentation}# BEGIN GENERATED: pulumi-version-drift.sh\n`;
-  const end = `${indentation}# END GENERATED: pulumi-version-drift.sh`;
-  const start = drift.indexOf(begin);
-  const finish = drift.indexOf(end);
-  assert.ok(start >= 0 && finish > start);
-  assert.equal(drift.indexOf(begin, start + begin.length), -1);
-  assert.equal(drift.indexOf(end, finish + end.length), -1);
-
-  const embedded = drift
-    .slice(start + begin.length, finish)
-    .split("\n")
-    .map((line) => {
-      if (line.length === 0) {
-        return "";
-      }
-      assert.ok(line.startsWith(indentation));
-      return line.slice(indentation.length);
-    })
-    .join("\n");
-  assert.equal(embedded, driftScript.replaceAll("\r\n", "\n"));
+test("drift detection reproduces the retired bash helper's bounded-read, single-retry semantics", () => {
+  const driftStep = drift.slice(
+    drift.indexOf("Detect and record stable-version drift"),
+  );
+  assert.match(
+    driftStep,
+    /READ_TIMEOUT_MILLISECONDS = 60_000/u,
+    "the read timeout must match the retired gh_read/gh_mutate 60s bound",
+  );
+  assert.match(
+    driftStep,
+    /async function boundedRead\(operation\) \{[\s\S]*?catch \(error\) \{[\s\S]*?retrying once/u,
+    "a read must retry exactly once on failure, mirroring gh_read",
+  );
+  // Mutations (create/update/comment) are never wrapped in boundedRead: a
+  // timed-out mutation may already have applied server-side, matching how
+  // gh_mutate never retried.
+  assert.doesNotMatch(
+    driftStep,
+    /boundedRead\(\(\) =>\s*\n?\s*github\.rest\.issues\.(create|update|createComment)/u,
+  );
 });

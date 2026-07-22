@@ -158,10 +158,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Pulumi's current stable release, and maintains one marker-identified auditable
   incident across rename or manual closure without resetting its age. It never
   changes or auto-merges a pin, retires resolved incidents instead of reusing
-  them, and hard-fails after 14 days of unresolved drift. The tested canonical
-  shell source is generated inline because reusable-workflow checkout resolves
-  to the caller repository; an equality test prevents drift and callers never
-  copy the implementation. Per-caller concurrency serializes issue mutation.
+  them, and hard-fails after 14 days of unresolved drift. Drift detection runs
+  on `actions/github-script` rather than a `gh`/`jq`-driven shell script: this
+  reusable runs on whatever runner the caller selects, and a self-hosted image
+  is not guaranteed to ship those CLIs, so the implementation lives directly in
+  the workflow on the action's bundled Node runtime instead of a generated,
+  equality-tested copy of a repo-local `.sh` source. Per-caller concurrency
+  serializes issue mutation.
 - `.github/workflows/issue-triage-label.yml` — applies a configured floor label
   (default `priority: needs-triage`) to an issue opened or reopened with no
   label matching a configured prefix (default `priority:`). **Non-gating**:
@@ -846,6 +849,28 @@ let one PR's run cancel another's required check.
 `merge_group` is required on any repo with a merge queue: the queue gates on
 the check, and without the trigger that required check never reports and the
 queue deadlocks. It is inert where no queue exists.
+
+## Triage: fleet-wide single-workflow failure spikes
+
+Before attributing a sudden, fleet-wide spike of failures in one reusable
+workflow to infrastructure flake, check that reusable's commit history and its
+job's runner routing (`runs-on:`, and whether it traces through
+`select-runner.yml`) first. A recent change that shells out to a CLI (`gh`,
+`jq`, …) combined with a routing change that moved callers onto a runner image
+without that CLI produces exactly this signature: many unrelated repos failing
+the same check at once, often with a low-level exit code rather than an
+application-level error.
+
+Lesson from the 2026-07-18 `do-not-merge` spike (~191 failures across 6
+repos, `exit 127: gh: command not found`): `do-not-merge-gate.yml`'s label
+refetch ran `gh api` in a `run:` step on a runner the caller selects, and a
+routing shift landed it on a self-hosted image that does not ship the gh CLI.
+Fixed in [#144](https://github.com/melodic-software/ci-workflows/pull/144) by
+porting to `actions/github-script`, which runs on the action's own bundled
+Node runtime and has no runner-image tooling dependency; the remaining
+gh-calling reusables were audited and ported the same way in
+[#209](https://github.com/melodic-software/ci-workflows/issues/209). See
+REVIEW.md's "Always check" criterion for the standing rule this established.
 
 ## Policy ownership and action inputs
 

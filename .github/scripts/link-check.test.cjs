@@ -57,10 +57,11 @@ test("link-check keeps one rolling issue and closes it after recovery", () => {
   );
   assert.match(
     closeStep,
-    /NUMBER: \$\{\{ steps\.tracking\.outputs\.issue-number \}\}/u,
+    /ISSUE_NUMBER: \$\{\{ steps\.tracking\.outputs\.issue-number \}\}/u,
   );
-  assert.match(closeStep, /gh issue close "\$NUMBER"/u);
-  assert.match(closeStep, /--reason completed/u);
+  assert.match(closeStep, /github\.rest\.issues\.createComment\(/u);
+  assert.match(closeStep, /state: "closed"/u);
+  assert.match(closeStep, /state_reason: "completed"/u);
 });
 
 test("the tracking marker is scoped per configured report", () => {
@@ -77,13 +78,13 @@ test("the tracking marker is scoped per configured report", () => {
   );
   assert.match(
     lookupStep,
-    /report_key="\$\(printf '%s' "\$ISSUE_TITLE" \| sha256sum \| cut -c1-12\)"/u,
+    /createHash\("sha256"\)\.update\(issueTitle, "utf8"\)\.digest\("hex"\)\.slice\(0, 12\)/u,
   );
   assert.match(
     lookupStep,
-    /MARKER="<!-- ci-workflows:link-check:v1:active:\$\{report_key\} -->"/u,
+    /`<!-- ci-workflows:link-check:v1:active:\$\{reportKey\} -->`/u,
   );
-  assert.match(lookupStep, /echo "marker=\$\{MARKER\}" >> "\$GITHUB_OUTPUT"/u);
+  assert.match(lookupStep, /core\.setOutput\("marker", marker\)/u);
 
   const embedStep = workflow.slice(embedIndex);
   assert.match(
@@ -133,23 +134,19 @@ test("the tracking lookup filters on the same labels the update step applies", (
   );
   assert.match(
     lookupStep,
-    /labels_query="\$\(jq -rn --arg labels "\$ISSUE_LABELS"/u,
+    /\.split\(\/\[,\\n\]\/\)/u,
+    "labels must split on the same comma/newline separators the bash " +
+      "resolver used",
   );
   assert.match(
     lookupStep,
-    /map\(@uri\) \| join\(","\)/u,
-    "each label must be percent-encoded individually so label text cannot " +
-      "split or terminate the query",
-  );
-  assert.match(
-    lookupStep,
-    /if \[\[ -z "\$labels_query" \]\]; then[\s\S]*?exit 1/u,
+    /if \(labels\.length === 0\) \{[\s\S]*?core\.setFailed\(/u,
     "an empty label set must fail closed, not silently drop the " +
       "owned-report constraint",
   );
   assert.match(
     lookupStep,
-    /labels=\$\{labels_query\}/u,
+    /labels: labels\.join\(","\)/u,
     "the issues query must filter on the caller-configured labels",
   );
 
@@ -183,10 +180,42 @@ test("the native issue type is asserted from input, after create or update", () 
   );
   assert.match(
     typeStep,
-    /NUMBER: \$\{\{ steps\.issue\.outputs\.issue-number \}\}/u,
+    /ISSUE_NUMBER: \$\{\{ steps\.issue\.outputs\.issue-number \}\}/u,
   );
   assert.match(
     typeStep,
-    /gh issue edit "\$NUMBER" --repo "\$GITHUB_REPOSITORY" --type "\$ISSUE_TYPE"/u,
+    /github\.request\("PATCH \/repos\/\{owner\}\/\{repo\}\/issues\/\{issue_number\}", \{/u,
   );
+  assert.match(typeStep, /type: process\.env\.ISSUE_TYPE/u);
+});
+
+test("the tracking lookup and its two consumers run on github-script, not the gh CLI", () => {
+  for (const name of [
+    "Find existing tracking issue",
+    "Assert native issue type",
+    "Close recovered tracking issue",
+  ]) {
+    const stepIndex = workflow.indexOf(`- name: ${name}`);
+    assert.ok(stepIndex >= 0, `step '${name}' is missing`);
+    const nextStepOffset = workflow
+      .slice(stepIndex + 1)
+      .search(/\n\s*(?:#[^\n]*\n\s*)*- name:/u);
+    const step =
+      nextStepOffset >= 0
+        ? workflow.slice(stepIndex, stepIndex + 1 + nextStepOffset)
+        : workflow.slice(stepIndex);
+    assert.match(
+      step,
+      /uses: actions\/github-script@/u,
+      `'${name}' must run on github-script, not shell out to the gh CLI`,
+    );
+    // Scoped to the executable script, not the whole step: surrounding
+    // explanatory comments may name the gh CLI in prose without invoking it.
+    const scriptBody = step.slice(step.indexOf("script: |"));
+    assert.doesNotMatch(
+      scriptBody,
+      /\bgh (api|issue|pr)\b/u,
+      `'${name}' must not shell out to the gh CLI`,
+    );
+  }
 });

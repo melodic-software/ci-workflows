@@ -108,95 +108,75 @@ jobs:
       # -- the same key the pre-marker, title-search lookup used -- so a
       # healthy invocation can't close, or overwrite, a different report's
       # still-failing tracking issue.
+      #
+      # actions/github-script rather than a `gh api` run step: this reusable
+      # runs on whatever runner the caller selected, and a self-hosted image is
+      # not guaranteed to ship the gh CLI. This also folds in the resolver
+      # logic find-tracking-issue.sh used to supply as a generated block —
+      # queue-monitor-liveness.yml and tool-version-drift-check.yml still run
+      # on a fixed hosted runner and keep that shared bash source; this is the
+      # only consumer that needed the port.
       - name: Find existing tracking issue
         id: tracking
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
           ISSUE_TITLE: ${{ inputs.issue-title }}
           ISSUE_LABELS: ${{ inputs.issue-labels }}
-        run: |
-          set -euo pipefail
-          gh_read() {
-            local attempt output status
-            for attempt in 1 2; do
-              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
-                printf '%s\n' "$output"
-                return 0
-              else
-                status=$?
-              fi
-              if ((attempt == 1)); then
-                echo '::warning::GitHub read failed; retrying once.' >&2
-                sleep 1
-              fi
-            done
-            return "$status"
-          }
-          report_key="$(printf '%s' "$ISSUE_TITLE" | sha256sum | cut -c1-12)"
-          MARKER="<!-- ci-workflows:link-check:v1:active:${report_key} -->"
-          echo "marker=${MARKER}" >> "$GITHUB_OUTPUT"
-          # Filtering on the configured labels restores the same-owned-report
-          # constraint the pre-marker workflow enforced via `gh issue list
-          # --label link-check`: without it, in any repo where issue creation
-          # isn't maintainer-only, an issue whose body or title happens to
-          # match by coincidence (or is crafted to match) could be adopted,
-          # then overwritten or closed by this automation. The labels are
-          # applied by the "Open or update tracking issue" step below (create
-          # AND update, additively), so the filter covers both the marker
-          # match and the title-fallback match; an empty set would silently
-          # drop the constraint, so it fails closed. The normalization
-          # mirrors how create-issue-from-file parses its labels input
-          # (split on commas/newlines, trim, drop empties) so the lookup
-          # filters on exactly the set the update step applies; the
-          # list-issues API ANDs the comma-separated labels value, and each
-          # label is percent-encoded on its own so label text (spaces,
-          # colons) cannot split or terminate the query.
-          labels_query="$(jq -rn --arg labels "$ISSUE_LABELS" '
-            $labels | split("[,\n]"; "") | map(gsub("^\\s+|\\s+$"; ""))
-            | map(select(length > 0)) | map(@uri) | join(",")
-          ')"
-          if [[ -z "$labels_query" ]]; then
-            echo '::error::issue-labels must name at least one label; the label filter is what keeps this automation from adopting, overwriting, or closing unrelated issues.'
-            exit 1
-          fi
-          open_issues="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&labels=${labels_query}&per_page=100")"
-          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT
-          # Source: .github/scripts/find-tracking-issue.sh
-          # Resolve the one open tracking issue this workflow owns into issue-number
-          # (empty if none), given open_issues (gh api --slurp JSON), MARKER, ISSUE_TITLE.
-          # More than one match is never auto-resolvable, so it fails closed.
-          #
-          # All three inputs are required: an unset MARKER would match every issue body
-          # (an empty needle), so assert them up front to keep the fail-closed posture
-          # set -u gave the pre-extraction inline blocks.
-          : "${MARKER:?MARKER is required}"
-          : "${ISSUE_TITLE:?ISSUE_TITLE is required}"
-          : "${open_issues:?open_issues is required}"
-          matches="$(jq -ce --arg marker "$MARKER" '
-            [.[][] | select(.pull_request? == null) | select((.body // "") | contains($marker)) | .number]
-          ' <<<"$open_issues")"
-          count="$(jq -r 'length' <<<"$matches")"
-          if ((count > 1)); then
-            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
-            exit 1
-          fi
-          if ((count == 0)); then
-            # One-time migration fallback: a still-open issue created by the pre-marker,
-            # title-search version of this workflow has no marker yet, so the search above
-            # can't find it. Adopt it by exact title match so the update step below reuses
-            # (and marker-backfills) that issue instead of orphaning it behind a newly
-            # opened duplicate.
-            matches="$(jq -ce --arg title "$ISSUE_TITLE" '
-              [.[][] | select(.pull_request? == null) | select(.title == $title) | .number]
-            ' <<<"$open_issues")"
-            count="$(jq -r 'length' <<<"$matches")"
-            if ((count > 1)); then
-              echo "::error::found ${count} pre-marker issues titled '${ISSUE_TITLE}'; reconcile them manually."
-              exit 1
-            fi
-          fi
-          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >>"${GITHUB_OUTPUT:?}"
-          # END GENERATED FIND TRACKING ISSUE
+        with:
+          script: |
+            const crypto = require("node:crypto");
+            const issueTitle = process.env.ISSUE_TITLE;
+            const reportKey = crypto.createHash("sha256").update(issueTitle, "utf8").digest("hex").slice(0, 12);
+            const marker = `<!-- ci-workflows:link-check:v1:active:${reportKey} -->`;
+            core.setOutput("marker", marker);
+
+            // Filtering on the configured labels restores the same-owned-report
+            // constraint the pre-marker workflow enforced via the CLI's
+            // `issue list --label link-check`: without it, in any repo where issue creation
+            // isn't maintainer-only, an issue whose body or title happens to
+            // match by coincidence (or is crafted to match) could be adopted,
+            // then overwritten or closed by this automation. The labels are
+            // applied by the "Open or update tracking issue" step below (create
+            // AND update, additively), so the filter covers both the marker
+            // match and the title-fallback match; an empty set would silently
+            // drop the constraint, so it fails closed.
+            const labels = (process.env.ISSUE_LABELS ?? "")
+              .split(/[,\n]/)
+              .map((label) => label.trim())
+              .filter((label) => label.length > 0);
+            if (labels.length === 0) {
+              core.setFailed("issue-labels must name at least one label; the label filter is what keeps this automation from adopting, overwriting, or closing unrelated issues.");
+              return;
+            }
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: labels.join(","),
+              per_page: 100,
+            });
+            const candidates = openIssues.filter((issue) => !issue.pull_request);
+
+            let matches = candidates.filter((issue) => (issue.body ?? "").includes(marker));
+            if (matches.length > 1) {
+              core.setFailed(`found ${matches.length} issues carrying marker '${marker}'; reconcile them manually.`);
+              return;
+            }
+            if (matches.length === 0) {
+              // One-time migration fallback: a still-open issue created by the
+              // pre-marker, title-search version of this workflow has no marker
+              // yet, so the search above can't find it. Adopt it by exact title
+              // match so the update step below reuses (and marker-backfills)
+              // that issue instead of orphaning it behind a newly opened
+              // duplicate.
+              matches = candidates.filter((issue) => issue.title === issueTitle);
+              if (matches.length > 1) {
+                core.setFailed(`found ${matches.length} pre-marker issues titled '${issueTitle}'; reconcile them manually.`);
+                return;
+              }
+            }
+            core.setOutput("issue-number", matches.length === 1 ? String(matches[0].number) : "");
 
       - name: Embed the marker in the lychee report
         if: steps.lychee.outputs.exit_code != '0'
@@ -222,20 +202,45 @@ jobs:
       # create-issue-from-file cannot set one — assert it as a follow-up
       # whenever the report is opened or updated (re-asserting on update heals
       # a manual type change, matching how labels are re-applied above).
+      # actions/github-script rather than a `gh issue edit` run step, for the
+      # same runner-tool-availability reason as the lookup step above. Native
+      # issue types are not on the typed `issues.update` REST method in every
+      # octokit release, so this calls the documented PATCH route directly.
       - name: Assert native issue type
         if: steps.lychee.outputs.exit_code != '0' && inputs.issue-type != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
-          NUMBER: ${{ steps.issue.outputs.issue-number }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.issue-number }}
           ISSUE_TYPE: ${{ inputs.issue-type }}
-        run: gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --type "$ISSUE_TYPE"
+        with:
+          script: |
+            await github.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.ISSUE_NUMBER),
+              type: process.env.ISSUE_TYPE,
+            });
 
+      # actions/github-script rather than a `gh issue close` run step, for the
+      # same runner-tool-availability reason as the lookup step above.
       - name: Close recovered tracking issue
         if: steps.lychee.outputs.exit_code == '0' && steps.tracking.outputs.issue-number != '' && inputs.auto-close
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
-          NUMBER: ${{ steps.tracking.outputs.issue-number }}
-        run: >-
-          gh issue close "$NUMBER"
-          --reason completed
-          --comment "The scheduled link check is healthy again; closing this rolling report."
+          ISSUE_NUMBER: ${{ steps.tracking.outputs.issue-number }}
+        with:
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: "The scheduled link check is healthy again; closing this rolling report.",
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: "closed",
+              state_reason: "completed",
+            });

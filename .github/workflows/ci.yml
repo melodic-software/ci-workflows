@@ -374,8 +374,6 @@ jobs:
         run: bash .github/actions/gitleaks/scan.test.sh
       - name: Test Pulumi deployment guard
         run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
-      - name: Test Pulumi version-drift lifecycle
-        run: bash .github/scripts/pulumi-version-drift.test.sh
       - name: Test govulncheck SARIF classification
         run: bash .github/scripts/govulncheck-sarif-guard.test.sh
 
