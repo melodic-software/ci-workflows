@@ -1,12 +1,14 @@
 name: Queue Monitor Liveness
 
 # External liveness check for the managed-runner queue monitor that lives in
-# melodic-software/ci-runner (queued-job-monitor.yml). The monitor alerts by
-# failing its own scheduled run, which leaves three silent death modes it
-# cannot report itself: GitHub disables a schedule after 60 days of repository
-# inactivity, the scheduler can delay or drop firings outright (observed
-# 2026-07-15: ~1 of 4 crons per hour fired), and an infrastructure step such as
-# the observer-App token mint can fail on every run while the queue goes
+# melodic-software/ci-runner (queued-job-monitor.yml). The monitor is
+# green-on-success by contract (ci-runner#139/#140): a successful execution
+# reports success whether or not it detected queue strain, alerting instead
+# by upserting an incident issue in ci-runner. That leaves three silent death
+# modes it cannot report itself: GitHub disables a schedule after 60 days of
+# repository inactivity, the scheduler can delay or drop firings outright
+# (observed 2026-07-15: ~1 of 4 crons per hour fired), and an infrastructure
+# or incident-issue-write failure can break every run while the queue goes
 # unwatched (observed 2026-07-15: installation grants lagged a repo transfer
 # and every run 03:42-07:23Z died at the mint step). This workflow runs in a
 # different repository on a different schedule and fails — with a rolling
@@ -36,11 +38,6 @@ permissions:
 env:
   MONITOR_REPOSITORY: melodic-software/ci-runner
   MONITOR_WORKFLOW: queued-job-monitor.yml
-  # The only step of the monitor allowed to fail while the monitor still
-  # counts as healthy: a failure there IS the queue alert. A failure in any
-  # other step (checkout, token mint) means the monitor is broken, not
-  # alerting.
-  MONITOR_AUDIT_STEP: Inspect queued jobs
   FRESHNESS_WINDOW_HOURS: '6'
 
 jobs:
@@ -95,21 +92,16 @@ jobs:
               --jq '.workflow_runs[0]')"
             conclusion="$(jq -r '.conclusion' <<<"$latest")"
             run_id="$(jq -r '.id' <<<"$latest")"
-            if [[ "$conclusion" == "failure" ]]; then
-              # A failure confined to the audit step is the monitor doing its
-              # job (queued-job alert). Any other failed step is breakage.
-              broken_steps="$(gh_read api "repos/${MONITOR_REPOSITORY}/actions/runs/${run_id}/jobs" \
-                --jq '[.jobs[].steps[] | select(.conclusion == "failure") | .name] | unique | .[]')"
-              unexpected="$(grep -Fxv "$MONITOR_AUDIT_STEP" <<<"$broken_steps" || true)"
-              if [[ -n "$unexpected" ]]; then
-                problems+="- Latest monitor run ${run_id} failed outside the audit step (failed: $(tr '\n' ',' <<<"$unexpected" | sed 's/,$//')); the monitor is broken, not alerting."$'\n'
-              else
-                echo "Latest monitor run ${run_id} failed only at '${MONITOR_AUDIT_STEP}' — that is a live queue alert, not a liveness problem."
-              fi
-            elif [[ "$conclusion" != "success" ]]; then
-              # cancelled / timed_out / action_required / stale never proved
-              # queue liveness — the audit step may never have executed.
-              problems+="- Latest monitor run ${run_id} completed as \`${conclusion}\` without reaching a verdict; the monitor is not provably watching the queue."$'\n'
+            # queued-job-monitor.yml is green-on-success by contract
+            # (ci-runner#139/#140): a successful execution reports success
+            # whether or not it detected queue strain, alerting instead by
+            # upserting an incident issue in ci-runner. There is no longer a
+            # step whose failure is an expected, healthy outcome — any
+            # non-success conclusion means the monitor itself is broken
+            # (config drift, GitHub API failure, incident-issue write
+            # failure), not that it is alerting.
+            if [[ "$conclusion" != "success" ]]; then
+              problems+="- Latest monitor run ${run_id} completed as \`${conclusion}\`, not \`success\`; the monitor is broken, not alerting."$'\n'
             fi
           fi
 
@@ -133,10 +125,11 @@ jobs:
             echo
             echo "1. Open the monitor: https://github.com/${MONITOR_REPOSITORY}/actions/workflows/${MONITOR_WORKFLOW}"
             echo "2. If the schedule was disabled, re-enable the workflow."
-            echo "3. If runs fail before the audit step, check the observer App"
-            echo "   installation grants against \`CI_RUNNER_MONITOR_TARGETS_JSON\`"
-            echo "   (every listed repository must be granted to the installation)"
-            echo "   and re-run with workflow_dispatch to verify."
+            echo "3. If a run failed, check the observer App installation grants"
+            echo "   against \`CI_RUNNER_MONITOR_TARGETS_JSON\` (every listed"
+            echo "   repository must be granted to the installation) and the"
+            echo "   incident-issue write in ci-runner, then re-run with"
+            echo "   workflow_dispatch to verify."
             echo "4. While the monitor is down, queued self-hosted jobs alert nobody;"
             echo "   check the fleet before trusting a quiet queue."
             echo
