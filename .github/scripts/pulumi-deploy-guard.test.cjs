@@ -168,16 +168,18 @@ test("Pulumi drift workflow is reusable-only and rejects untrusted refs before c
 
   const driftStep = drift.slice(driftDetectOffset);
   assert.match(driftStep, /uses: actions\/github-script@/u);
-  // Ported to actions/github-script (issue #209): this reusable runs on a
-  // caller-selected runner, and a self-hosted image is not guaranteed to
-  // ship the gh CLI or jq. The step's executable script (not the surrounding
-  // explanatory comments, which may name either tool in prose) must not
-  // shell out to either.
+  // This reusable runs on a caller-selected runner, and a self-hosted image
+  // is not guaranteed to ship the gh CLI or jq. The step's executable script
+  // (not the surrounding explanatory comments, which may name either tool in
+  // prose) must not shell out to either.
   const driftScriptBody = driftStep.slice(driftStep.indexOf("script: |"));
   assert.doesNotMatch(driftScriptBody, /\bgh (api|issue)\b/u);
   assert.doesNotMatch(driftScriptBody, /\bjq\b/u);
 
-  assert.match(driftStep, /current = fs\.readFileSync\(versionFile, "utf8"\)\.trim\(\)/u);
+  assert.match(
+    driftStep,
+    /current = fs\.readFileSync\(versionFile, "utf8"\)\.trim\(\)/u,
+  );
   assert.match(driftStep, /ci-workflows:pulumi-cli-version-drift:v1:active/u);
   assert.match(driftStep, /ci-workflows:pulumi-cli-version-drift:v1:resolved/u);
   assert.match(

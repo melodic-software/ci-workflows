@@ -106,10 +106,7 @@ test("Pulumi drift reads have an explicit freshness boundary and a single retry"
   const drift = read(".github/workflows/pulumi-version-drift-check.yml");
 
   assert.match(drift, /READ_TIMEOUT_MILLISECONDS = 60_000/u);
-  assert.match(
-    drift,
-    /request: \{ timeout: READ_TIMEOUT_MILLISECONDS \}/u,
-  );
+  assert.match(drift, /request: \{ timeout: READ_TIMEOUT_MILLISECONDS \}/u);
   assert.match(
     drift,
     /async function boundedRead\(operation\) \{[\s\S]*?retrying once/u,
