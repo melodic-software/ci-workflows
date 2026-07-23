@@ -162,13 +162,14 @@ jobs:
               }
             };
 
+            const armedHoursSince = (enabledAt) =>
+              enabledAt ? (Date.now() - Date.parse(enabledAt)) / 3_600_000 : null;
+
             const isArmedCandidate = (pullRequest) => {
               if (pullRequest.author?.__typename !== 'Bot') return false;
               if (pullRequest.author?.login !== botLogin) return false;
-              const armedAt = pullRequest.autoMergeRequest?.enabledAt;
-              if (!armedAt) return false;
-              const armedHoursAgo = (Date.now() - Date.parse(armedAt)) / 3_600_000;
-              return armedHoursAgo >= thresholdHours;
+              const armedHours = armedHoursSince(pullRequest.autoMergeRequest?.enabledAt);
+              return armedHours !== null && armedHours >= thresholdHours;
             };
 
             // @actions/github bundles @octokit/plugin-paginate-rest but not a
@@ -203,10 +204,15 @@ jobs:
             // and selecting it across a 50-node page fans that computation out
             // and reliably trips the opaque server-side error. Only armed,
             // past-threshold PRs can be stuck, so only they are probed.
+            // autoMergeRequest.enabledAt is re-read alongside it because a PR
+            // can be disarmed or re-armed in the interval between the page
+            // fetch and this probe; the stuck decision below re-validates armed
+            // state and threshold against this fresh value, not the page value.
             const mergeStateQuery = `
               query($owner: String!, $repo: String!, $number: Int!) {
                 repository(owner: $owner, name: $repo) {
                   pullRequest(number: $number) {
+                    autoMergeRequest { enabledAt }
                     mergeStateStatus
                   }
                 }
@@ -240,11 +246,11 @@ jobs:
                   { owner, repo, number: candidate.number },
                   `merge state for ${repo}#${candidate.number}`,
                 );
-                if (result.repository?.pullRequest?.mergeStateStatus !== 'BLOCKED') continue;
-                const armedHoursAgo = Math.floor(
-                  (Date.now() - Date.parse(candidate.autoMergeRequest.enabledAt)) / 3_600_000,
-                );
-                stuck.push({ repo, number: candidate.number, url: candidate.url, armedHoursAgo });
+                const pullRequest = result.repository?.pullRequest;
+                if (pullRequest?.mergeStateStatus !== 'BLOCKED') continue;
+                const armedHours = armedHoursSince(pullRequest.autoMergeRequest?.enabledAt);
+                if (armedHours === null || armedHours < thresholdHours) continue;
+                stuck.push({ repo, number: candidate.number, url: candidate.url, armedHoursAgo: Math.floor(armedHours) });
               }
             }
 
