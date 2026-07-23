@@ -23,12 +23,13 @@ const ALLOWED_LOCAL_EVENTS = [
   "pull_request",
   "pull_request_target",
 ];
-// Opt-in only: local routing depends on admits-comment-events, not on the
-// event class alone. See the admits-comment-events-parametrized tests below.
-const COMMENT_REVIEW_EVENTS = [
+// Opt-in only: local routing depends on admits-ancillary-events, not on the
+// event class alone. See the admits-ancillary-events-parametrized tests below.
+const ANCILLARY_EVENTS = [
   "issue_comment",
   "pull_request_review",
   "pull_request_review_comment",
+  "issues",
 ];
 const BLOCKED_LOCAL_EVENTS = [
   "workflow_run",
@@ -56,7 +57,7 @@ function input(overrides = {}) {
     repositoryPrivate: true,
     eventName: "push",
     isForkPullRequest: false,
-    admitsCommentEvents: false,
+    admitsAncillaryEvents: false,
     ...overrides,
   };
 }
@@ -310,22 +311,12 @@ for (const eventName of BLOCKED_LOCAL_EVENTS) {
   });
 }
 
-for (const eventName of COMMENT_REVIEW_EVENTS) {
-  test(`${eventName} routes hosted without admits-comment-events (prefer-self-hosted)`, async () => {
-    const result = await selectRunner(
-      input({ eventName, admitsCommentEvents: false, tokenOutcome: "skipped" }),
-      { request: requestMustNotRun },
-    );
-    assert.equal(result.route, "hosted");
-    assert.equal(result.reason, "hosted-only");
-  });
-
-  test(`${eventName} routes hosted without admits-comment-events (self-hosted-only)`, async () => {
+for (const eventName of ANCILLARY_EVENTS) {
+  test(`${eventName} routes hosted without admits-ancillary-events (prefer-self-hosted)`, async () => {
     const result = await selectRunner(
       input({
-        policy: "self-hosted-only",
         eventName,
-        admitsCommentEvents: false,
+        admitsAncillaryEvents: false,
         tokenOutcome: "skipped",
       }),
       { request: requestMustNotRun },
@@ -334,21 +325,35 @@ for (const eventName of COMMENT_REVIEW_EVENTS) {
     assert.equal(result.reason, "hosted-only");
   });
 
-  test(`${eventName} selects local capacity with admits-comment-events (prefer-self-hosted)`, async () => {
+  test(`${eventName} routes hosted without admits-ancillary-events (self-hosted-only)`, async () => {
     const result = await selectRunner(
-      input({ eventName, admitsCommentEvents: true }),
+      input({
+        policy: "self-hosted-only",
+        eventName,
+        admitsAncillaryEvents: false,
+        tokenOutcome: "skipped",
+      }),
+      { request: requestMustNotRun },
+    );
+    assert.equal(result.route, "hosted");
+    assert.equal(result.reason, "hosted-only");
+  });
+
+  test(`${eventName} selects local capacity with admits-ancillary-events (prefer-self-hosted)`, async () => {
+    const result = await selectRunner(
+      input({ eventName, admitsAncillaryEvents: true }),
       { request: async () => response([runner()]) },
     );
     assert.equal(result.route, "self-hosted");
     assert.equal(result.reason, "online");
   });
 
-  test(`${eventName} queues the strict label with admits-comment-events (self-hosted-only)`, async () => {
+  test(`${eventName} queues the strict label with admits-ancillary-events (self-hosted-only)`, async () => {
     const result = await selectRunner(
       input({
         policy: "self-hosted-only",
         eventName,
-        admitsCommentEvents: true,
+        admitsAncillaryEvents: true,
         tokenOutcome: "skipped",
       }),
       { request: requestMustNotRun },
@@ -362,11 +367,11 @@ for (const eventName of COMMENT_REVIEW_EVENTS) {
   });
 }
 
-test("admits-comment-events does not widen eligibility for an unreviewed event class", async () => {
+test("admits-ancillary-events does not widen eligibility for an unreviewed event class", async () => {
   const result = await selectRunner(
     input({
       eventName: "workflow_run",
-      admitsCommentEvents: true,
+      admitsAncillaryEvents: true,
       tokenOutcome: "skipped",
     }),
     { request: requestMustNotRun },
@@ -1056,7 +1061,7 @@ test("token mint is statically guarded before the App action runs", () => {
     "github.event_name == 'pull_request'",
     "github.event.repository.private == true",
     "github.event.pull_request.head.repo.full_name == github.repository",
-    "inputs.admits-comment-events == true",
+    "inputs.admits-ancillary-events == true",
   ]) {
     assert.ok(tokenStep.includes(requiredGuard), requiredGuard);
   }
@@ -1065,15 +1070,15 @@ test("token mint is statically guarded before the App action runs", () => {
   ].map((match) => match[1]);
   assert.deepEqual(comparedEvents, [
     ...ALLOWED_LOCAL_EVENTS,
-    ...COMMENT_REVIEW_EVENTS,
+    ...ANCILLARY_EVENTS,
   ]);
-  // The three comment events must appear ONLY inside the
-  // admits-comment-events-gated clause, not as unconditional local routes.
+  // The ancillary events must appear ONLY inside the
+  // admits-ancillary-events-gated clause, not as unconditional local routes.
   const admitsClauseStart = tokenStep.indexOf(
-    "(inputs.admits-comment-events == true &&",
+    "(inputs.admits-ancillary-events == true &&",
   );
   assert.notEqual(admitsClauseStart, -1);
-  for (const eventName of COMMENT_REVIEW_EVENTS) {
+  for (const eventName of ANCILLARY_EVENTS) {
     const eventIndex = tokenStep.indexOf(`github.event_name == '${eventName}'`);
     assert.notEqual(eventIndex, -1, eventName);
     assert.ok(eventIndex > admitsClauseStart, eventName);
