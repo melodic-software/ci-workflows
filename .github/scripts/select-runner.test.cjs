@@ -1062,6 +1062,7 @@ test("token mint is statically guarded before the App action runs", () => {
     "github.event.repository.private == true",
     "github.event.pull_request.head.repo.full_name == github.repository",
     "inputs.admits-ancillary-events == true",
+    "inputs.admits-comment-events == true",
   ]) {
     assert.ok(tokenStep.includes(requiredGuard), requiredGuard);
   }
@@ -1072,10 +1073,11 @@ test("token mint is statically guarded before the App action runs", () => {
     ...ALLOWED_LOCAL_EVENTS,
     ...ANCILLARY_EVENTS,
   ]);
-  // The ancillary events must appear ONLY inside the
-  // admits-ancillary-events-gated clause, not as unconditional local routes.
+  // The ancillary events must appear ONLY inside the opt-in-gated clause
+  // (canonical admits-ancillary-events ORed with the deprecated
+  // admits-comment-events alias), not as unconditional local routes.
   const admitsClauseStart = tokenStep.indexOf(
-    "(inputs.admits-ancillary-events == true &&",
+    "inputs.admits-ancillary-events == true ||",
   );
   assert.notEqual(admitsClauseStart, -1);
   for (const eventName of ANCILLARY_EVENTS) {
@@ -1094,6 +1096,27 @@ test("token mint is statically guarded before the App action runs", () => {
 
   const selectStep = workflow.slice(workflow.indexOf("- name: Select runner"));
   assert.match(selectStep, /EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
+  // The single flag the selector script reads is the OR of the canonical
+  // input and the deprecated alias, so either input name opts a caller in.
+  assert.match(
+    selectStep,
+    /ADMITS_ANCILLARY_EVENTS: \$\{\{ inputs\.admits-ancillary-events \|\| inputs\.admits-comment-events \}\}/u,
+  );
+});
+
+test("admits-comment-events is retained as a deprecated alias for admits-ancillary-events", () => {
+  const workflow = fs.readFileSync(workflowPath, "utf8");
+  // The deprecated alias input is still declared so a caller pinned to the
+  // former name is not rejected with an unknown-input error on repin.
+  const aliasInput = workflow.slice(
+    workflow.indexOf("admits-comment-events:"),
+    workflow.indexOf("    secrets:"),
+  );
+  assert.notEqual(workflow.indexOf("admits-comment-events:"), -1);
+  assert.match(aliasInput, /[Dd]eprecated/u);
+  assert.match(aliasInput, /admits-ancillary-events/u);
+  assert.match(aliasInput, /type: boolean/u);
+  assert.match(aliasInput, /default: false/u);
 });
 
 test("strict selector scheduling is local while adaptive policies stay hosted", () => {

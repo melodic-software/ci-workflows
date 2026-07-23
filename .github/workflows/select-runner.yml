@@ -53,6 +53,15 @@ on:
           on the hosted fallback regardless of policy.
         type: boolean
         default: false
+      admits-comment-events:
+        description: >-
+          Deprecated alias for admits-ancillary-events; set that input
+          instead. Retained as a compatibility shim so a caller that repins to
+          a post-rename revision while still passing the former input name is
+          not rejected with an unknown-input error. ORed with
+          admits-ancillary-events; remove once no caller sets it.
+        type: boolean
+        default: false
     secrets:
       observer-private-key:
         description: Private key for the read-only observer GitHub App.
@@ -113,7 +122,8 @@ jobs:
           ((github.event_name == 'pull_request' ||
           github.event_name == 'pull_request_target') &&
           github.event.pull_request.head.repo.full_name == github.repository) ||
-          (inputs.admits-ancillary-events == true &&
+          ((inputs.admits-ancillary-events == true ||
+          inputs.admits-comment-events == true) &&
           (github.event_name == 'issue_comment' ||
           github.event_name == 'pull_request_review' ||
           github.event_name == 'pull_request_review_comment' ||
@@ -153,7 +163,7 @@ jobs:
             github.event_name == 'pull_request_target') &&
             github.event.pull_request.head.repo.full_name != github.repository }}
           API_TIMEOUT_SECONDS: ${{ inputs.api-timeout-seconds }}
-          ADMITS_ANCILLARY_EVENTS: ${{ inputs.admits-ancillary-events }}
+          ADMITS_ANCILLARY_EVENTS: ${{ inputs.admits-ancillary-events || inputs.admits-comment-events }}
         with:
           github-token: ${{ steps.observer-token.outputs.token || github.token }}
           script: |
