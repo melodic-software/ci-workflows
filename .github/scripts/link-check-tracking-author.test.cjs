@@ -7,12 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-const workflowPath = path.join(
-  __dirname,
-  "..",
-  "workflows",
-  "link-check.yml",
-);
+const workflowPath = path.join(__dirname, "..", "workflows", "link-check.yml");
 const workflow = fs.readFileSync(workflowPath, "utf8");
 
 // Same inline-script extraction technique the standards-sync github-script
@@ -75,7 +70,9 @@ function issue({
 
 async function runLookup(openIssues) {
   const keys = ["ISSUE_TITLE", "ISSUE_LABELS", "ISSUE_AUTHOR_LOGIN"];
-  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const original = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]]),
+  );
   Object.assign(process.env, { ISSUE_TITLE, ISSUE_LABELS, ISSUE_AUTHOR_LOGIN });
   const outputs = {};
   let failedWith = null;
