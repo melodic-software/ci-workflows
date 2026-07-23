@@ -12,11 +12,11 @@ drain
 
 ## babysit_loop_tier
 
-worker
+autopilot
 
 ## babysit_loop_merge
 
-c2-mechanical
+full-autonomy
 
 ## babysit_loop_grace_window_minutes
 
