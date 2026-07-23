@@ -390,7 +390,9 @@ test("a stuck PR sorted onto a later GraphQL page is still found (manual cursor 
       ],
     },
   });
-  const pageCalls = graphqlCalls.filter((call) => call.variables.number == null);
+  const pageCalls = graphqlCalls.filter(
+    (call) => call.variables.number == null,
+  );
   assert.equal(
     pageCalls.length,
     2,
@@ -413,7 +415,9 @@ test("an all-clear result that never fetched every page is not trusted (paginati
       ],
     },
   });
-  const pageCalls = graphqlCalls.filter((call) => call.variables.number == null);
+  const pageCalls = graphqlCalls.filter(
+    (call) => call.variables.number == null,
+  );
   assert.equal(pageCalls.length, 3);
   assert.equal(outputs["stuck-count"], "0");
 });
@@ -466,7 +470,11 @@ test("only armed, past-threshold bot PRs are probed for merge state — no bulk 
     thresholdHours: 4,
     nodesByRepo: {
       dotfiles: [
-        pullRequest({ number: 1, enabledAt: null, mergeStateStatus: "BLOCKED" }),
+        pullRequest({
+          number: 1,
+          enabledAt: null,
+          mergeStateStatus: "BLOCKED",
+        }),
         pullRequest({
           number: 2,
           login: "some-human",
@@ -487,7 +495,9 @@ test("only armed, past-threshold bot PRs are probed for merge state — no bulk 
       ],
     },
   });
-  const probeCalls = graphqlCalls.filter((call) => call.variables.number != null);
+  const probeCalls = graphqlCalls.filter(
+    (call) => call.variables.number != null,
+  );
   assert.equal(
     probeCalls.length,
     1,
@@ -515,8 +525,14 @@ test("a transient server error on a page fetch is retried, then the page is proc
       ],
     },
   });
-  const pageCalls = graphqlCalls.filter((call) => call.variables.number == null);
-  assert.equal(pageCalls.length, 2, "one failure then a success on the page fetch");
+  const pageCalls = graphqlCalls.filter(
+    (call) => call.variables.number == null,
+  );
+  assert.equal(
+    pageCalls.length,
+    2,
+    "one failure then a success on the page fetch",
+  );
   assert.equal(outputs["stuck-count"], "1");
 });
 
@@ -538,7 +554,11 @@ test("a transient server error on the per-PR merge-state probe is retried, and t
     },
   });
   const probeCalls = graphqlCalls.filter((call) => call.variables.number === 7);
-  assert.equal(probeCalls.length, 3, "two failures then a success on the probe");
+  assert.equal(
+    probeCalls.length,
+    3,
+    "two failures then a success on the probe",
+  );
   assert.equal(threw, null);
   assert.equal(outputs["stuck-count"], "1");
   assert.match(report, /#7/u);
