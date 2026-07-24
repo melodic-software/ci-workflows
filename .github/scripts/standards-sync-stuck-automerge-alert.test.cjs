@@ -61,6 +61,10 @@ async function runScan({
   nodesByRepo = {},
   pagesByRepo = null,
   infinitePagesFor = null,
+  retryAttempts = 4,
+  listFailures = {},
+  mergeStateFailures = {},
+  probeOverrides = {},
   workspace,
 } = {}) {
   const keys = [
@@ -68,6 +72,8 @@ async function runScan({
     "REPO_NAMES",
     "THRESHOLD_HOURS",
     "GITHUB_WORKSPACE",
+    "GRAPHQL_RETRY_ATTEMPTS",
+    "GRAPHQL_RETRY_BASE_MS",
   ];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
@@ -79,21 +85,74 @@ async function runScan({
     REPO_NAMES: repoNames.join(","),
     THRESHOLD_HOURS: String(thresholdHours),
     GITHUB_WORKSPACE: effectiveWorkspace,
+    GRAPHQL_RETRY_ATTEMPTS: String(retryAttempts),
+    // Zero backoff so the retry-path tests never actually sleep.
+    GRAPHQL_RETRY_BASE_MS: "0",
   });
+  // Every node the mock knows for a repo, flattened across pages; the phase-2
+  // per-PR probe looks its mergeStateStatus up here by number.
+  const allNodesFor = (repo) =>
+    (pagesByRepo?.[repo] ?? [nodesByRepo[repo] ?? []]).flat();
+  const remainingListFailures = { ...listFailures };
+  const remainingMergeFailures = { ...mergeStateFailures };
   const graphqlCalls = [];
   const outputs = {};
   const infos = [];
   let failedWith = null;
+  let threw = null;
   try {
     const github = {
-      // Mirrors the real cursor contract: `after` is null on the first page,
-      // then the previous response's endCursor. Pages are supplied either as
-      // one flat array (nodesByRepo, wrapped as a single page) or as an
-      // explicit array-of-pages (pagesByRepo) for multi-page tests. A repo
-      // named in infinitePagesFor never terminates, exercising the MAX_PAGES
-      // guard.
+      // Two query shapes now share this mock. A phase-2 probe carries a
+      // `number` variable and returns the PR's current autoMergeRequest and
+      // mergeStateStatus. A phase-1 page fetch carries an `after` cursor (null
+      // on the first page, then the previous endCursor). Pages come from one
+      // flat array (nodesByRepo) or an explicit array-of-pages (pagesByRepo);
+      // a repo in infinitePagesFor never terminates, exercising MAX_PAGES.
+      // A positive listFailures/mergeStateFailures budget throws first,
+      // simulating the opaque server-side error the retry path must absorb
+      // (Infinity == a permanent failure). probeOverrides[number] supplies the
+      // fresh armed state (enabledAt) and/or mergeStateStatus the probe should
+      // report, distinct from the page value, to exercise the disarm/re-arm
+      // race; absent an override the probe echoes the page node.
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
+        if (variables.number != null) {
+          const budget = remainingMergeFailures[variables.number] ?? 0;
+          if (budget > 0) {
+            remainingMergeFailures[variables.number] = budget - 1;
+            throw new Error(
+              `simulated server error probing #${variables.number}`,
+            );
+          }
+          const node = allNodesFor(variables.repo).find(
+            (pr) => pr.number === variables.number,
+          );
+          const override = probeOverrides[variables.number];
+          if (!node && !override) {
+            return { repository: { pullRequest: null } };
+          }
+          const enabledAt =
+            override && "enabledAt" in override
+              ? override.enabledAt
+              : (node?.autoMergeRequest?.enabledAt ?? null);
+          const mergeStateStatus =
+            override && "mergeStateStatus" in override
+              ? override.mergeStateStatus
+              : node?.mergeStateStatus;
+          return {
+            repository: {
+              pullRequest: {
+                autoMergeRequest: enabledAt ? { enabledAt } : null,
+                mergeStateStatus,
+              },
+            },
+          };
+        }
+        const listBudget = remainingListFailures[variables.repo] ?? 0;
+        if (listBudget > 0) {
+          remainingListFailures[variables.repo] = listBudget - 1;
+          throw new Error(`simulated server error listing ${variables.repo}`);
+        }
         const pageIndex = variables.after == null ? 0 : Number(variables.after);
         if (infinitePagesFor?.includes(variables.repo)) {
           return {
@@ -138,7 +197,13 @@ async function runScan({
       "process",
       scanScript,
     );
-    await execute(github, core, require, process);
+    try {
+      await execute(github, core, require, process);
+    } catch (error) {
+      // Captured, not rethrown, so a persistent-failure test can assert both
+      // that the run threw and that stuck-count was never set (no false clear).
+      threw = error;
+    }
     const reportPath = path.join(
       effectiveWorkspace,
       ".stuck-automerge-report.md",
@@ -146,7 +211,7 @@ async function runScan({
     const report = fs.existsSync(reportPath)
       ? fs.readFileSync(reportPath, "utf8")
       : null;
-    return { graphqlCalls, outputs, infos, failedWith, report };
+    return { graphqlCalls, outputs, infos, failedWith, report, threw };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -342,13 +407,16 @@ test("a stuck PR sorted onto a later GraphQL page is still found (manual cursor 
       ],
     },
   });
+  const pageCalls = graphqlCalls.filter(
+    (call) => call.variables.number == null,
+  );
   assert.equal(
-    graphqlCalls.length,
+    pageCalls.length,
     2,
     "both pages must be fetched, and no more than that",
   );
-  assert.equal(graphqlCalls[0].variables.after, null);
-  assert.equal(graphqlCalls[1].variables.after, "1");
+  assert.equal(pageCalls[0].variables.after, null);
+  assert.equal(pageCalls[1].variables.after, "1");
   assert.equal(outputs["stuck-count"], "1");
   assert.match(report, /#99/u);
 });
@@ -364,7 +432,10 @@ test("an all-clear result that never fetched every page is not trusted (paginati
       ],
     },
   });
-  assert.equal(graphqlCalls.length, 3);
+  const pageCalls = graphqlCalls.filter(
+    (call) => call.variables.number == null,
+  );
+  assert.equal(pageCalls.length, 3);
   assert.equal(outputs["stuck-count"], "0");
 });
 
@@ -380,6 +451,223 @@ test("a repository stuck on an unterminated page sequence fails closed via MAX_P
     undefined,
     "must not report a false all-clear after aborting mid-scan",
   );
+});
+
+test("the page query never selects mergeStateStatus; a dedicated per-PR query fetches it", async () => {
+  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { graphqlCalls } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 4,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+  });
+  const pageCall = graphqlCalls.find((call) => call.variables.number == null);
+  const probeCall = graphqlCalls.find((call) => call.variables.number != null);
+  assert.doesNotMatch(
+    pageCall.query,
+    /mergeStateStatus/u,
+    "the paginated page query must not fan mergeStateStatus out across the page",
+  );
+  assert.match(probeCall.query, /pullRequest\(number:/u);
+  assert.match(probeCall.query, /mergeStateStatus/u);
+});
+
+test("only armed, past-threshold bot PRs are probed for merge state — no bulk fan-out across the page", async () => {
+  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const recentlyArmed = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+  const { graphqlCalls, outputs, report } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 1,
+          enabledAt: null,
+          mergeStateStatus: "BLOCKED",
+        }),
+        pullRequest({
+          number: 2,
+          login: "some-human",
+          typename: "User",
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+        pullRequest({
+          number: 3,
+          enabledAt: recentlyArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+        pullRequest({
+          number: 4,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+  });
+  const probeCalls = graphqlCalls.filter(
+    (call) => call.variables.number != null,
+  );
+  assert.equal(
+    probeCalls.length,
+    1,
+    "exactly one merge-state probe — for the single armed, past-threshold bot PR",
+  );
+  assert.equal(probeCalls[0].variables.number, 4);
+  assert.equal(outputs["stuck-count"], "1");
+  assert.match(report, /#4/u);
+});
+
+test("a transient server error on a page fetch is retried, then the page is processed", async () => {
+  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { graphqlCalls, outputs } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    retryAttempts: 3,
+    listFailures: { dotfiles: 1 },
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 5,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+  });
+  const pageCalls = graphqlCalls.filter(
+    (call) => call.variables.number == null,
+  );
+  assert.equal(
+    pageCalls.length,
+    2,
+    "one failure then a success on the page fetch",
+  );
+  assert.equal(outputs["stuck-count"], "1");
+});
+
+test("a transient server error on the per-PR merge-state probe is retried, and the PR is still reported", async () => {
+  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { graphqlCalls, outputs, report, threw } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    retryAttempts: 4,
+    mergeStateFailures: { 7: 2 },
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 7,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+  });
+  const probeCalls = graphqlCalls.filter((call) => call.variables.number === 7);
+  assert.equal(
+    probeCalls.length,
+    3,
+    "two failures then a success on the probe",
+  );
+  assert.equal(threw, null);
+  assert.equal(outputs["stuck-count"], "1");
+  assert.match(report, /#7/u);
+});
+
+test("a persistent server error on the merge-state probe fails the run loudly and never reports a false all-clear", async () => {
+  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { threw, outputs } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    retryAttempts: 3,
+    mergeStateFailures: { 7: Infinity },
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 7,
+          enabledAt: staleArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+  });
+  assert.ok(threw, "a persistent server error must propagate and fail the run");
+  assert.match(threw.message, /simulated server error/u);
+  assert.equal(
+    outputs["stuck-count"],
+    undefined,
+    "must not report a false all-clear after aborting mid-scan",
+  );
+});
+
+test("a candidate disarmed between the page fetch and the probe is not reported (armed state re-validated against fresh probe data)", async () => {
+  const pageArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { outputs, report } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 8,
+          enabledAt: pageArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+    probeOverrides: { 8: { enabledAt: null } },
+  });
+  assert.equal(outputs["stuck-count"], "0");
+  assert.equal(report, null);
+});
+
+test("the reported armed duration is computed from the probe-fresh enabledAt, not the stale page value", async () => {
+  const pageArmed = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
+  const freshArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { outputs, report } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 8,
+          enabledAt: pageArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+    probeOverrides: { 8: { enabledAt: freshArmed } },
+  });
+  assert.equal(outputs["stuck-count"], "1");
+  assert.match(report, /\| 6h \|/u);
+  assert.doesNotMatch(report, /20h/u);
+});
+
+test("a candidate re-armed under the threshold between page and probe is not reported (threshold re-checked against fresh enabledAt)", async () => {
+  const pageArmed = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
+  const freshArmed = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+  const { outputs, report } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 8,
+          enabledAt: pageArmed,
+          mergeStateStatus: "BLOCKED",
+        }),
+      ],
+    },
+    probeOverrides: { 8: { enabledAt: freshArmed } },
+  });
+  assert.equal(outputs["stuck-count"], "0");
+  assert.equal(report, null);
 });
 
 function extractStepScript(stepName) {

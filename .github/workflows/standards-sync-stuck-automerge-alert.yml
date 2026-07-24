@@ -129,6 +129,8 @@ jobs:
         env:
           REPO_NAMES: ${{ steps.targets.outputs.repo-names }}
           THRESHOLD_HOURS: ${{ inputs.threshold-hours }}
+          GRAPHQL_RETRY_ATTEMPTS: '4'
+          GRAPHQL_RETRY_BASE_MS: '1000'
         with:
           github-token: ${{ steps.token.outputs.token }}
           script: |
@@ -136,15 +138,38 @@ jobs:
             const botLogin = process.env.BOT_LOGIN;
             const thresholdHours = Number(process.env.THRESHOLD_HOURS);
             const repoNames = process.env.REPO_NAMES.split(',').filter((name) => name.length > 0);
+            const retryAttempts = Number(process.env.GRAPHQL_RETRY_ATTEMPTS ?? 4);
+            const retryBaseMs = Number(process.env.GRAPHQL_RETRY_BASE_MS ?? 1000);
 
-            const isStuck = (pullRequest) => {
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            // GitHub intermittently answers a GraphQL query with an opaque
+            // server-side error instead of data (github.graphql throws), most
+            // often when the query forces an on-demand mergeability computation.
+            // One such error must not abort the whole scan and falsely clear the
+            // tracking issue, so every call is retried with exponential backoff;
+            // only a persistent failure propagates, failing the run loudly.
+            const graphqlWithRetry = async (query, variables, description) => {
+              for (let attempt = 1; ; attempt += 1) {
+                try {
+                  return await github.graphql(query, variables);
+                } catch (error) {
+                  if (attempt >= retryAttempts) throw error;
+                  const delayMs = retryBaseMs * 2 ** (attempt - 1);
+                  core.info(`GraphQL ${description} failed (attempt ${attempt}/${retryAttempts}): ${error.message}; retrying in ${delayMs}ms.`);
+                  await sleep(delayMs);
+                }
+              }
+            };
+
+            const armedHoursSince = (enabledAt) =>
+              enabledAt ? (Date.now() - Date.parse(enabledAt)) / 3_600_000 : null;
+
+            const isArmedCandidate = (pullRequest) => {
               if (pullRequest.author?.__typename !== 'Bot') return false;
               if (pullRequest.author?.login !== botLogin) return false;
-              const armedAt = pullRequest.autoMergeRequest?.enabledAt;
-              if (!armedAt) return false;
-              if (pullRequest.mergeStateStatus !== 'BLOCKED') return false;
-              const armedHoursAgo = (Date.now() - Date.parse(armedAt)) / 3_600_000;
-              return armedHoursAgo >= thresholdHours;
+              const armedHours = armedHoursSince(pullRequest.autoMergeRequest?.enabledAt);
+              return armedHours !== null && armedHours >= thresholdHours;
             };
 
             // @actions/github bundles @octokit/plugin-paginate-rest but not a
@@ -159,7 +184,7 @@ jobs:
             // pathological repo cannot hang this workflow indefinitely.
             const PAGE_SIZE = 50;
             const MAX_PAGES = 50;
-            const query = `
+            const listQuery = `
               query($owner: String!, $repo: String!, $after: String) {
                 repository(owner: $owner, name: $repo) {
                   pullRequests(states: OPEN, first: ${PAGE_SIZE}, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -168,15 +193,34 @@ jobs:
                       url
                       author { login __typename }
                       autoMergeRequest { enabledAt }
-                      mergeStateStatus
                     }
                     pageInfo { hasNextPage endCursor }
                   }
                 }
               }`;
 
+            // mergeStateStatus is deliberately absent from the page query above
+            // and fetched one PR at a time here: GitHub computes it on demand,
+            // and selecting it across a 50-node page fans that computation out
+            // and reliably trips the opaque server-side error. Only armed,
+            // past-threshold PRs can be stuck, so only they are probed.
+            // autoMergeRequest.enabledAt is re-read alongside it because a PR
+            // can be disarmed or re-armed in the interval between the page
+            // fetch and this probe; the stuck decision below re-validates armed
+            // state and threshold against this fresh value, not the page value.
+            const mergeStateQuery = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    autoMergeRequest { enabledAt }
+                    mergeStateStatus
+                  }
+                }
+              }`;
+
             const stuck = [];
             for (const repo of repoNames) {
+              const candidates = [];
               let after = null;
               let hasNextPage = true;
               let page = 0;
@@ -186,19 +230,27 @@ jobs:
                   core.setFailed(`${repo} has more than ${MAX_PAGES * PAGE_SIZE} open pull requests; refusing to scan an unbounded number of pages.`);
                   return;
                 }
-                const result = await github.graphql(query, { owner, repo, after });
+                const result = await graphqlWithRetry(listQuery, { owner, repo, after }, `scan ${repo} page ${page}`);
                 const pullRequests = result.repository?.pullRequests;
                 const nodes = pullRequests?.nodes ?? [];
                 for (const pullRequest of nodes) {
-                  if (isStuck(pullRequest)) {
-                    const armedHoursAgo = Math.floor(
-                      (Date.now() - Date.parse(pullRequest.autoMergeRequest.enabledAt)) / 3_600_000,
-                    );
-                    stuck.push({ repo, number: pullRequest.number, url: pullRequest.url, armedHoursAgo });
-                  }
+                  if (isArmedCandidate(pullRequest)) candidates.push(pullRequest);
                 }
                 hasNextPage = pullRequests?.pageInfo?.hasNextPage ?? false;
                 after = pullRequests?.pageInfo?.endCursor ?? null;
+              }
+
+              for (const candidate of candidates) {
+                const result = await graphqlWithRetry(
+                  mergeStateQuery,
+                  { owner, repo, number: candidate.number },
+                  `merge state for ${repo}#${candidate.number}`,
+                );
+                const pullRequest = result.repository?.pullRequest;
+                if (pullRequest?.mergeStateStatus !== 'BLOCKED') continue;
+                const armedHours = armedHoursSince(pullRequest.autoMergeRequest?.enabledAt);
+                if (armedHours === null || armedHours < thresholdHours) continue;
+                stuck.push({ repo, number: candidate.number, url: candidate.url, armedHoursAgo: Math.floor(armedHours) });
               }
             }
 
