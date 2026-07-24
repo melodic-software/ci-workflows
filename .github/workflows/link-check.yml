@@ -122,10 +122,16 @@ jobs:
         env:
           ISSUE_TITLE: ${{ inputs.issue-title }}
           ISSUE_LABELS: ${{ inputs.issue-labels }}
+          # The bot identity every step here authors the rolling issue as: both
+          # this lookup's github-script and the create-issue-from-file step below
+          # run on the job's GITHUB_TOKEN, so the issue's author.login is always
+          # github-actions[bot] (type Bot). It is the adoption filter below.
+          ISSUE_AUTHOR_LOGIN: 'github-actions[bot]'
         with:
           script: |
             const crypto = require("node:crypto");
             const issueTitle = process.env.ISSUE_TITLE;
+            const issueAuthorLogin = process.env.ISSUE_AUTHOR_LOGIN;
             const reportKey = crypto.createHash("sha256").update(issueTitle, "utf8").digest("hex").slice(0, 12);
             const marker = `<!-- ci-workflows:link-check:v1:active:${reportKey} -->`;
             core.setOutput("marker", marker);
@@ -156,7 +162,21 @@ jobs:
               labels: labels.join(","),
               per_page: 100,
             });
-            const candidates = openIssues.filter((issue) => !issue.pull_request);
+            // The marker and title strings are public (embedded verbatim in
+            // this workflow, visible to every caller), so matching on them alone
+            // would let anyone able to open an issue in the caller repo craft a
+            // decoy this automation adopts — then overwrites or closes — or a
+            // duplicate decoy that trips the fail-closed ambiguity guard to
+            // suppress a real report. The label filter narrows to the owned
+            // report; restricting to the workflow token's own bot identity
+            // closes the rest: an issue this token did not author is never a
+            // candidate, whatever text or labels it carries.
+            const candidates = openIssues.filter(
+              (issue) =>
+                !issue.pull_request &&
+                issue.user?.login === issueAuthorLogin &&
+                issue.user?.type === "Bot",
+            );
 
             let matches = candidates.filter((issue) => (issue.body ?? "").includes(marker));
             if (matches.length > 1) {
