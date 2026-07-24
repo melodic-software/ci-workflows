@@ -21,3 +21,9 @@ full-autonomy
 ## babysit_loop_grace_window_minutes
 
 30
+
+## pr_body_required_sections
+
+- Summary
+- Test plan
+- Related
