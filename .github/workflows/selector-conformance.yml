@@ -10,7 +10,13 @@ on:
       - .github/workflows/zizmor.yml
       - .github/workflows/osv-scanner.yml
       - .github/workflows/tool-version-drift-check.yml
+      - .github/workflows/claude-review.yml
+      - .github/workflows/claude-security-review.yml
       - .github/osv-scanner-pin.json
+      - .github/scripts/classify-infra-failure.sh
+      - .github/scripts/classify-infra-failure.test.sh
+      - .github/scripts/classify-infra-failure-render.test.cjs
+      - .github/scripts/render-classify-infra-failure.cjs
       - .github/scripts/find-tracking-issue-render.test.cjs
       - .github/scripts/find-tracking-issue.sh
       - .github/scripts/find-tracking-issue.test.sh
@@ -35,7 +41,13 @@ on:
       - .github/workflows/zizmor.yml
       - .github/workflows/osv-scanner.yml
       - .github/workflows/tool-version-drift-check.yml
+      - .github/workflows/claude-review.yml
+      - .github/workflows/claude-security-review.yml
       - .github/osv-scanner-pin.json
+      - .github/scripts/classify-infra-failure.sh
+      - .github/scripts/classify-infra-failure.test.sh
+      - .github/scripts/classify-infra-failure-render.test.cjs
+      - .github/scripts/render-classify-infra-failure.cjs
       - .github/scripts/find-tracking-issue-render.test.cjs
       - .github/scripts/find-tracking-issue.sh
       - .github/scripts/find-tracking-issue.test.sh
@@ -84,6 +96,8 @@ jobs:
         run: node --test .github/scripts/*.test.cjs
       - name: Test tracking-issue resolver
         run: bash .github/scripts/find-tracking-issue.test.sh
+      - name: Test infra-failure classification
+        run: bash .github/scripts/classify-infra-failure.test.sh
       - name: Test OSV scanner exit-code policy
         run: bash .github/scripts/osv-scan-guard.test.sh
       - name: Test OSV release digest parsing
