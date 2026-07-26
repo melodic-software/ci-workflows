@@ -1,10 +1,12 @@
 # shellcheck shell=bash
 # Pin the properties a green composite-run-shellcheck run cannot prove on its
 # own: that a broken `run:` block fails the check, that the expression
-# substitution actually runs, that every tracked composite is reached, and that
-# a file set yielding no block fails rather than passing empty. Without these, a
-# selector matching nothing — or nearly nothing — is indistinguishable from a
-# clean scan.
+# substitution actually runs, that a step ShellCheck cannot read is announced,
+# that every tracked composite is reached — including one carrying no shell at
+# all — that a malformed `runs.steps` shape is refused rather than extracted
+# from, and that a file set yielding no block fails rather than passing empty.
+# Without these, a selector matching nothing — or nearly nothing — is
+# indistinguishable from a clean scan.
 set -euo pipefail
 
 check=.github/scripts/composite-run-shellcheck.sh
