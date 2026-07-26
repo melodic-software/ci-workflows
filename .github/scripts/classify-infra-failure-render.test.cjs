@@ -62,6 +62,74 @@ test("each marker-managed infra-status comment carries the class", () => {
   }
 });
 
+function stepSource(workflow, stepName) {
+  const start = workflow.indexOf(`      - name: ${stepName}\n`);
+  assert.notEqual(start, -1, `step not found: ${stepName}`);
+  const rest = workflow.slice(start + 1);
+  const next = rest.indexOf("\n      - name: ");
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+// Passing the check on an infrastructure failure is an operator-ratified
+// non-goal, and until now it was guarded only by reading the file. It is the
+// single invariant this whole design rests on: the review lane reports a
+// verdict, never an outage. A future edit that adds a nonzero exit to the
+// outcome step — or drops continue-on-error from the action step — would flip
+// every Anthropic-side blip into a merge blocker across every consumer repo,
+// and nothing in CI would have caught it.
+test("an infrastructure failure never fails the review job", () => {
+  for (const name of consumers) {
+    const source = workflowSource(name);
+
+    // The action exits nonzero on infra errors; continue-on-error is what keeps
+    // that off the check's conclusion.
+    assert.match(
+      stepSource(source, name === "claude-review.yml" ? "Claude review" : "Claude security review"),
+      /^ {8}continue-on-error: true$/mu,
+      `${name} must keep continue-on-error on the action step`,
+    );
+
+    // The outcome step reports the failure; it must not become the failure.
+    const outcome = stepSource(source, "Report review outcome");
+    const exits = [...outcome.matchAll(/^\s*exit\s+(\d+)\s*$/gmu)].map(
+      (match) => match[1],
+    );
+    assert.ok(exits.length > 0, `${name}: expected the outcome step to exit explicitly`);
+    for (const code of exits) {
+      assert.equal(
+        code,
+        "0",
+        `${name}: the outcome step must not exit nonzero on an infra failure (found exit ${code})`,
+      );
+    }
+
+    // Nor may the steps that surface the failure turn it into one. These are
+    // actions/github-script steps, so a shell `exit` check would never fire on
+    // them — assert against the primitives that actually fail a JS step.
+    for (const step of [
+      "Comment on genuine review failure",
+      "Clear stale failure comment after successful review",
+    ]) {
+      const body = stepSource(source, step);
+      assert.match(
+        body,
+        /^ {8}uses: actions\/github-script@/mu,
+        `${name}: "${step}" is no longer a github-script step; this assertion must be rewritten for its new failure mechanism`,
+      );
+      assert.doesNotMatch(
+        body,
+        /\bcore\.setFailed\s*\(/u,
+        `${name}: "${step}" must not fail the job`,
+      );
+      assert.doesNotMatch(
+        body,
+        /\bprocess\.exit\s*\(/u,
+        `${name}: "${step}" must not fail the job`,
+      );
+    }
+  }
+});
+
 // The whole point of the projection is that the two free-text fields are read
 // inside the generated block and never emitted. A future edit that echoes
 // either one, or projects it into the detail JSON, must fail here.
