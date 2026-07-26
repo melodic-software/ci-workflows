@@ -124,9 +124,10 @@ lanes never overlap.
 - A PR in any consumer repo gets: one code review on open/ready (inline comments
   present), security review per head when security-relevant paths change, name-stable
   skips otherwise; required security check never wedges.
-- Forced-failure test (bad token on a sandbox repo): check stays green, marker comment
-  + `class=auth` annotation appear, canary opens/updates the incident item, and a
-  human and the babysit-loop can both tell "not reviewed" from "reviewed clean".
+- Forced-failure test (bad token on a sandbox repo): check stays green, marker
+  comment + `class=auth` annotation appear, canary opens/updates the incident
+  item, and a human and the babysit-loop can both tell "not reviewed" from
+  "reviewed clean".
 - Setting the org kill-switch variable stops all lane runs fleet-wide within one event;
   unsetting restores.
 - Dependabot opens a same-day PR for a new claude-code-action release.
@@ -185,7 +186,6 @@ lanes never overlap.
 - [USER-RESERVED] `.github`/ci-runner/ci-runner-canary lane exemption (include vs
   exempt — document either way).
 - [USER-RESERVED] e2e-verify park/deprecate (trigger above).
-
 
 ## Plan
 
@@ -368,6 +368,11 @@ merged SHA — self-reference pins resolvable only post-merge), **PR-B** (featur
   (self-trigger ban); `allowed_bots` stays `dependabot[bot]`. Correct the stale
   header claim that the org secret uses selected-repositories scope (live value:
   `all`) — devils-advocate F16.
+- **2b-addendum (Phase 1 verifier finding, 2026-07-26):** claude-review.yml's
+  default prompt says "review for correctness, security, and alignment…";
+  restructured REVIEW.md scopes security out of this lane wherever a
+  claude-security-review workflow exists. Align the default prompt during 2b:
+  name the lane (code-review) and defer security scope to REVIEW.md's split.
 - **2c. Cadence (claude-review only):** job-level
   `if: github.event.pull_request.draft == false` composed into existing skip
   conditions; header canonical-caller comment → `[opened, ready_for_review,
@@ -409,6 +414,14 @@ merged SHA — self-reference pins resolvable only post-merge), **PR-B** (featur
     required check is not a skip and does not read success) and NO queue group
     initially; queue added only if the 3c overflow smoke proves the
     cancelled-overflow case cannot wedge the required check.
+- **2f-addendum (Phase 1 verifier finding, 2026-07-26):** REVIEW.md's
+  code-review-lane exclusion is gated on the security-lane WORKFLOW FILE
+  existing. The 2f kill-switch makes the file exist while the lane is off —
+  silently reopening the suppressed-security-findings window. Resolve during
+  2f: either the exclusion predicate also keys on the kill-switch state, or
+  the kill-switch docs (README + REVIEW.md wording) record that disabling the
+  security lane re-widens the code-review lane, and the incident playbook
+  says so. Decide with 2f, before Phase 3 rollout.
 - **2f. Kill-switches:** job-if in all three reusables:
   `vars.CLAUDE_LANES_DISABLED != 'true' && vars.<LANE>_DISABLED != 'true'`
   (`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`,
@@ -570,8 +583,9 @@ or matches only deliberate standing opt-outs).
 
 ### Phase 4: observability — #238 aggregator [TODO]
 
-#237 shipped (#248/#249/#251; closed). This phase consumes it. Can be developed in
-parallel with Phase 3 (disjoint files); its acceptance test runs after wave 1.
+Issue #237 shipped (#248/#249/#251; closed). This phase consumes it. Can be
+developed in parallel with Phase 3 (disjoint files); its acceptance test runs
+after wave 1.
 
 - Scheduled workflow, host **ci-workflows** (lanes' home; emitted content is
   allowlisted tokens only — public-safe). Polling scope: PRs updated within a 24h
@@ -589,8 +603,8 @@ parallel with Phase 3 (disjoint files); its acceptance test runs after wave 1.
   silent-green + seat/credential death, claude-code-plugins#1327 SDK
   instant-fail, provisioning#215 runner mismatch, and (if select-runner stays on
   lane callers) the caller-side `class=runner` selector-failure marker from 3a.
-- Acceptance test: sandbox repo with repo-level bad-token override → green check
-  + marker + `class=auth` annotation + incident item opens; restore →
+- Acceptance test: sandbox repo with repo-level bad-token override → green
+  check + marker + `class=auth` annotation + incident item opens; restore →
   auto-resolves after 3 clean cycles.
 - Close #228 + #238 on merge + passing acceptance test; comment-close
   claude-code-plugins#1327 (root cause + pointer); comment provisioning#215
