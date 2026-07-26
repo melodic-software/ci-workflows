@@ -84,7 +84,12 @@ test("an infrastructure failure never fails the review job", () => {
     // The action exits nonzero on infra errors; continue-on-error is what keeps
     // that off the check's conclusion.
     assert.match(
-      stepSource(source, name === "claude-review.yml" ? "Claude review" : "Claude security review"),
+      stepSource(
+        source,
+        name === "claude-review.yml"
+          ? "Claude review"
+          : "Claude security review",
+      ),
       /^ {8}continue-on-error: true$/mu,
       `${name} must keep continue-on-error on the action step`,
     );
@@ -94,7 +99,10 @@ test("an infrastructure failure never fails the review job", () => {
     const exits = [...outcome.matchAll(/^\s*exit\s+(\d+)\s*$/gmu)].map(
       (match) => match[1],
     );
-    assert.ok(exits.length > 0, `${name}: expected the outcome step to exit explicitly`);
+    assert.ok(
+      exits.length > 0,
+      `${name}: expected the outcome step to exit explicitly`,
+    );
     for (const code of exits) {
       assert.equal(
         code,
@@ -105,7 +113,12 @@ test("an infrastructure failure never fails the review job", () => {
 
     // Nor may the steps that surface the failure turn it into one. These are
     // actions/github-script steps, so a shell `exit` check would never fire on
-    // them — assert against the primitives that actually fail a JS step.
+    // them. Two mechanisms can fail a JS step: an explicit failure call, and an
+    // unhandled rejection — every one of these steps awaits GitHub API calls
+    // that can reject for reasons unrelated to the code under review, and
+    // github-script turns a rejection into a failed step on its own. Only
+    // continue-on-error covers that second path, so it is asserted rather than
+    // assumed.
     for (const step of [
       "Comment on genuine review failure",
       "Clear stale failure comment after successful review",
@@ -115,6 +128,11 @@ test("an infrastructure failure never fails the review job", () => {
         body,
         /^ {8}uses: actions\/github-script@/mu,
         `${name}: "${step}" is no longer a github-script step; this assertion must be rewritten for its new failure mechanism`,
+      );
+      assert.match(
+        body,
+        /^ {8}continue-on-error: true$/mu,
+        `${name}: "${step}" awaits GitHub API calls; without continue-on-error a rejected call fails the job`,
       );
       assert.doesNotMatch(
         body,
