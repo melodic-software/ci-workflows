@@ -66,6 +66,12 @@ trap 'rm -rf -- "$workdir"' EXIT
 bash_scripts=()
 sh_scripts=()
 for file in "${files[@]}"; do
+  # Announced for every file discovery reaches, before any shape check can skip
+  # it, so the coverage floor can distinguish "discovery missed this action"
+  # from "this action has no shell to check". A composite whose steps are all
+  # `uses:` is legitimate and emits no step line of its own.
+  printf 'visit %s\n' "$file"
+
   using="$(yq -r '.runs.using // ""' "$file")"
   if [[ "$using" != composite ]]; then
     printf 'skip %s: runs.using is %s, not composite\n' "$file" "${using:-<unset>}"
@@ -82,6 +88,17 @@ for file in "${files[@]}"; do
 
   while IFS=$'\t' read -r index shell; do
     [[ -n "$index" ]] || continue
+
+    # `.key` is a sequence index only while `runs.steps` is a sequence. A
+    # mapping makes it an arbitrary author-supplied string, and this runs
+    # against pull-request content, so reject the shape at the boundary rather
+    # than escaping it at each use: $index reaches both the write path below
+    # and an interpolated yq expression.
+    if [[ ! "$index" =~ ^[0-9]+$ ]]; then
+      echo "::error file=$file::composite-run-shellcheck: runs.steps is not a sequence (key '$index')."
+      exit 1
+    fi
+
     case "$shell" in
     bash | sh) ;;
     '')

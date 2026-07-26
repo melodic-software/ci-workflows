@@ -11,7 +11,9 @@ check=.github/scripts/composite-run-shellcheck.sh
 temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 
 broken="$temp/composite-run-shellcheck-broken.txt"
-if bash "$check" fixtures/composite-action/bad/action.yml >"$broken" 2>&1; then
+if bash "$check" \
+  fixtures/composite-action/bad/action.yml \
+  fixtures/composite-action/uses-only/action.yml >"$broken" 2>&1; then
   echo 'The intentionally broken composite run: block unexpectedly passed.' >&2
   exit 1
 fi
@@ -28,15 +30,31 @@ if grep -F 'SC2296' "$broken"; then
 fi
 # A step ShellCheck cannot analyse is announced, never silently dropped.
 grep -F 'shell is pwsh, not bash/sh' "$broken"
+# A composite whose steps are all `uses:` emits no step line at all, so only the
+# visit line keeps it out of the coverage floor's false-negative bucket below.
+grep -F 'visit fixtures/composite-action/uses-only/action.yml' "$broken"
 
-# Coverage floor. The check reports one line per step it accepts or skips, so
-# every tracked composite must appear by name: discovery that quietly reaches
-# one action instead of all of them is otherwise a clean green.
+# `runs.steps` as a mapping makes the step key an author-supplied string that
+# would otherwise reach a write path and an interpolated yq expression. The
+# shape is refused, not extracted from.
+mapping="$temp/composite-run-shellcheck-mapping.txt"
+if bash "$check" fixtures/composite-action/mapping-steps/action.yml >"$mapping" 2>&1; then
+  echo 'A mapping-shaped runs.steps was unexpectedly accepted.' >&2
+  exit 1
+fi
+cat -- "$mapping"
+grep -F 'runs.steps is not a sequence' "$mapping"
+
+# Coverage floor. The check announces every file discovery reaches, so every
+# tracked composite must appear by name: discovery that quietly reaches one
+# action instead of all of them is otherwise a clean green. Keyed on the visit
+# line rather than a step line so an action carrying no shell still counts as
+# reached.
 covered="$temp/composite-run-shellcheck-covered.txt"
 bash "$check" >"$covered" 2>&1
 while IFS= read -r action; do
-  if ! grep -Fq "$action runs.steps[" "$covered"; then
-    echo "No run: block was reached in $action." >&2
+  if ! grep -Fq "visit $action" "$covered"; then
+    echo "Discovery never reached $action." >&2
     exit 1
   fi
 done < <(git ls-files -- '.github/actions/*/action.yml')
