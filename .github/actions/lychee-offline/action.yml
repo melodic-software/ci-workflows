@@ -64,4 +64,5 @@ runs:
           args+=(--exclude-path "$e")
         done
         # $GLOBS word-splits into multiple lychee path/glob args (still noglob).
+        # shellcheck disable=SC2086
         lychee "${args[@]}" $GLOBS

@@ -220,6 +220,13 @@ jobs:
           cat "$output"
           grep -F '[shellcheck]' "$output"
           grep -F 'SC2086' "$output"
+      - name: Lint composite action shell
+        # actionlint covers workflows only, so this extends the same embedded-
+        # shell contract to composite metadata, which it cannot read. Runs here
+        # because the lane action already put the pinned ShellCheck on PATH.
+        run: bash .github/scripts/composite-run-shellcheck.sh
+      - name: Prove a broken composite shell block fails
+        run: bash .github/scripts/composite-run-shellcheck.test.sh
 
   lefthook-validate:
     runs-on: ubuntu-24.04

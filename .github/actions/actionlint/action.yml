@@ -72,4 +72,5 @@ runs:
         if [[ -n "${CONFIG_FILE// }" ]]; then args+=(-config-file "$CONFIG_FILE"); fi
         # $PATHS unquoted so multiple targets word-split; empty appends nothing
         # and actionlint auto-discovers .github/workflows.
+        # shellcheck disable=SC2086
         actionlint "${args[@]}" $PATHS

@@ -54,6 +54,7 @@ runs:
         # one-directory-deep matches (dropping root-level and deeper files) before
         # markdownlint-cli2 — which expands the globs itself via globby — runs.
         set -f
+        # shellcheck disable=SC2086
         npx --yes "markdownlint-cli2@$VERSION" --config "$CONFIG" $GLOBS || rc=$?
         if [[ "$ANNOTATIONS" == "true" ]]; then echo "::remove-matcher owner=markdownlint-cli2::"; fi
         exit $rc

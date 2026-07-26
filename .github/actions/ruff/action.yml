@@ -66,6 +66,8 @@ runs:
         # the first fails, so a single run surfaces every issue. --output-format
         # =github emits inline PR annotations for lint findings (the formatter has
         # no such format; its diff goes to the log).
+        # shellcheck disable=SC2086
         uvx "ruff@${VERSION}" check $PATHS "${args[@]}" --output-format=github || rc=1
+        # shellcheck disable=SC2086
         uvx "ruff@${VERSION}" format --check $PATHS "${args[@]}" || rc=1
         exit $rc

@@ -62,4 +62,5 @@ runs:
         # `include` drives discovery.
         warn=()
         if [[ "$WARNINGS_AS_ERRORS" == "true" ]]; then warn=(--warnings); fi
+        # shellcheck disable=SC2086
         uvx "pyright@${VERSION}" "${warn[@]}" -p "$CONFIG" $PATHS
