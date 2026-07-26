@@ -16,7 +16,7 @@ autopilot
 
 ## babysit_loop_merge
 
-full-autonomy
+c2-mechanical
 
 ## babysit_loop_grace_window_minutes
 
