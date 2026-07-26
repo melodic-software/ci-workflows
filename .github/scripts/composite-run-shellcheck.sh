@@ -4,8 +4,8 @@
 # Neither existing lane sees that shell. actionlint's docs state that `steps` in
 # a composite action's metadata "is not checked at this point", and passing an
 # action.yml on its command line makes actionlint parse the file as a workflow
-# and fail with `"jobs" section is missing` (upstream support is the still-open
-# rhysd/actionlint#46). The shellcheck lane discovers *.sh/*.bash, so
+# and fail with `"jobs" section is missing`; the upstream request for it is
+# still open (linked below). The shellcheck lane discovers *.sh/*.bash, so
 # YAML-embedded shell is invisible to it too.
 #
 # This extracts each bash/sh `run:` block and hands it to ShellCheck under the
@@ -60,7 +60,7 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 1
 fi
 
-workdir="$(mktemp -d)"
+workdir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/composite-run-shellcheck.XXXXXXXX")"
 trap 'rm -rf -- "$workdir"' EXIT
 
 bash_scripts=()

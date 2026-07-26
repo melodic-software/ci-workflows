@@ -95,9 +95,10 @@ runs:
         # a caller can upload it (e.g. SARIF). typos still exits non-zero on a
         # finding, and the file is written before that exit, so the gate fails
         # AND the report exists. $PATHS unquoted so multiple targets word-split.
-        # shellcheck disable=SC2086
         if [[ -n "${REPORT_PATH// }" ]]; then
+          # shellcheck disable=SC2086
           typos "${args[@]}" $PATHS >"$REPORT_PATH"
         else
+          # shellcheck disable=SC2086
           typos "${args[@]}" $PATHS
         fi

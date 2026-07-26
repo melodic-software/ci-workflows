@@ -967,8 +967,8 @@ Comment hygiene is the intentional CI-only exception: its default policy ships
 inside the action and is resolved through `$GITHUB_ACTION_PATH`, so consumers do
 not need another repository file. `patterns-file` accepts a complete replacement
 for repositories with a genuinely different policy. The small configs under
-`fixtures/` exist only to exercise action contracts; they are not mirrors of the
-standards catalog.
+`fixtures/` exist only to exercise action and CI-check contracts; they are not
+mirrors of the standards catalog.
 
 [dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
 [default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
