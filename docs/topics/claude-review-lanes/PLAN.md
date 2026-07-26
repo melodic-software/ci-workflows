@@ -225,7 +225,7 @@ conventions + `distribution/governance-process.md` reconciliation step,
   block them forever; `pull_request` runs execute the workflow file from the MERGE
   COMMIT (a sync PR replacing a caller exercises the NEW caller on itself).
 
-### Phase 0: Throwaway probes, then the actionlint disposition [DOING]
+### Phase 0: Throwaway probes, then the actionlint disposition [DONE]
 
 Probes FIRST (devils-advocate F3: never spend an approval on a suppression before
 the probe proves the syntax works). Probes run on a throwaway ci-workflows branch
@@ -262,6 +262,40 @@ after. Only 0d (disposition) changes production files, post-approval.
 in this section; `git ls-remote origin 'refs/heads/*probe*'` returns empty after
 cleanup; 0d decision + explicit approval recorded here before any `queue:` line
 lands on a mainline branch.
+
+**Probe results (2026-07-26, branch `probe/claude-review-lanes` @ 6cd08df/6d30857/383a797,
+runs at `https://github.com/melodic-software/ci-workflows/actions/runs/<id>`):**
+
+- **0a — all three queue shapes ACCEPTED and serialize.** Two pushes 20s apart,
+  70s job sleeps; in every shape run 2's job started only after run 1's job
+  completed, conclusions all `success`, nothing cancelled, no workflow-file
+  validation errors:
+  - shape 1 (job-level `queue: max`, plain job): runs 30223256397 →
+    30223269024; job windows 22:30:12–22:31:24 → 22:31:28–22:32:41.
+  - shape 2 (SHIPPING SHAPE — job-level `queue: max` on a `uses:` job +
+    separate workflow-level `cancel-in-progress: true` block): runs
+    30223256437 → 30223269148; job windows 22:30:12–22:31:25 →
+    22:31:26–22:32:38. Coexisting blocks accepted.
+  - shape 3 (workflow-level `queue: max`, no cancel): runs 30223256330 →
+    30223269059; job windows 22:30:12–22:31:24 → 22:31:27–22:32:39.
+- **0b — `ready_for_review` delivers `draft=false`.** PR #270 probe: `opened`
+  (draft PR) echoed `draft=true` (run 30223287000); flip to ready echoed
+  `action=ready_for_review draft=false` (run 30223293451). Job-level
+  `if: github.event.pull_request.draft == false` is safe on this trigger.
+- **0c — kill-switch job-if states** (reusable mirroring the security lane's
+  job-if shape; repo variable `PROBE_DISABLED`): absent → inner `success`
+  (run 30223256367); `true` → inner `skipped`, `changes` job and RUN
+  conclusion `success` (run 30223269188) — skip is name-stable success;
+  `false` → inner `success` (run 30223470912). `vars.X != 'true'` semantics
+  confirmed for all three states.
+- **0d — actionlint disposition (option 1, pre-approved — Approval record
+  item 3).** Local pinned actionlint 1.7.12 reproduces the blocker verbatim
+  (`unexpected key "queue" for "concurrency" section [syntax-check]`).
+  Empirical config test: scratch repo with a `queue: max` workflow —
+  `.github/actionlint.yaml` carrying a `paths → ignore` entry scoped to that
+  message → exit 0; config removed → exit 1. Config key shape accepted by
+  1.7.12. Shipped as `.github/actionlint.yaml` with justification + removal
+  trigger (rhysd/actionlint#654); fleet distribution deferred to Phase 3c0.
 
 ### Phase 1: standards — REVIEW.md restructure + REVIEW-CREDENTIAL re-derivation [DOING]
 
