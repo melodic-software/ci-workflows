@@ -269,18 +269,16 @@ test("fork PRs skip the job instead of failing closed forever", () => {
     workflow.indexOf("      - name: Reject privileged triggers"),
   );
 
-  // A fork run gets no secrets, so no number of retries can make it pass.
+  // A fork run gets no secrets, so no number of retries can make it pass. The
+  // two halves are asserted as ONE clause on purpose: the fork test scoped to
+  // pull_request is a security control, not a style choice. Unscoped, it also
+  // matches a fork PR arriving via pull_request_target or workflow_run and
+  // would skip the job before `Reject privileged triggers` could hard-fail it,
+  // turning a consumer's dangerous misconfiguration into a green check.
   assert.match(
     jobCondition,
-    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/u,
-    "the job must skip fork PRs; without this the fail-closed mapping pins every fork PR red",
-  );
-  // Without this disjunct the empty head.repo on a non-PR event reads as a fork
-  // and would skip every workflow_dispatch / schedule invocation.
-  assert.match(
-    jobCondition,
-    /github\.event\.pull_request\.number == ''/u,
-    "the fork guard must not skip non-pull_request events",
+    /\(github\.event_name != 'pull_request'\s+\|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository\)/u,
+    "the job must skip fork PRs, and the fork test must stay scoped to pull_request so privileged triggers still reach the tripwire",
   );
   assert.match(
     jobCondition,
