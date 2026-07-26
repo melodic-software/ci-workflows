@@ -6,17 +6,42 @@ name: claude-security-review
 # ADVISORY VERDICT. A whole-job concern (own job permissions + secrets
 # interface), so a reusable workflow, not a composite action.
 #
-# POSTURE — advisory VERDICT, name-stable EXECUTION check:
-#   This lane POSTS a security review as PR comments; the Claude step is
-#   continue-on-error so an OIDC/usage-limit/SDK blip does not show as a red
-#   check, and findings never fail ci-status. The VERDICT (what the review says)
-#   stays advisory. What a consumer CAN gate is EXECUTION EVIDENCE: a ruleset
-#   may make the `security-review` check REQUIRED, so every protected-branch PR
-#   carries proof a security pass ran — or was judged not-applicable. The
-#   intended promotion path for the verdict itself: flip to blocking on CRITICAL
+# POSTURE — advisory VERDICT, FAIL-CLOSED EXECUTION check:
+#   This lane POSTS a security review as PR comments. The VERDICT (what the
+#   review says) stays ADVISORY: findings never fail the job, and the intended
+#   promotion path for the verdict itself is to flip to blocking on CRITICAL
 #   findings once the lane's precision is proven over a sustained window — an
 #   earned promotion (trust-before-scale), mirroring the guardrail-matrix
-#   verification-promotion discipline. Until then the verdict stays advisory.
+#   verification-promotion discipline.
+#
+#   EXECUTION is different, and it FAILS CLOSED. A consumer's ruleset may make
+#   the `security-review` check REQUIRED, so the check's whole claim is that a
+#   security pass RAN — or was judged not-applicable. When the PR IS in scope
+#   and the review could not run at all (usage limit, dead credential, SDK
+#   crash), the check therefore reports FAILURE: it cannot certify an execution
+#   that did not happen. `success`, `neutral` and `skipped` all satisfy a
+#   required check, so failure is the only conclusion that does not silently
+#   authorize a merge on absent evidence.
+#
+#   Scope of that claim, stated precisely: it holds for `pull_request` runs.
+#   Fork PRs and non-PR events (`merge_group`, `workflow_dispatch`, `schedule`)
+#   cannot run the review at all — no secrets, or an event the action rejects —
+#   so they keep the pass-through and their green is NOT execution evidence.
+#   See the fork bullet below and the guard in `Report review outcome`.
+#
+#   NARROWING AMENDMENT (#266, adjudicated; amends the #228 non-goal): infra
+#   pass-through is ratified for ADVISORY lanes — claude-review.yml still passes
+#   through, because a red check there gates nothing and an infra failure is not
+#   a code-quality signal. That rationale reasons from merge-irrelevance and so
+#   does not transfer here, where the check is the sole required security
+#   context. Required execution-evidence contexts fail closed. Measured before
+#   the change: 55 of 129 in-scope merges (42.6%) carried a green required check
+#   with no security pass at the merge head.
+#
+#   Availability is bought back two ways, not by weakening the claim: a bounded
+#   in-job retry absorbs the sporadic-429 class, and a sustained outage is meant
+#   to be overridden by an explicit, logged, attributable break-glass on the
+#   consumer's ruleset — never by a check that lies.
 #
 # ALWAYS-REPORT SHAPE — the caller does NOT path-filter at workflow level:
 #   A security pass on every PR is noise in a doc-heavy repo where most PRs are
@@ -43,7 +68,14 @@ name: claude-security-review
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
 #       merge_group:   # ONLY if the consumer runs a merge queue — without it
-#                      # the required check never reports for queued PRs
+#                      # the required check never reports for queued PRs.
+#                      # CAVEAT: the pinned action cannot serve merge_group (it
+#                      # is not a supported event type), so a queued run reports
+#                      # GREEN WITHOUT REVIEWING. That unblocks the queue, which
+#                      # is why the trigger is still listed — but on this event
+#                      # the check is NOT execution evidence, so a merge queue
+#                      # is not covered the way a pull_request gate is. Review
+#                      # of the PR itself is what carries the evidence.
 #     jobs:
 #       security-review:
 #         permissions:
@@ -75,7 +107,13 @@ name: claude-security-review
 #     The `reject-privileged-triggers` step is a tripwire that hard-fails those
 #     two events; every other event is allowed (the consumer keeps flexibility).
 #   - Fork PRs receive no secrets and a read-only token by design, so they are
-#     simply not reviewed — that is correct, not a gap to "fix".
+#     simply not reviewed — that is correct, not a gap to "fix". The job SKIPS
+#     them at job level rather than letting a doomed, secretless action run: with
+#     the fail-closed mapping above, running would turn every fork PR red for a
+#     cause no push can fix. A skipped job is name-stable and a ruleset reads it
+#     as success, exactly as for an out-of-scope PR — so a required check does
+#     NOT prove a fork PR was reviewed, and a human must review fork changes to
+#     security-sensitive surfaces before merge.
 #   - The action gates triggering on the actor's write access; bots are blocked
 #     unless named in `allowed_bots`.
 #   - `display_report` / `show_full_output` stay off (public-repo log-leak risk).
@@ -145,7 +183,17 @@ on:
       skip-actors:
         description: >-
           Comma-separated actors (no spaces) for whom the job skips entirely, to
-          save runner minutes on PRs that never need review. Empty reviews all.
+          save runner minutes on PRs that never need review.
+
+          Empty reviews all — but removing the default `dependabot[bot]` carries
+          a SECRET CONTRACT. A Dependabot-triggered run reads from the separate
+          Dependabot secrets store, never from Actions or organization secrets
+          (GitHub: "When a Dependabot event triggers a workflow, the only secrets
+          available to the workflow are Dependabot secrets"). Unless the consumer
+          mirrors CLAUDE_CODE_OAUTH_TOKEN into that store, the review cannot
+          authenticate, and because this lane FAILS CLOSED the required check
+          then blocks every Dependabot PR until an operator provisions it.
+          Mirror the secret first, or keep dependabot[bot] in this list.
         type: string
         default: dependabot[bot]
     secrets:
@@ -280,7 +328,9 @@ jobs:
   security-review:
     needs: changes
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 30
+    # Two review attempts plus the backoff now share this budget; sized so a slow
+    # first attempt cannot starve the retry into a timeout-shaped red check.
+    timeout-minutes: 45
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
@@ -293,10 +343,26 @@ jobs:
     # review still runs. A silent skip would let unreviewed security-relevant
     # changes merge, so paying for a run beats a silent evidence gap. always()
     # is deliberately avoided — a cancelled workflow should still stop.
+    #
+    # The fork clause is load-bearing for the FAIL-CLOSED mapping (see POSTURE):
+    # a fork-triggered pull_request run gets no secrets, so the SDK call cannot
+    # succeed no matter how often it is retried. Without this skip the mapping
+    # would pin every fork PR red permanently.
+    #
+    # It is scoped to `pull_request` for a security reason, not a stylistic one.
+    # An unscoped fork test also matches a fork PR arriving via
+    # pull_request_target / workflow_run — the two privileged triggers this
+    # workflow exists to reject — and would skip the job before `Reject
+    # privileged triggers` could hard-fail it, turning a consumer's dangerous
+    # misconfiguration into a green skipped check. Every non-pull_request event
+    # must reach that tripwire; the ones it allows through then take the
+    # pass-through path in `Report review outcome`.
     if: >-
       ${{ !cancelled()
           && needs.changes.outputs.relevant != 'false'
-          && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor)) }}
+          && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name == github.repository) }}
     permissions:
       contents: read
       pull-requests: write
@@ -391,8 +457,15 @@ jobs:
         id: claude-review
         if: steps.freshness.outputs.superseded != 'true'
         # claude-code-action exits non-zero only on infrastructure errors; review
-        # findings go to PR comments, not the exit code. continue-on-error keeps
-        # an OIDC/usage-limit/SDK blip from showing as a red check.
+        # findings go to PR comments, not the exit code.
+        #
+        # continue-on-error stays, but its job here is NOT to hide the failure
+        # (this lane fails closed — see POSTURE). It keeps the ACTION step from
+        # ending the job so the retry below gets its turn and `Report review
+        # outcome` can classify the failure into a machine-readable class. The
+        # red conclusion is raised deliberately by that outcome step, on the one
+        # signal that means "in scope and did not run", instead of incidentally
+        # by whichever step happened to exit first.
         continue-on-error: true
         uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
         with:
@@ -420,6 +493,87 @@ jobs:
             commit blob (not the PR) using a permalink with line numbers:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
+      # ONE bounded retry, because this lane now fails closed: a sporadic 429
+      # that a re-run would clear must not block a merge. Measured motivation —
+      # run 30217744377 failed in 25s with api_error_status 429 and returned a
+      # real verdict in 3m17s on a manual re-run.
+      #
+      # Deliberately ONE retry, not a loop: Actions cannot loop a `uses:` step,
+      # so every attempt is a verbatim copy of the step above, and each copy is a
+      # place where the two can silently diverge (the render test asserts they do
+      # not). The measured failure population does not justify more — sustained
+      # multi-hour blackouts dominate, and no in-job backoff survives those. They
+      # are meant to be handled by the consumer's break-glass, not by retrying.
+      # Gated on being a pull_request too: on the events the action rejects
+      # outright the first attempt always fails, so retrying only spends a
+      # runner and a minute of wall clock to throw again.
+      - name: Back off before the review retry
+        if: >-
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.claude-review.outcome == 'failure' &&
+          github.event.pull_request.number != ''
+        run: sleep 60
+
+      - name: Claude security review (retry)
+        id: claude-review-retry
+        if: >-
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.claude-review.outcome == 'failure' &&
+          github.event.pull_request.number != ''
+        # Same rationale as the first attempt: the outcome step owns the red.
+        continue-on-error: true
+        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A clean security pass otherwise produces no visible output (upstream
+          # #1071); the tracking comment guarantees a "no findings" signal.
+          track_progress: true
+          # Off on this public lane (log-leak risk); hardcoded, not a flippable
+          # input, so a consumer cannot turn it on.
+          display_report: false
+          allowed_bots: dependabot[bot]
+          exclude_comments_by_actor: dependabot[bot]
+          claude_args: ${{ inputs.claude-args }}
+          # github-context expressions must appear directly in the step (a value
+          # carried in via inputs.prompt is NOT re-evaluated), so the structural
+          # header + permalink guidance live here and wrap the consumer's body.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            ${{ inputs.prompt }}
+
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+      # Collapse the two attempts into the one pair of facts the outcome step
+      # needs. Reading the retry's fields directly would be wrong: when it is
+      # skipped its outcome is the literal `skipped` and its execution_file is
+      # empty, so the first attempt's result has to be the fallback.
+      - name: Resolve the effective review attempt
+        id: attempt
+        if: always() && steps.freshness.outputs.superseded != 'true'
+        env:
+          FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
+          FIRST_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          RETRY_OUTCOME: ${{ steps.claude-review-retry.outcome }}
+          RETRY_FILE: ${{ steps.claude-review-retry.outputs.execution_file }}
+        run: |
+          if [ "$RETRY_OUTCOME" = "skipped" ] || [ -z "$RETRY_OUTCOME" ]; then
+            outcome="$FIRST_OUTCOME"
+            execution_file="$FIRST_FILE"
+          else
+            echo "First attempt failed; reporting the retry's result instead."
+            outcome="$RETRY_OUTCOME"
+            execution_file="$RETRY_FILE"
+          fi
+          {
+            echo "outcome=$outcome"
+            echo "execution_file=$execution_file"
+          } >>"$GITHUB_OUTPUT"
+
       # Also gated on the guard: a superseded run has no outcome to report, and
       # skipping this step leaves review_failed empty so both marker-comment
       # steps below skip too — a retired run must not touch the newer run's PR
@@ -428,8 +582,9 @@ jobs:
         id: review-outcome
         if: always() && steps.freshness.outputs.superseded != 'true'
         env:
-          REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
-          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          REVIEW_OUTCOME: ${{ steps.attempt.outputs.outcome }}
+          EXECUTION_FILE: ${{ steps.attempt.outputs.execution_file }}
+          IS_PULL_REQUEST: ${{ github.event.pull_request.number != '' }}
         run: |
           if [ "$REVIEW_OUTCOME" = "success" ]; then
             echo "Claude security review completed. Findings (if any) are in the PR comments."
@@ -557,6 +712,38 @@ jobs:
 
           echo "review_failed=true" >> "$GITHUB_OUTPUT"
 
+          # Only a pull_request run gates a merge, so only a pull_request run
+          # fails closed. The action rejects other events outright — `merge_group`
+          # is not a supported event type at all, and `track_progress` (hardcoded
+          # on above) rejects every non-PR event — so those runs fail for a reason
+          # the head cannot fix and no retry can clear. Reddening them would wedge
+          # a consumer's merge queue permanently, and the comment steps below are
+          # PR-gated too, so the red would carry no explanation. They keep the
+          # historical pass-through: still annotated, still classified, not fatal.
+          # Tested for the PASS-THROUGH value, not the fail-closed one, so the
+          # default is closed: if this variable is ever unset or garbled — a
+          # deleted env line, a renamed step — the comparison is false and the
+          # run still fails closed. Written as `!= "true"` it would do the
+          # opposite, silently reverting #266 on every event.
+          if [ "$IS_PULL_REQUEST" = "false" ]; then
+            echo "Not a pull_request run; reporting the failure without failing the job."
+            exit 0
+          fi
+
+          # FAIL CLOSED (#266). Ordering is load-bearing: review_failed and the
+          # class are written to GITHUB_OUTPUT above, before this exit, so the
+          # two `always()`-gated comment steps below still fire and the PR still
+          # gets its infra-status comment. Exiting here is what makes the check
+          # report FAILURE, and failure is the only conclusion a required check
+          # does not accept — `neutral` and `skipped` both read as success, so
+          # neither can express "in scope and did not run".
+          #
+          # Reached only when the review was in scope, the head is still current,
+          # and both attempts failed. The three legitimate no-verdict paths never
+          # arrive here: out-of-scope and fork/skip-actor PRs skip the whole job,
+          # and a superseded head skips this step (leaving review_failed unset).
+          exit 1
+
       # Runs only on a genuine infra failure (never on a clean review) and only
       # when the token can write: fork-triggered pull_request runs get a
       # read-only GITHUB_TOKEN and no secrets by design (CLAUDE.md), so
@@ -598,7 +785,13 @@ jobs:
               `> - Failure class: \`${process.env.REVIEW_CLASS}\``,
               `> - Last SDK result: \`${process.env.REVIEW_DETAIL}\``,
               ">",
-              "> Re-running the job, or pushing a new commit, will retry the review.",
+              "> **The check is red on purpose.** It certifies that a security pass ran, and this one did not complete, so it cannot report success. Where this check is required, merging is blocked until a review actually finishes.",
+              ">",
+              "> Re-running the job, or pushing a new commit, will retry the review — one automatic retry already ran.",
+              ">",
+              "> Re-running does NOT help for every class:",
+              "> - `rate-limit` that persists across re-runs, or `auth` — the credential or usage budget needs an **operator**; retrying will not clear it.",
+              "> - a run that exhausted its turn budget (`\"subtype\":\"error_max_turns\"` above) will exhaust it again. **As the PR author**, split the change into smaller PRs; raising `--max-turns` is a change to the *caller workflow*, not something you can set on this PR.",
             ].join("\n");
 
             const comments = await github.paginate(github.rest.issues.listComments, {
