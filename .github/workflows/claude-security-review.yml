@@ -23,11 +23,19 @@ name: claude-security-review
 #   required check, so failure is the only conclusion that does not silently
 #   authorize a merge on absent evidence.
 #
-#   Scope of that claim, stated precisely: it holds for `pull_request` runs.
+#   CARVE-OUT — the claim holds for `pull_request` runs, and ONLY those.
 #   Fork PRs and non-PR events (`merge_group`, `workflow_dispatch`, `schedule`)
 #   cannot run the review at all — no secrets, or an event the action rejects —
 #   so they keep the pass-through and their green is NOT execution evidence.
 #   See the fork bullet below and the guard in `Report review outcome`.
+#
+#   The merge-queue half of that carve-out is TRACKED, not accepted forever:
+#   melodic-software/ci-workflows#272, blocked on claude-code-action supporting
+#   `merge_group` (it throws `Unsupported event type` at the pinned SHA), with
+#   the revisit trigger recorded there — any org repo adopting a merge queue on
+#   a branch this check protects. Latent today: no org repo runs one, and the
+#   only consumer requiring this check triggers on `pull_request` only. It
+#   matters when it fires, because a merge queue IS the merge gate.
 #
 #   NARROWING AMENDMENT (#266, adjudicated; amends the #228 non-goal): infra
 #   pass-through is ratified for ADVISORY lanes — claude-review.yml still passes
@@ -67,15 +75,13 @@ name: claude-security-review
 #     on:
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
-#       merge_group:   # ONLY if the consumer runs a merge queue — without it
-#                      # the required check never reports for queued PRs.
-#                      # CAVEAT: the pinned action cannot serve merge_group (it
-#                      # is not a supported event type), so a queued run reports
-#                      # GREEN WITHOUT REVIEWING. That unblocks the queue, which
-#                      # is why the trigger is still listed — but on this event
-#                      # the check is NOT execution evidence, so a merge queue
-#                      # is not covered the way a pull_request gate is. Review
-#                      # of the PR itself is what carries the evidence.
+#       # NO `merge_group:` — deliberately not recommended, see #272. The pinned
+#       # action cannot serve that event (it throws `Unsupported event type`), so
+#       # adding the trigger buys a check that reports GREEN WITHOUT REVIEWING.
+#       # On a merge queue — which IS the merge gate — that is worse than not
+#       # reporting: it looks like execution evidence and is not. A consumer who
+#       # enables a merge queue anyway should read #272 first; without the
+#       # trigger the check simply never reports for queued PRs.
 #     jobs:
 #       security-review:
 #         permissions:

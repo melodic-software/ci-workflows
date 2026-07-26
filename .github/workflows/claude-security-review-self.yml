@@ -11,8 +11,9 @@ name: Claude Security Review
 # `security-review` check Pending on a prose-only PR and wedge a required-check
 # ruleset. Triggering on every PR instead lets the reusable workflow's `changes`
 # job skip `security-review` for a prose PR, yielding a name-stable check.
-# (Like the pr-title dogfood, this caller stays pull_request-only; add
-# merge_group only when the repo actually runs a merge queue.)
+# (Like the pr-title dogfood, this caller stays pull_request-only. Do NOT add
+# merge_group even if this repo adopts a merge queue — the pinned action cannot
+# serve that event, so the check would report green without reviewing; see #272.)
 #
 # Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
 # "selected repositories" scope (UI-managed); without it, fork PRs and an
