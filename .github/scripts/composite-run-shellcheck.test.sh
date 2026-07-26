@@ -47,6 +47,23 @@ fi
 cat -- "$mapping"
 grep -F 'runs.steps is not a sequence' "$mapping"
 
+# GitHub's custom-shell form (`command [...options] {0}`) is run with the
+# leading command word, so actionlint resolves the dialect by prefix and this
+# check must too — matching only the bare names would leave a block GitHub runs
+# with bash unchecked while the job stayed green. Asserted as `check` lines, not
+# merely as an exit code: the count guard only compares two selectors, so it
+# agrees when both are wrong.
+custom="$temp/composite-run-shellcheck-custom-shell.txt"
+bash "$check" fixtures/composite-action/custom-shell/action.yml >"$custom" 2>&1
+cat -- "$custom"
+grep -F 'runs.steps[1] (shell: bash)' "$custom"
+grep -F 'runs.steps[2] (shell: sh)' "$custom"
+grep -F 'runs.steps[3]: shell is pwsh, not bash/sh' "$custom"
+if [[ "$(grep -c '^check fixtures/composite-action/custom-shell/' "$custom")" -ne 3 ]]; then
+  echo 'Expected exactly three checked blocks in the custom-shell fixture.' >&2
+  exit 1
+fi
+
 # Coverage floor. The check announces every file discovery reaches, so every
 # tracked composite must appear by name: discovery that quietly reaches one
 # action instead of all of them is otherwise a clean green. Keyed on the visit

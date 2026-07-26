@@ -1,0 +1,28 @@
+name: custom-shell-composite
+description: >-
+  Every shell shape the selector must classify, in one file: the two bare
+  names, GitHub's custom-shell form (`command [...options] {0}`) for each of
+  them, and a dialect ShellCheck cannot read. The custom forms are the point —
+  GitHub runs them with bash and sh, so an exact-name selector would skip them
+  while the job stayed green. composite-run-shellcheck.test.sh asserts the two
+  custom forms are checked rather than skipped, and that the independent block
+  count agrees with what extraction produced.
+
+runs:
+  using: composite
+  steps:
+    - name: Bare bash
+      shell: bash
+      run: echo 'bare bash'
+
+    - name: Custom bash
+      shell: bash --noprofile --norc -eo pipefail {0}
+      run: echo 'custom bash'
+
+    - name: Custom sh
+      shell: sh -e {0}
+      run: echo 'custom sh'
+
+    - name: Not a shell ShellCheck handles
+      shell: pwsh
+      run: Write-Output 'skipped out loud'

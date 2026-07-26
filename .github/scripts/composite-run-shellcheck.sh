@@ -82,7 +82,7 @@ for file in "${files[@]}"; do
   # selector that silently matches nothing is caught rather than passing as a
   # zero-block success — the false green this check exists to prevent.
   expected="$(yq -r \
-    '[.runs.steps[] | select(has("run")) | select(.shell == "bash" or .shell == "sh")] | length' \
+    '[.runs.steps[] | select(has("run")) | select((.shell // "") | test("^(bash|sh)( |$)"))] | length' \
     "$file")"
   produced=0
 
@@ -99,8 +99,16 @@ for file in "${files[@]}"; do
       exit 1
     fi
 
+    # actionlint's own dialect resolution (rule_shellcheck.go): the bare names,
+    # plus GitHub's custom-shell form `command [...options] {0}`, whose dialect
+    # is the leading command word. Matching only the bare names would leave a
+    # block GitHub runs with bash unchecked while the job stayed green — the
+    # coverage hole this check exists to close. Only the case sees the raw
+    # scalar; everything downstream uses the resolved dialect, so no option text
+    # reaches a filename.
     case "$shell" in
-    bash | sh) ;;
+    bash | 'bash '*) dialect='bash' ;;
+    sh | 'sh '*) dialect='sh' ;;
     '')
       echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
       exit 1
@@ -111,14 +119,14 @@ for file in "${files[@]}"; do
       ;;
     esac
 
-    relative="$file.step-$index.$shell"
+    relative="$file.step-$index.$dialect"
     destination="$workdir/$relative"
     mkdir -p -- "$(dirname -- "$destination")"
     {
       # The options GitHub itself runs the step's shell with, prepended as
       # actionlint does. It occupies line 1, so ShellCheck's reported line N is
       # line N-1 of the `run:` body.
-      if [[ "$shell" == bash ]]; then
+      if [[ "$dialect" == bash ]]; then
         echo 'set -eo pipefail'
       else
         echo 'set -e'
@@ -126,12 +134,12 @@ for file in "${files[@]}"; do
       yq -r ".runs.steps[$index].run" "$file" | sanitize_expressions
     } >"$destination"
     produced=$((produced + 1))
-    if [[ "$shell" == bash ]]; then
+    if [[ "$dialect" == bash ]]; then
       bash_scripts+=("$relative")
     else
       sh_scripts+=("$relative")
     fi
-    printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$shell"
+    printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$dialect"
   done < <(yq -r \
     '.runs.steps | to_entries[] | select(.value | has("run")) | (.key | tostring) + "\t" + (.value.shell // "")' \
     "$file")
