@@ -371,6 +371,8 @@ jobs:
           package-manager-cache: false
       - name: Test selector and generated workflow contracts
         run: node --test .github/scripts/*.test.cjs
+      - name: Test Claude lane outcome classifier
+        run: node --test .github/actions/claude-lane-outcome/*.test.cjs
       - name: Test OSV scan policy guard
         run: bash .github/scripts/osv-scan-guard.test.sh
       - name: Test OSV release digest parsing

@@ -1,0 +1,127 @@
+name: claude-lane-marker-comment
+description: >-
+  Marker-comment lifecycle for the Claude lanes. In post-failure mode it
+  upserts a warning comment on the PR identifying an infrastructure failure;
+  in clear-on-success mode it deletes a stale warning left by an earlier
+  failed run. Targets the marker comment by ID (never --edit-last, which
+  edits the PR's last comment from ANY author) so a stuck placeholder comment
+  from track_progress is never mistaken for "no findings" and an unrelated
+  bot comment is never clobbered. Owns the fork-PR guard: fork-triggered
+  pull_request runs get a read-only GITHUB_TOKEN and no secrets by design, so
+  commenting would just fail there — the action no-ops instead. Runs on the
+  github-script Node runtime — no gh CLI or other runner-image dependency.
+  Reporting an outage must never become one: callers should set
+  continue-on-error on the step invoking this action so a rejected API call
+  never turns the lane red.
+
+inputs:
+  marker:
+    description: >-
+      HTML-comment marker identifying this lane's status comment, e.g.
+      "<!-- claude-review-infra-status -->".
+    required: true
+  mode:
+    description: '"post-failure" to upsert the warning, "clear-on-success" to delete it.'
+    required: true
+  headline:
+    description: >-
+      Bold headline for the warning body (post-failure mode), e.g.
+      "Automated review did not complete".
+    required: false
+    default: "Automated review did not complete"
+  failure-class:
+    description: "The failure class token to show (post-failure mode)."
+    required: false
+    default: ""
+  review-detail:
+    description: "The safe SDK-result projection to show (post-failure mode)."
+    required: false
+    default: ""
+  body-copy:
+    description: >-
+      Trailing guidance line of the warning body (post-failure mode).
+    required: false
+    default: "Re-running the job, or pushing a new commit, will retry the review."
+
+runs:
+  using: composite
+  steps:
+    - name: Manage lane marker comment
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        MARKER: ${{ inputs.marker }}
+        MODE: ${{ inputs.mode }}
+        HEADLINE: ${{ inputs.headline }}
+        REVIEW_CLASS: ${{ inputs.failure-class }}
+        REVIEW_DETAIL: ${{ inputs.review-detail }}
+        BODY_COPY: ${{ inputs.body-copy }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      with:
+        script: |
+          const marker = process.env.MARKER;
+          const mode = process.env.MODE;
+          if (mode !== "post-failure" && mode !== "clear-on-success") {
+            core.setFailed(`Unknown mode "${mode}" — expected post-failure or clear-on-success.`);
+            return;
+          }
+
+          const pr = context.payload.pull_request;
+          if (!pr?.number) {
+            core.info("No pull request in this event; nothing to do.");
+            return;
+          }
+          if (pr.head?.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+            core.info("Fork-triggered run has a read-only token; skipping comment management.");
+            return;
+          }
+
+          const comments = await github.paginate(github.rest.issues.listComments, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: pr.number,
+          });
+          const marked = comments.filter(
+            (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker),
+          );
+          const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
+
+          if (mode === "clear-on-success") {
+            if (existing) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+              });
+            }
+            return;
+          }
+
+          const body = [
+            marker,
+            "> [!WARNING]",
+            `> **${process.env.HEADLINE}** — this is an infrastructure failure, not a review verdict.`,
+            ">",
+            "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"",
+            ">",
+            `> - Run: ${process.env.RUN_URL}`,
+            `> - Failure class: \`${process.env.REVIEW_CLASS}\``,
+            `> - Last SDK result: \`${process.env.REVIEW_DETAIL}\``,
+            ">",
+            `> ${process.env.BODY_COPY}`,
+          ].join("\n");
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });
+          }

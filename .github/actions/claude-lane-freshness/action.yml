@@ -1,0 +1,54 @@
+name: claude-lane-freshness
+description: >-
+  Live freshness guard for the Claude lanes. A stale run must retire itself,
+  not rely on being cancelled: with a per-head concurrency key, nothing
+  cancels a run whose head was superseded while it sat in a queue. Asks the
+  live API whether this event's head is still the PR's head; when it is not,
+  a newer run owns the review, so every runner-consuming step downstream
+  should skip (posting feedback for an obsolete head is worse than doing
+  nothing, and the newer run also owns the marker-comment lifecycle). Fails
+  open — `!= 'true'` step gates treat a missing output as fresh, and only a
+  response shaped like a commit SHA may retire the run (a degenerate success
+  such as a literal `null` must not) — so an API anomaly degrades to
+  reviewing a possibly-stale head, never to silence. actions/github-script
+  rather than a `gh api` run step: the calling reusable runs on whatever
+  runner its caller selected, and a self-hosted image is not guaranteed to
+  ship the gh CLI (same pattern as do-not-merge-gate.yml).
+
+outputs:
+  superseded:
+    description: >-
+      "true" when the PR head moved past this event's head, "false" when the
+      head is current or the check could not be made, empty when the step
+      skipped (no PR in the event). Gate downstream steps with `!= 'true'`.
+    value: ${{ steps.freshness.outputs.superseded }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check whether this head is still current
+      id: freshness
+      if: github.event.pull_request.number != ''
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      with:
+        script: |
+          let liveHead = "";
+          try {
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            liveHead = pr.head.sha;
+          } catch (error) {
+            core.warning(`Could not refetch the PR head; treating this run as fresh: ${error.message}`);
+          }
+          const eventHeadSha = process.env.EVENT_HEAD_SHA ?? "";
+          if (/^[0-9a-f]{40}$/.test(liveHead) && liveHead !== eventHeadSha) {
+            core.notice(`Skipping review: the PR head moved from ${eventHeadSha} to ${liveHead}, so a newer run owns the review.`);
+            core.setOutput("superseded", "true");
+          } else {
+            core.setOutput("superseded", "false");
+          }
