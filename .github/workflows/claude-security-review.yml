@@ -465,6 +465,17 @@ jobs:
           #      that the API SDK folds into an APIError's message, and so into its stack.
           #   3. other.
           #
+          # The allowlist mirrors the status mapping type-for-type, so a payload that
+          # recovers no numeric status still lands in the same class the status would
+          # have chosen. Against the published error table that is: `authentication_error`
+          # (401), `billing_error` (402), `permission_error` (403) -> auth;
+          # `rate_limit_error` (429) -> rate-limit; `api_error` (500), `timeout_error`
+          # (504), `overloaded_error` (529) -> overloaded. The remaining published types
+          # — `invalid_request_error` (400), `not_found_error` (404), `conflict_error`
+          # (409), `request_too_large` (413) — are client errors, not infrastructure, and
+          # are deliberately left to `other` on both paths. Adding a type to one path
+          # without the other reopens the asymmetry this note exists to prevent.
+          #
           # `auth` is the credential-unusable class, not the 401-only class: it covers
           # every status where the credential cannot be used until a human acts. Per the
           # published error table that is 401 `authentication_error`, 402 `billing_error`,
@@ -506,6 +517,7 @@ jobs:
                         or contains("\"type\":\"permission_error\""))) then "auth"
                       elif ($text | contains("\"type\":\"rate_limit_error\"")) then "rate-limit"
                       elif ($text | (contains("\"type\":\"overloaded_error\"")
+                        or contains("\"type\":\"timeout_error\"")
                         or contains("\"type\":\"api_error\""))) then "overloaded"
                       else "other"
                       end

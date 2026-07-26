@@ -104,7 +104,7 @@ assert_class 'unmapped status' other \
 assert_class 'null status with auth text' auth \
   "$(result_message null "{\"errors\":[$diagnostic,$(api_error_body authentication_error)]}")"
 
-# 9-14. The error-variant substring pass, one case per allowlisted token.
+# 9-15. The error-variant substring pass, one case per allowlisted token.
 assert_class 'authentication_error' auth \
   "$(error_message "[$diagnostic,$(api_error_body authentication_error)]")"
 assert_class 'billing_error' auth \
@@ -115,26 +115,35 @@ assert_class 'rate_limit_error' rate-limit \
   "$(error_message "[$diagnostic,$(api_error_body rate_limit_error)]")"
 assert_class 'overloaded_error' overloaded \
   "$(error_message "[$diagnostic,$(api_error_body overloaded_error)]")"
+assert_class 'timeout_error' overloaded \
+  "$(error_message "[$diagnostic,$(api_error_body timeout_error)]")"
 assert_class 'api_error' overloaded \
   "$(error_message "[$diagnostic,$(api_error_body api_error)]")"
 
-# 15. The synthetic diagnostic line alone must not match any token, even though
+# 16-17. The client-error types stay `other` on the substring path exactly as they
+#     do on the status path: they are not infrastructure failures.
+assert_class 'invalid_request_error' other \
+  "$(error_message "[$diagnostic,$(api_error_body invalid_request_error)]")"
+assert_class 'not_found_error' other \
+  "$(error_message "[$diagnostic,$(api_error_body not_found_error)]")"
+
+# 18. The synthetic diagnostic line alone must not match any token, even though
 #     it can carry the literal text `api_error` in its result_type field.
 assert_class 'diagnostic only' other "$(error_message "[$diagnostic]")"
 
-# 16. The observed incident payload, whose projection carried no class field at
+# 19. The observed incident payload, whose projection carried no class field at
 #     all: no status, no errors, nothing to classify.
 assert_class 'unclassifiable' other \
   '[{"type":"result","subtype":"success","is_error":true,"num_turns":1,"duration_ms":1856,"total_cost_usd":0}]'
 
-# 17. The class token joins the safe projection alongside the numeric status.
+# 20. The class token joins the safe projection alongside the numeric status.
 run "$(result_message 401)"
 [[ "$(jq -r '.class' <<<"$detail")" == auth ]] || fail "projection: missing class ($detail)"
 [[ "$(jq -r '.api_error_status' <<<"$detail")" == 401 ]] || fail "projection: missing status ($detail)"
 [[ "$(jq -r 'has("result") or has("errors")' <<<"$detail")" == false ]] ||
   fail "projection: leaked a free-text field ($detail)"
 
-# 18. An unparsable execution file degrades to `other` and says so, rather than
+# 21. An unparsable execution file degrades to `other` and says so, rather than
 #     emitting an empty detail that reads as a successful projection.
 run
 jq -c . <<<'[]' >"$execution_file"
@@ -149,7 +158,7 @@ run
 [[ "$detail" == '(execution file present but unparsable)' ]] ||
   fail "unparsable: unexpected detail '$detail'"
 
-# 19. No execution file at all (the action failed before producing one).
+# 22. No execution file at all (the action failed before producing one).
 rm -f -- "$execution_file"
 run
 [[ "$class" == other ]] || fail "missing file: expected other, got '$class'"
@@ -164,7 +173,7 @@ rm -f -- "$github_output"
 [[ "$detail" == '(no execution file was produced)' ]] ||
   fail "empty EXECUTION_FILE: unexpected detail '$detail'"
 
-# 20. An unset GITHUB_OUTPUT fails closed instead of silently discarding the
+# 23. An unset GITHUB_OUTPUT fails closed instead of silently discarding the
 #     class the annotation and the PR comment are both keyed on.
 #     `env -u` is required, not cosmetic: a GitHub runner exports GITHUB_OUTPUT
 #     into every step, so merely omitting the assignment would inherit the real
