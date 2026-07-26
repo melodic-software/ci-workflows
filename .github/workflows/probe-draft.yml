@@ -1,0 +1,22 @@
+# Throwaway probe (claude-review-lanes Phase 0b): echo the pull_request.draft
+# payload value on opened and ready_for_review. Deleted with the probe branch.
+name: probe-draft
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  echo-draft:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      EVENT_ACTION: ${{ github.event.action }}
+      PR_DRAFT: ${{ github.event.pull_request.draft }}
+    steps:
+      - name: Echo draft payload
+        run: |
+          echo "action=${EVENT_ACTION}"
+          echo "draft=${PR_DRAFT}"
