@@ -60,6 +60,13 @@ runs:
         script: |
           const marker = process.env.MARKER;
           const mode = process.env.MODE;
+          if (!/^<!--.+-->$/.test(marker ?? "")) {
+            core.setFailed(
+              `Marker must be a nonempty HTML comment like "<!-- lane-status -->" (got "${marker}") — ` +
+                "an empty or malformed marker would match unrelated bot comments.",
+            );
+            return;
+          }
           if (mode !== "post-failure" && mode !== "clear-on-success") {
             core.setFailed(`Unknown mode "${mode}" — expected post-failure or clear-on-success.`);
             return;
