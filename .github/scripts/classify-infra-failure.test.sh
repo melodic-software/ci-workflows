@@ -166,8 +166,12 @@ rm -f -- "$github_output"
 
 # 20. An unset GITHUB_OUTPUT fails closed instead of silently discarding the
 #     class the annotation and the PR comment are both keyed on.
+#     `env -u` is required, not cosmetic: a GitHub runner exports GITHUB_OUTPUT
+#     into every step, so merely omitting the assignment would inherit the real
+#     one — the case would pass vacuously on a workstation and fail in CI, and
+#     the run would append this probe's outputs to the live step output.
 set +e
-out="$(EXECUTION_FILE="" bash "$core" 2>&1)"
+out="$(env -u GITHUB_OUTPUT EXECUTION_FILE="" bash "$core" 2>&1)"
 status=$?
 set -e
 [[ "$status" != 0 ]] || fail "unset GITHUB_OUTPUT: expected non-zero exit, got 0 ($out)"
