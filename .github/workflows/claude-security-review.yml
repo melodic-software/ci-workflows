@@ -573,6 +573,12 @@ jobs:
           always() && steps.review-outcome.outputs.review_failed == 'true' &&
           github.event.pull_request.number != '' &&
           github.event.pull_request.head.repo.full_name == github.repository
+        # Reporting an outage must never become one. This step only annotates a
+        # PR, and its API calls can reject for reasons entirely unrelated to the
+        # code under review — a rejected listComments/createComment would
+        # otherwise fail the job through github-script's own error handling,
+        # turning the infra-failure path red without any explicit failure call.
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -635,6 +641,10 @@ jobs:
           always() && steps.review-outcome.outputs.review_failed == 'false' &&
           github.event.pull_request.number != '' &&
           github.event.pull_request.head.repo.full_name == github.repository
+        # Symmetric to the failure step above: tidying a stale comment is
+        # housekeeping, and a rejected API call during it must not turn a
+        # successful review red.
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
