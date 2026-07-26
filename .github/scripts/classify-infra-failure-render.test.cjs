@@ -70,55 +70,61 @@ function stepSource(workflow, stepName) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-// Passing the check on an infrastructure failure is an operator-ratified
-// non-goal, and until now it was guarded only by reading the file. It is the
-// single invariant this whole design rests on: the review lane reports a
-// verdict, never an outage. A future edit that adds a nonzero exit to the
-// outcome step — or drops continue-on-error from the action step — would flip
-// every Anthropic-side blip into a merge blocker across every consumer repo,
-// and nothing in CI would have caught it.
-test("an infrastructure failure never fails the review job", () => {
+// The two lanes diverge here, and the difference is the whole point (#266,
+// adjudicated; narrowing the #228 non-goal). Infra pass-through is ratified for
+// the ADVISORY lane: `review / review` gates nothing whether it is green or red,
+// so reddening it on an Anthropic-side blip buys no safety and costs noise —
+// an infra failure is not a code-quality signal.
+//
+// That rationale reasons from merge-irrelevance, so it does not transfer to the
+// SECURITY lane, whose check is required precisely to prove a pass ran. There,
+// passing on an infra failure certifies an execution that did not happen; it is
+// asserted to fail closed by claude-security-review-fail-closed.test.cjs, which
+// replays a rate-limited payload through the real outcome step.
+//
+// Both directions are pinned, because both are one edit away from silently
+// inverting across every consumer repo.
+test("an infrastructure failure never fails the ADVISORY review job", () => {
+  const name = "claude-review.yml";
+  const source = workflowSource(name);
+
+  // The action exits nonzero on infra errors; continue-on-error is what keeps
+  // that off the check's conclusion.
+  assert.match(
+    stepSource(source, "Claude review"),
+    /^ {8}continue-on-error: true$/mu,
+    `${name} must keep continue-on-error on the action step`,
+  );
+
+  // The outcome step reports the failure; it must not become the failure.
+  const outcome = stepSource(source, "Report review outcome");
+  const exits = [...outcome.matchAll(/^\s*exit\s+(\d+)\s*$/gmu)].map(
+    (match) => match[1],
+  );
+  assert.ok(
+    exits.length > 0,
+    `${name}: expected the outcome step to exit explicitly`,
+  );
+  for (const code of exits) {
+    assert.equal(
+      code,
+      "0",
+      `${name}: the advisory lane's outcome step must not exit nonzero on an infra failure (found exit ${code}). If this lane is being promoted to a required check, that is a posture change needing its own ratification — see #266.`,
+    );
+  }
+});
+
+// Applies to BOTH lanes: whatever a lane's conclusion policy is, the steps that
+// merely annotate the PR must never be what decides it. These are
+// actions/github-script steps, so a shell `exit` check would never fire on them.
+// Two mechanisms can fail a JS step: an explicit failure call, and an unhandled
+// rejection — every one of these steps awaits GitHub API calls that can reject
+// for reasons unrelated to the code under review, and github-script turns a
+// rejection into a failed step on its own. Only continue-on-error covers that
+// second path, so it is asserted rather than assumed.
+test("the comment steps never decide either lane's conclusion", () => {
   for (const name of consumers) {
     const source = workflowSource(name);
-
-    // The action exits nonzero on infra errors; continue-on-error is what keeps
-    // that off the check's conclusion.
-    assert.match(
-      stepSource(
-        source,
-        name === "claude-review.yml"
-          ? "Claude review"
-          : "Claude security review",
-      ),
-      /^ {8}continue-on-error: true$/mu,
-      `${name} must keep continue-on-error on the action step`,
-    );
-
-    // The outcome step reports the failure; it must not become the failure.
-    const outcome = stepSource(source, "Report review outcome");
-    const exits = [...outcome.matchAll(/^\s*exit\s+(\d+)\s*$/gmu)].map(
-      (match) => match[1],
-    );
-    assert.ok(
-      exits.length > 0,
-      `${name}: expected the outcome step to exit explicitly`,
-    );
-    for (const code of exits) {
-      assert.equal(
-        code,
-        "0",
-        `${name}: the outcome step must not exit nonzero on an infra failure (found exit ${code})`,
-      );
-    }
-
-    // Nor may the steps that surface the failure turn it into one. These are
-    // actions/github-script steps, so a shell `exit` check would never fire on
-    // them. Two mechanisms can fail a JS step: an explicit failure call, and an
-    // unhandled rejection — every one of these steps awaits GitHub API calls
-    // that can reject for reasons unrelated to the code under review, and
-    // github-script turns a rejection into a failed step on its own. Only
-    // continue-on-error covers that second path, so it is asserted rather than
-    // assumed.
     for (const step of [
       "Comment on genuine review failure",
       "Clear stale failure comment after successful review",
