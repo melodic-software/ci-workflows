@@ -23,6 +23,12 @@ name: claude-security-review
 #   required check, so failure is the only conclusion that does not silently
 #   authorize a merge on absent evidence.
 #
+#   Scope of that claim, stated precisely: it holds for `pull_request` runs.
+#   Fork PRs and non-PR events (`merge_group`, `workflow_dispatch`, `schedule`)
+#   cannot run the review at all — no secrets, or an event the action rejects —
+#   so they keep the pass-through and their green is NOT execution evidence.
+#   See the fork bullet below and the guard in `Report review outcome`.
+#
 #   NARROWING AMENDMENT (#266, adjudicated; amends the #228 non-goal): infra
 #   pass-through is ratified for ADVISORY lanes — claude-review.yml still passes
 #   through, because a red check there gates nothing and an infra failure is not
@@ -62,7 +68,14 @@ name: claude-security-review
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
 #       merge_group:   # ONLY if the consumer runs a merge queue — without it
-#                      # the required check never reports for queued PRs
+#                      # the required check never reports for queued PRs.
+#                      # CAVEAT: the pinned action cannot serve merge_group (it
+#                      # is not a supported event type), so a queued run reports
+#                      # GREEN WITHOUT REVIEWING. That unblocks the queue, which
+#                      # is why the trigger is still listed — but on this event
+#                      # the check is NOT execution evidence, so a merge queue
+#                      # is not covered the way a pull_request gate is. Review
+#                      # of the PR itself is what carries the evidence.
 #     jobs:
 #       security-review:
 #         permissions:
@@ -481,17 +494,22 @@ jobs:
       # not). The measured failure population does not justify more — sustained
       # multi-hour blackouts dominate, and no in-job backoff survives those. They
       # are meant to be handled by the consumer's break-glass, not by retrying.
+      # Gated on being a pull_request too: on the events the action rejects
+      # outright the first attempt always fails, so retrying only spends a
+      # runner and a minute of wall clock to throw again.
       - name: Back off before the review retry
         if: >-
           steps.freshness.outputs.superseded != 'true' &&
-          steps.claude-review.outcome == 'failure'
+          steps.claude-review.outcome == 'failure' &&
+          github.event.pull_request.number != ''
         run: sleep 60
 
       - name: Claude security review (retry)
         id: claude-review-retry
         if: >-
           steps.freshness.outputs.superseded != 'true' &&
-          steps.claude-review.outcome == 'failure'
+          steps.claude-review.outcome == 'failure' &&
+          github.event.pull_request.number != ''
         # Same rationale as the first attempt: the outcome step owns the red.
         continue-on-error: true
         uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
@@ -692,7 +710,12 @@ jobs:
           # a consumer's merge queue permanently, and the comment steps below are
           # PR-gated too, so the red would carry no explanation. They keep the
           # historical pass-through: still annotated, still classified, not fatal.
-          if [ "$IS_PULL_REQUEST" != "true" ]; then
+          # Tested for the PASS-THROUGH value, not the fail-closed one, so the
+          # default is closed: if this variable is ever unset or garbled — a
+          # deleted env line, a renamed step — the comparison is false and the
+          # run still fails closed. Written as `!= "true"` it would do the
+          # opposite, silently reverting #266 on every event.
+          if [ "$IS_PULL_REQUEST" = "false" ]; then
             echo "Not a pull_request run; reporting the failure without failing the job."
             exit 0
           fi
@@ -752,11 +775,13 @@ jobs:
               `> - Failure class: \`${process.env.REVIEW_CLASS}\``,
               `> - Last SDK result: \`${process.env.REVIEW_DETAIL}\``,
               ">",
-              "> **The check is red on purpose.** It certifies that a security pass ran, and none did, so it cannot report success. Where this check is required, merging is blocked until a review actually completes.",
+              "> **The check is red on purpose.** It certifies that a security pass ran, and this one did not complete, so it cannot report success. Where this check is required, merging is blocked until a review actually finishes.",
               ">",
               "> Re-running the job, or pushing a new commit, will retry the review — one automatic retry already ran.",
               ">",
-              "> Re-running does NOT help for every class. `auth`, or `rate-limit` that persists across re-runs, needs an operator (credential or usage budget). A run that exhausted its turn budget on an oversized diff will exhaust it again — split the PR or raise `claude-args: --max-turns`.",
+              "> Re-running does NOT help for every class:",
+              "> - `rate-limit` that persists across re-runs, or `auth` — the credential or usage budget needs an **operator**; retrying will not clear it.",
+              "> - a run that exhausted its turn budget (`\"subtype\":\"error_max_turns\"` above) will exhaust it again. **As the PR author**, split the change into smaller PRs; raising `--max-turns` is a change to the *caller workflow*, not something you can set on this PR.",
             ].join("\n");
 
             const comments = await github.paginate(github.rest.issues.listComments, {

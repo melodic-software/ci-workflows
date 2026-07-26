@@ -372,4 +372,28 @@ test("the outcome step reads the resolved attempt, not just the first one", () =
     /^ {10}EXECUTION_FILE: \$\{\{ steps\.attempt\.outputs\.execution_file \}\}$/mu,
     "the classified payload must come from the attempt that actually ran last",
   );
+  // The harness supplies this variable itself, so without pinning the YAML a
+  // deleted or incorrect env line would leave it unset in CI and every event
+  // would take the pass-through branch — reverting #266 silently, and in the
+  // fail-OPEN direction this suite exists to prevent.
+  assert.match(
+    step,
+    /^ {10}IS_PULL_REQUEST: \$\{\{ github\.event\.pull_request\.number != '' \}\}$/mu,
+    "a missing or incorrect IS_PULL_REQUEST disables fail-closed on every event",
+  );
+});
+
+// Belt and braces with the assertion above: even if the wiring is lost, the
+// guard's sense must keep an unset value on the fail-closed path.
+test("an unset IS_PULL_REQUEST fails closed rather than passing through", () => {
+  const result = reportOutcome({
+    outcome: "failure",
+    executionFileContents: rateLimitedExecutionFile(),
+    isPullRequest: "",
+  });
+  assert.equal(
+    result.status,
+    1,
+    `an absent IS_PULL_REQUEST must not be read as "not a pull request"\n${result.stdout}\n${result.stderr}`,
+  );
 });
