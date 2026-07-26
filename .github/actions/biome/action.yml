@@ -48,4 +48,5 @@ runs:
           echo "::error::biome: config file not found: $CONFIG"
           exit 2
         fi
+        # shellcheck disable=SC2086
         npx --yes "@biomejs/biome@$VERSION" ci --config-path="$CONFIG" --error-on-warnings --reporter=github $PATHS

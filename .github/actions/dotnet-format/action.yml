@@ -55,7 +55,9 @@ runs:
       # analyzers), so it never double-reports what the build enforces.
       # --verify-no-changes exits non-zero on any file that is not already
       # formatted. $PROJECT is unquoted so an empty value expands to nothing.
-      run: dotnet format whitespace $PROJECT --verify-no-changes
+      run: |
+        # shellcheck disable=SC2086
+        dotnet format whitespace $PROJECT --verify-no-changes
 
     - name: Verify import ordering
       shell: bash
@@ -67,4 +69,6 @@ runs:
       # re-reporting whitespace or any other IDExxxx/CAxxxx rule the build
       # already owns — so the build, whitespace lane, and this lane never
       # double-report.
-      run: dotnet format style $PROJECT --diagnostics IDE0055 --verify-no-changes
+      run: |
+        # shellcheck disable=SC2086
+        dotnet format style $PROJECT --diagnostics IDE0055 --verify-no-changes

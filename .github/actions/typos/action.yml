@@ -83,6 +83,7 @@ runs:
         # the gate pass below owns pass/fail; col is the 1-based byte offset.
         # $PATHS unquoted so multiple targets word-split.
         if [[ "$ANNOTATIONS" == "true" ]]; then
+          # shellcheck disable=SC2086
           typos "${args[@]}" --format json $PATHS 2>/dev/null \
             | jq -r 'select(.type == "typo")
                 | "::warning file=\(.path),line=\(.line_num),col=\(.byte_offset + 1)::\"\(.typo)\" should be \"\(.corrections | join("\", \""))\"."' \
@@ -94,6 +95,7 @@ runs:
         # a caller can upload it (e.g. SARIF). typos still exits non-zero on a
         # finding, and the file is written before that exit, so the gate fails
         # AND the report exists. $PATHS unquoted so multiple targets word-split.
+        # shellcheck disable=SC2086
         if [[ -n "${REPORT_PATH// }" ]]; then
           typos "${args[@]}" $PATHS >"$REPORT_PATH"
         else

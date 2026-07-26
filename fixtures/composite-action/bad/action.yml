@@ -1,0 +1,26 @@
+name: broken-composite
+description: >-
+  Intentionally broken composite action. Its bash run: block carries an
+  unquoted expansion that ShellCheck reports as SC2086, and a pwsh step the
+  shell selector must skip out loud. It lives outside .github/actions so the
+  real lane never scans it; composite-run-shellcheck.test.sh points the check
+  at this file and asserts the check fails.
+
+runs:
+  using: composite
+  steps:
+    - name: Unquoted expansion
+      shell: bash
+      env:
+        PATHS: ${{ github.action_path }}
+      run: |
+        # The inline expression exercises the ${{ }} substitution, which no real
+        # action.yml here does — every one of those passes inputs through env:.
+        # Left unsubstituted the expression is a bash parse error, which would
+        # mask the finding below rather than report it.
+        echo "action at ${{ github.action_path }}"
+        ls $PATHS
+
+    - name: Not a shell ShellCheck handles
+      shell: pwsh
+      run: Write-Output 'the selector must skip this out loud'

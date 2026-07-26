@@ -1,0 +1,160 @@
+# shellcheck shell=bash
+# Run ShellCheck over the shell embedded in composite action `run:` blocks.
+#
+# Neither existing lane sees that shell. actionlint's docs state that `steps` in
+# a composite action's metadata "is not checked at this point", and passing an
+# action.yml on its command line makes actionlint parse the file as a workflow
+# and fail with `"jobs" section is missing` (upstream support is the still-open
+# rhysd/actionlint#46). The shellcheck lane discovers *.sh/*.bash, so
+# YAML-embedded shell is invisible to it too.
+#
+# This extracts each bash/sh `run:` block and hands it to ShellCheck under the
+# same contract actionlint applies to workflow `run:` blocks, so a step is
+# judged identically whether it lives in a workflow or a composite. It also
+# makes the in-place `# shellcheck disable=` directives those blocks already
+# carry take effect.
+#
+# Refs: https://github.com/rhysd/actionlint/blob/main/docs/checks.md
+#       https://github.com/rhysd/actionlint/blob/main/rule_shellcheck.go
+#       https://github.com/rhysd/actionlint/issues/46
+#
+# Usage: bash .github/scripts/composite-run-shellcheck.sh [action.yml ...]
+# With no arguments, every tracked .github/actions/*/action.yml is checked.
+# Requires yq (mikefarah) and shellcheck on PATH.
+set -euo pipefail
+
+# GitHub expands `${{ }}` before the runner writes the step script, so a raw
+# block is not valid shell on its own. Each expression becomes an equal-length
+# run of underscores, mirroring actionlint's sanitizeExpressionsInScript: same
+# length keeps reported columns aligned with the action.yml source, and
+# underscores (rather than blanks) keep constructs such as `if ${{ x }}; then`
+# syntactically whole. The whole block is processed at once so an expression
+# spanning lines is handled, and an unterminated `${{` is left intact to be
+# reported rather than silently mangled.
+sanitize_expressions() {
+  awk '
+    { src = src $0 ORS }
+    END {
+      out = ""
+      while ((s = index(src, "${{")) > 0) {
+        rest = substr(src, s)
+        e = index(rest, "}}")
+        if (e == 0) break
+        width = e + 1
+        filler = sprintf("%*s", width, "")
+        gsub(/ /, "_", filler)
+        out = out substr(src, 1, s - 1) filler
+        src = substr(src, s + width)
+      }
+      printf "%s%s", out, src
+    }
+  '
+}
+
+files=("$@")
+if [[ ${#files[@]} -eq 0 ]]; then
+  mapfile -d '' -t files < <(git ls-files -z -- '.github/actions/*/action.yml')
+fi
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo '::error::composite-run-shellcheck: no composite action metadata files to check.'
+  exit 1
+fi
+
+workdir="$(mktemp -d)"
+trap 'rm -rf -- "$workdir"' EXIT
+
+bash_scripts=()
+sh_scripts=()
+for file in "${files[@]}"; do
+  using="$(yq -r '.runs.using // ""' "$file")"
+  if [[ "$using" != composite ]]; then
+    printf 'skip %s: runs.using is %s, not composite\n' "$file" "${using:-<unset>}"
+    continue
+  fi
+
+  # Counted with an expression independent of the extraction query below, so a
+  # selector that silently matches nothing is caught rather than passing as a
+  # zero-block success — the false green this check exists to prevent.
+  expected="$(yq -r \
+    '[.runs.steps[] | select(has("run")) | select(.shell == "bash" or .shell == "sh")] | length' \
+    "$file")"
+  produced=0
+
+  while IFS=$'\t' read -r index shell; do
+    [[ -n "$index" ]] || continue
+    case "$shell" in
+    bash | sh) ;;
+    '')
+      echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
+      exit 1
+      ;;
+    *)
+      printf 'skip %s runs.steps[%s]: shell is %s, not bash/sh\n' "$file" "$index" "$shell"
+      continue
+      ;;
+    esac
+
+    relative="$file.step-$index.$shell"
+    destination="$workdir/$relative"
+    mkdir -p -- "$(dirname -- "$destination")"
+    {
+      # The options GitHub itself runs the step's shell with, prepended as
+      # actionlint does. It occupies line 1, so ShellCheck's reported line N is
+      # line N-1 of the `run:` body.
+      if [[ "$shell" == bash ]]; then
+        echo 'set -eo pipefail'
+      else
+        echo 'set -e'
+      fi
+      yq -r ".runs.steps[$index].run" "$file" | sanitize_expressions
+    } >"$destination"
+    produced=$((produced + 1))
+    if [[ "$shell" == bash ]]; then
+      bash_scripts+=("$relative")
+    else
+      sh_scripts+=("$relative")
+    fi
+    printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$shell"
+  done < <(yq -r \
+    '.runs.steps | to_entries[] | select(.value | has("run")) | (.key | tostring) + "\t" + (.value.shell // "")' \
+    "$file")
+
+  if [[ "$produced" -ne "$expected" ]]; then
+    echo "::error file=$file::composite-run-shellcheck: extracted $produced of $expected bash/sh run: block(s)."
+    exit 1
+  fi
+done
+
+total=$((${#bash_scripts[@]} + ${#sh_scripts[@]}))
+if [[ "$total" -eq 0 ]]; then
+  echo '::error::composite-run-shellcheck: no bash/sh run: block was extracted; the file set or the extraction is wrong.'
+  exit 1
+fi
+
+# actionlint's exact ShellCheck contract for embedded `run:` scripts, so a step
+# is not judged differently for living in a composite. Each excluded code is a
+# false positive of the artifact class, not a relaxation of shell policy: SC1091
+# (sources resolve only in the CI environment), SC2153/SC2154 (the block reads
+# variables injected by the step's `env:`), and SC2194/SC2050/SC2157/SC2043
+# (constant-expression artifacts of the `${{ }}` substitution above). `--norc`
+# is likewise actionlint's, and keeps the repo .shellcheckrc — whose optional
+# checks are written for standalone scripts — from applying here.
+# Ref: https://github.com/rhysd/actionlint/blob/main/rule_shellcheck.go
+excluded_codes='SC1091,SC2194,SC2050,SC2153,SC2154,SC2157,SC2043'
+shellcheck_args=(--norc -x "--exclude=$excluded_codes")
+
+printf 'Checking %d embedded run: block(s); reported line N is line N-1 of the run: body.\n' "$total"
+status=0
+cd -- "$workdir"
+if [[ ${#bash_scripts[@]} -gt 0 ]]; then
+  shellcheck "${shellcheck_args[@]}" --shell=bash "${bash_scripts[@]}" || status=$?
+fi
+if [[ ${#sh_scripts[@]} -gt 0 ]]; then
+  sh_status=0
+  shellcheck "${shellcheck_args[@]}" --shell=sh "${sh_scripts[@]}" || sh_status=$?
+  # ShellCheck reserves 1 for a completed scan with findings and 2-4 for
+  # processing errors; keep the more severe result rather than masking an
+  # operational failure behind a finding code.
+  ((sh_status <= status)) || status=$sh_status
+fi
+exit "$status"

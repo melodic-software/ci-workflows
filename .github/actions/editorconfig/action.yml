@@ -68,4 +68,5 @@ runs:
         if [[ -n "${EXCLUDE// }" ]]; then args+=(-exclude "$EXCLUDE"); fi
         if [[ -n "${FORMAT// }" ]]; then args+=(-format "$FORMAT"); fi
         # $PATHS unquoted so multiple targets word-split.
+        # shellcheck disable=SC2086
         ec "${args[@]}" $PATHS

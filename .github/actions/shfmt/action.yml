@@ -52,6 +52,7 @@ runs:
         else
           # $PATHS unquoted so multiple roots word-split. Explicit roots opt into
           # a raw filesystem walk that does not consult .gitignore.
+          # shellcheck disable=SC2086
           mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
         fi
         # Keep only on-disk files: a sparse checkout leaves tracked-but-absent
