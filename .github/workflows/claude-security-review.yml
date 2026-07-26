@@ -183,7 +183,17 @@ on:
       skip-actors:
         description: >-
           Comma-separated actors (no spaces) for whom the job skips entirely, to
-          save runner minutes on PRs that never need review. Empty reviews all.
+          save runner minutes on PRs that never need review.
+
+          Empty reviews all — but removing the default `dependabot[bot]` carries
+          a SECRET CONTRACT. A Dependabot-triggered run reads from the separate
+          Dependabot secrets store, never from Actions or organization secrets
+          (GitHub: "When a Dependabot event triggers a workflow, the only secrets
+          available to the workflow are Dependabot secrets"). Unless the consumer
+          mirrors CLAUDE_CODE_OAUTH_TOKEN into that store, the review cannot
+          authenticate, and because this lane FAILS CLOSED the required check
+          then blocks every Dependabot PR until an operator provisions it.
+          Mirror the secret first, or keep dependabot[bot] in this list.
         type: string
         default: dependabot[bot]
     secrets:
