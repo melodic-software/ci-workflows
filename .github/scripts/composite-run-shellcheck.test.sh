@@ -64,6 +64,22 @@ if [[ "$(grep -c '^check fixtures/composite-action/custom-shell/' "$custom")" -n
   exit 1
 fi
 
+# A path is reused as both the extracted script's location under the temp
+# workdir and the argument ShellCheck reads back after cd'ing there, so only a
+# repo-relative one makes the two coincide. Refused up front: an absolute path
+# otherwise surfaces as a ShellCheck "does not exist" having linted nothing,
+# and a `..` one writes outside the workdir, past the cleanup trap. Purely
+# syntactic, so the paths below need not exist.
+outside="$temp/composite-run-shellcheck-outside.txt"
+for bad in "$PWD/fixtures/composite-action/bad/action.yml" ../action.yml; do
+  if bash "$check" "$bad" >"$outside" 2>&1; then
+    echo "A path that is not repo-relative was unexpectedly accepted: $bad" >&2
+    exit 1
+  fi
+  cat -- "$outside"
+  grep -F 'must be a repo-relative path' "$outside"
+done
+
 # Coverage floor. The check announces every file discovery reaches, so every
 # tracked composite must appear by name: discovery that quietly reaches one
 # action instead of all of them is otherwise a clean green. Keyed on the visit

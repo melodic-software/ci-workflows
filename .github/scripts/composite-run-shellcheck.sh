@@ -19,8 +19,13 @@
 #       https://github.com/rhysd/actionlint/issues/46
 #
 # Usage: bash .github/scripts/composite-run-shellcheck.sh [action.yml ...]
-# With no arguments, every tracked .github/actions/*/action.yml is checked.
-# Requires yq (mikefarah) and shellcheck on PATH.
+# Run from the repository root; each path must be repo-relative. With no
+# arguments, every tracked .github/actions/*/action.yml is checked.
+#
+# Requires shellcheck on PATH — the ci.yml lane action installs a pinned,
+# checksum-verified one — and yq (mikefarah, preinstalled on ubuntu-24.04),
+# which is the same exception tool-version-drift-check.yml takes rather than
+# the pinned install standards-sync.yml performs.
 set -euo pipefail
 
 # GitHub expands `${{ }}` before the runner writes the step script, so a raw
@@ -59,6 +64,23 @@ if [[ ${#files[@]} -eq 0 ]]; then
   echo '::error::composite-run-shellcheck: no composite action metadata files to check.'
   exit 1
 fi
+
+# Each path is reused verbatim as the extracted script's location under the
+# temp workdir and as the argument ShellCheck is given after cd'ing there, so
+# the two only coincide for a repo-relative path. An absolute one writes under
+# the workdir but is read from the real filesystem root — ShellCheck reports a
+# bogus "does not exist" and never lints. A `..` one resolves outside the
+# workdir entirely, past the cleanup trap. git ls-files only ever yields the
+# safe form; this guards the documented explicit-argument form.
+for file in "${files[@]}"; do
+  case "$file" in
+  /* | [A-Za-z]:[/\\]*) reason='an absolute path' ;;
+  .. | ../* | */.. | */../*) reason='a path with a ".." component' ;;
+  *) continue ;;
+  esac
+  echo "::error::composite-run-shellcheck: '$file' is $reason; each argument must be a repo-relative path — run from the repository root."
+  exit 1
+done
 
 workdir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/composite-run-shellcheck.XXXXXXXX")"
 trap 'rm -rf -- "$workdir"' EXIT
