@@ -67,7 +67,11 @@ function rateLimitedExecutionFile() {
   ]);
 }
 
-function reportOutcome({ outcome, executionFileContents }) {
+function reportOutcome({
+  outcome,
+  executionFileContents,
+  isPullRequest = "true",
+}) {
   const directory = fs.mkdtempSync(
     path.join(os.tmpdir(), "security-review-outcome-"),
   );
@@ -77,6 +81,7 @@ function reportOutcome({ outcome, executionFileContents }) {
     const environment = {
       ...process.env,
       REVIEW_OUTCOME: outcome,
+      IS_PULL_REQUEST: isPullRequest,
       GITHUB_OUTPUT: githubOutput,
     };
     if (executionFileContents !== undefined) {
@@ -151,6 +156,108 @@ test("an unreadable execution file still fails closed", () => {
   assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
   assert.equal(result.outputs.review_failed, "true");
   assert.equal(result.outputs.failure_class, "other");
+});
+
+// The action rejects merge_group outright and rejects every non-PR event while
+// track_progress is on, so those runs fail for a cause no head change can fix.
+// Failing them closed would wedge a consumer's merge queue on a red check that
+// the PR-gated comment steps cannot even explain.
+test("a non-pull_request run reports the failure without failing the job", () => {
+  const result = reportOutcome({
+    outcome: "failure",
+    executionFileContents: rateLimitedExecutionFile(),
+    isPullRequest: "false",
+  });
+  assert.equal(
+    result.status,
+    0,
+    `merge_group / workflow_dispatch / schedule runs must keep the historical pass-through\n${result.stdout}\n${result.stderr}`,
+  );
+  // Still classified and still annotated — pass-through, not silence.
+  assert.equal(result.outputs.review_failed, "true");
+  assert.equal(result.outputs.failure_class, "rate-limit");
+});
+
+// The resolve step decides what the outcome step sees, so a bug here reddens
+// every CLEAN review — the widest blast radius in this workflow.
+function resolveAttempt({ first, firstFile, retry, retryFile }) {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "security-review-attempt-"),
+  );
+  try {
+    const githubOutput = path.join(directory, "github-output");
+    fs.writeFileSync(githubOutput, "");
+    const result = spawnSync(
+      "bash",
+      ["-c", runScript("Resolve the effective review attempt")],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FIRST_OUTCOME: first,
+          FIRST_FILE: firstFile,
+          RETRY_OUTCOME: retry,
+          RETRY_FILE: retryFile,
+          GITHUB_OUTPUT: githubOutput,
+        },
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return Object.fromEntries(
+      fs
+        .readFileSync(githubOutput, "utf8")
+        .split("\n")
+        .filter((line) => line.includes("="))
+        .map((line) => {
+          const separator = line.indexOf("=");
+          return [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("a clean first attempt resolves to itself when the retry is skipped", () => {
+  // Actions sets a skipped step's outcome to the literal "skipped"; resolving
+  // that as the effective outcome would fail every clean review closed.
+  for (const skipped of ["skipped", ""]) {
+    const resolved = resolveAttempt({
+      first: "success",
+      firstFile: "/tmp/first.json",
+      retry: skipped,
+      retryFile: "",
+    });
+    assert.equal(
+      resolved.outcome,
+      "success",
+      `retry outcome ${skipped || "(empty)"}`,
+    );
+    assert.equal(resolved.execution_file, "/tmp/first.json");
+  }
+});
+
+test("a successful retry supersedes the failed first attempt", () => {
+  const resolved = resolveAttempt({
+    first: "failure",
+    firstFile: "/tmp/first.json",
+    retry: "success",
+    retryFile: "/tmp/retry.json",
+  });
+  assert.equal(resolved.outcome, "success");
+  // The first attempt's payload would classify a failure that no longer applies.
+  assert.equal(resolved.execution_file, "/tmp/retry.json");
+});
+
+test("both attempts failing resolves to the retry's payload", () => {
+  const resolved = resolveAttempt({
+    first: "failure",
+    firstFile: "/tmp/first.json",
+    retry: "failure",
+    retryFile: "/tmp/retry.json",
+  });
+  assert.equal(resolved.outcome, "failure");
+  assert.equal(resolved.execution_file, "/tmp/retry.json");
 });
 
 // Everything below pins the three no-verdict paths that must NOT reach the

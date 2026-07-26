@@ -305,7 +305,9 @@ jobs:
   security-review:
     needs: changes
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 30
+    # Two review attempts plus the backoff now share this budget; sized so a slow
+    # first attempt cannot starve the retry into a timeout-shaped red check.
+    timeout-minutes: 45
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
@@ -548,6 +550,7 @@ jobs:
         env:
           REVIEW_OUTCOME: ${{ steps.attempt.outputs.outcome }}
           EXECUTION_FILE: ${{ steps.attempt.outputs.execution_file }}
+          IS_PULL_REQUEST: ${{ github.event.pull_request.number != '' }}
         run: |
           if [ "$REVIEW_OUTCOME" = "success" ]; then
             echo "Claude security review completed. Findings (if any) are in the PR comments."
@@ -675,6 +678,19 @@ jobs:
 
           echo "review_failed=true" >> "$GITHUB_OUTPUT"
 
+          # Only a pull_request run gates a merge, so only a pull_request run
+          # fails closed. The action rejects other events outright — `merge_group`
+          # is not a supported event type at all, and `track_progress` (hardcoded
+          # on above) rejects every non-PR event — so those runs fail for a reason
+          # the head cannot fix and no retry can clear. Reddening them would wedge
+          # a consumer's merge queue permanently, and the comment steps below are
+          # PR-gated too, so the red would carry no explanation. They keep the
+          # historical pass-through: still annotated, still classified, not fatal.
+          if [ "$IS_PULL_REQUEST" != "true" ]; then
+            echo "Not a pull_request run; reporting the failure without failing the job."
+            exit 0
+          fi
+
           # FAIL CLOSED (#266). Ordering is load-bearing: review_failed and the
           # class are written to GITHUB_OUTPUT above, before this exit, so the
           # two `always()`-gated comment steps below still fire and the PR still
@@ -732,7 +748,9 @@ jobs:
               ">",
               "> **The check is red on purpose.** It certifies that a security pass ran, and none did, so it cannot report success. Where this check is required, merging is blocked until a review actually completes.",
               ">",
-              "> Re-running the job, or pushing a new commit, will retry the review — one automatic retry already ran. If the failure class is `auth`, or `rate-limit` persists across re-runs, the credential or usage budget needs an operator, and re-running will not help.",
+              "> Re-running the job, or pushing a new commit, will retry the review — one automatic retry already ran.",
+              ">",
+              "> Re-running does NOT help for every class. `auth`, or `rate-limit` that persists across re-runs, needs an operator (credential or usage budget). A run that exhausted its turn budget on an oversized diff will exhaust it again — split the PR or raise `claude-args: --max-turns`.",
             ].join("\n");
 
             const comments = await github.paginate(github.rest.issues.listComments, {
