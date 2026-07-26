@@ -389,12 +389,23 @@ jobs:
           #
           # Classification order:
           #   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
-          #      the last assistant turn was an API error: 401/403 auth, 429 rate-limit,
-          #      5xx overloaded, every other status other.
+          #      the last assistant turn was an API error: 401/402/403 auth, 429
+          #      rate-limit, 5xx overloaded, every other status other.
           #   2. an allowlisted substring over `errors[]`, matching the serialized
           #      Anthropic error body (`{"type":"error","error":{"type":"<type>",...}}`)
           #      that the API SDK folds into an APIError's message, and so into its stack.
           #   3. other.
+          #
+          # `auth` is the credential-unusable class, not the 401-only class: it covers
+          # every status where the credential cannot be used until a human acts. Per the
+          # published error table that is 401 `authentication_error`, 402 `billing_error`,
+          # and 403 `permission_error`. 402 belongs here because the incident this
+          # classifier exists for (ci-workflows#228 / claude-code-plugins#1122) is
+          # described as a *usage-dead account credential* — a billing/entitlement death,
+          # which the API reports as 402, not 401. Leaving 402 in `other` would classify
+          # the originating incident as unremarkable. The downstream aggregator routes
+          # `auth` to a human-gated incident, correct for a billing death as much as for
+          # a revocation.
           #
           # The two sources are disjoint members of the SDK's result union:
           # `api_error_status` exists only on the success variant (the shape a dead
@@ -416,12 +427,13 @@ jobs:
                   | (($last.errors // []) | map(tostring) | join("\n")) as $text
                   | (
                       if ($status | type) == "number" then
-                        if $status == 401 or $status == 403 then "auth"
+                        if $status == 401 or $status == 402 or $status == 403 then "auth"
                         elif $status == 429 then "rate-limit"
                         elif $status >= 500 and $status < 600 then "overloaded"
                         else "other"
                         end
                       elif ($text | (contains("\"type\":\"authentication_error\"")
+                        or contains("\"type\":\"billing_error\"")
                         or contains("\"type\":\"permission_error\""))) then "auth"
                       elif ($text | contains("\"type\":\"rate_limit_error\"")) then "rate-limit"
                       elif ($text | (contains("\"type\":\"overloaded_error\"")

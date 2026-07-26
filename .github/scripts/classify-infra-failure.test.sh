@@ -81,26 +81,34 @@ assert_class() { # label expected_class contents
   return 0
 }
 
-# 1-5. The structured Anthropic-API status decides the class on the shape a
-#      dead credential produces (subtype success, is_error true).
+# 1-6. The structured Anthropic-API status decides the class on the shape a
+#      dead credential produces (subtype success, is_error true). 402 is
+#      `billing_error` — the usage-dead-credential shape of the originating
+#      incident — and is an `auth` (credential-unusable) case, not an unmapped
+#      one; see the classifier header.
 assert_class '401' auth "$(result_message 401)"
+assert_class '402' auth "$(result_message 402)"
 assert_class '403' auth "$(result_message 403)"
 assert_class '429' rate-limit "$(result_message 429)"
 assert_class '500' overloaded "$(result_message 500)"
 assert_class '529' overloaded "$(result_message 529)"
 
-# 6. A status outside the mapped set is still a status decision: it resolves to
-#    `other` rather than falling through to the substring pass.
+# 7. A status outside the mapped set is still a status decision: it resolves to
+#    `other` rather than falling through to the substring pass. 413
+#    `request_too_large` is a genuine non-infra client error, so it is the
+#    honest unmapped case.
 assert_class 'unmapped status' other \
-  "$(result_message 402 "{\"errors\":[$(api_error_body rate_limit_error)]}")"
+  "$(result_message 413 "{\"errors\":[$(api_error_body rate_limit_error)]}")"
 
-# 7. A status present but null is treated as absent, so the substring pass runs.
+# 8. A status present but null is treated as absent, so the substring pass runs.
 assert_class 'null status with auth text' auth \
   "$(result_message null "{\"errors\":[$diagnostic,$(api_error_body authentication_error)]}")"
 
-# 8-11. The error-variant substring pass, one case per allowlisted token.
+# 9-14. The error-variant substring pass, one case per allowlisted token.
 assert_class 'authentication_error' auth \
   "$(error_message "[$diagnostic,$(api_error_body authentication_error)]")"
+assert_class 'billing_error' auth \
+  "$(error_message "[$diagnostic,$(api_error_body billing_error)]")"
 assert_class 'permission_error' auth \
   "$(error_message "[$diagnostic,$(api_error_body permission_error)]")"
 assert_class 'rate_limit_error' rate-limit \
@@ -110,23 +118,23 @@ assert_class 'overloaded_error' overloaded \
 assert_class 'api_error' overloaded \
   "$(error_message "[$diagnostic,$(api_error_body api_error)]")"
 
-# 12. The synthetic diagnostic line alone must not match any token, even though
+# 15. The synthetic diagnostic line alone must not match any token, even though
 #     it can carry the literal text `api_error` in its result_type field.
 assert_class 'diagnostic only' other "$(error_message "[$diagnostic]")"
 
-# 13. The observed incident payload, whose projection carried no class field at
+# 16. The observed incident payload, whose projection carried no class field at
 #     all: no status, no errors, nothing to classify.
 assert_class 'unclassifiable' other \
   '[{"type":"result","subtype":"success","is_error":true,"num_turns":1,"duration_ms":1856,"total_cost_usd":0}]'
 
-# 14. The class token joins the safe projection alongside the numeric status.
+# 17. The class token joins the safe projection alongside the numeric status.
 run "$(result_message 401)"
 [[ "$(jq -r '.class' <<<"$detail")" == auth ]] || fail "projection: missing class ($detail)"
 [[ "$(jq -r '.api_error_status' <<<"$detail")" == 401 ]] || fail "projection: missing status ($detail)"
 [[ "$(jq -r 'has("result") or has("errors")' <<<"$detail")" == false ]] ||
   fail "projection: leaked a free-text field ($detail)"
 
-# 15. An unparsable execution file degrades to `other` and says so, rather than
+# 18. An unparsable execution file degrades to `other` and says so, rather than
 #     emitting an empty detail that reads as a successful projection.
 run
 jq -c . <<<'[]' >"$execution_file"
@@ -141,7 +149,7 @@ run
 [[ "$detail" == '(execution file present but unparsable)' ]] ||
   fail "unparsable: unexpected detail '$detail'"
 
-# 16. No execution file at all (the action failed before producing one).
+# 19. No execution file at all (the action failed before producing one).
 rm -f -- "$execution_file"
 run
 [[ "$class" == other ]] || fail "missing file: expected other, got '$class'"
@@ -156,7 +164,7 @@ rm -f -- "$github_output"
 [[ "$detail" == '(no execution file was produced)' ]] ||
   fail "empty EXECUTION_FILE: unexpected detail '$detail'"
 
-# 17. An unset GITHUB_OUTPUT fails closed instead of silently discarding the
+# 20. An unset GITHUB_OUTPUT fails closed instead of silently discarding the
 #     class the annotation and the PR comment are both keyed on.
 set +e
 out="$(EXECUTION_FILE="" bash "$core" 2>&1)"
