@@ -656,7 +656,11 @@ jobs:
       # empty, so the first attempt's result has to be the fallback.
       - name: Resolve the effective review attempt
         id: attempt
-        if: always() && steps.freshness.outputs.superseded != 'true'
+        # !cancelled(), not always(): cancellation is this lane's retirement
+        # mechanism (cancel-in-progress on same-head duplicates), and a
+        # retired run must not go on to report an outcome, raise the
+        # fail-closed red, or touch the newer run's PR comment state.
+        if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
         env:
           FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
           FIRST_FILE: ${{ steps.claude-review.outputs.execution_file }}
@@ -686,7 +690,7 @@ jobs:
       # owns the red.
       - name: Report review outcome
         id: review-outcome
-        if: always() && steps.freshness.outputs.superseded != 'true'
+        if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
@@ -697,7 +701,7 @@ jobs:
       # does not accept — `neutral` and `skipped` both read as success, so
       # neither can express "in scope and did not run". The composite above
       # already wrote the class and detail outputs, and both marker-comment
-      # steps below are `always()`-gated, so the PR still gets its
+      # steps below are `!cancelled()`-gated, so the PR still gets its
       # infra-status comment.
       #
       # Only a pull_request run gates a merge, so only a pull_request run
@@ -716,7 +720,7 @@ jobs:
       # review-failed unset — which skips this step too.
       - name: Fail closed on an in-scope non-run
         if: >-
-          always() && steps.review-outcome.outputs.review-failed == 'true' &&
+          !cancelled() && steps.review-outcome.outputs.review-failed == 'true' &&
           github.event.pull_request.number != ''
         run: |
           echo "The security review was in scope and did not run; the required check cannot report success (see POSTURE)."
@@ -729,7 +733,7 @@ jobs:
       # their own `> ` blockquote-continuation prefixes (the composite
       # prefixes only the first line).
       - name: Comment on genuine review failure
-        if: always() && steps.review-outcome.outputs.review-failed == 'true'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'true'"
         # Reporting an outage must never become one: this step only annotates
         # a PR, and a rejected API call must not fail the job on top of the
         # deliberate red the fail-closed step already raised.
@@ -755,7 +759,7 @@ jobs:
       # PR. Once a retry (rerun or new push) succeeds, clear that stale
       # warning so it is not mistaken for a still-open problem.
       - name: Clear stale failure comment after successful review
-        if: always() && steps.review-outcome.outputs.review-failed == 'false'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true

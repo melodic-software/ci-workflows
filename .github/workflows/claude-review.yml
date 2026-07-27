@@ -142,6 +142,9 @@ on:
           is upserted after each successful review — the comment doubles as
           the human "was this reviewed" signal. Deleting the comment resets
           the count (fail-open by design). Zero or negative disables the cap.
+          Soft cap: concurrent runs for different heads read the counter
+          before either writes it, so a burst can briefly exceed the cap by
+          the number of concurrent heads.
         type: number
         default: 5
       retry-delay-seconds:
@@ -266,16 +269,21 @@ jobs:
         with:
           script: |
             const max = Number(process.env.MAX_REVIEWS_PER_PR);
+            const capEnabled = Number.isFinite(max) && max > 0;
             const pr = context.payload.pull_request;
             core.setOutput("capped", "false");
             core.setOutput("count", "0");
-            if (!pr?.number || !Number.isFinite(max) || max <= 0) return;
+            if (!pr?.number) return;
+            // The lookup runs even when the cap is disabled: the upsert step
+            // reads count and comment-id from here, so skipping it would
+            // degrade the upsert to an insert-per-review.
             let count = 0;
             try {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
+                per_page: 100,
               });
               // The marker carries the machine-readable count; the prose
               // below it is the human signal. Author-checked so a PR author
@@ -295,7 +303,7 @@ jobs:
               return;
             }
             core.setOutput("count", String(count));
-            if (count >= max) {
+            if (capEnabled && count >= max) {
               core.notice(
                 `Skipping review: this PR already received ${count} reviews ` +
                   `(max-reviews-per-pr=${max}). Delete the count comment to re-enable.`,
@@ -508,6 +516,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
+                  per_page: 100,
                 });
                 for (const comment of comments) {
                   if (
@@ -573,8 +582,12 @@ jobs:
       # empty, so the first attempt's result has to be the fallback.
       - name: Resolve the effective review attempt
         id: attempt
+        # !cancelled(), not always(): cancellation is this lane's retirement
+        # mechanism (cancel-in-progress on same-head duplicates), and a
+        # retired run must not go on to report an outcome or touch the newer
+        # run's PR comment state.
         if: >-
-          always() && steps.freshness.outputs.superseded != 'true' &&
+          !cancelled() && steps.freshness.outputs.superseded != 'true' &&
           steps.review-count.outputs.capped != 'true'
         env:
           FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
@@ -607,7 +620,7 @@ jobs:
       - name: Report review outcome
         id: review-outcome
         if: >-
-          always() && steps.freshness.outputs.superseded != 'true' &&
+          !cancelled() && steps.freshness.outputs.superseded != 'true' &&
           steps.review-count.outputs.capped != 'true'
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
@@ -620,7 +633,7 @@ jobs:
       # no-PR no-op — clobbering an unrelated bot comment is the failure mode
       # this whole change exists to fix.
       - name: Comment on genuine review failure
-        if: always() && steps.review-outcome.outputs.review-failed == 'true'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'true'"
         # Reporting an outage must never become one: this step only annotates
         # a PR, and a rejected API call must not turn the infra-failure path
         # red (see the composite's description).
@@ -637,7 +650,7 @@ jobs:
       # PR. Once a retry (rerun or new push) succeeds, clear that stale
       # warning so it is not mistaken for a still-open problem.
       - name: Clear stale failure comment after successful review
-        if: always() && steps.review-outcome.outputs.review-failed == 'false'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
@@ -651,7 +664,7 @@ jobs:
       # ran, so the run was neither superseded nor capped), so failed and
       # skipped runs never inflate the count.
       - name: Update the review-count status comment
-        if: always() && steps.review-outcome.outputs.review-failed == 'false'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
         # Housekeeping: a rejected API call must not redden a successful
         # advisory review.
         continue-on-error: true

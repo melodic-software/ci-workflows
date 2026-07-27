@@ -553,7 +553,12 @@ jobs:
       # empty, so the first attempt's result has to be the fallback.
       - name: Resolve the effective verification attempt
         id: attempt
-        if: always() && steps.freshness.outputs.superseded != 'true'
+        # !cancelled(), not always(): cancellation is this lane's retirement
+        # mechanism (cancel-in-progress on same-head duplicates), and a
+        # retired run must not go on to report an outcome. The app-teardown
+        # and credential-strip steps below keep always() — cleanup must run
+        # even on cancellation.
+        if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
         shell: bash
         env:
           FIRST_OUTCOME: ${{ steps.claude-e2e.outcome }}
@@ -582,7 +587,7 @@ jobs:
       # reporting. Consumes the resolved attempt, not the first one, so a
       # successful retry reports success.
       - name: Report verification outcome
-        if: always() && steps.freshness.outputs.superseded != 'true'
+        if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
         shell: bash
         env:
           VERIFY_OUTCOME: ${{ steps.attempt.outputs.outcome }}

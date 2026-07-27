@@ -171,10 +171,12 @@ test("an in-scope non-run fails the job through the fail-closed step", () => {
   // rejects merge_group and, with track_progress on, every non-PR event, so
   // reddening those would wedge a consumer's merge queue on a cause no head
   // change can fix; they keep the historical pass-through by skipping this
-  // step). always() keeps the step reachable after the failed review step.
+  // step). !cancelled() keeps the step reachable after the failed review
+  // step while still skipping it on cancellation — a cancelled run is
+  // retired by a newer one and must not raise a red of its own.
   assert.match(
     step,
-    /^ {8}if: >-\n {10}always\(\) && steps\.review-outcome\.outputs\.review-failed == 'true' &&\n {10}github\.event\.pull_request\.number != ''$/mu,
+    /^ {8}if: >-\n {10}!cancelled\(\) && steps\.review-outcome\.outputs\.review-failed == 'true' &&\n {10}github\.event\.pull_request\.number != ''$/mu,
     "the fail-closed condition must key on review-failed and pull_request presence exactly",
   );
   assert.match(step, /^ {10}exit 1$/mu, "the step must conclude failure");
@@ -219,9 +221,12 @@ test("fork PRs skip the job instead of failing closed forever", () => {
 
 test("a superseded head reports nothing, so it cannot fail closed", () => {
   const step = stepSource("Report review outcome");
+  // !cancelled() rather than always(): cancellation is the concurrency
+  // group's retirement mechanism, so a cancelled run must skip the outcome
+  // step exactly like a superseded one.
   assert.match(
     step,
-    /^ {8}if: always\(\) && steps\.freshness\.outputs\.superseded != 'true'$/mu,
+    /^ {8}if: "!cancelled\(\) && steps\.freshness\.outputs\.superseded != 'true'"$/mu,
     "a retired run must skip the outcome step, leaving review-failed unset",
   );
 });
