@@ -42,7 +42,14 @@ function runScript(stepName) {
   const marker = "        run: |\n";
   const start = step.indexOf(marker);
   assert.notEqual(start, -1, `${stepName} has no literal run block`);
-  const body = step.slice(start + marker.length);
+  // The block ends at the first non-blank line indented shallower than the
+  // block body — stepSource alone over-reaches for a job's LAST step, whose
+  // "next step" boundary lives in the following job.
+  const lines = step.slice(start + marker.length).split("\n");
+  const end = lines.findIndex(
+    (line) => line !== "" && !line.startsWith("          "),
+  );
+  const body = (end === -1 ? lines : lines.slice(0, end)).join("\n");
   assert.doesNotMatch(
     body,
     /\$\{\{/u,
@@ -246,6 +253,135 @@ test("the kill-switches gate the review job only, never the changes job", () => 
     /vars\.CLAUDE/u,
     "the changes job must never be kill-switch gated",
   );
+});
+
+test("the paths file is read from the base branch and its faults fail open", () => {
+  // A PR able to influence which paths-file content is evaluated could edit
+  // the file to skip its own security review, so the fetch must pin the BASE
+  // branch — never the PR head.
+  const fetchStep = stepSource("List changed files");
+  assert.match(
+    fetchStep,
+    /ref: context\.payload\.pull_request\.base\.ref/u,
+    "the paths file must be fetched at the PR's base ref",
+  );
+  assert.doesNotMatch(
+    fetchStep,
+    /pull_request\.head/u,
+    "nothing in the fetch step may consult the PR head",
+  );
+
+  // Absent (404) or unreadable file → the failed flag, which the filter step
+  // must turn into relevant=true (fail open), matching the job's discipline.
+  assert.match(
+    fetchStep,
+    /core\.setOutput\("paths-file-failed", "true"\)/u,
+    "a fetch error must raise the paths-file-failed flag, not crash the job",
+  );
+  const filterStep = stepSource("Determine security relevance");
+  assert.match(
+    filterStep,
+    /if \[ "\$PATHS_FILE_FAILED" = "true" \] \|\| \[ -z "\$PATHS_FILE_PATH" \]; then\n {14}echo "::warning::Could not read paths file '\$PATHS_FILE'; treating PR as security-relevant\."\n {14}echo "relevant=true" >>"\$GITHUB_OUTPUT"/u,
+    "an unreadable paths file must fail open to relevant=true with a warning",
+  );
+});
+
+// The filter's run block is expression-free shell, so the precedence contract
+// — explicit `paths` wins, then `paths-file`, then no filter — is executed
+// here rather than pattern-matched.
+function runFilter({ paths, pathsFile, patterns, changedFiles, fetchFailed }) {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "security-review-filter-"),
+  );
+  try {
+    const githubOutput = path.join(directory, "github-output");
+    fs.writeFileSync(githubOutput, "");
+    const filesListPath = path.join(directory, "changed-files.txt");
+    fs.writeFileSync(filesListPath, `${changedFiles.join("\n")}\n`);
+    let patternsPath = "";
+    if (patterns !== undefined) {
+      patternsPath = path.join(directory, "paths-file.txt");
+      fs.writeFileSync(patternsPath, patterns);
+    }
+    const result = spawnSync(
+      "bash",
+      ["-c", runScript("Determine security relevance")],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          EVENT_NAME: "pull_request",
+          PATHS: paths,
+          PATHS_FILE: pathsFile,
+          PATHS_FILE_PATH: patternsPath,
+          PATHS_FILE_FAILED: fetchFailed ? "true" : "false",
+          FILES_LIST_PATH: filesListPath,
+          FILES_LIST_FAILED: "false",
+          GITHUB_OUTPUT: githubOutput,
+        },
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const relevant = fs
+      .readFileSync(githubOutput, "utf8")
+      .match(/^relevant=(.*)$/mu)?.[1];
+    assert.notEqual(relevant, undefined, "the filter must output relevant");
+    return relevant;
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("an explicit paths input wins over the paths file", () => {
+  // The file's patterns would match this PR; the explicit input's do not. If
+  // the file were consulted despite a non-empty `paths`, relevant flips true.
+  const relevant = runFilter({
+    paths: ".github/**\n",
+    pathsFile: ".github/claude-security-paths",
+    patterns: "docs/**\n",
+    changedFiles: ["docs/readme.md"],
+    fetchFailed: false,
+  });
+  assert.equal(relevant, "false");
+});
+
+test("the paths file supplies the patterns when the paths input is empty", () => {
+  const cases = [
+    { changedFiles: [".github/workflows/ci.yml"], expected: "true" },
+    { changedFiles: ["docs/readme.md"], expected: "false" },
+  ];
+  for (const { changedFiles, expected } of cases) {
+    const relevant = runFilter({
+      paths: "",
+      pathsFile: ".github/claude-security-paths",
+      patterns: ".github/**\n",
+      changedFiles,
+      fetchFailed: false,
+    });
+    assert.equal(relevant, expected, changedFiles.join(","));
+  }
+});
+
+test("a failed paths-file fetch fails open to relevant", () => {
+  const relevant = runFilter({
+    paths: "",
+    pathsFile: ".github/claude-security-paths",
+    patterns: undefined,
+    changedFiles: ["docs/readme.md"],
+    fetchFailed: true,
+  });
+  assert.equal(relevant, "true");
+});
+
+test("both pattern inputs empty keeps every call relevant", () => {
+  const relevant = runFilter({
+    paths: "",
+    pathsFile: "",
+    patterns: undefined,
+    changedFiles: ["docs/readme.md"],
+    fetchFailed: false,
+  });
+  assert.equal(relevant, "true");
 });
 
 test("a superseded head reports nothing, so it cannot fail closed", () => {
