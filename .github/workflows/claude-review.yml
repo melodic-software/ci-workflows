@@ -14,9 +14,29 @@ name: claude-review
 #
 #     on:
 #       pull_request:
-#         types: [opened, synchronize, ready_for_review, reopened]
+#         # No `synchronize`: this lane reviews on open/ready/reopen only.
+#         # Pushes do not re-trigger it — re-run the job for a fresh review
+#         # (the security lane, whose check certifies execution, keeps
+#         # `synchronize`). Cuts per-PR spend on active branches.
+#         types: [opened, ready_for_review, reopened]
+#     # Per-PR: a newer event for the same PR supersedes the older run, so a
+#     # rapid open→ready→reopen burst spends one review, not several. This
+#     # value is per-LANE and deliberate — the security caller must NOT copy
+#     # it (cancelling a REQUIRED check is not a skip and does not read
+#     # success; see claude-security-review.yml's canonical caller).
+#     concurrency:
+#       group: claude-review-${{ github.event.pull_request.number || github.run_id }}
+#       cancel-in-progress: true
 #     jobs:
 #       review:
+#         # The org's sync-managed caller component additionally carries a
+#         # job-level queue group here — a SEPARATE block, because `queue:`
+#         # cannot share a concurrency block with cancel-in-progress:
+#         #   concurrency:
+#         #     group: claude-review-${{ github.repository }}
+#         #     queue: max
+#         # It serializes reviews repo-wide, so parallel PRs queue for the
+#         # shared Claude seat instead of contending for it.
 #         permissions:
 #           contents: read         # checkout + read the diff
 #           pull-requests: write   # post review + track_progress tracking comment
@@ -46,6 +66,13 @@ name: claude-review
 #     a calling repo's own visibility from within a reusable-workflow context,
 #     so the restriction is a documented caller obligation, not a runtime
 #     check. standards/distribution/REVIEW-CREDENTIAL.md is the SSOT for why.
+#
+# KILL-SWITCH SCOPE NOTE: REVIEW.md scopes security findings OUT of this lane
+#   wherever a claude-security-review workflow FILE exists — static prose that
+#   cannot see Actions variables. While CLAUDE_SECURITY_REVIEW_DISABLED is
+#   'true' with that file present, NO lane reports security findings: this
+#   lane does not re-widen automatically, and re-enabling the security lane is
+#   what closes the window.
 
 on:
   workflow_call:
@@ -61,10 +88,14 @@ on:
           is just the instructions for what to look for.
         type: string
         default: >-
-          Review this pull request for correctness, security, and alignment with
-          the project's CLAUDE.md guidelines (and REVIEW.md criteria if the repo
-          has one). Focus on architecture decisions, error handling, test
-          coverage, and maintainability.
+          This is the CODE-REVIEW lane. Review this pull request for
+          correctness and alignment with the project's CLAUDE.md guidelines
+          (and REVIEW.md criteria if the repo has one). Focus on architecture
+          decisions, error handling, test coverage, and maintainability.
+          Where REVIEW.md splits review scope across lanes — it scopes
+          security review to the dedicated security lane wherever a
+          claude-security-review workflow exists — follow that split and
+          leave security findings to the security lane.
 
 
           Scope your review to the files changed in this PR. Use `gh pr diff` to
@@ -75,9 +106,12 @@ on:
           Passed through to the Claude CLI. The universal extension point: model,
           turn budget, allowed tools, system prompt, MCP config all ride here
           (the standalone model / max_turns / allowed_tools action inputs are
-          deprecated upstream).
+          deprecated upstream). The default allows the inline-comment MCP tool
+          so findings can land as line-anchored review comments.
         type: string
-        default: --model claude-sonnet-4-6 --max-turns 75
+        default: >-
+          --model claude-sonnet-5 --max-turns 75
+          --allowedTools "mcp__github_inline_comment__create_inline_comment"
       track-progress:
         description: >-
           Create one tracking comment with progress checkboxes, sticky-updated
@@ -101,19 +135,48 @@ on:
       exclude-comments-by-actor:
         description: >-
           Comma-separated actors whose comments are withheld from Claude's
-          context (prompt-injection hygiene), not a trigger gate.
+          context (prompt-injection hygiene), not a trigger gate. Both
+          Dependabot spellings are listed because the action matches the
+          bare login for some comment kinds (upstream #1514).
         type: string
-        default: dependabot[bot]
+        default: dependabot,dependabot[bot]
       skip-actors:
         description: >-
           Comma-separated actors (no spaces) for whom the job skips entirely, to
           save runner minutes on PRs that never need review. Empty reviews all.
+          The default also bans self-triggering: Claude and the org's
+          automation bots must never trigger their own review lanes.
         type: string
-        default: dependabot[bot]
+        default: dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]
       timeout-minutes:
-        description: Job timeout.
+        description: >-
+          Job timeout. The default is sized by the retry formula
+          2 x attempt timeout + retry delay + 5 slack: two 11-minute review
+          attempts (step-level timeouts) plus the jittered backoff (~2) fit
+          with headroom, so a slow first attempt never converts this advisory
+          lane into a red job timeout.
         type: number
         default: 30
+      max-reviews-per-pr:
+        description: >-
+          Maximum successful reviews per PR before the lane name-stable-skips
+          further runs (caps spend on long-lived PRs). Counted via a visible
+          per-PR status comment ("Claude has reviewed this PR N times") that
+          is upserted after each successful review — the comment doubles as
+          the human "was this reviewed" signal. Deleting the comment resets
+          the count (fail-open by design). Zero or negative disables the cap.
+          Soft cap: concurrent runs for different heads read the counter
+          before either writes it, so a burst can briefly exceed the cap by
+          the number of concurrent heads.
+        type: number
+        default: 5
+      retry-delay-seconds:
+        description: >-
+          Base delay before the single automatic retry attempt, in seconds. A
+          0-29 second random jitter is added on top so lanes retrying against
+          the same contended seat do not re-collide in lockstep.
+        type: number
+        default: 90
       standards-ref:
         description: >-
           Pinned commit SHA of melodic-software/standards to mount for
@@ -133,8 +196,8 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           Claude Code OAuth token (from `claude setup-token`). Supply as a
-          same-org organization secret scoped to selected repositories and pass
-          this named secret explicitly from the caller.
+          same-org organization secret (live visibility: all repositories) and
+          pass this named secret explicitly from the caller.
         required: true
       STANDARDS_REVIEW_APP_ID:
         description: >-
@@ -156,11 +219,25 @@ jobs:
   review:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    # The two vars clauses are the fleet kill-switches: Actions variables an
+    # operator flips to stop this lane (CLAUDE_REVIEW_DISABLED) or every
+    # Claude lane at once (CLAUDE_LANES_DISABLED) without touching workflow
+    # files. An absent variable evaluates to '' — not 'true' — so the lane is
+    # enabled by default, and a repo-level variable overrides an org-level one
+    # (platform-verified), giving one repo an opt-out under an org-wide value.
+    # A kill-switched run is a name-stable job-level SKIP.
+    #
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
+    # Draft PRs are not reviewed either (the cadence is open/ready/reopen);
+    # the draft test is scoped to pull_request so other events still run.
     if: >-
-      ${{ !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor)) }}
+      ${{ vars.CLAUDE_LANES_DISABLED != 'true'
+          && vars.CLAUDE_REVIEW_DISABLED != 'true'
+          && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.draft == false) }}
     permissions:
       contents: read
       pull-requests: write
@@ -207,6 +284,66 @@ jobs:
         id: freshness
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
 
+      # Review-count cap (max-reviews-per-pr). The counter is the visible
+      # status comment this lane upserts after each successful review — chosen
+      # over the runs API (which counts every advisory success including skips
+      # and needs an `actions: read` grant no caller makes) and over a hidden
+      # marker-only comment (which renders as an empty box and races). A
+      # missing, deleted, or unreadable comment counts as zero — fail-open by
+      # design, so deleting the comment re-enables review. Downstream steps
+      # gate on `capped != 'true'` exactly as they gate on the freshness
+      # guard, so a capped run is a name-stable skip, not a red check.
+      - name: Check the per-PR review count
+        id: review-count
+        if: steps.freshness.outputs.superseded != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          MAX_REVIEWS_PER_PR: ${{ inputs.max-reviews-per-pr }}
+        with:
+          script: |
+            const max = Number(process.env.MAX_REVIEWS_PER_PR);
+            const capEnabled = Number.isFinite(max) && max > 0;
+            const pr = context.payload.pull_request;
+            core.setOutput("capped", "false");
+            core.setOutput("count", "0");
+            if (!pr?.number) return;
+            // The lookup runs even when the cap is disabled: the upsert step
+            // reads count and comment-id from here, so skipping it would
+            // degrade the upsert to an insert-per-review.
+            let count = 0;
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              // The marker carries the machine-readable count; the prose
+              // below it is the human signal. Author-checked so a PR author
+              // cannot spoof the counter from an ordinary comment.
+              const marked = comments.filter(
+                (comment) =>
+                  comment.user?.login === "github-actions[bot]" &&
+                  /^<!-- claude-review-count:\d+ -->/u.test(comment.body ?? ""),
+              );
+              const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
+              if (existing) {
+                count = Number(existing.body.match(/^<!-- claude-review-count:(\d+) -->/u)[1]);
+                core.setOutput("comment-id", String(existing.id));
+              }
+            } catch (error) {
+              core.warning(`Could not read the review-count comment; not capping: ${error.message}`);
+              return;
+            }
+            core.setOutput("count", String(count));
+            if (capEnabled && count >= max) {
+              core.notice(
+                `Skipping review: this PR already received ${count} reviews ` +
+                  `(max-reviews-per-pr=${max}). Delete the count comment to re-enable.`,
+              );
+              core.setOutput("capped", "true");
+            }
+
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
       # `git fetch origin <ref>` BEFORE configuring git auth, so
@@ -214,7 +351,7 @@ jobs:
       # tracking comment. The final strip step below scrubs the persisted token
       # to restore zizmor `artipacked` compliance. Reversible when #1236 lands.
       - name: Check out
-        if: steps.freshness.outputs.superseded != 'true'
+        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           filter: blob:none
@@ -224,7 +361,9 @@ jobs:
       # must never do (see the input's own description above).
       - name: Generate standards-read token
         id: standards-token
-        if: inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true'
+        if: >-
+          inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.STANDARDS_REVIEW_APP_ID }}
@@ -238,7 +377,9 @@ jobs:
       # of following it, so the checkout below cannot be redirected to delete the
       # main workspace. Keeps the reference mount off a PR-controlled path.
       - name: Clear PR-supplied reference-mount path
-        if: inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true'
+        if: >-
+          inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
         env:
           MOUNT_PATH: ${{ github.workspace }}/.standards-ref
         run: rm -rf -- "$MOUNT_PATH"
@@ -250,7 +391,9 @@ jobs:
       # above, this read-only reference mount runs no later authenticated git
       # commands, so it is not subject to the #1236 constraint.
       - name: Check out standards (native-reference mount)
-        if: inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true'
+        if: >-
+          inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: melodic-software/standards
@@ -264,7 +407,7 @@ jobs:
       # ternary, so the conditional is testable and reads like ordinary code.
       - name: Compose Claude CLI arguments
         id: compose-args
-        if: steps.freshness.outputs.superseded != 'true'
+        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
           STANDARDS_REF: ${{ inputs.standards-ref }}
@@ -286,12 +429,17 @@ jobs:
 
       - name: Claude review
         id: claude-review
-        if: steps.freshness.outputs.superseded != 'true'
+        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
         # claude-code-action exits non-zero only on infrastructure errors; review
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
+        #
+        # The step timeout bounds each attempt so the job budget (see the
+        # timeout-minutes input's retry formula) always leaves room for the
+        # retry below.
         continue-on-error: true
-        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        timeout-minutes: 11
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: ${{ inputs.track-progress }}
@@ -313,27 +461,232 @@ jobs:
             commit blob (not the PR) using a permalink with line numbers:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
-      # Also gated on the guard: a superseded run has no outcome to report, and
-      # skipping this step leaves review-failed empty so both marker-comment
-      # steps below skip too — a retired run must not touch the newer run's PR
-      # comment state. The composite owns the classification (classify.cjs —
+      # ONE bounded, gated retry: this lane is advisory, but a zero-turn blip
+      # (usage-limit spike, OIDC failure, SDK instant-fail) otherwise silently
+      # costs the PR its review until someone notices and re-runs.
+      #
+      # The gate retries ONLY when the execution file shows ZERO assistant
+      # turns and the failure is not auth-class. Zero turns is the
+      # artifact-safety condition: the action posts nothing review-shaped
+      # before its first assistant turn, so attempt 2 cannot duplicate inline
+      # comments already on the PR. The auth exclusion skips the one class no
+      # retry can clear — the credential needs an operator. A mid-review
+      # failure (assistant turns already spent, comments possibly posted) is
+      # deliberately NOT retried: the duplicate-comment risk outweighs the
+      # second chance, and the re-run path remains.
+      #
+      # Deliberately ONE retry, not a loop: Actions cannot loop a `uses:`
+      # step, so the retry is a verbatim copy of the step above, and each copy
+      # is a place where the two can silently diverge. The gate honors the
+      # freshness guard and the review-count cap exactly as the first attempt
+      # does, so a retired or capped run never spends a retry.
+      #
+      # The auth predicate mirrors classify.cjs in the claude-lane-outcome
+      # composite — the authoritative sibling. The composite is fetched at its
+      # pinned SHA and the caller's checkout does not contain this repo's
+      # scripts, so classify.cjs cannot be require()d at runtime and the
+      # predicate is inlined here instead; keep the two type-for-type.
+      - name: Decide whether to retry the review
+        id: retry-gate
+        if: >-
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true' &&
+          steps.claude-review.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            core.setOutput("retry", "false");
+            let entries;
+            try {
+              const parsed = JSON.parse(
+                fs.readFileSync(process.env.EXECUTION_FILE, "utf8"),
+              );
+              if (Array.isArray(parsed)) entries = parsed;
+            } catch {
+              // Falls through to the evidence guard below.
+            }
+            // Retry only on EVIDENCE of zero turns. A missing or unparsable
+            // execution file proves nothing: a hard kill (step timeout, OOM)
+            // can lose the file after turns were already spent, and retrying
+            // then risks exactly the duplicate comments this gate exists to
+            // prevent.
+            if (entries === undefined) {
+              core.notice(
+                "Not retrying: no parseable execution file, so zero assistant turns cannot be proven.",
+              );
+              return;
+            }
+            const assistantTurns = entries.filter(
+              (entry) => entry?.type === "assistant",
+            ).length;
+            if (assistantTurns > 0) {
+              core.notice(
+                `Not retrying: attempt 1 recorded ${assistantTurns} assistant turn(s), ` +
+                  "so it may already have posted comments a second attempt would duplicate.",
+              );
+              return;
+            }
+            const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
+            const status = last?.api_error_status;
+            const errorText = (Array.isArray(last?.errors) ? last.errors : [])
+              .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
+              .join("\n");
+            const auth =
+              status === 401 ||
+              status === 402 ||
+              status === 403 ||
+              errorText.includes('"type":"authentication_error"') ||
+              errorText.includes('"type":"billing_error"') ||
+              errorText.includes('"type":"permission_error"');
+            if (auth) {
+              core.notice(
+                "Not retrying: auth-class failure — the credential needs an operator, and a retry cannot clear it.",
+              );
+              return;
+            }
+            // track_progress posts its tracking comment BEFORE the first
+            // assistant turn, so a zero-turn failure strands an orphan the
+            // retry will not adopt. Best-effort delete, identified by author
+            // + this run's URL. The tracking comment is authored by
+            // claude[bot] (the App identity, verified against live PRs);
+            // github-actions[bot] is accepted too in case upstream ever
+            // posts it with the workflow token. This run has posted nothing
+            // else yet, so the run-URL conjunct scopes deletion safely.
+            // Fork PRs run with a read-only token and must never fail the
+            // gate.
+            const trackingAuthors = new Set(["claude[bot]", "github-actions[bot]"]);
+            const pr = context.payload.pull_request;
+            if (pr?.number) {
+              try {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  per_page: 100,
+                });
+                for (const comment of comments) {
+                  if (
+                    trackingAuthors.has(comment.user?.login ?? "") &&
+                    (comment.body ?? "").includes(`/actions/runs/${context.runId}`)
+                  ) {
+                    await github.rest.issues.deleteComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: comment.id,
+                    });
+                    core.info(`Deleted attempt 1's orphan tracking comment (id ${comment.id}).`);
+                  }
+                }
+              } catch (error) {
+                core.warning(`Could not delete attempt 1's tracking comment: ${error.message}`);
+              }
+            }
+            core.setOutput("retry", "true");
+
+      # Jittered so parallel lanes retrying against the same contended seat do
+      # not re-collide in lockstep; the base delay rides the
+      # retry-delay-seconds input.
+      - name: Back off before the review retry
+        if: steps.retry-gate.outputs.retry == 'true'
+        env:
+          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+        run: sleep "$((RETRY_DELAY_SECONDS + RANDOM % 30))"
+
+      - name: Claude review (retry)
+        id: claude-review-retry
+        if: steps.retry-gate.outputs.retry == 'true'
+        # Same rationale as the first attempt: an infra failure stays off the
+        # check, and the same step timeout keeps the retry inside the job
+        # budget.
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: ${{ inputs.track-progress }}
+          display_report: ${{ inputs.display-report }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          claude_args: ${{ steps.compose-args.outputs.args }}
+          # github-context expressions must appear directly in the step (a value
+          # carried in via inputs.prompt is NOT re-evaluated), so the structural
+          # header + permalink guidance live here and wrap the consumer's body.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            ${{ inputs.prompt }}
+
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+      # Collapse the two attempts into the one pair of facts the outcome step
+      # needs. Reading the retry's fields directly would be wrong: when it is
+      # skipped its outcome is the literal `skipped` and its execution_file is
+      # empty, so the first attempt's result has to be the fallback.
+      - name: Resolve the effective review attempt
+        id: attempt
+        # !cancelled(), not always(): cancellation is this lane's retirement
+        # mechanism (cancel-in-progress on same-head duplicates), and a
+        # retired run must not go on to report an outcome or touch the newer
+        # run's PR comment state.
+        if: >-
+          !cancelled() && steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
+        env:
+          FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
+          FIRST_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          RETRY_OUTCOME: ${{ steps.claude-review-retry.outcome }}
+          RETRY_FILE: ${{ steps.claude-review-retry.outputs.execution_file }}
+        run: |
+          if [ "$RETRY_OUTCOME" = "skipped" ] || [ -z "$RETRY_OUTCOME" ]; then
+            outcome="$FIRST_OUTCOME"
+            execution_file="$FIRST_FILE"
+          else
+            echo "First attempt failed; reporting the retry's result instead."
+            outcome="$RETRY_OUTCOME"
+            execution_file="$RETRY_FILE"
+          fi
+          {
+            echo "outcome=$outcome"
+            echo "execution_file=$execution_file"
+          } >>"$GITHUB_OUTPUT"
+
+      # Also gated on the guard and the review-count cap: a superseded or
+      # capped run has no outcome to report, and skipping this step leaves
+      # review-failed empty so both marker-comment steps below skip too — a
+      # retired run must not touch the newer run's PR comment state, and a
+      # capped run must not post an infra-failure warning for a review that
+      # was deliberately not attempted. The composite owns the classification
+      # (classify.cjs —
       # the sole reader of the execution file's free-text fields) and the
       # machine-readable `class=<token>` annotation.
       - name: Report review outcome
         id: review-outcome
-        if: always() && steps.freshness.outputs.superseded != 'true'
+        if: >-
+          !cancelled() && steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
-          outcome: ${{ steps.claude-review.outcome }}
-          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          outcome: ${{ steps.attempt.outputs.outcome }}
+          execution-file: ${{ steps.attempt.outputs.execution_file }}
           lane: Claude review
 
       # Runs only on a genuine infra failure (never on a clean review). The
       # composite owns the ID-safe marker lifecycle, the fork guard, and the
       # no-PR no-op — clobbering an unrelated bot comment is the failure mode
-      # this whole change exists to fix.
+      # this whole change exists to fix. body-copy is explicit because this
+      # lane drops `synchronize`: a push does not re-trigger it, so the
+      # "pushing a new commit will retry" wording would be wrong here. The
+      # continuation line carries its own `> ` blockquote prefix (the
+      # composite prefixes only the first line).
       - name: Comment on genuine review failure
-        if: always() && steps.review-outcome.outputs.review-failed == 'true'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'true'"
         # Reporting an outage must never become one: this step only annotates
         # a PR, and a rejected API call must not turn the infra-failure path
         # red (see the composite's description).
@@ -344,13 +697,16 @@ jobs:
           mode: post-failure
           failure-class: ${{ steps.review-outcome.outputs.failure-class }}
           review-detail: ${{ steps.review-outcome.outputs.review-detail }}
+          body-copy: |-
+            Re-run the job to retry the review. A new push does **not** re-trigger this lane.
+            > An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator (`auth`).
 
       # Symmetric counterpart to the failure step above: a transient infra
       # failure (e.g. an OIDC blip) can leave the marker comment behind on the
       # PR. Once a retry (rerun or new push) succeeds, clear that stale
       # warning so it is not mistaken for a still-open problem.
       - name: Clear stale failure comment after successful review
-        if: always() && steps.review-outcome.outputs.review-failed == 'false'
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
@@ -358,6 +714,63 @@ jobs:
         with:
           marker: "<!-- claude-review-infra-status -->"
           mode: clear-on-success
+
+      # The visible counter the review-count gate reads. Upserted only after a
+      # successful review (review-failed == 'false' implies the outcome step
+      # ran, so the run was neither superseded nor capped), so failed and
+      # skipped runs never inflate the count.
+      - name: Update the review-count status comment
+        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
+        # Housekeeping: a rejected API call must not redden a successful
+        # advisory review.
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PRIOR_COUNT: ${{ steps.review-count.outputs.count }}
+          PRIOR_COMMENT_ID: ${{ steps.review-count.outputs.comment-id }}
+          MAX_REVIEWS_PER_PR: ${{ inputs.max-reviews-per-pr }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr?.number) {
+              core.info("No pull request in this event; nothing to count.");
+              return;
+            }
+            if (pr.head?.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.info("Fork-triggered run has a read-only token; skipping the count update.");
+              return;
+            }
+            const count = (Number(process.env.PRIOR_COUNT) || 0) + 1;
+            const max = Number(process.env.MAX_REVIEWS_PER_PR);
+            const capNote =
+              Number.isFinite(max) && max > 0
+                ? ` The lane skips further automatic reviews after ${max}; deleting this comment resets the count.`
+                : " Deleting this comment resets the count.";
+            const body =
+              `<!-- claude-review-count:${count} -->\n` +
+              `Claude has reviewed this PR ${count} time${count === 1 ? "" : "s"}.${capNote}`;
+            const commentId = Number(process.env.PRIOR_COMMENT_ID);
+            try {
+              if (Number.isInteger(commentId) && commentId > 0) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: commentId,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body,
+                });
+              }
+            } catch (error) {
+              // A comment deleted mid-run lands here; the next successful run
+              // recreates it from zero — fail-open, matching the gate.
+              core.warning(`Could not update the review-count comment: ${error.message}`);
+            }
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once

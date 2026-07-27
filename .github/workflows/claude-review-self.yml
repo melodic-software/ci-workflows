@@ -5,12 +5,14 @@ name: Claude Review
 # (caller owns `on:` + permissions; reusable workflow owns the action pin and
 # safe handling). Local `./` ref works because the checkout IS this repo.
 #
-# Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
-# "selected repositories" scope (UI-managed); without it, fork PRs and an
-# unscoped run get no token and the review degrades to a warning (no leak).
+# The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
+# so this repo receives it; fork PRs still get no token by design and the
+# review degrades to a warning (no leak).
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # No `synchronize` — dogfoods the canonical cadence: review on
+    # open/ready/reopen; re-run the job for a fresh review after a push.
+    types: [opened, ready_for_review, reopened]
 
 permissions:
   contents: read

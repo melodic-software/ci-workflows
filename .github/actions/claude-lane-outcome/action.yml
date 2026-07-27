@@ -75,9 +75,15 @@ runs:
           // `class=<token>` is a machine-readable term, not prose: this
           // annotation is the detection surface a receiver polls through the
           // check-run API, so keep it bare and greppable.
+          //
+          // The disclaimer names what the failure is NOT, so the noun must
+          // match the lane: a security lane's infra failure is not a
+          // security signal, any other lane's is not a code-quality signal.
+          // Derived from the lane name so callers need no extra wiring.
+          const signal = /security/iu.test(lane) ? "security" : "code-quality";
           core.error(
             `${lane} exited with: ${outcome} class=${failureClass} ` +
-              "(infrastructure error, not a code-quality signal — e.g. usage limit, " +
+              `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
               "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
               `Last SDK result: ${reviewDetail}`,
           );

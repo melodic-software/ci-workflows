@@ -15,9 +15,9 @@ name: Claude Security Review
 # merge_group even if this repo adopts a merge queue — the pinned action cannot
 # serve that event, so the check would report green without reviewing; see #272.)
 #
-# Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
-# "selected repositories" scope (UI-managed); without it, fork PRs and an
-# unscoped run get no token and the review degrades to a warning (no leak).
+# The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
+# so this repo receives it; fork PRs still get no token by design and the
+# review degrades to a warning (no leak).
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]

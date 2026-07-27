@@ -5,10 +5,11 @@
 // required check and cannot express it (#266). The classification itself lives
 // in the claude-lane-outcome composite (its corpus runs in
 // .github/actions/claude-lane-outcome/classify.test.cjs); what this workflow
-// owns — and what these tests pin — is the wiring around it: the resolve step
-// that picks the effective attempt, the outcome composite reading that attempt,
-// and the fail-closed step that raises the red on the one signal that means
-// "in scope and did not run".
+// owns — and what these tests pin — is the wiring around it: the retry gate
+// that decides whether a second attempt is safe (zero assistant turns) and
+// useful (not auth-class), the resolve step that picks the effective attempt,
+// the outcome composite reading that attempt, and the fail-closed step that
+// raises the red on the one signal that means "in scope and did not run".
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -170,10 +171,12 @@ test("an in-scope non-run fails the job through the fail-closed step", () => {
   // rejects merge_group and, with track_progress on, every non-PR event, so
   // reddening those would wedge a consumer's merge queue on a cause no head
   // change can fix; they keep the historical pass-through by skipping this
-  // step). always() keeps the step reachable after the failed review step.
+  // step). !cancelled() keeps the step reachable after the failed review
+  // step while still skipping it on cancellation — a cancelled run is
+  // retired by a newer one and must not raise a red of its own.
   assert.match(
     step,
-    /^ {8}if: >-\n {10}always\(\) && steps\.review-outcome\.outputs\.review-failed == 'true' &&\n {10}github\.event\.pull_request\.number != ''$/mu,
+    /^ {8}if: >-\n {10}!cancelled\(\) && steps\.review-outcome\.outputs\.review-failed == 'true' &&\n {10}github\.event\.pull_request\.number != ''$/mu,
     "the fail-closed condition must key on review-failed and pull_request presence exactly",
   );
   assert.match(step, /^ {10}exit 1$/mu, "the step must conclude failure");
@@ -216,11 +219,43 @@ test("fork PRs skip the job instead of failing closed forever", () => {
   );
 });
 
+test("the kill-switches gate the review job only, never the changes job", () => {
+  const changesJob = workflow.slice(
+    workflow.indexOf("  changes:"),
+    workflow.indexOf("  security-review:"),
+  );
+  const reviewJobCondition = workflow.slice(
+    workflow.indexOf("  security-review:"),
+    workflow.indexOf("      - name: Reject privileged triggers"),
+  );
+
+  // A kill-switched review job is a name-stable SKIP a required-check ruleset
+  // reads as success; a switch that also silenced the `changes` relevance job
+  // would change the reporting shape rather than just pausing the review.
+  for (const clause of [
+    "vars.CLAUDE_LANES_DISABLED != 'true'",
+    "vars.CLAUDE_SECURITY_REVIEW_DISABLED != 'true'",
+  ]) {
+    assert.ok(
+      reviewJobCondition.includes(clause),
+      `the security-review job condition must carry the kill-switch clause ${clause}`,
+    );
+  }
+  assert.doesNotMatch(
+    changesJob,
+    /vars\.CLAUDE/u,
+    "the changes job must never be kill-switch gated",
+  );
+});
+
 test("a superseded head reports nothing, so it cannot fail closed", () => {
   const step = stepSource("Report review outcome");
+  // !cancelled() rather than always(): cancellation is the concurrency
+  // group's retirement mechanism, so a cancelled run must skip the outcome
+  // step exactly like a superseded one.
   assert.match(
     step,
-    /^ {8}if: always\(\) && steps\.freshness\.outputs\.superseded != 'true'$/mu,
+    /^ {8}if: "!cancelled\(\) && steps\.freshness\.outputs\.superseded != 'true'"$/mu,
     "a retired run must skip the outcome step, leaving review-failed unset",
   );
 });
@@ -260,13 +295,8 @@ test("the review retry is configured identically to the first attempt", () => {
   );
   assert.match(
     retry,
-    /steps\.claude-review\.outcome == 'failure'/u,
-    "the retry must run only after a failed first attempt",
-  );
-  assert.match(
-    retry,
-    /steps\.freshness\.outputs\.superseded != 'true'/u,
-    "a superseded run must not spend a retry",
+    /^ {8}if: steps\.retry-gate\.outputs\.retry == 'true'$/mu,
+    "the retry must run only when the gate elected to retry",
   );
 
   // Same pin, or the retry is a different action than the one that was reviewed.
@@ -276,10 +306,68 @@ test("the review retry is configured identically to the first attempt", () => {
     stepSource("Claude security review").match(pin)?.[1],
     "the retry must pin the same action SHA as the first attempt",
   );
+});
 
+test("the retry gate keys on a failed, current, PR-scoped first attempt", () => {
+  const gate = stepSource("Decide whether to retry the review");
+
+  // The gate — not the retry step — owns the chain: a retry is considered
+  // only after a failed first attempt, on a still-current head, on a
+  // pull_request run (the events the action rejects outright fail for
+  // reasons no retry clears).
   assert.match(
-    stepSource("Back off before the review retry"),
-    /^ {8}run: sleep \d+$/mu,
-    "the retry must back off rather than immediately re-hammering a rate-limited API",
+    gate,
+    /steps\.claude-review\.outcome == 'failure'/u,
+    "the gate must consider a retry only after a failed first attempt",
+  );
+  assert.match(
+    gate,
+    /steps\.freshness\.outputs\.superseded != 'true'/u,
+    "a superseded run must not spend a retry",
+  );
+  assert.match(
+    gate,
+    /github\.event\.pull_request\.number != ''/u,
+    "the retry must stay PR-scoped",
+  );
+
+  // Zero assistant turns is the artifact-safety condition: nothing
+  // review-shaped was posted, so attempt 2 cannot duplicate inline comments.
+  assert.match(
+    gate,
+    /\(entry\) => entry\?\.type === "assistant"/u,
+    "the gate must refuse to retry once assistant turns were spent",
+  );
+
+  // The auth exclusion mirrors classify.cjs's auth class type-for-type; a
+  // retry cannot clear a credential death.
+  for (const errorType of [
+    "authentication_error",
+    "billing_error",
+    "permission_error",
+  ]) {
+    assert.ok(
+      gate.includes(`"type":"${errorType}"`),
+      `the gate must exclude ${errorType} failures from retry`,
+    );
+  }
+});
+
+test("the backoff is jittered and gated on the retry decision", () => {
+  const backoff = stepSource("Back off before the review retry");
+  assert.match(
+    backoff,
+    /^ {8}if: steps\.retry-gate\.outputs\.retry == 'true'$/mu,
+    "backing off without a retry decision would only delay the verdict",
+  );
+  assert.match(
+    backoff,
+    /^ {8}run: sleep "\$\(\(RETRY_DELAY_SECONDS \+ RANDOM % 30\)\)"$/mu,
+    "the retry must back off with jitter rather than re-hammering a contended seat in lockstep",
+  );
+  assert.match(
+    backoff,
+    /^ {10}RETRY_DELAY_SECONDS: \$\{\{ inputs\.retry-delay-seconds \}\}$/mu,
+    "the base delay must ride the retry-delay-seconds input",
   );
 });
