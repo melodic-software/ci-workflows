@@ -345,8 +345,18 @@ the mount prohibition now conditions on private content (with
 is explicitly historical, and `ai-review-bot-composition.md`'s governed
 baseline is the two scope-split lanes. Five `review-instructions` sync PRs
 opened: ci-workflows#275, claude-code-plugins#1643, github-iac#230,
-dotfiles#344, provisioning#221 — automerge armed; all five must be MERGED
-before 2b merges (the 2b gate).
+dotfiles#344, provisioning#221 — all five must be MERGED before 2b merges
+(the 2b gate). Merge state (2026-07-27): automerge had never actually
+armed (empty auto-merge timeline on every PR despite the prior session's
+record); armed 2026-07-27, after which ci-workflows#275,
+claude-code-plugins#1643, github-iac#230, and provisioning#221 merged
+immediately (their checks were already CLEAN) and dotfiles#344 armed on a
+second attempt; all five are MERGED (last: dotfiles#344,
+2026-07-27T00:57Z). The review lanes SKIPPED on every sync PR — the
+callers pass `skip-actors` including `melodic-standards-sync[bot]`
+(verified in dotfiles' caller) — so the prior handoff's open question
+resolves as "not exercised"; the new REVIEW.md's first real exercise
+arrives with ordinary PR traffic.
 
 ### Phase 2: ci-workflows change set [DOING]
 
@@ -377,6 +387,8 @@ merged SHA — self-reference pins resolvable only post-merge), **PR-B** (featur
     tripwire changes shape).
 - **2a-addendum (PR-A2 execution record, 2026-07-27):** PR-A1 merged as
   `b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd`; composites pinned at that SHA.
+  PR-A2 (ci-workflows#276) merged as `a7c7145` (2026-07-27T00:57Z) — the
+  repoint is live on main; 2a is complete.
   #266's fail-closed change landed between plan approval and the repoint, so
   the security lane's outcome step was not a pure embed swap: the composite
   records the failure without failing, and a new inline `Fail closed on an
@@ -480,6 +492,35 @@ merged SHA — self-reference pins resolvable only post-merge), **PR-B** (featur
   `exclude: [anthropics/claude-code-action]`; group `github-actions` gains
   `exclude-patterns: [anthropics/claude-code-action]`.
 - **2j. Release:** `release.yml` workflow_dispatch, bump `minor`.
+- **2b-2i execution record (2026-07-27, PR-B):** built on
+  `feat/claude-review-lanes-b` (stacked on A2, rebased onto main after the
+  A2 squash). Commits: `0ea2492` (2b), `41fddc7` (2i), `eb89a2a` (2c),
+  `042020f` (2d), `b7a13d7` (adversarial hardening), `97f8251` (doc
+  reconciliation), `21af5ac` (2e), `656d69a` (2f), `796b993` (2g); 2h is
+  satisfied by 2b/2d/2f's mechanical application to the e2e lane, with no
+  marker/class adoption. Notes against the plan text:
+  - Sanity-check amendments: "exactly 3" claude-code-action pins predates
+    #266's in-workflow retry and 2d's verbatim-copy retries — actual is 6
+    uses, all `be7b93b` `# v1.0.183`.
+    `grep -c synchronize .github/workflows/claude-review-self.yml` == 1: a
+    comment documenting the removal; the trigger list carries none.
+  - The 2c counter and 2d retry gate shipped exactly as the plan-locked
+    fallbacks (visible status comment; zero-assistant-turns AND not-auth).
+  - 2f-addendum resolved via the DOCS route: the exclusion predicate cannot
+    key on kill-switch state (REVIEW.md is static prose the review agent
+    reads; Actions vars are invisible to it), so both lane headers record
+    that a kill-switched security lane re-widens the
+    suppressed-security-findings window until re-enabled.
+  - 2g's composite edits (default body-copy, lane-aware annotation noun)
+    take effect at the Phase 3g re-pin; claude-review passes an explicit
+    live body-copy meanwhile.
+  - Post-review steps swapped `always()` for `!cancelled()` on all three
+    lanes (adversarial-review F2): cancellation is the concurrency group's
+    retirement mechanism, so a cancelled run must not report an outcome,
+    raise the fail-closed red, or mutate the newer run's comment state.
+  - Independent fresh-context verifiers audited every producer's commits:
+    2b/2i/2c PASS (doc drift D1-D4 fixed in `97f8251`); 2d-2g audit
+    recorded in the PR thread.
 
 **Sanity Check:**
 `grep -rc "12531344451323133b0493233c759991ac61da12" .github/workflows/` == 0;
