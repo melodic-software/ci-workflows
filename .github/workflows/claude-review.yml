@@ -198,46 +198,14 @@ jobs:
 
       # A stale run must retire itself, not rely on being cancelled: with the
       # per-head concurrency key above, nothing cancels a run whose head was
-      # superseded while it sat in a queue. Ask the live API whether this
-      # event's head is still the PR's head; when it is not, a newer run owns
-      # the review, so every runner-consuming step below skips (posting
-      # feedback for an obsolete head is worse than doing nothing, and the
-      # newer run also owns the marker-comment lifecycle). Fails open — the
-      # `!= 'true'` step gates treat a missing output as fresh, and only a
-      # response shaped like a commit SHA may retire the run (a degenerate
-      # success such as jq's literal `null` must not) — so an API anomaly
-      # degrades to reviewing a possibly-stale head, never to silence.
-      # actions/github-script rather than a `gh api` run step: this reusable
-      # runs on whatever runner the caller selected, and a self-hosted image
-      # is not guaranteed to ship the gh CLI. github-script executes on the
-      # action's own bundled Node runtime, so the live freshness check has no
-      # runner-image dependency (same pattern as do-not-merge-gate.yml).
+      # superseded while it sat in a queue. The composite owns the live-head
+      # check and its fail-open contract — downstream `!= 'true'` gates treat
+      # a missing output as fresh. Pinned to this repo's own merged SHA: a
+      # local ./ ref resolves against the CALLER's checkout in a reusable
+      # workflow and cannot work.
       - name: Check whether this head is still current
         id: freshness
-        if: github.event.pull_request.number != ''
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        with:
-          script: |
-            let liveHead = "";
-            try {
-              const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-              });
-              liveHead = pr.head.sha;
-            } catch (error) {
-              core.warning(`Could not refetch the PR head; treating this run as fresh: ${error.message}`);
-            }
-            const eventHeadSha = process.env.EVENT_HEAD_SHA ?? "";
-            if (/^[0-9a-f]{40}$/.test(liveHead) && liveHead !== eventHeadSha) {
-              core.notice(`Skipping review: the PR head moved from ${eventHeadSha} to ${liveHead}, so a newer run owns the review.`);
-              core.setOutput("superseded", "true");
-            } else {
-              core.setOutput("superseded", "false");
-            }
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
 
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
@@ -346,257 +314,50 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # Also gated on the guard: a superseded run has no outcome to report, and
-      # skipping this step leaves review_failed empty so both marker-comment
+      # skipping this step leaves review-failed empty so both marker-comment
       # steps below skip too — a retired run must not touch the newer run's PR
-      # comment state.
+      # comment state. The composite owns the classification (classify.cjs —
+      # the sole reader of the execution file's free-text fields) and the
+      # machine-readable `class=<token>` annotation.
       - name: Report review outcome
         id: review-outcome
         if: always() && steps.freshness.outputs.superseded != 'true'
-        env:
-          REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
-          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
-        run: |
-          if [ "$REVIEW_OUTCOME" = "success" ]; then
-            echo "Claude review completed. Findings (if any) are in the PR comments."
-            echo "review_failed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Prior to claude-code-action v1.0.172, the action reported `success`
-          # even when the underlying SDK result had is_error:true (upstream
-          # #1495, fixed in #1496) — this branch was effectively dead. Bumping
-          # past the fix makes REVIEW_OUTCOME finally reflect real failures, so
-          # this now needs to actually surface them instead of just logging.
-          #
-          # The raw SDKResultMessage is NOT safe to publish as-is on this public
-          # repo — the same leak risk that keeps display_report and
-          # show_full_output off (CLAUDE.md). The embedded block below is the
-          # sole reader of its free-text fields; its header carries the
-          # projection and classification contract.
-          # BEGIN GENERATED CLASSIFY INFRA FAILURE - DO NOT EDIT
-          # Source: .github/scripts/classify-infra-failure.sh
-          # Project the last claude-code-action SDK result message into safe, structured
-          # metadata and classify a genuine infrastructure failure into exactly one coarse
-          # class: auth | rate-limit | overloaded | other. Reads EXECUTION_FILE (the
-          # action's execution_file output, which may be unset, missing, or unparsable)
-          # and sets review_detail plus failure_class as shell variables and step outputs.
-          #
-          # This runs on a PUBLIC repo. The result message's `result` field is
-          # model-authored free text and its `errors[]` entries are raw error stacks; both
-          # are read INSIDE this block only, and nothing but the class token and the
-          # structured projection below ever leaves it. Never widen the projection to
-          # either field, and never echo the result message wholesale.
-          #
-          # Classification order:
-          #   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
-          #      the last assistant turn was an API error: 401/402/403 auth, 429
-          #      rate-limit, 5xx overloaded, every other status other.
-          #   2. an allowlisted substring over `errors[]`, matching the serialized
-          #      Anthropic error body (`{"type":"error","error":{"type":"<type>",...}}`)
-          #      that the API SDK folds into an APIError's message, and so into its stack.
-          #   3. other.
-          #
-          # The allowlist mirrors the status mapping type-for-type, so a payload that
-          # recovers no numeric status still lands in the same class the status would
-          # have chosen. Against the published error table that is: `authentication_error`
-          # (401), `billing_error` (402), `permission_error` (403) -> auth;
-          # `rate_limit_error` (429) -> rate-limit; `api_error` (500), `timeout_error`
-          # (504), `overloaded_error` (529) -> overloaded. The remaining published types
-          # — `invalid_request_error` (400), `not_found_error` (404), `conflict_error`
-          # (409), `request_too_large` (413) — are client errors, not infrastructure, and
-          # are deliberately left to `other` on both paths. Adding a type to one path
-          # without the other reopens the asymmetry this note exists to prevent.
-          #
-          # `auth` is the credential-unusable class, not the 401-only class: it covers
-          # every status where the credential cannot be used until a human acts. Per the
-          # published error table that is 401 `authentication_error`, 402 `billing_error`,
-          # and 403 `permission_error`. 402 belongs here because the incident this
-          # classifier exists for (ci-workflows#228 / claude-code-plugins#1122) is
-          # described as a *usage-dead account credential* — a billing/entitlement death,
-          # which the API reports as 402, not 401. Leaving 402 in `other` would classify
-          # the originating incident as unremarkable. The downstream aggregator routes
-          # `auth` to a human-gated incident, correct for a billing death as much as for
-          # a revocation.
-          #
-          # The two sources are disjoint members of the SDK's result union:
-          # `api_error_status` exists only on the success variant (the shape a dead
-          # credential produces — subtype success, is_error true) and `errors[]` only on
-          # the error subtypes. So the substring pass is the error-variant path, not a
-          # second look at the same payload, and a present-but-unmapped status stays a
-          # status decision rather than falling through to it.
-          : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
-
-          review_detail="(no execution file was produced)"
-          failure_class="other"
-
-          if [[ -n "${EXECUTION_FILE:-}" && -f "$EXECUTION_FILE" ]]; then
-            review_detail=$(jq -c '
-              (.[-1] // empty) as $last
-              | if $last == null then empty
-                else
-                  $last.api_error_status as $status
-                  | (($last.errors // []) | map(tostring) | join("\n")) as $text
-                  | (
-                      if ($status | type) == "number" then
-                        if $status == 401 or $status == 402 or $status == 403 then "auth"
-                        elif $status == 429 then "rate-limit"
-                        elif $status >= 500 and $status < 600 then "overloaded"
-                        else "other"
-                        end
-                      elif ($text | (contains("\"type\":\"authentication_error\"")
-                        or contains("\"type\":\"billing_error\"")
-                        or contains("\"type\":\"permission_error\""))) then "auth"
-                      elif ($text | contains("\"type\":\"rate_limit_error\"")) then "rate-limit"
-                      elif ($text | (contains("\"type\":\"overloaded_error\"")
-                        or contains("\"type\":\"timeout_error\"")
-                        or contains("\"type\":\"api_error\""))) then "overloaded"
-                      else "other"
-                      end
-                    ) as $class
-                  | {
-                      subtype: $last.subtype,
-                      is_error: $last.is_error,
-                      num_turns: $last.num_turns,
-                      duration_ms: $last.duration_ms,
-                      total_cost_usd: $last.total_cost_usd,
-                      api_error_status: $status,
-                      class: $class
-                    }
-                end
-            ' "$EXECUTION_FILE" 2>/dev/null || true)
-            if [[ -n "$review_detail" ]]; then
-              failure_class=$(jq -r '.class // "other"' <<<"$review_detail" 2>/dev/null || true)
-              [[ -n "$failure_class" ]] || failure_class="other"
-            else
-              review_detail="(execution file present but unparsable)"
-            fi
-          fi
-
-          {
-            echo "failure_class=$failure_class"
-            echo "review_detail=$review_detail"
-          } >>"$GITHUB_OUTPUT"
-          # END GENERATED CLASSIFY INFRA FAILURE
-
-          # `class=<token>` is a machine-readable term, not prose: this
-          # annotation is the detection surface a receiver polls through the
-          # check-run API, so keep it bare and greppable.
-          echo "::error::Claude review exited with: $REVIEW_OUTCOME class=$failure_class" \
-            "(infrastructure error, not a code-quality signal — e.g. usage limit," \
-            "OIDC failure, SDK crash, is_error result, or max-turns exhaustion)." \
-            "Last SDK result: $review_detail"
-
-          echo "review_failed=true" >> "$GITHUB_OUTPUT"
-
-      # Runs only on a genuine infra failure (never on a clean review) and only
-      # when the token can write: fork-triggered pull_request runs get a
-      # read-only GITHUB_TOKEN and no secrets by design (CLAUDE.md), so
-      # gh pr comment would just fail there — skip rather than error.
-      # Targets the marker comment by ID (never --edit-last, which edits the
-      # PR's last comment from ANY author) so a stuck placeholder comment from
-      # track_progress is never mistaken for "no findings" and an unrelated
-      # bot comment is never clobbered — this is the failure mode this whole
-      # change exists to fix.
-      # actions/github-script rather than `gh api`/`gh pr comment` run steps:
-      # this reusable runs on whatever runner the caller selected, and a
-      # self-hosted image is not guaranteed to ship the gh CLI.
-      - name: Comment on genuine review failure
-        if: >-
-          always() && steps.review-outcome.outputs.review_failed == 'true' &&
-          github.event.pull_request.number != '' &&
-          github.event.pull_request.head.repo.full_name == github.repository
-        # Reporting an outage must never become one. This step only annotates a
-        # PR, and its API calls can reject for reasons entirely unrelated to the
-        # code under review — a rejected listComments/createComment would
-        # otherwise fail the job through github-script's own error handling,
-        # turning the infra-failure path red without any explicit failure call.
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REVIEW_DETAIL: ${{ steps.review-outcome.outputs.review_detail }}
-          REVIEW_CLASS: ${{ steps.review-outcome.outputs.failure_class }}
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
-          script: |
-            const marker = "<!-- claude-review-infra-status -->";
-            const body = [
-              marker,
-              "> [!WARNING]",
-              "> **Automated review did not complete** — this is an infrastructure failure, not a review verdict.",
-              ">",
-              "> Treat any Claude comment on this PR (including a placeholder like \"I'll analyze this and get back to you\") as incomplete, not \"no findings.\"",
-              ">",
-              `> - Run: ${process.env.RUN_URL}`,
-              `> - Failure class: \`${process.env.REVIEW_CLASS}\``,
-              `> - Last SDK result: \`${process.env.REVIEW_DETAIL}\``,
-              ">",
-              "> Re-running the job, or pushing a new commit, will retry the review.",
-            ].join("\n");
+          outcome: ${{ steps.claude-review.outcome }}
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          lane: Claude review
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-            });
-            const marked = comments.filter(
-              (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker),
-            );
-            const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body,
-              });
-            }
+      # Runs only on a genuine infra failure (never on a clean review). The
+      # composite owns the ID-safe marker lifecycle, the fork guard, and the
+      # no-PR no-op — clobbering an unrelated bot comment is the failure mode
+      # this whole change exists to fix.
+      - name: Comment on genuine review failure
+        if: always() && steps.review-outcome.outputs.review-failed == 'true'
+        # Reporting an outage must never become one: this step only annotates
+        # a PR, and a rejected API call must not turn the infra-failure path
+        # red (see the composite's description).
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        with:
+          marker: "<!-- claude-review-infra-status -->"
+          mode: post-failure
+          failure-class: ${{ steps.review-outcome.outputs.failure-class }}
+          review-detail: ${{ steps.review-outcome.outputs.review-detail }}
 
       # Symmetric counterpart to the failure step above: a transient infra
       # failure (e.g. an OIDC blip) can leave the marker comment behind on the
-      # PR, and the failure-only condition previously meant no later code path
-      # ever touched it again. Once a retry (rerun or new push) succeeds, clear
-      # that stale warning so it is not mistaken for a still-open problem.
-      # Same fork guard and marker lookup as the failure step — never
-      # --edit-last, for the same clobbering risk.
-      # actions/github-script rather than a `gh api` run step, for the same
-      # runner-tool-availability reason as the failure-comment step above.
+      # PR. Once a retry (rerun or new push) succeeds, clear that stale
+      # warning so it is not mistaken for a still-open problem.
       - name: Clear stale failure comment after successful review
-        if: >-
-          always() && steps.review-outcome.outputs.review_failed == 'false' &&
-          github.event.pull_request.number != '' &&
-          github.event.pull_request.head.repo.full_name == github.repository
-        # Symmetric to the failure step above: tidying a stale comment is
-        # housekeeping, and a rejected API call during it must not turn a
-        # successful review red.
+        if: always() && steps.review-outcome.outputs.review-failed == 'false'
+        # Tidying a stale comment is housekeeping, and a rejected API call
+        # during it must not turn a successful review red.
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
-          script: |
-            const marker = "<!-- claude-review-infra-status -->";
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-            });
-            const marked = comments.filter(
-              (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker),
-            );
-            const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
-            if (existing) {
-              await github.rest.issues.deleteComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-              });
-            }
+          marker: "<!-- claude-review-infra-status -->"
+          mode: clear-on-success
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once

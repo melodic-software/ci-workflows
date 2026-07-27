@@ -39,7 +39,9 @@ inputs:
     default: ""
   body-copy:
     description: >-
-      Trailing guidance line of the warning body (post-failure mode).
+      Trailing guidance of the warning body (post-failure mode). May span
+      multiple lines: only the first line receives the `> ` blockquote
+      prefix, so every continuation line must carry its own `> ` prefix.
     required: false
     default: "Re-running the job, or pushing a new commit, will retry the review."
 

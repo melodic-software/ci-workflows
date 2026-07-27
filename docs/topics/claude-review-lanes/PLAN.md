@@ -297,7 +297,7 @@ runs at `https://github.com/melodic-software/ci-workflows/actions/runs/<id>`):**
   1.7.12. Shipped as `.github/actionlint.yaml` with justification + removal
   trigger (rhysd/actionlint#654); fleet distribution deferred to Phase 3c0.
 
-### Phase 1: standards — REVIEW.md restructure + REVIEW-CREDENTIAL re-derivation [DOING]
+### Phase 1: standards — REVIEW.md restructure + REVIEW-CREDENTIAL re-derivation [DONE]
 
 One PR to melodic-software/standards. Closes standards#264. Runs in parallel with
 Phase 0 (disjoint repos, no dependency).
@@ -330,7 +330,25 @@ claude-code-plugins reclassification; standards#264 closed by the merge; five
 downstream sync PRs opened and (before 2b merges) merged — verify via
 `gh pr list --repo melodic-software/<target> --search review-instructions`.
 
-### Phase 2: ci-workflows change set [TODO]
+**Phase 1 evidence (2026-07-27):** standards#278 merged as `abeccc6`
+(2026-07-27T00:03Z); #264 auto-closed by the merge. Post-merge greps on
+standards main: `grep -c "Do not report" REVIEW.md` == 0; `grep -c "Cap the
+nits" REVIEW.md` == 0; lane headings present (`## Code-review lane scope`
+:62, `## Security lane scope` :88), each with an explicit mutual-exclusion
+line ("does **not** report security findings … omitted here even when a
+hunk plainly contains one" / "Everything else … is out of scope here and is
+owned by the code-review lane; omit it"); `grep -ci public
+distribution/REVIEW-CREDENTIAL.md` == 27 (public-state re-derivation
+present). Three Codex review threads were fixed in `18bda17` before merge:
+the mount prohibition now conditions on private content (with
+`conventions/README.md` reconciled), the retained credential classification
+is explicitly historical, and `ai-review-bot-composition.md`'s governed
+baseline is the two scope-split lanes. Five `review-instructions` sync PRs
+opened: ci-workflows#275, claude-code-plugins#1643, github-iac#230,
+dotfiles#344, provisioning#221 — automerge armed; all five must be MERGED
+before 2b merges (the 2b gate).
+
+### Phase 2: ci-workflows change set [DOING]
 
 After Phases 0 + 1 (2b additionally gated on the five sync PRs). Delivery:
 **PR-A1** (composites land, unreferenced), **PR-A2** (reusables repoint at the
@@ -357,6 +375,25 @@ merged SHA — self-reference pins resolvable only post-merge), **PR-B** (featur
     (precedent: render-classify-infra-failure.cjs:9-11).
   - Update `claude-review-superseded-guard.test.cjs` deliberately (7-occurrence
     tripwire changes shape).
+- **2a-addendum (PR-A2 execution record, 2026-07-27):** PR-A1 merged as
+  `b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd`; composites pinned at that SHA.
+  #266's fail-closed change landed between plan approval and the repoint, so
+  the security lane's outcome step was not a pure embed swap: the composite
+  records the failure without failing, and a new inline `Fail closed on an
+  in-scope non-run` step owns the required-check red — the same
+  pull_request-only carve-out, expressed as a step condition
+  (`review-failed == 'true' && github.event.pull_request.number != ''`).
+  `claude-security-review-fail-closed.test.cjs` re-pins the wiring shape
+  (resolve step, composite inputs, fail-closed condition); the
+  classification behavior corpus lives in
+  `.github/actions/claude-lane-outcome/classify.test.cjs`. The security
+  lane's expanded marker body rides the composite's `body-copy` as
+  blockquote-continuation lines (input description updated, docs-only).
+  `selector-conformance.yml` also dropped its classifier path triggers +
+  test step — a consumer of the retired files the plan had not listed.
+  Known cosmetic delta until 2g: the composite annotation says "not a
+  code-quality signal" on both lanes (the security lane previously said
+  "not a security signal"); align the wording during the 2g copy rewrite.
 - **2b. Config currency (all three lanes):** pin bump → v1.0.183 (full SHA +
   `# v1.0.183`); `--model claude-sonnet-5` defaults (no `--effort`);
   `exclude_comments_by_actor: dependabot,dependabot[bot]` + upstream-#1514 comment

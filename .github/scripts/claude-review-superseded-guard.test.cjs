@@ -26,10 +26,14 @@ test("the review concurrency group is keyed per head, not per PR", () => {
   assert.match(workflowSource, /^ {6}cancel-in-progress: true$/mu);
 });
 
-test("the superseded-head guard compares the event head to the live PR head", () => {
+test("the superseded-head guard is the pinned freshness composite", () => {
+  // The live-head comparison itself lives in the composite; what this
+  // workflow owns is invoking it under the `freshness` id at a full-SHA
+  // self-reference pin (a local ./ ref would resolve against the caller's
+  // checkout in a reusable workflow).
   assert.match(
     workflowSource,
-    /id: freshness[\s\S]*?uses: actions\/github-script@[\s\S]*?github\.rest\.pulls\.get\(/u,
+    /id: freshness\s+uses: melodic-software\/ci-workflows\/\.github\/actions\/claude-lane-freshness@[0-9a-f]{40}/u,
   );
 });
 
