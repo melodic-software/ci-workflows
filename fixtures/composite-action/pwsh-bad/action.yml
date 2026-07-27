@@ -1,0 +1,30 @@
+name: broken-pwsh-composite
+description: >-
+  Intentionally broken composite action. Its pwsh run: block assigns a variable
+  it never reads, which PSScriptAnalyzer reports as
+  PSUseDeclaredVarsMoreThanAssignments, and a bash step the shell selector must
+  skip out loud. It lives outside .github/actions so the real lane never scans
+  it; Invoke-CompositeRunPssa.test.ps1 points the check at this file and asserts
+  the check fails on the finding, at this file's own line number.
+
+runs:
+  using: composite
+  steps:
+    - name: Assigned but never read
+      shell: pwsh
+      env:
+        PATHS: ${{ github.action_path }}
+      run: |
+        # The inline expression exercises the ${{ }} substitution, which no real
+        # action.yml here does — every one of those passes inputs through env:.
+        # Substituted, the expression becomes a run of underscores and the string
+        # is constant; left raw, the string holds a variable reference and the
+        # constant-string rule stays silent. So the finding on the line below is
+        # what proves the substitution ran, rather than an absence standing in
+        # for it.
+        Write-Output "${{ github.action_path }}"
+        $neverRead = Get-ChildItem -LiteralPath $env:PATHS
+
+    - name: Not a shell PSScriptAnalyzer reads
+      shell: bash
+      run: echo 'the selector must skip this out loud'

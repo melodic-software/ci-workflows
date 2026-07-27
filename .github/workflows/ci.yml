@@ -43,6 +43,14 @@ jobs:
           persist-credentials: false
       - name: Analyze PowerShell
         uses: ./.github/actions/powershell
+      - name: Analyze composite action PowerShell
+        # The lane action discovers *.ps1/*.psm1, so the pwsh embedded in
+        # composite metadata is invisible to it — and to actionlint and the
+        # bash/sh sibling check, which announces those blocks as skipped. Runs
+        # here because the lane action already installed the pinned analyzer.
+        run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.ps1
+      - name: Prove a broken composite pwsh block fails
+        run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
 
   links:
     runs-on: ubuntu-24.04
