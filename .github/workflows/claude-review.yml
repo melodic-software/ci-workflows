@@ -61,10 +61,14 @@ on:
           is just the instructions for what to look for.
         type: string
         default: >-
-          Review this pull request for correctness, security, and alignment with
-          the project's CLAUDE.md guidelines (and REVIEW.md criteria if the repo
-          has one). Focus on architecture decisions, error handling, test
-          coverage, and maintainability.
+          This is the CODE-REVIEW lane. Review this pull request for
+          correctness and alignment with the project's CLAUDE.md guidelines
+          (and REVIEW.md criteria if the repo has one). Focus on architecture
+          decisions, error handling, test coverage, and maintainability.
+          Where REVIEW.md splits review scope across lanes — it scopes
+          security review to the dedicated security lane wherever a
+          claude-security-review workflow exists — follow that split and
+          leave security findings to the security lane.
 
 
           Scope your review to the files changed in this PR. Use `gh pr diff` to
@@ -75,9 +79,12 @@ on:
           Passed through to the Claude CLI. The universal extension point: model,
           turn budget, allowed tools, system prompt, MCP config all ride here
           (the standalone model / max_turns / allowed_tools action inputs are
-          deprecated upstream).
+          deprecated upstream). The default allows the inline-comment MCP tool
+          so findings can land as line-anchored review comments.
         type: string
-        default: --model claude-sonnet-4-6 --max-turns 75
+        default: >-
+          --model claude-sonnet-5 --max-turns 75
+          --allowedTools "mcp__github_inline_comment__create_inline_comment"
       track-progress:
         description: >-
           Create one tracking comment with progress checkboxes, sticky-updated
@@ -101,15 +108,19 @@ on:
       exclude-comments-by-actor:
         description: >-
           Comma-separated actors whose comments are withheld from Claude's
-          context (prompt-injection hygiene), not a trigger gate.
+          context (prompt-injection hygiene), not a trigger gate. Both
+          Dependabot spellings are listed because the action matches the
+          bare login for some comment kinds (upstream #1514).
         type: string
-        default: dependabot[bot]
+        default: dependabot,dependabot[bot]
       skip-actors:
         description: >-
           Comma-separated actors (no spaces) for whom the job skips entirely, to
           save runner minutes on PRs that never need review. Empty reviews all.
+          The default also bans self-triggering: Claude and the org's
+          automation bots must never trigger their own review lanes.
         type: string
-        default: dependabot[bot]
+        default: dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]
       timeout-minutes:
         description: Job timeout.
         type: number
@@ -133,8 +144,8 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           Claude Code OAuth token (from `claude setup-token`). Supply as a
-          same-org organization secret scoped to selected repositories and pass
-          this named secret explicitly from the caller.
+          same-org organization secret (live visibility: all repositories) and
+          pass this named secret explicitly from the caller.
         required: true
       STANDARDS_REVIEW_APP_ID:
         description: >-
@@ -291,7 +302,7 @@ jobs:
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
         continue-on-error: true
-        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: ${{ inputs.track-progress }}

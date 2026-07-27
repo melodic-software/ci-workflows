@@ -184,9 +184,20 @@ on:
           Passed through to the Claude CLI. The universal extension point: model,
           turn budget, allowed tools, system prompt, MCP config all ride here
           (the standalone model / max_turns / allowed_tools action inputs are
-          deprecated upstream).
+          deprecated upstream). The default allows the inline-comment MCP tool
+          so findings can land as line-anchored review comments.
         type: string
-        default: --model claude-sonnet-4-6 --max-turns 75
+        default: >-
+          --model claude-sonnet-5 --max-turns 75
+          --allowedTools "mcp__github_inline_comment__create_inline_comment"
+      exclude-comments-by-actor:
+        description: >-
+          Comma-separated actors whose comments are withheld from Claude's
+          context (prompt-injection hygiene), not a trigger gate. Both
+          Dependabot spellings are listed because the action matches the
+          bare login for some comment kinds (upstream #1514).
+        type: string
+        default: dependabot,dependabot[bot]
       skip-actors:
         description: >-
           Comma-separated actors (no spaces) for whom the job skips entirely, to
@@ -201,14 +212,17 @@ on:
           authenticate, and because this lane FAILS CLOSED the required check
           then blocks every Dependabot PR until an operator provisions it.
           Mirror the secret first, or keep dependabot[bot] in this list.
+
+          The default also bans self-triggering: Claude and the org's
+          automation bots must never trigger their own review lanes.
         type: string
-        default: dependabot[bot]
+        default: dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           Claude Code OAuth token (from `claude setup-token`). Supply as a
-          same-org organization secret scoped to selected repositories and pass
-          this named secret explicitly from the caller.
+          same-org organization secret (live visibility: all repositories) and
+          pass this named secret explicitly from the caller.
         required: true
 
 permissions:
@@ -442,7 +456,7 @@ jobs:
         # signal that means "in scope and did not run", instead of incidentally
         # by whichever step happened to exit first.
         continue-on-error: true
-        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A clean security pass otherwise produces no visible output (upstream
@@ -452,7 +466,7 @@ jobs:
           # input, so a consumer cannot turn it on.
           display_report: false
           allowed_bots: dependabot[bot]
-          exclude_comments_by_actor: dependabot[bot]
+          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           claude_args: ${{ inputs.claude-args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
@@ -497,7 +511,7 @@ jobs:
           github.event.pull_request.number != ''
         # Same rationale as the first attempt: the outcome step owns the red.
         continue-on-error: true
-        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A clean security pass otherwise produces no visible output (upstream
@@ -507,7 +521,7 @@ jobs:
           # input, so a consumer cannot turn it on.
           display_report: false
           allowed_bots: dependabot[bot]
-          exclude_comments_by_actor: dependabot[bot]
+          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           claude_args: ${{ inputs.claude-args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural

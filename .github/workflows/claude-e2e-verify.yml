@@ -132,7 +132,7 @@ on:
           Passed through to the Claude CLI (model, turn budget, allowed tools,
           system prompt, MCP config all ride here). Defaults mirror claude-review.
         type: string
-        default: --model claude-sonnet-4-6 --max-turns 75
+        default: --model claude-sonnet-5 --max-turns 75
       setup-command:
         description: >-
           Optional dependency-install command, run before the browser toolchain
@@ -147,8 +147,8 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           Claude Code OAuth token (from `claude setup-token`). Supply as a
-          same-org organization secret scoped to selected repositories and pass
-          this named secret explicitly from the caller.
+          same-org organization secret (live visibility: all repositories) and
+          pass this named secret explicitly from the caller.
         required: true
 
 permissions:
@@ -358,7 +358,7 @@ jobs:
         # showing as a red check — this lane is advisory.
         continue-on-error: true
         timeout-minutes: ${{ inputs.timeout-minutes }}
-        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: ${{ inputs.claude-args }}

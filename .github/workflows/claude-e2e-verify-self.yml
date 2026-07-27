@@ -10,9 +10,9 @@ name: Claude E2E Verify
 # Python's stdlib HTTP server and passes a two-journey verification spec. The
 # path filter keeps the lane scoped to changes that touch it.
 #
-# Requires `ci-workflows` to be in the CLAUDE_CODE_OAUTH_TOKEN org secret's
-# "selected repositories" scope (UI-managed); without it, fork PRs and an
-# unscoped run get no token and verification degrades to a warning (no leak).
+# The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
+# so this repo receives it; fork PRs still get no token by design and
+# verification degrades to a warning (no leak).
 on:
   pull_request:
     paths:
