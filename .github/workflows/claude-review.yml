@@ -664,7 +664,11 @@ jobs:
       # Runs only on a genuine infra failure (never on a clean review). The
       # composite owns the ID-safe marker lifecycle, the fork guard, and the
       # no-PR no-op — clobbering an unrelated bot comment is the failure mode
-      # this whole change exists to fix.
+      # this whole change exists to fix. body-copy is explicit because this
+      # lane drops `synchronize`: a push does not re-trigger it, so the
+      # "pushing a new commit will retry" wording would be wrong here. The
+      # continuation line carries its own `> ` blockquote prefix (the
+      # composite prefixes only the first line).
       - name: Comment on genuine review failure
         if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'true'"
         # Reporting an outage must never become one: this step only annotates
@@ -677,6 +681,9 @@ jobs:
           mode: post-failure
           failure-class: ${{ steps.review-outcome.outputs.failure-class }}
           review-detail: ${{ steps.review-outcome.outputs.review-detail }}
+          body-copy: |-
+            Re-run the job to retry the review. A new push does **not** re-trigger this lane.
+            > An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator (`auth`).
 
       # Symmetric counterpart to the failure step above: a transient infra
       # failure (e.g. an OIDC blip) can leave the marker comment behind on the

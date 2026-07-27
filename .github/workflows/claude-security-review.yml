@@ -782,7 +782,7 @@ jobs:
           body-copy: |-
             **The check is red on purpose.** It certifies that a security pass ran, and this one did not complete, so it cannot report success. Where this check is required, merging is blocked until a review actually finishes.
             >
-            > Re-running the job, or pushing a new commit, will retry the review — one automatic retry already ran.
+            > Re-running the job, or pushing a new commit, will retry the review. An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator.
             >
             > Re-running does NOT help for every class:
             > - `rate-limit` that persists across re-runs, or `auth` — the credential or usage budget needs an **operator**; retrying will not clear it.
