@@ -38,13 +38,25 @@ test("the superseded-head guard is the pinned freshness composite", () => {
 });
 
 test("every runner-consuming step gates on the guard's superseded output", () => {
-  // Checkout, the three standards-mount steps, argument composition, the
-  // review itself, and outcome reporting (which transitively gates both
-  // marker-comment steps). A new runner-consuming or PR-writing step must
-  // join this set deliberately.
+  // The review-count gate, checkout, the three standards-mount steps,
+  // argument composition, the review itself, and outcome reporting (which
+  // transitively gates both marker-comment steps and the count upsert). A
+  // new runner-consuming or PR-writing step must join this set deliberately.
   const gates = [
     ...workflowSource.matchAll(
       /steps\.freshness\.outputs\.superseded != 'true'/gu,
+    ),
+  ].length;
+  assert.equal(gates, 8);
+});
+
+test("every review-producing step also gates on the review-count cap", () => {
+  // Same set minus the review-count gate itself (the producer) — a capped
+  // run must be a name-stable skip: no checkout, no mount, no review, no
+  // outcome (which would misreport the deliberate skip as an infra failure).
+  const gates = [
+    ...workflowSource.matchAll(
+      /steps\.review-count\.outputs\.capped != 'true'/gu,
     ),
   ].length;
   assert.equal(gates, 7);

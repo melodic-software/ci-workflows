@@ -10,7 +10,9 @@ name: Claude Review
 # review degrades to a warning (no leak).
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # No `synchronize` — dogfoods the canonical cadence: review on
+    # open/ready/reopen; re-run the job for a fresh review after a push.
+    types: [opened, ready_for_review, reopened]
 
 permissions:
   contents: read
