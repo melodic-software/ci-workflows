@@ -358,7 +358,7 @@ callers pass `skip-actors` including `melodic-standards-sync[bot]`
 resolves as "not exercised"; the new REVIEW.md's first real exercise
 arrives with ordinary PR traffic.
 
-### Phase 2: ci-workflows change set [DOING]
+### Phase 2: ci-workflows change set [DONE]
 
 After Phases 0 + 1 (2b additionally gated on the five sync PRs). Delivery:
 **PR-A1** (composites land, unreferenced), **PR-A2** (reusables repoint at the
@@ -539,7 +539,17 @@ org-secret, visibility `all`): check concludes SUCCESS, marker present,
 annotation contains `class=auth`; a second push to the dogfood PR does NOT
 re-trigger claude-review but DOES run the security lane's `changes` job.
 
-### Phase 3: fleet rollout via standards sync-manifest [TODO]
+- **Phase 2 close-out (2026-07-27):** PR-B merged as `cf666f67` (#280,
+  2026-07-27T12:41Z). Independent verifier series verdict: SHIP, with its
+  findings fixed in `069a2c3`. Dogfood evidence on #280: the review-count
+  status comment observed (`claude-review-count:1`, by github-actions[bot]);
+  kill-switch dogfood — repo var `CLAUDE_REVIEW_DISABLED=true` produced a
+  name-stable `review / review` skip on a re-run of run 30266815861, var
+  removed afterwards. Release `v0.9.0` tagged via release.yml dispatch
+  (run 30267095737). Deferred into the Phase 3c smoke: the forced-failure
+  sandbox probe and the second-push cadence observation.
+
+### Phase 3: fleet rollout via standards sync-manifest [DOING]
 
 Ordered pre-steps, then waved rollout.
 

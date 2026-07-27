@@ -58,11 +58,12 @@ name: claude-security-review
 #   whose ruleset REQUIRES the execution check must NOT express that scope with
 #   the caller's `on.pull_request.paths`: a workflow-level path miss leaves the
 #   required check Pending forever and wedges every prose PR. Instead the caller
-#   triggers on ALL pull_request events and passes the `paths` input; the
+#   triggers on ALL pull_request events and passes the pattern list — inline via
+#   `paths`, or by pointing `paths-file` at a repo-owned pattern file; the
 #   `changes` job evaluates it with a job-level conditional, so a not-applicable
 #   PR yields a name-stable SKIPPED `security-review` job — which a ruleset reads
 #   as success, satisfying the required check. The check context is
-#   `<caller-job-id> / security-review`. Empty `paths` (the default) means
+#   `<caller-job-id> / security-review`. Both inputs empty (the default) means
 #   "every call is relevant", so a consumer that passes nothing is unaffected.
 #
 # CONSUMER CONTRACT (the caller owns these — they are NOT set here):
@@ -71,7 +72,7 @@ name: claude-security-review
 #   caller's own `on:` decides which events invoke it; and because a called
 #   workflow can only DOWNGRADE the caller's permission grant, never elevate it.
 #   Canonical caller — trigger on all PR events (NO workflow-level `paths:`) and
-#   pass the security-sensitive surfaces as the `paths` input:
+#   scope the review with the conventional per-repo paths file:
 #
 #     on:
 #       pull_request:
@@ -105,17 +106,15 @@ name: claude-security-review
 #                                  # (required even with an OAuth/API-key credential)
 #         uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
 #         with:
-#           # Security-sensitive surfaces in Actions `paths:` syntax, one per
-#           # line (use a `|` literal block). Empty (default) reviews every PR;
-#           # a PR matching none yields a name-stable skipped check. `#` comment
-#           # and blank lines are ignored.
-#           paths: |
-#             .github/**
-#             scripts/**
-#             **/*.sh
-#             **/*.ps1
-#             # plus the caller's own auth/token-touching source and
-#             # network-call sites, mapped to that repo's actual paths
+#           # Each repo OWNS its pattern file at this conventional path: Actions
+#           # `paths:` patterns, one per line (`#` comments and blank lines
+#           # ignored) — the repo's security-sensitive surfaces (workflows,
+#           # scripts, auth/token-touching source, network-call sites). It is
+#           # read from the PR's BASE branch, never the head, and an absent
+#           # file FAILS OPEN: every PR is reviewed until the repo commits one.
+#           # The inline `paths` input still exists and, when non-empty, wins
+#           # over the file.
+#           paths-file: .github/claude-security-paths
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -160,9 +159,28 @@ on:
           matching file the review runs; when it matches none, the
           `security-review` job skips — a name-stable check verdict a
           required-check ruleset reads as success. Blank lines and `#` comments
-          are ignored. Empty (the default) means no filtering — every call is
-          relevant, so a consumer that passes nothing is unaffected. Consulted
-          only on `pull_request` events; other events are always relevant.
+          are ignored. Non-empty, this input wins over `paths-file`. Empty (the
+          default) with an empty `paths-file` means no filtering — every call
+          is relevant, so a consumer that passes nothing is unaffected.
+          Consulted only on `pull_request` events; other events are always
+          relevant.
+        type: string
+        default: ''
+      paths-file:
+        description: >-
+          Repo-relative path to a file whose CONTENT is the same
+          newline-separated pattern list `paths` takes, so a consumer can keep
+          its security-sensitive-surface list in its own tree instead of
+          inlining it in the caller. Conventional location:
+          `.github/claude-security-paths`. The file is read from the PR's BASE
+          repository at the base branch — never the PR head — so a PR cannot
+          edit the file's CONTENT to skip its own security review. (A PR can
+          still repoint this input in the caller workflow, exactly as it could
+          rewrite an inline `paths` list — either tampering is a visible
+          caller diff, which is the existing trust boundary.) Consulted only when
+          `paths` is empty; a file that is absent or unreadable FAILS OPEN
+          (every call relevant, with a warning), matching the `changes` job's
+          fail-open discipline. Empty (the default) means no file is consulted.
         type: string
         default: ''
       prompt:
@@ -259,27 +277,37 @@ jobs:
   # Relevance gate for the ALWAYS-REPORT SHAPE (see header): decides whether
   # this PR touches a security-sensitive surface, so `security-review` can skip
   # and still report a name-stable check — instead of the caller path-filtering
-  # at workflow level, which would wedge a required check Pending. Empty `paths`
-  # or any non-pull_request event is always relevant.
+  # at workflow level, which would wedge a required check Pending. Both pattern
+  # inputs empty, or any non-pull_request event, is always relevant.
   changes:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
-    # Only the PR file listing is needed; no checkout, so no contents grant.
+    # Deliberately NO checkout: the job reads only the PR file listing
+    # (pull-requests) and, when `paths-file` is set, that one file via the
+    # contents API (contents) — fetching a single blob from the base branch
+    # instead of checking out a tree keeps the job checkout-free.
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       relevant: ${{ steps.filter.outputs.relevant }}
     steps:
       # actions/github-script rather than a `gh api` run step: this job runs
       # on whatever runner the caller selected, and a self-hosted image is not
-      # guaranteed to ship the gh CLI. Only the PR-file listing moves here —
-      # the pattern-matching step below still shells out, but only to `git
-      # check-ignore`, which every runner needs anyway for actions/checkout to
-      # function, so it carries no comparable availability risk.
+      # guaranteed to ship the gh CLI. Only the API reads live here — the PR
+      # file listing and the optional `paths-file` fetch; the pattern-matching
+      # step below still shells out, but only to `git check-ignore`, which
+      # every runner needs anyway for actions/checkout to function, so it
+      # carries no comparable availability risk.
       - name: List changed files
         id: changed-files
-        if: github.event_name == 'pull_request' && inputs.paths != ''
+        if: >-
+          github.event_name == 'pull_request'
+          && (inputs.paths != '' || inputs.paths-file != '')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PATHS_INPUT: ${{ inputs.paths }}
+          PATHS_FILE: ${{ inputs.paths-file }}
         with:
           script: |
             const fs = require("node:fs");
@@ -300,19 +328,77 @@ jobs:
               core.setOutput("failed", "true");
             }
 
+            // Resolve `paths-file` only when it would actually be consulted:
+            // a non-empty explicit `paths` input wins, so no fetch then. The
+            // file is read from the BASE repository at the BASE branch — for a
+            // pull_request event that is context.repo — and never from the PR
+            // head: a head read would let a PR edit the paths file to skip its
+            // own security review. A missing (404) or unreadable file fails
+            // OPEN via the failed flag; the pattern-matching step turns it
+            // into relevant=true with a warning.
+            const pathsFile = (process.env.PATHS_FILE ?? "").trim();
+            const explicitPaths = (process.env.PATHS_INPUT ?? "").trim();
+            core.setOutput("paths-file-failed", "false");
+            if (pathsFile !== "" && explicitPaths === "") {
+              const patternsPath = `${process.env.RUNNER_TEMP}/security-review-paths-file.txt`;
+              try {
+                const response = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: pathsFile,
+                  ref: context.payload.pull_request.base.ref,
+                  mediaType: { format: "raw" },
+                });
+                if (typeof response.data !== "string") {
+                  throw new Error("not a readable file (is it a directory or submodule?)");
+                }
+                fs.writeFileSync(patternsPath, response.data, "utf8");
+                core.setOutput("paths-file-path", patternsPath);
+              } catch (error) {
+                core.warning(
+                  `Could not read paths file '${pathsFile}' from the base branch: ${error.message}`,
+                );
+                core.setOutput("paths-file-failed", "true");
+              }
+            }
+
       - name: Determine security relevance
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
           PATHS: ${{ inputs.paths }}
+          PATHS_FILE: ${{ inputs.paths-file }}
+          PATHS_FILE_PATH: ${{ steps.changed-files.outputs.paths-file-path }}
+          PATHS_FILE_FAILED: ${{ steps.changed-files.outputs.paths-file-failed }}
           FILES_LIST_PATH: ${{ steps.changed-files.outputs.path }}
           FILES_LIST_FAILED: ${{ steps.changed-files.outputs.failed }}
         run: |
           set -euo pipefail
 
-          # No filter, or a non-PR event, means every call is relevant — the
-          # backward-compatible default for a consumer that passes no `paths`.
-          if [ "$EVENT_NAME" != pull_request ] || [ -z "$(printf '%s' "$PATHS" | tr -d '[:space:]')" ]; then
+          # A non-PR event is always relevant.
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Resolve the effective pattern list. Precedence: a non-empty
+          # explicit `paths` input wins (unchanged semantics for existing
+          # consumers); else a non-empty `paths-file` supplies the patterns,
+          # fetched from the base branch by the step above; else no filter —
+          # the backward-compatible default for a consumer that passes nothing.
+          # An unreadable or absent paths file fails OPEN, like every other
+          # fault in this job: a run wasted on an out-of-scope PR beats a
+          # silently skipped security review.
+          if [ -n "$(printf '%s' "$PATHS" | tr -d '[:space:]')" ]; then
+            effective_paths="$PATHS"
+          elif [ -n "$(printf '%s' "$PATHS_FILE" | tr -d '[:space:]')" ]; then
+            if [ "$PATHS_FILE_FAILED" = "true" ] || [ -z "$PATHS_FILE_PATH" ]; then
+              echo "::warning::Could not read paths file '$PATHS_FILE'; treating PR as security-relevant."
+              echo "relevant=true" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            effective_paths="$(cat "$PATHS_FILE_PATH")"
+          else
             echo "relevant=true" >>"$GITHUB_OUTPUT"
             exit 0
           fi
@@ -328,7 +414,7 @@ jobs:
           ignore="$scratch/.gitignore"
           git init -q "$scratch"
           : >"$ignore"
-          printf '%s\n' "$PATHS" | while IFS= read -r pattern; do
+          printf '%s\n' "$effective_paths" | while IFS= read -r pattern; do
             pattern="${pattern%$'\r'}"
             pattern="${pattern#"${pattern%%[![:space:]]*}"}"
             pattern="${pattern%"${pattern##*[![:space:]]}"}"
