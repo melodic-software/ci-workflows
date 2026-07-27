@@ -50,6 +50,21 @@ $ErrorActionPreference = 'Stop'
 
 $actionMetadata = '.github/actions/powershell/action.yml'
 $runner = '.github/actions/powershell/Invoke-Pssa.ps1'
+
+# The repo's own ruleset, applied unchanged: an embedded block is this repo's
+# PowerShell and is held to the same policy as a .ps1. The bash/sh sibling
+# instead excludes a list of ShellCheck codes that the embedded form makes false
+# positives; no equivalent list is introduced here, because the runner takes a
+# settings path and this ruleset is the managed root payload, so any exclusion
+# means a second ruleset to keep in step with the first. Two artifacts of the
+# extraction are therefore visible and accepted:
+#   - a `${{ }}` expression inline in a double-quoted string becomes underscores,
+#     making the string constant, so PSAvoidUsingDoubleQuotesForConstantString
+#     fires where the expanded value would not be constant. Every action here
+#     passes inputs through `env:` instead, and the test relies on this to prove
+#     the substitution ran.
+#   - PSAvoidLongLines measures the dedented body, so it is lenient by the
+#     block's indentation and its columns are that much left of the source.
 $settings = 'PSScriptAnalyzerSettings.psd1'
 
 function Write-Annotation {
@@ -77,7 +92,14 @@ function Invoke-Yq {
         [string]$File
     )
 
-    $output = [string[]]@(& yq -r $Expression $File)
+    try {
+        $output = [string[]]@(& yq -r $Expression $File)
+    } catch {
+        # An absent yq is a CommandNotFoundException, which would otherwise
+        # surface as exit 1 and read as a finding rather than a broken setup.
+        Write-Annotation -File $File -Message "yq could not be run: $($_.Exception.Message)"
+        exit 2
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Annotation -File $File -Message "yq could not read $File."
         exit 2
@@ -94,12 +116,13 @@ function ConvertTo-SanitizedScript {
         variable name, and the unbalanced braces are a parse error that would
         mask every real finding behind it. Each expression becomes an
         equal-width run of underscores, mirroring actionlint's
-        sanitizeExpressionsInScript: same width keeps reported columns aligned,
-        and underscores (rather than blanks) keep the token whole where the
-        expression stands in for a value. Newlines inside an expression are
-        preserved rather than filled, so an expression spanning lines does not
-        shift the line numbers of everything after it. An unterminated `${{` is
-        left intact to be reported rather than silently mangled.
+        sanitizeExpressionsInScript: same width keeps the rest of the line at
+        its original offset, and underscores (rather than blanks) keep the token
+        whole where the expression stands in for a value. Newlines inside an
+        expression are preserved rather than filled, so an expression spanning
+        lines does not shift the line numbers of everything after it. An
+        unterminated `${{` is left intact to be reported rather than silently
+        mangled.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -134,6 +157,10 @@ if (-not $AnalyzerVersion) {
         Write-Annotation -Message "$actionMetadata not found — run from the repository root."
         exit 2
     }
+    # The input's default, which is the version the lane installs whenever no
+    # caller overrides it. A job that passes `with: analyzer-version:` would
+    # install one version and be checked against another, and this exits 2
+    # rather than analyzing under a version nothing installed.
     $AnalyzerVersion = @(Invoke-Yq -Expression '.inputs."analyzer-version".default' -File $actionMetadata)[0]
     if (-not $AnalyzerVersion -or $AnalyzerVersion -eq 'null') {
         Write-Annotation -File $actionMetadata -Message 'analyzer-version has no default to pin against.'
@@ -141,12 +168,19 @@ if (-not $AnalyzerVersion) {
     }
 }
 
+try {
+    $required = [version]$AnalyzerVersion
+} catch {
+    Write-Annotation -Message "analyzer-version '$AnalyzerVersion' is not a version string."
+    exit 2
+}
+
 # Invoke-Pssa.ps1 self-skips with exit 0 when the pinned analyzer is absent, so
 # a contributor box without it still gets working hooks. Delegating to that
 # under CI would turn a missing module into a green gate that analyzed nothing,
 # so this check requires what it self-skips on.
 $module = Get-Module -ListAvailable -Name PSScriptAnalyzer |
-    Where-Object { $_.Version -eq [version]$AnalyzerVersion } |
+    Where-Object { $_.Version -eq $required } |
     Select-Object -First 1
 if (-not $module) {
     Write-Annotation -Message ("PSScriptAnalyzer $AnalyzerVersion is not installed; " +
@@ -203,11 +237,11 @@ $workdir = Join-Path $temp "composite-run-pssa-$([guid]::NewGuid())"
 $null = New-Item -ItemType Directory -Path $workdir -Force
 
 try {
-    # Keyed by the leaf PSScriptAnalyzer will report, so it doubles as the
-    # collision guard below and the count of what was extracted.
-    $leaves = @{}
+    $total = 0
+    $ordinal = 0
 
     foreach ($file in $files) {
+        $ordinal++
         # Announced for every file discovery reaches, before any shape check can
         # skip it, so the coverage floor can tell "discovery missed this action"
         # from "this action has no PowerShell to check". A composite whose steps
@@ -235,9 +269,10 @@ try {
         $expected = [int]@(Invoke-Yq -Expression $expectedQuery -File $file)[0]
         $produced = 0
 
-        # `line` and `style` together locate the block body in the source: a
-        # literal or folded scalar starts on the line after its `run:` key, a
-        # plain or quoted one starts on the key's own line.
+        # `line` and `style` together locate the block body in the source. yq
+        # reports the scalar's own line, which for a literal or folded block is
+        # the line carrying the `|`/`>` indicator — the body starts after it —
+        # and for every other style is the first line of the body itself.
         $entryQuery = '.runs.steps | to_entries[] | select(.value | has("run"))' +
         ' | (.key | tostring) + "\t" + (.value.shell // "") + "\t"' +
         ' + (.value.run | line | tostring) + "\t" + (.value.run | style)'
@@ -245,7 +280,7 @@ try {
             if (-not $entry) {
                 continue
             }
-            $index, $shell, $keyLine, $style = $entry -split "`t", 4
+            $index, $shell, $scalarLine, $style = $entry -split "`t", 4
 
             # `.key` is a sequence index only while `runs.steps` is a sequence.
             # A mapping makes it an arbitrary author-supplied string, and this
@@ -281,25 +316,21 @@ try {
             # line in the source metadata, not an offset into an extract. The
             # body is dedented by the YAML parse, so columns are shifted left by
             # the block's indentation; lines are exact.
-            $bodyLine = if ($style -in 'literal', 'folded') { [int]$keyLine + 1 } else { [int]$keyLine }
+            $bodyLine = if ($style -in 'literal', 'folded') { [int]$scalarLine + 1 } else { [int]$scalarLine }
             $content = ("`n" * ($bodyLine - 1)) + (ConvertTo-SanitizedScript -Script $body)
 
-            # PSScriptAnalyzer reports the file's leaf name only, so a leaf that
-            # repeats would make a finding ambiguous about which action it came
-            # from. The action's own directory name is what distinguishes them.
-            $leaf = '{0}.step-{1}.ps1' -f (Split-Path -Path (Split-Path -Path $file -Parent) -Leaf), $index
-            if ($leaves.ContainsKey($leaf)) {
-                Write-Annotation -File $file -Message ("runs.steps[$index] and $($leaves[$leaf]) both report" +
-                    " as '$leaf'; findings would be ambiguous.")
-                exit 2
-            }
-            $leaves[$leaf] = "$file runs.steps[$index]"
-
-            $destination = Join-Path $workdir (Join-Path (Split-Path -Path $file -Parent) $leaf)
-            $null = New-Item -ItemType Directory -Path (Split-Path -Path $destination -Parent) -Force
-            Set-Content -LiteralPath $destination -Value $content -NoNewline
+            # PSScriptAnalyzer reports a file's leaf name only, so the leaf has
+            # to say which block it came from on its own. The discovery ordinal
+            # makes it unique whatever the paths are; the action's directory
+            # name makes it readable; the `check` line below maps it back. Names
+            # sit flat in the workdir rather than under a mirrored tree, so no
+            # discovery has to descend a dot-prefixed directory to find them.
+            $actionDirectory = Split-Path -Path (Split-Path -Path $file -Parent) -Leaf
+            $leaf = '{0}.{1}.step-{2}.ps1' -f $ordinal, $actionDirectory, $index
+            Set-Content -LiteralPath (Join-Path $workdir $leaf) -Value $content -NoNewline
 
             $produced++
+            $total++
             Write-Output "check $file runs.steps[$index] (shell: $dialect) as $leaf"
         }
 
@@ -309,14 +340,14 @@ try {
         }
     }
 
-    if ($leaves.Count -eq 0) {
+    if ($total -eq 0) {
         Write-Annotation -Message ('no pwsh/powershell run: block was extracted;' +
             ' the file set or the extraction is wrong.')
         exit 1
     }
 
     Write-Output ''
-    Write-Output ("Analyzing $($leaves.Count) embedded run: block(s); a reported line is the line" +
+    Write-Output ("Analyzing $total embedded run: block(s); a reported line is the line" +
         ' in the action.yml it was extracted from.')
 
     # -FailOnNoFiles turns a workdir the runner cannot see into a failure rather

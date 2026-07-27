@@ -1,0 +1,12 @@
+name: no-shell-composite
+description: >-
+  Malformed composite action: a run: step carries no shell:, which GitHub itself
+  rejects, so nothing downstream can tell which dialect the block is. A check
+  that guessed would analyze the wrong language and report either nonsense or a
+  clean pass. The shape is refused rather than guessed at.
+
+runs:
+  using: composite
+  steps:
+    - name: A run step with no shell
+      run: Write-Output 'the dialect must never be guessed'

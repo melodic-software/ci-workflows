@@ -2,9 +2,9 @@ name: uses-only-composite
 description: >-
   A composite action whose steps are all `uses:`, so it carries no embedded
   shell for ShellCheck to read. Nothing resolves the reference below — the
-  fixture is only ever parsed, never executed. composite-run-shellcheck.test.sh
-  points the check at this file and asserts discovery still announces it, so the
-  coverage floor cannot fail an action that is legitimately shell-free.
+  fixture is only ever parsed, never executed. The composite-run checks are
+  pointed at this file to assert discovery still announces it, so a coverage
+  floor cannot fail an action that is legitimately shell-free.
 
 runs:
   using: composite

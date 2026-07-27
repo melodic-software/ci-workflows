@@ -3,9 +3,9 @@ description: >-
   Malformed composite action: `runs.steps` is a mapping rather than a sequence,
   so the step key yq reports is an author-supplied string instead of an index.
   The key here is path-traversal shaped, which is what makes the shape worth
-  rejecting: the check builds both a write path and a yq expression from that
-  key. composite-run-shellcheck.test.sh asserts the check refuses the shape
-  instead of extracting from it.
+  rejecting: a check builds both a write path and a yq expression from that key.
+  The composite-run checks are asserted to refuse the shape instead of
+  extracting from it.
 
 runs:
   using: composite

@@ -29,6 +29,8 @@ $badFixture = 'fixtures/composite-action/pwsh-bad/action.yml'
 $customFixture = 'fixtures/composite-action/pwsh-custom-shell/action.yml'
 $usesOnlyFixture = 'fixtures/composite-action/uses-only/action.yml'
 $mappingFixture = 'fixtures/composite-action/mapping-steps/action.yml'
+$noShellFixture = 'fixtures/composite-action/no-shell/action.yml'
+$coveredAction = '.github/actions/powershell/action.yml'
 
 function Assert-Condition {
     [CmdletBinding()]
@@ -193,11 +195,39 @@ $covered = Invoke-Check
 Assert-Condition -Condition ($covered.ExitCode -eq 0) `
     -Message 'The default run over the tracked composites failed.' `
     -Context $covered.Output
-foreach ($action in @(& git ls-files -- '.github/actions/*/action.yml')) {
+# Mirrors the check's own discovery, quoting included, so a path holding a
+# non-ASCII byte cannot make this floor disagree with what was actually visited.
+$raw = & git -c core.quotePath=false ls-files -z -- '.github/actions/*/action.yml'
+foreach ($action in @(($raw -join "`n") -split "`0" | Where-Object { $_ })) {
     Assert-Condition -Condition ($covered.Output.Contains("visit $action")) `
         -Message "Discovery never reached $action." `
         -Context $covered.Output
 }
+
+# The issue's first acceptance criterion is about the real action, not the
+# fixtures: a visit line fires before any shape check, so on its own it would
+# still pass if that action's blocks stopped being extracted. Counted against an
+# independent selector so the assertion does not encode a step ordering, and so
+# it keeps its power once a second action grows a PowerShell block.
+$query = '[.runs.steps[] | select(has("run"))' +
+' | select((.shell // "") | test("^(pwsh|powershell)( |$)"))] | length'
+$expectedBlocks = [int]@(& yq -r $query $coveredAction)[0]
+Assert-Condition -Condition ($expectedBlocks -gt 0) `
+    -Message "$coveredAction no longer has a PowerShell run: block for this check to cover."
+$coveredChecks = @($covered.Output -split "`n" | Where-Object { $_ -like "check $coveredAction*" })
+Assert-Condition -Condition ($coveredChecks.Count -eq $expectedBlocks) `
+    -Message "Expected $expectedBlocks analyzed block(s) in $coveredAction, got $($coveredChecks.Count)." `
+    -Context $covered.Output
+
+# A run: step with no shell: leaves the dialect unknowable, and GitHub rejects
+# the shape outright. Refused rather than guessed at.
+$noShell = Invoke-Check -Argument @($noShellFixture)
+Assert-Condition -Condition ($noShell.ExitCode -eq 1) `
+    -Message 'A run: block with no shell: was unexpectedly accepted.' `
+    -Context $noShell.Output
+Assert-Condition -Condition ($noShell.Output.Contains('refusing to guess the dialect')) `
+    -Message 'The missing shell: was not reported.' `
+    -Context $noShell.Output
 
 $empty = Invoke-Check -Argument @('.github/workflows/ci.yml')
 Assert-Condition -Condition ($empty.ExitCode -ne 0) `
