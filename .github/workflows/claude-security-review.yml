@@ -137,6 +137,13 @@ name: claude-security-review
 #   - The action gates triggering on the actor's write access; bots are blocked
 #     unless named in `allowed_bots`.
 #   - `display_report` / `show_full_output` stay off (public-repo log-leak risk).
+#
+# KILL-SWITCH SCOPE NOTE: REVIEW.md scopes security findings out of the
+#   code-review lane wherever THIS workflow FILE exists — static prose that
+#   cannot see Actions variables. Disabling this lane via
+#   CLAUDE_SECURITY_REVIEW_DISABLED while the file exists therefore opens a
+#   window in which NO lane reports security findings — the code-review lane
+#   does not pick the scope back up; re-enabling this lane closes the window.
 
 on:
   workflow_call:
@@ -374,6 +381,18 @@ jobs:
     # = 43) so a slow first attempt cannot starve the retry into a
     # timeout-shaped red check.
     timeout-minutes: 45
+    # The two vars clauses are the fleet kill-switches: Actions variables an
+    # operator flips to stop this lane (CLAUDE_SECURITY_REVIEW_DISABLED) or
+    # every Claude lane at once (CLAUDE_LANES_DISABLED) without touching
+    # workflow files. An absent variable evaluates to '' — not 'true' — so the
+    # lane is enabled by default, and a repo-level variable overrides an
+    # org-level one (platform-verified). They gate THIS job only, never
+    # `changes`: a kill-switched run is a name-stable job-level SKIP, which a
+    # required-check ruleset reads as success — deliberate, because a switch
+    # that reddened the required check would block every merge for the whole
+    # outage it exists to manage. See the KILL-SWITCH SCOPE NOTE in the header
+    # for the REVIEW.md coverage window this opens.
+    #
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
@@ -402,6 +421,8 @@ jobs:
     # pass-through path past `Fail closed on an in-scope non-run`.
     if: >-
       ${{ !cancelled()
+          && vars.CLAUDE_LANES_DISABLED != 'true'
+          && vars.CLAUDE_SECURITY_REVIEW_DISABLED != 'true'
           && needs.changes.outputs.relevant != 'false'
           && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))
           && (github.event_name != 'pull_request'

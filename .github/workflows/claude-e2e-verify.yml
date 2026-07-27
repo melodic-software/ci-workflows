@@ -176,6 +176,16 @@ env:
 jobs:
   e2e-verify:
     runs-on: ${{ inputs.runner }}
+    # Fleet kill-switches: Actions variables an operator flips to stop this
+    # lane (CLAUDE_E2E_VERIFY_DISABLED) or every Claude lane at once
+    # (CLAUDE_LANES_DISABLED) without touching workflow files. An absent
+    # variable evaluates to '' — not 'true' — so the lane is enabled by
+    # default, and a repo-level variable overrides an org-level one
+    # (platform-verified). A kill-switched run is a name-stable job-level
+    # SKIP, harmless to this advisory lane.
+    if: >-
+      ${{ vars.CLAUDE_LANES_DISABLED != 'true'
+          && vars.CLAUDE_E2E_VERIFY_DISABLED != 'true' }}
     # Outer safety ceiling for the whole job (browser install + build + serve +
     # health poll + agent). Two agent attempts each carry their own
     # inputs.timeout-minutes below; this ceiling must stay above the retry

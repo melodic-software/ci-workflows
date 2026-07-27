@@ -219,6 +219,35 @@ test("fork PRs skip the job instead of failing closed forever", () => {
   );
 });
 
+test("the kill-switches gate the review job only, never the changes job", () => {
+  const changesJob = workflow.slice(
+    workflow.indexOf("  changes:"),
+    workflow.indexOf("  security-review:"),
+  );
+  const reviewJobCondition = workflow.slice(
+    workflow.indexOf("  security-review:"),
+    workflow.indexOf("      - name: Reject privileged triggers"),
+  );
+
+  // A kill-switched review job is a name-stable SKIP a required-check ruleset
+  // reads as success; a switch that also silenced the `changes` relevance job
+  // would change the reporting shape rather than just pausing the review.
+  for (const clause of [
+    "vars.CLAUDE_LANES_DISABLED != 'true'",
+    "vars.CLAUDE_SECURITY_REVIEW_DISABLED != 'true'",
+  ]) {
+    assert.ok(
+      reviewJobCondition.includes(clause),
+      `the security-review job condition must carry the kill-switch clause ${clause}`,
+    );
+  }
+  assert.doesNotMatch(
+    changesJob,
+    /vars\.CLAUDE/u,
+    "the changes job must never be kill-switch gated",
+  );
+});
+
 test("a superseded head reports nothing, so it cannot fail closed", () => {
   const step = stepSource("Report review outcome");
   // !cancelled() rather than always(): cancellation is the concurrency
