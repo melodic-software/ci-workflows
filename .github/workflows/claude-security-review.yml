@@ -83,6 +83,19 @@ name: claude-security-review
 #       # reporting: it looks like execution evidence and is not. A consumer who
 #       # enables a merge queue anyway should read #272 first; without the
 #       # trigger the check simply never reports for queued PRs.
+#     # cancel-in-progress: false is DELIBERATE, not an omission: a cancelled
+#     # run of a REQUIRED check is not a skip and does not read success, so
+#     # cancelling an in-flight review can wedge the merge behind a void check.
+#     # It is the live value on the one consumer whose ruleset requires this
+#     # check (claude-code-plugins). And NO job-level queue group initially: a
+#     # queue is added only if overflow smoke-testing proves a cancelled
+#     # overflow arrival cannot wedge the required check (a full queue CANCELS
+#     # new arrivals). These are per-LANE values, deliberately different from
+#     # the code-review caller's (which cancels superseded runs and queues
+#     # repo-wide) — do not normalize the two.
+#     concurrency:
+#       group: claude-security-review-${{ github.event.pull_request.number || github.run_id }}
+#       cancel-in-progress: false
 #     jobs:
 #       security-review:
 #         permissions:

@@ -19,8 +19,24 @@ name: claude-review
 #         # (the security lane, whose check certifies execution, keeps
 #         # `synchronize`). Cuts per-PR spend on active branches.
 #         types: [opened, ready_for_review, reopened]
+#     # Per-PR: a newer event for the same PR supersedes the older run, so a
+#     # rapid open→ready→reopen burst spends one review, not several. This
+#     # value is per-LANE and deliberate — the security caller must NOT copy
+#     # it (cancelling a REQUIRED check is not a skip and does not read
+#     # success; see claude-security-review.yml's canonical caller).
+#     concurrency:
+#       group: claude-review-${{ github.event.pull_request.number || github.run_id }}
+#       cancel-in-progress: true
 #     jobs:
 #       review:
+#         # The org's sync-managed caller component additionally carries a
+#         # job-level queue group here — a SEPARATE block, because `queue:`
+#         # cannot share a concurrency block with cancel-in-progress:
+#         #   concurrency:
+#         #     group: claude-review-${{ github.repository }}
+#         #     queue: max
+#         # It serializes reviews repo-wide, so parallel PRs queue for the
+#         # shared Claude seat instead of contending for it.
 #         permissions:
 #           contents: read         # checkout + read the diff
 #           pull-requests: write   # post review + track_progress tracking comment
