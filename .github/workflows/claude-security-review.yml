@@ -174,7 +174,10 @@ on:
           inlining it in the caller. Conventional location:
           `.github/claude-security-paths`. The file is read from the PR's BASE
           repository at the base branch — never the PR head — so a PR cannot
-          edit the file to skip its own security review. Consulted only when
+          edit the file's CONTENT to skip its own security review. (A PR can
+          still repoint this input in the caller workflow, exactly as it could
+          rewrite an inline `paths` list — either tampering is a visible
+          caller diff, which is the existing trust boundary.) Consulted only when
           `paths` is empty; a file that is absent or unreadable FAILS OPEN
           (every call relevant, with a warning), matching the `changes` job's
           fail-open discipline. Empty (the default) means no file is consulted.

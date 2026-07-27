@@ -362,6 +362,21 @@ test("the paths file supplies the patterns when the paths input is empty", () =>
   }
 });
 
+test("a vacuous paths file fails open to relevant", () => {
+  // An existing file whose lines are all comments/blanks yields an empty
+  // matcher. Today that lands on the shared no-usable-patterns guard; this
+  // pins the outcome so a refactor of that guard cannot silently turn a
+  // vacuous file into skip-every-PR.
+  const relevant = runFilter({
+    paths: "",
+    pathsFile: ".github/claude-security-paths",
+    patterns: "# nothing here\n\n",
+    changedFiles: ["docs/readme.md"],
+    fetchFailed: false,
+  });
+  assert.equal(relevant, "true");
+});
+
 test("a failed paths-file fetch fails open to relevant", () => {
   const relevant = runFilter({
     paths: "",
