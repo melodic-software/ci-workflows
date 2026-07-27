@@ -616,12 +616,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   passes a `run` command and owns discovery/reporting/exit; this supplies the
   hosted runner, pinned Pester, and checkout. Inputs are documented inline.
 - `.github/workflows/claude-review.yml` — automated PR code review with
-  `anthropics/claude-code-action`. Inputs (`prompt`, `claude-args`,
-  `track-progress`, `display-report`, `allowed-bots`,
-  `exclude-comments-by-actor`, `skip-actors`, `timeout-minutes`) have
-  public-safe defaults documented inline. Consume it per the [Claude lanes —
-  shared consumption contract](#claude-lanes--shared-consumption-contract)
-  below.
+  `anthropics/claude-code-action`. All inputs have public-safe defaults
+  documented inline in the workflow header (the authoritative list). Consume
+  it per the [Claude lanes — shared consumption
+  contract](#claude-lanes--shared-consumption-contract) below.
 - `.github/workflows/claude-security-review.yml` — a dedicated LLM
   **security-review** pass with `anthropics/claude-code-action`, sibling of
   `claude-review.yml` with the same secrets interface and safe-handling model
@@ -645,8 +643,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   evaluates it and a not-applicable PR yields a name-stable skipped
   `security-review` check. A consumer's ruleset may make that EXECUTION check
   required (check context `<caller job> / security-review`); the VERDICT stays
-  advisory. Inputs (`runner`, `paths`, `prompt`, `claude-args`, `skip-actors`)
-  have public-safe defaults documented inline. Consume it per the [Claude
+  advisory. All inputs have public-safe defaults documented inline in the
+  workflow header (the authoritative list). Consume it per the [Claude
   lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
   below, triggering on all PR events (no workflow-level `paths:`) and passing
   the `paths` input in the job:
@@ -668,8 +666,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   healthy, then has the agent drive the running app through the caller's journeys
   and post its findings as a PR comment (the agent step runs
   `continue-on-error`). This workflow additionally owns the pinned browser
-  toolchain. Inputs (`runner`, `app-start-command`, `app-url`, `e2e-spec`,
-  `claude-args`, `setup-command`, `timeout-minutes`) are documented inline.
+  toolchain. All inputs are documented inline in the workflow header (the
+  authoritative list).
   Consume it per the [Claude lanes — shared consumption
   contract](#claude-lanes--shared-consumption-contract) below, with the caller
   additionally passing:
@@ -891,6 +889,14 @@ handling. Security rules live in [CLAUDE.md](CLAUDE.md).
 ```yaml
 on:
   pull_request:
+    # Trigger types are PER LANE — copy the canonical caller from the lane's
+    # own workflow header, not this line:
+    #   claude-review:          [opened, ready_for_review, reopened]
+    #     (no `synchronize` — pushes do not re-trigger the code review;
+    #      re-run the job for a fresh pass)
+    #   claude-security-review: [opened, synchronize, ready_for_review, reopened]
+    #     (its check certifies execution at the merge head)
+    #   claude-e2e-verify:      [opened, synchronize, ready_for_review, reopened]
     types: [opened, synchronize, ready_for_review, reopened]
 jobs:
   <lane>:
@@ -904,10 +910,10 @@ jobs:
 ```
 
 The caller's job must grant those three permissions (a called workflow can only
-downgrade, not elevate) and the consumer repo must be in the
-`CLAUDE_CODE_OAUTH_TOKEN` org secret's selected scope. Pass that one named
-secret explicitly rather than `secrets: inherit`, which forwards every parent
-secret. Fork PRs receive no secrets by design and are not reviewed.
+downgrade, not elevate); the `CLAUDE_CODE_OAUTH_TOKEN` org secret has
+visibility "all repositories", so every org repo receives it. Pass that one
+named secret explicitly rather than `secrets: inherit`, which forwards every
+parent secret. Fork PRs receive no secrets by design and are not reviewed.
 
 ## Standalone gate checks — shared adoption contract
 

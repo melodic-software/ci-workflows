@@ -29,9 +29,11 @@ repo. These rules are load-bearing; changing any of them needs explicit review.
   (`id-token` mints the Claude GitHub App token and is required even with an
   OAuth/API-key credential). The review job re-declares that minimal set so an
   over-granting caller is still narrowed here.
-- **Never widen the secret.** `CLAUDE_CODE_OAUTH_TOKEN` is an org secret scoped to
-  *selected repositories* in the UI. Add an adopting repo to that list; never use
-  "all repositories" / a visibility that exposes it to public repos.
+- **Never touch the org secret.** `CLAUDE_CODE_OAUTH_TOKEN` is an org secret
+  with visibility *all repositories* — the live, deliberate value. Never
+  revoke, edit, or re-scope it from automation, and do not "correct" it to
+  selected-repositories. Forced-failure testing uses a repo-level same-name
+  override in a sandbox repo, never a change to the org secret.
 - **Public-repo log hygiene.** Keep `display_report` and `show_full_output` off
   (defaults) — both can surface model-authored content or secrets in publicly
   visible logs. Never enable Actions debug (`ACTIONS_STEP_DEBUG`) here. Never
