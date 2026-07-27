@@ -140,9 +140,21 @@ on:
         type: string
         default: ""
       timeout-minutes:
-        description: Timeout for the verification agent step.
+        description: >-
+          Timeout for each verification agent attempt (the automatic retry
+          carries the same budget). The job ceiling is fixed at 60, so keep
+          the retry formula 2 x this value + retry delay + 5 under it — at
+          the defaults that is 2x20 + ~2 + 5 = 47 — or a slow first attempt
+          converts this advisory lane into a red job timeout.
         type: number
         default: 20
+      retry-delay-seconds:
+        description: >-
+          Base delay before the single automatic retry attempt, in seconds. A
+          0-29 second random jitter is added on top so lanes retrying against
+          the same contended seat do not re-collide in lockstep.
+        type: number
+        default: 90
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
@@ -165,9 +177,11 @@ jobs:
   e2e-verify:
     runs-on: ${{ inputs.runner }}
     # Outer safety ceiling for the whole job (browser install + build + serve +
-    # health poll + agent). The agent step carries its own inputs.timeout-minutes
-    # below; keep this comfortably above it so the job ceiling never undercuts the
-    # agent's own timeout.
+    # health poll + agent). Two agent attempts each carry their own
+    # inputs.timeout-minutes below; this ceiling must stay above the retry
+    # formula 2 x attempt budget + retry delay + 5 (47 at the defaults — see
+    # the timeout-minutes input) so it never undercuts the attempts' own
+    # timeouts.
     timeout-minutes: 60
     permissions:
       contents: read
@@ -400,17 +414,179 @@ jobs:
             failure with concrete reproduction steps, and a severity for each
             failure. Use advisory, non-merge-blocking wording throughout.
 
-      # Advisory: annotate an infrastructure failure without failing the job (the
-      # agent step is continue-on-error and this step exits 0). A public repo, so
-      # the raw SDKResultMessage is NOT safe to publish — its `result` field is
-      # model-authored free text. Project only the safe, structured metadata
-      # fields, mirroring claude-review's failure reporting.
+      # ONE bounded, gated retry: this lane is advisory, but a zero-turn blip
+      # (usage-limit spike, OIDC failure, SDK instant-fail) otherwise silently
+      # costs the PR its verification until someone notices and re-runs — and
+      # the app under test is already built, serving, and healthy, so the
+      # second attempt is cheap relative to the first.
+      #
+      # The gate retries ONLY when the execution file shows ZERO assistant
+      # turns and the failure is not auth-class. Zero turns is the
+      # artifact-safety condition: the agent posts nothing before its first
+      # assistant turn, so attempt 2 cannot duplicate a findings comment
+      # already on the PR. The auth exclusion skips the one class no retry
+      # can clear — the credential needs an operator. A mid-verification
+      # failure (assistant turns already spent) is deliberately NOT retried.
+      # This lane does not set track_progress, so unlike the review lanes
+      # there is no orphan tracking comment to clean up between attempts.
+      #
+      # The auth predicate mirrors classify.cjs in the claude-lane-outcome
+      # composite — the authoritative sibling. The composite is fetched at its
+      # pinned SHA and the caller's checkout does not contain this repo's
+      # scripts, so classify.cjs cannot be require()d at runtime and the
+      # predicate is inlined here instead; keep the two type-for-type.
+      - name: Decide whether to retry the verification
+        id: retry-gate
+        if: >-
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.claude-e2e.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXECUTION_FILE: ${{ steps.claude-e2e.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            core.setOutput("retry", "false");
+            let entries = [];
+            try {
+              const parsed = JSON.parse(
+                fs.readFileSync(process.env.EXECUTION_FILE, "utf8"),
+              );
+              if (Array.isArray(parsed)) entries = parsed;
+            } catch {
+              // A missing or unparsable execution file records no assistant
+              // turn, so the artifact-safety condition holds.
+            }
+            const assistantTurns = entries.filter(
+              (entry) => entry?.type === "assistant",
+            ).length;
+            if (assistantTurns > 0) {
+              core.notice(
+                `Not retrying: attempt 1 recorded ${assistantTurns} assistant turn(s), ` +
+                  "so it may already have posted a comment a second attempt would duplicate.",
+              );
+              return;
+            }
+            const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
+            const status = last?.api_error_status;
+            const errorText = (Array.isArray(last?.errors) ? last.errors : [])
+              .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
+              .join("\n");
+            const auth =
+              status === 401 ||
+              status === 402 ||
+              status === 403 ||
+              errorText.includes('"type":"authentication_error"') ||
+              errorText.includes('"type":"billing_error"') ||
+              errorText.includes('"type":"permission_error"');
+            if (auth) {
+              core.notice(
+                "Not retrying: auth-class failure — the credential needs an operator, and a retry cannot clear it.",
+              );
+              return;
+            }
+            core.setOutput("retry", "true");
+
+      # Jittered so parallel lanes retrying against the same contended seat do
+      # not re-collide in lockstep; the base delay rides the
+      # retry-delay-seconds input.
+      - name: Back off before the verification retry
+        if: steps.retry-gate.outputs.retry == 'true'
+        shell: bash
+        env:
+          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+        run: sleep "$((RETRY_DELAY_SECONDS + RANDOM % 30))"
+
+      - name: Claude end-to-end verification (retry)
+        id: claude-e2e-retry
+        if: steps.retry-gate.outputs.retry == 'true'
+        # Same rationale as the first attempt: an infra failure stays off the
+        # check, and the same attempt budget keeps the retry inside the job
+        # ceiling.
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.timeout-minutes }}
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: ${{ inputs.claude-args }}
+          # input/github-context expressions appear directly here (a `with:`
+          # value is an action input, not a shell context), mirroring how
+          # claude-review passes its consumer prompt body.
+          prompt: |
+            This is an automated, ADVISORY end-to-end verification pass for a
+            pull request. Your findings are informational — never describe them
+            as merge-blocking.
+
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            The application under test has already been built and started by this
+            workflow and is responding at:
+
+              ${{ inputs.app-url }}
+
+            A Playwright CLI (version ${{ env.PLAYWRIGHT_VERSION }}) with Chromium
+            is installed globally and on PATH, and NODE_PATH points at the global
+            module root so Node scripts you author can `require('playwright')`
+            against that same pinned install. Drive the running application with
+            it — author and run Playwright scripts (via `node`) or use the
+            `playwright` CLI directly. Do not install a different Playwright
+            version; its browsers would not be provisioned.
+
+            Verification journeys to drive:
+
+            ${{ inputs.e2e-spec }}
+
+            Exercise each journey against the URL above, then report your
+            findings as instructed here:
+
+            ${{ env.REPORT_INSTRUCTION }}
+
+            The findings must cover: the journeys you confirmed as passing, each
+            failure with concrete reproduction steps, and a severity for each
+            failure. Use advisory, non-merge-blocking wording throughout.
+
+      # Collapse the two attempts into the one pair of facts the outcome step
+      # needs. Reading the retry's fields directly would be wrong: when it is
+      # skipped its outcome is the literal `skipped` and its execution_file is
+      # empty, so the first attempt's result has to be the fallback.
+      - name: Resolve the effective verification attempt
+        id: attempt
+        if: always() && steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        env:
+          FIRST_OUTCOME: ${{ steps.claude-e2e.outcome }}
+          FIRST_FILE: ${{ steps.claude-e2e.outputs.execution_file }}
+          RETRY_OUTCOME: ${{ steps.claude-e2e-retry.outcome }}
+          RETRY_FILE: ${{ steps.claude-e2e-retry.outputs.execution_file }}
+        run: |
+          if [ "$RETRY_OUTCOME" = "skipped" ] || [ -z "$RETRY_OUTCOME" ]; then
+            outcome="$FIRST_OUTCOME"
+            execution_file="$FIRST_FILE"
+          else
+            echo "First attempt failed; reporting the retry's result instead."
+            outcome="$RETRY_OUTCOME"
+            execution_file="$RETRY_FILE"
+          fi
+          {
+            echo "outcome=$outcome"
+            echo "execution_file=$execution_file"
+          } >>"$GITHUB_OUTPUT"
+
+      # Advisory: annotate an infrastructure failure without failing the job
+      # (the agent attempts are continue-on-error and this step exits 0). A
+      # public repo, so the raw SDKResultMessage is NOT safe to publish — its
+      # `result` field is model-authored free text. Project only the safe,
+      # structured metadata fields, mirroring claude-review's failure
+      # reporting. Consumes the resolved attempt, not the first one, so a
+      # successful retry reports success.
       - name: Report verification outcome
         if: always() && steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
-          VERIFY_OUTCOME: ${{ steps.claude-e2e.outcome }}
-          EXECUTION_FILE: ${{ steps.claude-e2e.outputs.execution_file }}
+          VERIFY_OUTCOME: ${{ steps.attempt.outputs.outcome }}
+          EXECUTION_FILE: ${{ steps.attempt.outputs.execution_file }}
         run: |
           set -uo pipefail
           if [ "$VERIFY_OUTCOME" = "success" ]; then

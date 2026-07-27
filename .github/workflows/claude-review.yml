@@ -126,7 +126,12 @@ on:
         type: string
         default: dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]
       timeout-minutes:
-        description: Job timeout.
+        description: >-
+          Job timeout. The default is sized by the retry formula
+          2 x attempt timeout + retry delay + 5 slack: two 11-minute review
+          attempts (step-level timeouts) plus the jittered backoff (~2) fit
+          with headroom, so a slow first attempt never converts this advisory
+          lane into a red job timeout.
         type: number
         default: 30
       max-reviews-per-pr:
@@ -139,6 +144,13 @@ on:
           the count (fail-open by design). Zero or negative disables the cap.
         type: number
         default: 5
+      retry-delay-seconds:
+        description: >-
+          Base delay before the single automatic retry attempt, in seconds. A
+          0-29 second random jitter is added on top so lanes retrying against
+          the same contended seat do not re-collide in lockstep.
+        type: number
+        default: 90
       standards-ref:
         description: >-
           Pinned commit SHA of melodic-software/standards to mount for
@@ -380,7 +392,12 @@ jobs:
         # claude-code-action exits non-zero only on infrastructure errors; review
         # findings go to PR comments, not the exit code. continue-on-error keeps
         # an OIDC/usage-limit/SDK blip from showing as a red check.
+        #
+        # The step timeout bounds each attempt so the job budget (see the
+        # timeout-minutes input's retry formula) always leaves room for the
+        # retry below.
         continue-on-error: true
+        timeout-minutes: 11
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -403,6 +420,181 @@ jobs:
             commit blob (not the PR) using a permalink with line numbers:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
+      # ONE bounded, gated retry: this lane is advisory, but a zero-turn blip
+      # (usage-limit spike, OIDC failure, SDK instant-fail) otherwise silently
+      # costs the PR its review until someone notices and re-runs.
+      #
+      # The gate retries ONLY when the execution file shows ZERO assistant
+      # turns and the failure is not auth-class. Zero turns is the
+      # artifact-safety condition: the action posts nothing review-shaped
+      # before its first assistant turn, so attempt 2 cannot duplicate inline
+      # comments already on the PR. The auth exclusion skips the one class no
+      # retry can clear — the credential needs an operator. A mid-review
+      # failure (assistant turns already spent, comments possibly posted) is
+      # deliberately NOT retried: the duplicate-comment risk outweighs the
+      # second chance, and the re-run path remains.
+      #
+      # Deliberately ONE retry, not a loop: Actions cannot loop a `uses:`
+      # step, so the retry is a verbatim copy of the step above, and each copy
+      # is a place where the two can silently diverge. The gate honors the
+      # freshness guard and the review-count cap exactly as the first attempt
+      # does, so a retired or capped run never spends a retry.
+      #
+      # The auth predicate mirrors classify.cjs in the claude-lane-outcome
+      # composite — the authoritative sibling. The composite is fetched at its
+      # pinned SHA and the caller's checkout does not contain this repo's
+      # scripts, so classify.cjs cannot be require()d at runtime and the
+      # predicate is inlined here instead; keep the two type-for-type.
+      - name: Decide whether to retry the review
+        id: retry-gate
+        if: >-
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true' &&
+          steps.claude-review.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            core.setOutput("retry", "false");
+            let entries = [];
+            try {
+              const parsed = JSON.parse(
+                fs.readFileSync(process.env.EXECUTION_FILE, "utf8"),
+              );
+              if (Array.isArray(parsed)) entries = parsed;
+            } catch {
+              // A missing or unparsable execution file records no assistant
+              // turn, so the artifact-safety condition holds.
+            }
+            const assistantTurns = entries.filter(
+              (entry) => entry?.type === "assistant",
+            ).length;
+            if (assistantTurns > 0) {
+              core.notice(
+                `Not retrying: attempt 1 recorded ${assistantTurns} assistant turn(s), ` +
+                  "so it may already have posted comments a second attempt would duplicate.",
+              );
+              return;
+            }
+            const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
+            const status = last?.api_error_status;
+            const errorText = (Array.isArray(last?.errors) ? last.errors : [])
+              .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
+              .join("\n");
+            const auth =
+              status === 401 ||
+              status === 402 ||
+              status === 403 ||
+              errorText.includes('"type":"authentication_error"') ||
+              errorText.includes('"type":"billing_error"') ||
+              errorText.includes('"type":"permission_error"');
+            if (auth) {
+              core.notice(
+                "Not retrying: auth-class failure — the credential needs an operator, and a retry cannot clear it.",
+              );
+              return;
+            }
+            // track_progress posts its tracking comment BEFORE the first
+            // assistant turn, so a zero-turn failure strands an orphan the
+            // retry will not adopt. Best-effort delete, identified as a
+            // github-actions[bot] comment carrying this run's URL; fork PRs
+            // run with a read-only token and must never fail the gate.
+            const pr = context.payload.pull_request;
+            if (pr?.number) {
+              try {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                });
+                for (const comment of comments) {
+                  if (
+                    comment.user?.login === "github-actions[bot]" &&
+                    (comment.body ?? "").includes(`/actions/runs/${context.runId}`)
+                  ) {
+                    await github.rest.issues.deleteComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: comment.id,
+                    });
+                    core.info(`Deleted attempt 1's orphan tracking comment (id ${comment.id}).`);
+                  }
+                }
+              } catch (error) {
+                core.warning(`Could not delete attempt 1's tracking comment: ${error.message}`);
+              }
+            }
+            core.setOutput("retry", "true");
+
+      # Jittered so parallel lanes retrying against the same contended seat do
+      # not re-collide in lockstep; the base delay rides the
+      # retry-delay-seconds input.
+      - name: Back off before the review retry
+        if: steps.retry-gate.outputs.retry == 'true'
+        env:
+          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+        run: sleep "$((RETRY_DELAY_SECONDS + RANDOM % 30))"
+
+      - name: Claude review (retry)
+        id: claude-review-retry
+        if: steps.retry-gate.outputs.retry == 'true'
+        # Same rationale as the first attempt: an infra failure stays off the
+        # check, and the same step timeout keeps the retry inside the job
+        # budget.
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: ${{ inputs.track-progress }}
+          display_report: ${{ inputs.display-report }}
+          allowed_bots: ${{ inputs.allowed-bots }}
+          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          claude_args: ${{ steps.compose-args.outputs.args }}
+          # github-context expressions must appear directly in the step (a value
+          # carried in via inputs.prompt is NOT re-evaluated), so the structural
+          # header + permalink guidance live here and wrap the consumer's body.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            ${{ inputs.prompt }}
+
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+      # Collapse the two attempts into the one pair of facts the outcome step
+      # needs. Reading the retry's fields directly would be wrong: when it is
+      # skipped its outcome is the literal `skipped` and its execution_file is
+      # empty, so the first attempt's result has to be the fallback.
+      - name: Resolve the effective review attempt
+        id: attempt
+        if: >-
+          always() && steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
+        env:
+          FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
+          FIRST_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          RETRY_OUTCOME: ${{ steps.claude-review-retry.outcome }}
+          RETRY_FILE: ${{ steps.claude-review-retry.outputs.execution_file }}
+        run: |
+          if [ "$RETRY_OUTCOME" = "skipped" ] || [ -z "$RETRY_OUTCOME" ]; then
+            outcome="$FIRST_OUTCOME"
+            execution_file="$FIRST_FILE"
+          else
+            echo "First attempt failed; reporting the retry's result instead."
+            outcome="$RETRY_OUTCOME"
+            execution_file="$RETRY_FILE"
+          fi
+          {
+            echo "outcome=$outcome"
+            echo "execution_file=$execution_file"
+          } >>"$GITHUB_OUTPUT"
+
       # Also gated on the guard and the review-count cap: a superseded or
       # capped run has no outcome to report, and skipping this step leaves
       # review-failed empty so both marker-comment steps below skip too — a
@@ -419,8 +611,8 @@ jobs:
           steps.review-count.outputs.capped != 'true'
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
-          outcome: ${{ steps.claude-review.outcome }}
-          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          outcome: ${{ steps.attempt.outputs.outcome }}
+          execution-file: ${{ steps.attempt.outputs.execution_file }}
           lane: Claude review
 
       # Runs only on a genuine infra failure (never on a clean review). The
