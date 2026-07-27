@@ -1,0 +1,35 @@
+name: expression-spans-composite
+description: >-
+  The two `${{ }}` span shapes a plain search for the next `}}` gets wrong: an
+  expression that spans lines, and a `}}` inside an expression's own string
+  literal. Neither appears in a real action.yml here — every one of those passes
+  its inputs through env: — so only this fixture exercises them. It lives
+  outside .github/actions so the real lane never scans it;
+  composite-run-shellcheck.test.sh points the check at this file and asserts the
+  SC2086 after each expression is reported, on the right line.
+
+runs:
+  using: composite
+  steps:
+    - name: Expression spanning lines
+      shell: bash
+      env:
+        PATHS: ${{ github.action_path }}
+      run: |
+        # The expression occupies two lines, so a substitution that swallows its
+        # newline reports the finding below one line too low.
+        echo "${{ fromJSON(
+          '{"paths": "."}').paths }}"
+        ls $PATHS
+
+    - name: Close marker inside a string literal
+      shell: bash
+      env:
+        PATHS: ${{ github.action_path }}
+      run: |
+        # Deliberately unquoted: the leaked remainder of a truncated span only
+        # unbalances the shell quoting — and so only masks the finding below —
+        # when it is not already inside a surrounding double-quoted string.
+        # Quoting this echo makes the defect silent and the assertion vacuous.
+        echo ${{ contains(github.action_path, '}}') && 'brace' || 'none' }}
+        ls $PATHS

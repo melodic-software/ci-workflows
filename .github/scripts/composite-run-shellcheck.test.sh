@@ -1,12 +1,13 @@
 # shellcheck shell=bash
 # Pin the properties a green composite-run-shellcheck run cannot prove on its
 # own: that a broken `run:` block fails the check, that the expression
-# substitution actually runs, that a step ShellCheck cannot read is announced,
-# that every tracked composite is reached — including one carrying no shell at
-# all — that a malformed `runs.steps` shape is refused rather than extracted
-# from, and that a file set yielding no block fails rather than passing empty.
-# Without these, a selector matching nothing — or nearly nothing — is
-# indistinguishable from a clean scan.
+# substitution actually runs — and spans the right bytes when an expression
+# crosses lines or carries a `}}` in a string literal — that a step ShellCheck
+# cannot read is announced, that every tracked composite is reached — including
+# one carrying no shell at all — that a malformed `runs.steps` shape is refused
+# rather than extracted from, and that a file set yielding no block fails rather
+# than passing empty. Without these, a selector matching nothing — or nearly
+# nothing — is indistinguishable from a clean scan.
 set -euo pipefail
 
 check=.github/scripts/composite-run-shellcheck.sh
@@ -61,6 +62,43 @@ grep -F 'runs.steps[2] (shell: sh)' "$custom"
 grep -F 'runs.steps[3]: shell is pwsh, not bash/sh' "$custom"
 if [[ "$(grep -c '^check fixtures/composite-action/custom-shell/' "$custom")" -ne 3 ]]; then
   echo 'Expected exactly three checked blocks in the custom-shell fixture.' >&2
+  exit 1
+fi
+
+# The two `${{ }}` span shapes a plain search for the next `}}` gets wrong.
+# Neither is a gate hole — both make the check go red — so the assertions are on
+# WHERE and WHETHER a real finding is reported, never on the exit status alone.
+spans="$temp/composite-run-shellcheck-expression-spans.txt"
+if bash "$check" fixtures/composite-action/expression-spans/action.yml >"$spans" 2>&1; then
+  echo 'The expression-spans fixture unexpectedly passed.' >&2
+  exit 1
+fi
+cat -- "$spans"
+
+# An expression spanning lines must consume its newline without deleting it.
+# `set -eo pipefail` occupies line 1 and the block's fifth line carries the
+# SC2086, so it is reported at line 6; collapsing the expression onto one line
+# reports 5 and shifts every later finding in the block by the same amount. The
+# finding count is asserted too, because a line number only proves a span was
+# handled if that span produced nothing of its own.
+spanning=fixtures/composite-action/expression-spans/action.yml.step-0.bash
+if [[ "$(grep -cF "In $spanning line " "$spans")" -ne 1 ]]; then
+  echo "Expected exactly one finding in $spanning." >&2
+  exit 1
+fi
+grep -F -A2 "In $spanning line 6:" "$spans" | grep -F 'SC2086'
+
+# A `}}` inside the expression's own string literal must not end the span.
+# Ending there leaks the literal's remainder into the script, and the unbalanced
+# quoting stops ShellCheck analysing the file — so the SC2086 two lines later is
+# reported at all only because the span survived intact.
+literal=fixtures/composite-action/expression-spans/action.yml.step-1.bash
+grep -F -A2 "In $literal line 7:" "$spans" | grep -F 'SC2086'
+# The parse errors a truncated span produces. Asserted absent by code rather
+# than by the SC2086 above alone: those codes are what masks it, and naming them
+# keeps the failure legible when the substitution regresses.
+if grep -E 'SC107[23]' "$spans"; then
+  echo 'A truncated expression span left ShellCheck unable to parse the block.' >&2
   exit 1
 fi
 

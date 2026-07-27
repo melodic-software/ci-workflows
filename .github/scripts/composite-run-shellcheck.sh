@@ -29,27 +29,71 @@
 set -euo pipefail
 
 # GitHub expands `${{ }}` before the runner writes the step script, so a raw
-# block is not valid shell on its own. Each expression becomes an equal-length
-# run of underscores, mirroring actionlint's sanitizeExpressionsInScript: same
-# length keeps reported columns aligned with the action.yml source, and
+# block is not valid shell on its own. Each expression becomes a same-width run
+# of underscores, following actionlint's sanitizeExpressionsInScript: the width
+# keeps reported columns aligned with the action.yml source, and
 # underscores (rather than blanks) keep constructs such as `if ${{ x }}; then`
 # syntactically whole. The whole block is processed at once so an expression
 # spanning lines is handled, and an unterminated `${{` is left intact to be
 # reported rather than silently mangled.
+#
+# Where the span ends is decided the way GitHub's own runner decides it, not the
+# way actionlint does. actionlint takes the next `}}` verbatim; the runner scans
+# for it while toggling on `'` — the only string delimiter a GitHub expression
+# has, double quotes being an error — so a `}}` inside a literal cannot end the
+# span. Taking the next one truncates the expression and leaks the literal's
+# remainder into the script, whose unbalanced quoting makes ShellCheck stop
+# analysing the file: every real finding after it is masked, and the parse error
+# reported instead points at synthesized underscores.
+# Ref: actions/runner, TemplateReader.ParseScalar (`inString`).
+#
+# A newline inside a span is likewise preserved rather than overwritten, so the
+# substitution is equal-length per line rather than equal-length overall and the
+# banner below holds for a block containing a multi-line expression. actionlint
+# overwrites it and documents the resulting shift as known; here the shift would
+# be silent, since nothing downstream reconciles a reported line against the
+# action.yml source. The cost is that a span broken across lines is two shell
+# words rather than one, which can itself produce a finding — the deliberate
+# trade, because a wrong line number is silent and a bogus finding is loud.
 sanitize_expressions() {
-  awk '
+  # The character the scan pivots on cannot be written inside the single-quoted
+  # awk program, so it is passed in.
+  awk -v quote="'" '
+    # Equal length per line: every byte of the span becomes an underscore except
+    # a newline, which stays a newline.
+    function fill(span,   parts, count, i, filler, out) {
+      count = split(span, parts, "\n")
+      for (i = 1; i <= count; i++) {
+        if (i > 1) out = out "\n"
+        filler = sprintf("%*s", length(parts[i]), "")
+        gsub(/ /, "_", filler)
+        out = out filler
+      }
+      return out
+    }
     { src = src $0 ORS }
     END {
       out = ""
       while ((s = index(src, "${{")) > 0) {
-        rest = substr(src, s)
-        e = index(rest, "}}")
+        n = length(src)
+        quoted = 0
+        e = 0
+        # From just past the opener, so its own trailing `{` can never be read
+        # as the first half of a close marker. A doubled `''` — the expression
+        # syntax escape for a literal quote — toggles twice and so is inert,
+        # which is exactly how the runner absorbs it.
+        for (i = s + 3; i <= n; i++) {
+          c = substr(src, i, 1)
+          if (c == quote) {
+            quoted = !quoted
+          } else if (!quoted && c == "}" && substr(src, i - 1, 1) == "}") {
+            e = i
+            break
+          }
+        }
         if (e == 0) break
-        width = e + 1
-        filler = sprintf("%*s", width, "")
-        gsub(/ /, "_", filler)
-        out = out substr(src, 1, s - 1) filler
-        src = substr(src, s + width)
+        out = out substr(src, 1, s - 1) fill(substr(src, s, e - s + 1))
+        src = substr(src, e + 1)
       }
       printf "%s%s", out, src
     }
