@@ -2,9 +2,13 @@
 
 // The security lane's required check certifies EXECUTION, so "in scope and could
 // not run" must conclude failure — `neutral` and `skipped` both satisfy a
-// required check and cannot express it (#266). These tests run the outcome step's
-// real script rather than grepping for `exit 1`, because the thing worth pinning
-// is the exit code a replayed 429 payload actually produces.
+// required check and cannot express it (#266). The classification itself lives
+// in the claude-lane-outcome composite (its corpus runs in
+// .github/actions/claude-lane-outcome/classify.test.cjs); what this workflow
+// owns — and what these tests pin — is the wiring around it: the resolve step
+// that picks the effective attempt, the outcome composite reading that attempt,
+// and the fail-closed step that raises the red on the one signal that means
+// "in scope and did not run".
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -49,137 +53,8 @@ function runScript(stepName) {
     .join("\n");
 }
 
-// Run 30217744377's payload: the shape a rate-limited call leaves behind — the
-// SDK's success variant with is_error true and no turns taken. This is the run
-// #266 was filed from, and it concluded green.
-function rateLimitedExecutionFile() {
-  return JSON.stringify([
-    {
-      type: "result",
-      subtype: "success",
-      is_error: true,
-      num_turns: 1,
-      duration_ms: 480,
-      total_cost_usd: 0,
-      result: "model-authored free text that must never be published",
-      api_error_status: 429,
-    },
-  ]);
-}
-
-function reportOutcome({
-  outcome,
-  executionFileContents,
-  isPullRequest = "true",
-}) {
-  const directory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "security-review-outcome-"),
-  );
-  try {
-    const githubOutput = path.join(directory, "github-output");
-    fs.writeFileSync(githubOutput, "");
-    const environment = {
-      ...process.env,
-      REVIEW_OUTCOME: outcome,
-      IS_PULL_REQUEST: isPullRequest,
-      GITHUB_OUTPUT: githubOutput,
-    };
-    if (executionFileContents !== undefined) {
-      const executionFile = path.join(directory, "execution.json");
-      fs.writeFileSync(executionFile, executionFileContents);
-      environment.EXECUTION_FILE = executionFile;
-    }
-    const result = spawnSync(
-      "bash",
-      ["-c", runScript("Report review outcome")],
-      {
-        encoding: "utf8",
-        env: environment,
-      },
-    );
-    const outputs = Object.fromEntries(
-      fs
-        .readFileSync(githubOutput, "utf8")
-        .split("\n")
-        .filter((line) => line.includes("="))
-        .map((line) => {
-          const separator = line.indexOf("=");
-          return [line.slice(0, separator), line.slice(separator + 1)];
-        }),
-    );
-    return { ...result, outputs };
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-}
-
-test("a replayed rate-limited review fails the job and still reports its class", () => {
-  const result = reportOutcome({
-    outcome: "failure",
-    executionFileContents: rateLimitedExecutionFile(),
-  });
-
-  assert.equal(
-    result.status,
-    1,
-    `the outcome step must exit nonzero so the required check concludes failure\n${result.stdout}\n${result.stderr}`,
-  );
-  assert.equal(result.outputs.review_failed, "true");
-  // Written before the exit, so the PR still gets its infra-status comment.
-  assert.equal(result.outputs.failure_class, "rate-limit");
-  assert.match(result.stdout, /::error::Claude security review exited with:/u);
-});
-
-// The free-text SDK fields stay off this public repo's logs even on the path that
-// now fails the job.
-test("failing closed does not start publishing the model-authored result", () => {
-  const result = reportOutcome({
-    outcome: "failure",
-    executionFileContents: rateLimitedExecutionFile(),
-  });
-  assert.doesNotMatch(result.stdout, /must never be published/u);
-  for (const value of Object.values(result.outputs)) {
-    assert.doesNotMatch(value, /must never be published/u);
-  }
-});
-
-test("a completed review still passes", () => {
-  const result = reportOutcome({ outcome: "success" });
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.equal(result.outputs.review_failed, "false");
-});
-
-// A missing execution file must not become a second failure mode: the class
-// degrades to `other` and the job still fails closed on the same signal.
-test("an unreadable execution file still fails closed", () => {
-  const result = reportOutcome({ outcome: "failure" });
-  assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-  assert.equal(result.outputs.review_failed, "true");
-  assert.equal(result.outputs.failure_class, "other");
-});
-
-// The action rejects merge_group outright and rejects every non-PR event while
-// track_progress is on, so those runs fail for a cause no head change can fix.
-// Failing them closed would wedge a consumer's merge queue on a red check that
-// the PR-gated comment steps cannot even explain.
-test("a non-pull_request run reports the failure without failing the job", () => {
-  const result = reportOutcome({
-    outcome: "failure",
-    executionFileContents: rateLimitedExecutionFile(),
-    isPullRequest: "false",
-  });
-  assert.equal(
-    result.status,
-    0,
-    `merge_group / workflow_dispatch / schedule runs must keep the historical pass-through\n${result.stdout}\n${result.stderr}`,
-  );
-  // Still classified and still annotated — pass-through, not silence.
-  assert.equal(result.outputs.review_failed, "true");
-  assert.equal(result.outputs.failure_class, "rate-limit");
-});
-
-// The resolve step decides what the outcome step sees, so a bug here reddens
-// every CLEAN review — the widest blast radius in this workflow.
+// The resolve step decides what the outcome composite sees, so a bug here
+// reddens every CLEAN review — the widest blast radius in this workflow.
 function resolveAttempt({ first, firstFile, retry, retryFile }) {
   const directory = fs.mkdtempSync(
     path.join(os.tmpdir(), "security-review-attempt-"),
@@ -260,9 +135,58 @@ test("both attempts failing resolves to the retry's payload", () => {
   assert.equal(resolved.execution_file, "/tmp/retry.json");
 });
 
+test("the outcome composite reads the resolved attempt, not just the first one", () => {
+  const step = stepSource("Report review outcome");
+  assert.match(
+    step,
+    /uses: melodic-software\/ci-workflows\/\.github\/actions\/claude-lane-outcome@[0-9a-f]{40}/u,
+    "the outcome step must be the pinned claude-lane-outcome composite",
+  );
+  assert.match(
+    step,
+    /^ {10}outcome: \$\{\{ steps\.attempt\.outputs\.outcome \}\}$/mu,
+    "reading steps.claude-review directly would ignore a successful retry",
+  );
+  assert.match(
+    step,
+    /^ {10}execution-file: \$\{\{ steps\.attempt\.outputs\.execution_file \}\}$/mu,
+    "the classified payload must come from the attempt that actually ran last",
+  );
+  // No continue-on-error: if the composite itself crashes before producing a
+  // verdict, the job must go red (closed), not silently green.
+  assert.doesNotMatch(
+    step,
+    /continue-on-error/u,
+    "a crashed outcome composite must fail the job, not pass through",
+  );
+});
+
+test("an in-scope non-run fails the job through the fail-closed step", () => {
+  const step = stepSource("Fail closed on an in-scope non-run");
+
+  // The red is raised deliberately, on the one signal that means "in scope
+  // and did not run": the outcome composite recorded a failure AND this is a
+  // pull_request run (only a pull_request run gates a merge — the action
+  // rejects merge_group and, with track_progress on, every non-PR event, so
+  // reddening those would wedge a consumer's merge queue on a cause no head
+  // change can fix; they keep the historical pass-through by skipping this
+  // step). always() keeps the step reachable after the failed review step.
+  assert.match(
+    step,
+    /^ {8}if: >-\n {10}always\(\) && steps\.review-outcome\.outputs\.review-failed == 'true' &&\n {10}github\.event\.pull_request\.number != ''$/mu,
+    "the fail-closed condition must key on review-failed and pull_request presence exactly",
+  );
+  assert.match(step, /^ {10}exit 1$/mu, "the step must conclude failure");
+  assert.doesNotMatch(
+    step,
+    /continue-on-error/u,
+    "continue-on-error here would revert #266 wholesale",
+  );
+});
+
 // Everything below pins the three no-verdict paths that must NOT reach the
-// failing step. Each is the reason the mapping keys on review_failed rather than
-// on "no verdict was produced".
+// failing step. Each is the reason the mapping keys on review-failed rather
+// than on "no verdict was produced".
 test("fork PRs skip the job instead of failing closed forever", () => {
   const jobCondition = workflow.slice(
     workflow.indexOf("  security-review:"),
@@ -297,7 +221,7 @@ test("a superseded head reports nothing, so it cannot fail closed", () => {
   assert.match(
     step,
     /^ {8}if: always\(\) && steps\.freshness\.outputs\.superseded != 'true'$/mu,
-    "a retired run must skip the outcome step, leaving review_failed unset",
+    "a retired run must skip the outcome step, leaving review-failed unset",
   );
 });
 
@@ -332,7 +256,7 @@ test("the review retry is configured identically to the first attempt", () => {
   assert.match(
     retry,
     /^ {8}continue-on-error: true$/mu,
-    "the retry must not fail the job itself; the outcome step owns the red",
+    "the retry must not fail the job itself; the fail-closed step owns the red",
   );
   assert.match(
     retry,
@@ -357,43 +281,5 @@ test("the review retry is configured identically to the first attempt", () => {
     stepSource("Back off before the review retry"),
     /^ {8}run: sleep \d+$/mu,
     "the retry must back off rather than immediately re-hammering a rate-limited API",
-  );
-});
-
-test("the outcome step reads the resolved attempt, not just the first one", () => {
-  const step = stepSource("Report review outcome");
-  assert.match(
-    step,
-    /^ {10}REVIEW_OUTCOME: \$\{\{ steps\.attempt\.outputs\.outcome \}\}$/mu,
-    "reading steps.claude-review directly would ignore a successful retry",
-  );
-  assert.match(
-    step,
-    /^ {10}EXECUTION_FILE: \$\{\{ steps\.attempt\.outputs\.execution_file \}\}$/mu,
-    "the classified payload must come from the attempt that actually ran last",
-  );
-  // The harness supplies this variable itself, so without pinning the YAML a
-  // deleted or incorrect env line would leave it unset in CI and every event
-  // would take the pass-through branch — reverting #266 silently, and in the
-  // fail-OPEN direction this suite exists to prevent.
-  assert.match(
-    step,
-    /^ {10}IS_PULL_REQUEST: \$\{\{ github\.event\.pull_request\.number != '' \}\}$/mu,
-    "a missing or incorrect IS_PULL_REQUEST disables fail-closed on every event",
-  );
-});
-
-// Belt and braces with the assertion above: even if the wiring is lost, the
-// guard's sense must keep an unset value on the fail-closed path.
-test("an unset IS_PULL_REQUEST fails closed rather than passing through", () => {
-  const result = reportOutcome({
-    outcome: "failure",
-    executionFileContents: rateLimitedExecutionFile(),
-    isPullRequest: "",
-  });
-  assert.equal(
-    result.status,
-    1,
-    `an absent IS_PULL_REQUEST must not be read as "not a pull request"\n${result.stdout}\n${result.stderr}`,
   );
 });
