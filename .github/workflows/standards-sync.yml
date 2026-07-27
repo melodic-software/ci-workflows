@@ -386,6 +386,11 @@ jobs:
           repositories: ${{ matrix.repo_name }}
           permission-contents: write
           permission-pull-requests: write
+          # Gated on the App-side grant: the mint fails if the
+          # melodic-standards-sync App lacks a requested permission, so this
+          # line must not ship before an org owner grants Workflows read/write
+          # on the App and approves it on installation 144867070.
+          permission-workflows: write
 
       - name: Check out exact standards source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
