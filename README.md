@@ -915,6 +915,19 @@ visibility "all repositories", so every org repo receives it. Pass that one
 named secret explicitly rather than `secrets: inherit`, which forwards every
 parent secret. Fork PRs receive no secrets by design and are not reviewed.
 
+**Kill-switches.** Every lane honors two Actions variables at job level:
+`CLAUDE_LANES_DISABLED` (all lanes) and a per-lane switch
+(`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`,
+`CLAUDE_E2E_VERIFY_DISABLED`). `true` skips the lane's job name-stably — a
+required security-review check reads the skip as success, so merges are never
+wedged. An absent variable means enabled; a repository-level variable
+overrides an organization-level one, so a single repo can opt out (or back
+in) without an org-wide change. Incident use: set the org-level variable to
+`true` to stop a misbehaving lane fleet-wide. While the security lane is
+disabled NO lane reports security findings — REVIEW.md's code-review
+exclusion keys on the security workflow file existing, and the file remains —
+so re-enable promptly and treat the outage window as security-unreviewed.
+
 ## Standalone gate checks — shared adoption contract
 
 `semantic-pr.yml`, `pr-issue-linkage.yml`, and `do-not-merge-gate.yml` are
