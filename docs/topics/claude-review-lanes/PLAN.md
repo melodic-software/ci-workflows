@@ -575,7 +575,8 @@ Ordered pre-steps, then waved rollout.
   `[opened, ready_for_review, reopened]`, security: + `synchronize`, NEVER
   workflow-level path filtering on the security caller (workflow non-trigger
   blocks a required check forever — platform-verified asymmetry); per-lane
-  concurrency per 2e; normalized skip-actors (2b values); runner via
+  concurrency per 2e; skip-actors normalized to the 2b values by INHERITANCE,
+  not by a passed input (SKIP-ACTORS INHERITANCE below); runner via
   `select-runner.yml` indirection uniformly [FALLBACK — confirm or override]:
   select-runner force-hosts public repos (select-runner.cjs:209-212) so one
   component serves both visibilities, BUT under `self-hosted-only` policy a
@@ -599,6 +600,23 @@ Ordered pre-steps, then waved rollout.
   ~:65, :116, :195) + grep AGENTS.md/governance-process.md for restatements;
   rationale: hand-written callers empirically drifted (medley `reopened` gap,
   skip-actors divergence, pin skew v0.6.1↔e295107).
+
+  SKIP-ACTORS INHERITANCE (measured 2026-07-29): the 2b values reach the fleet
+  as the reusable's DEFAULT, not as a value the component passes. The shipped
+  component passes no `skip-actors` at all (`grep -c skip-actors` on
+  `components/claude-lanes/claude-review.yml` at standards `main` returns 0),
+  while the reusable declares the input with default
+  `dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]`.
+  Behavior matches the 2b decision today only because both lists contain
+  `melodic-standards-sync[bot]`. The old hand-written callers passed an
+  explicit two-actor list — `dependabot[bot],melodic-standards-sync[bot]`,
+  still live in provisioning's default-branch caller — so the component MOVED
+  this value from caller-declared to reusable-inherited. DURABLE RISK: a
+  future change to the reusable's default silently alters fleet skip behavior
+  with no component diff and no consumer diff to review; the only review
+  surface left is the reusable's own PR. This does not contradict the Phase 1
+  evidence above, which correctly records the OLD callers passing
+  `skip-actors`.
 - **3b. Kill-switch org variables** before rollout: `CLAUDE_LANES_DISABLED`,
   `CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`,
   `CLAUDE_E2E_VERIFY_DISABLED` = `false`, **All-repositories visibility**
@@ -757,10 +775,12 @@ Ordered pre-steps, then waved rollout.
   is a real sync run, so merge nothing else inside it, and stay clear of the
   weekly `17 6 * * 1` reconciliation cron — allow hours of GitHub cron drift,
   not minutes. Wave 1: **provisioning** (lowest-traffic private consumer;
-  measured 2026-07-29 — see WAVE-1 TARGET below) — verify end-to-end,
-  including that the sync PR itself is reviewed by the NEW caller
-  (pull_request runs the merge-commit workflow file). Wave 2: remaining
-  existing targets (github-iac FIRST for the security lane), then new targets.
+  measured 2026-07-29 — see WAVE-1 TARGET below) — verify end-to-end across
+  TWO PRs, not one: the sync PR proves the caller FILE EXECUTES, and only a
+  human-authored PR can prove review BEHAVIOR (see WAVE-1 CRITERIA below).
+  Wave 2: remaining existing targets (github-iac FIRST — the ordering stands,
+  its "for the security lane" rationale does not; see PHASE 3 CLOSURE below),
+  then new targets.
   `.github` + ci-runner per the USER-RESERVED exemption decision (both already
   manifest targets; plan default: exempt from lane components, one-line targets
   comment).
@@ -783,7 +803,8 @@ Ordered pre-steps, then waved rollout.
   provisioning 24. Provisioning is ~4.6x quieter than dotfiles and satisfies
   wave 1's purpose identically: private, non-archived, already a sync-manifest
   target, and already carrying a `claude-review.yml` caller, so its own sync PR
-  still exercises the NEW caller on itself.
+  still EXECUTES the NEW caller on itself (execution, not review — WAVE-1
+  CRITERIA below separates the two).
 
   Two cautions on those figures. They are a SLIDING 7-day window, so absolute
   values drift between measurements (medley read 78 earlier the same day); the
@@ -794,13 +815,49 @@ Ordered pre-steps, then waved rollout.
   wrongly absolve dotfiles. It does NOT change the pick — provisioning is
   lowest under BOTH metrics — and is recorded here only so the discrepancy is
   not mistaken for an error and "corrected" back.
+
+  WAVE-1 CRITERIA (measured 2026-07-29) — TWO PRs, because ONE cannot carry
+  both. Wave 1 previously named the sync PR as the single vehicle and required
+  that it "is reviewed by the NEW caller". That is unsatisfiable, and by
+  design: every sync PR is authored by `melodic-standards-sync[bot]`; the
+  caller component passes NO `skip-actors` input, so the reusable's default
+  applies — declared on the `skip-actors` input in `claude-review.yml` as
+  `dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]`
+  — and the review job's own `if` skips when `github.actor` is in that list.
+  So the criterion contradicted 2b's self-trigger ban. Live confirmation:
+  `review / review` is `skipped` on all four open sync PR heads
+  (dotfiles#361, github-iac#244,
+  medley#1676, provisioning#231), and Phase 1 above already recorded the same
+  skip on the earlier `review-instructions` sync round. Split accordingly:
+
+  (a) SYNC PR — proves the caller FILE EXECUTES, and nothing more. Criterion:
+  the run's `referenced_workflows` names the NEW pin. The run CONCLUSION is
+  NOT the evidence — a run whose review job skipped still concludes `success`.
+  `gh api repos/melodic-software/<repo>/actions/runs/<run-id> --jq '.referenced_workflows[]'`
+  ALREADY SATISFIED for wave 1: provisioning run `30469715753` (event
+  `pull_request`, head `7b9d016`) references
+  `claude-review.yml@c136b27f404dd32ce3873f39a6f3443891d1c16e` and
+  `select-runner.yml` at the same SHA, whereas provisioning's default-branch
+  caller still pins `90f1c54935203fa31b5b3d1f41531228be2c2b7f`. The
+  discriminator is the PIN, which survives the review job skipping.
+
+  (b) HUMAN-AUTHORED PR in the wave-1 target — the ONLY vehicle for review
+  BEHAVIOR. Criteria: review fires exactly once on open; inline comments
+  present; the count comment carries `claude-review-count:1` and is authored
+  by `github-actions[bot]` (the TRACKING comment is `claude[bot]` — a
+  different author, do not conflate them); and the no-`synchronize` cadence
+  holds, i.e. a push to the same PR does not re-trigger the lane. None of
+  these is observable on a bot-authored PR, so wave 1 does not close until
+  such a PR exists in provisioning.
 - **3e. Post-rollout verification — ONE REPO AT A TIME** (devils-advocate F11:
   parallel verification manufactures the seat contention this effort fixes; use
   kill-switches as the sequencing mechanism): per consumer, one PR exercises —
   review fires once on open (inline comments present + count comment), security
   lane reports per head or name-stable-skips, and on ≥1 repo a PR touching the
   repo's PRIMARY language triggers an ACTUAL security run, not a skip (guards
-  against a paths file that silently filters everything). #227 smoke: bot-pushed
+  against a paths file that silently filters everything) — that ≥1 repo cannot
+  be a wave target, so this clause is unreachable as scoped; see PHASE 3
+  CLOSURE below. #227 smoke: bot-pushed
   head still produces a reporting required check. Record observed concurrency
   data for the cadence follow-ups.
 - **3f. Issue updates:** close #150 (code-review lane implemented; security keeps
@@ -818,9 +875,28 @@ Ordered pre-steps, then waved rollout.
   detector.
 
 **Sanity Check:** `bash distribution/sync-manifest.sh validate` exits 0; per
-target: `gh api repos/melodic-software/<repo>/contents/.github/workflows/claude-review.yml --jq .sha`
-equals `git hash-object components/claude-lanes/claude-review.yml` (blob-hash
-equivalence loop recorded verbatim; count of mismatches == 0); medley's synced
+target, blob-hash equivalence (loop recorded verbatim; count of mismatches ==
+0) — and BOTH sides of that comparison have a fault the obvious form does not
+survive, each producing a valid-looking WRONG value rather than an error.
+EXPECTED side: `git fetch origin && git rev-parse
+origin/main:components/claude-lanes/claude-review.yml`, never `git hash-object
+<path>` — `hash-object` hashes the WORKING TREE, so an uncommitted edit, or a
+checkout sitting on another branch, yields a different hash (two agents in
+separate checkouts read different values minutes apart this way); the `git
+fetch` is not optional, since a stale `origin/main` fails identically.
+OBSERVED side: an EXPLICIT `?ref=` —
+`gh api "repos/melodic-software/<repo>/contents/.github/workflows/claude-review.yml?ref=<sha>" --jq .sha`
+— because without it the API resolves the DEFAULT branch, which still holds
+the old hand-written caller. `<sha>` is the sync PR head during the rollout
+window and the merged SHA after it; the output cannot tell you which case you
+are in, so pass it always. DENOMINATOR is 4, not 8: the repos where
+`claude-review-caller` is MANAGED in `distribution/sync-manifest.yml` —
+dotfiles, github-iac, medley, provisioning. claude-code-plugins holds it
+`locally-owned`, so it is not in the loop, and `claude-security-review-caller`
+has ZERO managed targets, so it has nothing to compare (PHASE 3 CLOSURE
+below). Measured 2026-07-29 against the four open sync PR heads, expected blob
+`637a35473ac6f15b95e2cb6c674401469e4b2220`: the corrected form returns 0
+mismatches of 4, the as-written form 4 of 4, all false. medley's synced
 caller contains `reopened`; the 3c security-gate invariant re-reads intact —
 `gh api orgs/melodic-software/rulesets/19388547 --jq 'del(.id,.name,.node_id,.source,.source_type,.created_at,.updated_at,._links)'`
 compared as canonicalized JSON, which is the FULL disarmable surface rather than
@@ -828,10 +904,39 @@ just `conditions` + `rules` (the repo-level `rulesets` listing returns none of
 these keys, so it cannot verify this at all), AND the property set regenerated:
 `gh api "orgs/melodic-software/properties/values?per_page=100" --paginate --jq '.[]|select(.properties[]|select(.property_name=="requires-security-review" and .value=="true"))|.repository_name'`
 returns exactly `claude-code-plugins` — AND a live PR shows an ACTUAL
-security run (not skip) on a code-touching PR; smoke transcripts (kill-switch,
+security run (not skip) on a code-touching PR, which waves 1-2 cannot supply
+(PHASE 3 CLOSURE below); smoke transcripts (kill-switch,
 overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
 or matches only deliberate standing opt-outs).
+
+**PHASE 3 CLOSURE — the ACTUAL-security-run observation is not reachable from
+any wave [NEEDS ROUTING DECISION].** Measured 2026-07-29. Exactly two org
+repos run a security lane at all — `claude-code-plugins` and `ci-workflows`;
+every other manifest target 404s on
+`.github/workflows/claude-security-review.yml`. Neither is reachable as a
+managed wave target, and the two reasons are DIFFERENT, so neither is fixed by
+addressing the other. claude-code-plugins holds BOTH lane callers
+`locally-owned` in `distribution/sync-manifest.yml`, so sync never writes
+them. ci-workflows appears in the manifest for neither component: it is the
+reusable's home, and its `claude-security-review-self.yml` resolves the lane
+with `uses: ./.github/workflows/claude-security-review.yml` — a relative
+self-reference, so it is not a pinned consumer of anything. Upstream of both,
+`claude-security-review-caller` is recorded PARKED with ZERO managed targets,
+because runner-policy admits the governed selector only for a private
+self-hosted consumer and BOTH security-lane repos are public. That same fact
+retires 3d wave 2's "github-iac FIRST for the security lane" rationale —
+github-iac carries no security lane and no security caller, so the ordering is
+kept above while only its stated reason is withdrawn.
+
+CONSEQUENCE: as written, Phase 3 cannot close on waves 1 + 2, because its
+Sanity Check ANDs in an observation no wave target can produce. The routing is
+a DECISION and is deliberately NOT made here. Candidates: (a) take the
+observation on claude-code-plugins or ci-workflows and record it explicitly as
+evidence from a non-wave repo; (b) unpark `claude-security-review-caller` by
+admitting a private adopter, which is what its recorded unpark trigger
+describes; (c) move the observation to a phase whose scope covers those repos.
+Do not resolve this by picking one silently.
 
 ### Phase 4: observability — #238 aggregator [TODO]
 
