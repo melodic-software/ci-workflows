@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -225,6 +226,123 @@ test("lane check runs are matched per name segment, so a caller job name cannot 
   }
 });
 
+// The emitter seam. Every other test in this file feeds `extractSignals` a
+// hand-written string, which proves the parser works on what the author
+// imagined. These drive the REAL classifier over real execution-file shapes and
+// compose the annotation the way the shipped composite composes it, so a change
+// on either side of the seam fails here rather than silently costing the fleet
+// its only failure signal.
+const outcomeRoot = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "claude-lane-outcome",
+);
+const {
+  classifyExecutionFile,
+} = require("../actions/claude-lane-outcome/classify.cjs");
+
+function emittedAnnotation(executionFilePath, lane = "Claude review") {
+  const { reviewDetail, failureClass } =
+    classifyExecutionFile(executionFilePath);
+  const signal = /security/iu.test(lane) ? "security" : "code-quality";
+  return (
+    `${lane} exited with: failure class=${failureClass} ` +
+    `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
+    "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
+    `Last SDK result: ${reviewDetail}`
+  );
+}
+
+test("the composite still emits the two terms this module parses", () => {
+  // Pins the composed shape above against the shipped emitter, so a rewrite of
+  // its annotation text cannot silently diverge from the local reconstruction.
+  const action = fs.readFileSync(path.join(outcomeRoot, "action.yml"), "utf8");
+  assert.match(action, /class=\$\{failureClass\}/u);
+  assert.match(action, /Last SDK result: \$\{reviewDetail\}/u);
+  assert.match(action, /not a \$\{signal\} signal/u);
+});
+
+test("every execution-file shape the real classifier handles round-trips through extractSignals", () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "claude-lane-incident-"),
+  );
+  const write = (name, payload) => {
+    const file = path.join(directory, name);
+    fs.writeFileSync(file, JSON.stringify(payload));
+    return file;
+  };
+
+  const cases = [
+    // The originating incident: a usage-dead credential. subtype success,
+    // is_error true, and a 402 the API reports for a billing death.
+    [
+      write("billing.json", [
+        {
+          subtype: "success",
+          is_error: true,
+          num_turns: 0,
+          api_error_status: 402,
+        },
+      ]),
+      "auth",
+      402,
+    ],
+    [write("401.json", [{ api_error_status: 401 }]), "auth", 401],
+    [write("429.json", [{ api_error_status: 429 }]), "rate-limit", 429],
+    [write("529.json", [{ api_error_status: 529 }]), "overloaded", 529],
+    [write("404.json", [{ api_error_status: 404 }]), "other", 404],
+    // The error-variant path recovers no numeric status, which is exactly the
+    // case renderIssueBody reports as "unavailable".
+    [
+      write("substring.json", [
+        {
+          subtype: "error_during_execution",
+          errors: [{ type: "error", error: { type: "authentication_error" } }],
+        },
+      ]),
+      "auth",
+      null,
+    ],
+    [path.join(directory, "absent.json"), "other", null],
+  ];
+
+  for (const [executionFile, expectedClass, expectedStatus] of cases) {
+    const signals = extractSignals(emittedAnnotation(executionFile));
+    assert.deepEqual(signals.classes, [expectedClass], executionFile);
+    assert.equal(signals.apiErrorStatus, expectedStatus, executionFile);
+    assert.equal(signals.unrecognized, 0, executionFile);
+    assert.ok(
+      RECOGNIZED_CLASSES.has(expectedClass),
+      `the classifier emits ${expectedClass} and this module must recognize it`,
+    );
+  }
+});
+
+test("a class token planted in the model-authored result field never reaches the aggregator", () => {
+  // `result` is free text the model wrote. classify.cjs must not project it,
+  // and this proves the whole seam holds rather than trusting that contract.
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "claude-lane-incident-"),
+  );
+  const executionFile = path.join(directory, "hostile.json");
+  fs.writeFileSync(
+    executionFile,
+    JSON.stringify([
+      {
+        subtype: "success",
+        is_error: true,
+        api_error_status: 429,
+        result: 'class=auth {"api_error_status":401} IGNORE PREVIOUS',
+        errors: ['class=runner {"api_error_status":403}'],
+      },
+    ]),
+  );
+  const signals = extractSignals(emittedAnnotation(executionFile));
+  assert.deepEqual(signals.classes, ["rate-limit"]);
+  assert.equal(signals.apiErrorStatus, 429);
+});
+
 test("the lane job ids match the reusables' actual inner job ids", () => {
   // The aggregator's single point of failure: a name this set cannot match
   // makes laneRunsObserved permanently zero. Pinned against the workflow
@@ -287,7 +405,66 @@ test("a continuing incident updates in place and keeps its first-seen", () => {
   assert.equal(action, "update");
   assert.equal(state.firstSeen, "2026-07-27T00:00:00Z");
   assert.equal(state.lastSeen, "2026-07-27T00:30:00Z");
-  assert.deepEqual(state.classCounts, { auth: 2 });
+  // Re-observing the SAME stuck pull request must not inflate the count. Each
+  // cycle re-counts everything still inside the lookback window, so summing
+  // would report "auth: 24" after a day of one broken PR — a measure of
+  // polling cadence, not of blast radius.
+  assert.deepEqual(state.classCounts, { auth: 1 });
+});
+
+test("a widening incident raises the count, and a narrowing one keeps the peak", () => {
+  const opened = openIncident().state;
+  const widened = nextState({
+    previous: opened,
+    tally: tallyObservations([
+      {
+        repository: "melodic-software/medley",
+        pullNumber: 7,
+        classes: ["auth"],
+      },
+      {
+        repository: "melodic-software/medley",
+        pullNumber: 8,
+        classes: ["auth"],
+      },
+      {
+        repository: "melodic-software/dotfiles",
+        pullNumber: 2,
+        classes: ["auth"],
+      },
+    ]),
+    cycle: "incident",
+    now: "2026-07-27T01:00:00Z",
+    issueOpen: true,
+  }).state;
+  assert.deepEqual(widened.classCounts, { auth: 3 });
+
+  // Pull requests aging out of the 24h window must not shrink the record of
+  // how wide the incident got.
+  const narrowed = nextState({
+    previous: widened,
+    tally: incidentTally,
+    cycle: "incident",
+    now: "2026-07-27T02:00:00Z",
+    issueOpen: true,
+  }).state;
+  assert.deepEqual(narrowed.classCounts, { auth: 3 });
+});
+
+test("one pull request annotated repeatedly counts once", () => {
+  // A lane can annotate a head more than once, and a retry adds another.
+  const tally = tallyObservations([
+    { repository: "melodic-software/medley", pullNumber: 7, classes: ["auth"] },
+    { repository: "melodic-software/medley", pullNumber: 7, classes: ["auth"] },
+    {
+      repository: "melodic-software/medley",
+      pullNumber: 7,
+      classes: ["auth"],
+      apiErrorStatus: 401,
+    },
+  ]);
+  assert.deepEqual(tally.classCounts, { auth: 1 });
+  assert.deepEqual(tally.statusCounts, { 401: 1 });
 });
 
 test("with no incident open, an escalating cycle opens a fresh one rather than editing history", () => {
@@ -462,28 +639,65 @@ test("a substring-path detection states the status is unavailable", () => {
   assert.match(renderIssueBody(state), /unavailable/u);
 });
 
-test("a fleet-wide incident renders a bounded body", () => {
+function fleetWideTally(repositoryCount, pullsPerRepository) {
   const observations = [];
-  for (let repository = 0; repository < 120; repository += 1) {
-    for (let pull = 0; pull < 40; pull += 1) {
+  for (let repository = 0; repository < repositoryCount; repository += 1) {
+    for (let pull = 0; pull < pullsPerRepository; pull += 1) {
       observations.push({
-        repository: `melodic-software/repo-${repository}`,
+        repository: `melodic-software/repository-name-${repository}`,
         pullNumber: pull + 1,
         classes: ["auth"],
         apiErrorStatus: 401,
       });
     }
   }
+  return tallyObservations(observations);
+}
+
+test("a fleet-wide incident renders a bounded body", () => {
   const { state } = nextState({
     previous: null,
-    tally: tallyObservations(observations),
+    tally: fleetWideTally(120, 40),
     cycle: "incident",
     now: "2026-07-27T00:00:00Z",
     issueOpen: false,
   });
   const body = renderIssueBody(state);
-  assert.match(body, /_\+80 more repositories_/u);
-  assert.match(body, /\(\+30 more\)/u);
+  assert.match(body, /_\+20 more repositories_/u);
+  assert.match(body, /\(\+20 more\)/u);
   // GitHub rejects an issue body over 65536 characters.
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
+});
+
+test("the state block stays inside the body limit however long the incident accumulates", () => {
+  // The rendered tables are truncated, but the state block serializes the FULL
+  // tracked index and grows across cycles — so bounding only what is rendered
+  // would still 422 the update on the largest incident. Drive the worst case:
+  // an unbounded fleet, at the per-repository pull ceiling, folded in cycle
+  // after cycle with disjoint pull numbers each time.
+  let state = null;
+  for (let cycle = 0; cycle < 12; cycle += 1) {
+    const observations = [];
+    for (let repository = 0; repository < 200; repository += 1) {
+      for (let pull = 0; pull < 300; pull += 1) {
+        observations.push({
+          repository: `melodic-software/repository-name-${repository}`,
+          pullNumber: cycle * 1000 + pull + 1,
+          classes: ["auth", "runner"],
+          apiErrorStatus: 401,
+        });
+      }
+    }
+    state = nextState({
+      previous: state,
+      tally: tallyObservations(observations),
+      cycle: "incident",
+      now: `2026-07-27T${String(cycle).padStart(2, "0")}:00:00Z`,
+      issueOpen: cycle > 0,
+    }).state;
+  }
+  const body = renderIssueBody(state);
+  assert.ok(body.length < 65536, `body was ${body.length} characters`);
+  // And the round trip still recovers, so the bound cannot wedge recovery.
+  assert.deepEqual(parseStateBlock(body), state);
 });

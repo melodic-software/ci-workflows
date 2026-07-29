@@ -57,11 +57,11 @@ on:
     # Hourly. The clean-cycle counter is denominated in cycles, so this also
     # sets the auto-close latency: three consecutive clean hours.
     - cron: '17 * * * *'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/claude-lane-incident-aggregator.yml'
-      - '.github/scripts/claude-lane-incident.cjs'
+  # Deliberately no `push` trigger. An out-of-band cycle counts toward the three
+  # consecutive clean cycles that auto-close an incident, so merging an unrelated
+  # edit to this workflow during an outage would shorten the recovery window and
+  # falsify the "three consecutive clean hours" the cron above defines. Use the
+  # dispatch below to exercise a change.
   workflow_dispatch:
     inputs:
       dry-run:
@@ -249,6 +249,14 @@ jobs:
               for (const pull of pulls) {
                 const headSha = pull.head?.sha;
                 if (!headSha) continue;
+                // A fork PR's head repository ships its own workflow files, so
+                // any job it declares can write a `class=` annotation onto a
+                // check run in the base repository. The lanes deliberately do
+                // not review fork PRs at all (CLAUDE.md's fork-PR rule), so a
+                // lane-shaped check run on a fork head is never this fleet's
+                // signal — counting one would let an outside contributor open
+                // a false incident here, or vote a wedged fleet healthy.
+                if (pull.head?.repo?.full_name !== fullName) continue;
                 pullsExamined += 1;
 
                 // `filter: latest` (the default) collapses re-runs to the
@@ -263,6 +271,16 @@ jobs:
                   }),
                 );
                 if (checkRuns === null) continue;
+                // The response is a single page by construction; a ref with
+                // more check runs than that would drop lane runs invisibly,
+                // which is the silent-truncation failure this poll refuses to
+                // commit anywhere else.
+                if ((checkRuns.data.total_count ?? 0) > checkRuns.data.check_runs.length) {
+                  readErrors += 1;
+                  core.warning(
+                    `${fullName}#${pull.number} has ${checkRuns.data.total_count} check runs, past one page of ${PER_PAGE}; the poll is incomplete.`,
+                  );
+                }
 
                 const matched = checkRuns.data.check_runs.filter((checkRun) =>
                   isLaneCheckRun(checkRun.name),
@@ -274,14 +292,31 @@ jobs:
                   );
                 }
                 const laneRuns = matched.slice(0, MAX_LANE_CHECK_RUNS_PER_PULL);
-                laneRunsObserved += laneRuns.length;
+
+                // Liveness needs a lane that actually RAN. A skipped lane job
+                // still publishes a check run under the same name — that is the
+                // kill-switch's whole design (a name-stable skip reads as
+                // success), and draft PRs and skip-actors produce the same
+                // shape. Counting one as evidence of health is how flipping
+                // CLAUDE_LANES_DISABLED to quiet the noise during a credential
+                // outage would auto-close the very incident tracking it, three
+                // cycles later, with nothing being reviewed. `completed` also
+                // excludes an in-flight run whose annotation has not landed yet.
+                const NON_EVIDENCE_CONCLUSIONS = new Set(["skipped", "cancelled", "neutral"]);
+                laneRunsObserved += laneRuns.filter(
+                  (laneRun) =>
+                    laneRun.status === "completed" &&
+                    !NON_EVIDENCE_CONCLUSIONS.has(laneRun.conclusion),
+                ).length;
 
                 for (const laneRun of laneRuns) {
-                  // The lane concludes SUCCESS on an infrastructure failure by
-                  // design, so conclusion is not a filter — the annotation is
-                  // the only signal, and it must be fetched from every lane
-                  // check run regardless of how green it looks.
-                  if ((laneRun.output?.annotations_count ?? 0) === 0) continue;
+                  // Annotations ARE read from every lane check run, including
+                  // ones that prove nothing about liveness: the lane concludes
+                  // SUCCESS on an infrastructure failure by design, so the
+                  // annotation is the only signal and conclusion must never
+                  // filter it out.
+                  const annotationsCount = laneRun.output?.annotations_count ?? 0;
+                  if (annotationsCount === 0) continue;
                   const annotations = await read(
                     `${fullName}#${pull.number} annotations for ${laneRun.name}`,
                     () =>
@@ -293,6 +328,12 @@ jobs:
                       }),
                   );
                   if (annotations === null) continue;
+                  if (annotations.data.length < annotationsCount) {
+                    readErrors += 1;
+                    core.warning(
+                      `${fullName}#${pull.number} check run ${laneRun.id} reports ${annotationsCount} annotations but one page returned ${annotations.data.length}; the poll is incomplete.`,
+                    );
+                  }
                   for (const annotation of annotations.data) {
                     const signals = extractSignals(annotation.message);
                     if (signals.classes.length === 0 && signals.unrecognized === 0) continue;
@@ -335,12 +376,16 @@ jobs:
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
             );
 
+            const perPage = 100;
             const openIssues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: "open",
-              per_page: 100,
+              per_page: perPage,
             });
+            // Folded into the run's reported API budget so the deliverable line
+            // covers every read the run made, not just the poll's.
+            core.setOutput("api-calls", String(Math.max(1, Math.ceil(openIssues.length / perPage))));
             // The marker is a public string in a public repository, so anyone
             // able to open an issue here could plant a decoy carrying it. Only
             // a bot-authored issue is ever a candidate, and the ambiguity
@@ -397,7 +442,8 @@ jobs:
       # budget diagnosable from the same line.
       - name: Report the poll budget
         env:
-          API_CALLS: ${{ steps.poll.outputs.api-calls }}
+          POLL_API_CALLS: ${{ steps.poll.outputs.api-calls }}
+          LOOKUP_API_CALLS: ${{ steps.incident.outputs.api-calls }}
           READ_ERRORS: ${{ steps.poll.outputs.read-errors }}
           LANE_RUNS: ${{ steps.poll.outputs.lane-runs }}
           REPOSITORIES: ${{ steps.poll.outputs.repositories }}
@@ -406,7 +452,8 @@ jobs:
           ACTION: ${{ steps.state.outputs.action }}
         run: |
           set -euo pipefail
-          echo "claude-lane-incident: api-calls=${API_CALLS} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} action=${ACTION}"
+          api_calls=$(( POLL_API_CALLS + LOOKUP_API_CALLS ))
+          echo "claude-lane-incident: api-calls=${api_calls} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} action=${ACTION}"
 
       # The dry run's deliverable: the exact body a credentialed run would have
       # written, in the job summary, where it costs nothing and leaks nothing.

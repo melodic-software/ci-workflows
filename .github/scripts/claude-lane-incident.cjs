@@ -71,9 +71,15 @@ const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u;
 // else. This constant is the aggregator's single point of failure — a name it
 // cannot match makes `laneRunsObserved` permanently zero, which classifies
 // every cycle `indeterminate` and leaves an incident that never opens and never
-// auto-closes. Over-matching is the safe direction: a non-lane check run that
-// happens to be named `review` carries no `class=` annotation, so it adds
-// nothing but a lane-liveness vote.
+// auto-closes.
+//
+// Matching by name alone is not sufficient on its own, and the poll does not
+// rely on it being so. A fork pull request ships its own workflow files, so an
+// outside contributor can declare a job named `review` that emits any
+// annotation it likes; the poll therefore skips fork heads outright before this
+// ever runs. Within the base repository, a same-named non-lane job carries no
+// `class=` annotation, so it can only cast a liveness vote — and only if it
+// also completed with a real conclusion.
 const LANE_CHECK_RUN_JOB_IDS = Object.freeze(
   new Set(["review", "security-review", "e2e-verify"]),
 );
@@ -90,6 +96,13 @@ const CLEAN_CYCLES_TO_CLOSE = 3;
 // failing exactly when the incident is largest.
 const MAX_RENDERED_REPOSITORIES = 40;
 const MAX_RENDERED_PULLS_PER_REPOSITORY = 10;
+
+// Bounds on the TRACKED index, which the state block serializes into that same
+// body and which grows across cycles. Set above the rendered bounds so the
+// "+N more" remainders stay truthful for a while, and low enough that the state
+// block cannot approach the body limit — see mergeRepositories.
+const MAX_TRACKED_REPOSITORIES = 60;
+const MAX_TRACKED_PULLS_PER_REPOSITORY = 30;
 
 /**
  * Extract the machine-readable signals from one annotation message.
@@ -140,24 +153,42 @@ function toPositiveInteger(value) {
  *
  * An observation is `{ repository, pullNumber, classes, unrecognized,
  * apiErrorStatus }` — the shape the workflow builds from one annotation.
+ *
+ * Counts are DISTINCT AFFECTED PULL REQUESTS, not annotations seen. The same
+ * failure is re-observed every cycle for as long as its pull request stays in
+ * the lookback window, and a lane can annotate a head more than once, so a raw
+ * tally measures polling cadence rather than blast radius — "auth: 24" after a
+ * day of one stuck PR. Deduplicating on `<repository>#<pull>` makes the number
+ * mean what the incident body says it means, and makes it comparable to the
+ * affected-repository table beside it.
  */
 function tallyObservations(observations) {
-  const classCounts = {};
-  const statusCounts = {};
+  const classPulls = {};
+  const statusPulls = {};
   const repositories = {};
-  let unrecognized = 0;
+  const unrecognizedPulls = new Set();
 
   for (const observation of observations ?? []) {
-    unrecognized += toPositiveInteger(observation?.unrecognized) ?? 0;
-
     const repository = isValidRepository(observation?.repository)
       ? observation.repository
       : null;
     const pullNumber = toPositiveInteger(observation?.pullNumber);
+    // Anything lacking a usable identity still has to count, or a single
+    // unattributable failure would vanish; a per-observation fallback key keeps
+    // it distinct without pretending to know which pull request it came from.
+    const pullKey =
+      repository && pullNumber !== null
+        ? `${repository}#${pullNumber}`
+        : `unattributed:${observations.indexOf(observation)}`;
+
+    if ((toPositiveInteger(observation?.unrecognized) ?? 0) > 0) {
+      unrecognizedPulls.add(pullKey);
+    }
 
     for (const token of observation?.classes ?? []) {
       if (!RECOGNIZED_CLASSES.has(token)) continue;
-      classCounts[token] = (classCounts[token] ?? 0) + 1;
+      classPulls[token] ??= new Set();
+      classPulls[token].add(pullKey);
       if (!repository) continue;
       repositories[repository] ??= { classes: [], pulls: [] };
       const entry = repositories[repository];
@@ -169,25 +200,40 @@ function tallyObservations(observations) {
 
     const status = observation?.apiErrorStatus;
     if (Number.isInteger(status) && status >= 100 && status <= 599) {
-      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+      statusPulls[status] ??= new Set();
+      statusPulls[status].add(pullKey);
     }
   }
 
+  const sizes = (bucket) =>
+    Object.fromEntries(
+      Object.entries(bucket).map(([key, pulls]) => [key, pulls.size]),
+    );
+
   return {
-    classCounts,
-    statusCounts,
+    classCounts: sizes(classPulls),
+    statusCounts: sizes(statusPulls),
     repositories,
-    unrecognized,
-    escalating: Object.keys(classCounts).some((token) =>
+    unrecognized: unrecognizedPulls.size,
+    escalating: Object.keys(classPulls).some((token) =>
       ESCALATING_CLASSES.has(token),
     ),
   };
 }
 
+/**
+ * Carry a per-key count across cycles by taking the PEAK, never the sum.
+ *
+ * Each cycle re-counts everything still inside the 24h lookback window, so the
+ * current cycle already subsumes the previous one for any pull request still in
+ * view. Summing would re-add the same failures once an hour; the peak answers
+ * "how wide did this incident ever get" and stays put when pull requests age
+ * out of the window.
+ */
 function mergeCounts(previous, addition) {
   const merged = { ...(previous ?? {}) };
   for (const [key, count] of Object.entries(addition ?? {})) {
-    merged[key] = (merged[key] ?? 0) + count;
+    merged[key] = Math.max(merged[key] ?? 0, count);
   }
   return merged;
 }
@@ -224,7 +270,25 @@ function mergeRepositories(previous, addition) {
       if (!target.pulls.includes(pull)) target.pulls.push(pull);
     }
   }
-  return merged;
+
+  // The index is serialized into the issue body's state block, which GitHub
+  // caps at 65536 characters, and it ACCUMULATES across cycles — so bounding
+  // only what is rendered would still let the state block outgrow the body and
+  // 422 the update on the largest incident. Bounding here caps both. The kept
+  // slice is the sorted head, so the same repositories and pull requests stay
+  // in view cycle after cycle instead of churning.
+  const bounded = {};
+  for (const name of Object.keys(merged)
+    .sort()
+    .slice(0, MAX_TRACKED_REPOSITORIES)) {
+    bounded[name] = {
+      classes: merged[name].classes,
+      pulls: merged[name].pulls
+        .sort((a, b) => a - b)
+        .slice(0, MAX_TRACKED_PULLS_PER_REPOSITORY),
+    };
+  }
+  return bounded;
 }
 
 /**
@@ -286,7 +350,7 @@ function nextState({ previous, tally, cycle, now, issueOpen }) {
         carried?.repositories,
         tally.repositories,
       ),
-      unrecognized: (carried?.unrecognized ?? 0) + tally.unrecognized,
+      unrecognized: Math.max(carried?.unrecognized ?? 0, tally.unrecognized),
     };
     return { state, action: issueOpen ? "update" : "open" };
   }
@@ -441,7 +505,7 @@ function renderIssueBody(state) {
     "",
     "### Failure classes",
     "",
-    "| Class | Count | Escalating |",
+    "| Class | Affected pull requests | Escalating |",
     "| --- | --- | --- |",
     ...classLines,
     "",

@@ -59,11 +59,13 @@ function checkRun({
   id = 1,
   name = "review / review",
   annotationsCount = 0,
+  status = "completed",
   conclusion = "success",
 } = {}) {
   return {
     id,
     name,
+    status,
     conclusion,
     output: { annotations_count: annotationsCount },
   };
@@ -82,6 +84,7 @@ async function runPoll({
   repositoriesOverride = "",
   pullsByRepo = {},
   checkRunsByPull = {},
+  totalCountByRef = {},
   annotationsByCheckRun = {},
   failFor = [],
 } = {}) {
@@ -132,7 +135,13 @@ async function runPoll({
             const label = `checks:${owner}/${repo}`;
             calls.push({ kind: "checks", repo: `${owner}/${repo}`, ref });
             maybeFail(label);
-            return { data: { check_runs: checkRunsByPull[ref] ?? [] } };
+            const runs = checkRunsByPull[ref] ?? [];
+            return {
+              data: {
+                total_count: totalCountByRef[ref] ?? runs.length,
+                check_runs: runs,
+              },
+            };
           },
           listAnnotations: async ({ check_run_id: checkRunId }) => {
             calls.push({ kind: "annotations", checkRunId });
@@ -169,9 +178,15 @@ async function runPoll({
   }
 }
 
-const recentPull = (number, sha) => ({
+const recentPull = (number, sha, repository = "melodic-software/medley") => ({
   number,
-  head: { sha },
+  head: { sha, repo: { full_name: repository } },
+  updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+});
+
+const forkPull = (number, sha) => ({
+  number,
+  head: { sha, repo: { full_name: "outsider/medley" } },
   updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
 });
 
@@ -261,8 +276,28 @@ test("the dry-run report is published exactly when no token was minted", () => {
 test("the run logs the API-call count as an explicit deliverable line", () => {
   assert.match(
     workflow,
-    /echo "claude-lane-incident: api-calls=\$\{API_CALLS\}[^"]*read-errors=\$\{READ_ERRORS\}/u,
+    /echo "claude-lane-incident: api-calls=\$\{api_calls\}[^"]*read-errors=\$\{READ_ERRORS\}/u,
   );
+  // The total must cover every read the run made. The poll and the issue
+  // lookup are the two reading steps, and both feed the sum.
+  assert.match(
+    workflow,
+    /api_calls=\$\(\( POLL_API_CALLS \+ LOOKUP_API_CALLS \)\)/u,
+  );
+  assert.match(
+    extractStepScript("Find the open incident issue"),
+    /core\.setOutput\("api-calls"/u,
+  );
+});
+
+test("the workflow is scheduled and dispatched only — no push trigger can consume a clean cycle", () => {
+  const triggerBlock = workflow.slice(
+    workflow.indexOf("\non:"),
+    workflow.indexOf("\nconcurrency:"),
+  );
+  assert.doesNotMatch(triggerBlock, /^ {2}push:/mu);
+  assert.match(triggerBlock, /^ {2}schedule:/mu);
+  assert.match(triggerBlock, /^ {2}workflow_dispatch:/mu);
 });
 
 test("the issue lookup and close steps run on github-script, not the gh CLI", () => {
@@ -370,7 +405,11 @@ test("a transient class is counted but does not open an incident", async () => {
 test("an unreadable repository is counted as a read error and never reported as clean", async () => {
   const { outputs, warnings } = await runPoll({
     repositoriesOverride: "melodic-software/medley,melodic-software/dotfiles",
-    pullsByRepo: { "melodic-software/dotfiles": [[recentPull(3, "sha-b")]] },
+    pullsByRepo: {
+      "melodic-software/dotfiles": [
+        [recentPull(3, "sha-b", "melodic-software/dotfiles")],
+      ],
+    },
     checkRunsByPull: { "sha-b": [checkRun({ id: 91 })] },
     failFor: ["pulls:melodic-software/medley"],
   });
@@ -391,7 +430,11 @@ test("an unreadable repository is counted as a read error and never reported as 
 test("a read failure on one repository does not abort the scan of the others", async () => {
   const { calls } = await runPoll({
     repositoriesOverride: "melodic-software/medley,melodic-software/dotfiles",
-    pullsByRepo: { "melodic-software/dotfiles": [[recentPull(3, "sha-b")]] },
+    pullsByRepo: {
+      "melodic-software/dotfiles": [
+        [recentPull(3, "sha-b", "melodic-software/dotfiles")],
+      ],
+    },
     failFor: ["pulls:melodic-software/medley"],
   });
   assert.deepEqual(
@@ -425,6 +468,104 @@ test("only lane check runs are counted, and only annotated ones cost an annotati
     [92],
   );
   assert.equal(outputs.cycle, "incident");
+});
+
+test("a SKIPPED lane check run is not evidence that the lanes are running", async () => {
+  // The kill-switch, a draft PR, and skip-actors all produce a name-stable
+  // skipped lane job. Counting one as liveness is how flipping
+  // CLAUDE_LANES_DISABLED during a credential outage would auto-close the very
+  // incident tracking it, with nothing being reviewed.
+  for (const shape of [
+    { status: "completed", conclusion: "skipped" },
+    { status: "completed", conclusion: "cancelled" },
+    { status: "completed", conclusion: "neutral" },
+    { status: "in_progress", conclusion: null },
+  ]) {
+    const { outputs } = await runPoll({
+      repositoriesOverride: "melodic-software/medley",
+      pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+      checkRunsByPull: { "sha-a": [checkRun({ id: 90, ...shape })] },
+    });
+    assert.equal(outputs["lane-runs"], "0", JSON.stringify(shape));
+    assert.equal(outputs.cycle, "indeterminate", JSON.stringify(shape));
+  }
+
+  // The same head with one genuinely completed lane run IS evidence.
+  const { outputs } = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+    checkRunsByPull: {
+      "sha-a": [
+        checkRun({ id: 90, conclusion: "skipped" }),
+        checkRun({ id: 91, name: "security-review / security-review" }),
+      ],
+    },
+  });
+  assert.equal(outputs["lane-runs"], "1");
+  assert.equal(outputs.cycle, "clean");
+});
+
+test("a skipped lane check run still has its annotations read", async () => {
+  // Liveness and detection are separate questions: the lane concludes green on
+  // an infrastructure failure, so an annotation must never be filtered out by
+  // the conclusion that hid the failure in the first place.
+  const { outputs, tally } = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+    checkRunsByPull: {
+      "sha-a": [
+        checkRun({ id: 90, conclusion: "skipped", annotationsCount: 1 }),
+      ],
+    },
+    annotationsByCheckRun: { 90: [{ message: laneAnnotation("auth", 401) }] },
+  });
+  assert.equal(outputs["lane-runs"], "0");
+  assert.equal(outputs.cycle, "incident");
+  assert.deepEqual(tally.classCounts, { auth: 1 });
+});
+
+test("a fork pull request cannot vote on liveness or open an incident", async () => {
+  // A fork head ships its own workflow files, so an outside contributor could
+  // declare a job named `review` emitting any annotation they like. The lanes
+  // do not review fork PRs at all, so a fork head is never this fleet's signal.
+  const { outputs, tally, calls } = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[forkPull(12, "sha-fork")]] },
+    checkRunsByPull: {
+      "sha-fork": [checkRun({ id: 90, annotationsCount: 1 })],
+    },
+    annotationsByCheckRun: { 90: [{ message: laneAnnotation("auth", 401) }] },
+  });
+  assert.equal(outputs.pulls, "0");
+  assert.equal(outputs["lane-runs"], "0");
+  assert.deepEqual(tally.classCounts, {});
+  assert.equal(
+    calls.some((call) => call.kind === "checks"),
+    false,
+    "a fork head must not even cost an API call",
+  );
+});
+
+test("an API page that hides check runs or annotations is a read error, not a silent trim", async () => {
+  const truncatedCheckRuns = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+    checkRunsByPull: { "sha-a": [checkRun({ id: 90 })] },
+    totalCountByRef: { "sha-a": 140 },
+  });
+  assert.equal(truncatedCheckRuns.outputs["read-errors"], "1");
+  assert.equal(truncatedCheckRuns.outputs.cycle, "indeterminate");
+
+  const truncatedAnnotations = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+    checkRunsByPull: { "sha-a": [checkRun({ id: 90, annotationsCount: 150 })] },
+    annotationsByCheckRun: {
+      90: [{ message: laneAnnotation("rate-limit", 429) }],
+    },
+  });
+  assert.equal(truncatedAnnotations.outputs["read-errors"], "1");
+  assert.equal(truncatedAnnotations.outputs.cycle, "indeterminate");
 });
 
 test("a bound that truncates the scan is reported as a read error, never as a silent trim", async () => {
