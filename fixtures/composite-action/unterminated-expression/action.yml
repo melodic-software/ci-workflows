@@ -1,0 +1,34 @@
+name: unterminated-expression-composite
+description: >-
+  An unterminated `${{`, whose handling composite-run-shellcheck.sh chooses for
+  itself rather than following the runner — its header says why. Kept apart from
+  the expression-spans fixture because an intact opener is a ShellCheck parse
+  error by design, which that fixture asserts the absence of file-wide.
+  composite-run-shellcheck.test.sh points the check at this file and asserts
+  that the opener neither swallows the well-formed expression after it nor is
+  itself silently underscored.
+
+runs:
+  using: composite
+  steps:
+    - name: Unterminated opener before a well-formed expression
+      shell: bash
+      env:
+        PATHS: ${{ github.action_path }}
+      run: |
+        # A scan that runs on to the next expression's `}}` underscores both
+        # lines and the `ls` below with them, so the SC2086 there is reported
+        # only because the opener stopped the scan instead of extending it.
+        # ${{ open
+        echo "${{ github.event_name }}"
+        ls $PATHS
+
+    - name: Unterminated opener in code position
+      shell: bash
+      env:
+        PATHS: ${{ github.action_path }}
+      run: |
+        # Left intact to be reported rather than silently mangled: underscoring
+        # it would make the block parse cleanly and say nothing.
+        echo ${{ open
+        ls $PATHS

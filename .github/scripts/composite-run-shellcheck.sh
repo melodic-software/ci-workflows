@@ -33,27 +33,94 @@
 set -euo pipefail
 
 # GitHub expands `${{ }}` before the runner writes the step script, so a raw
-# block is not valid shell on its own. Each expression becomes an equal-length
-# run of underscores, mirroring actionlint's sanitizeExpressionsInScript: same
-# length keeps reported columns aligned with the action.yml source, and
+# block is not valid shell on its own. Each expression becomes a same-width run
+# of underscores, following actionlint's sanitizeExpressionsInScript: the width
+# keeps reported columns aligned with the action.yml source, and
 # underscores (rather than blanks) keep constructs such as `if ${{ x }}; then`
 # syntactically whole. The whole block is processed at once so an expression
 # spanning lines is handled, and an unterminated `${{` is left intact to be
 # reported rather than silently mangled.
+#
+# Where the span ends is decided the way GitHub's own runner decides it, not the
+# way actionlint does. actionlint takes the next `}}` verbatim; the runner scans
+# for it while toggling on `'` — the only string delimiter a GitHub expression
+# has, double quotes being an error — so a `}}` inside a literal cannot end the
+# span. Taking the next one truncates the expression and leaks the literal's
+# remainder into the script, whose unbalanced quoting makes ShellCheck stop
+# analysing the file: every real finding after it is masked, and the parse error
+# reported instead points at synthesized underscores.
+# Ref: actions/runner, TemplateReader.ParseScalar (`inString`).
+#
+# An unterminated `${{` has no runner behaviour to follow: ParseScalar fails the
+# whole document, so GitHub rejects the shape as a workflow-parse error and it
+# never reaches a real action. What happens to it here is therefore this
+# check's own choice, made for diagnosability. A second unquoted `${{` is taken
+# as proof the first never closed, so the scan stops there rather than running
+# on to a later span's `}}` and underscoring a well-formed expression along with
+# the broken text. Substitution resumes past the opener, leaving only the
+# opener itself in the extracted script for ShellCheck to report (SC1073).
+#
+# An unterminated `'` is the one broken shape still able to consume text, and
+# only when a later odd quote re-opens the scan and a `}}` arrives before any
+# unquoted `${{`. Bounding it would take a rule about whether an expression
+# string literal may cross a newline, which the runner does not state; it is
+# left as an accepted limitation on the same ground as the opener above — the
+# document does not parse, so no real action reaches this code.
+#
+# A newline inside a span is likewise preserved rather than overwritten, so the
+# substitution is equal-length per line rather than equal-length overall and the
+# banner below holds for a block containing a multi-line expression. actionlint
+# overwrites it and documents the resulting shift as known; here the shift would
+# be silent, since nothing downstream reconciles a reported line against the
+# action.yml source. The cost is that a span broken across lines is two shell
+# words rather than one, which can itself produce a finding — the deliberate
+# trade, because a wrong line number is silent and a bogus finding is loud.
 sanitize_expressions() {
-  awk '
+  # A literal quote cannot appear inside the single-quoted shell string holding
+  # the awk program, so the character the scan pivots on is passed in rather
+  # than written as the octal escape awk would otherwise need.
+  awk -v quote="'" '
+    # Equal length per line: every byte of the span becomes an underscore except
+    # a newline, which stays a newline.
+    function fill(span) {
+      gsub(/[^\n]/, "_", span)
+      return span
+    }
+
+    # The index of the close marker ending the span opened at `s`, or 0 when
+    # that opener is unterminated. Scanning starts just past the opener, so its
+    # own trailing `{` can never be read as the first half of a close marker. A
+    # doubled quote — the expression syntax escape for a literal one — toggles
+    # twice and so is inert, which is exactly how the runner absorbs it.
+    function span_end(text, s,   n, i, c, quoted) {
+      n = length(text)
+      for (i = s + 3; i <= n; i++) {
+        c = substr(text, i, 1)
+        if (c == quote) {
+          quoted = !quoted
+        } else if (quoted) {
+          continue
+        } else if (c == "}" && substr(text, i - 1, 1) == "}") {
+          return i
+        } else if (substr(text, i, 3) == "${{") {
+          return 0
+        }
+      }
+      return 0
+    }
+
     { src = src $0 ORS }
     END {
       out = ""
       while ((s = index(src, "${{")) > 0) {
-        rest = substr(src, s)
-        e = index(rest, "}}")
-        if (e == 0) break
-        width = e + 1
-        filler = sprintf("%*s", width, "")
-        gsub(/ /, "_", filler)
-        out = out substr(src, 1, s - 1) filler
-        src = substr(src, s + width)
+        e = span_end(src, s)
+        if (e == 0) {
+          out = out substr(src, 1, s + 2)
+          src = substr(src, s + 3)
+          continue
+        }
+        out = out substr(src, 1, s - 1) fill(substr(src, s, e - s + 1))
+        src = substr(src, e + 1)
       }
       printf "%s%s", out, src
     }
