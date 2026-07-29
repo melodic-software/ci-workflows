@@ -56,6 +56,13 @@ set -euo pipefail
 # the broken text. Substitution resumes past the opener, leaving only the
 # opener itself in the extracted script for ShellCheck to report (SC1073).
 #
+# An unterminated `'` is the one broken shape still able to consume text, and
+# only when a later odd quote re-opens the scan and a `}}` arrives before any
+# unquoted `${{`. Bounding it would take a rule about whether an expression
+# string literal may cross a newline, which the runner does not state; it is
+# left as an accepted limitation on the same ground as the opener above — the
+# document does not parse, so no real action reaches this code.
+#
 # A newline inside a span is likewise preserved rather than overwritten, so the
 # substitution is equal-length per line rather than equal-length overall and the
 # banner below holds for a block containing a multi-line expression. actionlint
@@ -65,8 +72,9 @@ set -euo pipefail
 # words rather than one, which can itself produce a finding — the deliberate
 # trade, because a wrong line number is silent and a bogus finding is loud.
 sanitize_expressions() {
-  # The character the scan pivots on cannot be written inside the single-quoted
-  # awk program, so it is passed in.
+  # A literal quote cannot appear inside the single-quoted shell string holding
+  # the awk program, so the character the scan pivots on is passed in rather
+  # than written as the octal escape awk would otherwise need.
   awk -v quote="'" '
     # Equal length per line: every byte of the span becomes an underscore except
     # a newline, which stays a newline.

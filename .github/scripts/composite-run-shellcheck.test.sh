@@ -3,8 +3,8 @@
 # own: that a broken `run:` block fails the check, that the expression
 # substitution actually runs — and spans the right bytes when an expression
 # crosses lines, carries a `}}` in a string literal, or is never closed at all —
-# that a step ShellCheck
-# cannot read is announced, that every tracked composite is reached — including
+# that a step ShellCheck cannot read is announced, that every tracked composite
+# is reached — including
 # one carrying no shell at all — that a malformed `runs.steps` shape is refused
 # rather than extracted from, and that a file set yielding no block fails rather
 # than passing empty. Without these, a selector matching nothing — or nearly
@@ -14,16 +14,31 @@ set -euo pipefail
 check=.github/scripts/composite-run-shellcheck.sh
 temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 
-# The findings ShellCheck reported against one line, for a caller to grep for a
-# code. ShellCheck prints a `In <file> line N:` header, the source line, then a
-# caret line per code, so a fixed -A count stops covering the block as soon as a
-# line draws a second code — and reads as a passing assertion when it does.
+# The caret lines ShellCheck attached to one reported line — one per code, and
+# the only lines a code appears on — for a caller to grep. A fixed -A count
+# instead stops covering the block as soon as a line draws a second code, and an
+# assertion on what it then cannot see reads as a pass. The source line between
+# the header and the carets is skipped unread, so a finding whose source line is
+# blank (ShellCheck reports one at end of file) still yields its codes.
 findings_at() {
   awk -v header="In $1 line $2:" '
-    $0 == header { inside = 1; next }
-    /^$/ { inside = 0 }
-    inside
+    $0 == header { inside = 1; source = 1; next }
+    inside && source { source = 0; next }
+    inside && /^ *\^/ { print; next }
+    inside { inside = 0 }
   ' "$3"
+}
+
+# Guards every assertion that reads a code off a given line: that line number
+# only proves a span was substituted correctly if the span produced nothing of
+# its own. A span ending one byte short leaks a `}` that draws its own finding
+# while leaving every other line number where it was, so the code and the line
+# both still match and the assertion passes.
+expect_findings() {
+  if [[ "$(grep -cF "In $1 line " "$3")" -ne "$2" ]]; then
+    echo "Expected exactly $2 finding(s) in $1." >&2
+    exit 1
+  fi
 }
 
 broken="$temp/composite-run-shellcheck-broken.txt"
@@ -78,7 +93,7 @@ if [[ "$(grep -c '^check fixtures/composite-action/custom-shell/' "$custom")" -n
   exit 1
 fi
 
-# The two `${{ }}` span shapes a plain search for the next `}}` gets wrong.
+# The span shapes the expression-spans fixture carries, which it describes.
 # Neither is a gate hole — both make the check go red — so the assertions are on
 # WHERE and WHETHER a real finding is reported, never on the exit status alone.
 spans="$temp/composite-run-shellcheck-expression-spans.txt"
@@ -91,21 +106,17 @@ cat -- "$spans"
 # An expression spanning lines must consume its newline without deleting it.
 # `set -eo pipefail` occupies line 1 and the block's fifth line carries the
 # SC2086, so it is reported at line 6; collapsing the expression onto one line
-# reports 5 and shifts every later finding in the block by the same amount. The
-# finding count is asserted too, because a line number only proves a span was
-# handled if that span produced nothing of its own.
+# reports 5 and shifts every later finding in the block by the same amount.
 spanning=fixtures/composite-action/expression-spans/action.yml.step-0.bash
-if [[ "$(grep -cF "In $spanning line " "$spans")" -ne 1 ]]; then
-  echo "Expected exactly one finding in $spanning." >&2
-  exit 1
-fi
+expect_findings "$spanning" 1 "$spans"
 findings_at "$spanning" 6 "$spans" | grep -F 'SC2086'
 
 # A `}}` inside the expression's own string literal must not end the span.
 # Ending there leaks the literal's remainder into the script, and the unbalanced
-# quoting stops ShellCheck analysing the file — so the SC2086 two lines later is
-# reported at all only because the span survived intact.
+# quoting stops ShellCheck analysing the file — so the SC2086 on the line below,
+# reported at line 7, is reported at all only because the span survived intact.
 literal=fixtures/composite-action/expression-spans/action.yml.step-1.bash
+expect_findings "$literal" 1 "$spans"
 findings_at "$literal" 7 "$spans" | grep -F 'SC2086'
 # The parse errors a truncated span produces. Asserted absent by code rather
 # than by the SC2086 above alone: those codes are what masks it, and naming them
@@ -117,11 +128,9 @@ if grep -E 'SC107[23]' "$spans"; then
   exit 1
 fi
 
-# An unterminated `${{` is the one span shape with no runner behaviour to
-# follow: GitHub rejects it as a workflow-parse error, so it never reaches a
-# real action and what happens to it is this check's own choice. Nothing else in
-# the toolchain would catch a wrong one — actionlint does not read composite
-# `steps:` — so both halves of the choice are pinned here.
+# The unterminated `${{`, whose handling the check chooses for itself rather
+# than following the runner — see the header of the script under test. Nothing
+# in the toolchain would catch a wrong choice, so both halves of it are pinned.
 unterminated="$temp/composite-run-shellcheck-unterminated.txt"
 if bash "$check" fixtures/composite-action/unterminated-expression/action.yml \
   >"$unterminated" 2>&1; then
@@ -136,6 +145,7 @@ cat -- "$unterminated"
 # the sixth line of the body, reported at line 7, is absent exactly when the
 # opener has silently consumed the real shell around it.
 swallowed=fixtures/composite-action/unterminated-expression/action.yml.step-0.bash
+expect_findings "$swallowed" 1 "$unterminated"
 findings_at "$swallowed" 7 "$unterminated" | grep -F 'SC2086'
 
 # The opener itself survives into the extracted script, so ShellCheck reports it
