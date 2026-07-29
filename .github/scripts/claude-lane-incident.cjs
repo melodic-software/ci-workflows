@@ -59,6 +59,25 @@ const API_ERROR_STATUS_PATTERN = /"api_error_status":(\d{3})[,}]/u;
 // reach the body, so an API response cannot smuggle markdown or a link.
 const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u;
 
+// The lane jobs whose check runs carry the `class=` annotation: the inner job
+// ids of the three reusables (claude-review.yml `review`,
+// claude-security-review.yml `security-review`, claude-e2e-verify.yml
+// `e2e-verify`), which the Phase 3a caller components mirror as their own job
+// ids for required-check continuity.
+//
+// A reusable-called job's check run is named `<caller job> / <inner job>`, so
+// the match is per `/`-separated segment rather than on the whole string: it
+// holds for `review / review` and for a caller that named its job something
+// else. This constant is the aggregator's single point of failure — a name it
+// cannot match makes `laneRunsObserved` permanently zero, which classifies
+// every cycle `indeterminate` and leaves an incident that never opens and never
+// auto-closes. Over-matching is the safe direction: a non-lane check run that
+// happens to be named `review` carries no `class=` annotation, so it adds
+// nothing but a lane-liveness vote.
+const LANE_CHECK_RUN_JOB_IDS = Object.freeze(
+  new Set(["review", "security-review", "e2e-verify"]),
+);
+
 const STATE_SCHEMA_VERSION = 1;
 const SELECTOR_MARKER = "<!-- ci-workflows:claude-lane-incident:v1:active -->";
 const STATE_MARKER_PREFIX = "<!-- ci-workflows:claude-lane-incident:state ";
@@ -100,10 +119,15 @@ function extractSignals(message) {
   return { classes, unrecognized, apiErrorStatus };
 }
 
+function isLaneCheckRun(name) {
+  if (typeof name !== "string") return false;
+  return name
+    .split("/")
+    .some((segment) => LANE_CHECK_RUN_JOB_IDS.has(segment.trim()));
+}
+
 function isValidRepository(fullName) {
-  return (
-    typeof fullName === "string" && REPOSITORY_NAME_PATTERN.test(fullName)
-  );
+  return typeof fullName === "string" && REPOSITORY_NAME_PATTERN.test(fullName);
 }
 
 function toPositiveInteger(value) {
@@ -135,7 +159,8 @@ function tallyObservations(observations) {
       if (!RECOGNIZED_CLASSES.has(token)) continue;
       classCounts[token] = (classCounts[token] ?? 0) + 1;
       if (!repository) continue;
-      const entry = (repositories[repository] ??= { classes: [], pulls: [] });
+      repositories[repository] ??= { classes: [], pulls: [] };
+      const entry = repositories[repository];
       if (!entry.classes.includes(token)) entry.classes.push(token);
       if (pullNumber !== null && !entry.pulls.includes(pullNumber)) {
         entry.pulls.push(pullNumber);
@@ -172,13 +197,26 @@ function mergeRepositories(previous, addition) {
   for (const [name, entry] of Object.entries(previous ?? {})) {
     if (!isValidRepository(name)) continue;
     merged[name] = {
-      classes: [...new Set((entry?.classes ?? []).filter((token) => RECOGNIZED_CLASSES.has(token)))],
-      pulls: [...new Set((entry?.pulls ?? []).filter((pull) => toPositiveInteger(pull) !== null))],
+      classes: [
+        ...new Set(
+          (entry?.classes ?? []).filter((token) =>
+            RECOGNIZED_CLASSES.has(token),
+          ),
+        ),
+      ],
+      pulls: [
+        ...new Set(
+          (entry?.pulls ?? []).filter(
+            (pull) => toPositiveInteger(pull) !== null,
+          ),
+        ),
+      ],
     };
   }
   for (const [name, entry] of Object.entries(addition ?? {})) {
     if (!isValidRepository(name)) continue;
-    const target = (merged[name] ??= { classes: [], pulls: [] });
+    merged[name] ??= { classes: [], pulls: [] };
+    const target = merged[name];
     for (const token of entry.classes) {
       if (!target.classes.includes(token)) target.classes.push(token);
     }
@@ -192,16 +230,24 @@ function mergeRepositories(previous, addition) {
 /**
  * Classify one polling cycle.
  *
- * `clean` requires positive evidence — at least one lane check run observed AND
- * no escalating class. Absence of failure is not health: the lanes conclude
- * green on an infrastructure failure by design, and a window with no lane runs
- * at all (a quiet night, or every lane wedged before it could report) proves
- * nothing. Such a window is `indeterminate`: it neither advances the
- * clean-cycle counter nor resets it, so an incident is never auto-closed by
- * silence.
+ * `clean` requires positive evidence — at least one lane check run observed,
+ * no escalating class, AND a poll that read everything it meant to read.
+ * Absence of failure is not health: the lanes conclude green on an
+ * infrastructure failure by design, and a window with no lane runs at all (a
+ * quiet night, or every lane wedged before it could report) proves nothing.
+ *
+ * `readErrors` is the same argument in a second guise. A consumer repository
+ * the poll could not read — a 403 under a narrowed credential, a rate limit, a
+ * transient 5xx — is a repository whose lanes might be the ones on fire, and
+ * counting that silence as health is how a live incident gets auto-closed
+ * three cycles later. Any read error therefore caps the cycle at
+ * `indeterminate`, which neither advances the clean-cycle counter nor resets
+ * it. An escalating class still wins outright: a failure that WAS observed is
+ * real regardless of what else the poll missed.
  */
-function classifyCycle({ laneRunsObserved, escalating }) {
+function classifyCycle({ laneRunsObserved, escalating, readErrors }) {
   if (escalating) return "incident";
+  if ((toPositiveInteger(readErrors) ?? 0) > 0) return "indeterminate";
   return (toPositiveInteger(laneRunsObserved) ?? 0) > 0
     ? "clean"
     : "indeterminate";
@@ -212,19 +258,23 @@ function classifyCycle({ laneRunsObserved, escalating }) {
  * workflow should perform.
  *
  * `action` is one of:
- *   - `open`   — no incident issue exists (or the selected one is closed) and
- *                an escalating class was seen; create or reopen it.
- *   - `update` — the issue exists and its body must change.
+ *   - `open`   — no incident issue is open and an escalating class was seen.
+ *   - `update` — an incident issue is open and its body must change.
  *   - `close`  — the third consecutive clean cycle; close with a recovery note.
  *   - `none`   — nothing changed; write nothing. Transition-edge writes only,
  *                which is also what keeps this inside GitHub's secondary
  *                content-creation limits.
+ *
+ * `issueOpen` is the only issue-state input because the workflow searches open
+ * issues only: a previously closed incident is superseded by a fresh one rather
+ * than reopened, which keeps the "at most one OPEN incident item" contract
+ * without paginating the repository's closed-issue history every cycle.
  */
-function nextState({ previous, tally, cycle, now, issueExists, issueOpen }) {
+function nextState({ previous, tally, cycle, now, issueOpen }) {
   const timestamp = now;
 
   if (cycle === "incident") {
-    const carried = issueExists && issueOpen ? previous : null;
+    const carried = issueOpen ? previous : null;
     const state = {
       v: STATE_SCHEMA_VERSION,
       firstSeen: carried?.firstSeen ?? timestamp,
@@ -232,16 +282,16 @@ function nextState({ previous, tally, cycle, now, issueExists, issueOpen }) {
       cleanCycles: 0,
       classCounts: mergeCounts(carried?.classCounts, tally.classCounts),
       statusCounts: mergeCounts(carried?.statusCounts, tally.statusCounts),
-      repositories: mergeRepositories(carried?.repositories, tally.repositories),
+      repositories: mergeRepositories(
+        carried?.repositories,
+        tally.repositories,
+      ),
       unrecognized: (carried?.unrecognized ?? 0) + tally.unrecognized,
     };
-    return {
-      state,
-      action: issueExists && issueOpen ? "update" : "open",
-    };
+    return { state, action: issueOpen ? "update" : "open" };
   }
 
-  if (!issueExists || !issueOpen) return { state: null, action: "none" };
+  if (!issueOpen) return { state: null, action: "none" };
 
   if (cycle === "indeterminate") return { state: previous, action: "none" };
 
@@ -250,7 +300,12 @@ function nextState({ previous, tally, cycle, now, issueExists, issueOpen }) {
   // the recovery path runs, so it must not hand `renderIssueBody` a state with
   // no counts to render; start from the empty shape instead of spreading null.
   const cleanCycles = (previous?.cleanCycles ?? 0) + 1;
-  const state = { ...emptyState(), ...previous, v: STATE_SCHEMA_VERSION, cleanCycles };
+  const state = {
+    ...emptyState(),
+    ...previous,
+    v: STATE_SCHEMA_VERSION,
+    cleanCycles,
+  };
   return {
     state,
     action: cleanCycles >= CLEAN_CYCLES_TO_CLOSE ? "close" : "update",
@@ -292,9 +347,7 @@ function parseStateBlock(body) {
 
   let parsed;
   try {
-    parsed = JSON.parse(
-      text.slice(start + STATE_MARKER_PREFIX.length, end),
-    );
+    parsed = JSON.parse(text.slice(start + STATE_MARKER_PREFIX.length, end));
   } catch {
     return null;
   }
@@ -421,11 +474,13 @@ module.exports = Object.freeze({
   CLASS_TOKEN_PATTERN,
   CLEAN_CYCLES_TO_CLOSE,
   ESCALATING_CLASSES,
+  LANE_CHECK_RUN_JOB_IDS,
   RECOGNIZED_CLASSES,
   SELECTOR_MARKER,
   STATE_SCHEMA_VERSION,
   classifyCycle,
   extractSignals,
+  isLaneCheckRun,
   nextState,
   parseStateBlock,
   renderIssueBody,

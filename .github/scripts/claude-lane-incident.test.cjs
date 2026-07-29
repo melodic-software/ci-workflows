@@ -1,14 +1,18 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
   CLEAN_CYCLES_TO_CLOSE,
+  LANE_CHECK_RUN_JOB_IDS,
   RECOGNIZED_CLASSES,
   SELECTOR_MARKER,
   classifyCycle,
   extractSignals,
+  isLaneCheckRun,
   nextState,
   parseStateBlock,
   renderIssueBody,
@@ -98,7 +102,6 @@ test("a hostile annotation contributes nothing renderable", () => {
     tally,
     cycle: "incident",
     now: "2026-07-27T00:00:00Z",
-    issueExists: false,
     issueOpen: false,
   });
   const body = renderIssueBody(state);
@@ -139,8 +142,16 @@ test("an invalid repository name never reaches the affected-repository index", (
 
 test("a tally separates escalating classes from reported-only ones", () => {
   const transient = tallyObservations([
-    { repository: "melodic-software/medley", pullNumber: 1, classes: ["rate-limit"] },
-    { repository: "melodic-software/medley", pullNumber: 1, classes: ["overloaded", "other"] },
+    {
+      repository: "melodic-software/medley",
+      pullNumber: 1,
+      classes: ["rate-limit"],
+    },
+    {
+      repository: "melodic-software/medley",
+      pullNumber: 1,
+      classes: ["overloaded", "other"],
+    },
   ]);
   assert.equal(transient.escalating, false);
   assert.deepEqual(transient.classCounts, {
@@ -151,7 +162,11 @@ test("a tally separates escalating classes from reported-only ones", () => {
 
   for (const token of ["auth", "runner"]) {
     const escalating = tallyObservations([
-      { repository: "melodic-software/medley", pullNumber: 1, classes: [token] },
+      {
+        repository: "melodic-software/medley",
+        pullNumber: 1,
+        classes: [token],
+      },
     ]);
     assert.equal(escalating.escalating, true, token);
   }
@@ -173,6 +188,63 @@ test("a cycle is clean only on positive evidence that a lane ran", () => {
   );
 });
 
+test("a poll that could not read everything is never clean", () => {
+  // The failure this forbids: one consumer repo 403s, the poll swallows it,
+  // the cycle reports clean, and three of those auto-close a live incident.
+  assert.equal(
+    classifyCycle({ laneRunsObserved: 40, escalating: false, readErrors: 1 }),
+    "indeterminate",
+  );
+  // An observed escalating class still wins: it is evidence of a real failure
+  // regardless of what else the poll missed.
+  assert.equal(
+    classifyCycle({ laneRunsObserved: 40, escalating: true, readErrors: 1 }),
+    "incident",
+  );
+});
+
+test("lane check runs are matched per name segment, so a caller job name cannot hide them", () => {
+  for (const name of [
+    "review / review",
+    "security-review / security-review",
+    "Claude review / review",
+    "e2e-verify",
+  ]) {
+    assert.equal(isLaneCheckRun(name), true, name);
+  }
+  for (const value of [
+    "ci-status",
+    "reviewer",
+    "security-review-summary",
+    "",
+    undefined,
+    null,
+    7,
+  ]) {
+    assert.equal(isLaneCheckRun(value), false, String(value));
+  }
+});
+
+test("the lane job ids match the reusables' actual inner job ids", () => {
+  // The aggregator's single point of failure: a name this set cannot match
+  // makes laneRunsObserved permanently zero. Pinned against the workflow
+  // sources rather than restated, so renaming a lane job fails here.
+  const workflowsRoot = path.join(__dirname, "..", "workflows");
+  for (const [file, jobId] of [
+    ["claude-review.yml", "review"],
+    ["claude-security-review.yml", "security-review"],
+    ["claude-e2e-verify.yml", "e2e-verify"],
+  ]) {
+    const source = fs.readFileSync(path.join(workflowsRoot, file), "utf8");
+    assert.match(
+      source,
+      new RegExp(`^ {2}${jobId}:$`, "mu"),
+      `${file} no longer declares the job id ${jobId}`,
+    );
+    assert.ok(LANE_CHECK_RUN_JOB_IDS.has(jobId), jobId);
+  }
+});
+
 const incidentTally = tallyObservations([
   {
     repository: "melodic-software/medley",
@@ -189,7 +261,6 @@ function openIncident() {
     tally: incidentTally,
     cycle: "incident",
     now: "2026-07-27T00:00:00Z",
-    issueExists: false,
     issueOpen: false,
   });
 }
@@ -211,7 +282,6 @@ test("a continuing incident updates in place and keeps its first-seen", () => {
     tally: incidentTally,
     cycle: "incident",
     now: "2026-07-27T00:30:00Z",
-    issueExists: true,
     issueOpen: true,
   });
   assert.equal(action, "update");
@@ -220,13 +290,12 @@ test("a continuing incident updates in place and keeps its first-seen", () => {
   assert.deepEqual(state.classCounts, { auth: 2 });
 });
 
-test("a closed incident issue is reopened rather than duplicated", () => {
+test("with no incident open, an escalating cycle opens a fresh one rather than editing history", () => {
   const { action } = nextState({
     previous: parseStateBlock(renderStateBlock(openIncident().state)),
     tally: incidentTally,
     cycle: "incident",
     now: "2026-07-27T01:00:00Z",
-    issueExists: true,
     issueOpen: false,
   });
   assert.equal(action, "open");
@@ -241,7 +310,6 @@ test("three consecutive clean cycles close the incident, and only the third", ()
       tally: tallyObservations([]),
       cycle: "clean",
       now: `2026-07-27T0${cycle + 1}:00:00Z`,
-      issueExists: true,
       issueOpen: true,
     });
     actions.push(result.action);
@@ -258,7 +326,6 @@ test("an indeterminate cycle neither advances nor resets the clean counter", () 
     tally: tallyObservations([]),
     cycle: "clean",
     now: "2026-07-27T01:00:00Z",
-    issueExists: true,
     issueOpen: true,
   }).state;
 
@@ -267,7 +334,6 @@ test("an indeterminate cycle neither advances nor resets the clean counter", () 
     tally: tallyObservations([]),
     cycle: "indeterminate",
     now: "2026-07-27T01:30:00Z",
-    issueExists: true,
     issueOpen: true,
   });
   assert.equal(quiet.action, "none");
@@ -283,7 +349,6 @@ test("recovery still renders when the open issue lost its state block", () => {
     tally: tallyObservations([]),
     cycle: "clean",
     now: "2026-07-27T00:00:00Z",
-    issueExists: true,
     issueOpen: true,
   });
   assert.equal(action, "update");
@@ -298,7 +363,6 @@ test("a fresh escalating cycle resets the clean counter", () => {
     tally: tallyObservations([]),
     cycle: "clean",
     now: "2026-07-27T01:00:00Z",
-    issueExists: true,
     issueOpen: true,
   }).state;
   assert.equal(afterClean.cleanCycles, 1);
@@ -308,7 +372,6 @@ test("a fresh escalating cycle resets the clean counter", () => {
     tally: incidentTally,
     cycle: "incident",
     now: "2026-07-27T01:30:00Z",
-    issueExists: true,
     issueOpen: true,
   });
   assert.equal(relapse.state.cleanCycles, 0);
@@ -323,7 +386,6 @@ test("with no incident open, a clean or quiet cycle writes nothing", () => {
         tally: tallyObservations([]),
         cycle,
         now: "2026-07-27T00:00:00Z",
-        issueExists: false,
         issueOpen: false,
       }).action,
       "none",
@@ -387,11 +449,14 @@ test("a substring-path detection states the status is unavailable", () => {
   const { state } = nextState({
     previous: null,
     tally: tallyObservations([
-      { repository: "melodic-software/medley", pullNumber: 1, classes: ["auth"] },
+      {
+        repository: "melodic-software/medley",
+        pullNumber: 1,
+        classes: ["auth"],
+      },
     ]),
     cycle: "incident",
     now: "2026-07-27T00:00:00Z",
-    issueExists: false,
     issueOpen: false,
   });
   assert.match(renderIssueBody(state), /unavailable/u);
@@ -414,7 +479,6 @@ test("a fleet-wide incident renders a bounded body", () => {
     tally: tallyObservations(observations),
     cycle: "incident",
     now: "2026-07-27T00:00:00Z",
-    issueExists: false,
     issueOpen: false,
   });
   const body = renderIssueBody(state);

@@ -1,0 +1,488 @@
+name: claude-lane-incident-aggregator
+
+# Watchdog for the Claude review lanes (PLAN.md Phase 4 / ci-workflows#238).
+#
+# The lanes are advisory by contract: an infrastructure failure — a dead org
+# credential, a rate limit, an SDK instant-fail, a runner the selector could not
+# resolve — concludes the check GREEN and posts a marker comment. That is the
+# right posture for a PR gate and the wrong posture for a fleet: nothing
+# aggregates those markers, so "every PR in every repo went unreviewed for two
+# days" looks exactly like "everything is fine". This workflow is the aggregate
+# view. It polls consumer repositories for the machine-readable `class=<token>`
+# annotation .github/actions/claude-lane-outcome emits, and maintains ONE
+# incident issue in this repository: opened on the first escalating class, kept
+# current in place, closed by itself after three consecutive clean cycles.
+#
+# CREDENTIAL SEAM — THIS WORKFLOW IS DRY-RUN UNTIL A HUMAN GRANTS IT ONE.
+# Reading another repository's check-run annotations needs cross-repository
+# `checks: read` (plus `pull-requests: read` to find the heads and `metadata:
+# read`), and maintaining the incident item needs `issues: write` here. No
+# existing App holds that set — the runner-observer App holds
+# actions/administration/metadata/organization_self_hosted_runners read only —
+# and widening an App or creating one is an org-owner decision, not an
+# automation's. So the credential is a seam, not a hardcoded identity:
+#
+#   - Absent `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`, no App token is minted and
+#     the run is a DRY RUN. It polls with the ambient GITHUB_TOKEN — which this
+#     workflow grants `contents: read` and `issues: read` and NOTHING ELSE — and
+#     renders the issue body it WOULD have written into the job summary.
+#   - Present, it mints an installation token and that token authors every
+#     write. Nothing else changes; there is no second code path to review.
+#
+# The dry-run guarantee is structural, not a flag. The job's `permissions:`
+# block grants no write scope of any kind, so the ambient token is incapable of
+# creating, editing, or closing an issue however the steps are wired; and every
+# write step is gated on the minted token being non-empty, so the gate and the
+# write credential are the same condition and cannot drift apart. A reviewer
+# confirms "this cannot write" by reading the permissions block, not by tracing
+# every branch.
+#
+# POLLING SCOPE is the credential's own installation (`GET
+# /installation/repositories`, one call): the org owner grants the App access to
+# exactly the consumer repositories, and this workflow polls exactly those.
+# There is no second, hand-maintained inventory to drift. A dry run has no
+# installation, so it scopes to this repository alone — which is a real
+# consumer of its own lanes (claude-review-self.yml), so the dry run exercises
+# the whole pipeline against live data rather than a fixture.
+#
+# PUBLIC-SAFETY: this repository is public and the incident body is its output.
+# Annotation text is untrusted (any workflow in any polled repository can write
+# one) and embeds a projection of model-authored content, so nothing derived
+# from it is ever rendered. The allowlist-and-validate discipline that enforces
+# that lives in .github/scripts/claude-lane-incident.cjs; read its header before
+# adding any field to the body.
+
+on:
+  schedule:
+    # Hourly. The clean-cycle counter is denominated in cycles, so this also
+    # sets the auto-close latency: three consecutive clean hours.
+    - cron: '17 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-lane-incident-aggregator.yml'
+      - '.github/scripts/claude-lane-incident.cjs'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Poll and render the report without writing the incident issue, even when the credential is present.
+        type: boolean
+        default: false
+      repositories:
+        description: Comma-separated owner/name list to poll instead of the credential's installation (smoke tests).
+        type: string
+        default: ''
+
+concurrency:
+  group: claude-lane-incident-aggregator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  aggregate:
+    name: Aggregate Claude lane infrastructure failures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      # READ ONLY, DELIBERATELY. `issues: read` lets a dry run find and parse
+      # the incident issue so it can render an accurate would-be body; no write
+      # scope is granted, so the ambient token cannot mutate anything in this
+      # repository. Every write below is authored by the minted App token.
+      contents: read
+      issues: read
+    env:
+      # Same presence-probe seam select-runner.yml uses for its observer
+      # credential: the secret's existence, not a checked-in flag, decides
+      # whether this run can write.
+      HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
+      # `github.event.inputs` values are strings on every event, and the whole
+      # object is absent on `schedule` and `push` — so this compares equal to
+      # 'true' only on a dispatch that explicitly asked for a dry run.
+      FORCED_DRY_RUN: ${{ github.event.inputs.dry-run == 'true' }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Minted without `repositories:` so the token carries the installation's
+      # full access, which is also what defines the polling scope below. Skipped
+      # entirely on a dry run: the token output is then empty, and every write
+      # step's gate reads that same emptiness.
+      - name: Mint the aggregator App token
+        id: credential
+        if: env.HAS_APP_CREDENTIAL == 'true' && env.FORCED_DRY_RUN != 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-checks: read
+          permission-pull-requests: read
+          permission-issues: write
+
+      - name: Poll consumer repositories for lane failure signals
+        id: poll
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          LOOKBACK_HOURS: '24'
+          REPOSITORIES_OVERRIDE: ${{ github.event.inputs.repositories }}
+          HAS_INSTALLATION: ${{ steps.credential.outputs.token != '' }}
+        with:
+          github-token: ${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}
+          script: |
+            const path = require("node:path");
+            const {
+              classifyCycle,
+              extractSignals,
+              isLaneCheckRun,
+              tallyObservations,
+            } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
+            );
+
+            // Every bound below exists so one pathological repository cannot
+            // turn a watchdog into an unbounded API spend. Hitting a bound is
+            // a read error, never a silent truncation: a truncated poll that
+            // reported "clean" is exactly how a live incident gets auto-closed.
+            const MAX_PULLS_PER_REPOSITORY = 300;
+            const MAX_LANE_CHECK_RUNS_PER_PULL = 12;
+            const PER_PAGE = 100;
+
+            const lookbackHours = Number(process.env.LOOKBACK_HOURS);
+            const since = Date.now() - lookbackHours * 3_600_000;
+
+            let apiCalls = 0;
+            let readErrors = 0;
+            let laneRunsObserved = 0;
+            let pullsExamined = 0;
+            const observations = [];
+
+            // Read errors are counted and the poll continues: one unreadable
+            // repository must neither abort the scan (losing every other
+            // repository's evidence) nor be mistaken for a healthy one. The
+            // count reaches classifyCycle, which refuses to call any cycle
+            // clean while it is non-zero.
+            const read = async (description, call) => {
+              apiCalls += 1;
+              try {
+                return await call();
+              } catch (error) {
+                readErrors += 1;
+                core.warning(`read failed (${description}): ${error.message}`);
+                return null;
+              }
+            };
+
+            const overrideNames = (process.env.REPOSITORIES_OVERRIDE ?? "")
+              .split(",")
+              .map((name) => name.trim())
+              .filter((name) => name.length > 0);
+
+            let repositories;
+            if (overrideNames.length > 0) {
+              repositories = overrideNames;
+            } else if (process.env.HAS_INSTALLATION === "true") {
+              // The installation's repository list IS the consumer inventory:
+              // granting the App access to a repository is what enrols it.
+              const installation = await read("installation repositories", () =>
+                github.paginate(github.rest.apps.listReposAccessibleToInstallation, {
+                  per_page: PER_PAGE,
+                }),
+              );
+              repositories = (installation ?? [])
+                .filter((repository) => !repository.archived)
+                .map((repository) => repository.full_name);
+            } else {
+              // Dry run: no installation exists, so the only repository the
+              // ambient token can read is this one.
+              repositories = [`${context.repo.owner}/${context.repo.repo}`];
+            }
+
+            for (const fullName of repositories) {
+              const [owner, repo] = fullName.split("/");
+              if (!owner || !repo) {
+                readErrors += 1;
+                core.warning(`skipping unparsable repository name: ${fullName}`);
+                continue;
+              }
+
+              // Sorted by update recency and stopped at the lookback edge, so
+              // a repository with years of history costs one page in the
+              // common case. `state: all` is deliberate — a PR closed inside
+              // the window still evidences whether its lanes ran.
+              const pulls = [];
+              let page = 1;
+              let exhausted = false;
+              while (!exhausted && pulls.length < MAX_PULLS_PER_REPOSITORY) {
+                const response = await read(`${fullName} pulls page ${page}`, () =>
+                  github.rest.pulls.list({
+                    owner,
+                    repo,
+                    state: "all",
+                    sort: "updated",
+                    direction: "desc",
+                    per_page: PER_PAGE,
+                    page,
+                  }),
+                );
+                if (response === null) break;
+                for (const pull of response.data) {
+                  if (Date.parse(pull.updated_at) < since) {
+                    exhausted = true;
+                    break;
+                  }
+                  pulls.push(pull);
+                }
+                if (response.data.length < PER_PAGE) exhausted = true;
+                page += 1;
+              }
+              if (!exhausted && pulls.length >= MAX_PULLS_PER_REPOSITORY) {
+                readErrors += 1;
+                core.warning(
+                  `${fullName} has more than ${MAX_PULLS_PER_REPOSITORY} pull requests updated in the lookback window; the poll is incomplete.`,
+                );
+              }
+
+              for (const pull of pulls) {
+                const headSha = pull.head?.sha;
+                if (!headSha) continue;
+                pullsExamined += 1;
+
+                // `filter: latest` (the default) collapses re-runs to the
+                // current attempt per check name, which is the attempt whose
+                // annotation describes the head's real state.
+                const checkRuns = await read(`${fullName}#${pull.number} check runs`, () =>
+                  github.rest.checks.listForRef({
+                    owner,
+                    repo,
+                    ref: headSha,
+                    per_page: PER_PAGE,
+                  }),
+                );
+                if (checkRuns === null) continue;
+
+                const matched = checkRuns.data.check_runs.filter((checkRun) =>
+                  isLaneCheckRun(checkRun.name),
+                );
+                if (matched.length > MAX_LANE_CHECK_RUNS_PER_PULL) {
+                  readErrors += 1;
+                  core.warning(
+                    `${fullName}#${pull.number} has ${matched.length} lane check runs, past the per-pull bound of ${MAX_LANE_CHECK_RUNS_PER_PULL}; the poll is incomplete.`,
+                  );
+                }
+                const laneRuns = matched.slice(0, MAX_LANE_CHECK_RUNS_PER_PULL);
+                laneRunsObserved += laneRuns.length;
+
+                for (const laneRun of laneRuns) {
+                  // The lane concludes SUCCESS on an infrastructure failure by
+                  // design, so conclusion is not a filter — the annotation is
+                  // the only signal, and it must be fetched from every lane
+                  // check run regardless of how green it looks.
+                  if ((laneRun.output?.annotations_count ?? 0) === 0) continue;
+                  const annotations = await read(
+                    `${fullName}#${pull.number} annotations for ${laneRun.name}`,
+                    () =>
+                      github.rest.checks.listAnnotations({
+                        owner,
+                        repo,
+                        check_run_id: laneRun.id,
+                        per_page: PER_PAGE,
+                      }),
+                  );
+                  if (annotations === null) continue;
+                  for (const annotation of annotations.data) {
+                    const signals = extractSignals(annotation.message);
+                    if (signals.classes.length === 0 && signals.unrecognized === 0) continue;
+                    observations.push({
+                      repository: fullName,
+                      pullNumber: pull.number,
+                      ...signals,
+                    });
+                  }
+                }
+              }
+            }
+
+            const tally = tallyObservations(observations);
+            const cycle = classifyCycle({
+              laneRunsObserved,
+              escalating: tally.escalating,
+              readErrors,
+            });
+
+            core.setOutput("cycle", cycle);
+            core.setOutput("tally", JSON.stringify(tally));
+            core.setOutput("api-calls", String(apiCalls));
+            core.setOutput("read-errors", String(readErrors));
+            core.setOutput("lane-runs", String(laneRunsObserved));
+            core.setOutput("repositories", String(repositories.length));
+            core.setOutput("pulls", String(pullsExamined));
+
+      # Open issues only. A closed incident is superseded by a fresh one rather
+      # than reopened, so this never paginates closed history; see nextState's
+      # `issueOpen` contract in claude-lane-incident.cjs.
+      - name: Find the open incident issue
+        id: incident
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}
+          script: |
+            const path = require("node:path");
+            const { SELECTOR_MARKER } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
+            );
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            // The marker is a public string in a public repository, so anyone
+            // able to open an issue here could plant a decoy carrying it. Only
+            // a bot-authored issue is ever a candidate, and the ambiguity
+            // check runs after that filter so a pile of decoys cannot fail the
+            // lookup closed and suppress a real incident.
+            const candidates = openIssues.filter(
+              (issue) =>
+                !issue.pull_request &&
+                issue.user?.type === "Bot" &&
+                (issue.body ?? "").includes(SELECTOR_MARKER),
+            );
+            if (candidates.length > 1) {
+              core.setFailed(
+                `found ${candidates.length} open issues carrying the incident marker; reconcile them manually.`,
+              );
+              return;
+            }
+            core.setOutput("number", candidates.length === 1 ? String(candidates[0].number) : "");
+            core.setOutput("body", candidates.length === 1 ? (candidates[0].body ?? "") : "");
+
+      - name: Advance the incident state
+        id: state
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CYCLE: ${{ steps.poll.outputs.cycle }}
+          TALLY: ${{ steps.poll.outputs.tally }}
+          ISSUE_BODY: ${{ steps.incident.outputs.body }}
+          ISSUE_NUMBER: ${{ steps.incident.outputs.number }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const { nextState, parseStateBlock, renderIssueBody } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
+            );
+
+            const { state, action } = nextState({
+              previous: parseStateBlock(process.env.ISSUE_BODY),
+              tally: JSON.parse(process.env.TALLY),
+              cycle: process.env.CYCLE,
+              now: new Date().toISOString(),
+              issueOpen: process.env.ISSUE_NUMBER !== "",
+            });
+
+            core.setOutput("action", action);
+            if (state === null) return;
+            fs.writeFileSync(
+              path.join(process.env.GITHUB_WORKSPACE, ".claude-lane-incident.md"),
+              renderIssueBody(state),
+            );
+
+      # PLAN.md Phase 4 requires the run to log its total API-call count as an
+      # explicit deliverable line; the rest of the counters make an unexpected
+      # budget diagnosable from the same line.
+      - name: Report the poll budget
+        env:
+          API_CALLS: ${{ steps.poll.outputs.api-calls }}
+          READ_ERRORS: ${{ steps.poll.outputs.read-errors }}
+          LANE_RUNS: ${{ steps.poll.outputs.lane-runs }}
+          REPOSITORIES: ${{ steps.poll.outputs.repositories }}
+          PULLS: ${{ steps.poll.outputs.pulls }}
+          CYCLE: ${{ steps.poll.outputs.cycle }}
+          ACTION: ${{ steps.state.outputs.action }}
+        run: |
+          set -euo pipefail
+          echo "claude-lane-incident: api-calls=${API_CALLS} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} action=${ACTION}"
+
+      # The dry run's deliverable: the exact body a credentialed run would have
+      # written, in the job summary, where it costs nothing and leaks nothing.
+      - name: Publish the dry-run report
+        if: steps.credential.outputs.token == ''
+        env:
+          ACTION: ${{ steps.state.outputs.action }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Claude lane incident aggregator — DRY RUN"
+            echo
+            echo "No App credential is configured, so this run wrote nothing. The"
+            echo "incident issue write it would have performed is \`${ACTION}\`."
+            echo
+            if [ -f .claude-lane-incident.md ]; then
+              echo '<details><summary>Rendered incident body</summary>'
+              echo
+              echo '```markdown'
+              cat .claude-lane-incident.md
+              echo '```'
+              echo
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # `labels` is applied on creation only. `claude-lane-incident` does not
+      # exist in this repository's label taxonomy yet, and that taxonomy is
+      # managed by github-iac (Labels.cs) — see the PR body: it must be declared
+      # there or the next apply prunes it. Issue SELECTION never keys on the
+      # label (the body marker and bot authorship do), so a pruned label
+      # degrades PLAN.md's `--label` sanity query and nothing else.
+      - name: Open or update the incident issue
+        if: steps.credential.outputs.token != '' && (steps.state.outputs.action == 'open' || steps.state.outputs.action == 'update')
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          token: ${{ steps.credential.outputs.token }}
+          title: '[Incident] Claude lane infrastructure failure'
+          issue-number: ${{ steps.incident.outputs.number }}
+          content-filepath: ${{ github.workspace }}/.claude-lane-incident.md
+          labels: claude-lane-incident
+
+      - name: Close the recovered incident issue
+        if: steps.credential.outputs.token != '' && steps.state.outputs.action == 'close'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ISSUE_NUMBER: ${{ steps.incident.outputs.number }}
+        with:
+          github-token: ${{ steps.credential.outputs.token }}
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) return;
+
+            // The final body lands before the close so the closed issue is a
+            // complete record rather than one cycle stale.
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: fs.readFileSync(
+                path.join(process.env.GITHUB_WORKSPACE, ".claude-lane-incident.md"),
+                "utf8",
+              ),
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: "The Claude lanes have reported three consecutive clean cycles with no escalating failure class; closing this rolling incident.",
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: "closed",
+              state_reason: "completed",
+            });
