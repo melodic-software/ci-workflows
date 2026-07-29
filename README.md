@@ -636,27 +636,33 @@ GitHub continues the normal weekly patching of each hosted image generation.
   repo, so the lane scopes itself to security-sensitive surfaces — but the
   caller must NOT express that scope with a workflow-level `on.pull_request.paths`
   filter, because a path miss leaves a required check Pending forever and wedges
-  every prose PR. Instead the caller triggers on all PR events and passes the
-  `paths` input (security-sensitive surfaces in Actions `paths:` syntax:
-  workflow files, permission/settings configs, hook and shell scripts,
-  auth/token-touching code, network-call sites); the workflow's `changes` job
-  evaluates it and a not-applicable PR yields a name-stable skipped
-  `security-review` check. A consumer's ruleset may make that EXECUTION check
-  required (check context `<caller job> / security-review`); the VERDICT stays
-  advisory. All inputs have public-safe defaults documented inline in the
-  workflow header (the authoritative list). Consume it per the [Claude
+  every prose PR. Instead the caller triggers on all PR events and supplies that
+  scope as a pattern list in Actions `paths:` syntax (workflow files,
+  permission/settings configs, hook and shell scripts, auth/token-touching code,
+  network-call sites); the workflow's `changes` job evaluates it and a
+  not-applicable PR yields a name-stable skipped `security-review` check. A
+  consumer's ruleset may make that EXECUTION check required (check context
+  `<caller job> / security-review`); the VERDICT stays advisory.
+
+  **Where that pattern list lives** is the caller's choice between two inputs.
+  The conventional shape is `paths-file`, pointing at a repo-owned file
+  (`.github/claude-security-paths`) so each repo keeps its own
+  security-sensitive-surface list in its own tree; the inline `paths` input
+  takes the same content directly and, when non-empty, wins over the file. The
+  file is read from the PR's **base** branch, never the head, so a PR cannot
+  edit its content to skip its own security review — repointing the input is
+  still possible, but only as a visible caller diff, which is the pre-existing
+  trust boundary. An absent or unreadable file **fails open** (every PR
+  reviewed, with a warning), matching the `changes` job's fail-open discipline
+  throughout; both inputs empty means no filtering, so a consumer that passes
+  nothing is unaffected. All inputs have public-safe defaults documented inline
+  in the workflow header (the authoritative list). Consume it per the [Claude
   lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
-  below, triggering on all PR events (no workflow-level `paths:`) and passing
-  the `paths` input in the job:
+  below, triggering on all PR events (no workflow-level `paths:`):
 
   ```yaml
   with:
-    paths: |
-      .github/workflows/**
-      .github/actions/**
-      **/*.sh
-      **/*.ps1
-      # plus the caller's own auth/token and network-call source paths
+    paths-file: .github/claude-security-paths
   ```
 
 - `.github/workflows/claude-e2e-verify.yml` — Claude-powered end-to-end
@@ -878,9 +884,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
 `claude-review.yml`, `claude-security-review.yml`, and `claude-e2e-verify.yml`
 share one consumption shape. Each is **advisory**: it posts PR comments and
 never gates `ci-status`. (The advisory verdict is separate from execution
-evidence: `claude-security-review.yml` additionally takes a `paths` input and
-its name-stable `security-review` check may be made a required status check —
-see its entry above.) Each is a whole-job concern (job `permissions:` plus a
+evidence: `claude-security-review.yml` scopes itself to security-sensitive
+paths, and its name-stable `security-review` check may be made a required
+status check — see its entry above.) Each is a whole-job concern (job `permissions:` plus a
 `secrets:` interface), which is why each is a reusable workflow rather than a
 composite action — the caller owns the triggers and the permission grant, and
 the workflow owns the SHA-pinned `anthropics/claude-code-action` and the safe
@@ -889,15 +895,7 @@ handling. Security rules live in [CLAUDE.md](CLAUDE.md).
 ```yaml
 on:
   pull_request:
-    # Trigger types are PER LANE — copy the canonical caller from the lane's
-    # own workflow header, not this line:
-    #   claude-review:          [opened, ready_for_review, reopened]
-    #     (no `synchronize` — pushes do not re-trigger the code review;
-    #      re-run the job for a fresh pass)
-    #   claude-security-review: [opened, synchronize, ready_for_review, reopened]
-    #     (its check certifies execution at the merge head)
-    #   claude-e2e-verify:      [opened, synchronize, ready_for_review, reopened]
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [<per lane — see below>]
 jobs:
   <lane>:
     permissions:
@@ -913,7 +911,48 @@ The caller's job must grant those three permissions (a called workflow can only
 downgrade, not elevate); the `CLAUDE_CODE_OAUTH_TOKEN` org secret has
 visibility "all repositories", so every org repo receives it. Pass that one
 named secret explicitly rather than `secrets: inherit`, which forwards every
-parent secret. Fork PRs receive no secrets by design and are not reviewed.
+parent secret. Fork PRs receive no secrets by design and are not reviewed. On
+both review lanes the caller can name actors whose comments are withheld from
+the agent's context — prompt-injection hygiene, not a trigger gate.
+
+**Trigger cadence is per lane, deliberately.** `claude-review` runs on
+`opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
+does not re-trigger the code review, so re-run the job for a fresh pass. That
+caps per-PR spend on active branches, and it is safe precisely because the
+lane's verdict gates nothing. `claude-security-review` keeps `synchronize`,
+because its check certifies that a security pass ran at the head being merged —
+a review of an earlier head is not that evidence. `claude-e2e-verify` keeps it
+too. Take each lane's canonical caller from its own workflow header.
+
+**Bounded retry.** Every lane makes at most **two** agent attempts — one
+automatic retry, never a loop. The retry is deliberately narrow, because a
+second attempt after the agent has already spoken duplicates its comments: it
+fires only on **zero assistant turns** in the first attempt's execution file.
+Nor does an **auth-class** failure retry — HTTP 401/402/403, or an
+`authentication_error` / `billing_error` / `permission_error` in the error
+payload — because the credential needs an operator and no retry can clear it.
+The gate also honors the same guards the first attempt does, so a superseded
+run (and, on the code-review lane, a capped one) never spends a retry. Between
+the attempts the lane backs off `retry-delay-seconds` plus a 0–29 second
+jitter, so lanes retrying against the same contended seat do not re-collide in
+lockstep. What this buys is availability against the sporadic-429 class without
+weakening the security lane's fail-closed execution claim.
+
+One divergence is worth knowing. The two review lanes demand **proof** of zero
+turns: a missing or unparsable execution file is not proof — a hard kill can
+lose the file after turns were already spent — so they do not retry on one.
+`claude-e2e-verify` reads an unreadable file as recording no assistant turn and
+does retry. It also sets no `track_progress` tracking comment, so it has no
+orphan comment to clean up between attempts, which the review lanes do.
+
+**Review-count cap (code-review lane only).** `claude-review.yml` stops
+reviewing a PR after `max-reviews-per-pr` successful reviews, capping spend on
+long-lived PRs. The counter is a **visible** per-PR status comment upserted
+after each review, which doubles as the human "was this reviewed" signal;
+deleting it resets the count, which is fail-open by design. A capped run is a
+name-stable skip, not a red check. Treat it as a soft cap: concurrent runs for
+different heads read the counter before either writes it, so a burst can
+briefly exceed it by the number of concurrent heads.
 
 **Kill-switches.** Every lane honors two Actions variables at job level:
 `CLAUDE_LANES_DISABLED` (all lanes) and a per-lane switch
@@ -927,6 +966,23 @@ in) without an org-wide change. Incident use: set the org-level variable to
 disabled NO lane reports security findings — REVIEW.md's code-review
 exclusion keys on the security workflow file existing, and the file remains —
 so re-enable promptly and treat the outage window as security-unreviewed.
+
+All four organization variables carry **all-repositories** visibility. That is
+a deliberate deviation from the org's selected-visibility convention for
+Actions variables, not an oversight: a switch scoped to a selection is invisible
+to every repo outside it, so flipping it during an incident would silently
+no-op exactly where nobody is looking. A kill-switch is only worth having if it
+reaches the whole fleet. Do not "correct" the visibility to selected.
+
+**Adoption.** Wiring these callers by hand is the fallback. The intended path
+is the sync-managed caller components in
+[`melodic-software/standards`](https://github.com/melodic-software/standards),
+which distribute a canonical per-lane caller to every target repo and keep it
+current through the ordinary sync PR. That work is in flight in
+[standards#286](https://github.com/melodic-software/standards/pull/286) and not
+yet landed — it is gated on the sync App gaining the `workflows` permission
+that writing files under `.github/workflows/` requires. Until it lands, copy
+the canonical caller from the lane's own workflow header.
 
 ## Standalone gate checks — shared adoption contract
 

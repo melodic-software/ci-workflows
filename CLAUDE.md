@@ -4,10 +4,12 @@ Guidance for working in this repo. The [README](README.md) covers what each
 building block does and the consumer contract; this file captures the rules a
 change must not violate.
 
-## Security ground rules — `claude-review` reusable workflow
+## Security ground rules — the Claude lane reusable workflows
 
-The PR-review workflow runs an AI agent with an org credential on a **public**
-repo. These rules are load-bearing; changing any of them needs explicit review.
+`claude-review.yml`, `claude-security-review.yml`, and `claude-e2e-verify.yml`
+each run an AI agent with an org credential on a **public** repo, and each
+workflow's own header cites this section for the rationale. These rules are
+load-bearing; changing any of them needs explicit review.
 
 - **`pull_request` only; never `pull_request_target` or `workflow_run` with
   secrets.** Those triggers run in a privileged context (base-repo secrets +
