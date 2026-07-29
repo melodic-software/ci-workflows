@@ -650,33 +650,50 @@ Ordered pre-steps, then waved rollout.
   conclusions, so treat it as the best-documented proxy for this gate, which is
   a ruleset); absence is a failure mode of equal weight. On either failure the
   queue stays off the security caller — 2e default already ships without it.
-- **3d. Waved sync rollout (devils-advocate F7/F8):** pre-steps: (i) set
-  `automerge: false` on every target for the rollout window (manifest change
-  landing before the component PR; restore after), (ii) for NEW targets
-  knowledge-corpus + songwriting [USER-APPROVAL GATE]: extend the App's selected
-  access BEFORE the manifest PR merges, in the tightest window that ordering
-  allows. The ordering stands; its ORIGINAL RATIONALE was wrong. Attestation
-  never reaches the both-directions comparison first: the operative gate is a
-  CARDINALITY check (`standards-sync.yml`, `attest` job) that aborts before any
-  set-diff — grant first and a run inside the window fails on `installation
-  reports 10 repositories; expected 8` (8 being today's manifest cardinality),
-  merge first and it fails the inverse; the `missing`/`excess` set-diff is only
-  reached on an equal-cardinality SUBSTITUTION. So EITHER order can wedge, but
-  the two are NOT equally likely to, and that asymmetry is why BEFORE is right:
-  the manifest merge is ITSELF a push to standards `main`, and the caller passes
-  no `standards-ref`, so the reusable's `main` default plans the POST-merge
-  manifest. Merge-first therefore MANUFACTURES its own triggering run and wedges
-  unless the grant lands before that run's `attest` step executes — a
-  seconds-to-minutes race, not something to plan around. Grant-first has no
+- **3d. Waved sync rollout (devils-advocate F7/F8):** pre-steps, STRICTLY IN
+  ORDER. (0) RE-PIN THE ENGINE, before anything else: standards `sync.yml` pins
+  ci-workflows at `ac223bb`, where auto-merge arming is gated on
+  `pull-request-operation == 'created'`. Every target's `chore/standards-sync`
+  branch already exists, so subsequent runs report `updated`, never `created`,
+  and arming is skipped — which makes (i)'s "restore after" a PERMANENT NO-OP at
+  that pin, leaving every sync PR silently unarmed forever. Re-pin to
+  `8202e03f30dd0c0189c862052d5f242b9a496798` (#291): it changes the gate to
+  `pull-request-number != ''` AND adds the never-armed watchdog in the SAME
+  commit, so ONE pin satisfies both, and nothing but docs has landed on
+  ci-workflows main since. This is itself a push to standards `main`, so it goes
+  BEFORE the window opens — inside it, it would trigger a run and wedge. (i)
+  `automerge: false` on every target for the rollout window — ALREADY LANDED
+  (standards#290, 8/8 targets), so this is a state to CONFIRM, not a step to
+  perform. It is likewise a push to standards `main`: if it ever needs
+  re-applying, that happens BEFORE the grant, never inside the window. Restore
+  it only AFTER (0) is in place, or the restore silently does nothing. (ii) for
+  NEW targets knowledge-corpus + songwriting [USER-APPROVAL GATE]: extend the
+  App's selected access BEFORE the manifest PR merges, in the tightest window
+  that ordering allows. The ordering stands; its ORIGINAL RATIONALE was wrong.
+  Attestation never reaches the both-directions comparison first: the operative
+  gate is a CARDINALITY check (`standards-sync.yml`, `attest` job) that aborts
+  before any set-diff — grant first and a run inside the window fails on
+  `installation reports 10 repositories; expected 8` (8 being today's manifest
+  cardinality), merge first and it fails the inverse; the `missing`/`excess`
+  set-diff is only reached on an equal-cardinality SUBSTITUTION. So EITHER order
+  can wedge, but the two are NOT equally likely to, and that asymmetry is why
+  BEFORE is right: the manifest merge is ITSELF a push to standards `main`, and
+  the caller passes no `standards-ref`, so the reusable's `main` default plans
+  the POST-merge manifest. Merge-first therefore MANUFACTURES its own triggering
+  run and wedges unless the grant lands before that run's `attest` step executes
+  — a seconds-to-minutes race, not something to plan around. Grant-first has no
   self-trigger, so it wedges only if some OTHER run reaches `attest` inside the
   window. PRECONDITION, and it is not just about new triggers: the reusable
   serializes on `concurrency: standards-sync` with `cancel-in-progress: false`,
   so runs QUEUE rather than cancel, and a queued run resolves the moving `main`
   ref when its `plan` job finally executes — an already-triggered run can
   therefore plan the PRE-merge manifest (8) against the POST-grant installation
-  (10) and wedge. So DRAIN FIRST, and RE-CHECK — sequence is drain, grant,
-  re-check, merge. This must return `[]` immediately BEFORE the grant and again
-  immediately BEFORE merging the manifest PR:
+  (10) and wedge. So DRAIN FIRST, and RE-CHECK. Whole ordered sequence, (0)
+  through the merge: re-pin, confirm `automerge: false`, drain, grant, re-check,
+  merge — the first two are pushes to standards `main` and MUST precede the
+  drain, or they become the very trigger the drain exists to exclude. This must
+  return `[]` immediately BEFORE the grant and again immediately BEFORE merging
+  the manifest PR:
   `gh api "repos/melodic-software/standards/actions/workflows/sync.yml/runs?per_page=100" --paginate --slurp | jq -c '[.[].workflow_runs[]|select(.status!="completed")]'`
   Two deliberate choices. It NEGATES `completed` rather than enumerating the
   pending states, because GitHub has at least five (`queued`, `in_progress`,
