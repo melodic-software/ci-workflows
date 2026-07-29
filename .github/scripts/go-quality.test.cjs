@@ -54,12 +54,18 @@ test("native Linux and Windows analyzer lanes use immutable verified binaries", 
   assert.match(workflow, /^ {2}linux:[\s\S]*?runs-on: ubuntu-24\.04/mu);
   assert.match(workflow, /^ {2}windows:[\s\S]*?runs-on: windows-2025/mu);
   assert.equal(occurrences(workflow, /timeout-minutes: 30/gu), 3);
+
+  // The exact SHA and version tag move with Dependabot bumps; the invariant
+  // under test is that all three job definitions pin the same SHA, so a
+  // partial bump that leaves one job definition behind is still caught.
+  const setupGoShas = [
+    ...workflow.matchAll(/actions\/setup-go@([0-9a-f]{40}) # v\d+\.\d+\.\d+/gu),
+  ].map((match) => match[1]);
+  assert.equal(setupGoShas.length, 3);
   assert.equal(
-    occurrences(
-      workflow,
-      /actions\/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6\.5\.0/gu,
-    ),
-    3,
+    new Set(setupGoShas).size,
+    1,
+    "all actions/setup-go pins must share the same SHA",
   );
   assert.match(workflow, /GOLANGCI_LINT_VERSION: 2\.12\.2/u);
   assert.match(
