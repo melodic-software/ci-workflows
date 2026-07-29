@@ -21,7 +21,9 @@ const workflow = fs.readFileSync(workflowPath, "utf8");
 function extractScanScript() {
   const lines = workflow.split(/\r?\n/u);
   const stepIndex = lines.findIndex((line) =>
-    line.includes("- name: Scan targets for stuck or never-armed pull requests"),
+    line.includes(
+      "- name: Scan targets for stuck or never-armed pull requests",
+    ),
   );
   assert.notEqual(stepIndex, -1, "scan step must exist");
   const scriptIndex = lines.findIndex(
@@ -125,9 +127,10 @@ async function runScan({
       // A positive listFailures/mergeStateFailures budget throws first,
       // simulating the opaque server-side error the retry path must absorb
       // (Infinity == a permanent failure). probeOverrides[number] supplies the
-      // fresh armed state (enabledAt) and/or mergeStateStatus the probe should
-      // report, distinct from the page value, to exercise the disarm/re-arm
-      // race; absent an override the probe echoes the page node.
+      // fresh armed state (enabledAt), state, and/or mergeStateStatus the probe
+      // should report, distinct from the page value, to exercise the
+      // disarm/re-arm and close/merge races; absent an override the probe
+      // echoes the page node and reports the PR still OPEN.
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
         if (variables.number != null && /timelineItems/u.test(query)) {
@@ -149,6 +152,7 @@ async function runScan({
           return {
             repository: {
               pullRequest: {
+                state: override?.state ?? "OPEN",
                 autoMergeRequest: enabledAt ? { enabledAt } : null,
                 timelineItems: {
                   nodes: disarmsByNumber[variables.number] ?? [],
@@ -971,7 +975,8 @@ test("a deliberate human disarm is not reported as an arming failure", async () 
   // The exoneration must come from the timeline probe actually running.
   assert.ok(
     graphqlCalls.some(
-      (call) => call.variables.number === 7 && /timelineItems/u.test(call.query),
+      (call) =>
+        call.variables.number === 7 && /timelineItems/u.test(call.query),
     ),
   );
 });
@@ -999,6 +1004,29 @@ test("a PR armed between the page fetch and the disarm probe is not reported", a
       dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
     },
     probeOverrides: { 7: { enabledAt: HOURS_AGO(0.1) } },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+test("a PR merged between the page fetch and the disarm probe is not reported", async () => {
+  // A merged sync PR is the happy path, and it reports neither an
+  // autoMergeRequest nor a disarm event — the two exonerating signals. Without
+  // a state guard the successful outcome itself raises the alarm.
+  const { outputs } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+    probeOverrides: { 7: { state: "MERGED" } },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+test("a PR closed between the page fetch and the disarm probe is not reported", async () => {
+  const { outputs } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+    probeOverrides: { 7: { state: "CLOSED" } },
   });
   assert.equal(outputs["unarmed-count"], "0");
 });

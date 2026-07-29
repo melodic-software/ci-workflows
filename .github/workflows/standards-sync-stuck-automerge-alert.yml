@@ -269,6 +269,7 @@ jobs:
               query($owner: String!, $repo: String!, $number: Int!) {
                 repository(owner: $owner, name: $repo) {
                   pullRequest(number: $number) {
+                    state
                     autoMergeRequest { enabledAt }
                     timelineItems(last: 10, itemTypes: [AUTO_MERGE_DISABLED_EVENT]) {
                       nodes {
@@ -326,10 +327,13 @@ jobs:
                   `disarm history for ${repo}#${candidate.number}`,
                 );
                 const pullRequest = result.repository?.pullRequest;
-                // Re-read armed state: the PR may have been armed in the
-                // interval between the page fetch and this probe.
-                if (pullRequest?.autoMergeRequest?.enabledAt) continue;
-                const disarms = pullRequest?.timelineItems?.nodes ?? [];
+                // Re-read state and armed state: between the page fetch and
+                // this probe the PR may have been armed, merged, or closed. A
+                // merged PR reports no autoMergeRequest and no disarm event,
+                // so without this guard the happy path itself raises an alert.
+                if (pullRequest?.state !== 'OPEN') continue;
+                if (pullRequest.autoMergeRequest?.enabledAt) continue;
+                const disarms = pullRequest.timelineItems?.nodes ?? [];
                 if (disarms.some((event) => event?.createdAt)) continue;
                 const openHours = (Date.now() - Date.parse(candidate.createdAt)) / 3_600_000;
                 unarmed.push({
