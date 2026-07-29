@@ -726,6 +726,96 @@ comment recorded in this file; equivalence results recorded (issue links or "no
 drift"); `gh issue view 256 --repo melodic-software/ci-workflows --json comments`
 contains the trailer-parsing note.
 
+- **Phase 5 partial evidence (2026-07-29):** two of five bullets fully closed
+  (trailer note, do-not-break sweep); one half-closed (equivalence — medley
+  done, blob-hash blocked); two outstanding (README/CLAUDE.md, tags advanced),
+  so the phase tag stays `[TODO]`.
+  - **medley REVIEW.md equivalence — DRIFT, filed as medley#1671.** The
+    comparison does not run the way the bullet's framing implies. medley's
+    `REVIEW.md` is not a drifted copy of the managed source: it is an
+    independently authored 188-line document with its own slice taxonomy, first
+    added in `4a1d61a6`, never synced from standards (the 109-line managed
+    source has no counterpart section structure). The absent lane-scope
+    headings are therefore NOT the finding, because the restructure's
+    mutual-exclusion rule is conditional on a named file — standards
+    `REVIEW.md:66-73` suppresses security findings only "On a repository whose
+    CI runs the security lane (a `.github/workflows/claude-security-review.yml`
+    workflow exists)", and otherwise directs "report security findings under
+    this lane too". medley has no such workflow and no caller routing to that
+    reusable (its only `claude-*` workflows are `claude-assistant.yml` and
+    `claude-review.yml`), so medley sits in the else branch and folding
+    security in is correct; adopting the mutual-exclusion text would have
+    produced the 2f-addendum failure mode of no lane reporting security
+    findings. Phase 1 sanity greps clean on medley's copy (`grep -c "Do not
+    report"` == 0, `grep -c "Cap the nits"` == 0). All FOUR security-lane
+    `blocking` always-checks have counterparts — object-level authorization
+    (`REVIEW.md:66` → `review/security.md:18`), secrets and injection
+    (`:65` → `review/security.md:7`, `:11`), tenant scoping (`:96` →
+    `review/multi-tenancy/README.md`) — as does the code-review lane's own
+    audit-log check (`:67` → `review/logging.md:12`), which standards
+    `REVIEW.md:79-81` explicitly assigns to the observability seam rather than
+    the security lane. medley carries zero suppression language. The real
+    drift is the one always-check that is NOT
+    security-gated: multi-location atomicity (standards `REVIEW.md:82-86`) has
+    no universal-checklist line in medley, and its nearest coverage
+    `review/transactions-and-consistency.md` self-scopes to "EF Core
+    persistence in the modular monolith" while medley is polyglot
+    (`python-ci.yml`, `typescript-ci.yml`, `shell-lint.yml`). medley's file was
+    NOT edited — `review-instructions` is `locally-owned` for medley, the
+    customization seam. medley#1671 records the gap and the forward-looking
+    trigger: adopting a security lane later inverts the finding into
+    double-reporting and would then require the mutual-exclusion language.
+  - **standards repo-local caller blob-hash equivalence — NOT DONE.** Blocked:
+    it cannot run until standards#286 merges and the components sync; that PR
+    is still OPEN and unmerged. This half of the equivalence bullet is
+    outstanding, not waived.
+  - **Co-Authored-By trailer-parsing note — POSTED** as a record-only comment on
+    #256 (`issuecomment-5112552526`), satisfying the Sanity Check line. The
+    item resolves N/A rather than pass/fail: it is conditional on the
+    `agent-approval-check` gate, which #256 already records as rejected for
+    autonomous repos, so no probe was run and the comment explicitly declines to
+    assert how the trailer parsing works.
+  - **Do-not-break sweep — COMPLETE.** #151 trigger UNCHANGED (it keys on a
+    background review loop existing, which the cadence cut neither creates nor
+    removes); comment records the one real nuance, that the cut erodes the
+    "scheduling freedom" rationale without touching the trigger
+    (`issuecomment-5112552666`). #254 CONSISTENT — the marker copy
+    (`claude-review.yml:751`) advertises only the comment-deletion reset and
+    correctly does not promise #254's unbuilt `workflow_dispatch` path.
+    #255/#258/#259 UNTOUCHED (all OPEN, `updatedAt` unchanged at
+    2026-07-27T02:11Z). #257 SEEDED with the Phase 3 pin inventory
+    (`issuecomment-5112552823`), including the medley staleness findings
+    (caller at v0.6.1 vs current v0.9.1; assistant lane on claude-code-action
+    v1.0.174 vs the lanes' v1.0.183) and the sync-engine pin class where a
+    granted capability stays inert until the engine pin moves; no currency
+    detector named, since 3g has not run.
+  - **Remaining for Phase 5:** the README/CLAUDE.md lane-contract bullet
+    (ci-workflows#285, open); the blob-hash equivalence above; and the final
+    bullet's "PLAN.md tags advanced; topic close-out at PR time", which cannot
+    close while the other two are open — the tag is still `[TODO]`, so tags are
+    by definition not yet advanced. Verification:
+    FOUR fresh-context verifier rounds ran against the comments, the
+    equivalence verdict, and this evidence block; all four returned REJECT and
+    each caught a defect introduced while remediating the previous round.
+    Round 1: a deployed-state overreach on the #151 comment and a false
+    "uniform across all three lane workflows" claim on #257. Round 2: a
+    `create-github-app-token` call-site undercount on #257 (one asserted, six
+    actual). Round 3: on #257, an absolute "no other pin was assessed"
+    disclaimer contradicted by the comment's own coverage claims, plus a
+    substantively false one — medley's `claude-code-action` pin described as
+    having no Dependabot path when medley#1668 was already open bumping it
+    1.0.174 → 1.0.180; and in THIS block, the security-lane always-checks
+    mislabelled as five (there are four) and an inverted `:65`/`:66` citation
+    mapping. Round 4: this verification sentence itself, which undercounted the
+    rounds and asserted the round-2 remediations had not been independently
+    re-verified when round 3 had in fact re-verified them. The recurring
+    failure mode is compression, not research — the primary evidence was read
+    correctly each time and damaged while being condensed into prose. Round 4's
+    two non-blocking findings were accepted as named gaps rather than
+    remediated, to stop the fix-and-reverify cycle: the #257 Step 2 enumeration
+    understates the cooldown/grouping assessment made for medley, and the
+    round-listing in ci-workflows#287's body undercounts round 3's findings.
+
 ## Blast radius
 
 HIGH. Fleet-wide CI touching every non-archived org repo's PR pipeline, one
