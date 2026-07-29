@@ -82,8 +82,8 @@ lanes never overlap.
   turn — verifier F3/F5).
 - Concurrency: per-(PR,head) cancel-in-progress group stays on the inner job;
   per-repo `queue: max` serialization group goes on the CALLER job (F2 —
-  `queue: max` cannot share a block with cancel-in-progress; groups are repo-scoped,
-  no org semaphore; freshness guard stays).
+  `queue: max` cannot share a block with `cancel-in-progress: true`; groups are
+  repo-scoped, no org semaphore; freshness guard stays).
 - Kill-switches: org Actions variables (per-lane + master, e.g.
   `CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`,
   `CLAUDE_LANES_DISABLED`), **All-repositories visibility** (documented deviation
@@ -725,12 +725,14 @@ Ordered pre-steps, then waved rollout.
   both operations excludes it. Shrink the window: every push to standards `main`
   is a real sync run, so merge nothing else inside it, and stay clear of the
   weekly `17 6 * * 1` reconciliation cron — allow hours of GitHub cron drift,
-  not minutes. Wave 1: dotfiles (low-traffic private) — verify end-to-end,
-  including that the sync PR itself is reviewed by the NEW caller (pull_request
-  runs the merge-commit workflow file). Wave 2: remaining existing targets
-  (github-iac FIRST for the security lane), then new targets. `.github` +
-  ci-runner per the USER-RESERVED exemption decision (both already manifest
-  targets; plan default: exempt from lane components, one-line targets comment).
+  not minutes. Wave 1: **provisioning** (lowest-traffic private consumer;
+  measured 2026-07-29 — see WAVE-1 TARGET below) — verify end-to-end,
+  including that the sync PR itself is reviewed by the NEW caller
+  (pull_request runs the merge-commit workflow file). Wave 2: remaining
+  existing targets (github-iac FIRST for the security lane), then new targets.
+  `.github` + ci-runner per the USER-RESERVED exemption decision (both already
+  manifest targets; plan default: exempt from lane components, one-line targets
+  comment).
   standards repo is the manifest SOURCE, not a target — its caller stays
   repo-local, byte-equivalence-checked in Phase 5. ROLLBACK procedure: revert
   the component source commit in standards → next sync run proposes the inverse
@@ -738,6 +740,29 @@ Ordered pre-steps, then waved rollout.
   minutes-scale); kill-switch covers the interim; the sync engine NEVER deletes
   files, so de-manifesting a component orphans it — reverting content is the
   only fleet revert.
+
+  WAVE-1 TARGET (measured 2026-07-29, replacing dotfiles): wave 1 named
+  dotfiles as the "low-traffic private" consumer; measurement contradicts that
+  premise. The population is the four private non-archived consumers carrying
+  the caller component — dotfiles, medley, github-iac, provisioning. On
+  claude-review runs over the trailing 7 days — the runs a
+  `CLAUDE_REVIEW_DISABLED` window actually suppresses, and so the metric that
+  bounds a wave's blast radius — dotfiles is the HIGHEST-traffic private
+  consumer, not the lowest: dotfiles 111, medley 53, github-iac 38,
+  provisioning 24. Provisioning is ~4.6x quieter than dotfiles and satisfies
+  wave 1's purpose identically: private, non-archived, already a sync-manifest
+  target, and already carrying a `claude-review.yml` caller, so its own sync PR
+  still exercises the NEW caller on itself.
+
+  Two cautions on those figures. They are a SLIDING 7-day window, so absolute
+  values drift between measurements (medley read 78 earlier the same day); the
+  durable claim is the ORDERING, which has reproduced across measurements.
+  And do not re-derive the pick from TOTAL workflow-run volume: that metric
+  counts every unrelated workflow in the repo and transposes the top two
+  (medley 969, dotfiles 689, github-iac 271, provisioning 174), so it would
+  wrongly absolve dotfiles. It does NOT change the pick — provisioning is
+  lowest under BOTH metrics — and is recorded here only so the discrepancy is
+  not mistaken for an error and "corrected" back.
 - **3e. Post-rollout verification — ONE REPO AT A TIME** (devils-advocate F11:
   parallel verification manufactures the seat contention this effort fixes; use
   kill-switches as the sequencing mechanism): per consumer, one PR exercises —
@@ -1070,7 +1095,8 @@ Original decision text (recommendations + alternatives) retained below for conte
   reusable default semantics unchanged.
 - [EXEC-SHAPE] Forced-failure method = sandbox repo + repo-level secret
   override; never touch the org secret.
-- [EXEC-SHAPE] Waved rollout (dotfiles first) + automerge-off window + rollback
+- [EXEC-SHAPE] Waved rollout (provisioning first — see 3d for the measurement
+  that replaced dotfiles) + automerge-off window + rollback
   = revert-component-source procedure.
 - [EXEC-SHAPE] 3e verification serialized one repo at a time via kill-switches.
 - [EXEC-SHAPE] standards repo keeps repo-local caller (manifest source, not
