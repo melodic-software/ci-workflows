@@ -47,10 +47,17 @@ name: claude-security-review
 #   the change: 55 of 129 in-scope merges (42.6%) carried a green required check
 #   with no security pass at the merge head.
 #
-#   Availability is bought back two ways, not by weakening the claim: a bounded
-#   in-job retry absorbs the sporadic-429 class, and a sustained outage is meant
-#   to be overridden by an explicit, logged, attributable break-glass on the
-#   consumer's ruleset — never by a check that lies.
+#   Availability is bought back by break-glass, not by retrying: a sustained
+#   outage is meant to be overridden by an explicit, logged, attributable
+#   break-glass on the consumer's ruleset — never by a check that lies. The
+#   bounded in-job retry below is a best-effort second chance at the sporadic
+#   class, NOT a second availability mechanism, and this line previously
+#   claimed otherwise. It has never been observed to absorb anything: across
+#   251 lane attempts org-wide on 2026-07-29 the retry step executed zero
+#   times, because the gate was unreachable for the dominant failure class in
+#   the only lane carrying it and no consumer pin carried a retry at all. That
+#   is a statement about reachability, not about efficacy — the mechanism has
+#   not been measured either way. See the gate's own header for the constant.
 #
 # ALWAYS-REPORT SHAPE — the caller does NOT path-filter at workflow level:
 #   A security pass on every PR is noise in a doc-heavy repo where most PRs are
@@ -704,9 +711,34 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # ONE bounded, gated retry, because this lane fails closed: a sporadic
-      # failure that a re-run would clear must not block a merge. Measured
-      # motivation — run 30217744377 failed in 25s with api_error_status 429
-      # and returned a real verdict in 3m17s on a manual re-run.
+      # failure that a re-run would clear must not block a merge.
+      #
+      # THE DELAY IS NOT CALIBRATED, and the citation that used to appear here
+      # could not calibrate it. That citation read: "run 30217744377 failed in
+      # 25s with api_error_status 429 and returned a real verdict in 3m17s on a
+      # manual re-run." Both numbers are real; neither is a delay. Attempt 1's
+      # lane job ran 19:52:02Z -> 19:52:27Z (25s, the failure). Attempt 2's ran
+      # 21:20:05Z -> 21:23:22Z, so 3m17s is that attempt's DURATION. The gap
+      # between them — how long recovery actually took — is 87m27s, and it is
+      # bounded below by when a human happened to press re-run, so it does not
+      # measure the outage either. The run says nothing about how long to wait.
+      #
+      # What the population does say: on 2026-07-29 a 4h36m blackout
+      # (02:00:56Z-06:37:43Z) produced zero successful lane runs org-wide, and
+      # of 92 failed attempts NONE had any lane attempt anywhere in the org
+      # succeed within 150s of it — wider than this delay's 90-119s window. So
+      # no in-job delay rescues a blackout, which is what POSTURE already says
+      # break-glass is for. Whether one rescues a genuinely SPORADIC 429 is
+      # unmeasured: the retry step executed zero times in 251 attempts that day
+      # because this gate refused every one of them (see below).
+      #
+      # 90s is therefore kept as-is rather than re-derived — there is no
+      # measurement to derive a different number from, and inventing one would
+      # repeat the error above. REVISIT TRIGGER: a lane failure whose retry
+      # step executes and whose second attempt succeeds. That instance
+      # calibrates the constant. If 429s keep recurring and no such instance
+      # appears once this gate is reachable, the mechanism is refuted and
+      # retiring it in favor of break-glass alone becomes the supported call.
       #
       # The gate retries ONLY when the execution file shows ZERO assistant
       # turns of real work and the failure is not auth-class. Zero real turns
