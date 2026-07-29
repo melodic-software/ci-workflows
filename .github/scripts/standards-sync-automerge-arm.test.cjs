@@ -20,7 +20,7 @@ const workflow = fs.readFileSync(workflowPath, "utf8");
 function extractArmingScript() {
   const lines = workflow.split(/\r?\n/u);
   const stepIndex = lines.findIndex((line) =>
-    line.includes("- name: Arm auto-merge on the newly created sync PR"),
+    line.includes("- name: Arm auto-merge on the sync PR"),
   );
   assert.notEqual(stepIndex, -1, "arming step must exist");
   const scriptIndex = lines.findIndex(
@@ -38,14 +38,18 @@ function extractArmingScript() {
 
 const armingScript = extractArmingScript();
 
-test("the arming step only runs on PR creation, gated on matrix.automerge", () => {
+test("the arming step runs for any existing sync PR, gated on matrix.automerge", () => {
   const stepIndex = workflow
     .split(/\r?\n/u)
     .findIndex((line) =>
-      line.includes("- name: Arm auto-merge on the newly created sync PR"),
+      line.includes("- name: Arm auto-merge on the sync PR"),
     );
   const ifLine = workflow.split(/\r?\n/u)[stepIndex + 1];
-  assert.match(ifLine, /pull-request-operation == 'created'/u);
+  // Keyed on the PR existing, NOT on `pull-request-operation == 'created'`: a
+  // PR opened while the target was opted out must still be armed once the
+  // opt-out lifts, and every later sync reports `updated` or `none`.
+  assert.match(ifLine, /pull-request-number != ''/u);
+  assert.doesNotMatch(ifLine, /pull-request-operation/u);
   assert.match(ifLine, /matrix\.automerge/u);
 });
 
@@ -53,7 +57,7 @@ test("the arming step uses the target-scoped App token, not the caller's default
   const stepIndex = workflow
     .split(/\r?\n/u)
     .findIndex((line) =>
-      line.includes("- name: Arm auto-merge on the newly created sync PR"),
+      line.includes("- name: Arm auto-merge on the sync PR"),
     );
   const block = workflow
     .split(/\r?\n/u)
@@ -70,6 +74,8 @@ async function runArming({
   repo = "dotfiles",
   prNumber = 42,
   nodeId = "PR_kwFoo",
+  pullRequest = {},
+  missingPullRequest = false,
   graphqlError,
 } = {}) {
   const keys = ["OWNER", "REPO", "PR_NUMBER"];
@@ -86,27 +92,32 @@ async function runArming({
   const infos = [];
   try {
     const github = {
-      rest: {
-        pulls: {
-          get: async ({
-            owner: calledOwner,
-            repo: calledRepo,
-            pull_number,
-          }) => {
-            assert.equal(calledOwner, owner);
-            assert.equal(calledRepo, repo);
-            assert.equal(pull_number, prNumber);
-            return { data: { node_id: nodeId } };
-          },
-        },
-      },
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
-        if (graphqlError) throw graphqlError;
+        // The step reads the PR's id and arming history in one query, then
+        // mutates; the mock discriminates on which shape it was handed.
+        if (/enablePullRequestAutoMerge/u.test(query)) {
+          if (graphqlError) throw graphqlError;
+          return {
+            enablePullRequestAutoMerge: {
+              pullRequest: {
+                autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" },
+              },
+            },
+          };
+        }
+        assert.equal(variables.owner, owner);
+        assert.equal(variables.repo, repo);
+        assert.equal(variables.number, prNumber);
+        if (missingPullRequest) return { repository: { pullRequest: null } };
         return {
-          enablePullRequestAutoMerge: {
+          repository: {
             pullRequest: {
-              autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" },
+              id: nodeId,
+              autoMergeRequest: pullRequest.autoMergeRequest ?? null,
+              timelineItems: {
+                totalCount: pullRequest.armedEventCount ?? 0,
+              },
             },
           },
         };
@@ -132,13 +143,57 @@ async function runArming({
   }
 }
 
-test("arms auto-merge with the target PR's node_id and squash merge method", async () => {
+test("arms auto-merge with the target PR's node id and squash merge method", async () => {
   const { graphqlCalls, infos, warnings } = await runArming();
-  assert.equal(graphqlCalls.length, 1);
-  assert.equal(graphqlCalls[0].variables.pullRequestId, "PR_kwFoo");
-  assert.match(graphqlCalls[0].query, /mergeMethod: SQUASH/u);
+  const mutation = graphqlCalls.at(-1);
+  assert.equal(mutation.variables.pullRequestId, "PR_kwFoo");
+  assert.match(mutation.query, /mergeMethod: SQUASH/u);
   assert.equal(warnings.length, 0);
   assert.ok(infos.some((message) => message.includes("Armed auto-merge")));
+});
+
+test("a PR that is currently armed is left alone", async () => {
+  const { graphqlCalls, infos, warnings } = await runArming({
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+  });
+  assert.equal(
+    graphqlCalls.filter((call) =>
+      /enablePullRequestAutoMerge/u.test(call.query),
+    ).length,
+    0,
+  );
+  assert.equal(warnings.length, 0);
+  assert.ok(infos.some((message) => message.includes("already armed")));
+});
+
+test("a PR that was armed and then disarmed is never re-armed", async () => {
+  // The whole reason arming keys on history rather than current state: a
+  // reviewer who disarms a sync PR to hold it back must not be overridden on
+  // the next sync, and GitHub's own auto-disable must not be fought either.
+  const { graphqlCalls, warnings } = await runArming({
+    pullRequest: { armedEventCount: 1 },
+  });
+  assert.equal(
+    graphqlCalls.filter((call) =>
+      /enablePullRequestAutoMerge/u.test(call.query),
+    ).length,
+    0,
+  );
+  assert.equal(warnings.length, 0);
+});
+
+test("an unreadable pull request warns and does not attempt the mutation", async () => {
+  const { graphqlCalls, warnings } = await runArming({
+    missingPullRequest: true,
+  });
+  assert.equal(
+    graphqlCalls.filter((call) =>
+      /enablePullRequestAutoMerge/u.test(call.query),
+    ).length,
+    0,
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Could not read/u);
 });
 
 test("a rejected mutation (e.g. clean-status) is logged and swallowed, not thrown", async () => {

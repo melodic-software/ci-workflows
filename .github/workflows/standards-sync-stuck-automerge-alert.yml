@@ -2,24 +2,28 @@ name: standards-sync-stuck-automerge-alert
 
 # Reusable workflow: scans the standards-sync target repos (read from the
 # standards manifest at run time — never hardcoded) for open, App-authored
-# standards-sync pull requests in either of the two states that keep a sync PR
-# from merging itself, both of which are silent without this watchdog:
+# standards-sync pull requests in two states that keep a sync PR from merging
+# itself, both silent without this watchdog:
 #
 #   1. ARMED BUT STUCK — auto-merge is on, but GraphQL reports
 #      `mergeStateStatus: BLOCKED` past a threshold (observed:
 #      melodic-software/medley#1619, an armed sync PR blocked for hours by an
 #      unrelated pre-existing ci-status failure, with nothing watching).
 #   2. NEVER ARMED — the PR is past the threshold, its target is marked
-#      `automerge: true`, and nobody disarmed it. standards-sync.yml downgrades
-#      every arming rejection to a `core.warning`, so a failed arm leaves a PR
-#      that looks exactly like the pre-arming status quo while the operator's
-#      mental model says "armed". Failing closed is fine; failing closed
-#      INVISIBLY is the defect, because the PR then waits on a human who was
-#      never told to look.
+#      `automerge: true`, and auto-merge was never successfully armed on it.
+#      standards-sync.yml downgrades every arming rejection to a
+#      `core.warning`, so a failed arm leaves a PR that looks exactly like the
+#      pre-arming status quo while the operator's mental model says "armed".
+#      Failing closed is fine; failing closed INVISIBLY is the defect, because
+#      the PR then waits on a human who was never told to look.
 #
-# standards-sync.yml arms auto-merge at PR creation on a body that is
-# gate-compliant by construction; this workflow is the second half of that
-# contract — the watchdog for arming that did not take, or did not stick.
+# Not exhaustive: an armed PR reporting a non-BLOCKED unmergeable state (DIRTY,
+# for one) is out of scope here and stays unreported.
+#
+# standards-sync.yml arms auto-merge on any PR the manifest marks armed that has
+# never been armed, on a body that is gate-compliant by construction; this
+# workflow is the second half of that contract — the watchdog for arming that
+# did not take, or did not stick.
 #
 # The target repo list is derived by checking out standards and running its
 # own sync-manifest.sh interpreter, the same way standards-sync.yml's plan job
@@ -201,9 +205,9 @@ jobs:
             // the pre-arming behavior nobody was watching. That is the blind
             // spot this predicate closes: an open sync PR in a target the
             // manifest says should be armed, never armed, and older than the
-            // threshold. A deliberate human disarm is NOT a failure, so an
-            // AutoMergeDisabledEvent in the PR's timeline exonerates it (see
-            // the disarm probe below).
+            // threshold. Only a PR that was NEVER armed is a failure — a PR
+            // armed and later disarmed is somebody's decision, or GitHub's
+            // (see the arming-history probe below).
             const isUnarmedCandidate = (pullRequest) => {
               if (!isSyncPullRequest(pullRequest)) return false;
               if (pullRequest.autoMergeRequest?.enabledAt) return false;
@@ -258,23 +262,24 @@ jobs:
                 }
               }`;
 
-            // A reviewer who deliberately disables auto-merge to hold a sync PR
-            // back leaves an AutoMergeDisabledEvent in the timeline; an arming
-            // failure never does, because the mutation never succeeded. That
-            // event is therefore the discriminator between "a human chose this"
-            // and "the automation silently failed", and probing it only for
+            // An arming failure is the one state that leaves NO
+            // AutoMergeEnabledEvent behind, because the mutation never
+            // succeeded. Absence of that event is therefore direct positive
+            // evidence, where "no disarm event" would only be an inference —
+            // and it does not conflate a reviewer disarming a PR with GitHub
+            // disabling auto-merge on its own (a push from someone without
+            // write access, or a base-branch switch), both of which leave the
+            // PR armed at some point and are not arming failures. Probing only
             // already-unarmed candidates keeps the extra query off the common
-            // path. `last:` because only the most recent disarm matters.
-            const disarmQuery = `
+            // path.
+            const armingHistoryQuery = `
               query($owner: String!, $repo: String!, $number: Int!) {
                 repository(owner: $owner, name: $repo) {
                   pullRequest(number: $number) {
                     state
                     autoMergeRequest { enabledAt }
-                    timelineItems(last: 10, itemTypes: [AUTO_MERGE_DISABLED_EVENT]) {
-                      nodes {
-                        ... on AutoMergeDisabledEvent { createdAt actor { login } }
-                      }
+                    timelineItems(last: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT]) {
+                      totalCount
                     }
                   }
                 }
@@ -322,19 +327,18 @@ jobs:
 
               for (const candidate of unarmedCandidates) {
                 const result = await graphqlWithRetry(
-                  disarmQuery,
+                  armingHistoryQuery,
                   { owner, repo, number: candidate.number },
-                  `disarm history for ${repo}#${candidate.number}`,
+                  `arming history for ${repo}#${candidate.number}`,
                 );
                 const pullRequest = result.repository?.pullRequest;
                 // Re-read state and armed state: between the page fetch and
                 // this probe the PR may have been armed, merged, or closed. A
-                // merged PR reports no autoMergeRequest and no disarm event,
-                // so without this guard the happy path itself raises an alert.
+                // merged PR reports no autoMergeRequest, so without this guard
+                // the happy path itself raises an alert.
                 if (pullRequest?.state !== 'OPEN') continue;
                 if (pullRequest.autoMergeRequest?.enabledAt) continue;
-                const disarms = pullRequest.timelineItems?.nodes ?? [];
-                if (disarms.some((event) => event?.createdAt)) continue;
+                if (pullRequest.timelineItems.totalCount > 0) continue;
                 const openHours = (Date.now() - Date.parse(candidate.createdAt)) / 3_600_000;
                 unarmed.push({
                   repo,
@@ -384,10 +388,10 @@ jobs:
                 '## standards-sync pull request(s) that were never armed',
                 '',
                 `${unarmed.length} pull request(s) opened by \`${botLogin}[bot]\` have been open for at least`,
-                `${thresholdHours}h in a target the manifest marks \`automerge: true\`, yet auto-merge was never`,
-                'armed and no one disabled it. `standards-sync.yml` arms auto-merge at PR creation and downgrades',
-                'every mutation rejection to a warning, so the arming step failing leaves exactly this state — a',
-                'sync PR that waits for a human who was never told to look.',
+                `${thresholdHours}h in a target the manifest marks \`automerge: true\`, yet auto-merge has never`,
+                'been armed on them. `standards-sync.yml` arms auto-merge on every such PR and downgrades every',
+                'mutation rejection to a warning, so the arming step failing leaves exactly this state — a sync PR',
+                'that waits for a human who was never told to look.',
                 '',
                 '| Repository | Pull request | Open for |',
                 '| --- | --- | --- |',
@@ -400,8 +404,8 @@ jobs:
                 "1. Read the arming step's warning in that target's most recent `standards-sync` run log — it",
                 '   carries the rejection message GitHub returned.',
                 '2. If the App identity cannot arm auto-merge at all, every target is affected and the fix belongs',
-                '   in `standards-sync.yml`, not in one PR. Otherwise merge this PR by hand; the next sync opens a',
-                '   fresh PR and arms it again.',
+                '   in `standards-sync.yml`, not in one PR. Otherwise merge this PR by hand — the sync retries',
+                '   arming on every run, so a PR still listed here has failed arming repeatedly.',
                 '',
               );
             }
@@ -445,7 +449,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
-          ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
+          ISSUE_TITLE: '[Alert] standards-sync auto-merge PR(s) needing attention'
         with:
           github-token: ${{ steps.issue-token.outputs.token }}
           script: |
@@ -495,7 +499,7 @@ jobs:
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           token: ${{ steps.issue-token.outputs.token }}
-          title: '[Alert] standards-sync stuck auto-merge PR(s)'
+          title: '[Alert] standards-sync auto-merge PR(s) needing attention'
           issue-number: ${{ steps.tracking.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
 
@@ -531,7 +535,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: match.number,
-              body: 'No standards-sync pull request is currently armed and blocked past the threshold; closing this rolling report.',
+              body: 'No standards-sync pull request is currently armed and blocked, or unarmed past the threshold; closing this rolling report.',
             });
             await github.rest.issues.update({
               owner: context.repo.owner,

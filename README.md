@@ -280,26 +280,32 @@ GitHub continues the normal weekly patching of each hosted image generation.
   token to each target and opens a signed, human-reviewed PR enumerating every
   managed source-to-destination mapping. It never writes a downstream receipt
   and never copies components declared `locally-owned`; the owner-scoped
-  attestation token is never passed to checkout or PR mutation. On PR
-  *creation* only (never a later update, so a reviewer who deliberately
-  disarmed a PR is not overridden), it also arms GitHub auto-merge (squash) via
-  the same target-scoped token — unless the manifest opts that target out with
-  `automerge: false`. A rejected arm attempt (for example an already-mergeable
-  PR) is logged and does not fail the sync — which is why the watchdog below
-  detects a PR that was never armed as well as one that stayed armed but
-  blocked. See `standards-sync-stuck-automerge-alert.yml`.
+  attestation token is never passed to checkout or PR mutation. It also arms
+  GitHub auto-merge (squash) via the same target-scoped token on any sync PR
+  auto-merge has *never* been armed on — unless the manifest opts that target
+  out with `automerge: false`. Keying on arming history rather than on PR
+  creation means a PR opened while a target was opted out is armed once the
+  opt-out lifts, while a PR someone deliberately disarmed is never overridden.
+  A rejected arm attempt (for example an already-mergeable PR) is logged and
+  does not fail the sync — which is why the watchdog below detects a PR that
+  was never armed as well as one that stayed armed but blocked. See
+  `standards-sync-stuck-automerge-alert.yml`.
 - `.github/workflows/standards-sync-stuck-automerge-alert.yml` — scans the
   standards-sync target repositories, read from the standards manifest at run
   time (never hardcoded), for open PRs authored by the standards-sync App in
-  either state that stops a sync PR from merging itself, each past
+  two states that stop a sync PR from merging itself, each past
   `threshold-hours` (default 4): **armed but stuck** (auto-merge on, GraphQL
-  `mergeStateStatus: BLOCKED`), and **never armed** (no auto-merge, no
-  `AutoMergeDisabledEvent` in the timeline, in a target the manifest marks
+  `mergeStateStatus: BLOCKED`), and **never armed** (no auto-merge and no
+  `AutoMergeEnabledEvent` in the timeline, in a target the manifest marks
   `automerge: true`). The second exists because the sync's arming step
   downgrades every rejection to a warning: a failed arm otherwise looks exactly
-  like the status quo while the operator believes the PR is armed. A target
-  opted out with `automerge: false` is never reported unarmed — that is the
-  intended state, not an incident. Consumed via `uses:` at job level from a
+  like the status quo while the operator believes the PR is armed. Absence of
+  an *enabled* event is what distinguishes arming that never took from
+  auto-merge that was armed and later turned off, whether by a reviewer or by
+  GitHub itself. A target opted out with `automerge: false` is never reported
+  unarmed — that is the intended state, not an incident. Neither check covers
+  an armed PR reporting a non-BLOCKED unmergeable state such as `DIRTY`.
+  Consumed via `uses:` at job level from a
   *scheduled* caller that grants `issues: write`; the tracking issue lands in
   the caller's own repository (a marker-deduped rolling report, the same
   mechanism `link-check.yml` and `queue-monitor-liveness.yml` use), and the run

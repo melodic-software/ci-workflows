@@ -67,8 +67,8 @@ function pullRequest({
 async function runScan({
   repoNames = ["dotfiles"],
   automergeRepoNames = null,
-  disarmsByNumber = {},
-  disarmFailures = {},
+  armedEventCounts = {},
+  armingHistoryFailures = {},
   thresholdHours = 4,
   nodesByRepo = {},
   pagesByRepo = null,
@@ -110,7 +110,7 @@ async function runScan({
     (pagesByRepo?.[repo] ?? [nodesByRepo[repo] ?? []]).flat();
   const remainingListFailures = { ...listFailures };
   const remainingMergeFailures = { ...mergeStateFailures };
-  const remainingDisarmFailures = { ...disarmFailures };
+  const remainingArmingHistoryFailures = { ...armingHistoryFailures };
   const graphqlCalls = [];
   const outputs = {};
   const infos = [];
@@ -134,11 +134,13 @@ async function runScan({
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
         if (variables.number != null && /timelineItems/u.test(query)) {
-          const disarmBudget = remainingDisarmFailures[variables.number] ?? 0;
-          if (disarmBudget > 0) {
-            remainingDisarmFailures[variables.number] = disarmBudget - 1;
+          const historyBudget =
+            remainingArmingHistoryFailures[variables.number] ?? 0;
+          if (historyBudget > 0) {
+            remainingArmingHistoryFailures[variables.number] =
+              historyBudget - 1;
             throw new Error(
-              `simulated server error probing disarms for #${variables.number}`,
+              `simulated server error probing arming history for #${variables.number}`,
             );
           }
           const node = allNodesFor(variables.repo).find(
@@ -155,7 +157,7 @@ async function runScan({
                 state: override?.state ?? "OPEN",
                 autoMergeRequest: enabledAt ? { enabledAt } : null,
                 timelineItems: {
-                  nodes: disarmsByNumber[variables.number] ?? [],
+                  totalCount: armedEventCounts[variables.number] ?? 0,
                 },
               },
             },
@@ -962,14 +964,16 @@ test("a never-armed PR still inside the threshold is not reported", async () => 
   assert.equal(outputs["unarmed-count"], "0");
 });
 
-test("a deliberate human disarm is not reported as an arming failure", async () => {
+test("a PR that was armed and later disarmed is not reported as an arming failure", async () => {
+  // Covers every way a PR stops being armed after arming succeeded: a reviewer
+  // disarming it to hold it back, and GitHub disarming it itself on a push from
+  // someone without write access or a base-branch switch. Only arming that
+  // never took is a failure, so the probe asks whether it ever took.
   const { outputs, graphqlCalls } = await runScan({
     nodesByRepo: {
       dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
     },
-    disarmsByNumber: {
-      7: [{ createdAt: HOURS_AGO(2), actor: { login: "kyle-sexton" } }],
-    },
+    armedEventCounts: { 7: 1 },
   });
   assert.equal(outputs["unarmed-count"], "0");
   // The exoneration must come from the timeline probe actually running.
@@ -998,7 +1002,7 @@ test("a target the manifest opts out of auto-merge is never reported unarmed", a
   );
 });
 
-test("a PR armed between the page fetch and the disarm probe is not reported", async () => {
+test("a PR armed between the page fetch and the arming-history probe is not reported", async () => {
   const { outputs } = await runScan({
     nodesByRepo: {
       dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
@@ -1008,7 +1012,7 @@ test("a PR armed between the page fetch and the disarm probe is not reported", a
   assert.equal(outputs["unarmed-count"], "0");
 });
 
-test("a PR merged between the page fetch and the disarm probe is not reported", async () => {
+test("a PR merged between the page fetch and the arming-history probe is not reported", async () => {
   // A merged sync PR is the happy path, and it reports neither an
   // autoMergeRequest nor a disarm event — the two exonerating signals. Without
   // a state guard the successful outcome itself raises the alarm.
@@ -1021,7 +1025,7 @@ test("a PR merged between the page fetch and the disarm probe is not reported", 
   assert.equal(outputs["unarmed-count"], "0");
 });
 
-test("a PR closed between the page fetch and the disarm probe is not reported", async () => {
+test("a PR closed between the page fetch and the arming-history probe is not reported", async () => {
   const { outputs } = await runScan({
     nodesByRepo: {
       dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
@@ -1053,12 +1057,12 @@ test("a non-sync-authored unarmed PR is ignored", async () => {
   assert.equal(outputs["unarmed-count"], "0");
 });
 
-test("a persistent server error on the disarm probe fails the run loudly and never reports a false all-clear", async () => {
+test("a persistent server error on the arming-history probe fails the run loudly and never reports a false all-clear", async () => {
   const { outputs, threw } = await runScan({
     nodesByRepo: {
       dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
     },
-    disarmFailures: { 7: Number.POSITIVE_INFINITY },
+    armingHistoryFailures: { 7: Number.POSITIVE_INFINITY },
   });
   assert.ok(threw, "a persistent probe failure must propagate");
   assert.equal(outputs["unarmed-count"], undefined);

@@ -464,15 +464,25 @@ jobs:
           body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync
 
-      # Arm auto-merge only at PR creation, never on a later update: the body
-      # is gate-compliant by construction (the App identity that opened it is
-      # the whole risk gate), but re-arming on every update would fight a
-      # reviewer who deliberately disabled auto-merge to hold a PR back. Every
-      # target repo has allow_auto_merge=true and required ci-status/pr-title
-      # checks on main, so a fresh PR is never immediately mergeable — except
-      # the rare case GitHub's mutation itself rejects, handled below.
-      - name: Arm auto-merge on the newly created sync PR
-        if: steps.cpr.outputs.pull-request-operation == 'created' && matrix.automerge
+      # Arm auto-merge on any sync PR the manifest says should be armed and
+      # that has NEVER been armed. Keying on "never armed" rather than "just
+      # created" is what makes the manifest's `automerge: true` mean what it
+      # says: a PR opened while the target was opted out (`automerge: false`,
+      # how a rollout window is held) is otherwise unarmed forever, because
+      # every later sync reports `updated`, not `created`. An
+      # AutoMergeEnabledEvent proves arming already took, so a reviewer who
+      # then disarmed the PR to hold it back is never overridden — and unlike
+      # AutoMergeDisabledEvent it does not conflate a human's choice with
+      # GitHub disabling auto-merge on its own (a push from someone without
+      # write access, or a base-branch switch).
+      #
+      # The body is gate-compliant by construction: the App identity that
+      # opened the PR is the whole risk gate. Every target repo has
+      # allow_auto_merge=true and required ci-status/pr-title checks on main,
+      # so a sync PR is normally not immediately mergeable — except the rare
+      # case GitHub's mutation itself rejects, handled below.
+      - name: Arm auto-merge on the sync PR
+        if: steps.cpr.outputs.pull-request-number != '' && matrix.automerge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OWNER: ${{ matrix.repo_owner }}
@@ -485,7 +495,29 @@ jobs:
             const repo = process.env.REPO;
             const pull_number = Number(process.env.PR_NUMBER);
 
-            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number });
+            const { repository } = await github.graphql(
+              `query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    id
+                    autoMergeRequest { enabledAt }
+                    timelineItems(last: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT]) {
+                      totalCount
+                    }
+                  }
+                }
+              }`,
+              { owner, repo, number: pull_number },
+            );
+            const pull = repository?.pullRequest;
+            if (!pull) {
+              core.warning(`Could not read ${owner}/${repo}#${pull_number} to arm auto-merge.`);
+              return;
+            }
+            if (pull.autoMergeRequest || pull.timelineItems.totalCount > 0) {
+              core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number}; leaving its current state alone.`);
+              return;
+            }
 
             try {
               await github.graphql(
@@ -497,7 +529,7 @@ jobs:
                     pullRequest { autoMergeRequest { enabledAt } }
                   }
                 }`,
-                { pullRequestId: pull.node_id },
+                { pullRequestId: pull.id },
               );
               core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number}.`);
             } catch (error) {
