@@ -296,7 +296,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   two states that stop a sync PR from merging itself, each past
   `threshold-hours` (default 4): **armed but stuck** (auto-merge on, GraphQL
   `mergeStateStatus: BLOCKED`), and **never armed** (no auto-merge and no
-  `AutoMergeEnabledEvent` in the timeline, in a target the manifest marks
+  auto-merge *enabled* event of any merge method in the timeline — a squash arm
+  records `AutoSquashEnabledEvent` — in a target the manifest marks
   `automerge: true`). The second exists because the sync's arming step
   downgrades every rejection to a warning: a failed arm otherwise looks exactly
   like the status quo while the operator believes the PR is armed. Absence of

@@ -262,9 +262,9 @@ jobs:
                 }
               }`;
 
-            // An arming failure is the one state that leaves NO
-            // AutoMergeEnabledEvent behind, because the mutation never
-            // succeeded. Absence of that event is therefore direct positive
+            // An arming failure is the one state that leaves NO auto-merge
+            // enabled event behind, because the mutation never succeeded.
+            // Absence of that event is therefore direct positive
             // evidence, where "no disarm event" would only be an inference —
             // and it does not conflate a reviewer disarming a PR with GitHub
             // disabling auto-merge on its own (a push from someone without
@@ -343,8 +343,9 @@ jobs:
                 const pullRequest = result.repository?.pullRequest;
                 // Re-read state and armed state: between the page fetch and
                 // this probe the PR may have been armed, merged, or closed. A
-                // merged PR reports no autoMergeRequest, so without this guard
-                // the happy path itself raises an alert.
+                // PR merged or closed by hand while still unarmed keeps
+                // reporting no autoMergeRequest and no arming event, so without
+                // the state guard a resolved PR is reported forever.
                 if (pullRequest?.state !== 'OPEN') continue;
                 if (pullRequest.autoMergeRequest?.enabledAt) continue;
                 if (pullRequest.timelineItems.nodes.length > 0) continue;
@@ -410,11 +411,12 @@ jobs:
                 '',
                 '### Recover',
                 '',
-                "1. Read the arming step's warning in that target's most recent `standards-sync` run log — it",
-                '   carries the rejection message GitHub returned.',
+                "1. Open that target's most recent `standards-sync` run. If the arming step ran and was",
+                "   rejected, its warning carries the message GitHub returned. If the step was skipped, the",
+                '   caller pins a `standards-sync.yml` that predates arming on already-open PRs, and re-pinning',
+                '   it is the fix.',
                 '2. If the App identity cannot arm auto-merge at all, every target is affected and the fix belongs',
-                '   in `standards-sync.yml`, not in one PR. Otherwise merge this PR by hand — the sync retries',
-                '   arming on every run, so a PR still listed here has failed arming repeatedly.',
+                '   in `standards-sync.yml`, not in one PR. Otherwise merge this PR by hand.',
                 '',
               );
             }
