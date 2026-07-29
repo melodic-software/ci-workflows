@@ -606,7 +606,12 @@ test("a hand-edited state block is re-validated, not trusted", () => {
   assert.deepEqual(tampered.repositories["melodic-software/medley"], {
     classes: ["auth"],
     pulls: [3],
+    pullsSeen: 1,
   });
+  // A tampered total below what the surviving index already proves is raised,
+  // never trusted downward — understating blast radius is the dangerous
+  // direction.
+  assert.equal(tampered.repositoriesSeen, 1);
   assert.equal(tampered.unrecognized, 0);
 });
 
@@ -654,7 +659,15 @@ function fleetWideTally(repositoryCount, pullsPerRepository) {
   return tallyObservations(observations);
 }
 
-test("a fleet-wide incident renders a bounded body", () => {
+// GitHub caps an owner at 39 characters and a repository name at 100, so this
+// is the longest `owner/name` that can exist. The body-size tests below drive
+// THAT, not a convenient short name: a row repeats the repository name once per
+// pull-request link, so name length — not row count — decides whether the body
+// fits, and a test that picks a short name proves nothing.
+const longestRepositoryName = (index) =>
+  `${"o".repeat(39)}/${`repository-${index}-`.padEnd(100, "n").slice(0, 100)}`;
+
+test("a fleet-wide incident renders a bounded body whose remainders tell the truth", () => {
   const { state } = nextState({
     previous: null,
     tally: fleetWideTally(120, 40),
@@ -663,26 +676,63 @@ test("a fleet-wide incident renders a bounded body", () => {
     issueOpen: false,
   });
   const body = renderIssueBody(state);
-  assert.match(body, /_\+20 more repositories_/u);
-  assert.match(body, /\(\+20 more\)/u);
-  // GitHub rejects an issue body over 65536 characters.
+  // 120 repositories affected, 40 rendered: the remainder counts the INCIDENT,
+  // not the slice that survived the tracked bound. Likewise 40 pull requests
+  // affected per repository against 10 rendered.
+  assert.match(body, /_\+80 more repositories_/u);
+  assert.match(body, /\(\+30 more\)/u);
+  assert.match(body, /- Repositories affected: 120/u);
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
 });
 
+test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
+  for (const [repositories, pulls, firstPull] of [
+    [40, 10, 1],
+    [120, 40, 1],
+    [200, 300, 100000],
+  ]) {
+    const observations = [];
+    for (let repository = 0; repository < repositories; repository += 1) {
+      for (let pull = 0; pull < pulls; pull += 1) {
+        observations.push({
+          repository: longestRepositoryName(repository),
+          pullNumber: firstPull + pull,
+          classes: ["auth", "runner"],
+          apiErrorStatus: 401,
+        });
+      }
+    }
+    const { state } = nextState({
+      previous: null,
+      tally: tallyObservations(observations),
+      cycle: "incident",
+      now: "2026-07-27T00:00:00Z",
+      issueOpen: false,
+    });
+    const body = renderIssueBody(state);
+    assert.ok(
+      body.length < 65536,
+      `${repositories}x${pulls}: body was ${body.length} characters`,
+    );
+    assert.match(body, /more repositories_/u);
+  }
+});
+
 test("the state block stays inside the body limit however long the incident accumulates", () => {
-  // The rendered tables are truncated, but the state block serializes the FULL
-  // tracked index and grows across cycles — so bounding only what is rendered
-  // would still 422 the update on the largest incident. Drive the worst case:
-  // an unbounded fleet, at the per-repository pull ceiling, folded in cycle
-  // after cycle with disjoint pull numbers each time.
+  // The rendered table is character-budgeted, but the state block serializes
+  // the tracked index and grows across cycles — so bounding only what is
+  // rendered would still 422 the update on the largest incident. Drive the
+  // worst case: an unbounded fleet at maximum name length, at the
+  // per-repository pull ceiling, folded in cycle after cycle with disjoint pull
+  // numbers each time.
   let state = null;
   for (let cycle = 0; cycle < 12; cycle += 1) {
     const observations = [];
     for (let repository = 0; repository < 200; repository += 1) {
       for (let pull = 0; pull < 300; pull += 1) {
         observations.push({
-          repository: `melodic-software/repository-name-${repository}`,
-          pullNumber: cycle * 1000 + pull + 1,
+          repository: longestRepositoryName(repository),
+          pullNumber: cycle * 100000 + pull + 1,
           classes: ["auth", "runner"],
           apiErrorStatus: 401,
         });
@@ -698,6 +748,9 @@ test("the state block stays inside the body limit however long the incident accu
   }
   const body = renderIssueBody(state);
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
+  // The remainder still describes the whole incident after twelve cycles of
+  // bounding, not the surviving slice.
+  assert.match(body, /- Repositories affected: 200/u);
   // And the round trip still recovers, so the bound cannot wedge recovery.
   assert.deepEqual(parseStateBlock(body), state);
 });

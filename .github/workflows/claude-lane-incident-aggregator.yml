@@ -24,8 +24,9 @@ name: claude-lane-incident-aggregator
 #
 #   - Absent `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`, no App token is minted and
 #     the run is a DRY RUN. It polls with the ambient GITHUB_TOKEN — which this
-#     workflow grants `contents: read` and `issues: read` and NOTHING ELSE — and
-#     renders the issue body it WOULD have written into the job summary.
+#     workflow grants four READ scopes and NOTHING ELSE — and renders the issue
+#     body it WOULD have written into the job summary. A dry run is a real
+#     poll, not a no-op: it reads this repository's own lane check runs.
 #   - Present, it mints an installation token and that token authors every
 #     write. Nothing else changes; there is no second code path to review.
 #
@@ -86,20 +87,29 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      # READ ONLY, DELIBERATELY. `issues: read` lets a dry run find and parse
-      # the incident issue so it can render an accurate would-be body; no write
-      # scope is granted, so the ambient token cannot mutate anything in this
-      # repository. Every write below is authored by the minted App token.
+      # EVERY SCOPE HERE IS READ, DELIBERATELY — and declaring `permissions:` at
+      # all sets every scope not listed to `none`, so this block IS the ambient
+      # token's whole authority. The no-write guarantee is the ABSENCE of any
+      # write scope, not the shortness of the list: adding a read never weakens
+      # it, and omitting one only makes the dry run blind.
+      #
+      # `checks` and `pull-requests` are what the poll reads — the check-run and
+      # annotation endpoints require Checks:read and carry no public-repository
+      # exemption, so without them a dry run 403s on its first read and reports
+      # `indeterminate` forever. `issues: read` lets it find and parse the
+      # incident issue and render an accurate would-be body.
+      checks: read
       contents: read
       issues: read
+      pull-requests: read
     env:
       # Same presence-probe seam select-runner.yml uses for its observer
       # credential: the secret's existence, not a checked-in flag, decides
       # whether this run can write.
       HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
       # `github.event.inputs` values are strings on every event, and the whole
-      # object is absent on `schedule` and `push` — so this compares equal to
-      # 'true' only on a dispatch that explicitly asked for a dry run.
+      # object is absent on `schedule` — so this compares equal to 'true' only
+      # on a dispatch that explicitly asked for a dry run.
       FORCED_DRY_RUN: ${{ github.event.inputs.dry-run == 'true' }}
     steps:
       - name: Check out
@@ -256,14 +266,30 @@ jobs:
                 // lane-shaped check run on a fork head is never this fleet's
                 // signal — counting one would let an outside contributor open
                 // a false incident here, or vote a wedged fleet healthy.
-                if (pull.head?.repo?.full_name !== fullName) continue;
+                // Case-insensitive: GitHub repository names are, and the
+                // `repositories` dispatch input is typed by a human, so an
+                // exact compare would silently classify every pull request in
+                // a smoke run as a fork and report nothing.
+                if (
+                  (pull.head?.repo?.full_name ?? "").toLowerCase() !==
+                  fullName.toLowerCase()
+                ) {
+                  continue;
+                }
                 pullsExamined += 1;
 
                 // `filter: latest` (the default) collapses re-runs to the
                 // current attempt per check name, which is the attempt whose
                 // annotation describes the head's real state.
+                //
+                // Paginated, not single-page-with-a-guard. A busy consumer's
+                // head already carries dozens of check runs; refusing to read
+                // one past 100 would make that repository raise a read error on
+                // every cycle forever, which pins the whole fleet at
+                // `indeterminate` and means no incident can ever auto-close —
+                // trading silent truncation for a permanent stall.
                 const checkRuns = await read(`${fullName}#${pull.number} check runs`, () =>
-                  github.rest.checks.listForRef({
+                  github.paginate(github.rest.checks.listForRef, {
                     owner,
                     repo,
                     ref: headSha,
@@ -271,18 +297,8 @@ jobs:
                   }),
                 );
                 if (checkRuns === null) continue;
-                // The response is a single page by construction; a ref with
-                // more check runs than that would drop lane runs invisibly,
-                // which is the silent-truncation failure this poll refuses to
-                // commit anywhere else.
-                if ((checkRuns.data.total_count ?? 0) > checkRuns.data.check_runs.length) {
-                  readErrors += 1;
-                  core.warning(
-                    `${fullName}#${pull.number} has ${checkRuns.data.total_count} check runs, past one page of ${PER_PAGE}; the poll is incomplete.`,
-                  );
-                }
 
-                const matched = checkRuns.data.check_runs.filter((checkRun) =>
+                const matched = checkRuns.filter((checkRun) =>
                   isLaneCheckRun(checkRun.name),
                 );
                 if (matched.length > MAX_LANE_CHECK_RUNS_PER_PULL) {
@@ -315,12 +331,11 @@ jobs:
                   // SUCCESS on an infrastructure failure by design, so the
                   // annotation is the only signal and conclusion must never
                   // filter it out.
-                  const annotationsCount = laneRun.output?.annotations_count ?? 0;
-                  if (annotationsCount === 0) continue;
+                  if ((laneRun.output?.annotations_count ?? 0) === 0) continue;
                   const annotations = await read(
                     `${fullName}#${pull.number} annotations for ${laneRun.name}`,
                     () =>
-                      github.rest.checks.listAnnotations({
+                      github.paginate(github.rest.checks.listAnnotations, {
                         owner,
                         repo,
                         check_run_id: laneRun.id,
@@ -328,13 +343,7 @@ jobs:
                       }),
                   );
                   if (annotations === null) continue;
-                  if (annotations.data.length < annotationsCount) {
-                    readErrors += 1;
-                    core.warning(
-                      `${fullName}#${pull.number} check run ${laneRun.id} reports ${annotationsCount} annotations but one page returned ${annotations.data.length}; the poll is incomplete.`,
-                    );
-                  }
-                  for (const annotation of annotations.data) {
+                  for (const annotation of annotations) {
                     const signals = extractSignals(annotation.message);
                     if (signals.classes.length === 0 && signals.unrecognized === 0) continue;
                     observations.push({

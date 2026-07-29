@@ -93,7 +93,12 @@ const CLEAN_CYCLES_TO_CLOSE = 3;
 // Bounds on the rendered body. GitHub rejects an issue body over 65536
 // characters, and a fleet-wide incident can name every repository and every
 // open PR; truncating with an explicit remainder line keeps the write from
-// failing exactly when the incident is largest.
+// failing exactly when the incident is largest. The repository table is
+// budgeted in CHARACTERS against this ceiling — the row count is only an upper
+// cap on how much detail is worth reading — because a row's size scales with
+// the repository's name length. See renderIssueBody.
+const MAX_BODY_CHARACTERS = 65536;
+const REMAINDER_LINE_RESERVE = 80;
 const MAX_RENDERED_REPOSITORIES = 40;
 const MAX_RENDERED_PULLS_PER_REPOSITORY = 10;
 
@@ -257,11 +262,14 @@ function mergeRepositories(previous, addition) {
           ),
         ),
       ],
+      // How many pull requests this repository has ever had in the incident,
+      // which is NOT `pulls.length` once the bound below bites.
+      pullsSeen: toPositiveInteger(entry?.pullsSeen) ?? 0,
     };
   }
   for (const [name, entry] of Object.entries(addition ?? {})) {
     if (!isValidRepository(name)) continue;
-    merged[name] ??= { classes: [], pulls: [] };
+    merged[name] ??= { classes: [], pulls: [], pullsSeen: 0 };
     const target = merged[name];
     for (const token of entry.classes) {
       if (!target.classes.includes(token)) target.classes.push(token);
@@ -277,18 +285,24 @@ function mergeRepositories(previous, addition) {
   // 422 the update on the largest incident. Bounding here caps both. The kept
   // slice is the sorted head, so the same repositories and pull requests stay
   // in view cycle after cycle instead of churning.
-  const bounded = {};
-  for (const name of Object.keys(merged)
-    .sort()
-    .slice(0, MAX_TRACKED_REPOSITORIES)) {
-    bounded[name] = {
-      classes: merged[name].classes,
-      pulls: merged[name].pulls
-        .sort((a, b) => a - b)
-        .slice(0, MAX_TRACKED_PULLS_PER_REPOSITORY),
+  //
+  // Each bound carries a count of what it dropped, so the rendered "+N more"
+  // remainders describe the INCIDENT rather than the surviving slice — an
+  // operator reading "40 shown, +20 more" when 200 repositories are affected
+  // would badly misjudge the blast radius. Two integers cost nothing to
+  // serialize; two hundred repository names do.
+  const names = Object.keys(merged).sort();
+  const repositories = {};
+  for (const name of names.slice(0, MAX_TRACKED_REPOSITORIES)) {
+    const entry = merged[name];
+    const pulls = entry.pulls.sort((a, b) => a - b);
+    repositories[name] = {
+      classes: entry.classes,
+      pulls: pulls.slice(0, MAX_TRACKED_PULLS_PER_REPOSITORY),
+      pullsSeen: Math.max(entry.pullsSeen, pulls.length),
     };
   }
-  return bounded;
+  return { repositories, repositoriesSeen: names.length };
 }
 
 /**
@@ -339,6 +353,10 @@ function nextState({ previous, tally, cycle, now, issueOpen }) {
 
   if (cycle === "incident") {
     const carried = issueOpen ? previous : null;
+    const { repositories, repositoriesSeen } = mergeRepositories(
+      carried?.repositories,
+      tally.repositories,
+    );
     const state = {
       v: STATE_SCHEMA_VERSION,
       firstSeen: carried?.firstSeen ?? timestamp,
@@ -346,9 +364,10 @@ function nextState({ previous, tally, cycle, now, issueOpen }) {
       cleanCycles: 0,
       classCounts: mergeCounts(carried?.classCounts, tally.classCounts),
       statusCounts: mergeCounts(carried?.statusCounts, tally.statusCounts),
-      repositories: mergeRepositories(
-        carried?.repositories,
-        tally.repositories,
+      repositories,
+      repositoriesSeen: Math.max(
+        carried?.repositoriesSeen ?? 0,
+        repositoriesSeen,
       ),
       unrecognized: Math.max(carried?.unrecognized ?? 0, tally.unrecognized),
     };
@@ -385,6 +404,7 @@ function emptyState() {
     classCounts: {},
     statusCounts: {},
     repositories: {},
+    repositoriesSeen: 0,
     unrecognized: 0,
   };
 }
@@ -421,6 +441,10 @@ function parseStateBlock(body) {
     ? Math.max(0, Math.min(CLEAN_CYCLES_TO_CLOSE, parsed.cleanCycles))
     : 0;
 
+  const { repositories, repositoriesSeen } = mergeRepositories(
+    parsed.repositories,
+    {},
+  );
   return {
     v: STATE_SCHEMA_VERSION,
     firstSeen: typeof parsed.firstSeen === "string" ? parsed.firstSeen : null,
@@ -433,7 +457,13 @@ function parseStateBlock(body) {
       const status = Number(key);
       return Number.isInteger(status) && status >= 100 && status <= 599;
     }),
-    repositories: mergeRepositories(parsed.repositories, {}),
+    repositories,
+    // A recovered total below what the surviving index already proves is a
+    // tampered or truncated body, not a smaller incident.
+    repositoriesSeen: Math.max(
+      toPositiveInteger(parsed.repositoriesSeen) ?? 0,
+      repositoriesSeen,
+    ),
     unrecognized: toPositiveInteger(parsed.unrecognized) ?? 0,
   };
 }
@@ -467,27 +497,29 @@ function renderIssueBody(state) {
       : "unavailable — detection came from the substring path, which carries no numeric status";
 
   const repositoryNames = Object.keys(state.repositories).sort();
-  const shownRepositories = repositoryNames.slice(0, MAX_RENDERED_REPOSITORIES);
-  const repositoryLines = shownRepositories.map((name) => {
+  const untrackedRepositories = Math.max(
+    0,
+    (state.repositoriesSeen ?? 0) - repositoryNames.length,
+  );
+  const renderRepositoryLine = (name) => {
     const entry = state.repositories[name];
     const pulls = [...entry.pulls]
       .sort((a, b) => a - b)
       .slice(0, MAX_RENDERED_PULLS_PER_REPOSITORY)
       .map((pull) => `[#${pull}](https://github.com/${name}/pull/${pull})`);
-    const overflow =
-      entry.pulls.length > MAX_RENDERED_PULLS_PER_REPOSITORY
-        ? ` (+${entry.pulls.length - MAX_RENDERED_PULLS_PER_REPOSITORY} more)`
-        : "";
+    // Counted against everything the incident ever touched in this repository,
+    // not against the slice that survived the tracked bound — "+20 more" when
+    // 290 are affected would badly understate the blast radius.
+    const hidden = Math.max(
+      0,
+      (entry.pullsSeen ?? entry.pulls.length) - pulls.length,
+    );
+    const overflow = hidden > 0 ? ` (+${hidden} more)` : "";
     const classes = [...entry.classes].sort().map((token) => `\`${token}\``);
     return `| \`${name}\` | ${classes.join(", ")} | ${pulls.join(", ")}${overflow} |`;
-  });
-  if (repositoryNames.length > shownRepositories.length) {
-    repositoryLines.push(
-      `| _+${repositoryNames.length - shownRepositories.length} more repositories_ | | |`,
-    );
-  }
+  };
 
-  return [
+  const prologue = [
     SELECTOR_MARKER,
     renderStateBlock(state),
     "",
@@ -502,10 +534,19 @@ function renderIssueBody(state) {
     `- Last seen: ${state.lastSeen ?? "unknown"}`,
     `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE})`,
     `- Observed \`api_error_status\`: ${statusLine}`,
+    `- Repositories affected: ${Math.max(state.repositoriesSeen ?? 0, repositoryNames.length)}`,
+    `- Unrecognized \`class=\` tokens seen: ${state.unrecognized ?? 0}${
+      (state.unrecognized ?? 0) > 0
+        ? " — a lane is emitting a class this watchdog does not know; widen RECOGNIZED_CLASSES"
+        : ""
+    }`,
     "",
     "### Failure classes",
     "",
-    "| Class | Affected pull requests | Escalating |",
+    "Counts are the peak number of distinct pull requests seen failing this way",
+    "in any single polling window, not a running total of annotations.",
+    "",
+    "| Class | Peak affected pull requests | Escalating |",
     "| --- | --- | --- |",
     ...classLines,
     "",
@@ -513,7 +554,9 @@ function renderIssueBody(state) {
     "",
     "| Repository | Classes | Pull requests |",
     "| --- | --- | --- |",
-    ...repositoryLines,
+  ];
+
+  const epilogue = [
     "",
     "### Remediate",
     "",
@@ -522,7 +565,11 @@ function renderIssueBody(state) {
     "   Claude Console; `403` fix key permissions and workspace access.",
     "2. `runner` — the lane could not resolve a runner; check the governed",
     "   runner fleet and the caller's selector inputs.",
-    "3. Re-run the affected lane jobs once the cause is fixed, then let this",
+    "3. Confirm the lanes are ENABLED before waiting for this to close. A",
+    "   kill-switched lane still publishes a name-stable skipped check, and a",
+    "   skip is not evidence the lanes ran — so while `CLAUDE_LANES_DISABLED`",
+    "   (or a per-lane switch) is set, this issue can never auto-close.",
+    "4. Re-run the affected lane jobs once the cause is fixed, then let this",
     `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive clean cycles; it closes itself.`,
     "",
     "---",
@@ -530,7 +577,36 @@ function renderIssueBody(state) {
     "*Only allowlisted class tokens and validated identifiers are reported here —",
     "no annotation text, and no model-authored content, is ever copied into this issue.*",
     "*Closing this by hand while the failure persists reopens it on the next cycle.*",
-  ].join("\n");
+  ];
+
+  // A CHARACTER budget, not a row count. Rows are not a fixed size: each one
+  // repeats the repository name once per pull-request link, so the same 40 rows
+  // span ~48k characters at a 36-character name and blow past GitHub's 65536
+  // limit at a 70-character one. Budgeting by rows means the body fits or 422s
+  // depending on how the org happens to name its repositories; budgeting by
+  // characters means it always fits.
+  const fixedLength =
+    [...prologue, ...epilogue].reduce(
+      (total, line) => total + line.length + 1,
+      0,
+    ) + REMAINDER_LINE_RESERVE;
+  let remaining = MAX_BODY_CHARACTERS - fixedLength;
+  const repositoryLines = [];
+  let rendered = 0;
+  for (const name of repositoryNames.slice(0, MAX_RENDERED_REPOSITORIES)) {
+    const line = renderRepositoryLine(name);
+    if (line.length + 1 > remaining) break;
+    remaining -= line.length + 1;
+    repositoryLines.push(line);
+    rendered += 1;
+  }
+  const hiddenRepositories =
+    repositoryNames.length - rendered + untrackedRepositories;
+  if (hiddenRepositories > 0) {
+    repositoryLines.push(`| _+${hiddenRepositories} more repositories_ | | |`);
+  }
+
+  return [...prologue, ...repositoryLines, ...epilogue].join("\n");
 }
 
 module.exports = Object.freeze({

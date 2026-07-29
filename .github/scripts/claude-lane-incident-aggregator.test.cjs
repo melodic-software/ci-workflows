@@ -84,7 +84,6 @@ async function runPoll({
   repositoriesOverride = "",
   pullsByRepo = {},
   checkRunsByPull = {},
-  totalCountByRef = {},
   annotationsByCheckRun = {},
   failFor = [],
 } = {}) {
@@ -113,14 +112,31 @@ async function runPoll({
         throw new Error(`simulated read failure for ${label}`);
       }
     };
-    const github = {
-      paginate: async (_fn, _params) => {
+    // The poll reaches three endpoints through `github.paginate` and one
+    // directly, so the mock routes by endpoint identity rather than by call
+    // order — `paginate` returns the flattened array the real helper returns,
+    // and the direct call returns an `{ data }` envelope.
+    const endpoints = {
+      installation: () => {
         calls.push({ kind: "installation" });
         maybeFail("installation");
         return installationRepositories;
       },
+      checkRuns: ({ owner, repo, ref }) => {
+        calls.push({ kind: "checks", repo: `${owner}/${repo}`, ref });
+        maybeFail(`checks:${owner}/${repo}`);
+        return checkRunsByPull[ref] ?? [];
+      },
+      annotations: ({ check_run_id: checkRunId }) => {
+        calls.push({ kind: "annotations", checkRunId });
+        maybeFail(`annotations:${checkRunId}`);
+        return annotationsByCheckRun[checkRunId] ?? [];
+      },
+    };
+    const github = {
+      paginate: async (endpoint, params) => endpoint(params),
       rest: {
-        apps: { listReposAccessibleToInstallation: () => {} },
+        apps: { listReposAccessibleToInstallation: endpoints.installation },
         pulls: {
           list: async ({ owner, repo, page }) => {
             const label = `pulls:${owner}/${repo}`;
@@ -131,23 +147,8 @@ async function runPoll({
           },
         },
         checks: {
-          listForRef: async ({ owner, repo, ref }) => {
-            const label = `checks:${owner}/${repo}`;
-            calls.push({ kind: "checks", repo: `${owner}/${repo}`, ref });
-            maybeFail(label);
-            const runs = checkRunsByPull[ref] ?? [];
-            return {
-              data: {
-                total_count: totalCountByRef[ref] ?? runs.length,
-                check_runs: runs,
-              },
-            };
-          },
-          listAnnotations: async ({ check_run_id: checkRunId }) => {
-            calls.push({ kind: "annotations", checkRunId });
-            maybeFail(`annotations:${checkRunId}`);
-            return { data: annotationsByCheckRun[checkRunId] ?? [] };
-          },
+          listForRef: endpoints.checkRuns,
+          listAnnotations: endpoints.annotations,
         },
       },
     };
@@ -546,26 +547,52 @@ test("a fork pull request cannot vote on liveness or open an incident", async ()
   );
 });
 
-test("an API page that hides check runs or annotations is a read error, not a silent trim", async () => {
-  const truncatedCheckRuns = await runPoll({
-    repositoriesOverride: "melodic-software/medley",
-    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
-    checkRunsByPull: { "sha-a": [checkRun({ id: 90 })] },
-    totalCountByRef: { "sha-a": 140 },
-  });
-  assert.equal(truncatedCheckRuns.outputs["read-errors"], "1");
-  assert.equal(truncatedCheckRuns.outputs.cycle, "indeterminate");
+test("check runs and annotations are paginated, neither truncated at one page nor refused", async () => {
+  // A busy consumer head already carries dozens of check runs. Reading one page
+  // and dropping the rest loses lane runs silently; refusing to read past one
+  // page instead makes that repository raise a read error every cycle forever,
+  // pinning the whole fleet at `indeterminate` so no incident can ever
+  // auto-close. Both are wrong — the poll paginates, as it already does for the
+  // installation list and the open-issue lookup.
+  const poll = extractStepScript(
+    "Poll consumer repositories for lane failure signals",
+  );
+  assert.match(poll, /github\.paginate\(github\.rest\.checks\.listForRef/u);
+  assert.match(
+    poll,
+    /github\.paginate\(github\.rest\.checks\.listAnnotations/u,
+  );
 
-  const truncatedAnnotations = await runPoll({
+  const { outputs } = await runPoll({
     repositoriesOverride: "melodic-software/medley",
     pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
-    checkRunsByPull: { "sha-a": [checkRun({ id: 90, annotationsCount: 150 })] },
-    annotationsByCheckRun: {
-      90: [{ message: laneAnnotation("rate-limit", 429) }],
+    checkRunsByPull: {
+      "sha-a": Array.from({ length: 140 }, (_unused, index) =>
+        checkRun({ id: index + 1, name: "ci-status" }),
+      ).concat([checkRun({ id: 500, name: "review / review" })]),
     },
   });
-  assert.equal(truncatedAnnotations.outputs["read-errors"], "1");
-  assert.equal(truncatedAnnotations.outputs.cycle, "indeterminate");
+  assert.equal(outputs["read-errors"], "0");
+  assert.equal(
+    outputs["lane-runs"],
+    "1",
+    "a lane run past the first page must still be seen",
+  );
+  assert.equal(outputs.cycle, "clean");
+});
+
+test("the ambient token is granted every read the poll makes, or a dry run sees nothing", () => {
+  // Declaring `permissions:` sets every unlisted scope to `none`. The check-run
+  // and annotation endpoints require Checks:read with no public-repository
+  // exemption, so omitting them 403s the first read of every dry run and
+  // reports `indeterminate` forever — a workflow that ships doing nothing.
+  for (const scope of ["checks", "contents", "issues", "pull-requests"]) {
+    assert.match(
+      workflow,
+      new RegExp(`^ {6}${scope}: read$`, "mu"),
+      `the job must grant ${scope}: read`,
+    );
+  }
 });
 
 test("a bound that truncates the scan is reported as a read error, never as a silent trim", async () => {
