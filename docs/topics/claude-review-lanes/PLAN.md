@@ -794,13 +794,27 @@ contains the trailer-parsing note.
     bullet's "PLAN.md tags advanced; topic close-out at PR time", which cannot
     close while the other two are open — the tag is still `[TODO]`, so tags are
     by definition not yet advanced. Verification:
-    two fresh-context verifier rounds ran against the comments and the
-    equivalence verdict; both returned REJECT and both were remediated — round
-    1 caught a deployed-state overreach on the #151 comment and a false
-    uniformity claim on #257, round 2 caught a `create-github-app-token`
-    call-site undercount (one vs the actual six) introduced while fixing round
-    1. The round-2 remediations were self-checked against primary evidence, not
-    independently re-verified.
+    FOUR fresh-context verifier rounds ran against the comments, the
+    equivalence verdict, and this evidence block; all four returned REJECT and
+    each caught a defect introduced while remediating the previous round.
+    Round 1: a deployed-state overreach on the #151 comment and a false
+    "uniform across all three lane workflows" claim on #257. Round 2: a
+    `create-github-app-token` call-site undercount on #257 (one asserted, six
+    actual). Round 3: on #257, an absolute "no other pin was assessed"
+    disclaimer contradicted by the comment's own coverage claims, plus a
+    substantively false one — medley's `claude-code-action` pin described as
+    having no Dependabot path when medley#1668 was already open bumping it
+    1.0.174 → 1.0.180; and in THIS block, the security-lane always-checks
+    mislabelled as five (there are four) and an inverted `:65`/`:66` citation
+    mapping. Round 4: this verification sentence itself, which undercounted the
+    rounds and asserted the round-2 remediations had not been independently
+    re-verified when round 3 had in fact re-verified them. The recurring
+    failure mode is compression, not research — the primary evidence was read
+    correctly each time and damaged while being condensed into prose. Round 4's
+    two non-blocking findings were accepted as named gaps rather than
+    remediated, to stop the fix-and-reverify cycle: the #257 Step 2 enumeration
+    understates the cooldown/grouping assessment made for medley, and the
+    round-listing in ci-workflows#287's body undercounts round 3's findings.
 
 ## Blast radius
 
