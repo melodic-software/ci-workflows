@@ -675,29 +675,32 @@ Ordered pre-steps, then waved rollout.
   ref when its `plan` job finally executes — an already-triggered run can
   therefore plan the PRE-merge manifest (8) against the POST-grant installation
   (10) and wedge. So DRAIN FIRST, and RE-CHECK — sequence is drain, grant,
-  re-check, merge: `gh run list --repo melodic-software/standards --workflow
-  sync.yml --limit 100 --json databaseId,status --jq
-  '[.[]|select(.status!="completed")]'` should return `[]` immediately BEFORE
-  the grant and again immediately BEFORE merging the manifest PR. Negate
-  `completed` rather than enumerate the pending states — GitHub has at least
-  five (`queued`, `in_progress`, `waiting`, `requested`, `pending`) and may add
-  more — and pass `--limit` explicitly rather than lean on the default 20 and an
-  undocumented newest-first ordering. This REDUCES the window, it does not close
-  it: a push landing between the re-check and the merge still wedges, which is
-  precisely why the fail-closed property below is what makes the whole procedure
-  safe rather than the checks. Grant-first's cost is a different one and belongs
-  on the page: for the window the App HOLDS write access to two repos that are
-  not yet manifest targets (sync writes only to manifest targets, so the
-  exposure is authority, not activity). Either way the wedge is FAIL-CLOSED and
-  self-clearing: `attest` is a `needs:` of `sync`, so the whole matrix is
-  skipped, not just the mismatched target — the engine has no `always()`,
-  nothing mutates, no target is corrupted. Recovery is asymmetric too, the same
-  way: under grant-first the manifest merge IS the clean recovery run (10 == 10,
-  attest passes, all targets sync), whereas merge-first needs a manual
-  `workflow_dispatch` with `dry-run: false` — the dispatch default is `true` and
-  both `attest` and `sync` carry `if: !inputs.dry-run`, so a default dispatch
-  syncs nothing. Either way recovery is available immediately; it is NOT a wait
-  for the weekly cron. MECHANISM: repository SELECTION is REST-addressable —
+  re-check, merge. This must return `[]` immediately BEFORE the grant and again
+  immediately BEFORE merging the manifest PR:
+  `gh api "repos/melodic-software/standards/actions/workflows/sync.yml/runs?per_page=100" --paginate --slurp | jq -c '[.[].workflow_runs[]|select(.status!="completed")]'`
+  Two deliberate choices. It NEGATES `completed` rather than enumerating the
+  pending states, because GitHub has at least five (`queued`, `in_progress`,
+  `waiting`, `requested`, `pending`) and may add more. And it PAGINATES the full
+  run history rather than sampling a page, because `gh run list` defaults to 20
+  and its newest-first ordering is undocumented — a pending run outside the
+  sample would read as a drained queue. (`--slurp` is rejected alongside `--jq`,
+  hence the pipe; it also makes the result ONE array instead of one per page.)
+  This REDUCES the window, it does not close it: a push landing between the
+  re-check and the merge still wedges, which is precisely why the fail-closed
+  property below is what makes the whole procedure safe rather than the checks.
+  Grant-first's cost is a different one and belongs on the page: for the window
+  the App HOLDS write access to two repos that are not yet manifest targets
+  (sync writes only to manifest targets, so the exposure is authority, not
+  activity). Either way the wedge is FAIL-CLOSED and self-clearing: `attest` is
+  a `needs:` of `sync`, so the whole matrix is skipped, not just the mismatched
+  target — the engine has no `always()`, nothing mutates, no target is
+  corrupted. Recovery is asymmetric too, the same way: under grant-first the
+  manifest merge IS the clean recovery run (10 == 10, attest passes, all targets
+  sync), whereas merge-first needs a manual `workflow_dispatch` with `dry-run:
+  false` — the dispatch default is `true` and both `attest` and `sync` carry
+  `if: !inputs.dry-run`, so a default dispatch syncs nothing. Either way
+  recovery is available immediately; it is NOT a wait for the weekly cron.
+  MECHANISM: repository SELECTION is REST-addressable —
   `PUT /user/installations/{installation_id}/repositories/{repository_id}` (add)
   and `DELETE` (remove), wrapped by Terraform
   `github_app_installation_repository(-ies)` and Pulumi
