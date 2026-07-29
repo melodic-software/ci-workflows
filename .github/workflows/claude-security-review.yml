@@ -47,10 +47,17 @@ name: claude-security-review
 #   the change: 55 of 129 in-scope merges (42.6%) carried a green required check
 #   with no security pass at the merge head.
 #
-#   Availability is bought back two ways, not by weakening the claim: a bounded
-#   in-job retry absorbs the sporadic-429 class, and a sustained outage is meant
-#   to be overridden by an explicit, logged, attributable break-glass on the
-#   consumer's ruleset — never by a check that lies.
+#   Availability is bought back by break-glass, not by retrying: a sustained
+#   outage is meant to be overridden by an explicit, logged, attributable
+#   break-glass on the consumer's ruleset — never by a check that lies. The
+#   bounded in-job retry below is a best-effort second chance at the sporadic
+#   class, NOT a second availability mechanism, and this line previously
+#   claimed otherwise. It has never been observed to absorb anything: across
+#   251 lane attempts org-wide on 2026-07-29 the retry step executed zero
+#   times, because the gate was unreachable for the dominant failure class in
+#   the only lane carrying it and no consumer pin carried a retry at all. That
+#   is a statement about reachability, not about efficacy — the mechanism has
+#   not been measured either way. See the gate's own header for the constant.
 #
 # ALWAYS-REPORT SHAPE — the caller does NOT path-filter at workflow level:
 #   A security pass on every PR is noise in a doc-heavy repo where most PRs are
@@ -704,19 +711,47 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # ONE bounded, gated retry, because this lane fails closed: a sporadic
-      # failure that a re-run would clear must not block a merge. Measured
-      # motivation — run 30217744377 failed in 25s with api_error_status 429
-      # and returned a real verdict in 3m17s on a manual re-run.
+      # failure that a re-run would clear must not block a merge.
+      #
+      # THE DELAY IS NOT CALIBRATED, and the citation that used to appear here
+      # could not calibrate it. That citation read: "run 30217744377 failed in
+      # 25s with api_error_status 429 and returned a real verdict in 3m17s on a
+      # manual re-run." Both numbers are real; neither is a delay. Attempt 1's
+      # lane job ran 19:52:02Z -> 19:52:27Z (25s, the failure). Attempt 2's ran
+      # 21:20:05Z -> 21:23:22Z, so 3m17s is that attempt's DURATION. The gap
+      # between them — how long recovery actually took — is 87m27s, and it is
+      # bounded below by when a human happened to press re-run, so it does not
+      # measure the outage either. The run says nothing about how long to wait.
+      #
+      # What the population does say: on 2026-07-29 a 4h36m blackout
+      # (02:00:56Z-06:37:43Z) produced zero successful lane runs org-wide, and
+      # of 92 failed attempts NONE had any lane attempt anywhere in the org
+      # succeed within 150s of it — wider than this delay's 90-119s window. So
+      # no in-job delay rescues a blackout, which is what POSTURE already says
+      # break-glass is for. Whether one rescues a genuinely SPORADIC 429 is
+      # unmeasured: the retry step executed zero times in 251 attempts that day
+      # because this gate refused every one of them (see below).
+      #
+      # 90s is therefore kept as-is rather than re-derived — there is no
+      # measurement to derive a different number from, and inventing one would
+      # repeat the error above. REVISIT TRIGGER: a lane failure whose retry
+      # step executes and whose second attempt succeeds. That instance
+      # calibrates the constant. If 429s keep recurring and no such instance
+      # appears once this gate is reachable, the mechanism is refuted and
+      # retiring it in favor of break-glass alone becomes the supported call.
       #
       # The gate retries ONLY when the execution file shows ZERO assistant
-      # turns and the failure is not auth-class. Zero turns is the
-      # artifact-safety condition: the action posts nothing review-shaped
-      # before its first assistant turn, so attempt 2 cannot duplicate inline
-      # comments already on the PR. The auth exclusion skips the one class no
-      # retry can clear — the credential needs an operator. A mid-review
-      # failure (assistant turns already spent, comments possibly posted) is
-      # deliberately NOT retried: the duplicate-comment risk outweighs the
-      # second chance, and the re-run and break-glass paths remain.
+      # turns of real work and the failure is not auth-class. Zero real turns
+      # is the artifact-safety condition: the action posts nothing
+      # review-shaped before its first assistant turn, so attempt 2 cannot
+      # duplicate inline comments already on the PR. The auth exclusion skips
+      # the one class no retry can clear — the credential needs an operator. A
+      # mid-review failure (assistant turns already spent, comments possibly
+      # posted) is deliberately NOT retried: the duplicate-comment risk
+      # outweighs the second chance, and the re-run and break-glass paths
+      # remain. "Real work" is load-bearing and not the same as "an assistant
+      # entry exists" — see the gate script for why an API error manufactures
+      # an assistant turn that posted nothing.
       #
       # Deliberately ONE retry, not a loop: Actions cannot loop a `uses:` step,
       # so every attempt is a verbatim copy of the step above, and each copy is a
@@ -728,11 +763,18 @@ jobs:
       # outright the first attempt always fails, so retrying only spends a
       # runner and a minute of wall clock to throw again.
       #
-      # The auth predicate mirrors classify.cjs in the claude-lane-outcome
-      # composite — the authoritative sibling. The composite is fetched at its
-      # pinned SHA and the caller's checkout does not contain this repo's
-      # scripts, so classify.cjs cannot be require()d at runtime and the
-      # predicate is inlined here instead; keep the two type-for-type.
+      # The auth predicate covers classify.cjs's auth class in the
+      # claude-lane-outcome composite — the authoritative sibling for the
+      # status-to-class mapping. The composite is fetched at its pinned SHA and
+      # the caller's checkout does not contain this repo's scripts, so
+      # classify.cjs cannot be require()d at runtime and the predicate is
+      # inlined here instead; keep the three auth statuses and three auth error
+      # types identical in both. The gate is deliberately a SUPERSET of its
+      # sibling on inputs, not on classes: classify.cjs reads only the last
+      # entry because its job is to name the class of a completed run, while the
+      # gate must also rule out an auth failure recorded on a synthetic turn
+      # when no result entry was written. Do not widen classify.cjs to match —
+      # that changes the fail-closed mapping.
       - name: Decide whether to retry the review
         id: retry-gate
         if: >-
@@ -755,36 +797,87 @@ jobs:
             } catch {
               // Falls through to the evidence guard below.
             }
-            // Retry only on EVIDENCE of zero turns. A missing or unparsable
-            // execution file proves nothing: a hard kill (step timeout, OOM)
-            // can lose the file after turns were already spent, and retrying
-            // then risks exactly the duplicate comments this gate exists to
-            // prevent.
+            // Retry only on EVIDENCE of zero real turns. A missing or
+            // unparsable execution file proves nothing: a hard kill (step
+            // timeout, OOM) can lose the file after turns were already spent,
+            // and retrying then risks exactly the duplicate comment this gate
+            // exists to prevent.
             if (entries === undefined) {
               core.notice(
                 "Not retrying: no parseable execution file, so zero assistant turns cannot be proven.",
               );
               return;
             }
+            // An API error does not end the stream quietly. Claude Code emits a
+            // SYNTHETIC assistant turn carrying the error as ordinary text, so a
+            // 429 that killed the run before any real work still records a
+            // `type: "assistant"` entry. Counting those turns is what made this
+            // gate unreachable for the dominant failure class. The
+            // artifact-safety condition is about work that could have POSTED
+            // something, so synthetic error turns do not count as work.
+            //
+            // `error` is carried by the SDK's published message union;
+            // `isApiErrorMessage`, `apiErrorStatus`, and the `<synthetic>` model
+            // sentinel are observed wire fields the types do not declare.
+            // The three markers are OR'd, so ALL THREE would have to be
+            // renamed before a synthetic turn counted as real work again —
+            // renaming one is absorbed by the other two. Both drift shapes are
+            // safe, for different reasons: under partial drift the turn stays
+            // discounted, but `realTurns` is still 0, so nothing was posted and
+            // nothing can be duplicated; under total drift the turn counts as
+            // real and the gate declines outright. Neither shape produces
+            // duplicate comments.
+            const isSyntheticErrorTurn = (entry) =>
+              typeof entry?.error === "string" ||
+              entry?.isApiErrorMessage === true ||
+              entry?.message?.model === "<synthetic>";
             const assistantTurns = entries.filter(
               (entry) => entry?.type === "assistant",
+            );
+            const realTurns = assistantTurns.filter(
+              (entry) => !isSyntheticErrorTurn(entry),
             ).length;
-            if (assistantTurns > 0) {
+            if (realTurns > 0) {
               core.notice(
-                `Not retrying: attempt 1 recorded ${assistantTurns} assistant turn(s), ` +
+                `Not retrying: attempt 1 recorded ${realTurns} assistant turn(s) of real work, ` +
                   "so it may already have posted comments a second attempt would duplicate.",
               );
               return;
             }
+            // Auth is read from the result entry AND from every synthetic error
+            // turn. The result entry is the primary source, but the action also
+            // writes the file from a path that produces NO result entry, and
+            // discounting synthetic turns above would otherwise let an
+            // auth-class failure through that hole — the one class this gate
+            // must never retry.
             const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
-            const status = last?.api_error_status;
+            const statuses = [
+              last?.api_error_status,
+              ...assistantTurns.map((entry) => entry?.apiErrorStatus),
+            ].filter((status) => typeof status === "number");
             const errorText = (Array.isArray(last?.errors) ? last.errors : [])
               .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
               .join("\n");
+            // A retry needs a PROVEN non-auth class, so an unreadable class is a
+            // refusal rather than a default. This is not belt-and-braces: when
+            // no result entry was written, `apiErrorStatus` on the synthetic
+            // turn is the ONLY auth signal there is, and it is also one of the
+            // markers that made the turn synthetic. A payload keeping `error`
+            // or the `<synthetic>` sentinel but dropping the status would
+            // otherwise discount the turn AND blind the auth check in one move,
+            // and retry a credential death. An empty array lands here too: it
+            // proves zero turns but nothing about the class, and the gate
+            // requires both.
+            if (statuses.length === 0 && !Array.isArray(last?.errors)) {
+              core.notice(
+                "Not retrying: no failure class could be read, so a non-auth class cannot be proven.",
+              );
+              return;
+            }
             const auth =
-              status === 401 ||
-              status === 402 ||
-              status === 403 ||
+              statuses.some(
+                (status) => status === 401 || status === 402 || status === 403,
+              ) ||
               errorText.includes('"type":"authentication_error"') ||
               errorText.includes('"type":"billing_error"') ||
               errorText.includes('"type":"permission_error"');
