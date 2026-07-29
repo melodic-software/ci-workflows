@@ -659,21 +659,30 @@ Ordered pre-steps, then waved rollout.
   the two are NOT equally likely to, and that asymmetry is why BEFORE is right:
   the manifest merge is ITSELF a push to standards `main`, and the caller passes
   no `standards-ref`, so the reusable's `main` default plans the POST-merge
-  manifest — merge-first self-triggers and wedges with CERTAINTY, while
-  grant-first wedges only if an unrelated push, the weekly cron, or a dispatch
-  lands inside the window. Grant-first's cost is a different one and belongs on
-  the page: for the window the App HOLDS write access to two repos that are not
-  yet manifest targets (sync writes only to manifest targets, so the exposure is
-  authority, not activity). Either way the wedge is FAIL-CLOSED and
-  self-clearing: `attest` is a `needs:` of `sync`, so the whole matrix is
-  skipped, not just the mismatched target — the engine has no `always()`,
-  nothing mutates, no target is corrupted. Recovery is asymmetric too, the same
-  way: under grant-first the manifest merge IS the clean recovery run (10 == 10,
-  attest passes, all targets sync), whereas merge-first needs a manual
-  `workflow_dispatch` with `dry-run: false` — the dispatch default is `true` and
-  both `attest` and `sync` carry `if: !inputs.dry-run`, so a default dispatch
-  syncs nothing. Either way recovery is available immediately; it is NOT a wait
-  for the weekly cron. MECHANISM: repository SELECTION is REST-addressable —
+  manifest. Merge-first therefore MANUFACTURES its own triggering run and wedges
+  unless the grant lands before that run's `attest` step executes — a
+  seconds-to-minutes race, not something to plan around. Grant-first has no
+  self-trigger, so it wedges only if some OTHER run reaches `attest` inside the
+  window. PRECONDITION, and it is not just about new triggers: the reusable
+  serializes on `concurrency: standards-sync` with `cancel-in-progress: false`,
+  so runs QUEUE rather than cancel, and a queued run resolves the moving `main`
+  ref when its `plan` job finally executes — an already-triggered run can
+  therefore plan the PRE-merge manifest (8) against the POST-grant installation
+  (10) and wedge. So DRAIN FIRST: confirm no standards-sync run is in progress
+  or queued before granting, then grant, then merge. Grant-first's cost is a
+  different one and belongs on the page: for the window the App HOLDS write
+  access to two repos that are not yet manifest targets (sync writes only to
+  manifest targets, so the exposure is authority, not activity). Either way the
+  wedge is FAIL-CLOSED and self-clearing: `attest` is a `needs:` of `sync`, so
+  the whole matrix is skipped, not just the mismatched target — the engine has
+  no `always()`, nothing mutates, no target is corrupted. Recovery is asymmetric
+  too, the same way: under grant-first the manifest merge IS the clean recovery
+  run (10 == 10, attest passes, all targets sync), whereas merge-first needs a
+  manual `workflow_dispatch` with `dry-run: false` — the dispatch default is
+  `true` and both `attest` and `sync` carry `if: !inputs.dry-run`, so a default
+  dispatch syncs nothing. Either way recovery is available immediately; it is
+  NOT a wait for the weekly cron. MECHANISM: repository SELECTION is
+  REST-addressable —
   `PUT /user/installations/{installation_id}/repositories/{repository_id}` (add)
   and `DELETE` (remove), wrapped by Terraform
   `github_app_installation_repository(-ies)` and Pulumi
