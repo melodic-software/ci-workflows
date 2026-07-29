@@ -886,11 +886,12 @@ share one consumption shape. Each is **advisory**: it posts PR comments and
 never gates `ci-status`. (The advisory verdict is separate from execution
 evidence: `claude-security-review.yml` scopes itself to security-sensitive
 paths, and its name-stable `security-review` check may be made a required
-status check — see its entry above.) Each is a whole-job concern (job `permissions:` plus a
-`secrets:` interface), which is why each is a reusable workflow rather than a
-composite action — the caller owns the triggers and the permission grant, and
-the workflow owns the SHA-pinned `anthropics/claude-code-action` and the safe
-handling. Security rules live in [CLAUDE.md](CLAUDE.md).
+status check — see its entry above.) Each is a whole-job concern (job
+`permissions:` plus a `secrets:` interface), which is why each is a reusable
+workflow rather than a composite action — the caller owns the triggers and the
+permission grant, and the workflow owns the SHA-pinned
+`anthropics/claude-code-action` and the safe handling. Security rules live in
+[CLAUDE.md](CLAUDE.md).
 
 ```yaml
 on:
@@ -915,14 +916,39 @@ parent secret. Fork PRs receive no secrets by design and are not reviewed. On
 both review lanes the caller can name actors whose comments are withheld from
 the agent's context — prompt-injection hygiene, not a trigger gate.
 
+**What the security lane's required check proves — and does not.** Only
+`claude-security-review` reports a check a ruleset can require, under its own
+context (`<caller job> / security-review`), never through `ci-status`. Its
+claim is narrow: a security pass RAN at this head, or the PR was judged not
+applicable. The verdict stays advisory — findings never fail the job. Execution
+is what **fails closed**: when the PR is in scope and the review could not run
+at all (usage limit, dead credential, SDK crash), the check reports FAILURE,
+because `success`, `neutral` and `skipped` all satisfy a required check, so
+failure is the only conclusion that does not silently authorize a merge on
+absent evidence. That mapping is scoped to `pull_request` runs; fork PRs and
+non-PR events cannot run the review at all, so they keep the pass-through and
+their green is not execution evidence.
+
+The corollary is what the check does not prove. Every legitimate non-run is a
+name-stable job-level skip that a ruleset reads as success — a fork PR, an
+out-of-scope PR, a skip-listed actor, a kill-switched lane. So a green required
+check does not establish that a fork PR was reviewed; review fork changes to
+security-sensitive surfaces by hand. Availability is bought back by the bounded
+retry below, and a sustained outage is meant to be handled by an explicit,
+logged, attributable break-glass on the consumer's ruleset — never by weakening
+the check.
+
 **Trigger cadence is per lane, deliberately.** `claude-review` runs on
 `opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
 does not re-trigger the code review, so re-run the job for a fresh pass. That
 caps per-PR spend on active branches, and it is safe precisely because the
-lane's verdict gates nothing. `claude-security-review` keeps `synchronize`,
-because its check certifies that a security pass ran at the head being merged —
-a review of an earlier head is not that evidence. `claude-e2e-verify` keeps it
-too. Take each lane's canonical caller from its own workflow header.
+lane's verdict gates nothing. It also skips draft PRs at job level, so an
+`opened` event on a draft costs nothing and `ready_for_review` is what buys the
+review. `claude-security-review` keeps `synchronize`, because its check
+certifies that a security pass ran at the head being merged — a review of an
+earlier head is not that evidence, and it reviews drafts. `claude-e2e-verify`
+keeps `synchronize` too. Take each lane's canonical caller from its own
+workflow header.
 
 **Bounded retry.** Every lane makes at most **two** agent attempts — one
 automatic retry, never a loop. The retry is deliberately narrow, because a
@@ -948,7 +974,8 @@ orphan comment to clean up between attempts, which the review lanes do.
 **Review-count cap (code-review lane only).** `claude-review.yml` stops
 reviewing a PR after `max-reviews-per-pr` successful reviews, capping spend on
 long-lived PRs. The counter is a **visible** per-PR status comment upserted
-after each review, which doubles as the human "was this reviewed" signal;
+after each successful review — failed and skipped runs never inflate it — which
+doubles as the human "was this reviewed" signal;
 deleting it resets the count, which is fail-open by design. A capped run is a
 name-stable skip, not a red check. Treat it as a soft cap: concurrent runs for
 different heads read the counter before either writes it, so a burst can
@@ -974,15 +1001,14 @@ to every repo outside it, so flipping it during an incident would silently
 no-op exactly where nobody is looking. A kill-switch is only worth having if it
 reaches the whole fleet. Do not "correct" the visibility to selected.
 
-**Adoption.** Wiring these callers by hand is the fallback. The intended path
-is the sync-managed caller components in
+**Adoption.** Each lane's own workflow header carries its canonical caller;
+copy it from there. Callers are additionally being brought under the org's
+sync-managed component distribution in
 [`melodic-software/standards`](https://github.com/melodic-software/standards),
-which distribute a canonical per-lane caller to every target repo and keep it
-current through the ordinary sync PR. That work is in flight in
-[standards#286](https://github.com/melodic-software/standards/pull/286) and not
-yet landed — it is gated on the sync App gaining the `workflows` permission
-that writing files under `.github/workflows/` requires. Until it lands, copy
-the canonical caller from the lane's own workflow header.
+which materializes a canonical per-lane caller into every target repo and keeps
+it current through the ordinary sync PR. Where a repo's caller is
+sync-managed, change it at the component source and let the sync carry it to
+every target — never edit the materialized caller in the target repo.
 
 ## Standalone gate checks — shared adoption contract
 

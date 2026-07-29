@@ -14,14 +14,19 @@ load-bearing; changing any of them needs explicit review.
 - **`pull_request` only; never `pull_request_target` or `workflow_run` with
   secrets.** Those triggers run in a privileged context (base-repo secrets +
   write token) over potentially untrusted fork code — the "pwn request" class,
-  i.e. token exfiltration. The workflow keeps a tripwire step that hard-fails on
-  those two events. Do not whitelist a single event (that would block a
+  i.e. token exfiltration. Each workflow keeps a tripwire step that hard-fails
+  on those two events. Do not whitelist a single event (that would block a
   consumer's legitimate `workflow_dispatch` / `schedule`); reject only the
   dangerous two.
 - **Fork PRs are intentionally not reviewed.** GitHub passes no secrets and a
-  read-only token to fork-triggered `pull_request` runs, so the review degrades
-  to a warning. That is the safety guarantee, not a bug — never "fix" it by
-  reaching for `pull_request_target`.
+  read-only token to fork-triggered `pull_request` runs, so the agent cannot
+  run. `claude-review` and `claude-e2e-verify` let it degrade to a warning;
+  `claude-security-review` skips the job at job level instead, because its
+  fail-closed mapping would otherwise pin every fork PR red for a cause no push
+  can fix — and because that skip reads as success, its required check does not
+  prove a fork PR was reviewed, so fork changes to security-sensitive surfaces
+  need a human. The no-secrets guarantee is the safety property, not a bug —
+  never "fix" it by reaching for `pull_request_target`.
 - **SHA-pin both layers.** Consumers pin this reusable workflow `@<40-char-sha>`;
   this workflow pins `anthropics/claude-code-action@<sha>` (mutable tags were the
   tj-actions/CVE-2025-30066 vector). Dependabot bumps the inner pin.
@@ -29,7 +34,7 @@ load-bearing; changing any of them needs explicit review.
   the caller's `GITHUB_TOKEN` grant, so the consumer's caller job must grant
   exactly `contents: read` + `pull-requests: write` + `id-token: write`
   (`id-token` mints the Claude GitHub App token and is required even with an
-  OAuth/API-key credential). The review job re-declares that minimal set so an
+  OAuth/API-key credential). Each lane's job re-declares that minimal set so an
   over-granting caller is still narrowed here.
 - **Never touch the org secret.** `CLAUDE_CODE_OAUTH_TOKEN` is an org secret
   with visibility *all repositories* — the live, deliberate value. Never
@@ -40,12 +45,22 @@ load-bearing; changing any of them needs explicit review.
   (defaults) — both can surface model-authored content or secrets in publicly
   visible logs. Never enable Actions debug (`ACTIONS_STEP_DEBUG`) here. Never
   echo the token.
-- **No untrusted checkout before the action.** Do not check out a PR head ref
-  into the workspace root ahead of the action step.
+- **No untrusted checkout before the action — on the two review lanes.** Do not
+  check out a PR head ref into the workspace root ahead of the action step, and
+  never execute PR-authored code in a review job. `claude-e2e-verify` is the
+  deliberate exception, because building, serving, and browser-driving the PR
+  head *is* that lane: it runs PR-authored code on the runner alongside the
+  persisted `GITHUB_TOKEN` and the agent's credential. That residual is
+  accepted, not mitigated in-job; the reasoning, its bound (the
+  `pull_request`-only tripwire plus the fork-PR no-secrets guarantee), and the
+  hardening direction if the lane's scope widens are recorded in that
+  workflow's own header. Do not widen it, and do not carry the pattern into a
+  review lane.
 
 The `secrets:`/`vars:` context is unavailable in composite actions; that, plus
-the need for job-level `permissions` and the `secrets:` interface, is why review
-is a reusable workflow and the tool-runner lanes are composite actions.
+the need for job-level `permissions` and the `secrets:` interface, is why each
+Claude lane is a reusable workflow and the tool-runner lanes are composite
+actions.
 
 ## Pin everything by SHA
 
