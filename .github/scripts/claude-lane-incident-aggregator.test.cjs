@@ -133,8 +133,26 @@ async function runPoll({
         return annotationsByCheckRun[checkRunId] ?? [];
       },
     };
+    // Page-aware on purpose. A mock that hands back one flattened array cannot
+    // tell "walked three pages" from "one call returned everything", which is
+    // exactly how an unbounded walk and an undercounted API budget hide. This
+    // chunks each endpoint's result into pages of PAGE_SIZE and counts one
+    // request per page, so the poll's page cap and its reported budget are both
+    // observable.
+    const PAGE_SIZE = 100;
     const github = {
-      paginate: async (endpoint, params) => endpoint(params),
+      paginate: {
+        iterator: (endpoint, params) => ({
+          async *[Symbol.asyncIterator]() {
+            const items = endpoint(params);
+            const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+            for (let page = 0; page < pages; page += 1) {
+              calls.push({ kind: "page" });
+              yield { data: items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) };
+            }
+          },
+        }),
+      },
       rest: {
         apps: { listReposAccessibleToInstallation: endpoints.installation },
         pulls: {
@@ -658,7 +676,13 @@ async function runLookup(openIssues) {
   let failedWith = null;
   try {
     const github = {
-      paginate: async () => openIssues,
+      paginate: {
+        iterator: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield { data: openIssues };
+          },
+        }),
+      },
       rest: { issues: { listForRepo: () => {} } },
     };
     const core = {

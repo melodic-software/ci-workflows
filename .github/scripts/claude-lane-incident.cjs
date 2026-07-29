@@ -152,6 +152,12 @@ function toPositiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
+function toTimestamp(value) {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
+
 /**
  * Fold this cycle's observations into per-class counts, an affected-repository
  * index, and the observed API statuses.
@@ -359,8 +365,10 @@ function nextState({ previous, tally, cycle, now, issueOpen }) {
     );
     const state = {
       v: STATE_SCHEMA_VERSION,
-      firstSeen: carried?.firstSeen ?? timestamp,
-      lastSeen: timestamp,
+      // Normalized on the way in as well as out, so the state a cycle writes
+      // and the state parsed back from the issue body are byte-identical.
+      firstSeen: carried?.firstSeen ?? toTimestamp(timestamp),
+      lastSeen: toTimestamp(timestamp),
       cleanCycles: 0,
       classCounts: mergeCounts(carried?.classCounts, tally.classCounts),
       statusCounts: mergeCounts(carried?.statusCounts, tally.statusCounts),
@@ -447,8 +455,14 @@ function parseStateBlock(body) {
   );
   return {
     v: STATE_SCHEMA_VERSION,
-    firstSeen: typeof parsed.firstSeen === "string" ? parsed.firstSeen : null,
-    lastSeen: typeof parsed.lastSeen === "string" ? parsed.lastSeen : null,
+    // Re-serialized from a parsed instant, never echoed. A bare typeof check
+    // would let a hand-edited body put an arbitrary string — a link, a script
+    // tag, or 100k characters that push every future update past GitHub's body
+    // limit and wedge the aggregator permanently — straight into the rendered
+    // "First seen" line, which is exactly the class of leak the module header
+    // says cannot happen.
+    firstSeen: toTimestamp(parsed.firstSeen),
+    lastSeen: toTimestamp(parsed.lastSeen),
     cleanCycles,
     classCounts: sanitizeCounts(parsed.classCounts, (key) =>
       RECOGNIZED_CLASSES.has(key),
@@ -606,7 +620,28 @@ function renderIssueBody(state) {
     repositoryLines.push(`| _+${hiddenRepositories} more repositories_ | | |`);
   }
 
-  return [...prologue, ...repositoryLines, ...epilogue].join("\n");
+  const body = [...prologue, ...repositoryLines, ...epilogue].join("\n");
+  if (body.length <= MAX_BODY_CHARACTERS) return body;
+
+  // The budget above bounds the TABLE; this bounds the BODY. They differ only
+  // when the prologue alone is already over the limit, which no organic input
+  // produces — every field it renders is validated and bounded. It is reachable
+  // by hand-editing the state block in the issue, and the consequence of
+  // getting it wrong is the worst failure this module has: an over-limit body
+  // is rejected on every future update, and because the poison lives in the
+  // durable store it never clears itself. A last-resort minimal body keeps the
+  // watchdog writable, and says why it is wearing one.
+  return [
+    SELECTOR_MARKER,
+    renderStateBlock(emptyState()),
+    "",
+    "## Claude lane infrastructure incident",
+    "",
+    "The rendered report exceeded GitHub's issue-body limit and the persisted",
+    "state has been reset so this issue stays writable. That state is recovered",
+    "from this body, so it was almost certainly hand-edited; the next polling",
+    "cycle repopulates it from live data.",
+  ].join("\n");
 }
 
 module.exports = Object.freeze({

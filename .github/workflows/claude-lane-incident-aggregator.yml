@@ -159,6 +159,7 @@ jobs:
             // reported "clean" is exactly how a live incident gets auto-closed.
             const MAX_PULLS_PER_REPOSITORY = 300;
             const MAX_LANE_CHECK_RUNS_PER_PULL = 12;
+            const MAX_PAGES_PER_READ = 10;
             const PER_PAGE = 100;
 
             const lookbackHours = Number(process.env.LOOKBACK_HOURS);
@@ -186,6 +187,41 @@ jobs:
               }
             };
 
+            // Paginated reads walk the iterator rather than `github.paginate`,
+            // for two reasons the deliverable line depends on. `paginate`
+            // returns one flattened array and hides how many requests it made,
+            // so the reported API budget would silently undercount the
+            // dominant per-pull-request term; and it follows Link headers to
+            // exhaustion, so a consumer publishing thousands of annotations
+            // (annotation text is untrusted — see the module header) could walk
+            // the poll past its own job timeout. A killed job reports nothing,
+            // which is the same pinned-at-`indeterminate` failure as refusing
+            // to read at all. So: count every real request, cap the walk, and
+            // treat the cap as a read error rather than a silent trim.
+            const readAll = async (description, endpoint, params) => {
+              const items = [];
+              let pages = 0;
+              try {
+                for await (const response of github.paginate.iterator(endpoint, params)) {
+                  apiCalls += 1;
+                  pages += 1;
+                  items.push(...response.data);
+                  if (pages >= MAX_PAGES_PER_READ) {
+                    readErrors += 1;
+                    core.warning(
+                      `read truncated (${description}): more than ${MAX_PAGES_PER_READ} pages of ${PER_PAGE}; the poll is incomplete.`,
+                    );
+                    break;
+                  }
+                }
+              } catch (error) {
+                readErrors += 1;
+                core.warning(`read failed (${description}): ${error.message}`);
+                return null;
+              }
+              return items;
+            };
+
             const overrideNames = (process.env.REPOSITORIES_OVERRIDE ?? "")
               .split(",")
               .map((name) => name.trim())
@@ -197,10 +233,10 @@ jobs:
             } else if (process.env.HAS_INSTALLATION === "true") {
               // The installation's repository list IS the consumer inventory:
               // granting the App access to a repository is what enrols it.
-              const installation = await read("installation repositories", () =>
-                github.paginate(github.rest.apps.listReposAccessibleToInstallation, {
-                  per_page: PER_PAGE,
-                }),
+              const installation = await readAll(
+                "installation repositories",
+                github.rest.apps.listReposAccessibleToInstallation,
+                { per_page: PER_PAGE },
               );
               repositories = (installation ?? [])
                 .filter((repository) => !repository.archived)
@@ -288,13 +324,10 @@ jobs:
                 // every cycle forever, which pins the whole fleet at
                 // `indeterminate` and means no incident can ever auto-close —
                 // trading silent truncation for a permanent stall.
-                const checkRuns = await read(`${fullName}#${pull.number} check runs`, () =>
-                  github.paginate(github.rest.checks.listForRef, {
-                    owner,
-                    repo,
-                    ref: headSha,
-                    per_page: PER_PAGE,
-                  }),
+                const checkRuns = await readAll(
+                  `${fullName}#${pull.number} check runs`,
+                  github.rest.checks.listForRef,
+                  { owner, repo, ref: headSha, per_page: PER_PAGE },
                 );
                 if (checkRuns === null) continue;
 
@@ -332,15 +365,10 @@ jobs:
                   // annotation is the only signal and conclusion must never
                   // filter it out.
                   if ((laneRun.output?.annotations_count ?? 0) === 0) continue;
-                  const annotations = await read(
+                  const annotations = await readAll(
                     `${fullName}#${pull.number} annotations for ${laneRun.name}`,
-                    () =>
-                      github.paginate(github.rest.checks.listAnnotations, {
-                        owner,
-                        repo,
-                        check_run_id: laneRun.id,
-                        per_page: PER_PAGE,
-                      }),
+                    github.rest.checks.listAnnotations,
+                    { owner, repo, check_run_id: laneRun.id, per_page: PER_PAGE },
                   );
                   if (annotations === null) continue;
                   for (const annotation of annotations) {
@@ -385,16 +413,24 @@ jobs:
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
             );
 
-            const perPage = 100;
-            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              per_page: perPage,
-            });
-            // Folded into the run's reported API budget so the deliverable line
-            // covers every read the run made, not just the poll's.
-            core.setOutput("api-calls", String(Math.max(1, Math.ceil(openIssues.length / perPage))));
+            // Walked page by page so the count folded into the run's reported
+            // API budget is the number of requests actually made, not a
+            // division that assumes every page came back full.
+            const openIssues = [];
+            let apiCalls = 0;
+            for await (const response of github.paginate.iterator(
+              github.rest.issues.listForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "open",
+                per_page: 100,
+              },
+            )) {
+              apiCalls += 1;
+              openIssues.push(...response.data);
+            }
+            core.setOutput("api-calls", String(apiCalls));
             // The marker is a public string in a public repository, so anyone
             // able to open an issue here could plant a decoy carrying it. Only
             // a bot-authored issue is ever a candidate, and the ambiguity

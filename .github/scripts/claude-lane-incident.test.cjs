@@ -386,8 +386,8 @@ function openIncident() {
 test("the first escalating cycle opens the incident", () => {
   const { state, action } = openIncident();
   assert.equal(action, "open");
-  assert.equal(state.firstSeen, "2026-07-27T00:00:00Z");
-  assert.equal(state.lastSeen, "2026-07-27T00:00:00Z");
+  assert.equal(state.firstSeen, "2026-07-27T00:00:00.000Z");
+  assert.equal(state.lastSeen, "2026-07-27T00:00:00.000Z");
   assert.equal(state.cleanCycles, 0);
   assert.deepEqual(state.classCounts, { auth: 1 });
   assert.deepEqual(state.statusCounts, { 402: 1 });
@@ -403,8 +403,8 @@ test("a continuing incident updates in place and keeps its first-seen", () => {
     issueOpen: true,
   });
   assert.equal(action, "update");
-  assert.equal(state.firstSeen, "2026-07-27T00:00:00Z");
-  assert.equal(state.lastSeen, "2026-07-27T00:30:00Z");
+  assert.equal(state.firstSeen, "2026-07-27T00:00:00.000Z");
+  assert.equal(state.lastSeen, "2026-07-27T00:30:00.000Z");
   // Re-observing the SAME stuck pull request must not inflate the count. Each
   // cycle re-counts everything still inside the lookback window, so summing
   // would report "auth: 24" after a day of one broken PR — a measure of
@@ -716,6 +716,98 @@ test("the body stays inside GitHub's limit at the longest repository name that c
     );
     assert.match(body, /more repositories_/u);
   }
+});
+
+test("a hand-edited timestamp is re-derived from an instant, never echoed", () => {
+  // `firstSeen` and `lastSeen` are the only free-form strings the body renders.
+  // Accepting one verbatim would put a link, a script tag, or 100k characters
+  // into the rendered report — and the 100k case is the worst failure this
+  // module has, because an over-limit body is rejected on every future update
+  // and the poison lives in the durable store, so it never clears itself.
+  const tampered = parseStateBlock(
+    `<!-- ci-workflows:claude-lane-incident:state {"v":1,"firstSeen":${JSON.stringify(
+      "](https://evil.example/) <img src=x onerror=alert(1)>",
+    )},"lastSeen":${JSON.stringify("x".repeat(100000))}} -->`,
+  );
+  assert.equal(tampered.firstSeen, null);
+  assert.equal(tampered.lastSeen, null);
+
+  const recovered = parseStateBlock(
+    '<!-- ci-workflows:claude-lane-incident:state {"v":1,' +
+      '"firstSeen":"2026-07-27T00:00:00Z","lastSeen":"2026-07-27T01:00:00+00:00"} -->',
+  );
+  assert.equal(recovered.firstSeen, "2026-07-27T00:00:00.000Z");
+  assert.equal(recovered.lastSeen, "2026-07-27T01:00:00.000Z");
+});
+
+test("even a maximally hostile recovered state renders inside the body limit", () => {
+  // Everything a hand-edited body can push on at once: the whole 100-599 status
+  // range at MAX_SAFE_INTEGER counts, a full tracked index at the longest
+  // `owner/name` GitHub permits, and nine-digit pull numbers. The table budget
+  // must absorb all of it by dropping rows.
+  const statuses = {};
+  for (let status = 100; status <= 599; status += 1) {
+    statuses[status] = Number.MAX_SAFE_INTEGER;
+  }
+  const observations = [];
+  for (let repository = 0; repository < 200; repository += 1) {
+    for (let pull = 0; pull < 300; pull += 1) {
+      observations.push({
+        repository: longestRepositoryName(repository),
+        pullNumber: 900000000 + pull,
+        classes: ["auth", "runner"],
+        apiErrorStatus: 401,
+      });
+    }
+  }
+  const { state } = nextState({
+    previous: null,
+    tally: tallyObservations(observations),
+    cycle: "incident",
+    now: "2026-07-27T00:00:00Z",
+    issueOpen: false,
+  });
+  const body = renderIssueBody({ ...state, statusCounts: statuses });
+  assert.ok(body.length <= 65536, `body was ${body.length} characters`);
+  assert.ok(body.startsWith(SELECTOR_MARKER));
+});
+
+test("a state too large to render at all degrades to a writable body", () => {
+  // The character budget bounds the TABLE; this bounds the BODY. They diverge
+  // only when the prologue alone is over the limit — unreachable through
+  // parseStateBlock today, because every field it admits is bounded, which is
+  // why this drives renderIssueBody directly. It stays because the failure it
+  // prevents is the worst one here: an over-limit body is rejected on every
+  // future update, and the poison lives in the durable store, so a wedged
+  // aggregator would never recover on its own.
+  const statuses = {};
+  for (let status = 100; status <= 599; status += 1) {
+    statuses[status] = Number.MAX_SAFE_INTEGER;
+  }
+  const repositories = {};
+  for (let repository = 0; repository < 400; repository += 1) {
+    repositories[longestRepositoryName(repository)] = {
+      classes: ["auth", "runner"],
+      pulls: Array.from({ length: 300 }, (_unused, pull) => 900000000 + pull),
+      pullsSeen: 300,
+    };
+  }
+  const body = renderIssueBody({
+    v: 1,
+    firstSeen: "2026-07-27T00:00:00.000Z",
+    lastSeen: "2026-07-27T01:00:00.000Z",
+    cleanCycles: 0,
+    classCounts: { auth: 1 },
+    statusCounts: statuses,
+    repositories,
+    repositoriesSeen: 400,
+    unrecognized: 0,
+  });
+  assert.ok(body.length <= 65536, `body was ${body.length} characters`);
+  // Still selectable and still parseable, so the next cycle recovers rather
+  // than opening a duplicate incident beside an unwritable one.
+  assert.ok(body.startsWith(SELECTOR_MARKER));
+  assert.deepEqual(parseStateBlock(body).classCounts, {});
 });
 
 test("the state block stays inside the body limit however long the incident accumulates", () => {
