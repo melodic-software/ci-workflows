@@ -871,15 +871,23 @@ Ordered pre-steps, then waved rollout.
   the sync PR merges, when the default branch no longer shows the old pin.
 
   (b) HUMAN-AUTHORED PR in the wave-1 target — the ONLY vehicle for review
-  BEHAVIOR. Criteria: review fires exactly once on open; inline comments
-  present; the count comment carries `claude-review-count:1` and is authored
-  by `github-actions[bot]` (the TRACKING comment is `claude[bot]` — a
-  different author, do not conflate them); and the no-`synchronize` cadence
-  holds, i.e. a push to the same PR does not re-trigger the lane. The count
-  marker is an HTML comment, so read raw comment BODIES
-  (`gh api repos/melodic-software/<repo>/issues/<pr>/comments`) — it is
-  invisible in the rendered PR. None of these is observable on a bot-authored
-  PR, so wave 1 does not close until such a PR exists in provisioning.
+  BEHAVIOR. Criteria: the PR's open-event run's `referenced_workflows` names
+  the NEW pin (same check as (a); a human PR opened before the sync PR merges
+  runs the OLD default-branch caller, so every behavior item below could pass
+  while the new caller has exercised only its bot-skip path — merge the sync
+  PR first, and verify the pin on THIS run, not just the sync PR's); review
+  fires exactly once on open; inline comments present; the count comment
+  carries `claude-review-count:1` and is authored by `github-actions[bot]`
+  (the TRACKING comment is `claude[bot]` — a different author, do not conflate
+  them); and the no-`synchronize` cadence holds, i.e. a push to the same PR
+  does not re-trigger the lane. The count marker is an HTML comment, so read
+  raw comment BODIES and PAGINATE — the endpoint defaults to 30 results/page,
+  so on a busy PR an un-paginated read can miss the marker and falsely fail
+  this criterion
+  (`gh api --paginate repos/melodic-software/<repo>/issues/<pr>/comments --jq '.[].body'`,
+  then filter for the marker) — it is invisible in the rendered PR. None of
+  these is observable on a bot-authored PR, so wave 1 does not close until
+  such a PR exists in provisioning.
 - **3e. Post-rollout verification — ONE REPO AT A TIME** (devils-advocate F11:
   parallel verification manufactures the seat contention this effort fixes; use
   kill-switches as the sequencing mechanism): per consumer, one PR exercises —
@@ -977,7 +985,14 @@ Sanity Check ANDs in an observation no wave target can produce. The routing is
 a DECISION and is deliberately NOT made here. Candidates: (a) take the
 observation on claude-code-plugins or ci-workflows and record it explicitly as
 evidence from a non-wave repo — this is the cheapest, and it is what widening
-3e's population means in practice; (b) unpark `claude-security-review-caller`
+3e's population means in practice, BUT it satisfies only the actual-run half
+of 3e's guard, not the `paths-file` half: both repos' callers pass the inline
+`paths` input and never `paths-file` (ci-workflows'
+`claude-security-review-self.yml` jobs block; claude-code-plugins' locally-
+owned `claude-security-review.yml`, verified 2026-07-29), so a run there
+cannot prove the newly added `paths-file` mechanism doesn't silently filter
+everything — closing via (a) still requires either a caller migrated to
+`paths-file` or a separate paths-file probe; (b) unpark `claude-security-review-caller`
 by admitting a private adopter, which is what its recorded unpark trigger
 describes; (c) move the observation to a phase whose scope covers those repos.
 Do not resolve this by picking one silently.
