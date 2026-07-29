@@ -611,30 +611,82 @@ Ordered pre-steps, then waved rollout.
   lane runs; the security `changes` relevance job still runs (by design —
   name-stable reporting).
 - **3c. Pre-rollout smoke:** org-var flip on one private consumer (caller runs,
-  inner skips, conclusion recorded; org var readable on Team plan);
-  claude-code-plugins ruleset string `security-review / security-review` intact
-  post-component; queue-overflow case: overflowed-cancelled caller conclusion
-  observed and confirmed non-red for the required check (else queue stays off the
-  security caller — 2e default already ships without it).
+  inner skips, conclusion recorded; org var readable on Team plan); security-gate
+  invariant intact post-component — BOTH halves, because the gate is org-owned,
+  not repo-local (claude-code-plugins carries zero repo-local rulesets): org
+  ruleset `19388547` `security-review-gate` still `active`, `bypass_actors: []`,
+  required context exactly `security-review / security-review`, AND its
+  `repository_property` condition still including `requires-security-review ==
+  "true"` — inverting that ONE field disarms the gate with every other field
+  byte-identical — AND the set of repos carrying that property `"true"` still
+  equal to `{claude-code-plugins}`; the property is `org_actors`-editable and
+  defaults `"false"`, so a flip on either side arms or disarms the required check
+  WITHOUT touching the ruleset string, and 3d is exactly when that drifts;
+  queue-overflow case: the old criterion named an artifact that may not exist, so
+  probe the discriminator first — does a run cancelled while PENDING create a
+  check RUN for its jobs? One adjacent observation says no: claude-code-plugins
+  run `30172462100` (conclusion `cancelled`, zero jobs) left no
+  `security-review / security-review` check run at `d26dac6`, where 24 sibling
+  checks DID report. Two caveats, both load-bearing — it is ONE data point, and
+  it came from pending EVICTION under `cancel-in-progress: false` with no
+  `queue:` key, which is ADJACENT to `queue: max` overflow, not the same
+  mechanism. Note also that the check SUITE there does conclude `cancelled` with
+  zero runs, so the signal survives at suite level while the required check —
+  which the ruleset evaluates by context — is simply absent. Pass requires the
+  required check to REPORT a documented-pass status (`success`, `skipped`, or
+  `neutral`); absence is a failure mode of equal weight. On either failure the
+  queue stays off the security caller — 2e default already ships without it.
 - **3d. Waved sync rollout (devils-advocate F7/F8):** pre-steps: (i) set
   `automerge: false` on every target for the rollout window (manifest change
   landing before the component PR; restore after), (ii) for NEW targets
-  knowledge-corpus + songwriting [USER-APPROVAL GATE]: org owner extends the
-  App's selected access BEFORE the manifest PR merges (attestation compares the
-  FULL target set both directions and a mismatch wedges every target's sync —
-  standards-sync.yml:309-355). Wave 1: dotfiles (low-traffic private) — verify
-  end-to-end, including that the sync PR itself is reviewed by the NEW caller
-  (pull_request runs the merge-commit workflow file). Wave 2: remaining existing
-  targets (github-iac FIRST for the security lane), then new targets. `.github` +
+  knowledge-corpus + songwriting [USER-APPROVAL GATE]: extend the App's selected
+  access in the TIGHTEST window around the manifest PR merge. Exposure is
+  SYMMETRIC — neither order is the safe one. The operative gate is a CARDINALITY
+  check (`standards-sync.yml`, `attest` job): grant first and it fails on
+  `installation reports 10 repositories; expected 8` (8 being today's manifest
+  cardinality); merge first and it fails the inverse. The `missing`/`excess`
+  set-diff is only reached on an equal-cardinality SUBSTITUTION. `attest` is a
+  `needs:` of `sync`, so the whole matrix is skipped, not just the mismatched
+  target — the wedge is FAIL-CLOSED and self-clearing: the engine has no
+  `always()`, nothing mutates, no target is corrupted. MECHANISM: repository
+  SELECTION is REST-addressable —
+  `PUT /user/installations/{installation_id}/repositories/{repository_id}` (add)
+  and `DELETE` (remove), wrapped by Terraform
+  `github_app_installation_repository(-ies)` and Pulumi
+  `github.AppInstallationRepository`/`AppInstallationRepositories` — the plural
+  forms manage the whole selected set. Docs, verbatim: "Add a single repository
+  to an installation. The authenticated user must have admin access to the
+  repository." and "This endpoint only works for PATs (classic) with the `repo`
+  scope." So the gate does NOT require a hand-timed UI click: it requires a
+  HOLDER of a classic `ghp_` PAT with `repo` scope and admin on the targets,
+  after which the extension is an API call sequenceable to seconds inside the
+  window. Installation `144867070` is `repository_selection: selected`, so an
+  extension IS required; repository ids: knowledge-corpus `1300170946`,
+  songwriting `1297959888`. Selection is NOT the same surface as installation
+  PERMISSIONS — 3a0's `workflows: write` grant stays the org-owner action it is
+  documented as, and this endpoint does not touch it. UNDOCUMENTED, do not
+  resolve by inference: whether org-owned installations gate above repo-admin
+  (144867070 IS org-owned, so have an ORG OWNER hold the PAT rather than assume
+  repo-admin suffices); and whether ADD works when `repository_selection` is
+  `all` (only REMOVE states it requires `selected`). App authentication is NOT
+  an open question — the PAT-only sentence plus OpenAPI `enabledForGitHubApps:
+  false` on both operations excludes it. Shrink the window: every push to
+  standards `main` is a real sync run, so merge nothing else inside it, and stay
+  clear of the weekly `17 6 * * 1` reconciliation cron — allow hours of GitHub
+  cron drift, not minutes. If the window closes with no push, recovery waits for
+  that cron. Wave 1: dotfiles (low-traffic private) — verify end-to-end,
+  including that the sync PR itself is reviewed by the NEW caller (pull_request
+  runs the merge-commit workflow file). Wave 2: remaining existing targets
+  (github-iac FIRST for the security lane), then new targets. `.github` +
   ci-runner per the USER-RESERVED exemption decision (both already manifest
   targets; plan default: exempt from lane components, one-line targets comment).
   standards repo is the manifest SOURCE, not a target — its caller stays
-  repo-local, byte-equivalence-checked in Phase 5. ROLLBACK procedure: revert the
-  component source commit in standards → next sync run proposes the inverse delta
-  to all targets → merge those PRs (automerge off ⇒ manual, minutes-scale);
-  kill-switch covers the interim; the sync engine NEVER deletes files, so
-  de-manifesting a component orphans it — reverting content is the only fleet
-  revert.
+  repo-local, byte-equivalence-checked in Phase 5. ROLLBACK procedure: revert
+  the component source commit in standards → next sync run proposes the inverse
+  delta to all targets → merge those PRs (automerge off ⇒ manual,
+  minutes-scale); kill-switch covers the interim; the sync engine NEVER deletes
+  files, so de-manifesting a component orphans it — reverting content is the
+  only fleet revert.
 - **3e. Post-rollout verification — ONE REPO AT A TIME** (devils-advocate F11:
   parallel verification manufactures the seat contention this effort fixes; use
   kill-switches as the sequencing mechanism): per consumer, one PR exercises —
@@ -889,8 +941,9 @@ their RECOMMENDED options:
    rhysd/actionlint#654; fleet distribution in 3c0. Suppression explicitly approved.
 4. Sync App `workflows: write` grant: APPROVED (org-owner + github-iac change;
    authority widening acknowledged).
-5. knowledge-corpus + songwriting new targets: APPROVED; App access extends BEFORE
-   manifest merge.
+5. knowledge-corpus + songwriting new targets: APPROVED; App access extends in the
+   TIGHTEST window around manifest merge — either order wedges (see 3d) — via the
+   REST selection endpoint under a classic PAT held by an org owner.
 6. Phase 4 credential: reuse runner-observer App if permissions fit, else new
    minimal App — proceed per that order, report which at implementation.
 7. Retry gate: zero assistant turns AND class != auth.
@@ -916,8 +969,9 @@ Original decision text (recommendations + alternatives) retained below for conte
   `.github/actionlint.yaml` suppression + removal trigger on rhysd/actionlint#654,
   distributed fleet-wide in 3c0).
 - [GATE] sync App `workflows: write` grant (Phase 3a0; authority widening stated).
-- [GATE] knowledge-corpus + songwriting as new sync targets (App access BEFORE
-  manifest merge).
+- [GATE] knowledge-corpus + songwriting as new sync targets (App access in the
+  tightest window around manifest merge, via the REST selection endpoint under a
+  classic PAT held by an org owner).
 - [GATE] Phase 4 credential (reuse runner-observer App vs new App).
 - [FALLBACK — confirm or override] retry gate = zero-turns AND class != auth
   (2d; minor refinement of locked B24).
@@ -939,7 +993,9 @@ Original decision text (recommendations + alternatives) retained below for conte
 - Phase 0d actionlint disposition (suppression needs explicit approval; fleet
   distribution in 3c0 rides the same approval).
 - Phase 3a0 sync App `workflows: write` grant (org-owner + github-iac change).
-- Phase 3d new sync targets (App access extended BEFORE manifest merge).
+- Phase 3d new sync targets (App access extended in the tightest window around
+  manifest merge, via the REST selection endpoint under a classic PAT held by an
+  org owner).
 - Phase 4 credential (App reuse vs creation).
 - The two USER-RESERVED open questions and six [FALLBACK] items above.
 - Any mid-flight pivot touching required-check semantics.
