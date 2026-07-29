@@ -1,0 +1,434 @@
+// Pure logic for the Claude lane incident aggregator
+// (.github/workflows/claude-lane-incident-aggregator.yml). Everything here is
+// deterministic and network-free so it can be unit-tested; the workflow keeps
+// only the octokit calls and the counted API budget around it.
+//
+// PUBLIC-SAFETY CONTRACT — this repository is public and the aggregator's only
+// output is an issue body in it. Check-run annotation text is UNTRUSTED input:
+// any workflow in any consumer repository, and any GitHub App installed there,
+// can put arbitrary text in an annotation, and the lane's own annotation embeds
+// a projection of a model-authored SDK result. So NOTHING derived from
+// annotation text is ever rendered. Two independent gates stand between an
+// annotation and the issue body:
+//
+//   1. a pattern that can only match a narrow character class, and
+//   2. a frozen allowlist / numeric-range membership test on what it captured.
+//
+// A capture that fails gate 2 is counted, never stored and never rendered — not
+// even truncated. The same discipline covers repository names (validated
+// against the GitHub name grammar) and every number (coerced to a bounded
+// integer). `renderIssueBody` therefore emits only: allowlisted class tokens,
+// validated `owner/name` strings, integers, and timestamps this module
+// generated. Adding a render path that reads any other API string reopens the
+// leak this note exists to prevent.
+"use strict";
+
+// The token vocabulary is owned by .github/actions/claude-lane-outcome/classify.cjs
+// — that module is the only emitter, and this set mirrors what it can produce.
+// `runner` is the caller-side selector-failure token the review lanes will emit
+// once the select-runner surfacing lands; it is listed now so the aggregator
+// recognises it the moment it appears rather than counting it as unrecognised.
+// PLAN.md's early sketch also names a `concurrency` token; classify.cjs never
+// emits one, so it is deliberately absent — an aspirational token in a
+// narrative paragraph is not a contract, and an unemitted allowlist entry is
+// indistinguishable from a forged one.
+const RECOGNIZED_CLASSES = Object.freeze(
+  new Set(["auth", "rate-limit", "overloaded", "other", "runner"]),
+);
+
+// Classes that by themselves open (or hold open) the incident. Both are dead
+// until a human acts: `auth` is a credential that cannot be used until it is
+// rotated, re-entitled, or re-permissioned, and `runner` is a fleet
+// misconfiguration no retry resolves. `rate-limit`, `overloaded`, and `other`
+// are transient or benign — they self-heal, so escalating them would page a
+// human for weather. They are still counted and rendered whenever an incident
+// is open, which is what makes a storm visible in context.
+const ESCALATING_CLASSES = Object.freeze(new Set(["auth", "runner"]));
+
+// Gate 1 for the class token: a bounded lowercase-and-hyphen run, anchored on
+// word boundaries so it matches the emitter's bare `class=<token>` term.
+const CLASS_TOKEN_PATTERN = /\bclass=([a-z][a-z-]{0,20})\b/gu;
+
+// Gate 1 for the API status: the emitter folds classify.cjs's safe projection
+// into the annotation, and `api_error_status` is the one further field #238
+// requires (401 vs 402 vs 403 prescribe different remedies). Only a bare
+// three-digit number matches; a string-valued or absent field cannot.
+const API_ERROR_STATUS_PATTERN = /"api_error_status":(\d{3})[,}]/u;
+
+// GitHub's repository-name grammar. Applied to every `owner/name` before it can
+// reach the body, so an API response cannot smuggle markdown or a link.
+const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u;
+
+const STATE_SCHEMA_VERSION = 1;
+const SELECTOR_MARKER = "<!-- ci-workflows:claude-lane-incident:v1:active -->";
+const STATE_MARKER_PREFIX = "<!-- ci-workflows:claude-lane-incident:state ";
+const STATE_MARKER_SUFFIX = " -->";
+const CLEAN_CYCLES_TO_CLOSE = 3;
+
+// Bounds on the rendered body. GitHub rejects an issue body over 65536
+// characters, and a fleet-wide incident can name every repository and every
+// open PR; truncating with an explicit remainder line keeps the write from
+// failing exactly when the incident is largest.
+const MAX_RENDERED_REPOSITORIES = 40;
+const MAX_RENDERED_PULLS_PER_REPOSITORY = 10;
+
+/**
+ * Extract the machine-readable signals from one annotation message.
+ *
+ * Returns only allowlisted class tokens and a range-checked status; every other
+ * capture is folded into `unrecognized` as a count.
+ */
+function extractSignals(message) {
+  const text = typeof message === "string" ? message : "";
+  const classes = [];
+  let unrecognized = 0;
+
+  for (const match of text.matchAll(CLASS_TOKEN_PATTERN)) {
+    const token = match[1];
+    if (RECOGNIZED_CLASSES.has(token)) {
+      classes.push(token);
+    } else {
+      unrecognized += 1;
+    }
+  }
+
+  const statusMatch = API_ERROR_STATUS_PATTERN.exec(text);
+  const parsedStatus = statusMatch ? Number(statusMatch[1]) : Number.NaN;
+  const apiErrorStatus =
+    parsedStatus >= 100 && parsedStatus <= 599 ? parsedStatus : null;
+
+  return { classes, unrecognized, apiErrorStatus };
+}
+
+function isValidRepository(fullName) {
+  return (
+    typeof fullName === "string" && REPOSITORY_NAME_PATTERN.test(fullName)
+  );
+}
+
+function toPositiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * Fold this cycle's observations into per-class counts, an affected-repository
+ * index, and the observed API statuses.
+ *
+ * An observation is `{ repository, pullNumber, classes, unrecognized,
+ * apiErrorStatus }` — the shape the workflow builds from one annotation.
+ */
+function tallyObservations(observations) {
+  const classCounts = {};
+  const statusCounts = {};
+  const repositories = {};
+  let unrecognized = 0;
+
+  for (const observation of observations ?? []) {
+    unrecognized += toPositiveInteger(observation?.unrecognized) ?? 0;
+
+    const repository = isValidRepository(observation?.repository)
+      ? observation.repository
+      : null;
+    const pullNumber = toPositiveInteger(observation?.pullNumber);
+
+    for (const token of observation?.classes ?? []) {
+      if (!RECOGNIZED_CLASSES.has(token)) continue;
+      classCounts[token] = (classCounts[token] ?? 0) + 1;
+      if (!repository) continue;
+      const entry = (repositories[repository] ??= { classes: [], pulls: [] });
+      if (!entry.classes.includes(token)) entry.classes.push(token);
+      if (pullNumber !== null && !entry.pulls.includes(pullNumber)) {
+        entry.pulls.push(pullNumber);
+      }
+    }
+
+    const status = observation?.apiErrorStatus;
+    if (Number.isInteger(status) && status >= 100 && status <= 599) {
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    }
+  }
+
+  return {
+    classCounts,
+    statusCounts,
+    repositories,
+    unrecognized,
+    escalating: Object.keys(classCounts).some((token) =>
+      ESCALATING_CLASSES.has(token),
+    ),
+  };
+}
+
+function mergeCounts(previous, addition) {
+  const merged = { ...(previous ?? {}) };
+  for (const [key, count] of Object.entries(addition ?? {})) {
+    merged[key] = (merged[key] ?? 0) + count;
+  }
+  return merged;
+}
+
+function mergeRepositories(previous, addition) {
+  const merged = {};
+  for (const [name, entry] of Object.entries(previous ?? {})) {
+    if (!isValidRepository(name)) continue;
+    merged[name] = {
+      classes: [...new Set((entry?.classes ?? []).filter((token) => RECOGNIZED_CLASSES.has(token)))],
+      pulls: [...new Set((entry?.pulls ?? []).filter((pull) => toPositiveInteger(pull) !== null))],
+    };
+  }
+  for (const [name, entry] of Object.entries(addition ?? {})) {
+    if (!isValidRepository(name)) continue;
+    const target = (merged[name] ??= { classes: [], pulls: [] });
+    for (const token of entry.classes) {
+      if (!target.classes.includes(token)) target.classes.push(token);
+    }
+    for (const pull of entry.pulls) {
+      if (!target.pulls.includes(pull)) target.pulls.push(pull);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Classify one polling cycle.
+ *
+ * `clean` requires positive evidence — at least one lane check run observed AND
+ * no escalating class. Absence of failure is not health: the lanes conclude
+ * green on an infrastructure failure by design, and a window with no lane runs
+ * at all (a quiet night, or every lane wedged before it could report) proves
+ * nothing. Such a window is `indeterminate`: it neither advances the
+ * clean-cycle counter nor resets it, so an incident is never auto-closed by
+ * silence.
+ */
+function classifyCycle({ laneRunsObserved, escalating }) {
+  if (escalating) return "incident";
+  return (toPositiveInteger(laneRunsObserved) ?? 0) > 0
+    ? "clean"
+    : "indeterminate";
+}
+
+/**
+ * Advance the persisted incident state by one cycle and name the write the
+ * workflow should perform.
+ *
+ * `action` is one of:
+ *   - `open`   — no incident issue exists (or the selected one is closed) and
+ *                an escalating class was seen; create or reopen it.
+ *   - `update` — the issue exists and its body must change.
+ *   - `close`  — the third consecutive clean cycle; close with a recovery note.
+ *   - `none`   — nothing changed; write nothing. Transition-edge writes only,
+ *                which is also what keeps this inside GitHub's secondary
+ *                content-creation limits.
+ */
+function nextState({ previous, tally, cycle, now, issueExists, issueOpen }) {
+  const timestamp = now;
+
+  if (cycle === "incident") {
+    const carried = issueExists && issueOpen ? previous : null;
+    const state = {
+      v: STATE_SCHEMA_VERSION,
+      firstSeen: carried?.firstSeen ?? timestamp,
+      lastSeen: timestamp,
+      cleanCycles: 0,
+      classCounts: mergeCounts(carried?.classCounts, tally.classCounts),
+      statusCounts: mergeCounts(carried?.statusCounts, tally.statusCounts),
+      repositories: mergeRepositories(carried?.repositories, tally.repositories),
+      unrecognized: (carried?.unrecognized ?? 0) + tally.unrecognized,
+    };
+    return {
+      state,
+      action: issueExists && issueOpen ? "update" : "open",
+    };
+  }
+
+  if (!issueExists || !issueOpen) return { state: null, action: "none" };
+
+  if (cycle === "indeterminate") return { state: previous, action: "none" };
+
+  // `previous` is null whenever the open issue carries no parsable state block —
+  // a hand-edited body, or one written by an older schema. That is exactly when
+  // the recovery path runs, so it must not hand `renderIssueBody` a state with
+  // no counts to render; start from the empty shape instead of spreading null.
+  const cleanCycles = (previous?.cleanCycles ?? 0) + 1;
+  const state = { ...emptyState(), ...previous, v: STATE_SCHEMA_VERSION, cleanCycles };
+  return {
+    state,
+    action: cleanCycles >= CLEAN_CYCLES_TO_CLOSE ? "close" : "update",
+  };
+}
+
+function emptyState() {
+  return {
+    v: STATE_SCHEMA_VERSION,
+    firstSeen: null,
+    lastSeen: null,
+    cleanCycles: 0,
+    classCounts: {},
+    statusCounts: {},
+    repositories: {},
+    unrecognized: 0,
+  };
+}
+
+function renderStateBlock(state) {
+  return `${STATE_MARKER_PREFIX}${JSON.stringify(state)}${STATE_MARKER_SUFFIX}`;
+}
+
+/**
+ * Recover the persisted state from an issue body.
+ *
+ * The issue body is the durable store, so a body a human edited by hand — or
+ * one written by an older schema — must degrade to "no prior state" rather than
+ * throwing: a parse failure would otherwise wedge the aggregator on exactly the
+ * cycle it needs to report. Every recovered field is re-validated, because the
+ * body is world-writable by anyone with issue-edit rights in this repository.
+ */
+function parseStateBlock(body) {
+  const text = typeof body === "string" ? body : "";
+  const start = text.indexOf(STATE_MARKER_PREFIX);
+  if (start < 0) return null;
+  const end = text.indexOf(STATE_MARKER_SUFFIX, start);
+  if (end < 0) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(
+      text.slice(start + STATE_MARKER_PREFIX.length, end),
+    );
+  } catch {
+    return null;
+  }
+  if (parsed?.v !== STATE_SCHEMA_VERSION) return null;
+
+  const cleanCycles = Number.isSafeInteger(parsed.cleanCycles)
+    ? Math.max(0, Math.min(CLEAN_CYCLES_TO_CLOSE, parsed.cleanCycles))
+    : 0;
+
+  return {
+    v: STATE_SCHEMA_VERSION,
+    firstSeen: typeof parsed.firstSeen === "string" ? parsed.firstSeen : null,
+    lastSeen: typeof parsed.lastSeen === "string" ? parsed.lastSeen : null,
+    cleanCycles,
+    classCounts: sanitizeCounts(parsed.classCounts, (key) =>
+      RECOGNIZED_CLASSES.has(key),
+    ),
+    statusCounts: sanitizeCounts(parsed.statusCounts, (key) => {
+      const status = Number(key);
+      return Number.isInteger(status) && status >= 100 && status <= 599;
+    }),
+    repositories: mergeRepositories(parsed.repositories, {}),
+    unrecognized: toPositiveInteger(parsed.unrecognized) ?? 0,
+  };
+}
+
+function sanitizeCounts(counts, keyIsValid) {
+  const clean = {};
+  for (const [key, value] of Object.entries(counts ?? {})) {
+    const count = toPositiveInteger(value);
+    if (count !== null && keyIsValid(key)) clean[key] = count;
+  }
+  return clean;
+}
+
+function renderIssueBody(state) {
+  const classLines = Object.entries(state.classCounts)
+    .filter(([token]) => RECOGNIZED_CLASSES.has(token))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([token, count]) =>
+        `| \`${token}\` | ${count} | ${ESCALATING_CLASSES.has(token) ? "yes" : "no"} |`,
+    );
+
+  const statusEntries = Object.entries(state.statusCounts).sort(
+    ([a], [b]) => Number(a) - Number(b),
+  );
+  const statusLine =
+    statusEntries.length > 0
+      ? statusEntries
+          .map(([status, count]) => `\`${status}\` (${count})`)
+          .join(", ")
+      : "unavailable — detection came from the substring path, which carries no numeric status";
+
+  const repositoryNames = Object.keys(state.repositories).sort();
+  const shownRepositories = repositoryNames.slice(0, MAX_RENDERED_REPOSITORIES);
+  const repositoryLines = shownRepositories.map((name) => {
+    const entry = state.repositories[name];
+    const pulls = [...entry.pulls]
+      .sort((a, b) => a - b)
+      .slice(0, MAX_RENDERED_PULLS_PER_REPOSITORY)
+      .map((pull) => `[#${pull}](https://github.com/${name}/pull/${pull})`);
+    const overflow =
+      entry.pulls.length > MAX_RENDERED_PULLS_PER_REPOSITORY
+        ? ` (+${entry.pulls.length - MAX_RENDERED_PULLS_PER_REPOSITORY} more)`
+        : "";
+    const classes = [...entry.classes].sort().map((token) => `\`${token}\``);
+    return `| \`${name}\` | ${classes.join(", ")} | ${pulls.join(", ")}${overflow} |`;
+  });
+  if (repositoryNames.length > shownRepositories.length) {
+    repositoryLines.push(
+      `| _+${repositoryNames.length - shownRepositories.length} more repositories_ | | |`,
+    );
+  }
+
+  return [
+    SELECTOR_MARKER,
+    renderStateBlock(state),
+    "",
+    "## Claude lane infrastructure incident",
+    "",
+    "The Claude review lanes reported an infrastructure failure that no retry",
+    "clears. The lanes are advisory and conclude green by design, so their",
+    "checks look healthy — this issue is the only signal that PRs in the",
+    "repositories below went **unreviewed**.",
+    "",
+    `- First seen: ${state.firstSeen ?? "unknown"}`,
+    `- Last seen: ${state.lastSeen ?? "unknown"}`,
+    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE})`,
+    `- Observed \`api_error_status\`: ${statusLine}`,
+    "",
+    "### Failure classes",
+    "",
+    "| Class | Count | Escalating |",
+    "| --- | --- | --- |",
+    ...classLines,
+    "",
+    "### Affected repositories",
+    "",
+    "| Repository | Classes | Pull requests |",
+    "| --- | --- | --- |",
+    ...repositoryLines,
+    "",
+    "### Remediate",
+    "",
+    "1. `auth` — the org credential is unusable until a human acts. `401`",
+    "   rotate or replace the token; `402` fix billing or entitlement in the",
+    "   Claude Console; `403` fix key permissions and workspace access.",
+    "2. `runner` — the lane could not resolve a runner; check the governed",
+    "   runner fleet and the caller's selector inputs.",
+    "3. Re-run the affected lane jobs once the cause is fixed, then let this",
+    `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive clean cycles; it closes itself.`,
+    "",
+    "---",
+    "*Maintained automatically by `.github/workflows/claude-lane-incident-aggregator.yml`.*",
+    "*Only allowlisted class tokens and validated identifiers are reported here —",
+    "no annotation text, and no model-authored content, is ever copied into this issue.*",
+    "*Closing this by hand while the failure persists reopens it on the next cycle.*",
+  ].join("\n");
+}
+
+module.exports = Object.freeze({
+  API_ERROR_STATUS_PATTERN,
+  CLASS_TOKEN_PATTERN,
+  CLEAN_CYCLES_TO_CLOSE,
+  ESCALATING_CLASSES,
+  RECOGNIZED_CLASSES,
+  SELECTOR_MARKER,
+  STATE_SCHEMA_VERSION,
+  classifyCycle,
+  extractSignals,
+  nextState,
+  parseStateBlock,
+  renderIssueBody,
+  renderStateBlock,
+  tallyObservations,
+});
