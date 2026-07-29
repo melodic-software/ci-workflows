@@ -8,8 +8,8 @@ change must not violate.
 
 `claude-review.yml`, `claude-security-review.yml`, and `claude-e2e-verify.yml`
 each run an AI agent with an org credential on a **public** repo, and each
-workflow's own header cites this section for the rationale. These rules are
-load-bearing; changing any of them needs explicit review.
+workflow's `SECURITY MODEL` header block cites this file for the rationale.
+These rules are load-bearing; changing any of them needs explicit review.
 
 - **`pull_request` only; never `pull_request_target` or `workflow_run` with
   secrets.** Those triggers run in a privileged context (base-repo secrets +
@@ -42,12 +42,20 @@ load-bearing; changing any of them needs explicit review.
   selected-repositories. Forced-failure testing uses a repo-level same-name
   override in a sandbox repo, never a change to the org secret.
 - **Public-repo log hygiene.** Keep `display_report` and `show_full_output` off
-  (defaults) — both can surface model-authored content or secrets in publicly
-  visible logs. Never enable Actions debug (`ACTIONS_STEP_DEBUG`) here. Never
-  echo the token.
-- **No untrusted checkout before the action — on the two review lanes.** Do not
-  check out a PR head ref into the workspace root ahead of the action step, and
-  never execute PR-authored code in a review job. `claude-e2e-verify` is the
+  — both can surface model-authored content or secrets in publicly visible
+  logs. No lane sets `show_full_output`, so it stays at the action's off
+  default. `display_report` is enforced unevenly, and deliberately so:
+  `claude-security-review` hardcodes it `false` so a consumer cannot turn it
+  on, `claude-e2e-verify` never sets it, and `claude-review` exposes it as an
+  input for private consumers — **a public caller must never set
+  `display-report: true`**. Never enable Actions debug (`ACTIONS_STEP_DEBUG`)
+  here. Never echo the token.
+- **Never execute PR-authored code in a review job.** All three lanes check out
+  before the action step, and on `pull_request` the default checkout resolves to
+  the PR merge ref, so PR-authored file content is already in the workspace root
+  — presence is not the hazard, execution is. Never point a checkout at the PR
+  head ref, and never run a build, install script, or test command against that
+  tree in a review lane. `claude-e2e-verify` is the
   deliberate exception, because building, serving, and browser-driving the PR
   head *is* that lane: it runs PR-authored code on the runner alongside the
   persisted `GITHUB_TOKEN` and the agent's credential. That residual is

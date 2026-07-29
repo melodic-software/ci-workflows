@@ -917,26 +917,29 @@ both review lanes the caller can name actors whose comments are withheld from
 the agent's context — prompt-injection hygiene, not a trigger gate.
 
 **What the security lane's required check proves — and does not.** Only
-`claude-security-review` reports a check a ruleset can require, under its own
-context (`<caller job> / security-review`), never through `ci-status`. Its
-claim is narrow: a security pass RAN at this head, or the PR was judged not
+`claude-security-review`'s check is designed to be required: it reports under
+its own context (`<caller job> / security-review`), never through `ci-status`.
+Its claim is narrow: a security pass RAN at this head, or the PR was judged not
 applicable. The verdict stays advisory — findings never fail the job. Execution
 is what **fails closed**: when the PR is in scope and the review could not run
 at all (usage limit, dead credential, SDK crash), the check reports FAILURE,
 because `success`, `neutral` and `skipped` all satisfy a required check, so
 failure is the only conclusion that does not silently authorize a merge on
-absent evidence. That mapping is scoped to `pull_request` runs; fork PRs and
-non-PR events cannot run the review at all, so they keep the pass-through and
-their green is not execution evidence.
+absent evidence. That mapping is scoped to `pull_request` runs; a non-PR event
+cannot run the review at all and keeps the historical pass-through, and a fork
+PR skips the job outright — neither green is execution evidence.
 
-The corollary is what the check does not prove. Every legitimate non-run is a
-name-stable job-level skip that a ruleset reads as success — a fork PR, an
-out-of-scope PR, a skip-listed actor, a kill-switched lane. So a green required
-check does not establish that a fork PR was reviewed; review fork changes to
-security-sensitive surfaces by hand. Availability is bought back by the bounded
-retry below, and a sustained outage is meant to be handled by an explicit,
-logged, attributable break-glass on the consumer's ruleset — never by weakening
-the check.
+The corollary is what the check does not prove. Every legitimate non-run reads
+as success to a ruleset. Four are name-stable job-level skips: a fork PR, an
+out-of-scope PR, a skip-listed actor, a kill-switched lane. A fifth is not a
+skip at all — a run whose head was superseded while it queued retires itself
+step by step and reports a **green** job having reviewed nothing, on the
+premise that the newer run for the current head reports the same context. So a
+green required check is not by itself proof that this head was reviewed, and it
+never establishes that a fork PR was: review fork changes to security-sensitive
+surfaces by hand. Availability is bought back by the bounded retry below, and a
+sustained outage is meant to be handled by an explicit, logged, attributable
+break-glass on the consumer's ruleset — never by weakening the check.
 
 **Trigger cadence is per lane, deliberately.** `claude-review` runs on
 `opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
@@ -947,8 +950,10 @@ lane's verdict gates nothing. It also skips draft PRs at job level, so an
 review. `claude-security-review` keeps `synchronize`, because its check
 certifies that a security pass ran at the head being merged — a review of an
 earlier head is not that evidence, and it reviews drafts. `claude-e2e-verify`
-keeps `synchronize` too. Take each lane's canonical caller from its own
-workflow header.
+keeps `synchronize` too, and gates on nothing but its kill-switches — no draft
+skip, no `skip-actors` input — so the most expensive lane has the loosest gate.
+Scope it with the caller's own trigger types. Take each lane's canonical caller
+from its own workflow header.
 
 **Bounded retry.** Every lane makes at most **two** agent attempts — one
 automatic retry, never a loop. The retry is deliberately narrow, because a
