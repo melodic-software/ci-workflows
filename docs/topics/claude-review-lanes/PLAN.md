@@ -614,14 +614,17 @@ Ordered pre-steps, then waved rollout.
   inner skips, conclusion recorded; org var readable on Team plan); security-gate
   invariant intact post-component — BOTH halves, because the gate is org-owned,
   not repo-local (claude-code-plugins carries zero repo-local rulesets): org
-  ruleset `19388547` `security-review-gate` still `active`, `target: branch`,
-  `bypass_actors: []`, required context exactly `security-review /
-  security-review`, `conditions.ref_name` still INCLUDING `~DEFAULT_BRANCH` (and
-  not excluding it), AND its `repository_property` condition still including
-  `requires-security-review == "true"` — each of `target`, `ref_name`, and that
-  property value is a SINGLE-FIELD disarm that leaves every other field
-  byte-identical, which is why all of them are pinned — AND the set of repos
-  carrying that property `"true"` still equal to `{claude-code-plugins}`; the
+  ruleset `19388547` `security-review-gate` still `active` with its ENTIRE
+  `conditions` and `rules` objects unchanged — compare canonicalized JSON, do
+  NOT enumerate fields, because the single-field disarms are many and any list
+  misses one: `target`, `bypass_actors`, the context string
+  `security-review / security-review`, `conditions.ref_name`, and both halves of
+  `conditions.repository_property` each suffice alone, and `exclude` is the
+  subtlest (GitHub documents "The condition will not pass if any of these
+  properties match", so excluding ANY property claude-code-plugins carries —
+  `requires-signing == "true"`, say — disarms the gate with every other field
+  byte-identical) — AND the set of repos carrying `requires-security-review`
+  `"true"` still equal to `{claude-code-plugins}`; the
   property is `org_actors`-editable and
   defaults `"false"`, so a flip on either side arms or disarms the required check
   WITHOUT touching the ruleset string, and 3d is exactly when that drifts;
@@ -664,9 +667,13 @@ Ordered pre-steps, then waved rollout.
   authority, not activity). Either way the wedge is FAIL-CLOSED and
   self-clearing: `attest` is a `needs:` of `sync`, so the whole matrix is
   skipped, not just the mismatched target — the engine has no `always()`,
-  nothing mutates, no target is corrupted, and recovery is a `workflow_dispatch`
-  with `dry-run: false`, NOT a wait for the weekly cron. MECHANISM: repository
-  SELECTION is REST-addressable —
+  nothing mutates, no target is corrupted. Recovery is asymmetric too, the same
+  way: under grant-first the manifest merge IS the clean recovery run (10 == 10,
+  attest passes, all targets sync), whereas merge-first needs a manual
+  `workflow_dispatch` with `dry-run: false` — the dispatch default is `true` and
+  both `attest` and `sync` carry `if: !inputs.dry-run`, so a default dispatch
+  syncs nothing. Either way recovery is available immediately; it is NOT a wait
+  for the weekly cron. MECHANISM: repository SELECTION is REST-addressable —
   `PUT /user/installations/{installation_id}/repositories/{repository_id}` (add)
   and `DELETE` (remove), wrapped by Terraform
   `github_app_installation_repository(-ies)` and Pulumi
@@ -732,10 +739,13 @@ target: `gh api repos/melodic-software/<repo>/contents/.github/workflows/claude-
 equals `git hash-object components/claude-lanes/claude-review.yml` (blob-hash
 equivalence loop recorded verbatim; count of mismatches == 0); medley's synced
 caller contains `reopened`; the 3c security-gate invariant re-reads intact —
-`gh api orgs/melodic-software/rulesets/19388547` (the repo-level `rulesets`
-listing does NOT return context strings, only `{id, name, source_type, target,
-enforcement}`, so it cannot verify this) plus the regenerated
-`requires-security-review == "true"` repo set — AND a live PR shows an ACTUAL
+`gh api orgs/melodic-software/rulesets/19388547`, `conditions` + `rules`
+compared as canonicalized JSON (the repo-level `rulesets` listing returns
+NEITHER key, so it cannot verify this), AND the property set regenerated:
+`gh api "orgs/melodic-software/properties/values?per_page=100" --paginate --jq`
+`'.[]|select(.properties[]|select(.property_name=="requires-security-review"`
+`and .value=="true"))|.repository_name'` returns exactly `claude-code-plugins`
+— AND a live PR shows an ACTUAL
 security run (not skip) on a code-touching PR; smoke transcripts (kill-switch,
 overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
