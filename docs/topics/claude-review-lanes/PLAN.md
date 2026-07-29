@@ -632,10 +632,10 @@ Ordered pre-steps, then waved rollout.
   `queue:` key, which is ADJACENT to `queue: max` overflow, not the same
   mechanism. Note also that the check SUITE there does conclude `cancelled` with
   zero runs, so the signal survives at suite level while the required check —
-  which the ruleset evaluates by context — is simply absent. Pass requires that
-  required check reporting a documented-pass status (`success`, `skipped`, or
-  `neutral`); absence is a failure mode of equal weight. On either failure, queue
-  stays off the security caller — 2e default already ships without it.
+  which the ruleset evaluates by context — is simply absent. Pass requires the
+  required check to REPORT a documented-pass status (`success`, `skipped`, or
+  `neutral`); absence is a failure mode of equal weight. On either failure the
+  queue stays off the security caller — 2e default already ships without it.
 - **3d. Waved sync rollout (devils-advocate F7/F8):** pre-steps: (i) set
   `automerge: false` on every target for the rollout window (manifest change
   landing before the component PR; restore after), (ii) for NEW targets
@@ -943,7 +943,7 @@ their RECOMMENDED options:
    authority widening acknowledged).
 5. knowledge-corpus + songwriting new targets: APPROVED; App access extends in the
    TIGHTEST window around manifest merge — either order wedges (see 3d) — via the
-   REST selection endpoint under a classic PAT.
+   REST selection endpoint under a classic PAT held by an org owner.
 6. Phase 4 credential: reuse runner-observer App if permissions fit, else new
    minimal App — proceed per that order, report which at implementation.
 7. Retry gate: zero assistant turns AND class != auth.
@@ -994,7 +994,8 @@ Original decision text (recommendations + alternatives) retained below for conte
   distribution in 3c0 rides the same approval).
 - Phase 3a0 sync App `workflows: write` grant (org-owner + github-iac change).
 - Phase 3d new sync targets (App access extended in the tightest window around
-  manifest merge, via the REST selection endpoint under a classic PAT).
+  manifest merge, via the REST selection endpoint under a classic PAT held by an
+  org owner).
 - Phase 4 credential (App reuse vs creation).
 - The two USER-RESERVED open questions and six [FALLBACK] items above.
 - Any mid-flight pivot touching required-check semantics.
