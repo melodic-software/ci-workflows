@@ -272,14 +272,23 @@ jobs:
             // PR armed at some point and are not arming failures. Probing only
             // already-unarmed candidates keeps the extra query off the common
             // path.
+            //
+            // `nodes`, never `totalCount`: totalCount counts the WHOLE timeline
+            // and ignores itemTypes (verified live — a PR with four timeline
+            // items and no arming event reports totalCount 4). All three
+            // enabled-event types are listed because which one GitHub records
+            // depends on the merge method: standards-sync.yml arms with SQUASH,
+            // which emits AutoSquashEnabledEvent, not AutoMergeEnabledEvent
+            // (verified live), so naming only the latter would report every
+            // armed PR as an arming failure.
             const armingHistoryQuery = `
               query($owner: String!, $repo: String!, $number: Int!) {
                 repository(owner: $owner, name: $repo) {
                   pullRequest(number: $number) {
                     state
                     autoMergeRequest { enabledAt }
-                    timelineItems(last: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT]) {
-                      totalCount
+                    timelineItems(first: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, AUTO_REBASE_ENABLED_EVENT]) {
+                      nodes { __typename }
                     }
                   }
                 }
@@ -338,7 +347,7 @@ jobs:
                 // the happy path itself raises an alert.
                 if (pullRequest?.state !== 'OPEN') continue;
                 if (pullRequest.autoMergeRequest?.enabledAt) continue;
-                if (pullRequest.timelineItems.totalCount > 0) continue;
+                if (pullRequest.timelineItems.nodes.length > 0) continue;
                 const openHours = (Date.now() - Date.parse(candidate.createdAt)) / 3_600_000;
                 unarmed.push({
                   repo,

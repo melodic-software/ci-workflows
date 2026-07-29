@@ -69,6 +69,34 @@ test("the arming step uses the target-scoped App token, not the caller's default
   );
 });
 
+// Two GraphQL semantics no mock can enforce, both verified against live
+// GitHub and both silently wrong in an earlier revision of this step:
+// `totalCount` reports the WHOLE timeline and ignores `itemTypes`, and a
+// `mergeMethod: SQUASH` arm records AutoSquashEnabledEvent — so reading
+// totalCount, or naming only AUTO_MERGE_ENABLED_EVENT, makes the arming gate
+// answer the opposite of the truth on every PR.
+test("the arming history is read from filtered nodes, never totalCount", () => {
+  assert.match(armingScript, /timelineItems\(first: 1, itemTypes: \[/u);
+  assert.match(armingScript, /timelineItems\.nodes\.length/u);
+  assert.doesNotMatch(
+    armingScript,
+    /timelineItems\([^)]*\)\s*\{\s*totalCount|timelineItems\.totalCount/u,
+  );
+});
+
+test("the arming history covers every merge method's enabled event", () => {
+  for (const eventType of [
+    "AUTO_MERGE_ENABLED_EVENT",
+    "AUTO_SQUASH_ENABLED_EVENT",
+    "AUTO_REBASE_ENABLED_EVENT",
+  ]) {
+    assert.ok(
+      armingScript.includes(eventType),
+      `${eventType} must be probed; the merge method decides which one GitHub records`,
+    );
+  }
+});
+
 async function runArming({
   owner = "melodic-software",
   repo = "dotfiles",
@@ -115,8 +143,15 @@ async function runArming({
             pullRequest: {
               id: nodeId,
               autoMergeRequest: pullRequest.autoMergeRequest ?? null,
+              // Mirrors real GitHub: `nodes` is filtered by itemTypes, and a
+              // SQUASH arm records AutoSquashEnabledEvent. `totalCount` is
+              // deliberately a non-zero decoy the production code must not
+              // read, because GitHub reports the WHOLE timeline there.
               timelineItems: {
-                totalCount: pullRequest.armedEventCount ?? 0,
+                totalCount: 4,
+                nodes: pullRequest.wasEverArmed
+                  ? [{ __typename: "AutoSquashEnabledEvent" }]
+                  : [],
               },
             },
           },
@@ -171,7 +206,7 @@ test("a PR that was armed and then disarmed is never re-armed", async () => {
   // reviewer who disarms a sync PR to hold it back must not be overridden on
   // the next sync, and GitHub's own auto-disable must not be fought either.
   const { graphqlCalls, warnings } = await runArming({
-    pullRequest: { armedEventCount: 1 },
+    pullRequest: { wasEverArmed: true },
   });
   assert.equal(
     graphqlCalls.filter((call) =>

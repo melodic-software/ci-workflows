@@ -501,8 +501,8 @@ jobs:
                   pullRequest(number: $number) {
                     id
                     autoMergeRequest { enabledAt }
-                    timelineItems(last: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT]) {
-                      totalCount
+                    timelineItems(first: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, AUTO_REBASE_ENABLED_EVENT]) {
+                      nodes { __typename }
                     }
                   }
                 }
@@ -514,7 +514,15 @@ jobs:
               core.warning(`Could not read ${owner}/${repo}#${pull_number} to arm auto-merge.`);
               return;
             }
-            if (pull.autoMergeRequest || pull.timelineItems.totalCount > 0) {
+            // Read `nodes`, never `totalCount`: totalCount counts the WHOLE
+            // timeline and ignores itemTypes (verified live — a PR with four
+            // timeline items and no arming event reports totalCount 4). All
+            // three enabled-event types are listed because which one GitHub
+            // records depends on the merge method: SQUASH emits
+            // AutoSquashEnabledEvent, not AutoMergeEnabledEvent (verified
+            // live), so naming only the latter would read "never armed" on
+            // every PR this workflow has ever armed.
+            if (pull.autoMergeRequest || pull.timelineItems.nodes.length > 0) {
               core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number}; leaving its current state alone.`);
               return;
             }

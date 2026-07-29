@@ -67,7 +67,7 @@ function pullRequest({
 async function runScan({
   repoNames = ["dotfiles"],
   automergeRepoNames = null,
-  armedEventCounts = {},
+  wasEverArmed = {},
   armingHistoryFailures = {},
   thresholdHours = 4,
   nodesByRepo = {},
@@ -156,8 +156,15 @@ async function runScan({
               pullRequest: {
                 state: override?.state ?? "OPEN",
                 autoMergeRequest: enabledAt ? { enabledAt } : null,
+                // Mirrors real GitHub: `nodes` is filtered by itemTypes, and a
+                // SQUASH arm records AutoSquashEnabledEvent. `totalCount` is
+                // deliberately a non-zero decoy the production code must not
+                // read, because GitHub reports the WHOLE timeline there.
                 timelineItems: {
-                  totalCount: armedEventCounts[variables.number] ?? 0,
+                  totalCount: 4,
+                  nodes: wasEverArmed[variables.number]
+                    ? [{ __typename: "AutoSquashEnabledEvent" }]
+                    : [],
                 },
               },
             },
@@ -943,6 +950,34 @@ test("close comments on and closes the genuine bot-authored tracking issue", asy
 // the detector that makes that state observable, and — equally important — the
 // states that must NOT alarm, since a watchdog that cries wolf gets muted.
 
+// Two GraphQL semantics no mock can enforce, both verified against live
+// GitHub and both silently wrong in an earlier revision of this scan:
+// `totalCount` reports the WHOLE timeline and ignores `itemTypes`, and a
+// `mergeMethod: SQUASH` arm records AutoSquashEnabledEvent — so reading
+// totalCount, or naming only AUTO_MERGE_ENABLED_EVENT, makes the exoneration
+// answer the opposite of the truth on every PR.
+test("the arming history is read from filtered nodes, never totalCount", () => {
+  assert.match(scanScript, /timelineItems\(first: 1, itemTypes: \[/u);
+  assert.match(scanScript, /timelineItems\.nodes\.length/u);
+  assert.doesNotMatch(
+    scanScript,
+    /timelineItems\([^)]*\)\s*\{\s*totalCount|timelineItems\.totalCount/u,
+  );
+});
+
+test("the arming history covers every merge method's enabled event", () => {
+  for (const eventType of [
+    "AUTO_MERGE_ENABLED_EVENT",
+    "AUTO_SQUASH_ENABLED_EVENT",
+    "AUTO_REBASE_ENABLED_EVENT",
+  ]) {
+    assert.ok(
+      scanScript.includes(eventType),
+      `${eventType} must be probed; the merge method decides which one GitHub records`,
+    );
+  }
+});
+
 test("a sync PR past the threshold that was never armed is reported", async () => {
   const { outputs, report } = await runScan({
     nodesByRepo: {
@@ -973,7 +1008,7 @@ test("a PR that was armed and later disarmed is not reported as an arming failur
     nodesByRepo: {
       dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
     },
-    armedEventCounts: { 7: 1 },
+    wasEverArmed: { 7: true },
   });
   assert.equal(outputs["unarmed-count"], "0");
   // The exoneration must come from the timeline probe actually running.
