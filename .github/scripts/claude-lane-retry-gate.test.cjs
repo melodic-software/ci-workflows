@@ -77,7 +77,10 @@ function gateScript(workflowName, stepName) {
     .join("\n");
 }
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+// github-script wraps the body in an AsyncFunction, which is what makes the
+// body's top-level `await` and bare `return` legal. Constructing one the same
+// way is what keeps this harness faithful rather than an approximation.
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // Returns the gate's decision plus everything it told the operator, so a test
 // can assert WHY it decided, not just what it decided.
@@ -187,7 +190,12 @@ const rateLimitedMidReview = [
     message: {
       model: "claude-opus-4-5-20260514",
       content: [
-        { type: "tool_use", id: "t1", name: "mcp__github__create_review", input: {} },
+        {
+          type: "tool_use",
+          id: "t1",
+          name: "mcp__github__create_review",
+          input: {},
+        },
       ],
       usage: { input_tokens: 12043, output_tokens: 318 },
     },
@@ -374,7 +382,11 @@ for (const lane of lanes) {
     // author AND this run's URL: nothing else this run posted exists yet.
     test(`${label}: retrying deletes this run's orphan tracking comment`, async () => {
       const comments = [
-        { id: 1, user: { login: "claude[bot]" }, body: "…/actions/runs/424242" },
+        {
+          id: 1,
+          user: { login: "claude[bot]" },
+          body: "…/actions/runs/424242",
+        },
         { id: 2, user: { login: "claude[bot]" }, body: "…/actions/runs/999" },
         { id: 3, user: { login: "someone" }, body: "…/actions/runs/424242" },
       ];
