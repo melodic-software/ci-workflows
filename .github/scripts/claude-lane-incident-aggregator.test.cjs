@@ -112,42 +112,53 @@ async function runPoll({
         throw new Error(`simulated read failure for ${label}`);
       }
     };
-    // The poll reaches three endpoints through `github.paginate` and one
+    // The poll reaches three endpoints through `paginate.iterator` and one
     // directly, so the mock routes by endpoint identity rather than by call
-    // order — `paginate` returns the flattened array the real helper returns,
-    // and the direct call returns an `{ data }` envelope.
+    // order. Each entry here RESOLVES a paginated endpoint — its call-record
+    // shape, its failure label, and its full result set — without performing a
+    // request; the requests are the pages the iterator below walks. Keeping
+    // resolution and request separate is what makes `calls` a one-record-per-
+    // HTTP-request ledger, and therefore a usable oracle for the `api-calls`
+    // output. Recording once here AND once per page would double-count every
+    // single-page read.
     const endpoints = {
-      installation: () => {
-        calls.push({ kind: "installation" });
-        maybeFail("installation");
-        return installationRepositories;
-      },
-      checkRuns: ({ owner, repo, ref }) => {
-        calls.push({ kind: "checks", repo: `${owner}/${repo}`, ref });
-        maybeFail(`checks:${owner}/${repo}`);
-        return checkRunsByPull[ref] ?? [];
-      },
-      annotations: ({ check_run_id: checkRunId }) => {
-        calls.push({ kind: "annotations", checkRunId });
-        maybeFail(`annotations:${checkRunId}`);
-        return annotationsByCheckRun[checkRunId] ?? [];
-      },
+      installation: () => ({
+        record: { kind: "installation" },
+        label: "installation",
+        items: installationRepositories,
+      }),
+      checkRuns: ({ owner, repo, ref }) => ({
+        record: { kind: "checks", repo: `${owner}/${repo}`, ref },
+        label: `checks:${owner}/${repo}`,
+        items: checkRunsByPull[ref] ?? [],
+      }),
+      annotations: ({ check_run_id: checkRunId }) => ({
+        record: { kind: "annotations", checkRunId },
+        label: `annotations:${checkRunId}`,
+        items: annotationsByCheckRun[checkRunId] ?? [],
+      }),
     };
     // Page-aware on purpose. A mock that hands back one flattened array cannot
     // tell "walked three pages" from "one call returned everything", which is
     // exactly how an unbounded walk and an undercounted API budget hide. This
-    // chunks each endpoint's result into pages of PAGE_SIZE and counts one
-    // request per page, so the poll's page cap and its reported budget are both
-    // observable.
+    // chunks each endpoint's result into pages of PAGE_SIZE and records one
+    // request per page — carrying that endpoint's own kind, so the per-endpoint
+    // filters below keep working — leaving the poll's page cap and its reported
+    // budget both observable.
     const PAGE_SIZE = 100;
     const github = {
       paginate: {
         iterator: (endpoint, params) => ({
           async *[Symbol.asyncIterator]() {
-            const items = endpoint(params);
+            const { record, label, items } = endpoint(params);
             const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
             for (let page = 0; page < pages; page += 1) {
-              calls.push({ kind: "page" });
+              // Recorded BEFORE the failure check, matching the direct
+              // `pulls.list` mock below: a request that 403s was still a
+              // request, and a ledger that omitted it would understate the
+              // budget exactly on the cycles that go wrong.
+              calls.push({ ...record, page: page + 1 });
+              maybeFail(label);
               yield { data: items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) };
             }
           },
@@ -575,11 +586,36 @@ test("check runs and annotations are paginated, neither truncated at one page no
   const poll = extractStepScript(
     "Poll consumer repositories for lane failure signals",
   );
-  assert.match(poll, /github\.paginate\(github\.rest\.checks\.listForRef/u);
+  // Pinned as "goes through the paginating helper", NOT as `github.paginate`.
+  // The poll deliberately rejects that form: it returns one flattened array
+  // that hides how many requests it made — which would silently undercount the
+  // API budget this workflow's deliverable line reports — and it follows Link
+  // headers to exhaustion, so a consumer publishing thousands of annotations
+  // could walk the poll past its own job timeout. `readAll` walks the iterator
+  // instead, counting and capping. So three things are pinned: the helper
+  // paginates, both endpoints go through it, and neither is ever invoked
+  // directly — a direct call is the single-page read this test exists to rule
+  // out, and it would pass a check that only looked for the helper.
   assert.match(
     poll,
-    /github\.paginate\(github\.rest\.checks\.listAnnotations/u,
+    /const readAll = async \([\s\S]*?github\.paginate\.iterator\(endpoint, params\)/u,
+    "readAll must paginate, not issue a single request",
   );
+  for (const endpoint of ["listForRef", "listAnnotations"]) {
+    assert.match(
+      poll,
+      new RegExp(
+        `await readAll\\(\\s*\`[^\`]*\`,\\s*github\\.rest\\.checks\\.${endpoint},`,
+        "u",
+      ),
+      `checks.${endpoint} must be read through readAll`,
+    );
+    assert.doesNotMatch(
+      poll,
+      new RegExp(`github\\.rest\\.checks\\.${endpoint}\\(`, "u"),
+      `checks.${endpoint} must never be invoked directly — that reads one page`,
+    );
+  }
 
   const { outputs } = await runPoll({
     repositoriesOverride: "melodic-software/medley",
@@ -655,13 +691,66 @@ test("pagination stops at the lookback edge rather than walking history", async 
 });
 
 test("the API-call count reported to the log is the number of reads actually attempted", async () => {
-  const { outputs, calls } = await runPoll({
+  const single = await runPoll({
     repositoriesOverride: "melodic-software/medley",
     pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
     checkRunsByPull: { "sha-a": [checkRun({ id: 90, annotationsCount: 1 })] },
     annotationsByCheckRun: { 90: [{ message: laneAnnotation("auth", 401) }] },
   });
+  assert.equal(Number(single.outputs["api-calls"]), single.calls.length);
+
+  // The single-page case above is satisfied by any accounting that happens to
+  // land on the right total; only a MULTI-page read distinguishes "counts
+  // requests" from "counts reads". Both paginated endpoints span two pages
+  // here, so a helper that counted once per read rather than once per page
+  // would undercount by two — which is precisely how the dominant
+  // per-pull-request term of the reported budget would go silently wrong.
+  const paged = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+    checkRunsByPull: {
+      "sha-a": Array.from({ length: 140 }, (_unused, index) =>
+        checkRun({ id: index + 1, name: "ci-status" }),
+      ).concat([
+        checkRun({ id: 500, name: "review / review", annotationsCount: 1 }),
+      ]),
+    },
+    annotationsByCheckRun: {
+      500: Array.from({ length: 150 }, () => ({
+        message: laneAnnotation("auth", 401),
+      })),
+    },
+  });
+  assert.equal(Number(paged.outputs["api-calls"]), paged.calls.length);
+  assert.equal(
+    paged.calls.length,
+    5,
+    "one pulls page, two check-run pages, two annotation pages",
+  );
+});
+
+test("a paginated read that fails still costs the request it made", async () => {
+  // The read helpers count the request before they know it failed, so a 403
+  // under a narrowed credential is visible in the budget rather than shrinking
+  // it. Without this the accounting seam is only exercised on the happy path.
+  const { outputs, calls } = await runPoll({
+    repositoriesOverride: "melodic-software/medley",
+    pullsByRepo: { "melodic-software/medley": [[recentPull(12, "sha-a")]] },
+    checkRunsByPull: { "sha-a": [checkRun({ id: 90, annotationsCount: 1 })] },
+    failFor: ["checks:melodic-software/medley"],
+  });
+  assert.equal(
+    calls.filter((call) => call.kind === "checks").length,
+    1,
+    "the failed check-run read is still one request",
+  );
   assert.equal(Number(outputs["api-calls"]), calls.length);
+  assert.equal(outputs["read-errors"], "1");
+  assert.equal(
+    outputs.cycle,
+    "indeterminate",
+    "an unreadable head must never be reported clean",
+  );
 });
 
 // --- Issue selection -------------------------------------------------------

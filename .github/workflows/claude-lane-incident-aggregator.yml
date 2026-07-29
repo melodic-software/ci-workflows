@@ -215,6 +215,13 @@ jobs:
                   }
                 }
               } catch (error) {
+                // The request that threw was issued but never yielded a page,
+                // so the loop above never counted it. Counting it here keeps
+                // this helper's accounting identical to `read`'s, which counts
+                // before it can fail: a budget that SHRANK once reads started
+                // 403ing would understate spend on exactly the cycles most
+                // worth diagnosing.
+                apiCalls += 1;
                 readErrors += 1;
                 core.warning(`read failed (${description}): ${error.message}`);
                 return null;
