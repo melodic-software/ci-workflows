@@ -726,8 +726,10 @@ comment recorded in this file; equivalence results recorded (issue links or "no
 drift"); `gh issue view 256 --repo melodic-software/ci-workflows --json comments`
 contains the trailer-parsing note.
 
-- **Phase 5 partial evidence (2026-07-29):** three bullets closed; two
-  outstanding, so the phase tag stays `[TODO]`.
+- **Phase 5 partial evidence (2026-07-29):** two of five bullets fully closed
+  (trailer note, do-not-break sweep); one half-closed (equivalence — medley
+  done, blob-hash blocked); two outstanding (README/CLAUDE.md, tags advanced),
+  so the phase tag stays `[TODO]`.
   - **medley REVIEW.md equivalence — DRIFT, filed as medley#1671.** The
     comparison does not run the way the bullet's framing implies. medley's
     `REVIEW.md` is not a drifted copy of the managed source: it is an
@@ -745,11 +747,15 @@ contains the trailer-parsing note.
     security in is correct; adopting the mutual-exclusion text would have
     produced the 2f-addendum failure mode of no lane reporting security
     findings. Phase 1 sanity greps clean on medley's copy (`grep -c "Do not
-    report"` == 0, `grep -c "Cap the nits"` == 0). All five security-scope
-    checks have counterparts (`REVIEW.md:65`, `:66`, `:67`, `:96` routing to
-    `review/security.md:18`, `:11`, `review/logging.md:12`,
-    `review/multi-tenancy/README.md`), and medley carries zero suppression
-    language. The real drift is the one always-check that is NOT
+    report"` == 0, `grep -c "Cap the nits"` == 0). All FOUR security-lane
+    `blocking` always-checks have counterparts — object-level authorization
+    (`REVIEW.md:66` → `review/security.md:18`), secrets and injection
+    (`:65` → `review/security.md:7`, `:11`), tenant scoping (`:96` →
+    `review/multi-tenancy/README.md`) — as does the code-review lane's own
+    audit-log check (`:67` → `review/logging.md:12`), which standards
+    `REVIEW.md:79-81` explicitly assigns to the observability seam rather than
+    the security lane. medley carries zero suppression language. The real
+    drift is the one always-check that is NOT
     security-gated: multi-location atomicity (standards `REVIEW.md:82-86`) has
     no universal-checklist line in medley, and its nearest coverage
     `review/transactions-and-consistency.md` self-scopes to "EF Core
@@ -784,7 +790,10 @@ contains the trailer-parsing note.
     granted capability stays inert until the engine pin moves; no currency
     detector named, since 3g has not run.
   - **Remaining for Phase 5:** the README/CLAUDE.md lane-contract bullet
-    (ci-workflows#285, open) and the blob-hash equivalence above. Verification:
+    (ci-workflows#285, open); the blob-hash equivalence above; and the final
+    bullet's "PLAN.md tags advanced; topic close-out at PR time", which cannot
+    close while the other two are open — the tag is still `[TODO]`, so tags are
+    by definition not yet advanced. Verification:
     two fresh-context verifier rounds ran against the comments and the
     equivalence verdict; both returned REJECT and both were remediated — round
     1 caught a deployed-state overreach on the #151 comment and a false
