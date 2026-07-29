@@ -666,11 +666,25 @@ Ordered pre-steps, then waved rollout.
   is deleted and the next delta reports `created` again), which is why it is
   easy to miss. Re-pin to `8202e03f30dd0c0189c862052d5f242b9a496798` (#291): it
   changes the gate to `pull-request-number != ''` — non-empty on BOTH the create
-  and update paths — AND adds the never-armed watchdog in the SAME commit, so
-  ONE pin satisfies both. Confirm nothing functional has landed since with `git
-  diff --name-only 8202e03 origin/main`, and update the trailing `# <short-sha>
-  <date>` comment alongside the SHA. Expect this push to fire a real sync run
-  that refreshes open sync PRs — benign here (cardinality unchanged, and
+  and update paths. #291 ALSO adds the never-armed watchdog, but ONE PIN DOES
+  NOT SATISFY BOTH — the watchdog lives in a DIFFERENT reusable
+  (`standards-sync-stuck-automerge-alert.yml`), reached through a SEPARATE
+  standards caller carrying its OWN pin, so re-pinning `sync.yml` activates the
+  arming half and nothing else. That watchdog caller
+  (`.github/workflows/standards-sync-stuck-automerge-alert.yml:19`) still sits
+  at `43bc8d0` (2026-07-22), which predates BOTH #291's never-armed detection
+  and #234's split-scan reliability fix. It needs its own re-pin to
+  `8202e03f`, as its own PR with its own `components/runner-policy/policy.json`
+  entry, and the deadline is BEFORE `automerge: true` is restored: the
+  never-armed scan only considers targets the manifest marks `automerge: true`,
+  so it is inert while the window holds all 8 at `false` and becomes
+  load-bearing at the exact moment the restore lands. (The armed-but-stuck scan
+  is NOT automerge-gated — it sweeps every target on the hourly cron today, and
+  is quiet only because no sync PR is currently armed.) Confirm nothing
+  functional has landed since with `git diff --name-only 8202e03 origin/main`,
+  and update the trailing `# <short-sha> <date>` comment alongside the SHA.
+  Expect this push to fire a real sync run that refreshes open sync PRs —
+  benign here (cardinality unchanged, and
   `automerge: false` still blocks arming). Being a push to standards `main`, it
   goes BEFORE the window opens; inside it, it is exactly the trigger the drain
   exists to exclude. (i) `automerge: false` on every target for the rollout
