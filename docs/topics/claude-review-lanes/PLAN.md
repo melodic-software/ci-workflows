@@ -826,11 +826,14 @@ Ordered pre-steps, then waved rollout.
   component) as
   `dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]`
   — and the review job's own `if` skips when `github.actor` is in that list.
-  So the criterion contradicted 2b's self-trigger ban. Confirmed live on the
-  2026-07-29 sync round: on the run each of the four sync PRs' OPEN event
-  produced, `review / review` reported `skipped`. Look for it on the OPEN-event
-  run, not on the PR's current head — the no-`synchronize` cadence means a
-  later push produces no claude-review run at all, so a head-keyed query
+  So the criterion contradicted 2b's self-trigger ban. This is not one round's
+  accident — it holds for EVERY sync PR, because the author is fixed and the
+  skip list is a default the component never overrides. Confirmed live on the
+  2026-07-29 round: provisioning run `30469715753` reports
+  `review / review -> skipped`. Cite a RUN ID, not a PR number, and read the
+  OPEN-event run rather than the PR's current head: sync PRs are recreated
+  round to round so their numbers decay, and the no-`synchronize` cadence means
+  a later push produces no claude-review run at all, so a head-keyed query
   returns no such check rather than a skip. Phase 1 above already recorded the
   same skip on the earlier `review-instructions` sync round. Split accordingly:
 
