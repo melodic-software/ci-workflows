@@ -668,9 +668,13 @@ Ordered pre-steps, then waved rollout.
   so runs QUEUE rather than cancel, and a queued run resolves the moving `main`
   ref when its `plan` job finally executes — an already-triggered run can
   therefore plan the PRE-merge manifest (8) against the POST-grant installation
-  (10) and wedge. So DRAIN FIRST: confirm no standards-sync run is in progress
-  or queued before granting, then grant, then merge. Grant-first's cost is a
-  different one and belongs on the page: for the window the App HOLDS write
+  (10) and wedge. So DRAIN FIRST, and RE-CHECK — sequence is drain, grant,
+  re-check, merge: `gh run list --repo melodic-software/standards --workflow
+  sync.yml --json databaseId,status --jq '[.[]|select(.status!="completed")]'`
+  must return `[]` immediately BEFORE the grant and again immediately BEFORE
+  merging the manifest PR (negate `completed` rather than enumerate, so
+  `queued`, `in_progress`, and `waiting` are all caught). Grant-first's cost is
+  a different one and belongs on the page: for the window the App HOLDS write
   access to two repos that are not yet manifest targets (sync writes only to
   manifest targets, so the exposure is authority, not activity). Either way the
   wedge is FAIL-CLOSED and self-clearing: `attest` is a `needs:` of `sync`, so
