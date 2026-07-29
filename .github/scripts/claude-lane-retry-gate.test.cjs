@@ -277,6 +277,42 @@ for (const lane of lanes) {
     });
   }
 
+  // The status is BOTH a synthetic-turn marker and, when no result entry was
+  // written, the only auth signal available. A payload that keeps the other
+  // markers but drops the status would discount the turn and blind the auth
+  // check in one move, so an unreadable class must refuse rather than default.
+  test(`${label}: a synthetic turn with no readable status does not retry`, async () => {
+    const payload = [
+      { type: "system", subtype: "init" },
+      {
+        type: "assistant",
+        message: {
+          model: "<synthetic>",
+          content: [{ type: "text", text: "API Error: 401" }],
+        },
+        error: "auth_error",
+      },
+    ];
+    const result = await withPayload(payload, (file) =>
+      runGate(lane, { executionFile: file }),
+    );
+    assert.equal(
+      result.retry,
+      "false",
+      "a failure whose class cannot be read may be an auth failure",
+    );
+    assert.match(result.notices.join("\n"), /no failure class could be read/u);
+  });
+
+  // Proves zero turns and nothing else. The gate needs both halves.
+  test(`${label}: an empty execution array does not retry`, async () => {
+    const result = await withPayload([], (file) =>
+      runGate(lane, { executionFile: file }),
+    );
+    assert.equal(result.retry, "false");
+    assert.match(result.notices.join("\n"), /no failure class could be read/u);
+  });
+
   test(`${label}: an auth-class error variant does not retry`, async () => {
     // The error subtypes carry `errors[]` instead of `api_error_status`, so the
     // substring pass is the only evidence available.
@@ -361,7 +397,10 @@ for (const lane of lanes) {
 // logic: each lane words its own refusal notice for the artifact it posts
 // (inline review comments vs a single findings comment), and that copy is
 // allowed to differ.
+// The evidence guard is its own region: leaving it out is what let the e2e lane
+// diverge into retrying on an unprovable file while its siblings refused.
 const decisionRegions = [
+  ["the evidence guard", "let entries;", "core.notice("],
   ["the real-work count", "const isSyntheticErrorTurn", "if (realTurns > 0) {"],
   ["the auth predicate", "const last = entries.length", "if (auth) {"],
 ];

@@ -797,11 +797,11 @@ jobs:
             } catch {
               // Falls through to the evidence guard below.
             }
-            // Retry only on EVIDENCE of zero turns. A missing or unparsable
-            // execution file proves nothing: a hard kill (step timeout, OOM)
-            // can lose the file after turns were already spent, and retrying
-            // then risks exactly the duplicate comments this gate exists to
-            // prevent.
+            // Retry only on EVIDENCE of zero real turns. A missing or
+            // unparsable execution file proves nothing: a hard kill (step
+            // timeout, OOM) can lose the file after turns were already spent,
+            // and retrying then risks exactly the duplicate comment this gate
+            // exists to prevent.
             if (entries === undefined) {
               core.notice(
                 "Not retrying: no parseable execution file, so zero assistant turns cannot be proven.",
@@ -819,11 +819,14 @@ jobs:
             // `error` is carried by the SDK's published message union;
             // `isApiErrorMessage`, `apiErrorStatus`, and the `<synthetic>` model
             // sentinel are observed wire fields the types do not declare.
-            // Depending on them is safe in one direction only, and that is the
-            // direction taken here: if upstream renames any of them the turn
-            // counts as real, `realTurns` rises above zero, and the gate
-            // declines. Drift degrades to not retrying, never to duplicate
-            // comments.
+            // The three markers are OR'd, so ALL THREE would have to be
+            // renamed before a synthetic turn counted as real work again —
+            // renaming one is absorbed by the other two. Both drift shapes are
+            // safe, for different reasons: under partial drift the turn stays
+            // discounted, but `realTurns` is still 0, so nothing was posted and
+            // nothing can be duplicated; under total drift the turn counts as
+            // real and the gate declines outright. Neither shape produces
+            // duplicate comments.
             const isSyntheticErrorTurn = (entry) =>
               typeof entry?.error === "string" ||
               entry?.isApiErrorMessage === true ||
@@ -851,10 +854,26 @@ jobs:
             const statuses = [
               last?.api_error_status,
               ...assistantTurns.map((entry) => entry?.apiErrorStatus),
-            ];
+            ].filter((status) => typeof status === "number");
             const errorText = (Array.isArray(last?.errors) ? last.errors : [])
               .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
               .join("\n");
+            // A retry needs a PROVEN non-auth class, so an unreadable class is a
+            // refusal rather than a default. This is not belt-and-braces: when
+            // no result entry was written, `apiErrorStatus` on the synthetic
+            // turn is the ONLY auth signal there is, and it is also one of the
+            // markers that made the turn synthetic. A payload keeping `error`
+            // or the `<synthetic>` sentinel but dropping the status would
+            // otherwise discount the turn AND blind the auth check in one move,
+            // and retry a credential death. An empty array lands here too: it
+            // proves zero turns but nothing about the class, and the gate
+            // requires both.
+            if (statuses.length === 0 && !Array.isArray(last?.errors)) {
+              core.notice(
+                "Not retrying: no failure class could be read, so a non-auth class cannot be proven.",
+              );
+              return;
+            }
             const auth =
               statuses.some(
                 (status) => status === 401 || status === 402 || status === 403,
