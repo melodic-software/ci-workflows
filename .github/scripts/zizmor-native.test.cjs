@@ -65,9 +65,11 @@ test("native zizmor preserves the reusable interface and read-only boundary", ()
   assert.match(workflow, /^permissions:\n {2}contents: read\n\njobs:/mu);
   assert.doesNotMatch(workflow, /(?:permissions:|^ {2,})[^\n]*write/mu);
   assert.match(workflow, /^ {4}runs-on: \$\{\{ inputs\.runner \}\}$/mu);
+  // The exact SHA and version tag move with Dependabot bumps; only the
+  // SHA-pinned-with-a-version-comment shape is the invariant under test.
   assert.match(
     workflow,
-    /uses: actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7\.0\.0/u,
+    /uses: actions\/checkout@[0-9a-f]{40} # v\d+\.\d+\.\d+/u,
   );
   assert.match(workflow, /persist-credentials: false/u);
 });
