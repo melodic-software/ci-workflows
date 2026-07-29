@@ -47,6 +47,15 @@ set -euo pipefail
 # reported instead points at synthesized underscores.
 # Ref: actions/runner, TemplateReader.ParseScalar (`inString`).
 #
+# An unterminated `${{` has no runner behaviour to follow: ParseScalar fails the
+# whole document, so GitHub rejects the shape as a workflow-parse error and it
+# never reaches a real action. What happens to it here is therefore this
+# check's own choice, made for diagnosability. A second unquoted `${{` is taken
+# as proof the first never closed, so the scan stops there rather than running
+# on to a later span's `}}` and underscoring a well-formed expression along with
+# the broken text. Substitution resumes past the opener, leaving only the
+# opener itself in the extracted script for ShellCheck to report (SC1073).
+#
 # A newline inside a span is likewise preserved rather than overwritten, so the
 # substitution is equal-length per line rather than equal-length overall and the
 # banner below holds for a block containing a multi-line expression. actionlint
@@ -61,37 +70,43 @@ sanitize_expressions() {
   awk -v quote="'" '
     # Equal length per line: every byte of the span becomes an underscore except
     # a newline, which stays a newline.
-    function fill(span,   parts, count, i, filler, out) {
-      count = split(span, parts, "\n")
-      for (i = 1; i <= count; i++) {
-        if (i > 1) out = out "\n"
-        filler = sprintf("%*s", length(parts[i]), "")
-        gsub(/ /, "_", filler)
-        out = out filler
-      }
-      return out
+    function fill(span) {
+      gsub(/[^\n]/, "_", span)
+      return span
     }
+
+    # The index of the close marker ending the span opened at `s`, or 0 when
+    # that opener is unterminated. Scanning starts just past the opener, so its
+    # own trailing `{` can never be read as the first half of a close marker. A
+    # doubled quote — the expression syntax escape for a literal one — toggles
+    # twice and so is inert, which is exactly how the runner absorbs it.
+    function span_end(text, s,   n, i, c, quoted) {
+      n = length(text)
+      for (i = s + 3; i <= n; i++) {
+        c = substr(text, i, 1)
+        if (c == quote) {
+          quoted = !quoted
+        } else if (quoted) {
+          continue
+        } else if (c == "}" && substr(text, i - 1, 1) == "}") {
+          return i
+        } else if (substr(text, i, 3) == "${{") {
+          return 0
+        }
+      }
+      return 0
+    }
+
     { src = src $0 ORS }
     END {
       out = ""
       while ((s = index(src, "${{")) > 0) {
-        n = length(src)
-        quoted = 0
-        e = 0
-        # From just past the opener, so its own trailing `{` can never be read
-        # as the first half of a close marker. A doubled `''` — the expression
-        # syntax escape for a literal quote — toggles twice and so is inert,
-        # which is exactly how the runner absorbs it.
-        for (i = s + 3; i <= n; i++) {
-          c = substr(src, i, 1)
-          if (c == quote) {
-            quoted = !quoted
-          } else if (!quoted && c == "}" && substr(src, i - 1, 1) == "}") {
-            e = i
-            break
-          }
+        e = span_end(src, s)
+        if (e == 0) {
+          out = out substr(src, 1, s + 2)
+          src = substr(src, s + 3)
+          continue
         }
-        if (e == 0) break
         out = out substr(src, 1, s - 1) fill(substr(src, s, e - s + 1))
         src = substr(src, e + 1)
       }

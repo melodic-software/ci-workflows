@@ -2,7 +2,8 @@
 # Pin the properties a green composite-run-shellcheck run cannot prove on its
 # own: that a broken `run:` block fails the check, that the expression
 # substitution actually runs — and spans the right bytes when an expression
-# crosses lines or carries a `}}` in a string literal — that a step ShellCheck
+# crosses lines, carries a `}}` in a string literal, or is never closed at all —
+# that a step ShellCheck
 # cannot read is announced, that every tracked composite is reached — including
 # one carrying no shell at all — that a malformed `runs.steps` shape is refused
 # rather than extracted from, and that a file set yielding no block fails rather
@@ -12,6 +13,18 @@ set -euo pipefail
 
 check=.github/scripts/composite-run-shellcheck.sh
 temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+
+# The findings ShellCheck reported against one line, for a caller to grep for a
+# code. ShellCheck prints a `In <file> line N:` header, the source line, then a
+# caret line per code, so a fixed -A count stops covering the block as soon as a
+# line draws a second code — and reads as a passing assertion when it does.
+findings_at() {
+  awk -v header="In $1 line $2:" '
+    $0 == header { inside = 1; next }
+    /^$/ { inside = 0 }
+    inside
+  ' "$3"
+}
 
 broken="$temp/composite-run-shellcheck-broken.txt"
 if bash "$check" \
@@ -86,21 +99,50 @@ if [[ "$(grep -cF "In $spanning line " "$spans")" -ne 1 ]]; then
   echo "Expected exactly one finding in $spanning." >&2
   exit 1
 fi
-grep -F -A2 "In $spanning line 6:" "$spans" | grep -F 'SC2086'
+findings_at "$spanning" 6 "$spans" | grep -F 'SC2086'
 
 # A `}}` inside the expression's own string literal must not end the span.
 # Ending there leaks the literal's remainder into the script, and the unbalanced
 # quoting stops ShellCheck analysing the file — so the SC2086 two lines later is
 # reported at all only because the span survived intact.
 literal=fixtures/composite-action/expression-spans/action.yml.step-1.bash
-grep -F -A2 "In $literal line 7:" "$spans" | grep -F 'SC2086'
+findings_at "$literal" 7 "$spans" | grep -F 'SC2086'
 # The parse errors a truncated span produces. Asserted absent by code rather
 # than by the SC2086 above alone: those codes are what masks it, and naming them
-# keeps the failure legible when the substitution regresses.
+# keeps the failure legible when the substitution regresses. File-global, so
+# the shape that legitimately produces them gets a fixture and a run of its own
+# below rather than a step here.
 if grep -E 'SC107[23]' "$spans"; then
   echo 'A truncated expression span left ShellCheck unable to parse the block.' >&2
   exit 1
 fi
+
+# An unterminated `${{` is the one span shape with no runner behaviour to
+# follow: GitHub rejects it as a workflow-parse error, so it never reaches a
+# real action and what happens to it is this check's own choice. Nothing else in
+# the toolchain would catch a wrong one — actionlint does not read composite
+# `steps:` — so both halves of the choice are pinned here.
+unterminated="$temp/composite-run-shellcheck-unterminated.txt"
+if bash "$check" fixtures/composite-action/unterminated-expression/action.yml \
+  >"$unterminated" 2>&1; then
+  echo 'The unterminated-expression fixture unexpectedly passed.' >&2
+  exit 1
+fi
+cat -- "$unterminated"
+
+# The opener stops the scan rather than extending it to the next expression's
+# `}}`. Extending it underscores that well-formed expression and the `ls` after
+# it, leaving the block's stray `"` to swallow what remains — so the SC2086 on
+# the sixth line of the body, reported at line 7, is absent exactly when the
+# opener has silently consumed the real shell around it.
+swallowed=fixtures/composite-action/unterminated-expression/action.yml.step-0.bash
+findings_at "$swallowed" 7 "$unterminated" | grep -F 'SC2086'
+
+# The opener itself survives into the extracted script, so ShellCheck reports it
+# rather than the block parsing cleanly and saying nothing. Third line of the
+# body, reported at line 4.
+intact=fixtures/composite-action/unterminated-expression/action.yml.step-1.bash
+findings_at "$intact" 4 "$unterminated" | grep -F 'SC1073'
 
 # A path is reused as both the extracted script's location under the temp
 # workdir and the argument ShellCheck reads back after cd'ing there, so only a
