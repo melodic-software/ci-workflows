@@ -726,6 +726,73 @@ comment recorded in this file; equivalence results recorded (issue links or "no
 drift"); `gh issue view 256 --repo melodic-software/ci-workflows --json comments`
 contains the trailer-parsing note.
 
+- **Phase 5 partial evidence (2026-07-29):** three bullets closed; two
+  outstanding, so the phase tag stays `[TODO]`.
+  - **medley REVIEW.md equivalence — DRIFT, filed as medley#1671.** The
+    comparison does not run the way the bullet's framing implies. medley's
+    `REVIEW.md` is not a drifted copy of the managed source: it is an
+    independently authored 188-line document with its own slice taxonomy, first
+    added in `4a1d61a6`, never synced from standards (the 109-line managed
+    source has no counterpart section structure). The absent lane-scope
+    headings are therefore NOT the finding, because the restructure's
+    mutual-exclusion rule is conditional on a named file — standards
+    `REVIEW.md:66-73` suppresses security findings only "On a repository whose
+    CI runs the security lane (a `.github/workflows/claude-security-review.yml`
+    workflow exists)", and otherwise directs "report security findings under
+    this lane too". medley has no such workflow and no caller routing to that
+    reusable (its only `claude-*` workflows are `claude-assistant.yml` and
+    `claude-review.yml`), so medley sits in the else branch and folding
+    security in is correct; adopting the mutual-exclusion text would have
+    produced the 2f-addendum failure mode of no lane reporting security
+    findings. Phase 1 sanity greps clean on medley's copy (`grep -c "Do not
+    report"` == 0, `grep -c "Cap the nits"` == 0). All five security-scope
+    checks have counterparts (`REVIEW.md:65`, `:66`, `:67`, `:96` routing to
+    `review/security.md:18`, `:11`, `review/logging.md:12`,
+    `review/multi-tenancy/README.md`), and medley carries zero suppression
+    language. The real drift is the one always-check that is NOT
+    security-gated: multi-location atomicity (standards `REVIEW.md:82-86`) has
+    no universal-checklist line in medley, and its nearest coverage
+    `review/transactions-and-consistency.md` self-scopes to "EF Core
+    persistence in the modular monolith" while medley is polyglot
+    (`python-ci.yml`, `typescript-ci.yml`, `shell-lint.yml`). medley's file was
+    NOT edited — `review-instructions` is `locally-owned` for medley, the
+    customization seam. medley#1671 records the gap and the forward-looking
+    trigger: adopting a security lane later inverts the finding into
+    double-reporting and would then require the mutual-exclusion language.
+  - **standards repo-local caller blob-hash equivalence — NOT DONE.** Blocked:
+    it cannot run until standards#286 merges and the components sync; that PR
+    is still OPEN and unmerged. This half of the equivalence bullet is
+    outstanding, not waived.
+  - **Co-Authored-By trailer-parsing note — POSTED** as a record-only comment on
+    #256 (`issuecomment-5112552526`), satisfying the Sanity Check line. The
+    item resolves N/A rather than pass/fail: it is conditional on the
+    `agent-approval-check` gate, which #256 already records as rejected for
+    autonomous repos, so no probe was run and the comment explicitly declines to
+    assert how the trailer parsing works.
+  - **Do-not-break sweep — COMPLETE.** #151 trigger UNCHANGED (it keys on a
+    background review loop existing, which the cadence cut neither creates nor
+    removes); comment records the one real nuance, that the cut erodes the
+    "scheduling freedom" rationale without touching the trigger
+    (`issuecomment-5112552666`). #254 CONSISTENT — the marker copy
+    (`claude-review.yml:751`) advertises only the comment-deletion reset and
+    correctly does not promise #254's unbuilt `workflow_dispatch` path.
+    #255/#258/#259 UNTOUCHED (all OPEN, `updatedAt` unchanged at
+    2026-07-27T02:11Z). #257 SEEDED with the Phase 3 pin inventory
+    (`issuecomment-5112552823`), including the medley staleness findings
+    (caller at v0.6.1 vs current v0.9.1; assistant lane on claude-code-action
+    v1.0.174 vs the lanes' v1.0.183) and the sync-engine pin class where a
+    granted capability stays inert until the engine pin moves; no currency
+    detector named, since 3g has not run.
+  - **Remaining for Phase 5:** the README/CLAUDE.md lane-contract bullet
+    (ci-workflows#285, open) and the blob-hash equivalence above. Verification:
+    two fresh-context verifier rounds ran against the comments and the
+    equivalence verdict; both returned REJECT and both were remediated — round
+    1 caught a deployed-state overreach on the #151 comment and a false
+    uniformity claim on #257, round 2 caught a `create-github-app-token`
+    call-site undercount (one vs the actual six) introduced while fixing round
+    1. The round-2 remediations were self-checked against primary evidence, not
+    independently re-verified.
+
 ## Blast radius
 
 HIGH. Fleet-wide CI touching every non-archived org repo's PR pipeline, one
