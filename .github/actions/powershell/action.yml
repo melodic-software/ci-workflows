@@ -43,9 +43,25 @@ runs:
             Where-Object { $_.Version -eq [version]$required }
         if (-not $have) {
             try {
-                Install-Module PSScriptAnalyzer -RequiredVersion $required -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+                $module = @{
+                    Name               = 'PSScriptAnalyzer'
+                    RequiredVersion    = $required
+                    Scope              = 'CurrentUser'
+                    Force              = $true
+                    SkipPublisherCheck = $true
+                    ErrorAction        = 'Stop'
+                }
+                Install-Module @module
             } catch {
-                Install-PSResource PSScriptAnalyzer -Version $required -Scope CurrentUser -TrustRepository -Reinstall -ErrorAction Stop
+                $resource = @{
+                    Name            = 'PSScriptAnalyzer'
+                    Version         = $required
+                    Scope           = 'CurrentUser'
+                    TrustRepository = $true
+                    Reinstall       = $true
+                    ErrorAction     = 'Stop'
+                }
+                Install-PSResource @resource
             }
         }
         Import-Module PSScriptAnalyzer -RequiredVersion $required -ErrorAction Stop
@@ -70,5 +86,12 @@ runs:
         $paths = @($env:PATHS -split '\s+' | Where-Object { $_ })
         $exclude = @($env:EXCLUDE -split '\s+' | Where-Object { $_ })
         $failOnNoFiles = $env:FAIL_ON_NO_FILES -eq 'true'
-        & "$env:ACTION_PATH/Invoke-Pssa.ps1" -Path $paths -Settings $env:SETTINGS -ExcludePath $exclude -FailOnNoFiles:$failOnNoFiles -AnalyzerVersion $env:REQUIRED
+        $analysis = @{
+            Path            = $paths
+            Settings        = $env:SETTINGS
+            ExcludePath     = $exclude
+            FailOnNoFiles   = $failOnNoFiles
+            AnalyzerVersion = $env:REQUIRED
+        }
+        & "$env:ACTION_PATH/Invoke-Pssa.ps1" @analysis
         exit $LASTEXITCODE

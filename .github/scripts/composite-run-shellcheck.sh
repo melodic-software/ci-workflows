@@ -14,6 +14,10 @@
 # makes the in-place `# shellcheck disable=` directives those blocks already
 # carry take effect.
 #
+# The pwsh blocks this announces as skipped are covered by the PowerShell
+# counterpart, .github/scripts/Invoke-CompositeRunPssa.ps1. The two run in
+# different CI lanes because each needs its own analyzer on PATH.
+#
 # Refs: https://github.com/rhysd/actionlint/blob/main/docs/checks.md
 #       https://github.com/rhysd/actionlint/blob/main/rule_shellcheck.go
 #       https://github.com/rhysd/actionlint/issues/46

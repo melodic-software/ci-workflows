@@ -1,0 +1,28 @@
+name: pwsh-custom-shell-composite
+description: >-
+  Every PowerShell shell shape the selector must classify, in one file: the bare
+  name, GitHub's custom-shell form (`command [...options] {0}`), the Windows
+  PowerShell keyword, and a dialect PSScriptAnalyzer does not read. The custom
+  form is the point — GitHub runs it with pwsh, so an exact-name selector would
+  skip it while the job stayed green. Invoke-CompositeRunPssa.test.ps1 asserts
+  the custom and `powershell` forms are analyzed rather than skipped, and that
+  the independent block count agrees with what extraction produced.
+
+runs:
+  using: composite
+  steps:
+    - name: Bare pwsh
+      shell: pwsh
+      run: Write-Output 'bare pwsh'
+
+    - name: Custom pwsh
+      shell: pwsh -command ". '{0}'"
+      run: Write-Output 'custom pwsh'
+
+    - name: Windows PowerShell
+      shell: powershell
+      run: Write-Output 'windows powershell'
+
+    - name: Not a shell PSScriptAnalyzer reads
+      shell: bash
+      run: echo 'skipped out loud'
