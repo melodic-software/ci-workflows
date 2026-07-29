@@ -482,15 +482,18 @@ test("the retry gate keys on a failed, current, PR-scoped first attempt", () => 
     "the retry must stay PR-scoped",
   );
 
-  // Zero assistant turns is the artifact-safety condition: nothing
+  // Zero turns of REAL work is the artifact-safety condition: nothing
   // review-shaped was posted, so attempt 2 cannot duplicate inline comments.
+  // What the gate DECIDES from those payloads is executed, not pattern-matched,
+  // in claude-lane-retry-gate.test.cjs — a regex here cannot tell a reachable
+  // branch from a dead one, which is how the 429 path went unnoticed.
   assert.match(
     gate,
-    /\(entry\) => entry\?\.type === "assistant"/u,
-    "the gate must refuse to retry once assistant turns were spent",
+    /const realTurns = assistantTurns\.filter\(/u,
+    "the gate must refuse to retry once turns of real work were spent",
   );
 
-  // The auth exclusion mirrors classify.cjs's auth class type-for-type; a
+  // The auth exclusion covers classify.cjs's auth class type-for-type; a
   // retry cannot clear a credential death.
   for (const errorType of [
     "authentication_error",

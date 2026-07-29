@@ -466,14 +466,17 @@ jobs:
       # costs the PR its review until someone notices and re-runs.
       #
       # The gate retries ONLY when the execution file shows ZERO assistant
-      # turns and the failure is not auth-class. Zero turns is the
-      # artifact-safety condition: the action posts nothing review-shaped
-      # before its first assistant turn, so attempt 2 cannot duplicate inline
-      # comments already on the PR. The auth exclusion skips the one class no
-      # retry can clear — the credential needs an operator. A mid-review
-      # failure (assistant turns already spent, comments possibly posted) is
-      # deliberately NOT retried: the duplicate-comment risk outweighs the
-      # second chance, and the re-run path remains.
+      # turns of real work and the failure is not auth-class. Zero real turns
+      # is the artifact-safety condition: the action posts nothing
+      # review-shaped before its first assistant turn, so attempt 2 cannot
+      # duplicate inline comments already on the PR. The auth exclusion skips
+      # the one class no retry can clear — the credential needs an operator. A
+      # mid-review failure (assistant turns already spent, comments possibly
+      # posted) is deliberately NOT retried: the duplicate-comment risk
+      # outweighs the second chance, and the re-run path remains. "Real work"
+      # is load-bearing and not the same as "an assistant entry exists" — see
+      # the gate script for why an API error manufactures an assistant turn
+      # that posted nothing.
       #
       # Deliberately ONE retry, not a loop: Actions cannot loop a `uses:`
       # step, so the retry is a verbatim copy of the step above, and each copy
@@ -481,11 +484,18 @@ jobs:
       # freshness guard and the review-count cap exactly as the first attempt
       # does, so a retired or capped run never spends a retry.
       #
-      # The auth predicate mirrors classify.cjs in the claude-lane-outcome
-      # composite — the authoritative sibling. The composite is fetched at its
-      # pinned SHA and the caller's checkout does not contain this repo's
-      # scripts, so classify.cjs cannot be require()d at runtime and the
-      # predicate is inlined here instead; keep the two type-for-type.
+      # The auth predicate covers classify.cjs's auth class in the
+      # claude-lane-outcome composite — the authoritative sibling for the
+      # status-to-class mapping. The composite is fetched at its pinned SHA and
+      # the caller's checkout does not contain this repo's scripts, so
+      # classify.cjs cannot be require()d at runtime and the predicate is
+      # inlined here instead; keep the three auth statuses and three auth error
+      # types identical in both. The gate is deliberately a SUPERSET of its
+      # sibling on inputs, not on classes: classify.cjs reads only the last
+      # entry because its job is to name the class of a completed run, while the
+      # gate must also rule out an auth failure recorded on a synthetic turn
+      # when no result entry was written. Do not widen classify.cjs to match —
+      # that changes the fail-closed mapping.
       - name: Decide whether to retry the review
         id: retry-gate
         if: >-
@@ -519,25 +529,57 @@ jobs:
               );
               return;
             }
+            // An API error does not end the stream quietly. Claude Code emits a
+            // SYNTHETIC assistant turn carrying the error as ordinary text, so a
+            // 429 that killed the run before any real work still records a
+            // `type: "assistant"` entry. Counting those turns is what made this
+            // gate unreachable for the dominant failure class. The
+            // artifact-safety condition is about work that could have POSTED
+            // something, so synthetic error turns do not count as work.
+            //
+            // `error` is carried by the SDK's published message union;
+            // `isApiErrorMessage`, `apiErrorStatus`, and the `<synthetic>` model
+            // sentinel are observed wire fields the types do not declare.
+            // Depending on them is safe in one direction only, and that is the
+            // direction taken here: if upstream renames any of them the turn
+            // counts as real, `realTurns` rises above zero, and the gate
+            // declines. Drift degrades to not retrying, never to duplicate
+            // comments.
+            const isSyntheticErrorTurn = (entry) =>
+              typeof entry?.error === "string" ||
+              entry?.isApiErrorMessage === true ||
+              entry?.message?.model === "<synthetic>";
             const assistantTurns = entries.filter(
               (entry) => entry?.type === "assistant",
+            );
+            const realTurns = assistantTurns.filter(
+              (entry) => !isSyntheticErrorTurn(entry),
             ).length;
-            if (assistantTurns > 0) {
+            if (realTurns > 0) {
               core.notice(
-                `Not retrying: attempt 1 recorded ${assistantTurns} assistant turn(s), ` +
+                `Not retrying: attempt 1 recorded ${realTurns} assistant turn(s) of real work, ` +
                   "so it may already have posted comments a second attempt would duplicate.",
               );
               return;
             }
+            // Auth is read from the result entry AND from every synthetic error
+            // turn. The result entry is the primary source, but the action also
+            // writes the file from a path that produces NO result entry, and
+            // discounting synthetic turns above would otherwise let an
+            // auth-class failure through that hole — the one class this gate
+            // must never retry.
             const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
-            const status = last?.api_error_status;
+            const statuses = [
+              last?.api_error_status,
+              ...assistantTurns.map((entry) => entry?.apiErrorStatus),
+            ];
             const errorText = (Array.isArray(last?.errors) ? last.errors : [])
               .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
               .join("\n");
             const auth =
-              status === 401 ||
-              status === 402 ||
-              status === 403 ||
+              statuses.some(
+                (status) => status === 401 || status === 402 || status === 403,
+              ) ||
               errorText.includes('"type":"authentication_error"') ||
               errorText.includes('"type":"billing_error"') ||
               errorText.includes('"type":"permission_error"');
