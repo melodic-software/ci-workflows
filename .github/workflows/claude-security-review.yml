@@ -108,8 +108,9 @@ name: claude-security-review
 #         with:
 #           # Each repo OWNS its pattern file at this conventional path:
 #           # root-anchored gitignore patterns, one per line (`#` comments and
-#           # blank lines ignored; `!` negation is REJECTED — see the `paths`
-#           # input's MATCHER note) — the repo's security-sensitive surfaces
+#           # blank lines ignored; `!`, `?` and `+` are REJECTED — see the
+#           # `paths` input's MATCHER note) — the repo's security-sensitive
+#           # surfaces
 #           # (workflows, scripts, auth/token-touching source, network-call
 #           # sites). Ordinary `*` / `**` globs mean what an Actions `paths:`
 #           # author expects, which is every pattern worth writing here. It is
@@ -170,16 +171,20 @@ on:
           MATCHER: patterns are ROOT-ANCHORED GITIGNORE patterns, not GitHub
           Actions `paths:` patterns — the `changes` job matches with
           `git check-ignore` (see the `Determine security relevance` step).
-          The two agree on ordinary `*` / `**` globs, which is every pattern
-          worth writing here, so this rarely matters. Where they differ:
-          `!` NEGATION does NOT behave as Actions documents it (an Actions-valid
-          `!.github/docs/**` after `.github/**` still matches, i.e. does NOT
-          exclude), and the `Determine security relevance` step REJECTS a
-          negated pattern rather than silently mismatching it; gitignore extras
-          Actions does not document (`?`, `[0-9]` character classes, trailing-
-          slash directory patterns like `scripts/`) DO work, but a caller
-          relying on them is relying on this implementation, not on the
-          Actions spec.
+          Plain `*` / `**` globs and `[a-z0-9]` character classes mean the same
+          thing under both, and that covers every pattern worth writing here.
+          The three that do NOT are REJECTED as a configuration error rather
+          than silently mismatched: `!` negation (gitignore cannot re-include
+          below an excluded directory, so `.github/**` + `!.github/docs/**`
+          still matches), and `?` / `+`, which Actions defines as
+          zero-or-one / one-or-more of the PRECEDING character but gitignore
+          does not — `*.jsx?` matches `page.js` and `page.jsx` for Actions and
+          NEITHER here. Those two fail toward matching fewer files, i.e. toward
+          skipping the review, so they fail loudly instead. Two remaining
+          differences are harmless and permitted: a trailing-slash directory
+          pattern (`scripts/`) works here though Actions does not document it,
+          and `docs/*` matches at any depth here versus root-only for Actions
+          — matching MORE than intended only costs an extra review.
         type: string
         default: ''
       paths-file:
@@ -420,21 +425,69 @@ jobs:
             exit 0
           fi
 
-          # Reject `!` negation BEFORE matching, in its own pass — the pattern
-          # loop below runs in a `printf | while` subshell, where a non-zero
-          # exit would not fail the step.
+          # Reject the pattern characters this matcher cannot honor as GitHub
+          # Actions defines them, BEFORE matching. Its own pass rather than an
+          # arm in the loop below, so the check reads in one place and runs
+          # once. (An `exit 1` inside that `printf | while` subshell WOULD
+          # still fail the step under `set -e` — the pipeline returns the
+          # subshell's status — but a single up-front guard is clearer.)
           #
-          # Negation is valid GitHub Actions `paths:` syntax with documented
-          # order-dependent semantics, but this job matches with gitignore
-          # rules, where an anchored `!` after a broad `**` does NOT re-include
-          # as an Actions author expects — `.github/**` then `!.github/docs/**`
-          # still matches `.github/docs/notes.md`. Silently honoring a pattern
-          # that does not mean what the caller wrote is the failure mode worth
-          # preventing on a lane whose check can be REQUIRED, so a negated
-          # pattern is a hard configuration error rather than a quiet
-          # mismatch. Express the exclusion by narrowing the positive patterns.
-          if printf '%s\n' "$effective_paths" | grep -qE '^[[:space:]]*!'; then
-            echo "::error::The security-relevance paths filter contains a '!' negation, which this matcher cannot honor as GitHub Actions defines it. Narrow the positive patterns instead. See the 'paths' input description."
+          # `!`, `?` and `+` are all documented GitHub Actions filter syntax
+          # for PATH filters (docs: "You can use special characters in path,
+          # branch, and tag filters"), and this job matches with gitignore
+          # rules instead, where each means something different:
+          #
+          #   `!`  Actions re-includes a previously excluded path. Under
+          #        gitignore an anchored `!` cannot re-include below an already
+          #        excluded directory, so `.github/**` + `!.github/docs/**`
+          #        still matches `.github/docs/notes.md`.
+          #   `?`  Actions: zero-or-one of the PRECEDING character — the docs'
+          #        own path example `*.jsx?` matches `page.js` and `page.jsx`.
+          #        Gitignore: exactly one of ANY character, so it matches
+          #        NEITHER, and matches `page.jsxx` instead.
+          #   `+`  Actions: one-or-more of the preceding character, so
+          #        `v[0-9]+/**` matches `v1/` and `v10/`. Gitignore treats it
+          #        as a literal, matching neither.
+          #
+          # `?` and `+` fail in the DANGEROUS direction: the pattern silently
+          # matches fewer files than the caller wrote, so a security-relevant
+          # PR reads as out-of-scope and the review never runs. On a lane whose
+          # check can be REQUIRED that is a silent evidence gap, which is
+          # exactly what this job exists to prevent — so an unhonorable pattern
+          # is a hard configuration error, not a quiet mismatch.
+          #
+          # Failing this job does NOT create an evidence gap: `security-review`
+          # gates on `!cancelled()`, a status function that overrides the
+          # default needs-failure skip, and a failed `changes` leaves
+          # `relevant` unset ('') which is not 'false' — so the review still
+          # runs and reviews everything. This guard therefore fails OPEN, like
+          # every other fault in this job.
+          #
+          # `[a-z0-9]` character classes are documented by Actions AND behave
+          # the same here, so they are allowed.
+          #
+          # A LITERAL `+` or `?` in a real filename (`src/c++/**`) is rejected
+          # too. Accepted deliberately: it is rare, the rejection is loud and
+          # names the fix, and the alternative — parsing intent out of a glob —
+          # is exactly the silent guesswork this guard replaces. Use `*`
+          # (`src/c*/**`).
+          # Here-strings, NOT `printf ... | grep -q`. `grep -q` exits at its
+          # first match, and on a pattern list larger than the pipe buffer
+          # that kills the still-writing producer with SIGPIPE; under
+          # `pipefail` the pipeline then returns 141 and the `if` reads the
+          # rejected character as ABSENT — silently restoring the mismatch
+          # these guards exist to prevent. Reproduced at ~170 KB with the
+          # negation on line 1. A here-string has no producer to kill.
+          if grep -qE '^[[:space:]]*!' <<<"$effective_paths"; then
+            echo "::error::The security-relevance paths filter contains a '!' negation. This matcher uses gitignore rules, where '!' does not re-include as GitHub Actions defines it. Narrow the positive patterns instead. See the 'paths' input description."
+            exit 1
+          fi
+          # Two steps for the same reason: chaining these into one pipeline
+          # reintroduces the SIGPIPE race. `|| true` because grep exits 1 when
+          # every line is a comment, which is not an error here.
+          uncommented_paths="$(grep -vE '^[[:space:]]*(#|$)' <<<"$effective_paths" || true)"
+          if grep -qE '[?+]' <<<"$uncommented_paths"; then
+            echo "::error::The security-relevance paths filter contains '?' or '+'. Both are valid GitHub Actions path-filter syntax but mean something different under this matcher's gitignore rules, and they silently match FEWER files — which would skip the security review. Rewrite with '*' / '**' globs. See the 'paths' input description."
             exit 1
           fi
 
