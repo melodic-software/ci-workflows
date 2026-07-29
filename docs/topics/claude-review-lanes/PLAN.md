@@ -651,8 +651,11 @@ Ordered pre-steps, then waved rollout.
   a ruleset); absence is a failure mode of equal weight. On either failure the
   queue stays off the security caller — 2e default already ships without it.
 - **3d. Waved sync rollout (devils-advocate F7/F8):** pre-steps, STRICTLY IN
-  ORDER. (0) RE-PIN THE ENGINE, before anything else: standards `sync.yml` pins
-  ci-workflows at `ac223bb`, where auto-merge arming is gated on
+  ORDER. (0) RE-PIN THE ENGINE, before anything else. ENGINE HALF LANDED —
+  standards#293 moved `sync.yml` to `8202e03f`; the watchdog half below is
+  still outstanding, so read the rest of (0) as the record of why, plus the one
+  step that remains. As written, standards `sync.yml` pinned
+  ci-workflows at `ac223bb`, where auto-merge arming was gated on
   `pull-request-operation == 'created'`. That gate is unsound for THIS phase,
   and the reason is precise — `create-pull-request` (pinned `5f6978f`, v8.1.1)
   always attempts `pulls.create` FIRST and reports `created`; it reports
