@@ -613,17 +613,23 @@ Ordered pre-steps, then waved rollout.
 - **3c. Pre-rollout smoke:** org-var flip on one private consumer (caller runs,
   inner skips, conclusion recorded; org var readable on Team plan); security-gate
   invariant intact post-component — BOTH halves, because the gate is org-owned,
-  not repo-local (claude-code-plugins carries zero repo-local rulesets): org
-  ruleset `19388547` `security-review-gate` still `active` with its ENTIRE
-  `conditions` and `rules` objects unchanged — compare canonicalized JSON, do
-  NOT enumerate fields, because the single-field disarms are many and any list
-  misses one: `target`, `bypass_actors`, the context string
-  `security-review / security-review`, `conditions.ref_name`, and both halves of
-  `conditions.repository_property` each suffice alone, and `exclude` is the
-  subtlest (GitHub documents "The condition will not pass if any of these
-  properties match", so excluding ANY property claude-code-plugins carries —
-  `requires-signing == "true"`, say — disarms the gate with every other field
-  byte-identical) — AND the set of repos carrying `requires-security-review`
+  not repo-local (claude-code-plugins carries zero repo-local rulesets — check
+  with `?includes_parents=false`, since the bare listing returns the 4
+  org-sourced ones and reads as if the repo owned them): org ruleset `19388547`
+  `security-review-gate` unchanged in EVERY field that can disarm it. Do not
+  enumerate the fields to keep — enumerate only the ones provably inert and
+  compare the whole remainder as canonicalized JSON, so a top-level field GitHub
+  adds later is captured by default instead of silently dropped:
+  `gh api orgs/melodic-software/rulesets/19388547 --jq 'del(.id, .name,
+  .node_id, .source, .source_type, .created_at, .updated_at, ._links)'`. An
+  allow-list is what fails here: `target` and `bypass_actors` are top-level
+  SIBLINGS of `conditions` and `rules`, so pinning those two alone misses a
+  retarget to `tag` and misses a bypass actor. Inside `conditions`,
+  `repository_property.exclude` is the subtlest disarm of all — GitHub documents
+  "The condition will not pass if any of these properties match", so excluding
+  ANY property claude-code-plugins carries (`requires-signing == "true"`, say)
+  disarms the gate with every other field byte-identical. AND the set of repos
+  carrying `requires-security-review`
   `"true"` still equal to `{claude-code-plugins}`; the
   property is `org_actors`-editable and
   defaults `"false"`, so a flip on either side arms or disarms the required check
@@ -668,21 +674,33 @@ Ordered pre-steps, then waved rollout.
   so runs QUEUE rather than cancel, and a queued run resolves the moving `main`
   ref when its `plan` job finally executes — an already-triggered run can
   therefore plan the PRE-merge manifest (8) against the POST-grant installation
-  (10) and wedge. So DRAIN FIRST: confirm no standards-sync run is in progress
-  or queued before granting, then grant, then merge. Grant-first's cost is a
-  different one and belongs on the page: for the window the App HOLDS write
-  access to two repos that are not yet manifest targets (sync writes only to
-  manifest targets, so the exposure is authority, not activity). Either way the
-  wedge is FAIL-CLOSED and self-clearing: `attest` is a `needs:` of `sync`, so
-  the whole matrix is skipped, not just the mismatched target — the engine has
-  no `always()`, nothing mutates, no target is corrupted. Recovery is asymmetric
-  too, the same way: under grant-first the manifest merge IS the clean recovery
-  run (10 == 10, attest passes, all targets sync), whereas merge-first needs a
-  manual `workflow_dispatch` with `dry-run: false` — the dispatch default is
-  `true` and both `attest` and `sync` carry `if: !inputs.dry-run`, so a default
-  dispatch syncs nothing. Either way recovery is available immediately; it is
-  NOT a wait for the weekly cron. MECHANISM: repository SELECTION is
-  REST-addressable —
+  (10) and wedge. So DRAIN FIRST, and RE-CHECK — sequence is drain, grant,
+  re-check, merge. This must return `[]` immediately BEFORE the grant and again
+  immediately BEFORE merging the manifest PR:
+  `gh api "repos/melodic-software/standards/actions/workflows/sync.yml/runs?per_page=100" --paginate --slurp | jq -c '[.[].workflow_runs[]|select(.status!="completed")]'`
+  Two deliberate choices. It NEGATES `completed` rather than enumerating the
+  pending states, because GitHub has at least five (`queued`, `in_progress`,
+  `waiting`, `requested`, `pending`) and may add more. And it PAGINATES the full
+  run history rather than sampling a page, because `gh run list` defaults to 20
+  and its newest-first ordering is undocumented — a pending run outside the
+  sample would read as a drained queue. (`--slurp` is rejected alongside `--jq`,
+  hence the pipe; it also makes the result ONE array instead of one per page.)
+  This REDUCES the window, it does not close it: a push landing between the
+  re-check and the merge still wedges, which is precisely why the fail-closed
+  property below is what makes the whole procedure safe rather than the checks.
+  Grant-first's cost is a different one and belongs on the page: for the window
+  the App HOLDS write access to two repos that are not yet manifest targets
+  (sync writes only to manifest targets, so the exposure is authority, not
+  activity). Either way the wedge is FAIL-CLOSED and self-clearing: `attest` is
+  a `needs:` of `sync`, so the whole matrix is skipped, not just the mismatched
+  target — the engine has no `always()`, nothing mutates, no target is
+  corrupted. Recovery is asymmetric too, the same way: under grant-first the
+  manifest merge IS the clean recovery run (10 == 10, attest passes, all targets
+  sync), whereas merge-first needs a manual `workflow_dispatch` with `dry-run:
+  false` — the dispatch default is `true` and both `attest` and `sync` carry
+  `if: !inputs.dry-run`, so a default dispatch syncs nothing. Either way
+  recovery is available immediately; it is NOT a wait for the weekly cron.
+  MECHANISM: repository SELECTION is REST-addressable —
   `PUT /user/installations/{installation_id}/repositories/{repository_id}` (add)
   and `DELETE` (remove), wrapped by Terraform
   `github_app_installation_repository(-ies)` and Pulumi
@@ -748,13 +766,12 @@ target: `gh api repos/melodic-software/<repo>/contents/.github/workflows/claude-
 equals `git hash-object components/claude-lanes/claude-review.yml` (blob-hash
 equivalence loop recorded verbatim; count of mismatches == 0); medley's synced
 caller contains `reopened`; the 3c security-gate invariant re-reads intact —
-`gh api orgs/melodic-software/rulesets/19388547`, `conditions` + `rules`
-compared as canonicalized JSON (the repo-level `rulesets` listing returns
-NEITHER key, so it cannot verify this), AND the property set regenerated:
-`gh api "orgs/melodic-software/properties/values?per_page=100" --paginate --jq`
-`'.[]|select(.properties[]|select(.property_name=="requires-security-review"`
-`and .value=="true"))|.repository_name'` returns exactly `claude-code-plugins`
-— AND a live PR shows an ACTUAL
+`gh api orgs/melodic-software/rulesets/19388547 --jq 'del(.id,.name,.node_id,.source,.source_type,.created_at,.updated_at,._links)'`
+compared as canonicalized JSON, which is the FULL disarmable surface rather than
+just `conditions` + `rules` (the repo-level `rulesets` listing returns none of
+these keys, so it cannot verify this at all), AND the property set regenerated:
+`gh api "orgs/melodic-software/properties/values?per_page=100" --paginate --jq '.[]|select(.properties[]|select(.property_name=="requires-security-review" and .value=="true"))|.repository_name'`
+returns exactly `claude-code-plugins` — AND a live PR shows an ACTUAL
 security run (not skip) on a code-touching PR; smoke transcripts (kill-switch,
 overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
@@ -983,7 +1000,8 @@ their RECOMMENDED options:
 5. knowledge-corpus + songwriting new targets: APPROVED; App access extends BEFORE
    manifest merge — ordering unchanged, but its rationale is corrected in 3d
    (cardinality gate, and merge-first self-triggers) — via the REST selection
-   endpoint under a classic PAT (precaution: have an org owner hold it).
+   endpoint under a classic PAT (precaution: have an org owner hold it), after
+   draining in-flight sync runs and re-checking before the merge (3d).
 6. Phase 4 credential: reuse runner-observer App if permissions fit, else new
    minimal App — proceed per that order, report which at implementation.
 7. Retry gate: zero assistant turns AND class != auth.
