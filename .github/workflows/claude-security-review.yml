@@ -106,10 +106,13 @@ name: claude-security-review
 #                                  # (required even with an OAuth/API-key credential)
 #         uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
 #         with:
-#           # Each repo OWNS its pattern file at this conventional path: Actions
-#           # `paths:` patterns, one per line (`#` comments and blank lines
-#           # ignored) — the repo's security-sensitive surfaces (workflows,
-#           # scripts, auth/token-touching source, network-call sites). It is
+#           # Each repo OWNS its pattern file at this conventional path:
+#           # root-anchored gitignore patterns, one per line (`#` comments and
+#           # blank lines ignored; `!` negation is REJECTED — see the `paths`
+#           # input's MATCHER note) — the repo's security-sensitive surfaces
+#           # (workflows, scripts, auth/token-touching source, network-call
+#           # sites). Ordinary `*` / `**` globs mean what an Actions `paths:`
+#           # author expects, which is every pattern worth writing here. It is
 #           # read from the PR's BASE branch, never the head, and an absent
 #           # file FAILS OPEN: every PR is reviewed until the repo commits one.
 #           # The inline `paths` input still exists and, when non-empty, wins
@@ -153,25 +156,39 @@ on:
         default: ubuntu-24.04
       paths:
         description: >-
-          Newline-separated path patterns, in GitHub Actions `paths:` filter
-          syntax, naming this consumer's security-sensitive surfaces (use a `|`
-          literal block to preserve newlines). When a PR changes at least one
-          matching file the review runs; when it matches none, the
-          `security-review` job skips — a name-stable check verdict a
-          required-check ruleset reads as success. Blank lines and `#` comments
-          are ignored. Non-empty, this input wins over `paths-file`. Empty (the
-          default) with an empty `paths-file` means no filtering — every call
-          is relevant, so a consumer that passes nothing is unaffected.
-          Consulted only on `pull_request` events; other events are always
-          relevant.
+          Newline-separated path patterns naming this consumer's
+          security-sensitive surfaces (use a `|` literal block to preserve
+          newlines). When a PR changes at least one matching file the review
+          runs; when it matches none, the `security-review` job skips — a
+          name-stable check verdict a required-check ruleset reads as success.
+          Blank lines and `#` comments are ignored. Non-empty, this input wins
+          over `paths-file`. Empty (the default) with an empty `paths-file`
+          means no filtering — every call is relevant, so a consumer that
+          passes nothing is unaffected. Consulted only on `pull_request`
+          events; other events are always relevant.
+
+          MATCHER: patterns are ROOT-ANCHORED GITIGNORE patterns, not GitHub
+          Actions `paths:` patterns — the `changes` job matches with
+          `git check-ignore` (see the `Determine security relevance` step).
+          The two agree on ordinary `*` / `**` globs, which is every pattern
+          worth writing here, so this rarely matters. Where they differ:
+          `!` NEGATION does NOT behave as Actions documents it (an Actions-valid
+          `!.github/docs/**` after `.github/**` still matches, i.e. does NOT
+          exclude), and the `Determine security relevance` step REJECTS a
+          negated pattern rather than silently mismatching it; gitignore extras
+          Actions does not document (`?`, `[0-9]` character classes, trailing-
+          slash directory patterns like `scripts/`) DO work, but a caller
+          relying on them is relying on this implementation, not on the
+          Actions spec.
         type: string
         default: ''
       paths-file:
         description: >-
           Repo-relative path to a file whose CONTENT is the same
-          newline-separated pattern list `paths` takes, so a consumer can keep
-          its security-sensitive-surface list in its own tree instead of
-          inlining it in the caller. Conventional location:
+          newline-separated pattern list `paths` takes — same gitignore matcher
+          and same negation rejection, see that input's MATCHER note — so a
+          consumer can keep its security-sensitive-surface list in its own tree
+          instead of inlining it in the caller. Conventional location:
           `.github/claude-security-paths`. The file is read from the PR's BASE
           repository at the base branch — never the PR head — so a PR cannot
           edit the file's CONTENT to skip its own security review. (A PR can
@@ -403,6 +420,24 @@ jobs:
             exit 0
           fi
 
+          # Reject `!` negation BEFORE matching, in its own pass — the pattern
+          # loop below runs in a `printf | while` subshell, where a non-zero
+          # exit would not fail the step.
+          #
+          # Negation is valid GitHub Actions `paths:` syntax with documented
+          # order-dependent semantics, but this job matches with gitignore
+          # rules, where an anchored `!` after a broad `**` does NOT re-include
+          # as an Actions author expects — `.github/**` then `!.github/docs/**`
+          # still matches `.github/docs/notes.md`. Silently honoring a pattern
+          # that does not mean what the caller wrote is the failure mode worth
+          # preventing on a lane whose check can be REQUIRED, so a negated
+          # pattern is a hard configuration error rather than a quiet
+          # mismatch. Express the exclusion by narrowing the positive patterns.
+          if printf '%s\n' "$effective_paths" | grep -qE '^[[:space:]]*!'; then
+            echo "::error::The security-relevance paths filter contains a '!' negation, which this matcher cannot honor as GitHub Actions defines it. Narrow the positive patterns instead. See the 'paths' input description."
+            exit 1
+          fi
+
           # Build a root-anchored gitignore matcher in a throwaway repo — no
           # checkout of the caller's code. Actions `paths:` patterns are
           # root-anchored; gitignore patterns without a leading slash match at
@@ -419,9 +454,9 @@ jobs:
             pattern="${pattern#"${pattern%%[![:space:]]*}"}"
             pattern="${pattern%"${pattern##*[![:space:]]}"}"
             [ -n "$pattern" ] || continue
+            # No `!` arm: negation is rejected by the guard above.
             case "$pattern" in
               \#*) continue ;;
-              '!'*) printf '!/%s\n' "${pattern#!}" >>"$ignore" ;;
               /*) printf '%s\n' "$pattern" >>"$ignore" ;;
               *) printf '/%s\n' "$pattern" >>"$ignore" ;;
             esac
