@@ -21,7 +21,7 @@ const workflow = fs.readFileSync(workflowPath, "utf8");
 function extractScanScript() {
   const lines = workflow.split(/\r?\n/u);
   const stepIndex = lines.findIndex((line) =>
-    line.includes("- name: Scan targets for stuck armed pull requests"),
+    line.includes("- name: Scan targets for stuck or never-armed pull requests"),
   );
   assert.notEqual(stepIndex, -1, "scan step must exist");
   const scriptIndex = lines.findIndex(
@@ -39,16 +39,23 @@ function extractScanScript() {
 
 const scanScript = extractScanScript();
 
+const HOURS_AGO = (hours) =>
+  new Date(Date.now() - hours * 3_600_000).toISOString();
+
 function pullRequest({
   number = 1,
   login = "melodic-standards-sync",
   typename = "Bot",
   enabledAt = null,
   mergeStateStatus = "CLEAN",
+  // Default well inside the threshold so an existing armed-PR fixture is never
+  // incidentally old enough to also trip the never-armed detector.
+  createdAt = HOURS_AGO(1),
 } = {}) {
   return {
     number,
     url: `https://github.com/melodic-software/dotfiles/pull/${number}`,
+    createdAt,
     author: { login, __typename: typename },
     autoMergeRequest: enabledAt ? { enabledAt } : null,
     mergeStateStatus,
@@ -57,6 +64,9 @@ function pullRequest({
 
 async function runScan({
   repoNames = ["dotfiles"],
+  automergeRepoNames = null,
+  disarmsByNumber = {},
+  disarmFailures = {},
   thresholdHours = 4,
   nodesByRepo = {},
   pagesByRepo = null,
@@ -70,6 +80,7 @@ async function runScan({
   const keys = [
     "BOT_LOGIN",
     "REPO_NAMES",
+    "AUTOMERGE_REPO_NAMES",
     "THRESHOLD_HOURS",
     "GITHUB_WORKSPACE",
     "GRAPHQL_RETRY_ATTEMPTS",
@@ -83,6 +94,8 @@ async function runScan({
   Object.assign(process.env, {
     BOT_LOGIN: "melodic-standards-sync",
     REPO_NAMES: repoNames.join(","),
+    // Absent override: every scanned repo is manifest-armed, the common case.
+    AUTOMERGE_REPO_NAMES: (automergeRepoNames ?? repoNames).join(","),
     THRESHOLD_HOURS: String(thresholdHours),
     GITHUB_WORKSPACE: effectiveWorkspace,
     GRAPHQL_RETRY_ATTEMPTS: String(retryAttempts),
@@ -95,6 +108,7 @@ async function runScan({
     (pagesByRepo?.[repo] ?? [nodesByRepo[repo] ?? []]).flat();
   const remainingListFailures = { ...listFailures };
   const remainingMergeFailures = { ...mergeStateFailures };
+  const remainingDisarmFailures = { ...disarmFailures };
   const graphqlCalls = [];
   const outputs = {};
   const infos = [];
@@ -116,6 +130,33 @@ async function runScan({
       // race; absent an override the probe echoes the page node.
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
+        if (variables.number != null && /timelineItems/u.test(query)) {
+          const disarmBudget = remainingDisarmFailures[variables.number] ?? 0;
+          if (disarmBudget > 0) {
+            remainingDisarmFailures[variables.number] = disarmBudget - 1;
+            throw new Error(
+              `simulated server error probing disarms for #${variables.number}`,
+            );
+          }
+          const node = allNodesFor(variables.repo).find(
+            (pr) => pr.number === variables.number,
+          );
+          const override = probeOverrides[variables.number];
+          const enabledAt =
+            override && "enabledAt" in override
+              ? override.enabledAt
+              : (node?.autoMergeRequest?.enabledAt ?? null);
+          return {
+            repository: {
+              pullRequest: {
+                autoMergeRequest: enabledAt ? { enabledAt } : null,
+                timelineItems: {
+                  nodes: disarmsByNumber[variables.number] ?? [],
+                },
+              },
+            },
+          };
+        }
         if (variables.number != null) {
           const budget = remainingMergeFailures[variables.number] ?? 0;
           if (budget > 0) {
@@ -888,4 +929,141 @@ test("close comments on and closes the genuine bot-authored tracking issue", asy
     state: "closed",
     state_reason: "completed",
   });
+});
+
+// --- never-armed detection -------------------------------------------------
+// standards-sync.yml swallows every arming rejection into a core.warning, so a
+// failed arm is indistinguishable from the pre-arming status quo. These cover
+// the detector that makes that state observable, and — equally important — the
+// states that must NOT alarm, since a watchdog that cries wolf gets muted.
+
+test("a sync PR past the threshold that was never armed is reported", async () => {
+  const { outputs, report } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+  });
+  assert.equal(outputs["unarmed-count"], "1");
+  assert.equal(outputs["stuck-count"], "0");
+  assert.match(report, /never armed/u);
+  assert.match(report, /\| `dotfiles` \| \[#7\]\([^)]+\) \| 9h \|/u);
+});
+
+test("a never-armed PR still inside the threshold is not reported", async () => {
+  const { outputs } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(1) })],
+    },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+test("a deliberate human disarm is not reported as an arming failure", async () => {
+  const { outputs, graphqlCalls } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+    disarmsByNumber: {
+      7: [{ createdAt: HOURS_AGO(2), actor: { login: "kyle-sexton" } }],
+    },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+  // The exoneration must come from the timeline probe actually running.
+  assert.ok(
+    graphqlCalls.some(
+      (call) => call.variables.number === 7 && /timelineItems/u.test(call.query),
+    ),
+  );
+});
+
+test("a target the manifest opts out of auto-merge is never reported unarmed", async () => {
+  const { outputs, graphqlCalls } = await runScan({
+    repoNames: ["dotfiles"],
+    automergeRepoNames: [],
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+  // Opting out must skip the probe entirely, not probe and then discard: the
+  // Phase 3d rollout window sets automerge:false on every target at once.
+  assert.equal(
+    graphqlCalls.filter((call) => /timelineItems/u.test(call.query)).length,
+    0,
+  );
+});
+
+test("a PR armed between the page fetch and the disarm probe is not reported", async () => {
+  const { outputs } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+    probeOverrides: { 7: { enabledAt: HOURS_AGO(0.1) } },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+test("a non-sync-authored unarmed PR is ignored", async () => {
+  const { outputs } = await runScan({
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 7,
+          login: "dependabot",
+          typename: "Bot",
+          createdAt: HOURS_AGO(9),
+        }),
+        pullRequest({
+          number: 8,
+          login: "kyle-sexton",
+          typename: "User",
+          createdAt: HOURS_AGO(9),
+        }),
+      ],
+    },
+  });
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+test("a persistent server error on the disarm probe fails the run loudly and never reports a false all-clear", async () => {
+  const { outputs, threw } = await runScan({
+    nodesByRepo: {
+      dotfiles: [pullRequest({ number: 7, createdAt: HOURS_AGO(9) })],
+    },
+    disarmFailures: { 7: Number.POSITIVE_INFINITY },
+  });
+  assert.ok(threw, "a persistent probe failure must propagate");
+  assert.equal(outputs["unarmed-count"], undefined);
+  assert.equal(outputs["stuck-count"], undefined);
+});
+
+test("both categories are reported together, each in its own section", async () => {
+  const { outputs, report } = await runScan({
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({
+          number: 7,
+          enabledAt: HOURS_AGO(9),
+          mergeStateStatus: "BLOCKED",
+        }),
+        pullRequest({ number: 8, createdAt: HOURS_AGO(9) }),
+      ],
+    },
+  });
+  assert.equal(outputs["stuck-count"], "1");
+  assert.equal(outputs["unarmed-count"], "1");
+  assert.match(report, /## standards-sync stuck auto-merge pull request\(s\)/u);
+  assert.match(
+    report,
+    /## standards-sync pull request\(s\) that were never armed/u,
+  );
+});
+
+test("the all-clear path requires both categories empty", async () => {
+  const { outputs, report } = await runScan({
+    nodesByRepo: { dotfiles: [pullRequest({ number: 7 })] },
+  });
+  assert.equal(outputs["stuck-count"], "0");
+  assert.equal(outputs["unarmed-count"], "0");
+  assert.equal(report, null);
 });
