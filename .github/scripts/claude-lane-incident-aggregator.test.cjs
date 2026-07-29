@@ -159,7 +159,9 @@ async function runPoll({
               // budget exactly on the cycles that go wrong.
               calls.push({ ...record, page: page + 1 });
               maybeFail(label);
-              yield { data: items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) };
+              yield {
+                data: items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+              };
             }
           },
         }),
