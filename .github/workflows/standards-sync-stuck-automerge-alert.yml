@@ -2,13 +2,28 @@ name: standards-sync-stuck-automerge-alert
 
 # Reusable workflow: scans the standards-sync target repos (read from the
 # standards manifest at run time — never hardcoded) for open, App-authored
-# standards-sync pull requests that have auto-merge armed but whose GraphQL
-# `mergeStateStatus` is BLOCKED for longer than a threshold. standards-sync.yml
-# arms auto-merge at PR creation on a body that is gate-compliant by
-# construction; this workflow is the second half of that contract — the
-# watchdog for when arming a PR was not enough to get it merged (observed:
-# melodic-software/medley#1619, an armed sync PR silently blocked for hours by
-# an unrelated pre-existing ci-status failure, with nothing watching).
+# standards-sync pull requests in two states that keep a sync PR from merging
+# itself, both silent without this watchdog:
+#
+#   1. ARMED BUT STUCK — auto-merge is on, but GraphQL reports
+#      `mergeStateStatus: BLOCKED` past a threshold (observed:
+#      melodic-software/medley#1619, an armed sync PR blocked for hours by an
+#      unrelated pre-existing ci-status failure, with nothing watching).
+#   2. NEVER ARMED — the PR is past the threshold, its target is marked
+#      `automerge: true`, and auto-merge was never successfully armed on it.
+#      standards-sync.yml downgrades every arming rejection to a
+#      `core.warning`, so a failed arm leaves a PR that looks exactly like the
+#      pre-arming status quo while the operator's mental model says "armed".
+#      Failing closed is fine; failing closed INVISIBLY is the defect, because
+#      the PR then waits on a human who was never told to look.
+#
+# Not exhaustive: an armed PR reporting a non-BLOCKED unmergeable state (DIRTY,
+# for one) is out of scope here and stays unreported.
+#
+# standards-sync.yml arms auto-merge on any PR the manifest marks armed that has
+# never been armed, on a body that is gate-compliant by construction; this
+# workflow is the second half of that contract — the watchdog for arming that
+# did not take, or did not stick.
 #
 # The target repo list is derived by checking out standards and running its
 # own sync-manifest.sh interpreter, the same way standards-sync.yml's plan job
@@ -34,7 +49,7 @@ on:
         type: string
         default: main
       threshold-hours:
-        description: Minimum hours an armed PR must have been BLOCKED before it is reported as stuck.
+        description: Minimum hours before an armed-but-BLOCKED or never-armed PR is reported.
         type: number
         default: 4
     secrets:
@@ -75,7 +90,7 @@ env:
 
 jobs:
   detect-stuck-armed-prs:
-    name: Detect stuck standards-sync auto-merge PRs
+    name: Detect standards-sync auto-merge PRs that cannot merge themselves
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
@@ -112,6 +127,12 @@ jobs:
           matrix="$(bash distribution/sync-manifest.sh matrix --source-root . --manifest "$MANIFEST")"
           repo_names="$(jq -r '[.include[].repo_name] | join(",")' <<<"$matrix")"
           echo "repo-names=${repo_names}" >> "$GITHUB_OUTPUT"
+          # Only targets the manifest expects to be armed can be reported
+          # unarmed. `automerge: false` is a deliberate opt-out (the Phase 3d
+          # rollout window sets it fleet-wide), so scanning it would turn the
+          # intended state into an alert on every target at once.
+          automerge_names="$(jq -r '[.include[] | select(.automerge) | .repo_name] | join(",")' <<<"$matrix")"
+          echo "automerge-repo-names=${automerge_names}" >> "$GITHUB_OUTPUT"
 
       - name: Mint read-only App token scoped to every target
         id: token
@@ -123,11 +144,12 @@ jobs:
           repositories: ${{ steps.targets.outputs.repo-names }}
           permission-pull-requests: read
 
-      - name: Scan targets for stuck armed pull requests
+      - name: Scan targets for stuck or never-armed pull requests
         id: scan
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REPO_NAMES: ${{ steps.targets.outputs.repo-names }}
+          AUTOMERGE_REPO_NAMES: ${{ steps.targets.outputs.automerge-repo-names }}
           THRESHOLD_HOURS: ${{ inputs.threshold-hours }}
           GRAPHQL_RETRY_ATTEMPTS: '4'
           GRAPHQL_RETRY_BASE_MS: '1000'
@@ -138,6 +160,9 @@ jobs:
             const botLogin = process.env.BOT_LOGIN;
             const thresholdHours = Number(process.env.THRESHOLD_HOURS);
             const repoNames = process.env.REPO_NAMES.split(',').filter((name) => name.length > 0);
+            const automergeRepoNames = new Set(
+              (process.env.AUTOMERGE_REPO_NAMES ?? '').split(',').filter((name) => name.length > 0),
+            );
             const retryAttempts = Number(process.env.GRAPHQL_RETRY_ATTEMPTS ?? 4);
             const retryBaseMs = Number(process.env.GRAPHQL_RETRY_BASE_MS ?? 1000);
 
@@ -165,11 +190,29 @@ jobs:
             const armedHoursSince = (enabledAt) =>
               enabledAt ? (Date.now() - Date.parse(enabledAt)) / 3_600_000 : null;
 
+            const isSyncPullRequest = (pullRequest) =>
+              pullRequest.author?.__typename === 'Bot' && pullRequest.author?.login === botLogin;
+
             const isArmedCandidate = (pullRequest) => {
-              if (pullRequest.author?.__typename !== 'Bot') return false;
-              if (pullRequest.author?.login !== botLogin) return false;
+              if (!isSyncPullRequest(pullRequest)) return false;
               const armedHours = armedHoursSince(pullRequest.autoMergeRequest?.enabledAt);
               return armedHours !== null && armedHours >= thresholdHours;
+            };
+
+            // The arming step swallows every mutation rejection into a
+            // core.warning, so a failure to arm produces a sync PR that simply
+            // sits unarmed — a state indistinguishable, from the outside, from
+            // the pre-arming behavior nobody was watching. That is the blind
+            // spot this predicate closes: an open sync PR in a target the
+            // manifest says should be armed, never armed, and older than the
+            // threshold. Only a PR that was NEVER armed is a failure — a PR
+            // armed and later disarmed is somebody's decision, or GitHub's
+            // (see the arming-history probe below).
+            const isUnarmedCandidate = (pullRequest) => {
+              if (!isSyncPullRequest(pullRequest)) return false;
+              if (pullRequest.autoMergeRequest?.enabledAt) return false;
+              const openHours = (Date.now() - Date.parse(pullRequest.createdAt)) / 3_600_000;
+              return openHours >= thresholdHours;
             };
 
             // @actions/github bundles @octokit/plugin-paginate-rest but not a
@@ -191,6 +234,7 @@ jobs:
                     nodes {
                       number
                       url
+                      createdAt
                       author { login __typename }
                       autoMergeRequest { enabledAt }
                     }
@@ -218,9 +262,43 @@ jobs:
                 }
               }`;
 
+            // An arming failure is the one state that leaves NO auto-merge
+            // enabled event behind, because the mutation never succeeded.
+            // Absence of that event is therefore direct positive
+            // evidence, where "no disarm event" would only be an inference —
+            // and it does not conflate a reviewer disarming a PR with GitHub
+            // disabling auto-merge on its own (a push from someone without
+            // write access, or a base-branch switch), both of which leave the
+            // PR armed at some point and are not arming failures. Probing only
+            // already-unarmed candidates keeps the extra query off the common
+            // path.
+            //
+            // `nodes`, never `totalCount`: totalCount counts the WHOLE timeline
+            // and ignores itemTypes (verified live — a PR with four timeline
+            // items and no arming event reports totalCount 4). All three
+            // enabled-event types are listed because which one GitHub records
+            // depends on the merge method: standards-sync.yml arms with SQUASH,
+            // which emits AutoSquashEnabledEvent, not AutoMergeEnabledEvent
+            // (verified live), so naming only the latter would report every
+            // armed PR as an arming failure.
+            const armingHistoryQuery = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    state
+                    autoMergeRequest { enabledAt }
+                    timelineItems(first: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, AUTO_REBASE_ENABLED_EVENT]) {
+                      nodes { __typename }
+                    }
+                  }
+                }
+              }`;
+
             const stuck = [];
+            const unarmed = [];
             for (const repo of repoNames) {
               const candidates = [];
+              const unarmedCandidates = [];
               let after = null;
               let hasNextPage = true;
               let page = 0;
@@ -235,6 +313,9 @@ jobs:
                 const nodes = pullRequests?.nodes ?? [];
                 for (const pullRequest of nodes) {
                   if (isArmedCandidate(pullRequest)) candidates.push(pullRequest);
+                  else if (automergeRepoNames.has(repo) && isUnarmedCandidate(pullRequest)) {
+                    unarmedCandidates.push(pullRequest);
+                  }
                 }
                 hasNextPage = pullRequests?.pageInfo?.hasNextPage ?? false;
                 after = pullRequests?.pageInfo?.endCursor ?? null;
@@ -252,44 +333,103 @@ jobs:
                 if (armedHours === null || armedHours < thresholdHours) continue;
                 stuck.push({ repo, number: candidate.number, url: candidate.url, armedHoursAgo: Math.floor(armedHours) });
               }
+
+              for (const candidate of unarmedCandidates) {
+                const result = await graphqlWithRetry(
+                  armingHistoryQuery,
+                  { owner, repo, number: candidate.number },
+                  `arming history for ${repo}#${candidate.number}`,
+                );
+                const pullRequest = result.repository?.pullRequest;
+                // Re-read state and armed state: between the page fetch and
+                // this probe the PR may have been armed, merged, or closed. A
+                // PR merged or closed by hand while still unarmed keeps
+                // reporting no autoMergeRequest and no arming event, so without
+                // the state guard a resolved PR is reported forever.
+                if (pullRequest?.state !== 'OPEN') continue;
+                if (pullRequest.autoMergeRequest?.enabledAt) continue;
+                if (pullRequest.timelineItems.nodes.length > 0) continue;
+                const openHours = (Date.now() - Date.parse(candidate.createdAt)) / 3_600_000;
+                unarmed.push({
+                  repo,
+                  number: candidate.number,
+                  url: candidate.url,
+                  openHoursAgo: Math.floor(openHours),
+                });
+              }
             }
 
             core.setOutput('stuck-count', String(stuck.length));
-            if (stuck.length === 0) {
-              core.info('No stuck armed standards-sync pull requests found.');
+            core.setOutput('unarmed-count', String(unarmed.length));
+            if (stuck.length === 0 && unarmed.length === 0) {
+              core.info('No stuck armed or silently unarmed standards-sync pull requests found.');
               return;
             }
 
             const marker = '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->';
-            const rows = stuck
-              .map((entry) => `| \`${entry.repo}\` | [#${entry.number}](${entry.url}) | ${entry.armedHoursAgo}h |`)
-              .join('\n');
-            const body = [
-              marker,
-              '',
-              '## standards-sync stuck auto-merge pull request(s)',
-              '',
-              `${stuck.length} pull request(s) opened by \`${botLogin}[bot]\` have had auto-merge armed for at`,
-              `least ${thresholdHours}h while GraphQL reports \`mergeStateStatus: BLOCKED\` — auto-merge cannot`,
-              'complete until whatever is blocking it (a failing required check, a missing required review, an',
-              'out-of-date branch) is resolved.',
-              '',
-              '| Repository | Pull request | Armed for |',
-              '| --- | --- | --- |',
-              rows,
-              '',
-              '### Recover',
-              '',
-              '1. Open the pull request and read its checks tab for the specific blocking reason.',
-              '2. Resolve it (push a fix, re-run the failing check, request the missing review) or close the PR',
-              '   if the sync is no longer wanted; the next scheduled sync recreates and re-arms it.',
-              '',
+            const body = [marker, ''];
+
+            if (stuck.length > 0) {
+              body.push(
+                '## standards-sync stuck auto-merge pull request(s)',
+                '',
+                `${stuck.length} pull request(s) opened by \`${botLogin}[bot]\` have had auto-merge armed for at`,
+                `least ${thresholdHours}h while GraphQL reports \`mergeStateStatus: BLOCKED\` — auto-merge cannot`,
+                'complete until whatever is blocking it (a failing required check, a missing required review, an',
+                'out-of-date branch) is resolved.',
+                '',
+                '| Repository | Pull request | Armed for |',
+                '| --- | --- | --- |',
+                ...stuck.map(
+                  (entry) => `| \`${entry.repo}\` | [#${entry.number}](${entry.url}) | ${entry.armedHoursAgo}h |`,
+                ),
+                '',
+                '### Recover',
+                '',
+                '1. Open the pull request and read its checks tab for the specific blocking reason.',
+                '2. Resolve it (push a fix, re-run the failing check, request the missing review) or close the PR',
+                '   if the sync is no longer wanted; the next scheduled sync recreates and re-arms it.',
+                '',
+              );
+            }
+
+            if (unarmed.length > 0) {
+              body.push(
+                '## standards-sync pull request(s) that were never armed',
+                '',
+                `${unarmed.length} pull request(s) opened by \`${botLogin}[bot]\` have been open for at least`,
+                `${thresholdHours}h in a target the manifest marks \`automerge: true\`, yet auto-merge has never`,
+                'been armed on them. `standards-sync.yml` arms auto-merge on every such PR and downgrades every',
+                'mutation rejection to a warning, so the arming step failing leaves exactly this state — a sync PR',
+                'that waits for a human who was never told to look.',
+                '',
+                '| Repository | Pull request | Open for |',
+                '| --- | --- | --- |',
+                ...unarmed.map(
+                  (entry) => `| \`${entry.repo}\` | [#${entry.number}](${entry.url}) | ${entry.openHoursAgo}h |`,
+                ),
+                '',
+                '### Recover',
+                '',
+                "1. Open that target's most recent `standards-sync` run. If the arming step ran and was",
+                "   rejected, its warning carries the message GitHub returned. If the step was skipped, the",
+                '   caller pins a `standards-sync.yml` that predates arming on already-open PRs, and re-pinning',
+                '   it is the fix.',
+                '2. If the App identity cannot arm auto-merge at all, every target is affected and the fix belongs',
+                '   in `standards-sync.yml`, not in one PR. Otherwise merge this PR by hand.',
+                '',
+              );
+            }
+
+            body.push(
               '---',
               '*Updated automatically by `standards-sync-stuck-automerge-alert.yml`. Closing this issue without',
               'resolving the underlying block reopens it on the next scheduled scan.*',
-            ].join('\n');
+            );
 
-            require('node:fs').writeFileSync(process.env.GITHUB_WORKSPACE + '/.stuck-automerge-report.md', body);
+            const reportBody = body.join('\n');
+
+            require('node:fs').writeFileSync(process.env.GITHUB_WORKSPACE + '/.stuck-automerge-report.md', reportBody);
 
       # owner/repositories intentionally omitted: create-github-app-token
       # defaults both to the current (calling) repository when unset — the
@@ -316,11 +456,11 @@ jobs:
       # on a fixed hosted runner).
       - name: Find existing tracking issue
         id: tracking
-        if: steps.scan.outputs.stuck-count != '0'
+        if: steps.scan.outputs.stuck-count != '0' || steps.scan.outputs.unarmed-count != '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
-          ISSUE_TITLE: '[Alert] standards-sync stuck auto-merge PR(s)'
+          ISSUE_TITLE: '[Alert] standards-sync auto-merge PR(s) needing attention'
         with:
           github-token: ${{ steps.issue-token.outputs.token }}
           script: |
@@ -366,18 +506,18 @@ jobs:
 
       - name: Open or update tracking issue
         id: issue
-        if: steps.scan.outputs.stuck-count != '0'
+        if: steps.scan.outputs.stuck-count != '0' || steps.scan.outputs.unarmed-count != '0'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           token: ${{ steps.issue-token.outputs.token }}
-          title: '[Alert] standards-sync stuck auto-merge PR(s)'
+          title: '[Alert] standards-sync auto-merge PR(s) needing attention'
           issue-number: ${{ steps.tracking.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
 
       # actions/github-script rather than a `gh issue close` run step, for
       # the same runner-tool-availability reason as the lookup step above.
       - name: Close recovered tracking issue
-        if: steps.scan.outputs.stuck-count == '0'
+        if: steps.scan.outputs.stuck-count == '0' && steps.scan.outputs.unarmed-count == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
@@ -406,7 +546,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: match.number,
-              body: 'No standards-sync pull request is currently armed and blocked past the threshold; closing this rolling report.',
+              body: 'No standards-sync pull request is currently armed and blocked, or unarmed past the threshold; closing this rolling report.',
             });
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -417,9 +557,10 @@ jobs:
             });
 
       - name: Fail so the scheduled run notifies
-        if: steps.scan.outputs.stuck-count != '0'
+        if: steps.scan.outputs.stuck-count != '0' || steps.scan.outputs.unarmed-count != '0'
         env:
           STUCK_COUNT: ${{ steps.scan.outputs.stuck-count }}
+          UNARMED_COUNT: ${{ steps.scan.outputs.unarmed-count }}
         run: |
-          echo "::error::${STUCK_COUNT} standards-sync pull request(s) are armed and stuck; see the tracking issue."
+          echo "::error::${STUCK_COUNT} standards-sync pull request(s) are armed and stuck; ${UNARMED_COUNT} were never armed. See the tracking issue."
           exit 1

@@ -5,8 +5,9 @@ name: standards-sync
 # GitHub orchestration only: resolve one immutable source SHA, mint a narrowly
 # scoped App token, materialize each target, open a reviewed signed PR, and
 # (unless the manifest opts a target out via `automerge: false`) arm auto-merge
-# on it at creation. A sync PR left armed but blocked past a threshold is a
-# separate concern: see standards-sync-stuck-automerge-alert.yml.
+# on any sync PR auto-merge has never been armed on. A sync PR left armed but
+# blocked past a threshold, or never armed at all, is a separate concern: see
+# standards-sync-stuck-automerge-alert.yml.
 on:
   workflow_call:
     inputs:
@@ -464,15 +465,26 @@ jobs:
           body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync
 
-      # Arm auto-merge only at PR creation, never on a later update: the body
-      # is gate-compliant by construction (the App identity that opened it is
-      # the whole risk gate), but re-arming on every update would fight a
-      # reviewer who deliberately disabled auto-merge to hold a PR back. Every
-      # target repo has allow_auto_merge=true and required ci-status/pr-title
-      # checks on main, so a fresh PR is never immediately mergeable — except
-      # the rare case GitHub's mutation itself rejects, handled below.
-      - name: Arm auto-merge on the newly created sync PR
-        if: steps.cpr.outputs.pull-request-operation == 'created' && matrix.automerge
+      # Arm auto-merge on any sync PR the manifest says should be armed and
+      # that has NEVER been armed. Keying on "never armed" rather than "just
+      # created" is what makes the manifest's `automerge: true` mean what it
+      # says: a PR opened while the target was opted out (`automerge: false`,
+      # how a rollout window is held) is otherwise unarmed forever, because
+      # every later sync reports `updated` or `none`, never `created`. An
+      # auto-merge enabled event proves arming already took, so a reviewer who
+      # then disarmed the PR to hold it back is never overridden — and unlike
+      # AutoMergeDisabledEvent it does not conflate a human's choice with
+      # GitHub disabling auto-merge on its own (a push from someone without
+      # write access, or a base-branch switch). Verified live: disarming does
+      # not erase the enabled event.
+      #
+      # The body is gate-compliant by construction: the App identity that
+      # opened the PR is the whole risk gate. Every target repo has
+      # allow_auto_merge=true and required ci-status/pr-title checks on main,
+      # so a sync PR is normally not immediately mergeable — except the rare
+      # case GitHub's mutation itself rejects, handled below.
+      - name: Arm auto-merge on the sync PR
+        if: steps.cpr.outputs.pull-request-number != '' && matrix.automerge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OWNER: ${{ matrix.repo_owner }}
@@ -485,7 +497,37 @@ jobs:
             const repo = process.env.REPO;
             const pull_number = Number(process.env.PR_NUMBER);
 
-            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number });
+            const { repository } = await github.graphql(
+              `query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    id
+                    autoMergeRequest { enabledAt }
+                    timelineItems(first: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, AUTO_REBASE_ENABLED_EVENT]) {
+                      nodes { __typename }
+                    }
+                  }
+                }
+              }`,
+              { owner, repo, number: pull_number },
+            );
+            const pull = repository?.pullRequest;
+            if (!pull) {
+              core.warning(`Could not read ${owner}/${repo}#${pull_number} to arm auto-merge.`);
+              return;
+            }
+            // Read `nodes`, never `totalCount`: totalCount counts the WHOLE
+            // timeline and ignores itemTypes (verified live — a PR with four
+            // timeline items and no arming event reports totalCount 4). All
+            // three enabled-event types are listed because which one GitHub
+            // records depends on the merge method: SQUASH emits
+            // AutoSquashEnabledEvent, not AutoMergeEnabledEvent (verified
+            // live), so naming only the latter would read "never armed" on
+            // every PR this workflow has ever armed.
+            if (pull.autoMergeRequest || pull.timelineItems.nodes.length > 0) {
+              core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number}; leaving its current state alone.`);
+              return;
+            }
 
             try {
               await github.graphql(
@@ -497,7 +539,7 @@ jobs:
                     pullRequest { autoMergeRequest { enabledAt } }
                   }
                 }`,
-                { pullRequestId: pull.node_id },
+                { pullRequestId: pull.id },
               );
               core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number}.`);
             } catch (error) {
