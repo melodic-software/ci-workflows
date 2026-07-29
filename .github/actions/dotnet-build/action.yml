@@ -41,7 +41,7 @@ runs:
   steps:
     - name: Set up .NET
       id: setup-dotnet
-      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
 
@@ -58,7 +58,7 @@ runs:
       # dotnet-version's default changed here — this always tracks
       # global.json directly, so there is no separate pin to keep in lockstep.
       if: steps.setup-dotnet.outputs.dotnet-version == ''
-      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         global-json-file: ${{ github.action_path }}/../../../global.json
 
