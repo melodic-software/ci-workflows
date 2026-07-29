@@ -637,7 +637,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   caller must NOT express that scope with a workflow-level `on.pull_request.paths`
   filter, because a path miss leaves a required check Pending forever and wedges
   every prose PR. Instead the caller triggers on all PR events and supplies that
-  scope as a pattern list in Actions `paths:` syntax (workflow files,
+  scope as a pattern list of root-anchored globs (workflow files,
   permission/settings configs, hook and shell scripts, auth/token-touching code,
   network-call sites); the workflow's `changes` job evaluates it and a
   not-applicable PR yields a name-stable skipped `security-review` check. A
@@ -655,7 +655,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   trust boundary. An absent or unreadable file **fails open** (every PR
   reviewed, with a warning), matching the `changes` job's fail-open discipline
   throughout; both inputs empty means no filtering, so a consumer that passes
-  nothing is unaffected. All inputs have public-safe defaults documented inline
+  nothing is unaffected. Patterns are matched as root-anchored **gitignore**
+  patterns rather than Actions `paths:` patterns — identical for the ordinary
+  `*` / `**` globs worth writing here, but `!` negation cannot be honored as
+  Actions defines it and is rejected outright, so express an exclusion by
+  narrowing the positive patterns. All inputs have public-safe defaults
+  documented inline
   in the workflow header (the authoritative list). Consume it per the [Claude
   lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
   below, triggering on all PR events (no workflow-level `paths:`):
