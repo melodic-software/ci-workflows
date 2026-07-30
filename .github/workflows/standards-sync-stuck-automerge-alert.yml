@@ -104,6 +104,13 @@ jobs:
           persist-credentials: false
 
       - name: Install checksum-verified yq
+        # Mirrors standards-sync.yml's install rather than independently
+        # taking the runner-preinstalled exception this workflow's own,
+        # advisory-only blast radius might otherwise justify (ratified,
+        # melodic-software/ci-workflows#265): this workflow is the watchdog
+        # half of standards-sync.yml's arm-then-verify contract, reads the
+        # same manifest, and is meant to stay toolchain-identical to it
+        # rather than drift to a second, independently-reasoned yq.
         run: |
           set -euo pipefail
           install_dir="${RUNNER_TEMP}/standards-sync-alert-bin"
