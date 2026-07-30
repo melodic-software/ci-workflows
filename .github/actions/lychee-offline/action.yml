@@ -54,15 +54,22 @@ runs:
         # default for fragment checking is off, so anchor integrity is ruleset-
         # driven; the config is intentionally not overridden here.
         args=(--offline --no-progress --config "$CONFIG")
-        # noglob for the rest of the step: $EXCLUDE entries are --exclude-path
-        # REGEXES and $GLOBS are lychee's own globs (lychee expands ** itself and
-        # documents quoting the pattern). Without set -f, GH Actions bash (globstar
-        # off) would pathname-expand both before lychee — mangling `**/*.md` into
-        # one-directory-deep matches and expanding regex metacharacters.
+        # noglob for the exclude loop: $EXCLUDE entries are --exclude-path
+        # REGEXES. Without set -f, GH Actions bash (globstar off) would
+        # pathname-expand an entry containing a metacharacter before lychee
+        # sees it as a regex.
         set -f
         for e in $EXCLUDE; do
           args+=(--exclude-path "$e")
         done
-        # $GLOBS word-splits into multiple lychee path/glob args (still noglob).
-        # shellcheck disable=SC2086
-        lychee "${args[@]}" $GLOBS
+        set +f
+        # Split into an array at the input boundary so multiple globs reach
+        # lychee as separate arguments. $GLOBS is lychee's own glob syntax
+        # (lychee expands ** itself and documents quoting the pattern); quoting
+        # the array keeps bash from touching it at all, so noglob is not needed
+        # for this part. -d '' takes the whole value so a caller-authored
+        # multi-line input still splits; read hits EOF without finding that
+        # delimiter, hence the `|| true`.
+        globs=()
+        read -r -d '' -a globs <<<"$GLOBS" || true
+        lychee "${args[@]}" "${globs[@]}"

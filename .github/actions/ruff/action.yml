@@ -61,13 +61,17 @@ runs:
           IFS=,; joined="${quoted[*]}"; unset IFS
           args+=(--config "extend-exclude=[$joined]")
         fi
+        # Split into an array at the input boundary so multiple targets reach
+        # ruff as separate arguments. -d '' takes the whole value so a
+        # caller-authored multi-line input still splits; read hits EOF without
+        # finding that delimiter, hence the `|| true`.
+        paths=()
+        read -r -d '' -a paths <<<"$PATHS" || true
         rc=0
-        # $PATHS unquoted so multiple targets word-split. Run both checks even if
-        # the first fails, so a single run surfaces every issue. --output-format
-        # =github emits inline PR annotations for lint findings (the formatter has
-        # no such format; its diff goes to the log).
-        # shellcheck disable=SC2086
-        uvx "ruff@${VERSION}" check $PATHS "${args[@]}" --output-format=github || rc=1
-        # shellcheck disable=SC2086
-        uvx "ruff@${VERSION}" format --check $PATHS "${args[@]}" || rc=1
+        # Run both checks even if the first fails, so a single run surfaces
+        # every issue. --output-format=github emits inline PR annotations for
+        # lint findings (the formatter has no such format; its diff goes to the
+        # log).
+        uvx "ruff@${VERSION}" check "${paths[@]}" "${args[@]}" --output-format=github || rc=1
+        uvx "ruff@${VERSION}" format --check "${paths[@]}" "${args[@]}" || rc=1
         exit $rc

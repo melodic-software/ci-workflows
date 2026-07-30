@@ -70,7 +70,11 @@ runs:
         args=()
         if [[ "$COLOR" == "true" ]]; then args+=(-color); fi
         if [[ -n "${CONFIG_FILE// }" ]]; then args+=(-config-file "$CONFIG_FILE"); fi
-        # $PATHS unquoted so multiple targets word-split; empty appends nothing
-        # and actionlint auto-discovers .github/workflows.
-        # shellcheck disable=SC2086
-        actionlint "${args[@]}" $PATHS
+        # Split into an array at the input boundary so multiple targets reach
+        # actionlint as separate arguments; empty appends nothing and actionlint
+        # auto-discovers .github/workflows. -d '' takes the whole value so a
+        # caller-authored multi-line input still splits; read hits EOF without
+        # finding that delimiter, hence the `|| true`.
+        paths=()
+        read -r -d '' -a paths <<<"$PATHS" || true
+        actionlint "${args[@]}" "${paths[@]}"

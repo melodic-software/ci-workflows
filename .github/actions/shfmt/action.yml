@@ -50,10 +50,17 @@ runs:
           # any path is safe; ls-files output is already sorted.
           mapfile -d '' -t files < <(git ls-files -z -- '*.sh' '*.bash')
         else
-          # $PATHS unquoted so multiple roots word-split. Explicit roots opt into
-          # a raw filesystem walk that does not consult .gitignore.
-          # shellcheck disable=SC2086
-          mapfile -t files < <(find $PATHS -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
+          # Explicit roots opt into a raw filesystem walk that does not consult
+          # .gitignore. Split into an array so each root reaches find as its own
+          # path operand: an unquoted $PATHS would let bash pathname-expand a
+          # root first, and find treats a stray operand as a -exec-capable
+          # expression rather than a mere argument. -d '' takes the whole value
+          # (a newline is an IFS separator too, so a caller-authored multi-line
+          # input still splits correctly); read hits EOF without finding that
+          # delimiter, hence the `|| true`.
+          path_roots=()
+          read -r -d '' -a path_roots <<<"$PATHS" || true
+          mapfile -t files < <(find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
         fi
         # Keep only on-disk files: a sparse checkout leaves tracked-but-absent
         # (skip-worktree) entries that shfmt cannot open.

@@ -39,8 +39,7 @@ runs:
       # `biome ci` is the read-only CI command — formatter, linter and import
       # sorting in one non-mutating pass. --error-on-warnings makes any warning
       # fail the build (strict posture, the analog of pyright --warnings).
-      # --reporter=github emits inline PR annotations. $PATHS is unquoted so
-      # multiple targets word-split.
+      # --reporter=github emits inline PR annotations.
       run: |
         set -euo pipefail
 
@@ -48,5 +47,10 @@ runs:
           echo "::error::biome: config file not found: $CONFIG"
           exit 2
         fi
-        # shellcheck disable=SC2086
-        npx --yes "@biomejs/biome@$VERSION" ci --config-path="$CONFIG" --error-on-warnings --reporter=github $PATHS
+        # Split into an array at the input boundary so multiple targets reach
+        # biome as separate arguments. -d '' takes the whole value so a
+        # caller-authored multi-line input still splits; read hits EOF without
+        # finding that delimiter, hence the `|| true`.
+        paths=()
+        read -r -d '' -a paths <<<"$PATHS" || true
+        npx --yes "@biomejs/biome@$VERSION" ci --config-path="$CONFIG" --error-on-warnings --reporter=github "${paths[@]}"
