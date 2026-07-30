@@ -217,6 +217,26 @@ conventions + `distribution/governance-process.md` reconciliation step,
 - `CLAUDE_CODE_OAUTH_TOKEN` org secret has `visibility: all` (live-verified) — the
   forced-failure test must NEVER revoke it; it uses a sandbox repo with a
   repo-level same-name secret override (repo scope wins).
+- The sandbox repo is NOT an unconstrained playground (live-verified,
+  `orgs/melodic-software/properties/schema` + the two rulesets below): a newly
+  created org repo inherits org custom-property defaults, and both org
+  rulesets `base` (`17988999`, target `~ALL` repos) and `signing` (`17989003`,
+  gated on property `requires-signing == "true"`, which defaults `true`) are
+  scoped `conditions.ref_name.include: ["~DEFAULT_BRANCH"]` with an empty
+  exclude. So: a non-default branch — the path a PR-based probe takes — is
+  unconstrained (no signing requirement, no gate); the sandbox's DEFAULT
+  branch is PR-gated (`base` requires `pull_request` + linear history — a
+  direct push there is refused regardless of signature) and signature-gated
+  (`signing` requires `required_signatures` — satisfied for free by GitHub's
+  own squash/rebase merge commit, which GitHub signs itself). `requires-
+  security-review` defaults `false` on a new repo, so the security-review
+  gate does NOT arm on the sandbox — the desirable half, easy to mistake for
+  the whole picture. Net: work the sandbox through PRs (fine as-is). A
+  direct push to its default branch stays refused by `base` regardless of
+  signing, so `requires-signing=false` alone never enables one — it would
+  additionally take an org actor with a bypass on (or a re-scope of) the
+  `base` ruleset, a github-iac change; only then does unsetting
+  `requires-signing` matter, and only for unsigned pushes.
 - Platform docs confirm: `concurrency` (incl. `queue`) is documented at BOTH
   workflow and job level, and `jobs.<id>.concurrency` is an allowed keyword on jobs
   that call reusable workflows; `queue: max` + `cancel-in-progress: true` in one
