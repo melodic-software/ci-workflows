@@ -913,7 +913,7 @@ Ordered pre-steps, then waved rollout.
   `5125524714`, tracking comment `5125500446`) — the one line-anchored P2
   comment on that PR (id `3679387284`) was authored by
   `chatgpt-codex-connector[bot]`, the Codex reviewer, not this lane; it
-  landed inside the lane run's window and was initially mis-attributed
+  landed inside the lane run's window and was initially misattributed
   (caught by a fresh-context verifier). So (b) reads: review fires exactly
   once on open; count comment present; inline comments expected only WHEN the
   review has findings — and the inline path stays an open verification item
