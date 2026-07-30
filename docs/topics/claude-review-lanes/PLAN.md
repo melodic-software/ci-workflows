@@ -965,20 +965,26 @@ Ordered pre-steps, then waved rollout.
   the queue has still not been observed to BLOCK on the consumer where it was
   most likely to. Incidental: marker read `claude-review-count:1` on a repo
   with 111 trailing-7-day review runs — the counter is per-PR, not per-repo.
-  medley DONE (2026-07-30) — PR #1679 (human-authored, docs-only: REVIEW.md +
-  `review/error-handling.md`, both `locally-owned` for medley), open-event
+  medley DONE (2026-07-30) — PR #1679 (human-authored, three markdown files
+  at the reviewed head `48541af`, none managed: `REVIEW.md` — covered by the
+  `locally-owned` `review-instructions` component — plus
+  `review/error-handling.md` and a `.work/` restatement-review evidence
+  file, both in no component at all), open-event
   run `30514566338` at head `48541af`: NEW pin on `referenced_workflows`,
   review RAN and concluded success, exactly one claude-review run for the
   branch (workflow-scoped enumeration), count marker comment `5127540056`
   (`github-actions[bot]`), tracking comment `5127516271` (`claude[bot]`,
-  "finished in 1m 49s"), clean lane review (inline comments on the PR are
-  `chatgpt-codex-connector[bot]`'s), and NO claude-review run at the later
+  "finished in 1m 49s"), clean lane review (the only line-anchored review
+  comments are `chatgpt-codex-connector[bot]`'s plus later human replies),
+  and NO claude-review run at the later
   heads (3 commits on the branch, current head `af355fd`) — the
   no-`synchronize` cadence holds. Cadence — the first observed QUEUE
-  CONTENTION: three medley PRs (#1678/#1679/#1680) opened within 20 min put
-  queue depth at 3 in the `claude-review-<repo>` group; this run sat queued
-  ~2h (created 04:41:52Z, completed 06:43:35Z) while the review job itself
-  took 1m49s. The serializer queues rather than cancels, exactly as designed
+  CONTENTION: three medley PRs (#1678/#1679/#1680) opened within 16 min put
+  queue depth at 3 in the `claude-review-<repo>` group (all three review
+  jobs simultaneously waiting 04:58-05:05Z, then strictly serialized); this
+  run sat queued ~2h (created 04:41:52Z, completed 06:43:35Z) against a
+  6m48s review-job wall time (the 1m49s figure is the Claude task runtime
+  inside it, per the tracking comment). The serializer queues rather than cancels, exactly as designed
   — record for the 3g/cadence follow-ups that repo-level burst latency is
   bounded by runner availability, not by review runtime. ALL FOUR 3e ROWS
   ARE DONE; the inline-comment path is still unproven at the rollout pin
