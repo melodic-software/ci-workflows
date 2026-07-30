@@ -1000,21 +1000,40 @@ Ordered pre-steps, then waved rollout.
 - **3f. Issue updates [AMENDED 2026-07-30 — three of the five directives were
   wrong against their threads; dispositions recorded]:** #150 CLOSED as
   directed. #152 CLOSED, pointer comment verified (cross-links #150,
-  `issuecomment-5085070277`). #158 stays OPEN — the thread carries an explicit
-  DO-NOT-CLOSE (2026-07-29T15:41Z) with two triggers; trigger 1 (standards#286
-  merged) is met and recorded on the thread, trigger 2 — account-type
-  detection evaluated in the component, adopted or rejected-with-reason — is
-  not; "superseded by component normalization" delivers only the not-per-caller
-  half. #227 stays OPEN — the directed verification predicate ("bot-pushed
-  head produces a reporting required check") is INVALID: the issue's own
-  triggering example #1103 satisfied it while broken, so it cannot falsify.
-  Non-recurrence across four 2026-07-29 rounds is recorded on the thread
-  (latency seconds-to-minutes vs #1103's ~23h20m). Honest closure is
-  CLOSE-AS-MISDIAGNOSED (the event-split mechanism is refuted by #1103's own
-  data; the real question — why nothing fired at all for ~23h — would be
-  refiled fresh), which the thread's trigger 3 anticipates by asking for the
-  root-cause section to be replaced; that body edit is deferred, not silently
-  dropped. #242 stays OPEN, not closable — deliverables 4 (capability
+  `issuecomment-5085070277`). #158: trigger 2 EXECUTED 2026-07-30 — the
+  account-type evaluation was performed and posted
+  (`issuecomment-5132316690`), verdict REJECT-WITH-REASON: the identical
+  skip predicate guards the REQUIRED security check, where a type-based skip
+  converts "no security review happened" into a green required check;
+  failure directions are asymmetric (stale name list fails visibly toward
+  wasted budget, type detection fails silently toward non-review of exactly
+  the agent-authored PRs that most warrant it); and the measured benefit is
+  now zero (62 bot-actor runs resolve at JOB level to 49 skipped / 13
+  executed, all 13 predating centralization — job-level resolution is
+  mandatory, run-level conclusions mislead on this lane). Both DO-NOT-CLOSE
+  triggers are therefore met; the issue stays OPEN only because its
+  `needs-human` label bars autonomous closure — closing is a one-click
+  human action. #227 stays OPEN, CORRECTED IN PLACE and RETITLED
+  (2026-07-30) — the earlier "close-as-misdiagnosed" framing recorded here
+  was itself wrong, refuted by direct run inventory: on #1103's open head
+  `67ffa66` the `pull_request_target` workflows fired within 4 s while ZERO
+  `pull_request` runs occurred, so the event split was REAL on the wedged
+  head; what failed was the generalization (three later bot force-pushes
+  each fired both event classes within seconds, the wedge cleared on a bot
+  push after ~13h31m with no human commit, and the previously cited ~23h20m
+  — actually 23h16m25s — measured to the bot's next force-push). A second
+  instance with the identical signature exists: ci-runner#143 open head
+  `750310d`, cleared ~42 min later; dotfiles#299 showed a 2m19s same-head
+  lag — an intermittent, variable-latency `pull_request` event-delivery gap
+  (0-5 s typical, 2m19s, ~42 min, ~13h31m, plus the 20m46s #1754 outlier),
+  `pull_request_target` unaffected in every observed case. The issue body's
+  root-cause, impact, category, fix-direction, and title were revised in
+  place (edit-noted; correction of record `issuecomment-5132244199`, erratum
+  `issuecomment-5132722167`), non-recurrence across four 2026-07-29 rounds
+  recorded, root cause still unknown (webhook delivery logs unreachable from
+  the Actions surface). Three fresh-context verifier rounds ran on the
+  disposition; the final round returned PASS on all four criteria with zero
+  factual errors and presentational-only residuals, accepted as named gaps. #242 stays OPEN, not closable — deliverables 4 (capability
   deep-dive) and 7 (medley claude-assistant extraction evaluation) remain
   untouched; medley's `--model claude-sonnet-4-6` pin is still stale (its
   action pin has since moved to v1.0.180 via Dependabot, recorded to prevent a
