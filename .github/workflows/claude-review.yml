@@ -113,11 +113,15 @@ on:
           turn budget, allowed tools, system prompt, MCP config all ride here
           (the standalone model / max_turns / allowed_tools action inputs are
           deprecated upstream). The default allows the inline-comment MCP tool
-          so findings can land as line-anchored review comments.
+          so findings can land as line-anchored review comments, and a scoped
+          `Bash(gh pr diff:*)` grant so the prompt's "use `gh pr diff`"
+          instruction is actually sanctioned — a read-only diff-enumeration
+          command, matching the minimal-grant pattern the action's own
+          security docs recommend for `gh` subcommands.
         type: string
         default: >-
           --model claude-sonnet-5 --max-turns 75
-          --allowedTools "mcp__github_inline_comment__create_inline_comment"
+          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*)"
       track-progress:
         description: >-
           Create one tracking comment with progress checkboxes, sticky-updated
