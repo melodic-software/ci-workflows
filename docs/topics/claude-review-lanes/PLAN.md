@@ -231,9 +231,12 @@ conventions + `distribution/governance-process.md` reconciliation step,
   own squash/rebase merge commit, which GitHub signs itself). `requires-
   security-review` defaults `false` on a new repo, so the security-review
   gate does NOT arm on the sandbox — the desirable half, easy to mistake for
-  the whole picture. Net: work the sandbox through PRs (fine as-is), or have
-  an org actor set `requires-signing=false` on it first if a direct push to
-  its default branch is ever needed.
+  the whole picture. Net: work the sandbox through PRs (fine as-is). A
+  direct push to its default branch stays refused by `base` regardless of
+  signing, so `requires-signing=false` alone never enables one — it would
+  additionally take an org actor with a bypass on (or a re-scope of) the
+  `base` ruleset, a github-iac change; only then does unsetting
+  `requires-signing` matter, and only for unsigned pushes.
 - Platform docs confirm: `concurrency` (incl. `queue`) is documented at BOTH
   workflow and job level, and `jobs.<id>.concurrency` is an allowed keyword on jobs
   that call reusable workflows; `queue: max` + `cancel-in-progress: true` in one
