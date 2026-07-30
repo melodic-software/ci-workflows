@@ -107,6 +107,13 @@ on:
           Scope your review to the files changed in this PR. Use `gh pr diff` to
           identify what changed, then review those files. Do not explore
           unrelated parts of the codebase.
+
+
+          Never restate the PR author's own claimed verification (e.g. a Test
+          plan's described commands or output) as evidence you independently
+          confirmed. Only claim to have verified something you yourself ran
+          with a tool available to you; label anything else as
+          author-claimed and unverified.
       claude-args:
         description: >-
           Passed through to the Claude CLI. The universal extension point: model,
