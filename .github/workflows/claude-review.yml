@@ -37,7 +37,8 @@ name: claude-review
 #       review:
 #         # The org's sync-managed caller component additionally carries a
 #         # job-level queue group here — a SEPARATE block, because `queue:`
-#         # cannot share a concurrency block with cancel-in-progress:
+#         # cannot share a concurrency block with `cancel-in-progress: true`
+#         # (false is fine; several live fleet workflows pair them that way):
 #         #   concurrency:
 #         #     group: claude-review-${{ github.repository }}
 #         #     queue: max
