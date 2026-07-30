@@ -802,7 +802,9 @@ Ordered pre-steps, then waved rollout.
   manifest targets; plan default: exempt from lane components, one-line targets
   comment).
   standards repo is the manifest SOURCE, not a target — its caller stays
-  repo-local, byte-equivalence-checked in Phase 5. ROLLBACK procedure: revert
+  repo-local, equivalence-checked in Phase 5 modulo its documented deviations
+  (byte equality is impossible: standards is public and cannot call the
+  selector). ROLLBACK procedure: revert
   the component source commit in standards → next sync run proposes the inverse
   delta to all targets → merge those PRs (automerge off ⇒ manual,
   minutes-scale); kill-switch covers the interim; the sync engine NEVER deletes
@@ -888,9 +890,39 @@ Ordered pre-steps, then waved rollout.
   then filter for the marker) — it is invisible in the rendered PR. None of
   these is observable on a bot-authored PR, so wave 1 does not close until
   such a PR exists in provisioning.
+
+  WAVE-1 (b) SATISFIED (2026-07-30): provisioning#235 (human-authored,
+  README-only, non-managed). Open-event run `30503910653` (head `84adc33`,
+  `run_attempt` 1): `referenced_workflows` names
+  `claude-review.yml@c136b27f404dd32ce3873f39a6f3443891d1c16e` and
+  `select-runner.yml` at the same SHA — the NEW pin, on THIS run; exactly one
+  claude-review run for the PR (three independent paginated enumerations,
+  including a workflow-scoped runs query); count comment id `5125040466`
+  authored by `github-actions[bot]`, raw body line 1
+  `<!-- claude-review-count:1 -->` (tracking comment id `5125025302` is
+  `claude[bot]`, no marker); follow-up push `a41e175` at 01:00Z produced NO
+  claude-review run (re-confirmed ~15 min later) — the no-`synchronize`
+  cadence holds. ONE CRITERION REWORDED, not waived: "inline comments
+  present" is unsatisfiable on a CLEAN review — the review found nothing,
+  posted no review object, and the reusable documents that clean reviews
+  otherwise produce no visible output (its `track-progress` mitigation for
+  upstream #1071). The clean-review evidence is the count marker plus the
+  tracking comment; the INLINE-COMMENT PATH itself was proven the same day on
+  a findings-bearing review in another consumer at the same pin — github-iac
+  PR #247, run `30507312523`, one line-anchored P2 review comment posted. So
+  (b) reads: review fires exactly once on open; count comment present; inline
+  comments present WHEN the review has findings, with the path proven on ≥1
+  consumer at the rollout pin. Cadence data: review job queue-to-start 85 s
+  (upper bound on contention — ARC pod provisioning indistinguishable),
+  runtime 158 s, self-hosted `melodic-review-ubuntu-24.04-x64`, zero 429s,
+  `RETRY_OUTCOME: skipped`, repo had zero in-flight lane runs (uncontended
+  measurement).
 - **3e. Post-rollout verification — ONE REPO AT A TIME** (devils-advocate F11:
-  parallel verification manufactures the seat contention this effort fixes; use
-  kill-switches as the sequencing mechanism): per consumer, one PR exercises —
+  parallel verification manufactures the seat contention this effort fixes;
+  sequenced by MERGE ORDER — the kill-switch cannot sequence anything it does
+  not reach, and reachability at rollout time was 1 of 7 callers, so the
+  original "use kill-switches as the sequencing mechanism" was unsound and is
+  replaced): per consumer, one PR exercises —
   review fires once on open (inline comments present + count comment), security
   lane reports per head or name-stable-skips, and on ≥1 repo a PR touching the
   repo's PRIMARY language triggers an ACTUAL security run, not a skip (guards
@@ -901,18 +933,73 @@ Ordered pre-steps, then waved rollout.
   decision flagged in PHASE 3 CLOSURE below. #227 smoke: bot-pushed
   head still produces a reporting required check. Record observed concurrency
   data for the cadence follow-ups.
-- **3f. Issue updates:** close #150 (code-review lane implemented; security keeps
-  synchronize — QF1); comment-close #158 (superseded by component normalization;
-  account-type detection noted as component-level candidate); verify+close #227;
-  close #242 (pointer to decision record); verify #152's pointer comment.
-- **3g. Fleet action-currency follow-through [FALLBACK — confirm or override]:**
-  the Brief's "Dependabot keeps it same-day current" reaches ci-workflows only —
-  every consumer `ignore`s ci-workflows refs, so fleet currency moves through
-  release-tag → component re-pin → sync, all manual today (devils-advocate F10).
-  RECOMMENDED: a small scheduled job in standards that re-pins the caller
-  components to the newest ci-workflows release tag and lets the existing sync
-  cascade carry it (scope addition); alternative: accept the lag, state the
-  fleet-propagation SLA in README, and let #257 (staleness audit) be the
+
+  3e EVIDENCE (2026-07-30, merge order): provisioning DONE — see WAVE-1 (b)
+  above (run `30503910653`; no security lane in the repo, so the security row
+  is N/A by absence, not by skip). github-iac DONE — PR #247, open-event run
+  `30507312523` referencing the NEW pin, `review / review` RAN and concluded
+  success, count marker present, one inline P2 finding posted (the
+  findings-bearing proof of the inline path); no security lane in the repo.
+  dotfiles and medley PENDING — next human-authored PR in each, in that
+  order. The ≥1 ACTUAL-security-run item routes per PHASE 3 CLOSURE below.
+  #227 smoke recorded but INVALID as verification: four bot-authored sync PRs
+  on claude-code-plugins today all show `security-review / security-review`
+  reporting `skipped` within seconds-to-minutes (check-runs `90636524265`,
+  `90682064295`, `90712488013`, `90728741759`), BUT the issue's own
+  triggering example #1103 reached the identical terminal state while broken,
+  so the predicate cannot verify the fix — see the amended 3f below.
+- **3f. Issue updates [AMENDED 2026-07-30 — three of the five directives were
+  wrong against their threads; dispositions recorded]:** #150 CLOSED as
+  directed. #152 CLOSED, pointer comment verified (cross-links #150,
+  `issuecomment-5085070277`). #158 stays OPEN — the thread carries an explicit
+  DO-NOT-CLOSE (2026-07-29T15:41Z) with two triggers; trigger 1 (standards#286
+  merged) is met and recorded on the thread, trigger 2 — account-type
+  detection evaluated in the component, adopted or rejected-with-reason — is
+  not; "superseded by component normalization" delivers only the not-per-caller
+  half. #227 stays OPEN — the directed verification predicate ("bot-pushed
+  head produces a reporting required check") is INVALID: the issue's own
+  triggering example #1103 satisfied it while broken, so it cannot falsify.
+  Non-recurrence across four 2026-07-30 rounds is recorded on the thread
+  (latency seconds-to-minutes vs #1103's ~23h20m). Honest closure is
+  CLOSE-AS-MISDIAGNOSED (the event-split mechanism is refuted by #1103's own
+  data; the real question — why nothing fired at all for ~23h — would be
+  refiled fresh), which the thread's trigger 3 anticipates by asking for the
+  root-cause section to be replaced; that body edit is deferred, not silently
+  dropped. #242 stays OPEN, not closable — deliverables 4 (capability
+  deep-dive) and 7 (medley claude-assistant extraction evaluation) remain
+  untouched; medley's `--model claude-sonnet-4-6` pin is still stale (its
+  action pin has since moved to v1.0.180 via Dependabot, recorded to prevent a
+  false staleness re-report).
+- **3g. Fleet action-currency follow-through [RESOLVED — Approval record
+  item 12]:** the Brief's "Dependabot keeps it same-day current" reaches
+  ci-workflows only — every consumer `ignore`s ci-workflows refs, so fleet
+  currency moves through release-tag → component re-pin → sync, all manual
+  today (devils-advocate F10). Resolved to the recommended option,
+  pre-approved 2026-07-26 (Approval record item 12): a scheduled re-pin job
+  in standards. Spec (implementation pending): new workflow in standards,
+  daily `schedule` + `workflow_dispatch`, offset from sync's Monday
+  `17 6 * * 1`; resolve `releases/latest` on ci-workflows, deref the tag to
+  a commit SHA (handle annotated and lightweight — today's tags are
+  lightweight), rewrite every
+  `uses: melodic-software/ci-workflows/...@<sha>` under
+  `components/claude-lanes/` ONLY (the pin-comment-convention fixtures hold
+  deliberate bad pins — never in scope) to `@<new-full-sha> # <tag>`; no
+  diff → exit clean; diff → force-update the fixed branch
+  `chore/repin-claude-lanes` and open-or-update ONE PR (idempotent; a yanked
+  release self-corrects on the next run; a merged bad pin rolls back via the
+  3d revert-component-source procedure). The PR is NEVER auto-merged —
+  human review of the re-pin diff is the fleet's compatibility gate; the
+  existing pin-comment-convention check validates the pin form on the PR;
+  the sync cascade (sync.yml `push: main`, a real non-dry run) carries the
+  merge to targets with no further action. Credential: App token, because a
+  GITHUB_TOKEN-authored PR gets its `pull_request` runs held in an
+  approval-required state (per GitHub docs on GITHUB_TOKEN-triggered
+  events), so required checks never report hands-free —
+  reuse the standards-sync App if its installation covers standards itself
+  with contents + pull-requests write (verify at implementation), else a
+  minimal new App [USER-APPROVAL GATE per org precedent — no silent App
+  creation]. The alternative (accept lag + README SLA + #257 as sole
+  detector) is dead; #257 remains the belt-and-suspenders staleness
   detector.
 
 **Sanity Check:** `bash distribution/sync-manifest.sh validate` exits 0; per
@@ -958,8 +1045,21 @@ overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
 or matches only deliberate standing opt-outs).
 
+3c INVARIANT RE-READ (2026-07-30): the canonicalized-JSON read of ruleset
+19388547 shows `bypass_actors: []`, `conditions` intact
+(`~DEFAULT_BRANCH` include, empty excludes on both `ref_name` and
+`repository_property`, the `requires-security-review == "true"` include),
+`enforcement: active`, and the `security-review / security-review` required
+check — and the property regeneration returns exactly `claude-code-plugins`.
+Both halves intact. EXPECTED DOCUMENTED DELTA: github-iac PR #247 (break-glass,
+ADR 0010, merge user-gated) adds one bypass actor
+(`OrganizationAdmin`, `bypass_mode: pull_request`, `actor_id: 1`) to this
+ruleset by design; after it applies, the canonical compare must expect exactly
+that delta and nothing else — an empty `bypass_actors` read post-merge would
+itself be drift.
+
 **PHASE 3 CLOSURE — the ACTUAL-security-run observation is not reachable from
-any wave [NEEDS ROUTING DECISION].** Measured 2026-07-29. Exactly two org
+any wave [ROUTED 2026-07-29 — decision recorded below].** Measured 2026-07-29. Exactly two org
 repos run a security lane at all — `claude-code-plugins` and `ci-workflows`;
 every other manifest target 404s on
 `.github/workflows/claude-security-review.yml`. Neither is reachable as a
@@ -997,6 +1097,46 @@ by admitting a private adopter, which is what its recorded unpark trigger
 describes; (c) move the observation to a phase whose scope covers those repos.
 Do not resolve this by picking one silently.
 
+ROUTING DECIDED (2026-07-29, delegated decision session; rationale recorded
+here): candidate (a), made whole by the claude-code-plugins `paths-file`
+migration already in flight on `chore/repin-claude-lanes-v0.9.1` (pushed;
+re-pins both lane callers to v0.9.1 =
+`c136b27f404dd32ce3873f39a6f3443891d1c16e`, and the security caller drops its
+inline `paths` for `paths-file: .github/claude-security-paths` — the pattern
+file landed on claude-code-plugins main via #1701 (merged 2026-07-28),
+byte-identical on the branch; 26 non-comment pattern lines measured
+2026-07-29, correcting the "27-entry" count in 3a above). The migration is
+CONTRACT-FORCED, not discretionary: the managed runner-policy component's
+approved contract for `claude-security-review.yml@c136b27f…` is
+`allowedInputs: ["runner", "paths-file"]` — inline `paths` is excluded at
+the v0.9.1 pin, so any consumer re-pinning to v0.9.1 migrates or violates
+the contract. That retires (a)'s recorded limitation: the run evidence now
+exercises the `paths-file` mechanism itself.
+Verified against the reusable at v0.9.1 before deciding: a non-empty inline
+`paths` wins over the file (no fetch); the file is fetched from the BASE
+branch via the contents API (a PR cannot edit it to skip its own review; a
+head lacking the file is irrelevant); an absent or unreadable file FAILS OPEN
+to `relevant=true` with a `::warning`; a not-applicable PR yields the
+name-stable SKIPPED `security-review` check. Failure modes are therefore
+noise (extra reviews), never a wedged required check. EVIDENCE CRITERIA
+(record run URLs here when they exist; all post-merge of the repin PR):
+(1) a code-touching claude-code-plugins PR whose run references
+`claude-security-review.yml@c136b27f…` AND whose `security-review` job RAN,
+AND whose `changes` job log carries no `Could not read paths file` warning —
+the warning's absence is what distinguishes a working paths-file from a
+silent fail-open, so the run alone is not the evidence; (2) one prose-only
+claude-code-plugins PR showing the name-stable SKIPPED `security-review`
+check — proves the filter filters. Recorded explicitly as evidence from a
+NON-WAVE repo (claude-code-plugins holds both callers locally-owned): it
+transfers because the reusable bytes and the `paths-file` mechanism are
+exactly what the parked component calls; what it does NOT prove —
+sync-managed delivery of a security caller — stays parked. (b) NOT taken:
+the park and its unpark trigger are unchanged; a private repo adopts the
+security lane on its own merits (github-iac and medley are the plausible
+first movers), never to manufacture closure evidence. (c) NOT taken: moving
+the observation to a later phase relabels (a)'s evidence without producing
+it.
+
 ### Phase 4: observability — #238 aggregator [TODO]
 
 Issue #237 shipped (#248/#249/#251; closed). This phase consumes it. Can be
@@ -1031,7 +1171,7 @@ auto-resolve; scheduled-run log contains the API-call-count line;
 `gh issue list --repo melodic-software/ci-workflows --label claude-lane-incident --state open`
 returns ≤1; #228/#238 closed with pointers.
 
-### Phase 5: close-out [TODO]
+### Phase 5: close-out [DOING]
 
 - ci-workflows README lane-contract section updated (new inputs, cadence,
   kill-switches, caller-component pointer, kill-switch visibility deviation,
@@ -1039,8 +1179,12 @@ returns ≤1; #228/#238 closed with pointers.
   checked for drift. Sanity: `grep -c "max-reviews-per-pr" README.md` ≥ 1 and
   `grep -c "CLAUDE_LANES_DISABLED" README.md` ≥ 1.
 - medley REVIEW.md content-equivalence check (locally-owned vs restructured
-  managed source); standards repo-local caller blob-hash equivalence vs component
-  source; file issues on drift.
+  managed source); standards repo-local caller equivalence vs component source
+  MODULO DOCUMENTED DEVIATIONS — byte equality is impossible by design, since
+  standards is public and cannot call the governed selector; file issues on
+  drift. Verification:
+  `git -C <standards> diff --unified=0 'origin/main:components/claude-lanes/claude-review.yml' 'origin/main:.github/workflows/claude-review.yml'`
+  and classify every hunk.
 - Co-Authored-By trailer-parsing finding (fourth Brief smoke item, record-only)
   posted as a comment on ci-workflows#256.
 - Do-not-break sweep: #151 (loop-driven replacement — note whether the cadence
@@ -1054,10 +1198,16 @@ comment recorded in this file; equivalence results recorded (issue links or "no
 drift"); `gh issue view 256 --repo melodic-software/ci-workflows --json comments`
 contains the trailer-parsing note.
 
-- **Phase 5 partial evidence (2026-07-29):** two of five bullets fully closed
-  (trailer note, do-not-break sweep); one half-closed (equivalence — medley
-  done, blob-hash blocked); two outstanding (README/CLAUDE.md, tags advanced),
-  so the phase tag stays `[TODO]`.
+- **Phase 5 evidence (updated 2026-07-30; the 2026-07-29 block below predates
+  it):** four of five bullets fully closed — README/CLAUDE.md lane contract
+  (ci-workflows#285 MERGED 2026-07-29T13:20Z; both sanity greps return 1 at
+  origin/main — the 07-29 "two outstanding" claim below was stale on this
+  point at write time), trailer note, do-not-break sweep, and equivalence
+  (medley drift filed as medley#1671; standards-side check complete with the
+  component drift filed as standards#298, companion reusable-header claim as
+  ci-workflows#311). Remaining: the final bullet — tags advanced + topic
+  close-out — which this PR performs for everything except Phase 3's own tag
+  (still `[DOING]` pending its closure evidence) and Phase 4.
   - **medley REVIEW.md equivalence — DRIFT, filed as medley#1671.** The
     comparison does not run the way the bullet's framing implies. medley's
     `REVIEW.md` is not a drifted copy of the managed source: it is an
@@ -1093,10 +1243,42 @@ contains the trailer-parsing note.
     customization seam. medley#1671 records the gap and the forward-looking
     trigger: adopting a security lane later inverts the finding into
     double-reporting and would then require the mutual-exclusion language.
-  - **standards repo-local caller blob-hash equivalence — NOT DONE.** Blocked:
-    it cannot run until standards#286 merges and the components sync; that PR
-    is still OPEN and unmerged. This half of the equivalence bullet is
-    outstanding, not waived.
+  - **standards repo-local caller equivalence — CHECK DONE, DRIFT in the
+    component (not the caller); filed.** The blocker cleared: standards#286
+    merged 2026-07-29T16:12Z and #296 merged 2026-07-29T22:04Z. Reframed from
+    "blob-hash equivalence": byte equality is impossible by design, because
+    standards is PUBLIC and `components/runner-policy/README.md:113` bars a
+    public repo from calling the selector the component uses. The check is
+    equivalence modulo documented deviations. Component blob
+    `a9dfe7f45a5697693298e86db221067fc4d008af`, caller blob
+    `89a73c1741172588cb63547a2079e059e7a491a5`; the diff is 11 hunks at
+    `--unified=0`, all classified, none of them undocumented drift (a
+    difference that changes behavior or contradicts documented intent and
+    carries no citation). FOUR documented deviations, behavior-affecting only
+    in the first: D1 runner hardcoded `ubuntu-24.04` with the `select-review`
+    job deleted (runner-policy README:113; the same constraint the manifest
+    records for claude-code-plugins' `locally-owned` callers); D2 the
+    workflow-level concurrency group in the `${{ github.workflow }}`-prefixed
+    canonical form that standards' own `concurrency-policy` enforces via
+    `ci.yml`'s "Enforce concurrency policy on standards" — runtime-identical,
+    since the workflow is named `claude-review`; D3 the trigger comment drops
+    the component's false "re-run the job for a fresh review" claim; D4 the
+    header states repo-local ownership instead of the SYNC-MANAGED banner, per
+    the manifest's "standards: manifest source, not a target". #296 enumerates
+    D1-D3; the manifest documents D4. Two hunks are word-identical rewraps and
+    one adds a comment-only `skip-actors` explanation — the suspected
+    `skip-actors` deviation is a NON-deviation, since neither file passes the
+    input and both inherit the reusable's four-actor default. Byte equivalence
+    HOLDS for all four managed targets (dotfiles, github-iac, medley,
+    provisioning all at `a9dfe7f4`), confirming the sync renders the component
+    verbatim with no templating. The drift found is upstream in the component,
+    not in the caller: the false re-run claim and the stale KNOWN CONFLICT
+    prescription are both live there and synced to all four targets — filed as
+    standards#298 (the reusable's own header carries the same re-run claim,
+    filed as ci-workflows#311). The same paragraph's historical deadlock
+    statement is TRUE (`ec91c34^` carried the `claude-review-<PR>` inner group
+    and `ec91c34` predates `v0.9.0`) and is explicitly excluded from that
+    issue.
   - **Co-Authored-By trailer-parsing note — POSTED** as a record-only comment on
     #256 (`issuecomment-5112552526`), satisfying the Sanity Check line. The
     item resolves N/A rather than pass/fail: it is conditional on the
@@ -1117,11 +1299,14 @@ contains the trailer-parsing note.
     v1.0.174 vs the lanes' v1.0.183) and the sync-engine pin class where a
     granted capability stays inert until the engine pin moves; no currency
     detector named, since 3g has not run.
-  - **Remaining for Phase 5:** the README/CLAUDE.md lane-contract bullet
-    (ci-workflows#285, open); the blob-hash equivalence above; and the final
-    bullet's "PLAN.md tags advanced; topic close-out at PR time", which cannot
-    close while the other two are open — the tag is still `[TODO]`, so tags are
-    by definition not yet advanced. Verification:
+  - **Remaining for Phase 5 (superseded 2026-07-30 — see the updated evidence
+    header above):** as of 2026-07-29 this listed the README/CLAUDE.md bullet
+    (in fact already merged as ci-workflows#285 at 13:20Z that day) and the
+    equivalence check (since completed, drift filed as standards#298 +
+    ci-workflows#311). What remains is only the final bullet — tags advanced +
+    topic close-out — performed by the PR carrying this edit for every phase
+    except Phase 3 (`[DOING]` pending closure evidence) and Phase 4.
+    Verification:
     FOUR fresh-context verifier rounds ran against the comments, the
     equivalence verdict, and this evidence block; all four returned REJECT and
     each caught a defect introduced while remediating the previous round.
