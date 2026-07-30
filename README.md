@@ -179,6 +179,9 @@ consumer to audit it.
   awk); pairs with `lychee-offline`, which covers link/fragment targets.
 - `.github/actions/exec-bit` — verifies every tracked shebang file carries git
   index mode 100755, so executable scripts keep their bit on checkout.
+- `.github/actions/action-metadata-filename` — rejects any tracked
+  `action.yaml` (GitHub also accepts this spelling, but every lane here globs
+  `action.yml` only); repo-wide, not scoped to `.github/actions/`.
 - `.github/actions/machine-specific-paths` — rejects machine-specific absolute /
   user-home paths in tracked files (portable placeholders allowed).
 - `.github/actions/comment-hygiene` — scans comments for deferred-work markers

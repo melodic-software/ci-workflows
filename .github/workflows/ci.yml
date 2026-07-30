@@ -286,6 +286,17 @@ jobs:
       - name: Verify shebang files are executable
         uses: ./.github/actions/exec-bit
 
+  action-metadata-filename:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject action.yaml metadata (action.yml is enforced exclusively)
+        uses: ./.github/actions/action-metadata-filename
+
   machine-specific-paths:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -442,7 +453,7 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, exec-bit, action-metadata-filename, machine-specific-paths, eol-renormalize, comment-hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -453,4 +464,4 @@ jobs:
       - name: Aggregate lane results
         uses: ./.github/actions/ci-status
         with:
-          results: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
