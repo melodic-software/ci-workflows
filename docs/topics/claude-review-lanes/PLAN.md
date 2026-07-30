@@ -590,7 +590,7 @@ Ordered pre-steps, then waved rollout.
   `.github/claude-security-paths`); the `changes` job fetches it via the contents
   API (no checkout added); file absent → fail-open `relevant=true` (current `''`
   semantics unchanged). The component caller passes the conventional path; each
-  repo owns its paths file (claude-code-plugins keeps its 27-entry tuned list
+  repo owns its paths file (claude-code-plugins keeps its 26-entry tuned list
   verbatim; new adopters get a seeded starter list in their sync PR). Medley
   divergence classification: `reopened` gap + skip-actors = drift (normalized
   away); its `paths-ignore` block = TUNING — carried as accepted loss [FALLBACK —
@@ -907,12 +907,18 @@ Ordered pre-steps, then waved rollout.
   posted no review object, and the reusable documents that clean reviews
   otherwise produce no visible output (its `track-progress` mitigation for
   upstream #1071). The clean-review evidence is the count marker plus the
-  tracking comment; the INLINE-COMMENT PATH itself was proven the same day on
-  a findings-bearing review in another consumer at the same pin — github-iac
-  PR #247, run `30507312523`, one line-anchored P2 review comment posted. So
-  (b) reads: review fires exactly once on open; count comment present; inline
-  comments present WHEN the review has findings, with the path proven on ≥1
-  consumer at the rollout pin. Cadence data: review job queue-to-start 85 s
+  tracking comment. The INLINE-COMMENT PATH itself is UNPROVEN at the rollout
+  pin: github-iac PR #247's lane run `30507312523` was ALSO clean ("No
+  buffered inline comments" in the review job log; marker comment
+  `5125524714`, tracking comment `5125500446`) — the one line-anchored P2
+  comment on that PR (id `3679387284`) was authored by
+  `chatgpt-codex-connector[bot]`, the Codex reviewer, not this lane; it
+  landed inside the lane run's window and was initially mis-attributed
+  (caught by a fresh-context verifier). So (b) reads: review fires exactly
+  once on open; count comment present; inline comments expected only WHEN the
+  review has findings — and the inline path stays an open verification item
+  until a findings-bearing LANE review is observed on any consumer at the
+  rollout pin. Cadence data: review job queue-to-start 85 s
   (upper bound on contention — ARC pod provisioning indistinguishable),
   runtime 158 s, self-hosted `melodic-review-ubuntu-24.04-x64`, zero 429s,
   `RETRY_OUTCOME: skipped`, repo had zero in-flight lane runs (uncontended
@@ -938,12 +944,16 @@ Ordered pre-steps, then waved rollout.
   above (run `30503910653`; no security lane in the repo, so the security row
   is N/A by absence, not by skip). github-iac DONE — PR #247, open-event run
   `30507312523` referencing the NEW pin, `review / review` RAN and concluded
-  success, count marker present, one inline P2 finding posted (the
-  findings-bearing proof of the inline path); no security lane in the repo.
-  dotfiles and medley PENDING — next human-authored PR in each, in that
-  order. The ≥1 ACTUAL-security-run item routes per PHASE 3 CLOSURE below.
+  success, a second CLEAN review (count marker `5125524714`, tracking comment
+  `5125500446`, "No buffered inline comments" in the job log; the PR's one
+  inline P2 comment is `chatgpt-codex-connector[bot]`'s, not this lane's); no
+  security lane in the repo. dotfiles and medley PENDING — next
+  human-authored PR in each, in that order; the inline-comment path is still
+  unproven at the rollout pin (see WAVE-1 (b) above) and closes on the first
+  findings-bearing lane review any of these rows produces. The ≥1
+  ACTUAL-security-run item routes per PHASE 3 CLOSURE below.
   #227 smoke recorded but INVALID as verification: four bot-authored sync PRs
-  on claude-code-plugins today all show `security-review / security-review`
+  on claude-code-plugins (2026-07-29) all show `security-review / security-review`
   reporting `skipped` within seconds-to-minutes (check-runs `90636524265`,
   `90682064295`, `90712488013`, `90728741759`), BUT the issue's own
   triggering example #1103 reached the identical terminal state while broken,
@@ -959,7 +969,7 @@ Ordered pre-steps, then waved rollout.
   half. #227 stays OPEN — the directed verification predicate ("bot-pushed
   head produces a reporting required check") is INVALID: the issue's own
   triggering example #1103 satisfied it while broken, so it cannot falsify.
-  Non-recurrence across four 2026-07-30 rounds is recorded on the thread
+  Non-recurrence across four 2026-07-29 rounds is recorded on the thread
   (latency seconds-to-minutes vs #1103's ~23h20m). Honest closure is
   CLOSE-AS-MISDIAGNOSED (the event-split mechanism is refuted by #1103's own
   data; the real question — why nothing fired at all for ~23h — would be
@@ -1478,7 +1488,9 @@ Original decision text (recommendations + alternatives) retained below for conte
 - [EXEC-SHAPE] Waved rollout (provisioning first — see 3d for the measurement
   that replaced dotfiles) + automerge-off window + rollback
   = revert-component-source procedure.
-- [EXEC-SHAPE] 3e verification serialized one repo at a time via kill-switches.
+- [EXEC-SHAPE] 3e verification serialized one repo at a time via kill-switches
+  — SUPERSEDED 2026-07-30: serialization is by merge order; the kill-switch
+  could not sequence (see the amended 3e bullet).
 - [EXEC-SHAPE] standards repo keeps repo-local caller (manifest source, not
   target); archived repos out of scope.
 - Routing table above; PLAN.md edits stay main-session-only; agents report back.
