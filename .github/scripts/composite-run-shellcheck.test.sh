@@ -88,8 +88,14 @@ cat -- "$custom"
 grep -F 'runs.steps[1] (shell: bash)' "$custom"
 grep -F 'runs.steps[2] (shell: sh)' "$custom"
 grep -F 'runs.steps[3]: shell is pwsh, not bash/sh' "$custom"
-if [[ "$(grep -c '^check fixtures/composite-action/custom-shell/' "$custom")" -ne 3 ]]; then
-  echo 'Expected exactly three checked blocks in the custom-shell fixture.' >&2
+# A PATH-QUALIFIED custom shell (`/usr/bin/bash --noprofile {0}`) is run as
+# bash too, but its leading word is the full path, not the bare name — the
+# selector must resolve by the leading command's basename, one step further
+# than actionlint's own bare-name/leading-word resolution, or this step falls
+# to the same silent skip a path-qualified shell gets upstream.
+grep -F 'runs.steps[4] (shell: bash)' "$custom"
+if [[ "$(grep -c '^check fixtures/composite-action/custom-shell/' "$custom")" -ne 4 ]]; then
+  echo 'Expected exactly four checked blocks in the custom-shell fixture.' >&2
   exit 1
 fi
 

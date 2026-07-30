@@ -10,7 +10,16 @@
 #
 # This extracts each bash/sh `run:` block and hands it to ShellCheck under the
 # same contract actionlint applies to workflow `run:` blocks, so a step is
-# judged identically whether it lives in a workflow or a composite. It also
+# judged AT LEAST AS STRICTLY whether it lives in a workflow or a composite —
+# not merely identically. actionlint's own dialect resolution (rule_shellcheck
+# .go) matches only a bare "bash"/"sh" or its literal leading word in GitHub's
+# custom-shell form ("bash [options] {0}"), so a path-qualified custom shell
+# (`shell: /usr/bin/bash --noprofile {0}`, which GitHub documents and runs as
+# bash) falls through actionlint's own check unanalysed. This check resolves
+# by the leading command's BASENAME instead, so a path-qualified shell of
+# either dialect is analysed here too rather than silently skipped as it is
+# upstream — a composite step is therefore never LESS covered than the
+# identical workflow step would be, only ever equally or more so. It also
 # makes the in-place `# shellcheck disable=` directives those blocks already
 # carry take effect.
 #
@@ -173,9 +182,14 @@ for file in "${files[@]}"; do
 
   # Counted with an expression independent of the extraction query below, so a
   # selector that silently matches nothing is caught rather than passing as a
-  # zero-block success — the false green this check exists to prevent.
+  # zero-block success — the false green this check exists to prevent. The
+  # regex resolves the same basename the case below does — an optional
+  # slash-terminated path prefix, then a bare "bash"/"sh" followed by a space
+  # or end-of-string — so the two selectors must stay in lockstep; letting
+  # them drift would make this guard fire on every path-qualified shell
+  # instead of only on a genuine selector regression.
   expected="$(yq -r \
-    '[.runs.steps[] | select(has("run")) | select((.shell // "") | test("^(bash|sh)( |$)"))] | length' \
+    '[.runs.steps[] | select(has("run")) | select((.shell // "") | test("^([^ ]*/)?(bash|sh)( |$)"))] | length' \
     "$file")"
   produced=0
 
@@ -192,20 +206,27 @@ for file in "${files[@]}"; do
       exit 1
     fi
 
-    # actionlint's own dialect resolution (rule_shellcheck.go): the bare names,
-    # plus GitHub's custom-shell form `command [...options] {0}`, whose dialect
-    # is the leading command word. Matching only the bare names would leave a
-    # block GitHub runs with bash unchecked while the job stayed green — the
+    # DELIBERATELY exceeds actionlint's own dialect resolution
+    # (rule_shellcheck.go), which matches only a bare name or its literal
+    # leading word in GitHub's custom-shell form (`command [...options] {0}`).
+    # This resolves by the leading command's BASENAME instead, so a
+    # path-qualified custom shell (`shell: /usr/bin/bash --noprofile {0}`,
+    # which GitHub documents and runs as bash) is classified too, rather than
+    # silently skipped as it is upstream — narrower coverage would leave a
+    # block GitHub runs with bash/sh unchecked while the job stayed green, the
     # coverage hole this check exists to close. Only the case sees the raw
-    # scalar; everything downstream uses the resolved dialect, so no option text
-    # reaches a filename.
-    case "$shell" in
-    bash | 'bash '*) dialect='bash' ;;
-    sh | 'sh '*) dialect='sh' ;;
-    '')
+    # scalar; everything downstream uses the resolved dialect, so no option
+    # text reaches a filename. Parameter expansion (not `basename`) to avoid a
+    # subprocess per step.
+    if [[ -z "$shell" ]]; then
       echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
       exit 1
-      ;;
+    fi
+    leading="${shell%% *}"
+    leading="${leading##*/}"
+    case "$leading" in
+    bash) dialect='bash' ;;
+    sh) dialect='sh' ;;
     *)
       printf 'skip %s runs.steps[%s]: shell is %s, not bash/sh\n' "$file" "$index" "$shell"
       continue
