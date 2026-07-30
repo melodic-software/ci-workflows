@@ -56,11 +56,15 @@ runs:
         fi
         # --warnings makes residual warnings fail the build (strict posture, the
         # default). Pyright has no native GitHub-annotation output format, so
-        # findings are plain text. The flag is a defined (possibly empty) array
-        # so unquoted expansion is set -u-safe. $PATHS unquoted so multiple
-        # targets word-split; an empty value appends nothing and the config's
-        # `include` drives discovery.
+        # findings are plain text. Each flag is a defined (possibly empty) array
+        # so unquoted expansion is set -u-safe. $PATHS is split into an array at
+        # the input boundary so multiple targets reach pyright as separate
+        # arguments; empty appends nothing and the config's `include` drives
+        # discovery. -d '' takes the whole value so a caller-authored multi-line
+        # input still splits; read hits EOF without finding that delimiter,
+        # hence the `|| true`.
         warn=()
         if [[ "$WARNINGS_AS_ERRORS" == "true" ]]; then warn=(--warnings); fi
-        # shellcheck disable=SC2086
-        uvx "pyright@${VERSION}" "${warn[@]}" -p "$CONFIG" $PATHS
+        paths=()
+        read -r -d '' -a paths <<<"$PATHS" || true
+        uvx "pyright@${VERSION}" "${warn[@]}" -p "$CONFIG" "${paths[@]}"

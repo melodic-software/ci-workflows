@@ -67,6 +67,10 @@ runs:
         # -exclude takes ONE regex (quoted, never word-split).
         if [[ -n "${EXCLUDE// }" ]]; then args+=(-exclude "$EXCLUDE"); fi
         if [[ -n "${FORMAT// }" ]]; then args+=(-format "$FORMAT"); fi
-        # $PATHS unquoted so multiple targets word-split.
-        # shellcheck disable=SC2086
-        ec "${args[@]}" $PATHS
+        # Split into an array at the input boundary so multiple targets reach
+        # ec as separate arguments. -d '' takes the whole value so a
+        # caller-authored multi-line input still splits; read hits EOF without
+        # finding that delimiter, hence the `|| true`.
+        paths=()
+        read -r -d '' -a paths <<<"$PATHS" || true
+        ec "${args[@]}" "${paths[@]}"

@@ -73,13 +73,16 @@ runs:
       # analyzer (CA + IDE) diagnostics — so no rule flags are needed here.
       # RestoreLockedMode rides the build's implicit restore as an MSBuild
       # property, so there is no separate restore step to drift from the build.
-      # $PROJECT is unquoted so an empty value expands to nothing and the
-      # working-directory project/solution is built.
+      # $PROJECT is appended to the array only when non-empty, so an empty value
+      # omits the argument entirely and the working-directory project/solution
+      # is built, without unquoted expansion risking word-splitting a path that
+      # contains a space.
       run: |
         set -euo pipefail
-        args=(--configuration "$CONFIGURATION" --nologo)
+        args=()
+        if [[ -n "${PROJECT// }" ]]; then args+=("$PROJECT"); fi
+        args+=(--configuration "$CONFIGURATION" --nologo)
         if [[ "$LOCKED_MODE" == 'true' ]]; then
           args+=(-p:RestoreLockedMode=true)
         fi
-        # shellcheck disable=SC2086
-        dotnet build $PROJECT "${args[@]}"
+        dotnet build "${args[@]}"
