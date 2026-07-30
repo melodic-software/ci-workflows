@@ -71,6 +71,12 @@ jobs:
           persist-credentials: false
 
       - &install-yq
+        # Pinned + checksum-verified, not the runner-preinstalled exception
+        # tool-version-drift-check.yml and composite-run-shellcheck.sh take
+        # (ratified, melodic-software/ci-workflows#265): this workflow's yq
+        # reads drive what gets pushed as a PR to OTHER repositories, so an
+        # unpinned, runner-image-drifted yq could corrupt a synced file
+        # everywhere this workflow is called, not just misreport locally.
         name: Install checksum-verified yq
         run: |
           set -euo pipefail

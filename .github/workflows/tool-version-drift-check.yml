@@ -121,8 +121,14 @@ jobs:
           )
 
           # Read inputs.<key>.default from an action.yml with yq (mikefarah,
-          # preinstalled on ubuntu-24.04). The quoted key handles the hyphen in
-          # analyzer-version; a missing key yields the literal "null".
+          # preinstalled on ubuntu-24.04, not pinned+checksum-verified like
+          # standards-sync.yml's install). Ratified, not an oversight
+          # (melodic-software/ci-workflows#265): this workflow only files an
+          # advisory tracking issue on drift, never blocks a merge or pushes
+          # a change anywhere, so a runner-image yq behaviour change would at
+          # worst misreport a version rather than corrupt anything. The
+          # quoted key handles the hyphen in analyzer-version; a missing key
+          # yields the literal "null".
           # $2: tag prefix to strip (default "v"; e.g. "lychee-v").
           latest_github() { bounded_read 60 gh api "repos/$1/releases/latest" --jq '.tag_name' | sed "s/^${2:-v}//"; }
           latest_pypi() { curl_small_json "https://pypi.org/pypi/$1/json" | jq -r '.info.version'; }
