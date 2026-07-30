@@ -1002,9 +1002,10 @@ Ordered pre-steps, then waved rollout.
   existing pin-comment-convention check validates the pin form on the PR;
   the sync cascade (sync.yml `push: main`, a real non-dry run) carries the
   merge to targets with no further action. Credential: App token, because a
-  GITHUB_TOKEN-authored PR gets its `pull_request` runs held in an
-  approval-required state (per GitHub docs on GITHUB_TOKEN-triggered
-  events), so required checks never report hands-free —
+  `pull_request` event caused by the default `GITHUB_TOKEN` creates no
+  workflow runs at all (this repo documents the behavior in README and
+  `dependabot-lock-regen.yml` — recursion prevention, not an
+  approval-required hold), so required checks never report —
   reuse the standards-sync App if its installation covers standards itself
   with contents + pull-requests write (verify at implementation), else a
   minimal new App [USER-APPROVAL GATE per org precedent — no silent App
