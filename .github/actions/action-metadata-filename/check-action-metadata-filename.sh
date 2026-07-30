@@ -7,7 +7,7 @@
 # would be invisible to every one of them, with nothing in the log to notice
 # — no visit/skip line, no count mismatch, completely silent.
 #
-# Ratified (melodic-software/ci-workflows#267): action.yml is enforced as the
+# Ratified: action.yml is enforced as the
 # ONLY accepted metadata filename, repo-wide, rather than teaching every
 # current and future enumeration site a second pattern for a spelling GitHub
 # itself calls non-preferred and nothing here uses. This converts the silent
