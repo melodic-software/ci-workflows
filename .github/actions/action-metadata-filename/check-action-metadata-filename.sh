@@ -21,13 +21,16 @@ set -uo pipefail
 
 # Whole tracked tree, not scoped to .github/actions/ — a stray action.yaml
 # anywhere (a fixture, a future actions/ subdirectory) still fails loudly.
+# :(glob) magic is required for that whole-tree claim: with the default
+# pathspec match, a leading `**/` matches nested files only, silently
+# missing a repository-root action.yaml; glob magic matches both.
 # -z / core.quotePath=false so a path with a space, tab, or non-ASCII byte is
 # read back intact rather than split or C-escaped.
 candidates=$(mktemp)
 errfile=$(mktemp)
 trap 'rm -f "$candidates" "$errfile"' EXIT
 ls_rc=0
-git -c core.quotePath=false ls-files -z -- '**/action.yaml' \
+git -c core.quotePath=false ls-files -z -- ':(glob)**/action.yaml' \
   >"$candidates" 2>"$errfile" || ls_rc=$?
 if [[ "$ls_rc" -ne 0 ]]; then
   echo "::error::git ls-files failed (exit $ls_rc) — refusing to pass the filename gate without a full scan."
