@@ -947,11 +947,44 @@ Ordered pre-steps, then waved rollout.
   success, a second CLEAN review (count marker `5125524714`, tracking comment
   `5125500446`, "No buffered inline comments" in the job log; the PR's one
   inline P2 comment is `chatgpt-codex-connector[bot]`'s, not this lane's); no
-  security lane in the repo. dotfiles and medley PENDING — next
-  human-authored PR in each, in that order; the inline-comment path is still
-  unproven at the rollout pin (see WAVE-1 (b) above) and closes on the first
-  findings-bearing lane review any of these rows produces. The ≥1
-  ACTUAL-security-run item routes per PHASE 3 CLOSURE below.
+  security lane in the repo. dotfiles DONE (2026-07-30) — PR #371
+  (human-authored, docs-only, non-managed; verified against the enumerated
+  managed set with transitive `requires` expansion), open-event run
+  `30511335419` at head `c422863`: NEW pin on `referenced_workflows`,
+  `review / review` RAN (job `90771924713`, success), fires exactly once
+  (three independent paginated enumerations), count comment `5126089411` by
+  `github-actions[bot]` with raw first line `<!-- claude-review-count:1 -->`
+  (tracking comment `5126074243` is `claude[bot]`), clean review (0 inline
+  comments, 0 review objects — the reworded criterion's marker+tracking
+  signature), follow-up push `6036728` produced NO claude-review run across
+  three checks over 25 min. Cadence: queue-to-start 70 s with a genuinely
+  overlapping run (`30510976401`) whose review job completed the same second
+  this one was created — the repo-wide `queue: max` group released
+  immediately, so the 70 s is ARC pod acquisition, not queue blocking; with
+  provisioning's 85 s (zero in-flight), two samples converge at 70-85 s and
+  the queue has still not been observed to BLOCK on the consumer where it was
+  most likely to. Incidental: marker read `claude-review-count:1` on a repo
+  with 111 trailing-7-day review runs — the counter is per-PR, not per-repo.
+  medley DONE (2026-07-30) — PR #1679 (human-authored, docs-only: REVIEW.md +
+  `review/error-handling.md`, both `locally-owned` for medley), open-event
+  run `30514566338` at head `48541af`: NEW pin on `referenced_workflows`,
+  review RAN and concluded success, exactly one claude-review run for the
+  branch (workflow-scoped enumeration), count marker comment `5127540056`
+  (`github-actions[bot]`), tracking comment `5127516271` (`claude[bot]`,
+  "finished in 1m 49s"), clean lane review (inline comments on the PR are
+  `chatgpt-codex-connector[bot]`'s), and NO claude-review run at the later
+  heads (3 commits on the branch, current head `af355fd`) — the
+  no-`synchronize` cadence holds. Cadence — the first observed QUEUE
+  CONTENTION: three medley PRs (#1678/#1679/#1680) opened within 20 min put
+  queue depth at 3 in the `claude-review-<repo>` group; this run sat queued
+  ~2h (created 04:41:52Z, completed 06:43:35Z) while the review job itself
+  took 1m49s. The serializer queues rather than cancels, exactly as designed
+  — record for the 3g/cadence follow-ups that repo-level burst latency is
+  bounded by runner availability, not by review runtime. ALL FOUR 3e ROWS
+  ARE DONE; the inline-comment path is still unproven at the rollout pin
+  (every lane review to date was clean — see WAVE-1 (b) above) and closes on
+  the first findings-bearing lane review. The ≥1 ACTUAL-security-run item
+  routes per PHASE 3 CLOSURE below.
   #227 smoke recorded but INVALID as verification: four bot-authored sync PRs
   on claude-code-plugins (2026-07-29) all show `security-review / security-review`
   reporting `skipped` within seconds-to-minutes (check-runs `90636524265`,
