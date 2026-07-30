@@ -1,0 +1,12 @@
+name: action-metadata-filename
+description: >-
+  Reject any tracked action.yaml (GitHub also accepts this spelling for action
+  metadata, but every lane here globs action.yml only). Repo-wide, not scoped
+  to .github/actions/.
+
+runs:
+  using: composite
+  steps:
+    - name: Verify action.yml is the only metadata filename in use
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/check-action-metadata-filename.sh"
