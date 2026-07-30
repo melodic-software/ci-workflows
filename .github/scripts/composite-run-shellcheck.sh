@@ -28,7 +28,7 @@
 #
 # Requires shellcheck on PATH — the ci.yml lane action installs a pinned,
 # checksum-verified one — and yq (mikefarah, preinstalled on ubuntu-24.04).
-# RATIFIED (not an oversight): the repo has two yq conventions — pinned +
+# Ratified (not an oversight): the repo has two yq conventions — pinned +
 # checksum-verified (standards-sync.yml, which pushes changes to OTHER
 # repositories) and the documented runner-preinstalled exception
 # (tool-version-drift-check.yml, which only files an advisory tracking issue).
