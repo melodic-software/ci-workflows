@@ -14,10 +14,16 @@ name: claude-review
 #
 #     on:
 #       pull_request:
-#         # No `synchronize`: this lane reviews on open/ready/reopen only.
-#         # Pushes do not re-trigger it — re-run the job for a fresh review
+#         # No `synchronize`: this lane reviews on open/ready/reopen only
 #         # (the security lane, whose check certifies execution, keeps
-#         # `synchronize`). Cuts per-PR spend on active branches.
+#         # `synchronize`). Cuts per-PR spend on active branches. A push does
+#         # NOT re-trigger this lane, and re-running the job does not recover
+#         # a fresh review either: the re-run replays the ORIGINAL event
+#         # payload, and the freshness guard (claude-lane-freshness) compares
+#         # that payload's head SHA against the live head, retiring the run as
+#         # superseded once the head has moved. To review a newer head, reopen
+#         # the PR, or mark it draft then ready again — either emits a fresh
+#         # event at the current head.
 #         types: [opened, ready_for_review, reopened]
 #     # Per-PR: a newer event for the same PR supersedes the older run, so a
 #     # rapid open→ready→reopen burst spends one review, not several. This
