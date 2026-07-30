@@ -41,7 +41,6 @@
 # yq here in isolation, which would duplicate the install standards-sync.yml
 # already performs; a shared, non-duplicated install is tracked as a
 # prerequisite in #200. Revisit there if that lands.
-# Refs: melodic-software/ci-workflows#265
 set -euo pipefail
 
 # GitHub expands `${{ }}` before the runner writes the step script, so a raw
