@@ -1115,7 +1115,7 @@ re-pins both lane callers to v0.9.1 =
 inline `paths` for `paths-file: .github/claude-security-paths` — the pattern
 file landed on claude-code-plugins main via #1701 (merged 2026-07-28),
 byte-identical on the branch; 26 non-comment pattern lines measured
-2026-07-29, correcting the "27-entry" count in 3a above). The migration is
+2026-07-29, correcting 3a's former "27-entry" count, now fixed at source). The migration is
 CONTRACT-FORCED, not discretionary: the managed runner-policy component's
 approved contract for `claude-security-review.yml@c136b27f…` is
 `allowedInputs: ["runner", "paths-file"]` — inline `paths` is excluded at
