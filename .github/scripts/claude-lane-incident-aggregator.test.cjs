@@ -66,14 +66,21 @@ function aggregateStepNames() {
     assert.ok(named, `every step must open with 'name:'; found: ${bullet[1]}`);
     names.push(named[1]);
   }
-  assert.ok(names.length > 0, "the aggregate job must declare at least one step");
+  assert.ok(
+    names.length > 0,
+    "the aggregate job must declare at least one step",
+  );
   return names;
 }
 
 function permissionsBlock(indent) {
   const marker = `\n${" ".repeat(indent)}permissions:\n`;
   const start = workflow.indexOf(marker);
-  assert.notEqual(start, -1, `a permissions block at indent ${indent} is missing`);
+  assert.notEqual(
+    start,
+    -1,
+    `a permissions block at indent ${indent} is missing`,
+  );
   const scopes = {};
   for (const line of workflow.slice(start + marker.length).split(/\r?\n/u)) {
     if (line.trim().length === 0) continue;
@@ -339,7 +346,7 @@ test("the write gate is defined once, from the dry-run input and nothing else", 
 // inverting the operator or renaming the input fails the table below.
 function evaluateWriteGate(inputs) {
   const definition = /^ {6}WRITES_ENABLED: \$\{\{ (.+) \}\}$/mu.exec(workflow);
-  assert.ok(definition, "the write gate must be one ${{ }} expression");
+  assert.ok(definition, "the write gate must be a single expression");
   const parsed = /^github\.event\.inputs\.([a-z-]+) (==|!=) '([^']*)'$/u.exec(
     definition[1],
   );
@@ -388,7 +395,10 @@ test("every registered writer leads its condition with the shared gate and autho
 test("every step is either a registered writer or provably incapable of writing", () => {
   const names = aggregateStepNames();
   for (const name of WRITER_STEPS) {
-    assert.ok(names.includes(name), `registered writer '${name}' is not a step`);
+    assert.ok(
+      names.includes(name),
+      `registered writer '${name}' is not a step`,
+    );
   }
   for (const name of names) {
     if (WRITER_STEPS.includes(name)) continue;
