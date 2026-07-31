@@ -1,0 +1,96 @@
+name: change-detection
+description: >-
+  Decide which CI lanes a pull request's changed files make relevant, so a
+  caller can skip lanes at JOB level while its single aggregated required
+  check still reports. Checkout-free: the PR file listing comes from the API,
+  and matching runs in a scratch repository. Every operational fault — a
+  non-pull_request event, an API failure, an oversized file listing — fails
+  OPEN to relevant: a run wasted on an out-of-scope PR beats a silently
+  skipped check. Never reach for workflow-level `on.<event>.paths` instead:
+  a path-skipped workflow leaves a required check Pending forever, while a
+  job-level skip reports `skipped`, which branch protection counts as
+  success.
+
+inputs:
+  filters:
+    description: >-
+      Newline-separated filter groups. An UNINDENTED line ending in `:`
+      names a group (the name becomes a key in `results`; letters, digits,
+      `_` and `-` only); each following non-blank, non-comment line up to
+      the next group header is one pattern for that group. Indent patterns
+      under their header: an indented line ending in `:` is rejected as
+      ambiguous rather than guessed at. Patterns match with
+      ROOT-ANCHORED gitignore rules — ordinary `*` / `**` globs mean what a
+      GitHub Actions `paths:` pattern means — against every changed file's
+      current and previous (pre-rename) path. `!`, `?` and `+` are rejected
+      up front: each is valid Actions path-filter syntax but means
+      something different (or nothing) under gitignore matching, and `?` /
+      `+` silently match FEWER files — the direction that skips a lane that
+      should have run. A group with no usable patterns is treated as
+      relevant, with a warning.
+    required: true
+
+outputs:
+  results:
+    description: >-
+      JSON object mapping each filter-group name to the string "true" (at
+      least one changed file matched, or this run fell back to
+      run-everything) or "false" (a pull_request whose complete file
+      listing matched nothing). Gate a lane with `!cancelled() &&
+      fromJSON(needs.<job>.outputs.results || '{}')['<group>'] != 'false'`
+      — never `== 'true'`: an unset output (a failed or missing detection
+      job, or a group name absent from the filters) must run the lane, not
+      skip it.
+    value: ${{ steps.match.outputs.results }}
+
+runs:
+  using: composite
+  steps:
+    # actions/github-script rather than a `gh api` run step: this action runs
+    # on whatever runner the caller selected, and a self-hosted image is not
+    # guaranteed to ship the gh CLI. The matching step below shells out only
+    # to git, which every runner needs anyway for actions/checkout.
+    - name: List changed files
+      id: changed-files
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        script: |
+          const fs = require("node:fs");
+          const outputPath = `${process.env.RUNNER_TEMP}/change-detection-files.txt`;
+          try {
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            // The endpoint reports at most 3,000 files; at that cap the
+            // listing may be incomplete, and matching an incomplete listing
+            // could read a lane as out-of-scope when an unlisted file needed
+            // it. Fail OPEN instead.
+            if (files.length >= 3000) {
+              core.warning(
+                `PR file listing hit the 3,000-file API cap (${files.length} files); treating every filter group as relevant.`,
+              );
+              core.setOutput("failed", "true");
+              return;
+            }
+            const names = files.flatMap((file) => [file.filename, file.previous_filename].filter(Boolean));
+            fs.writeFileSync(outputPath, names.length > 0 ? `${names.join("\n")}\n` : "", "utf8");
+            core.setOutput("path", outputPath);
+            core.setOutput("failed", "false");
+          } catch (error) {
+            core.warning(`Could not list PR files: ${error.message}`);
+            core.setOutput("failed", "true");
+          }
+
+    - name: Match changed files against filters
+      id: match
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        FILTERS: ${{ inputs.filters }}
+        FILES_LIST_PATH: ${{ steps.changed-files.outputs.path }}
+        FILES_LIST_FAILED: ${{ steps.changed-files.outputs.failed }}
+      run: bash "$GITHUB_ACTION_PATH/match.sh"
