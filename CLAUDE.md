@@ -58,12 +58,12 @@ These rules are load-bearing; changing any of them needs explicit review.
   tree in a review lane. `claude-e2e-verify` is the
   deliberate exception, because building, serving, and browser-driving the PR
   head *is* that lane: it runs PR-authored code on the runner alongside the
-  persisted `GITHUB_TOKEN` and the agent's credential. That residual is
-  accepted, not mitigated in-job; the reasoning, its bound (the
-  `pull_request`-only tripwire plus the fork-PR no-secrets guarantee), and the
-  hardening direction if the lane's scope widens are recorded in that
-  workflow's own header. Do not widen it, and do not carry the pattern into a
-  review lane.
+  persisted `GITHUB_TOKEN` and the agent's credential. That coexistence is
+  mitigated in-job, not merely accepted — PR-authored code executes under a
+  dedicated unprivileged uid that cannot reach either credential — and the
+  mitigation, the reasoning, and its bound (the `pull_request`-only tripwire
+  plus the fork-PR no-secrets guarantee) are recorded in that workflow's own
+  header. Do not widen it, and do not carry the pattern into a review lane.
 
 The `secrets:`/`vars:` context is unavailable in composite actions; that, plus
 the need for job-level `permissions` and the `secrets:` interface, is why each

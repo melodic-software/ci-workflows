@@ -231,6 +231,15 @@ env:
   # (setup-command + app-start-command) — the uid boundary the header's
   # persisted-credential section rests on.
   APP_USER: app-under-test
+  # Written to the account's GECOS field at creation and re-checked before any
+  # reuse, so a persistent runner can repeat the lane without the account
+  # being adopted from whoever else may have created that login. No ':' —
+  # the field is colon-delimited in /etc/passwd.
+  APP_USER_MARKER: claude-e2e-verify app sandbox
+  # Root-owned staging directory for the caller's command scripts. Outside
+  # both $RUNNER_TEMP (unreadable to the app uid) and the app user's own home
+  # (writable by it) — see the isolation step for the full reasoning.
+  APP_SCRIPT_DIR: /opt/claude-e2e-verify
 
 jobs:
   e2e-verify:
@@ -360,13 +369,45 @@ jobs:
               "a runner that does."
             exit 1
           fi
-          sudo useradd --create-home --shell /bin/bash "$APP_USER"
-          app_home="$(getent passwd "$APP_USER" | cut -d: -f6)"
+          # A persistent runner keeps the account from earlier runs, so account
+          # provisioning has to be repeatable. Reuse is gated on this lane's own
+          # marker: an `app-under-test` this lane did not create belongs to
+          # someone else, and adopting it would run PR-controlled code under
+          # whatever that account already carries — group memberships, sudo
+          # rules, existing files. Fail closed there, matching this step's
+          # refusal to degrade to same-uid execution.
+          if id -- "$APP_USER" >/dev/null 2>&1; then
+            if [[ "$(getent passwd "$APP_USER" | cut -d: -f5)" != "$APP_USER_MARKER" ]]; then
+              echo "::error::User '$APP_USER' exists but was not provisioned by this" \
+                "lane. Refusing to execute PR-controlled code under an account whose" \
+                "privileges and contents this lane does not control."
+              exit 1
+            fi
+            # Reset to a clean slate: no survivor process from an earlier run
+            # holding the port, no leftover tree.
+            sudo pkill -KILL -u "$APP_USER" || true
+            app_home="$(getent passwd "$APP_USER" | cut -d: -f6)"
+            sudo rm -rf "$app_home/app"
+          else
+            sudo useradd --create-home --shell /bin/bash \
+              --comment "$APP_USER_MARKER" "$APP_USER"
+            app_home="$(getent passwd "$APP_USER" | cut -d: -f6)"
+          fi
           sudo mkdir -p "$app_home/app"
           sudo cp -a "$GITHUB_WORKSPACE/." "$app_home/app/"
           sudo rm -rf "$app_home/app/.git"
           sudo chown -R "$APP_USER:$APP_USER" "$app_home/app"
           chmod o-rwx "$GITHUB_WORKSPACE"
+          # The caller's command scripts are staged here instead of under
+          # $RUNNER_TEMP, which the app uid cannot READ — the log fd is opened
+          # by the runner and inherited precisely because runner-owned paths
+          # are out of that uid's reach, and reads are barred just as writes
+          # are. Root-owned, and deliberately not under $app_home: a script
+          # placed in the app user's own home could be swapped by that user
+          # before it runs, because the directory is app-owned. Recreated fresh
+          # so a reused account never inherits an earlier run's script.
+          sudo rm -rf "$APP_SCRIPT_DIR"
+          sudo install -d -m 0755 -o root -g root "$APP_SCRIPT_DIR"
 
       - name: Install application dependencies
         if: inputs.setup-command != '' && steps.freshness.outputs.superseded != 'true'
@@ -386,7 +427,8 @@ jobs:
           cd "$HOME/app"
           PRELUDE
           printf '%s\n' "$SETUP_COMMAND" >> "$setup_script"
-          sudo -u "$APP_USER" -H bash "$setup_script"
+          sudo install -m 0555 -o root -g root "$setup_script" "$APP_SCRIPT_DIR/setup.sh"
+          sudo -u "$APP_USER" -H bash "$APP_SCRIPT_DIR/setup.sh"
 
       - name: Install pinned Playwright browsers
         if: steps.freshness.outputs.superseded != 'true'
@@ -418,6 +460,7 @@ jobs:
           cd "$HOME/app"
           PRELUDE
           printf '%s\n' "$APP_START_COMMAND" >> "$start_script"
+          sudo install -m 0555 -o root -g root "$start_script" "$APP_SCRIPT_DIR/start.sh"
           # Backgrounded as the unprivileged user. The log file is DELIBERATELY
           # opened by this (runner-uid) subshell — not by sudo — and the open fd
           # is inherited by the app, so the runner can tail the log later
@@ -426,7 +469,7 @@ jobs:
           # needed here.
           (
             exec > "$app_log" 2>&1
-            exec sudo -u "$APP_USER" -H bash "$start_script"
+            exec sudo -u "$APP_USER" -H bash "$APP_SCRIPT_DIR/start.sh"
           ) &
           echo "APP_LOG=$app_log" >> "$GITHUB_ENV"
 
