@@ -49,9 +49,15 @@ name: claude-e2e-verify
 #     runner. Under `pull_request` a fork gets no secrets and a read-only token,
 #     so that execution has nothing to exfiltrate; under a privileged trigger it
 #     would. Keep it `pull_request`-only.
-#   - Fork PRs receive no secrets and a read-only token by design, so the agent
-#     degrades to a no-op warning — fork PRs are simply not verified. That is
-#     correct, not a gap to "fix".
+#   - Fork PRs receive no secrets and a read-only GITHUB_TOKEN by design
+#     (authoritative: GitHub's forked-repository secret and GITHUB_TOKEN docs),
+#     so there is no CLAUDE_CODE_OAUTH_TOKEN for the agent to run with. Precisely
+#     what happens on a fork: the agent step is NOT fork-guarded — the job `if:`
+#     carries only the two kill-switch conjuncts — so the build/serve steps run
+#     (executing fork-authored code with no secrets present, as the unprivileged
+#     user below) and the agent step EXECUTES and FAILS under continue-on-error
+#     rather than being skipped. Fork PRs are simply not verified — correct, not
+#     a gap to "fix" — but the mechanism is a failing agent step, not a no-op.
 #   - One named secret (CLAUDE_CODE_OAUTH_TOKEN); broad secret inheritance is never used.
 #   - Least privilege, re-declared on the job so an over-granting caller is still
 #     narrowed here: contents:read + pull-requests:write + id-token:write.
@@ -62,34 +68,71 @@ name: claude-e2e-verify
 #     `run:` steps only through env vars, never inlined into a shell command
 #     (template-injection discipline). github-context and input expressions
 #     appear directly only in `with:`/env, where they are not shell-evaluated.
-#   - PERSISTED-CREDENTIAL COEXISTENCE (accepted, not mitigated in-job):
-#     actions/checkout persists the GITHUB_TOKEN into .git/config, and this lane
-#     then runs PR-controlled code (the app build/serve) in the SAME job — so
-#     that process can read the token from .git/config and, via same-uid /proc,
-#     the environment of a later step, including the claude-code-action process
-#     that holds CLAUDE_CODE_OAUTH_TOKEN. The residual differs by credential and
-#     the "author already holds write" argument covers only the first:
-#       * GITHUB_TOKEN (contents:read + pull-requests:write): a same-repository
-#         author already holds write, so reading it grants them nothing they
-#         lack — low impact.
-#       * CLAUDE_CODE_OAUTH_TOKEN: an org credential scoped to selected repos in
-#         the UI, NOT otherwise held by a branch author. Reading it from the
-#         action step's /proc environ would uniquely elevate a malicious
-#         same-repository branch to an org Claude API credential it was never
-#         granted directly — a strictly higher residual than the write token.
-#     Both residuals are accepted at present because the lane is `pull_request`-
-#     only (the tripwire above) and fork PRs receive no secrets and skip the
-#     agent entirely, so the exposure is bounded to same-repository branches;
-#     the final `Strip persisted git credentials` step also scrubs .git/config
-#     at job end. The strip is NOT moved ahead of the app (which would isolate
-#     the app from the token) because claude-code-action's setupBranch fetches
+#   - PERSISTED-CREDENTIAL COEXISTENCE (acceptance DECLINED — mitigated in-job
+#     by privilege separation; ruling on ci-workflows#288): this lane runs
+#     PR-controlled code (the app build/serve — and, on any PR that installs
+#     dependencies, third-party package install scripts, so the executing actor
+#     is the SUPPLY-CHAIN actor, not just the branch author) in the same job as
+#     four credentials:
+#       1. GITHUB_TOKEN, persisted into .git/config by actions/checkout
+#          (contents:read + pull-requests:write — low marginal impact for a
+#          same-repo author, who already holds write).
+#       2. CLAUDE_CODE_OAUTH_TOKEN, an Anthropic org secret with visibility
+#          "all repositories" (verified live) — zero GitHub access, but a leak
+#          from any repo's CI forces an org-wide rotation.
+#       3. The OIDC minting capability (ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN),
+#          injected into every step's environment and inherited by child
+#          processes at spawn.
+#       4. The Claude GitHub App installation token that claude-code-action
+#          mints via OIDC and holds in its step environment (granted scope not
+#          determinable from open source; deliberately not asserted).
+#     A same-uid neighbour could reach those through .git/config, /proc environ
+#     of later steps, and — strictly more reachable than either — by appending
+#     to $GITHUB_ENV/$GITHUB_PATH, which the runner ingests between steps,
+#     giving execution-path control over later steps (ci-workflows#298). That
+#     coexistence is NOT accepted. Instead the app is privilege-separated
+#     inside the job (a separate unprivileged JOB cannot work here: jobs run on
+#     separate VMs, and the agent must reach the live app over localhost):
+#       * The app and the caller's setup-command run as a dedicated
+#         unprivileged user from a .git-free COPY of the checkout, so the
+#         persisted token never enters the app's world.
+#       * The runner-owned checkout is chmod'd o-rwx before any PR-controlled
+#         code runs, closing the .git/config read.
+#       * sudo's env_reset gives the app a clean environment — no
+#         ACTIONS_ID_TOKEN_REQUEST_*, no step env.
+#       * $GITHUB_ENV/$GITHUB_PATH and /proc environs of runner-uid steps are
+#         unreachable across the uid boundary, closing #298's channel.
+#     Remaining accepted residuals, on their merits: PR-authored code still
+#     EXECUTES (unprivileged) on the runner — kernel and local-network surface
+#     only; and the agent itself still holds credentials while reading
+#     untrusted content (see INDIRECT PROMPT INJECTION below). The isolation
+#     requires passwordless sudo + useradd (present on GitHub-hosted Ubuntu
+#     images); a runner without them fails the isolation step closed rather
+#     than falling back to same-uid execution.
+#   - The final `Strip persisted git credentials` step is NOT an in-job
+#     mitigation for any of the above (it runs at job end, after the app and
+#     the agent). It stays on its own merits: zizmor `artipacked` compliance,
+#     and a genuine cross-job scrub on self-hosted runners. The strip is NOT
+#     moved ahead of the app because claude-code-action's setupBranch fetches
 #     origin BEFORE it configures auth (claude-code-action#1236, open; its fix
 #     PR reorders rather than catches), so an earlier strip makes that fetch
 #     throw and aborts verification on private consumers while a public dogfood
-#     stays green and masks it. Reversal is recorded against #1236. Full in-job
-#     isolation of BOTH residuals would require running the app in a SEPARATE
-#     UNPRIVILEGED JOB — the recorded hardening direction if this lane's scope
-#     ever widens.
+#     stays green and masks it. Reversal is recorded against #1236.
+#   - INDIRECT PROMPT INJECTION (recorded residual; ci-workflows#299): the
+#     agent reads PR-authored text (the default e2e-spec points it at
+#     `gh pr diff`) and browser-drives an app RENDERING PR-authored content —
+#     two untrusted channels into an agent holding the credentials above, with
+#     an authenticated `gh` and a turn budget. DECIDED: the default claude-args
+#     deliberately carries NO --allowedTools. This lane's function requires the
+#     agent to author and run Playwright scripts (node/bash) and post its own
+#     PR comment (gh), so Bash cannot be excluded — and an allowlist that
+#     includes Bash bounds nothing while implying it does. The honest boundary
+#     is recorded instead: advisory posture (never gating), minimal token
+#     permissions, the org-level can_approve_pull_request_reviews=false
+#     setting, the bounded turn budget, and the privilege separation above.
+#     Consumers wanting a tighter cage pass their own claude-args; unlike the
+#     review lanes there is no exclude-comments-by-actor input because this
+#     lane does not ingest issue comments.
 #
 # PIN NOTE: PLAYWRIGHT_VERSION below is an in-workflow tool pin with no package
 # manifest, so Dependabot cannot see it (it bumps only `uses:` SHAs). The
@@ -100,14 +143,22 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Runner label selected by the caller (defaults to the hosted image).
+        description: >-
+          Runner label selected by the caller (defaults to the hosted image).
+          Must provide passwordless sudo and useradd (GitHub-hosted Ubuntu
+          images do) — the unprivileged-app isolation model depends on them
+          and fails closed without them.
         type: string
         default: ubuntu-24.04
       app-start-command:
         description: >-
-          Command that builds and serves the app under test. Run in the
-          background through an env var (never inlined), so a multi-line block
-          works. Must start a server that listens at `app-url`.
+          Command that builds and serves the app under test. Composed into a
+          script through an env var (never shell-inlined), so a multi-line
+          block works, and run in the background AS THE UNPRIVILEGED APP USER
+          from an isolated .git-free copy of the checkout with a clean
+          environment (no runner step env, no GITHUB_* vars — set anything the
+          app needs inside the command). Must start a server that listens at
+          `app-url`.
         type: string
         required: true
       app-url:
@@ -130,13 +181,17 @@ on:
       claude-args:
         description: >-
           Passed through to the Claude CLI (model, turn budget, allowed tools,
-          system prompt, MCP config all ride here). Defaults mirror claude-review.
+          system prompt, MCP config all ride here). Defaults mirror claude-review
+          except that the default deliberately sets NO --allowedTools — see
+          INDIRECT PROMPT INJECTION in the header for that recorded decision.
         type: string
         default: --model claude-sonnet-5 --max-turns 75
       setup-command:
         description: >-
           Optional dependency-install command, run before the browser toolchain
-          and the app start. Empty (default) skips it. Passed through an env var.
+          and the app start. Empty (default) skips it. Composed through an env
+          var and run AS THE UNPRIVILEGED APP USER inside the isolated copy of
+          the checkout (same execution contract as app-start-command).
         type: string
         default: ""
       timeout-minutes:
@@ -172,6 +227,19 @@ permissions:
 # PIN NOTE in the header for the drift-watch convention.
 env:
   PLAYWRIGHT_VERSION: 1.61.1
+  # The dedicated unprivileged account that executes ALL PR-controlled code
+  # (setup-command + app-start-command) — the uid boundary the header's
+  # persisted-credential section rests on.
+  APP_USER: app-under-test
+  # Written to the account's GECOS field at creation and re-checked before any
+  # reuse, so a persistent runner can repeat the lane without the account
+  # being adopted from whoever else may have created that login. No ':' —
+  # the field is colon-delimited in /etc/passwd.
+  APP_USER_MARKER: claude-e2e-verify app sandbox
+  # Root-owned staging directory for the caller's command scripts. Outside
+  # both $RUNNER_TEMP (unreadable to the app uid) and the app user's own home
+  # (writable by it) — see the isolation step for the full reasoning.
+  APP_SCRIPT_DIR: /opt/claude-e2e-verify
 
 jobs:
   e2e-verify:
@@ -280,15 +348,87 @@ jobs:
         with:
           filter: blob:none
 
+      # The uid boundary of the header's persisted-credential section: every
+      # piece of PR-controlled code below runs as this unprivileged user, from
+      # a .git-free COPY of the checkout, with a clean (sudo env_reset)
+      # environment. The runner-owned checkout is made untraversable to that
+      # uid so the token actions/checkout persisted into .git/config — and
+      # anything else in the workspace — is out of the app's reach, and the
+      # runner-uid step machinery ($GITHUB_ENV/$GITHUB_PATH, /proc environs)
+      # is unreachable across the uid boundary. Fails CLOSED: a runner without
+      # passwordless sudo/useradd must not degrade to same-uid execution.
+      - name: Isolate the app from the job's credentials
+        if: steps.freshness.outputs.superseded != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
+            echo "::error::Passwordless sudo is required: the app-isolation model runs" \
+              "PR-controlled code as a dedicated unprivileged user and must not fall" \
+              "back to same-uid execution. GitHub-hosted images provide this; select" \
+              "a runner that does."
+            exit 1
+          fi
+          # A persistent runner keeps the account from earlier runs, so account
+          # provisioning has to be repeatable. Reuse is gated on this lane's own
+          # marker: an `app-under-test` this lane did not create belongs to
+          # someone else, and adopting it would run PR-controlled code under
+          # whatever that account already carries — group memberships, sudo
+          # rules, existing files. Fail closed there, matching this step's
+          # refusal to degrade to same-uid execution.
+          if id -- "$APP_USER" >/dev/null 2>&1; then
+            if [[ "$(getent passwd "$APP_USER" | cut -d: -f5)" != "$APP_USER_MARKER" ]]; then
+              echo "::error::User '$APP_USER' exists but was not provisioned by this" \
+                "lane. Refusing to execute PR-controlled code under an account whose" \
+                "privileges and contents this lane does not control."
+              exit 1
+            fi
+            # Reset to a clean slate: no survivor process from an earlier run
+            # holding the port, no leftover tree.
+            sudo pkill -KILL -u "$APP_USER" || true
+            app_home="$(getent passwd "$APP_USER" | cut -d: -f6)"
+            sudo rm -rf "$app_home/app"
+          else
+            sudo useradd --create-home --shell /bin/bash \
+              --comment "$APP_USER_MARKER" "$APP_USER"
+            app_home="$(getent passwd "$APP_USER" | cut -d: -f6)"
+          fi
+          sudo mkdir -p "$app_home/app"
+          sudo cp -a "$GITHUB_WORKSPACE/." "$app_home/app/"
+          sudo rm -rf "$app_home/app/.git"
+          sudo chown -R "$APP_USER:$APP_USER" "$app_home/app"
+          chmod o-rwx "$GITHUB_WORKSPACE"
+          # The caller's command scripts are staged here instead of under
+          # $RUNNER_TEMP, which the app uid cannot READ — the log fd is opened
+          # by the runner and inherited precisely because runner-owned paths
+          # are out of that uid's reach, and reads are barred just as writes
+          # are. Root-owned, and deliberately not under $app_home: a script
+          # placed in the app user's own home could be swapped by that user
+          # before it runs, because the directory is app-owned. Recreated fresh
+          # so a reused account never inherits an earlier run's script.
+          sudo rm -rf "$APP_SCRIPT_DIR"
+          sudo install -d -m 0755 -o root -g root "$APP_SCRIPT_DIR"
+
       - name: Install application dependencies
         if: inputs.setup-command != '' && steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
-          # Caller string via env (never inlined) — template-injection discipline.
+          # Caller string via env (never inlined) — template-injection
+          # discipline. printf writes it into the script verbatim; nothing is
+          # shell-evaluated at the runner's uid.
           SETUP_COMMAND: ${{ inputs.setup-command }}
         run: |
           set -euo pipefail
-          eval "$SETUP_COMMAND"
+          setup_script="$RUNNER_TEMP/app-setup-command.sh"
+          # Quoted heredoc: $HOME must expand in the app user's shell, not here.
+          cat > "$setup_script" <<'PRELUDE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$HOME/app"
+          PRELUDE
+          printf '%s\n' "$SETUP_COMMAND" >> "$setup_script"
+          sudo install -m 0555 -o root -g root "$setup_script" "$APP_SCRIPT_DIR/setup.sh"
+          sudo -u "$APP_USER" -H bash "$APP_SCRIPT_DIR/setup.sh"
 
       - name: Install pinned Playwright browsers
         if: steps.freshness.outputs.superseded != 'true'
@@ -306,15 +446,31 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         shell: bash
         env:
-          # Caller string via env (never inlined) — template-injection discipline.
+          # Caller string via env (never inlined) — template-injection
+          # discipline; composed into the script verbatim, like setup-command.
           APP_START_COMMAND: ${{ inputs.app-start-command }}
         run: |
           set -euo pipefail
           app_log="$RUNNER_TEMP/app-under-test.log"
-          # New session (setsid) so the whole served process tree can be signalled
-          # on teardown, not just the top-level shell.
-          setsid bash -c "$APP_START_COMMAND" >"$app_log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/app-under-test.pid"
+          start_script="$RUNNER_TEMP/app-start-command.sh"
+          # Quoted heredoc: $HOME must expand in the app user's shell, not here.
+          cat > "$start_script" <<'PRELUDE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$HOME/app"
+          PRELUDE
+          printf '%s\n' "$APP_START_COMMAND" >> "$start_script"
+          sudo install -m 0555 -o root -g root "$start_script" "$APP_SCRIPT_DIR/start.sh"
+          # Backgrounded as the unprivileged user. The log file is DELIBERATELY
+          # opened by this (runner-uid) subshell — not by sudo — and the open fd
+          # is inherited by the app, so the runner can tail the log later
+          # without the app ever holding write access to runner-owned paths.
+          # Teardown signals the whole uid, so no PID/session bookkeeping is
+          # needed here.
+          (
+            exec > "$app_log" 2>&1
+            exec sudo -u "$APP_USER" -H bash "$APP_SCRIPT_DIR/start.sh"
+          ) &
           echo "APP_LOG=$app_log" >> "$GITHUB_ENV"
 
       - name: Wait for the application to become healthy
@@ -702,15 +858,12 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          pid_file="$RUNNER_TEMP/app-under-test.pid"
-          if [ -f "$pid_file" ]; then
-            pid=$(cat "$pid_file")
-            if [ -n "$pid" ]; then
-              # Negative PID signals the whole process group; the app was started
-              # in its own session, so its child server processes are torn down
-              # too. Fall back to the single PID if the group signal fails.
-              kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-            fi
+          # Everything PR-controlled ran as the unprivileged user, so
+          # signalling that uid tears down the entire served process tree.
+          # Guarded: on a run that failed before the isolation step the user
+          # does not exist.
+          if id -- "$APP_USER" >/dev/null 2>&1; then
+            sudo pkill -TERM -u "$APP_USER" || true
           fi
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
