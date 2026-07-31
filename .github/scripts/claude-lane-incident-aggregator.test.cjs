@@ -638,10 +638,11 @@ test("check runs and annotations are paginated, neither truncated at one page no
 });
 
 test("the ambient token is granted every read the poll makes, or a dry run sees nothing", () => {
-  // Declaring `permissions:` sets every unlisted scope to `none`. The check-run
-  // and annotation endpoints require Checks:read with no public-repository
-  // exemption, so omitting them 403s the first read of every dry run and
-  // reports `indeterminate` forever — a workflow that ships doing nothing.
+  // Declaring `permissions:` sets every unlisted scope to `none`. Grant the
+  // four reads the local dry-run poll uses against this repository's own
+  // lanes. Do not treat Checks:read as what makes public cross-repo dry-run
+  // reads succeed — those work with the ambient token; PRIVATE reads 404
+  // without an installation token rather than 403 without Checks:read.
   for (const scope of ["checks", "contents", "issues", "pull-requests"]) {
     assert.match(
       workflow,

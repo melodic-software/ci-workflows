@@ -14,9 +14,10 @@ name: claude-lane-incident-aggregator
 # current in place, closed by itself after three consecutive clean cycles.
 #
 # CREDENTIAL SEAM — THIS WORKFLOW IS DRY-RUN UNTIL A HUMAN GRANTS IT ONE.
-# Reading another repository's check-run annotations needs cross-repository
-# `checks: read` (plus `pull-requests: read` to find the heads and `metadata:
-# read`), and maintaining the incident item needs `issues: write` here. No
+# Credential sizing is asymmetric: PUBLIC dry-run reads (pulls + check runs)
+# work with the ambient GITHUB_TOKEN; PRIVATE cross-repository reads and all
+# writes need an installation token (`checks: read`, `pull-requests: read`,
+# `metadata: read`, plus `issues: write` here for the incident item). No
 # existing App holds that set — the runner-observer App holds
 # actions/administration/metadata/organization_self_hosted_runners read only —
 # and widening an App or creating one is an org-owner decision, not an
@@ -26,9 +27,11 @@ name: claude-lane-incident-aggregator
 #     the run is a DRY RUN. It polls with the ambient GITHUB_TOKEN — which this
 #     workflow grants four READ scopes and NOTHING ELSE — and renders the issue
 #     body it WOULD have written into the job summary. A dry run is a real
-#     poll, not a no-op: it reads this repository's own lane check runs.
+#     poll, not a no-op: it reads this repository's own lane check runs, and
+#     can also read PUBLIC cross-repo lanes when `repositories` is overridden.
 #   - Present, it mints an installation token and that token authors every
-#     write. Nothing else changes; there is no second code path to review.
+#     write (and every PRIVATE cross-repo read). Nothing else changes; there
+#     is no second code path to review.
 #
 # The dry-run guarantee is structural, not a flag. The job's `permissions:`
 # block grants no write scope of any kind, so the ambient token is incapable of
@@ -91,13 +94,19 @@ jobs:
       # all sets every scope not listed to `none`, so this block IS the ambient
       # token's whole authority. The no-write guarantee is the ABSENCE of any
       # write scope, not the shortness of the list: adding a read never weakens
-      # it, and omitting one only makes the dry run blind.
+      # it; the grants below keep the local dry-run poll sharp against this
+      # repository's own lanes.
       #
-      # `checks` and `pull-requests` are what the poll reads — the check-run and
-      # annotation endpoints require Checks:read and carry no public-repository
-      # exemption, so without them a dry run 403s on its first read and reports
-      # `indeterminate` forever. `issues: read` lets it find and parse the
-      # incident issue and render an accurate would-be body.
+      # `checks` and `pull-requests` are what the poll reads. Do not size the
+      # App credential from an assumption that omitting Checks:read always
+      # 403s: on PUBLIC repositories the check-run and annotation endpoints are
+      # readable with the ambient token even without Checks:read (dispatch with
+      # repositories=<public> and zero write scopes returned read-errors=0).
+      # PRIVATE repositories fail differently — typically 404 Not Found when
+      # the token cannot see them, not 403. So: public dry-run reads work with
+      # the ambient token; PRIVATE reads and all writes need the installation
+      # token. `issues: read` lets it find and parse the incident issue and
+      # render an accurate would-be body.
       checks: read
       contents: read
       issues: read
@@ -249,8 +258,9 @@ jobs:
                 .filter((repository) => !repository.archived)
                 .map((repository) => repository.full_name);
             } else {
-              // Dry run: no installation exists, so the only repository the
-              // ambient token can read is this one.
+              // Dry run: no installation exists, so default scope is this
+              // repository alone. (Public cross-repo dry-run reads still work
+              // when `repositories` is overridden; private ones need the App.)
               repositories = [`${context.repo.owner}/${context.repo.repo}`];
             }
 
