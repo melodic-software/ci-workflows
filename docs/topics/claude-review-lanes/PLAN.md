@@ -1440,12 +1440,31 @@ The API-call-count deliverable this phase names is SATISFIED. Scheduled run
 `claude-lane-incident: api-calls=24 repositories=1 pull-requests=21 lane-check-runs=49 read-errors=0 cycle=clean action=none`
 
 The `claude-lane-incident` label NOW EXISTS — github-iac#252 merged
-2026-07-31T03:58Z, color `ededed` — so the Sanity Check's `--label` query above
-is no longer VACUOUS. Before the label existed it returned an empty set whether
-the system was healthy or entirely absent, because `gh issue list --label
-<nonexistent>` exits 0 and prints nothing rather than erroring (confirmed by
-running it against a made-up label on this repo). Its `≤1` threshold was
-therefore satisfied by a system that had never run at all; it now discriminates.
+2026-07-31T03:58Z, color `ededed` — which removes ONE of the `--label` query's
+two ambiguities, not both. Before the label existed the query returned an empty
+set whether the system was healthy or entirely absent, because `gh issue list
+--label <nonexistent>` exits 0 and prints nothing rather than erroring
+(confirmed by running it against a made-up label on this repo). That failure
+mode is gone.
+
+The REMAINING ambiguity is not fixed by the label and must not be recorded as
+if it were: a count of zero still satisfies `≤1` whether the fleet is clean OR
+the aggregator never ran, never polled, or ran and could not write. Absence of
+an incident is not evidence of health — it is the same observation either way.
+So the `≤1` query is a CEILING check (never more than one incident item open),
+never a liveness check, and it must be paired with a positive signal to mean
+anything. The positive signal is the aggregator's own deliverable line, which
+is emitted per run and states what it actually did:
+`claude-lane-incident: api-calls=<n> repositories=<n> pull-requests=<n> lane-check-runs=<n> read-errors=<n> cycle=<clean|indeterminate> action=<none|open|update|close>`
+Read `cycle` and `read-errors` together: `cycle=clean` with `read-errors=0`
+means the poll actually reached its scope and found nothing; `cycle=indeterminate`
+means at least one repository could not be read, so a zero incident count that
+round is uninformative rather than reassuring (this is the state private
+consumers produce today under the ambient token — see the Phase 4 write
+findings above). Phase 4's acceptance test is what closes the gap end-to-end,
+because it forces a real incident open and then requires it to auto-close after
+three consecutive clean cycles — exercising the write path the `≤1` query can
+never observe on its own.
 
 ### Phase 5: close-out [DOING]
 
