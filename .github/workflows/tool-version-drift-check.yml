@@ -31,7 +31,6 @@ on:
       - '.github/actions/shellcheck/action.yml'
       - '.github/scripts/actionlint-shellcheck-pin.test.cjs'
       - '.github/scripts/tool-version-drift-contract.test.cjs'
-      - '.markdownlint-cli2.jsonc'
       - '.github/scripts/osv-release-digest.sh'
       - '.github/scripts/osv-release-digest.test.sh'
   workflow_dispatch:
@@ -233,14 +232,11 @@ jobs:
               exit 1
             fi
           done
-          markdown_current="$(yq '.inputs.version.default' .github/actions/markdown/action.yml)"
-          markdown_schema_version="$(
-            sed -nE '/"[$]schema"/ s#.*markdownlint-cli2/v([^/]+)/schema/.*#\1#p' .markdownlint-cli2.jsonc
-          )"
-          if [[ -z "$markdown_schema_version" || "$markdown_schema_version" != "$markdown_current" ]]; then
-            echo "::error::markdownlint schema version (${markdown_schema_version:-unresolved}) diverges from action default (${markdown_current})"
-            exit 1
-          fi
+          # `.markdownlint-cli2.jsonc` is deliberately absent from these
+          # in-repo agreement checks: it is a standards-managed materialization
+          # whose `$schema` URL pins that repository's own markdownlint-cli2
+          # devDependency, not the version the `markdown` action runs here. The
+          # action default is still watched against npm by the tools list above.
           # dotnet-build and dotnet-format resolve their fallback SDK version
           # by pointing setup-dotnet's global-json-file input at this repo's
           # own root global.json (via github.action_path), so they can never
