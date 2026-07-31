@@ -172,6 +172,31 @@ consumer to audit it.
   unrecognised policy value fails rather than defaulting. Empty input fails
   closed. GitHub offers no "all other jobs" selector, so the `needs` list and the
   matching results string stay caller-owned.
+- `.github/actions/change-detection` — decides which CI lanes a pull request's
+  changed files make relevant, so a caller can skip lanes at JOB level and
+  stop paying for runs a change cannot affect. Checkout-free: the PR file
+  listing comes from the API, and caller-named filter groups match it with
+  root-anchored gitignore rules — the same matcher `claude-security-review.yml`'s
+  `changes` job uses, generalized to many named groups. One `results` JSON
+  output maps each group to `"true"`/`"false"` strings; every operational
+  fault (non-PR event, API failure, a listing at the 3,000-file API cap)
+  fails OPEN to `"true"`, while unhonorable pattern syntax (`!`, `?`, `+`)
+  and malformed group config are hard errors even on fallback runs. The
+  required-check interplay is load-bearing: gate each lane job with
+  `!cancelled() && fromJSON(needs.changes.outputs.results || '{}')['<group>']
+  != 'false'` (never `== 'true'` — an unset output must run the lane, not
+  skip it), keep aggregating through the always-running `ci-status` gateway
+  with `treat-skipped-as: pass` (a job-level skip reports `skipped`, which
+  branch protection counts as success under the single required check), add
+  the detection job itself to the `ci-status` `needs` list so a broken
+  filter config goes red instead of riding fail-open to green indefinitely,
+  and never reach for workflow-level `on.<event>.paths` on a workflow whose
+  check is required — a path-skipped workflow leaves that check Pending
+  forever. Filter conservatively: include `.github/**` in every group so CI
+  changes re-run everything, and leave content-agnostic lanes (spell-check,
+  secret scan, editorconfig, link integrity, and kin) ungated — any file can
+  carry the defect they gate on. This repo's own `ci.yml` `changes` job is
+  the reference wiring.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network).
 - `.github/actions/reference-integrity` — resolves `file.md` "Anchor" prose

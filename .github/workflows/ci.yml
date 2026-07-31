@@ -21,8 +21,127 @@ concurrency:
 # standards config or a small fixture-local contract input; the local ci-status
 # gateway aggregates them into the single required check. Local (./) action refs
 # work here because the checkout IS this repo.
+#
+# Change-scoped execution (dogfooding ./.github/actions/change-detection):
+# file-type-scoped lanes gate on `changes` at JOB level, so a skipped lane
+# still reports `skipped` under the always-running `ci-status` required check
+# — never workflow-level `paths:`, which would wedge a required check Pending.
+# Each gate reads `!= 'false'`, never `== 'true'`: with `!cancelled()` a
+# failed or unset detection output runs the lane rather than skipping it, and
+# `changes` itself is aggregated by `ci-status` so a broken detection goes
+# red instead of riding fail-open to silent green forever. Content-agnostic
+# lanes (typos, editorconfig, gitleaks, links, exec-bit,
+# action-metadata-filename, machine-specific-paths, eol-renormalize,
+# comment-hygiene) stay unconditional: any file can carry the defect they
+# gate on, so no path filter over them is conservative. osv-scanner is also
+# ungated — see its job comment.
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      results: ${{ steps.detect.outputs.results }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect relevant lanes
+        id: detect
+        uses: ./.github/actions/change-detection
+        with:
+          # Conservative by design: every group includes `.github/**`, so any
+          # change to a workflow, an action, or a bundled script re-runs every
+          # scoped lane; language groups also glob their file types repo-wide,
+          # not just the fixture trees the lanes currently point at.
+          filters: |
+            markdown:
+              .github/**
+              **/*.md
+              **/.markdownlint*
+            powershell:
+              .github/**
+              fixtures/composite-action/**
+              **/*.ps1
+              **/*.psm1
+              **/*.psd1
+            reference-integrity:
+              .github/**
+              fixtures/reference-integrity/**
+            python:
+              .github/**
+              fixtures/python/**
+              **/*.py
+            typescript:
+              .github/**
+              fixtures/typescript/**
+              **/*.js
+              **/*.cjs
+              **/*.mjs
+              **/*.jsx
+              **/*.ts
+              **/*.tsx
+              **/biome.json
+              **/tsconfig.json
+            dotnet:
+              .github/**
+              fixtures/dotnet/**
+              **/*.cs
+              **/*.csproj
+              **/*.props
+              **/*.targets
+              **/packages.lock.json
+              **/nuget.config
+              **/NuGet.config
+              **/NuGet.Config
+              **/.editorconfig
+              global.json
+            shell:
+              .github/**
+              fixtures/shell/**
+              **/*.sh
+              **/*.bash
+              **/.editorconfig
+              .shellcheckrc
+            actionlint:
+              .github/**
+              fixtures/composite-action/**
+            lefthook-validate:
+              .github/**
+              **/lefthook.yml
+            jsonschema:
+              .github/**
+            selector-contract:
+              .github/**
+            pester:
+              .github/**
+              fixtures/pester/**
+            go:
+              .github/**
+              fixtures/go/**
+              **/*.go
+              **/go.mod
+              **/go.sum
+              **/.golangci.yml
+            # Repo-wide `**/action.yml`, unlike the sibling lanes above: zizmor
+            # is the only lane whose target discovery is not confined to
+            # `.github/` — it runs with `paths: .` and audits composite-action
+            # metadata wherever it lives, so a composite added outside
+            # `.github/actions/` (say `tools/example/action.yml`) would
+            # otherwise skip a lane that does audit it. `action.yml` alone is
+            # the complete pattern because `action.yaml` is rejected repo-wide
+            # by the always-run action-metadata-filename gate (#267).
+            zizmor:
+              .github/**
+              fixtures/composite-action/**
+              **/action.yml
+
   markdown:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['markdown'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -34,6 +153,8 @@ jobs:
         uses: ./.github/actions/markdown
 
   powershell:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['powershell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -64,6 +185,8 @@ jobs:
         uses: ./.github/actions/lychee-offline
 
   reference-integrity:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -79,6 +202,8 @@ jobs:
           globs: fixtures/reference-integrity/*.md
 
   ruff:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -93,6 +218,8 @@ jobs:
           config: fixtures/python/good/ruff.toml
 
   pyright:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -106,6 +233,8 @@ jobs:
           config: fixtures/python/good/pyrightconfig.json
 
   biome:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -122,6 +251,8 @@ jobs:
           config: fixtures/typescript/good/biome.json
 
   tsc:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -137,6 +268,8 @@ jobs:
           project: fixtures/typescript/good/tsconfig.json
 
   dotnet-build:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -152,6 +285,8 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   dotnet-format:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -198,6 +333,8 @@ jobs:
         uses: ./.github/actions/gitleaks
 
   actionlint:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -237,6 +374,8 @@ jobs:
         run: bash .github/scripts/composite-run-shellcheck.test.sh
 
   lefthook-validate:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['lefthook-validate'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -252,6 +391,8 @@ jobs:
         run: bash .github/scripts/lefthook-validate.test.sh
 
   jsonschema:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['jsonschema'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -345,6 +486,8 @@ jobs:
           exclude: ':(exclude).github/actions/comment-hygiene/**'
 
   shellcheck:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -358,6 +501,8 @@ jobs:
         run: bash .github/actions/shellcheck/run.test.sh
 
   shfmt:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -371,9 +516,11 @@ jobs:
         # generated security boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard
+          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection
 
   selector-contract:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['selector-contract'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -390,6 +537,8 @@ jobs:
           package-manager-cache: false
       - name: Test selector and generated workflow contracts
         run: node --test .github/scripts/*.test.cjs
+      - name: Test change-detection matcher
+        run: bash .github/actions/change-detection/match.test.sh
       - name: Test Claude lane outcome classifier
         run: node --test .github/actions/claude-lane-outcome/*.test.cjs
       - name: Test OSV scan policy guard
@@ -406,6 +555,8 @@ jobs:
         run: bash .github/scripts/govulncheck-sarif-guard.test.sh
 
   zizmor:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
     # Audit this repo's own workflows AND composite actions (paths: .) — strong
@@ -415,6 +566,10 @@ jobs:
       paths: .
 
   osv-scanner:
+    # Deliberately ungated: the scanner discovers every manifest and lockfile
+    # format OSV supports, and a filter enumerating that set would drift as
+    # upstream adds formats — an unlisted new lockfile type would then skip
+    # the scan that covers it. Running always is the conservative posture.
     permissions:
       contents: read
     uses: ./.github/workflows/osv-scanner.yml
@@ -429,6 +584,8 @@ jobs:
       allow-no-lockfiles: true
 
   pester:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['pester'] != 'false' }}
     permissions:
       contents: read
     # Dogfood the reusable Pester workflow on a minimal fixture suite — proves
@@ -439,6 +596,8 @@ jobs:
       run: Invoke-Pester -Path fixtures/pester -CI
 
   go-quality-dogfood:
+    needs: changes
+    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
     permissions:
       contents: read
     # A local reusable-workflow reference executes the workflow from this exact
@@ -453,7 +612,10 @@ jobs:
 
   ci-status:
     if: always()
-    needs: [markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, exec-bit, action-metadata-filename, machine-specific-paths, eol-renormalize, comment-hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
+    # `changes` is aggregated alongside the lanes it gates: a failed detection
+    # job fails ci-status even though every gated lane fails open and runs, so
+    # a broken filter config cannot ride the fallback to green indefinitely.
+    needs: [changes, markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, exec-bit, action-metadata-filename, machine-specific-paths, eol-renormalize, comment-hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -464,4 +626,4 @@ jobs:
       - name: Aggregate lane results
         uses: ./.github/actions/ci-status
         with:
-          results: ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.changes.result }} ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

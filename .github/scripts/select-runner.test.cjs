@@ -1133,9 +1133,12 @@ test("strict selector scheduling is local while adaptive policies stay hosted", 
 
 test("root CI requires every selector and OSV guard contract", () => {
   const workflow = fs.readFileSync(rootCIPath, "utf8");
+  // Newline-anchored at the job-level two-space indent: the change-detection
+  // filter config declares deeper-indented groups with the same names, which
+  // a bare substring search would match first.
   const selectorLane = workflow.slice(
-    workflow.indexOf("  selector-contract:"),
-    workflow.indexOf("  zizmor:"),
+    workflow.indexOf("\n  selector-contract:"),
+    workflow.indexOf("\n  zizmor:"),
   );
   assert.match(selectorLane, /node --test \.github\/scripts\/\*\.test\.cjs/u);
   assert.match(

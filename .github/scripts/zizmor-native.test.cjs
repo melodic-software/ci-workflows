@@ -187,6 +187,28 @@ test("zizmor no longer bundles a generated SARIF guard", () => {
   );
 });
 
+test("the ci.yml zizmor gate is as wide as the lane's audit scope", () => {
+  const ci = fs.readFileSync(
+    path.join(repositoryRoot, ".github", "workflows", "ci.yml"),
+    "utf8",
+  );
+  const filter = ci
+    .slice(ci.indexOf("\n            zizmor:\n"))
+    .split(/\n\n/u)[0];
+
+  assert.match(
+    ci,
+    /uses: \.\/\.github\/workflows\/zizmor\.yml\n {4}with:\n {6}paths: \./u,
+    "the zizmor lane is expected to audit repo-wide (paths: .)",
+  );
+  assert.match(
+    filter,
+    /^ {14}\*\*\/action\.yml$/mu,
+    "a repo-wide audit needs a repo-wide gate: a composite action added " +
+      "outside .github/ must not skip the lane that audits it",
+  );
+});
+
 test("documentation removes only the retired zizmor Docker exception", () => {
   const zizmorSection = readme.slice(
     readme.indexOf("- `.github/workflows/zizmor.yml`"),
