@@ -831,6 +831,137 @@ Ordered pre-steps, then waved rollout.
   files, so de-manifesting a component orphans it — reverting content is the
   only fleet revert.
 
+  INSTALLATION-EXTENSION MECHANISM — CORRECTION (2026-07-31). The MECHANISM
+  paragraph above already excludes App authentication and is not restated
+  here; what is new is that under a NO-CLASSIC-PAT posture the REST route is a
+  DEAD END with no substitute anywhere on the REST surface, so the classic PAT
+  is not one holder among several, it is the only one. Three live artifacts,
+  each independent of the others. The docs page for the add operation carries
+  a section headed `Fine-grained access tokens for "Add a repository to an app
+  installation"` whose entire body is "This endpoint does not work with GitHub
+  App user access tokens, GitHub App installation access tokens, or
+  fine-grained personal access tokens." — extending the exclusion to
+  FINE-GRAINED PATs, which the PAT-only sentence quoted above does not say and
+  which is the leg that actually closes this route. The public OpenAPI carries
+  `x-github.enabledForGitHubApps: false` on both operations (cited above). And
+  the docs payload's `progAccess` block for the add operation reads
+  `{"userToServerRest":false,"serverToServer":false,"fineGrainedPat":false,"permissions":[]}`
+  — every programmatic door shut, with an empty permission set because no
+  permission can open it. The operation's absence from the official
+  token-allowlist pages is that same fact read from the other side, not a
+  fourth artifact.
+
+  NO EQUIVALENT EXISTS — recorded as a sweep with counts so nobody repeats it.
+  Against the public OpenAPI: 7 mutating operations on any `installation`
+  path, of which exactly TWO are App-enabled (`POST
+  /app/installations/{id}/access_tokens` and `DELETE /installation/token`, both
+  token lifecycle, neither touching selection); 15 mutating `category: apps`
+  operations, with those same two the only App-enabled members; and exactly ONE
+  mutating operation whose description mentions `repository_selection` — the
+  DELETE half of this very pair, itself App-disabled. No org-admin route and no
+  App-authenticated route to an installation's repository selection exists.
+  ONE NEAR-MISS that is not one: the token mint accepts a `repositories` body
+  parameter, but "The installation access token cannot be granted access to
+  repositories that the installation was not granted access to." — it NARROWS a
+  token inside the existing selection and cannot widen the selection itself.
+
+  ZERO-CREDENTIAL ROUTE — the org-owner UI, whose steps the docs give in full:
+  profile picture → Your organizations → Settings next to the organization name
+  → sidebar "Third-party Access" → GitHub Apps → Configure next to the App →
+  under "Repository access" select "Only select repositories" → pick the
+  repositories in the Select repositories dropdown → "Click Save".
+
+  CONSEQUENCE FOR IaC, and it outlives this phase: under a no-classic-PAT
+  posture the Terraform/Pulumi wrappers named in MECHANISM are UNUSABLE, not
+  merely awkward. `github_app_installation_repository`'s own doc carries the
+  note "This resource is not compatible with the GitHub App Installation
+  authentication method." (`docs/resources/app_installation_repository.md:9`),
+  and the provider code does not enforce that note:
+  `resourceGithubAppInstallationRepositoryCreate` calls
+  `client.Apps.AddRepository` and returns its error unchanged, carrying none of
+  the `checkOrganization(meta)` precondition guard that other resources in the
+  same provider carry — so a wrong-auth apply fails at the API at APPLY time
+  rather than at plan time. The exact status was NOT OBSERVED; do not write a
+  code into this record. Net: installation SCOPE either stays off the IaC
+  surface as a deliberate UI-only boundary, or the no-classic-PAT constraint
+  bends far enough to mint one. THAT IS A POLICY CHOICE AND IS NOT DECIDED
+  HERE. It disturbs no approved decision: Approval-record item 5 resolved the
+  ORDERING (grant before manifest merge) and named a classic PAT as the holder;
+  all that is new is that no other holder exists, so the item-5 route requires
+  either that PAT or the UI.
+
+  Anyone changing App PERMISSIONS later (3a0's `workflows: write`, or any
+  successor) faces a different surface with its own asymmetry, verified the
+  same day: there is no REST route at all — enumerating every mutating
+  `category: apps` operation returns 15, none of which edits an App's declared
+  permissions — so the change is UI-only. REMOVALS "will take effect
+  immediately". ADDITIONS do not: "each account where the app is installed will
+  need to approve the new permissions", GitHub "will send an email to each
+  organization owner or user", and "Updated permissions won't take effect on an
+  installation or user authorization until the new permissions are approved."
+  So a removal is one action by the App owner, while an addition is a two-party
+  handshake — App owner edits, each installing account's owner approves — and
+  costs a second browser action by whoever holds org ownership, even when that
+  is the same person.
+
+  WAVE-TARGET SET — UNRATIFIED PROPOSAL (measured 2026-07-31). NOT A DECISION
+  AND NOT APPROVED: recorded for operator ratification. Until ratified,
+  3d(ii)'s target set stands exactly as Approval-record item 5 approved it.
+
+  CENSUS. 13 non-archived org repos; SEVEN carry a claude-review lane —
+  ci-workflows, claude-code-plugins, dotfiles, github-iac, medley,
+  provisioning, standards, which reconciles with the accounting already in this
+  file rather than introducing a new population (the 4 managed
+  `claude-review-caller` targets, plus claude-code-plugins locally-owned, plus
+  standards repo-local, plus ci-workflows' own self-caller). SIX do not:
+  `.github`, ci-runner, claude-code-proxy, cursor-plugins, knowledge-corpus,
+  songwriting. TWO of those six are APPROVED EXEMPTIONS, not gaps — `.github`
+  and ci-runner, per Approval-record item 1.
+
+  THE OBSERVATION. 3d(ii)'s two new targets are the two repos where a
+  CODE-review lane has near-zero signal: knowledge-corpus is private HTML whose
+  stated purpose is consolidated corpus material for the knowledge plugin's
+  ingest pipelines, and songwriting is private with no primary language, a
+  personal working repo of lyric and song files. Meanwhile two unexempted
+  no-lane repos are genuine code: cursor-plugins (public, PowerShell, the
+  sibling Cursor plugin marketplace to claude-code-plugins, real `plugins/`,
+  `scripts/`, and `docs/` trees, pushed on the measurement date) and
+  claude-code-proxy (private; a local HTTPS proxy that captures Claude Code's
+  API traffic to disk — credential adjacent, so security-lane relevant rather
+  than merely code-review relevant, though as measured it is ONE commit holding
+  only a README, so the value is prospective rather than present). Both
+  POSTDATE the plan — created 2026-07-30 against a 2026-07-26 lock — which is
+  why neither appears anywhere above.
+
+  PROPOSAL, as put: drop knowledge-corpus + songwriting from the 3d(ii) target
+  set and adopt cursor-plugins, claude-code-proxy, and ci-runner in their
+  place. THE ci-runner LEG WOULD REVERSE APPROVAL-RECORD ITEM 1, which exempted
+  it, and item 1's reason is an argument on the merits rather than bookkeeping:
+  ci-runner is runner infrastructure where a wedged lane job could block its
+  own substrate. A ratifying operator should weigh that against ci-runner's
+  candidacy on the other side (public, Go, 8 workflows, runner image
+  infrastructure). The `.github` exemption is untouched by the proposal.
+
+  ONE CLAIM MADE FOR THE PROPOSAL DOES NOT SURVIVE CHECKING, and it is recorded
+  as refuted so it is not re-adopted: retargeting does NOT delete the
+  installation-extension problem above. Installation `144867070` is
+  `repository_selection: selected` and its selected set equals the manifest
+  target set exactly — attested live on 2026-07-31, standards run
+  `30637559324`: "Attested 8 selected repositories for melodic-standards-sync."
+  So ANY new manifest target requires the extension, whichever repositories are
+  chosen; retargeting changes only WHICH repositories are added, never whether
+  an extension is needed. The correction above therefore applies to the
+  proposal unchanged.
+
+  DEFERRED WITH TRIGGER, per this plan's own convention rather than dropped:
+  knowledge-corpus ingests external documents that agents later read, which is
+  a PROMPT-INJECTION surface, not a code-quality one. Revisit it for a security
+  or content-scanning lane, not for claude-review. Separately, claude-code-proxy
+  being private and security-lane relevant brushes PHASE 3 CLOSURE's candidate
+  (b) without touching it: (b) stays NOT taken on its recorded terms, a private
+  repo adopts the security lane on its own merits, and nothing here manufactures
+  unpark or closure evidence.
+
   WAVE-1 TARGET (measured 2026-07-29, replacing dotfiles): wave 1 named
   dotfiles as the "low-traffic private" consumer; measurement contradicts that
   premise. The population is the four private non-archived consumers carrying
@@ -1259,6 +1390,62 @@ after wave 1.
 auto-resolve; scheduled-run log contains the API-call-count line;
 `gh issue list --repo melodic-software/ci-workflows --label claude-lane-incident --state open`
 returns ≤1; #228/#238 closed with pointers.
+
+**Phase 4 acceptance — what gates it, and what stopped gating it
+(2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
+for two reasons at once: repo secret `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`
+does not exist (`gh secret list` on this repo returns nothing at all), so no
+App token is minted; and the `aggregate` job's `permissions:` block grants only
+read scopes (`checks`, `contents`, `issues`, `pull-requests` — all `read`, and
+deliberately so per the block's own comment).
+
+THE FINDING THAT RESHAPES THIS: the incident issue targets
+`context.repo.owner`/`context.repo.repo` — the SAME repo the workflow runs in —
+so maintaining it needs only `issues: write` on the ambient `GITHUB_TOKEN`. No
+App, no secret, no cross-repo credential. GitHub documents exactly this shape:
+its "Automatic token authentication" example workflow declares `permissions:
+contents: read` + `issues: write` and creates an issue in its own repository
+via `gh issue --repo ${{ github.repository }} create`. The App credential is
+needed ONLY for the READ half, and only for PRIVATE consumer repos.
+
+That read boundary is verified live rather than reasoned about, and the cleanest
+evidence is a SINGLE run rather than a pair, which removes the between-run
+confound: run `30574504350` polled standards and medley in one execution on one
+token — `repositories=2`, and the log carries
+`read failed (melodic-software/medley pulls page 1): Not Found` with
+`read-errors=1`, the 404 falling on the PRIVATE repo while the PUBLIC one read
+clean. Run `30574672188` (standards alone) corroborates with `read-errors=0`.
+
+IMPORTANT QUALIFIER, and it must not be softened: GitHub does NOT document a
+public-repository exemption for `GITHUB_TOKEN`. The docs say only "The token's
+permissions are limited to the repository that contains your workflow." The
+observed public cross-repo read is CONSISTENT with public data being readable
+without any granted permission, but that reconciliation is INFERENCE, not a
+documented guarantee. Treat it as UNVERIFIED and build no guarantee on it — in
+particular, do not conclude from it that a future public-only polling scope is
+credential-free by contract.
+
+This NARROWS Approval-record item 6 rather than retiring it: the App must still
+be chosen (reuse runner-observer, else a new minimal App) and its
+[USER-APPROVAL GATE] stands, but the permission set it has to satisfy drops to
+cross-repo `checks: read` + `pull-requests: read`, with `issues: write` no
+longer part of the cross-repo ask. Whether the shipped mint
+(`claude-lane-incident-aggregator.yml`, which still requests
+`permission-issues: write`) narrows accordingly is implementation, not this
+record; ci-workflows#331 is the open PR moving the incident write to the
+ambient token.
+
+The API-call-count deliverable this phase names is SATISFIED. Scheduled run
+`30571900637` emitted, verbatim:
+`claude-lane-incident: api-calls=24 repositories=1 pull-requests=21 lane-check-runs=49 read-errors=0 cycle=clean action=none`
+
+The `claude-lane-incident` label NOW EXISTS — github-iac#252 merged
+2026-07-31T03:58Z, color `ededed` — so the Sanity Check's `--label` query above
+is no longer VACUOUS. Before the label existed it returned an empty set whether
+the system was healthy or entirely absent, because `gh issue list --label
+<nonexistent>` exits 0 and prints nothing rather than erroring (confirmed by
+running it against a made-up label on this repo). Its `≤1` threshold was
+therefore satisfied by a system that had never run at all; it now discriminates.
 
 ### Phase 5: close-out [DOING]
 
