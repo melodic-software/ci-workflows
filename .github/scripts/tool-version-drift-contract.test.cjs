@@ -57,23 +57,14 @@ test("Python action defaults are the same exact patch release", () => {
   );
 });
 
-test("markdownlint action and schema pins agree", () => {
-  const actionVersion = inputDefault("markdown", "version");
-  const config = read(".markdownlint-cli2.jsonc");
-  const schemaVersion = config.match(
-    /"\$schema":\s*"https:\/\/raw\.githubusercontent\.com\/DavidAnson\/markdownlint-cli2\/v([^/]+)\/schema\/markdownlint-cli2-config-schema\.json"/u,
-  );
-  const commentVersion = config.match(
-    /Schema pinned to markdownlint-cli2 v([^ ]+) — bump together on upgrade\./u,
-  );
+// `.markdownlint-cli2.jsonc` is a standards-managed materialization. Its
+// `$schema` URL pins the standards repository's own markdownlint-cli2
+// devDependency for authoring-time validation there, and makes no claim about
+// the version the `markdown` action runs here, so this repository asserts no
+// agreement between the two. The action default's own drift is still watched
+// via the `markdown:version:npm:markdownlint-cli2` entry below.
 
-  assert.ok(schemaVersion, "missing pinned markdownlint-cli2 schema URL");
-  assert.ok(commentVersion, "missing markdownlint-cli2 schema pin comment");
-  assert.equal(schemaVersion[1], actionVersion);
-  assert.equal(commentVersion[1], actionVersion);
-});
-
-test("drift workflow protects runtime and schema agreement", () => {
+test("drift workflow protects runtime agreement", () => {
   const workflow = read(
     path.join(".github", "workflows", "tool-version-drift-check.yml"),
   );
@@ -83,7 +74,6 @@ test("drift workflow protects runtime and schema agreement", () => {
     ".github/actions/pyright/action.yml",
     ".github/actions/check-jsonschema/action.yml",
     ".github/actions/markdown/action.yml",
-    ".markdownlint-cli2.jsonc",
   ]) {
     assert.match(
       workflow,
@@ -99,7 +89,5 @@ test("drift workflow protects runtime and schema agreement", () => {
     workflow,
     /\.github\/actions\/pyright\/action\.yml \.github\/actions\/check-jsonschema\/action\.yml/u,
   );
-  assert.match(workflow, /markdown_schema_version/u);
-  assert.match(workflow, /markdown_schema_version" != "\$markdown_current"/u);
   assert.match(workflow, /local prefix="\$\{1%\.\*\}\."/u);
 });
