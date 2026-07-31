@@ -126,9 +126,18 @@ jobs:
               **/go.mod
               **/go.sum
               **/.golangci.yml
+            # Repo-wide `**/action.yml`, unlike the sibling lanes above: zizmor
+            # is the only lane whose target discovery is not confined to
+            # `.github/` — it runs with `paths: .` and audits composite-action
+            # metadata wherever it lives, so a composite added outside
+            # `.github/actions/` (say `tools/example/action.yml`) would
+            # otherwise skip a lane that does audit it. `action.yml` alone is
+            # the complete pattern because `action.yaml` is rejected repo-wide
+            # by the always-run action-metadata-filename gate (#267).
             zizmor:
               .github/**
               fixtures/composite-action/**
+              **/action.yml
 
   markdown:
     needs: changes
