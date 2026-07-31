@@ -49,6 +49,86 @@ function stepSource(stepName) {
     : workflow.slice(stepIndex);
 }
 
+// Every step in the `aggregate` job, by name. The partition tests below are only
+// as complete as this enumerator, so it asserts that every step opens with
+// `name:` — an anonymous step would be invisible to `stepSource` and would
+// therefore skip both halves of the partition.
+function aggregateStepNames() {
+  const marker = "\n    steps:\n";
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, "the aggregate job must declare steps");
+  const names = [];
+  for (const line of workflow.slice(start + marker.length).split(/\r?\n/u)) {
+    if (line.trim().length > 0 && !line.startsWith("      ")) break;
+    const bullet = /^ {6}- (.*)$/u.exec(line);
+    if (!bullet) continue;
+    const named = /^name: (.+)$/u.exec(bullet[1]);
+    assert.ok(named, `every step must open with 'name:'; found: ${bullet[1]}`);
+    names.push(named[1]);
+  }
+  assert.ok(names.length > 0, "the aggregate job must declare at least one step");
+  return names;
+}
+
+function permissionsBlock(indent) {
+  const marker = `\n${" ".repeat(indent)}permissions:\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `a permissions block at indent ${indent} is missing`);
+  const scopes = {};
+  for (const line of workflow.slice(start + marker.length).split(/\r?\n/u)) {
+    if (line.trim().length === 0) continue;
+    if (!line.startsWith(" ".repeat(indent + 2))) break;
+    if (line.trim().startsWith("#")) continue;
+    const entry = /^\s*([a-z-]+): (read|write|none)$/u.exec(line);
+    assert.ok(entry, `unparsable permissions entry: ${line}`);
+    scopes[entry[1]] = entry[2];
+  }
+  return scopes;
+}
+
+// The one condition every writing step shares, verbatim.
+const WRITE_GATE = "env.WRITES_ENABLED == 'true'";
+
+// THE WRITER REGISTRY. Membership is the only sanctioned way for a step to
+// mutate this repository, and the partition below makes it self-enforcing: a
+// new write step that is not registered trips the no-mutation check, and one
+// that is registered trips the gate check unless it carries the gate.
+const WRITER_STEPS = [
+  "Open or update the incident issue",
+  "Close the recovered incident issue",
+];
+
+// Actions a non-writing step may delegate to. `github-script` is on the list
+// despite being fully write-capable, because what it does is legible inline and
+// the call scan below reads it; the point of the allowlist is that a step
+// cannot smuggle write capability into an opaque third-party action.
+const READ_ONLY_ACTIONS = new Set([
+  "actions/checkout",
+  "actions/create-github-app-token",
+  "actions/github-script",
+]);
+
+// Write capability reaches GitHub through more than the three issue verbs this
+// workflow happens to call, so the scan is written against the shapes rather
+// than the endpoints: any mutating REST verb in any namespace, the raw
+// request/GraphQL escape hatches that can name any route, the gh CLI, and a
+// hand-rolled HTTP call.
+const MUTATING_CALLS = [
+  [
+    /\.rest\.[A-Za-z]+\.(?:create|update|delete|add|remove|set|replace|merge|lock|unlock|transfer|convert)[A-Za-z]*\(/u,
+    "a mutating Octokit REST verb",
+  ],
+  [
+    /\b(?:github|octokit)\.(?:request|graphql)\(/u,
+    "a raw request or GraphQL call, which can name any verb and any route",
+  ],
+  [
+    /\bgh (?:api|issue|pr|release|label|repo|run|workflow|secret|variable|cache|project)\b/u,
+    "a gh CLI subcommand",
+  ],
+  [/\bcurl\b[^\n]*(?:-X|--request)\b/u, "a curl carrying an explicit method"],
+];
+
 const laneAnnotation = (failureClass, status) =>
   `Claude review exited with: failure class=${failureClass} (infrastructure ` +
   `error, not a code-quality signal). Last SDK result: ` +
@@ -222,87 +302,152 @@ const forkPull = (number, sha) => ({
   updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
 });
 
-// --- The dry-run guarantee -------------------------------------------------
+// --- The write gate --------------------------------------------------------
+//
+// The incident issue lives in this repository, so the writes are same-repo and
+// `issues: write` on the ambient token carries them. That ends the older
+// guarantee that rested on the job holding no write scope at all. What replaces
+// it is the partition these tests enforce: every step in the job is either a
+// REGISTERED WRITER whose `if:` leads with the one shared gate, or a step with
+// no mutating API surface and no action outside the read-only allowlist. Both
+// halves are derived from the workflow text rather than hand-listed, so adding
+// an ungated write step fails CI whichever way it is added.
 
-test("the job grants no write permission of any kind, so the ambient token cannot mutate this repository", () => {
-  const permissionsBlocks = [
-    ...workflow.matchAll(/permissions:\n((?: {2,}[^\n]*\n)+)/gu),
-  ];
-  assert.ok(
-    permissionsBlocks.length >= 2,
-    "workflow and job permissions blocks must both be declared",
-  );
-  for (const [, block] of permissionsBlocks) {
-    assert.doesNotMatch(
-      block,
-      /:\s*write\b/u,
-      `a permissions block grants write scope:\n${block}`,
-    );
-  }
-  assert.match(workflow, /^ {6}contents: read$/mu);
-  assert.match(workflow, /^ {6}issues: read$/mu);
+test("the job's permission set is exactly one write scope — issues — and nothing else is widened", () => {
+  assert.deepEqual(permissionsBlock(4), {
+    checks: "read",
+    contents: "read",
+    issues: "write",
+    "pull-requests": "read",
+  });
+  assert.deepEqual(permissionsBlock(0), { contents: "read" });
 });
 
-test("every issue-writing step is gated on the minted token existing, so the gate and the credential are one condition", () => {
-  const writingSteps = [
-    "Open or update the incident issue",
-    "Close the recovered incident issue",
-  ];
-  for (const name of writingSteps) {
-    const step = stepSource(name);
-    assert.match(
-      step,
-      /if: steps\.credential\.outputs\.token != ''/u,
-      `'${name}' is not gated on the minted token`,
-    );
-    assert.match(
-      step,
-      /token: \$\{\{ steps\.credential\.outputs\.token \}\}/u,
-      `'${name}' does not author with the minted token`,
-    );
-    assert.doesNotMatch(
-      step,
-      /secrets\.GITHUB_TOKEN/u,
-      `'${name}' must never fall back to the ambient token`,
-    );
-  }
-});
-
-test("no step outside the gated writers can write an issue", () => {
-  const mutatingCall = /issues\.(?:create|update|createComment)\b/u;
-  for (const name of [
-    "Poll consumer repositories for lane failure signals",
-    "Find the open incident issue",
-    "Advance the incident state",
-  ]) {
-    assert.doesNotMatch(
-      extractStepScript(name),
-      mutatingCall,
-      `'${name}' must be read-only`,
-    );
-  }
-});
-
-test("the credential is minted only when its secret exists and no dry run was requested", () => {
-  const step = stepSource("Mint the aggregator App token");
+test("the write gate is defined once, from the dry-run input and nothing else", () => {
   assert.match(
-    step,
-    /if: env\.HAS_APP_CREDENTIAL == 'true' && env\.FORCED_DRY_RUN != 'true'/u,
+    workflow,
+    /^ {6}WRITES_ENABLED: \$\{\{ github\.event\.inputs\.dry-run != 'true' \}\}$/mu,
+    "the gate must be a single job-level env expression over the dry-run input",
   );
+  // Deriving it from the App token would rebuild the coupling this change
+  // exists to break: writes must work with or without a credential.
+  const definition = /^ {6}WRITES_ENABLED: .*$/mu.exec(workflow)[0];
+  assert.doesNotMatch(definition, /credential|secrets\./u);
+});
+
+// Evaluate the SHIPPED gate expression rather than a restatement of it, so
+// inverting the operator or renaming the input fails the table below.
+function evaluateWriteGate(inputs) {
+  const definition = /^ {6}WRITES_ENABLED: \$\{\{ (.+) \}\}$/mu.exec(workflow);
+  assert.ok(definition, "the write gate must be one ${{ }} expression");
+  const parsed = /^github\.event\.inputs\.([a-z-]+) (==|!=) '([^']*)'$/u.exec(
+    definition[1],
+  );
+  assert.ok(parsed, `unsupported gate expression: ${definition[1]}`);
+  const [, input, operator, literal] = parsed;
+  const actual = inputs?.[input] ?? "";
+  return operator === "==" ? actual === literal : actual !== literal;
+}
+
+test("the dry-run input suppresses writes, and every other event shape enables them", () => {
+  assert.equal(
+    evaluateWriteGate({ "dry-run": "true" }),
+    false,
+    "a dispatch asking for a dry run must not write",
+  );
+  assert.equal(evaluateWriteGate({ "dry-run": "false" }), true);
+  // `github.event.inputs` is absent on `schedule`, and an absent input never
+  // equals 'true' — so the hourly cycle writes.
+  assert.equal(evaluateWriteGate(undefined), true);
+});
+
+test("every registered writer leads its condition with the shared gate and authors with the ambient token", () => {
+  for (const name of WRITER_STEPS) {
+    const step = stepSource(name);
+    // Leading conjunct, not merely present: a gate reached through `||` is not
+    // a gate, and one appended after another condition is easy to lose in a
+    // later edit.
+    assert.match(
+      step,
+      /^ {8}if: env\.WRITES_ENABLED == 'true'(?: &&|$)/mu,
+      `'${name}' must open its 'if:' with ${WRITE_GATE}`,
+    );
+    assert.match(
+      step,
+      /(?:^|\W)(?:github-)?token: \$\{\{ secrets\.GITHUB_TOKEN \}\}$/mu,
+      `'${name}' must author with the ambient token`,
+    );
+    assert.doesNotMatch(
+      step,
+      /steps\.credential\.outputs\.token/u,
+      `'${name}' must not depend on the App token — the write path has to work without one`,
+    );
+  }
+});
+
+test("every step is either a registered writer or provably incapable of writing", () => {
+  const names = aggregateStepNames();
+  for (const name of WRITER_STEPS) {
+    assert.ok(names.includes(name), `registered writer '${name}' is not a step`);
+  }
+  for (const name of names) {
+    if (WRITER_STEPS.includes(name)) continue;
+    const step = stepSource(name);
+    for (const [pattern, description] of MUTATING_CALLS) {
+      assert.doesNotMatch(
+        step,
+        pattern,
+        `'${name}' is not a registered writer but reaches ${description}`,
+      );
+    }
+    for (const [, action] of step.matchAll(/^\s*uses: ([^@\s]+)@/gmu)) {
+      assert.ok(
+        READ_ONLY_ACTIONS.has(action),
+        `'${name}' is not a registered writer but delegates to '${action}', which is not on the read-only allowlist`,
+      );
+    }
+  }
+});
+
+test("the dry-run report is gated on the negation of the write gate", () => {
+  // Mutually exclusive with the writers by construction, so no run can both
+  // write the issue and print that it wrote nothing.
+  assert.match(
+    stepSource("Publish the dry-run report"),
+    /^ {8}if: env\.WRITES_ENABLED != 'true'$/mu,
+  );
+});
+
+test("the App credential is minted read-only, whenever its secret exists", () => {
+  const step = stepSource("Mint the aggregator App token");
+  // No dry-run term: the token only reads, so a dry run can hold one and render
+  // the body a live run would have written against the full installation.
+  assert.match(step, /^ {8}if: env\.HAS_APP_CREDENTIAL == 'true'$/mu);
   assert.match(step, /permission-checks: read/u);
   assert.match(step, /permission-pull-requests: read/u);
-  assert.match(step, /permission-issues: write/u);
+  assert.match(step, /permission-issues: read/u);
+  assert.doesNotMatch(
+    step,
+    /permission-[a-z-]+: write/u,
+    "the App token authors nothing, so it must request no write permission",
+  );
   assert.match(
     workflow,
     /HAS_APP_CREDENTIAL: \$\{\{ secrets\.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' \}\}/u,
   );
 });
 
-test("the dry-run report is published exactly when no token was minted", () => {
-  assert.match(
-    stepSource("Publish the dry-run report"),
-    /if: steps\.credential\.outputs\.token == ''/u,
-  );
+test("the reading steps prefer the App token and fall back to the ambient one, so an App-less run still reads", () => {
+  for (const name of [
+    "Poll consumer repositories for lane failure signals",
+    "Find the open incident issue",
+  ]) {
+    assert.match(
+      stepSource(name),
+      /github-token: \$\{\{ steps\.credential\.outputs\.token \|\| secrets\.GITHUB_TOKEN \}\}/u,
+      `'${name}' must degrade to the ambient token when no App token was minted`,
+    );
+  }
 });
 
 test("the run logs the API-call count as an explicit deliverable line", () => {
@@ -359,7 +504,10 @@ test("the schedule and its serialization are declared", () => {
 
 // --- Polling behavior ------------------------------------------------------
 
-test("a dry run with no installation polls this repository alone", async () => {
+test("an uncredentialed run degrades to this repository alone and still classifies the cycle", async () => {
+  // The App seam is optional by design. Without it the poll must narrow rather
+  // than fail: no installation read it cannot perform, and a real verdict from
+  // the one repository the ambient token can always reach.
   const { outputs, calls } = await runPoll({ hasInstallation: false });
   assert.equal(outputs.repositories, "1");
   assert.deepEqual(
@@ -369,7 +517,24 @@ test("a dry run with no installation polls this repository alone", async () => {
   assert.equal(
     calls.some((call) => call.kind === "installation"),
     false,
-    "a dry run must not attempt an installation read it cannot perform",
+    "an uncredentialed run must not attempt an installation read it cannot perform",
+  );
+
+  const detected = await runPoll({
+    hasInstallation: false,
+    pullsByRepo: {
+      "melodic-software/ci-workflows": [
+        [recentPull(12, "sha-a", "melodic-software/ci-workflows")],
+      ],
+    },
+    checkRunsByPull: { "sha-a": [checkRun({ id: 90, annotationsCount: 1 })] },
+    annotationsByCheckRun: { 90: [{ message: laneAnnotation("auth", 401) }] },
+  });
+  assert.equal(detected.outputs["read-errors"], "0");
+  assert.equal(
+    detected.outputs.cycle,
+    "incident",
+    "an App-less run must still detect an escalating class, not report indeterminate",
   );
 });
 
@@ -637,16 +802,16 @@ test("check runs and annotations are paginated, neither truncated at one page no
   assert.equal(outputs.cycle, "clean");
 });
 
-test("the ambient token is granted every read the poll makes, or a dry run sees nothing", () => {
+test("the ambient token is granted every read the poll makes, or an App-less run sees nothing", () => {
   // Declaring `permissions:` sets every unlisted scope to `none`. The check-run
   // and annotation endpoints require Checks:read with no public-repository
-  // exemption, so omitting them 403s the first read of every dry run and
-  // reports `indeterminate` forever — a workflow that ships doing nothing.
+  // exemption, so omitting them 403s the first read of every uncredentialed run
+  // and reports `indeterminate` forever — a workflow that ships doing nothing.
+  const scopes = permissionsBlock(4);
   for (const scope of ["checks", "contents", "issues", "pull-requests"]) {
-    assert.match(
-      workflow,
-      new RegExp(`^ {6}${scope}: read$`, "mu"),
-      `the job must grant ${scope}: read`,
+    assert.ok(
+      scopes[scope] === "read" || scopes[scope] === "write",
+      `the job must grant at least ${scope}: read`,
     );
   }
 });

@@ -13,7 +13,7 @@ name: claude-lane-incident-aggregator
 # incident issue in this repository: opened on the first escalating class, kept
 # current in place, closed by itself after three consecutive clean cycles.
 #
-# TOKEN MATRIX — TWO CREDENTIALS, DISJOINT JOBS.
+# TOKEN MATRIX — TWO CREDENTIALS, DISJOINT ROLES.
 # The incident issue lives in THIS repository, so maintaining it is a same-repo
 # write, and `issues: write` on the ambient GITHUB_TOKEN is the entire authority
 # it needs. What the ambient token CANNOT do is read a private repository it is
@@ -270,8 +270,9 @@ jobs:
                 .filter((repository) => !repository.archived)
                 .map((repository) => repository.full_name);
             } else {
-              // Dry run: no installation exists, so the only repository the
-              // ambient token can read is this one.
+              // Uncredentialed: no installation exists, so the only repository
+              // the ambient token is guaranteed to read is this one. This says
+              // nothing about writing — see the workflow header's write gate.
               repositories = [`${context.repo.owner}/${context.repo.repo}`];
             }
 
