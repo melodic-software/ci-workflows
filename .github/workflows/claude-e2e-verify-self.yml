@@ -11,8 +11,8 @@ name: Claude E2E Verify
 # path filter keeps the lane scoped to changes that touch it.
 #
 # The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
-# so this repo receives it; fork PRs still get no token by design and
-# verification degrades to a warning (no leak).
+# so this repo receives it; fork PRs still get no token by design, so their
+# agent step fails under continue-on-error and nothing is verified (no leak).
 on:
   pull_request:
     paths:
