@@ -37,8 +37,8 @@ while IFS= read -r line; do
   trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
   [[ -n "$trimmed" ]] || continue
   case "$trimmed" in
-    \#*) continue ;;
-    *) ;;
+  \#*) continue ;;
+  *) ;;
   esac
   if [[ "$trimmed" == *: ]]; then
     # A header-shaped line that was INDENTED is ambiguous: headers are
@@ -147,8 +147,8 @@ for index in "${!names[@]}"; do
   : >"$ignore"
   while IFS= read -r pattern; do
     case "$pattern" in
-      /*) printf '%s\n' "$pattern" >>"$ignore" ;;
-      *) printf '/%s\n' "$pattern" >>"$ignore" ;;
+    /*) printf '%s\n' "$pattern" >>"$ignore" ;;
+    *) printf '/%s\n' "$pattern" >>"$ignore" ;;
     esac
   done <"${group_files[$index]}"
 
