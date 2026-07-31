@@ -1265,6 +1265,30 @@ overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
 or matches only deliberate standing opt-outs).
 
+**PHASE 3 CLOSE-OUT LEDGER (2026-07-31).** The tag stays `[DOING]` for exactly
+one unexecuted item; everything else this Sanity Check names is satisfied.
+SATISFIED: `sync-manifest.sh validate` exits 0; per-target blob-hash
+equivalence 4/4 (all managed targets at `a9dfe7f4`); the 3c gate invariant
+re-read intact with the single documented break-glass delta (see the re-read
+block below); the `requires-security-review` property set still exactly
+`{claude-code-plugins}`; the ACTUAL-security-run observation, closed via the
+routing decision and its evidence block (runs `30602103731` and `30602120481`,
+independently verified twice); automerge restored — `grep -c automerge` on
+standards `main` returns 0, the pre-window shape, since the restore was a key
+REMOVAL and absent means true; wave-1 and #227 smoke transcripts recorded
+above.
+NOT SATISFIED, and the only thing blocking the tag: the **kill-switch org-var
+flip smoke** has never been executed. It requires mutating an org Actions
+variable (`CLAUDE_REVIEW_DISABLED` to `true`, observe a caller run with the
+inner job skipping, restore to `false`), which is an operator action. The
+queue-overflow probe is separately recorded as SUPERSEDED rather than
+outstanding: 3e produced a real contention observation on medley — three PRs
+opened within 16 minutes drove queue depth to 3 in the repo-wide group, all
+three review jobs waited simultaneously and were then strictly serialized,
+with one run queued ~2h against a 6m48s job — which is stronger evidence than
+the synthetic probe was designed to manufacture, and it confirms the
+serializer queues rather than cancels.
+
 3c INVARIANT RE-READ (2026-07-30): the canonicalized-JSON read of ruleset
 19388547 shows `bypass_actors: []`, `conditions` intact
 (`~DEFAULT_BRANCH` include, empty excludes on both `ref_name` and
