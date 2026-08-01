@@ -479,6 +479,48 @@ ${UNGATED_WRITE}
       ),
   },
   {
+    // Every value in JavaScript reaches a Function constructor through its own
+    // prototype, so allowlisting the Octokit handle's members while leaving an
+    // ordinary global's unexamined leaves a way to run anything at all.
+    what: "reflection to a Function constructor through a permitted global",
+    caught: /reaches 'String\.constructor', which is not a read-only surface/u,
+    mutate: (source) =>
+      spliceAfter(
+        source,
+        STATE_SCRIPT_TAIL,
+        [
+          "",
+          "            const build = String.constructor;",
+          '            await build("return fetch")()("https://api.github.com", {',
+          '              method: "POST",',
+          "            });",
+          "",
+        ].join("\n"),
+      ),
+  },
+  {
+    // The same reflection off a local, spelled through a subscript so no member
+    // name appears in the source at all.
+    what: "a computed property name, which no member scan can read",
+    caught: /subscripts with '.*', a property name this scan cannot read/u,
+    mutate: (source) =>
+      spliceAfter(
+        source,
+        STATE_SCRIPT_TAIL,
+        [
+          "",
+          '            const verb = "createComment";',
+          "            await lookup.issues[verb]({",
+          "              owner: context.repo.owner,",
+          "              repo: context.repo.repo,",
+          "              issue_number: 1,",
+          '              body: "ungated write",',
+          "            });",
+          "",
+        ].join("\n"),
+      ),
+  },
+  {
     what: "a local ./ action, which carries no pin to check",
     caught:
       /must pin 'uses:' to owner\/repo@<40-hex sha>; found '\.\/\.github\/actions\/incident-mirror'/u,

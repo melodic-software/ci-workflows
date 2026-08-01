@@ -60,13 +60,12 @@ const READ_CREDENTIAL_FORMS = new Set([
 
 const AMBIENT_TOKEN = `\${{ secrets.GITHUB_TOKEN }}`;
 
-// The globals that carry capability, so their every member path is pinned
-// exactly rather than merely being reachable.
-const CAPABILITY_ROOTS = new Set(["github", "core", "context", "process"]);
-
-// Every surface a non-writing script may name off those roots, as an exact
-// member path. Exactness is what kills aliasing: `const api = github.rest`
+// Every surface a non-writing script may name off a permitted global, as an
+// exact member path. Exactness is what kills aliasing: `const api = github.rest`
 // names the path `github.rest`, which is not an endpoint and is not on the list.
+// Every permitted global is pinned this way, not just the Octokit handle: any
+// value reaches a Function constructor through its own prototype, so a global
+// admitted with its members unexamined is a way to run anything at all.
 const READ_ONLY_SCRIPT_PATHS = new Set([
   // `paginate` only walks whatever endpoint it is handed, and handing it a
   // mutating one means naming that endpoint, which this list still catches.
@@ -83,7 +82,30 @@ const READ_ONLY_SCRIPT_PATHS = new Set([
   "core.warning",
   "context.repo.owner",
   "context.repo.repo",
+  "Date",
+  "Date.now",
+  "Date.parse",
+  "JSON.parse",
+  "JSON.stringify",
+  "Number",
+  "Number.isSafeInteger",
+  "Set",
+  "String",
+  "require",
 ]);
+
+// Reflection reaches a Function constructor from ANY value, including a local
+// this audit does not track, so these three member names are refused wherever
+// they appear. The set is closed by the language rather than guessed at, and
+// the computed-access rule below stops them being spelled dynamically.
+const REFLECTIVE_MEMBER = /\.\s*(constructor|__proto__|prototype)\b/u;
+
+// A subscript that is not a plain number is a property name this audit cannot
+// read, which is the whole of `github[k]` and `x["constructor"]`.
+const COMPUTED_ACCESS = /(?<=[\w$)\]])\s*\[([^[\]]*)\]/gu;
+const NUMERIC_SUBSCRIPT = /^\s*[0-9]+\s*$/u;
+const SUBSCRIPT_EXEMPT_KEYWORDS =
+  /\b(?:const|let|var|of|in|return|new|await|yield|typeof|case|do|else)\s*$/u;
 
 // `process.env.NAME` is a read of one named variable. Computed access —
 // `process.env[expression]` — is the dynamic lookup that reaches a name this
@@ -96,15 +118,9 @@ const PROCESS_ENVIRONMENT_READ = /^process\.env\.[A-Za-z_][A-Za-z0-9_]*$/u;
 // a future runtime injects next — is denied by absence, which is the point: the
 // set of ways to reach the network is not a list anyone can finish writing.
 const PERMITTED_GLOBALS = new Set([
-  "Array",
-  "Boolean",
   "Date",
-  "Error",
   "JSON",
-  "Math",
   "Number",
-  "Object",
-  "Promise",
   "Set",
   "String",
   "context",
@@ -473,12 +489,26 @@ function auditScript(script, label, violations) {
     );
   }
   for (const [, root, tail] of code.matchAll(MEMBER_PATH)) {
-    if (!CAPABILITY_ROOTS.has(root)) continue;
+    if (!PERMITTED_GLOBALS.has(root)) continue;
     const memberPath = `${root}${tail.replaceAll(/\s+/gu, "")}`;
     if (READ_ONLY_SCRIPT_PATHS.has(memberPath)) continue;
     if (PROCESS_ENVIRONMENT_READ.test(memberPath)) continue;
     violations.push(
       `${label} reaches '${memberPath}', which is not a read-only surface`,
+    );
+  }
+  const reflective = REFLECTIVE_MEMBER.exec(code);
+  if (reflective) {
+    violations.push(
+      `${label} reads '${reflective[1]}', which reaches a Function constructor`,
+    );
+  }
+  for (const match of code.matchAll(COMPUTED_ACCESS)) {
+    const before = code.slice(0, match.index + 1);
+    if (SUBSCRIPT_EXEMPT_KEYWORDS.test(before)) continue;
+    if (NUMERIC_SUBSCRIPT.test(match[1])) continue;
+    violations.push(
+      `${label} subscripts with '${match[1].trim()}', a property name this scan cannot read`,
     );
   }
   for (const argument of requireArguments(script)) {
