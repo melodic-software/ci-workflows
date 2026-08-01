@@ -41,8 +41,11 @@ const PINNED_USES =
 
 // Anything that could carry authority into a step: an Actions secret or token
 // expression, or the environment names the runner and the gh CLI read one from.
+// `INPUT_*` covers the environment spelling of an action's own inputs, which is
+// how a github-script body reaches the token it was handed without naming a
+// secret — note the hyphen `github-token` survives into `INPUT_GITHUB-TOKEN`.
 const CREDENTIAL_REFERENCE =
-  /secrets\.|github\.token|steps\.credential\.outputs\.token|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bACTIONS_[A-Z_]*TOKEN\b/u;
+  /secrets\.|github\.token|steps\.credential\.outputs\.token|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bACTIONS_[A-Z_]*TOKEN\b|\bINPUT_[A-Z0-9_-]*TOKEN\b/u;
 
 // The exact credential expressions a non-writing step may carry. Each is a READ
 // path: the App token is minted read-only, and the presence probes disclose only
@@ -57,9 +60,13 @@ const READ_CREDENTIAL_FORMS = new Set([
 
 const AMBIENT_TOKEN = `\${{ secrets.GITHUB_TOKEN }}`;
 
-// Every Octokit surface a non-writing script may name, as an exact member path.
-// Exactness is what kills aliasing: `const api = github.rest` names the path
-// `rest`, which is not an endpoint and is therefore not on the list.
+// The globals that carry capability, so their every member path is pinned
+// exactly rather than merely being reachable.
+const CAPABILITY_ROOTS = new Set(["github", "core", "context", "process"]);
+
+// Every surface a non-writing script may name off those roots, as an exact
+// member path. Exactness is what kills aliasing: `const api = github.rest`
+// names the path `github.rest`, which is not an endpoint and is not on the list.
 const READ_ONLY_SCRIPT_PATHS = new Set([
   // `paginate` only walks whatever endpoint it is handed, and handing it a
   // mutating one means naming that endpoint, which this list still catches.
@@ -78,18 +85,92 @@ const READ_ONLY_SCRIPT_PATHS = new Set([
   "context.repo.repo",
 ]);
 
-// The lookbehind keeps a path segment or a string fragment from reading as a
-// reference — `.github/scripts/…` names a directory, not the Octokit handle.
-// Comments are deliberately NOT stripped: scanning them costs an occasional
-// false positive, which is a reworded comment, while a comment lexer that
-// mishandled one regex literal would cost a false negative.
-const SCRIPT_ROOTS =
-  /(?<![\w$./"'-])(github|octokit|core|context)((?:\s*\.\s*[A-Za-z_$][\w$]*)*)/gu;
+// `process.env.NAME` is a read of one named variable. Computed access —
+// `process.env[expression]` — is the dynamic lookup that reaches a name this
+// audit cannot see, so it is not admitted: it produces the bare path
+// `process.env`, which is absent from the set above.
+const PROCESS_ENVIRONMENT_READ = /^process\.env\.[A-Za-z_][A-Za-z0-9_]*$/u;
 
-// Reflective escapes that would reach the injected `github` handle, or the
-// runner's credential, without naming it.
-const SCRIPT_ESCAPES =
-  /\b(?:arguments|eval|globalThis|Function|constructor|__proto__|child_process|getInput)\b/u;
+// The only free identifiers a non-writing script may name. Everything else —
+// `fetch`, `exec`, `io`, `glob`, `__original_require__`, `Buffer`, and whatever
+// a future runtime injects next — is denied by absence, which is the point: the
+// set of ways to reach the network is not a list anyone can finish writing.
+const PERMITTED_GLOBALS = new Set([
+  "Array",
+  "Boolean",
+  "Date",
+  "Error",
+  "JSON",
+  "Math",
+  "Number",
+  "Object",
+  "Promise",
+  "Set",
+  "String",
+  "context",
+  "core",
+  "github",
+  "process",
+  "require",
+]);
+
+// Names bound by the script itself. A declaration this misses costs a false
+// positive; the scan that feeds it runs on code with comments and string
+// literals already blanked, so a declaration cannot be faked in either.
+const DECLARATIONS = [
+  /\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/gu,
+  /\b(?:const|let|var)\s*[[{]([^\]}]*)[\]}]/gu,
+  /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/gu,
+  /\(([^()]*)\)\s*=>/gu,
+  /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=>/gu,
+  /\bfunction\s*[A-Za-z_$]?[\w$]*\s*\(([^()]*)\)/gu,
+];
+
+const JAVASCRIPT_KEYWORDS = new Set([
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "in",
+  "instanceof",
+  "let",
+  "new",
+  "null",
+  "of",
+  "return",
+  "static",
+  "switch",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "undefined",
+  "var",
+  "void",
+  "while",
+  "yield",
+]);
+
+// An identifier in reference position: not a member name (`.foo`) and not an
+// object-literal key (`foo:`).
+const IDENTIFIER = /(?<![\w$.])([A-Za-z_$][\w$]*)(?![\w$])(?!\s*:)/gu;
+const MEMBER_PATH =
+  /(?<![\w$.])([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*)*)/gu;
 
 const ALLOWED_REQUIRE_ARGUMENTS = new Set([
   '"node:fs"',
@@ -199,6 +280,108 @@ function scanShell(body) {
   return { fragments, substitution, unterminated: quote !== null };
 }
 
+/**
+ * Blank out everything in a script that cannot execute — comments, and the
+ * literal chunks of strings and template literals — while keeping the code
+ * inside a template's `${…}` substitutions, which can.
+ *
+ * Blanking rather than deleting keeps offsets, so a token cannot be created by
+ * two fragments becoming adjacent. `//` and `/*` in code position are always
+ * comments: an unescaped `//` cannot occur inside a regular expression literal
+ * (it would close it), and `/ *` is not a valid expression.
+ *
+ * @returns {{code: string, unterminated: boolean}}
+ */
+function stripNonCode(script) {
+  const code = [...script];
+  const blank = (from, to) => {
+    for (let index = from; index < to && index < code.length; index += 1) {
+      if (code[index] !== "\n") code[index] = " ";
+    }
+  };
+  // One entry per open template literal, holding the `{` nesting depth inside
+  // its current `${…}`; 0 means the template's own literal text.
+  const templates = [];
+  let index = 0;
+  while (index < script.length) {
+    const char = script[index];
+    const inTemplateText = templates.length > 0 && templates.at(-1) === 0;
+    if (inTemplateText) {
+      if (char === "\\") {
+        blank(index, index + 2);
+        index += 2;
+      } else if (char === "`") {
+        templates.pop();
+        blank(index, index + 1);
+        index += 1;
+      } else if (char === "$" && script[index + 1] === "{") {
+        templates[templates.length - 1] = 1;
+        blank(index, index + 2);
+        index += 2;
+      } else {
+        blank(index, index + 1);
+        index += 1;
+      }
+      continue;
+    }
+    if (char === "/" && script[index + 1] === "/") {
+      const end = script.indexOf("\n", index);
+      blank(index, end < 0 ? script.length : end);
+      index = end < 0 ? script.length : end;
+      continue;
+    }
+    if (char === "/" && script[index + 1] === "*") {
+      const end = script.indexOf("*/", index + 2);
+      if (end < 0) return { code: code.join(""), unterminated: true };
+      blank(index, end + 2);
+      index = end + 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      let cursor = index + 1;
+      while (cursor < script.length && script[cursor] !== char) {
+        if (script[cursor] === "\\") cursor += 1;
+        else if (script[cursor] === "\n") break;
+        cursor += 1;
+      }
+      if (script[cursor] !== char) {
+        return { code: code.join(""), unterminated: true };
+      }
+      blank(index, cursor + 1);
+      index = cursor + 1;
+      continue;
+    }
+    if (char === "`") {
+      templates.push(0);
+      blank(index, index + 1);
+      index += 1;
+      continue;
+    }
+    if (templates.length > 0 && (char === "{" || char === "}")) {
+      templates[templates.length - 1] += char === "{" ? 1 : -1;
+      if (templates.at(-1) === 0) blank(index, index + 1);
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  return { code: code.join(""), unterminated: templates.length > 0 };
+}
+
+/** Names the script binds itself, read from code with literals already blanked. */
+function declaredNames(code) {
+  const declared = new Set();
+  for (const pattern of DECLARATIONS) {
+    for (const [, captured] of code.matchAll(pattern)) {
+      for (const part of captured.split(/[,:]/u)) {
+        const name = part.replace(/\.\.\./u, "").trim();
+        if (/^[A-Za-z_$][\w$]*$/u.test(name)) declared.add(name);
+      }
+    }
+  }
+  return declared;
+}
+
 /** Every `require(…)` argument in a script, normalized to one line. */
 function requireArguments(script) {
   const args = [];
@@ -270,19 +453,33 @@ function auditScript(script, label, violations) {
     );
     return;
   }
-  const reflective = SCRIPT_ESCAPES.exec(script);
-  if (reflective) {
+  const { code, unterminated } = stripNonCode(script);
+  if (unterminated) {
     violations.push(
-      `${label} names '${reflective[0]}', which can reach the API handle without naming it`,
+      `${label} has an unterminated string, template, or comment`,
+    );
+    return;
+  }
+  // Every free identifier must be allowlisted, not merely fail to look
+  // dangerous: `actions/github-script` defaults `github-token` to the ambient
+  // token, so each of these steps holds write capability and this scan is the
+  // only thing standing between that capability and a `fetch`.
+  const declared = declaredNames(code);
+  for (const [, name] of code.matchAll(IDENTIFIER)) {
+    if (JAVASCRIPT_KEYWORDS.has(name) || declared.has(name)) continue;
+    if (PERMITTED_GLOBALS.has(name)) continue;
+    violations.push(
+      `${label} names '${name}', which is neither declared in the script nor a permitted global`,
     );
   }
-  for (const [, root, tail] of script.matchAll(SCRIPT_ROOTS)) {
+  for (const [, root, tail] of code.matchAll(MEMBER_PATH)) {
+    if (!CAPABILITY_ROOTS.has(root)) continue;
     const memberPath = `${root}${tail.replaceAll(/\s+/gu, "")}`;
-    if (!READ_ONLY_SCRIPT_PATHS.has(memberPath)) {
-      violations.push(
-        `${label} reaches '${memberPath}', which is not a read-only Octokit surface`,
-      );
-    }
+    if (READ_ONLY_SCRIPT_PATHS.has(memberPath)) continue;
+    if (PROCESS_ENVIRONMENT_READ.test(memberPath)) continue;
+    violations.push(
+      `${label} reaches '${memberPath}', which is not a read-only surface`,
+    );
   }
   for (const argument of requireArguments(script)) {
     if (!ALLOWED_REQUIRE_ARGUMENTS.has(argument)) {

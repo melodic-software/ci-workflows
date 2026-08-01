@@ -412,7 +412,7 @@ ${UNGATED_WRITE}
     // verb is then reached by subscript. Naming `github.rest` at all is the
     // violation.
     what: "one binding plus bracket access to the verb",
-    caught: /reaches 'github\.rest', which is not a read-only Octokit surface/u,
+    caught: /reaches 'github\.rest', which is not a read-only surface/u,
     mutate: (source) =>
       spliceAfter(
         source,
@@ -431,6 +431,53 @@ ${UNGATED_WRITE}
   {
     // A local action has no `@`, so a pin pattern anchored on one never fires.
     // Its contents are also outside this file entirely.
+    // `actions/github-script` defaults `github-token` to the ambient token, so
+    // every one of these steps already holds write capability; the script scan
+    // is the only control. It injects `exec`, `io` and `glob` alongside
+    // `github`, and the runtime supplies `fetch` — none of which a scan that
+    // enumerated only the Octokit handle would ever look at. The token's
+    // environment spelling keeps the hyphen, so `INPUT_GITHUB-TOKEN` is also
+    // not the `GITHUB_TOKEN` a word-boundary match expects.
+    what: "a network call through a global the script scan never enumerated",
+    caught:
+      /names 'fetch', which is neither declared in the script nor a permitted global/u,
+    mutate: (source) =>
+      spliceAfter(
+        source,
+        STATE_SCRIPT_TAIL,
+        [
+          "",
+          '            await fetch("https://api.github.com/repos/o/r/issues/1/comments", {',
+          '              method: "POST",',
+          "              headers: {",
+          `                authorization: \`Bearer \${process.env["INPUT_GITHUB-TOKEN"]}\`,`,
+          "              },",
+          '              body: JSON.stringify({ body: "ungated write" }),',
+          "            });",
+          "",
+        ].join("\n"),
+      ),
+  },
+  {
+    // The require allowlist matched the literal `require(`, which
+    // `__original_require__(` does not contain — github-script exposes it to
+    // reach Node's own resolver, so it loads `node:https` unexamined.
+    what: "the unscanned alias of require, which bypasses its argument allowlist",
+    caught:
+      /names '__original_require__', which is neither declared in the script nor a permitted global/u,
+    mutate: (source) =>
+      spliceAfter(
+        source,
+        STATE_SCRIPT_TAIL,
+        [
+          "",
+          '            const https = __original_require__("node:https");',
+          '            https.request({ method: "POST", host: "api.github.com" }).end();',
+          "",
+        ].join("\n"),
+      ),
+  },
+  {
     what: "a local ./ action, which carries no pin to check",
     caught:
       /must pin 'uses:' to owner\/repo@<40-hex sha>; found '\.\/\.github\/actions\/incident-mirror'/u,

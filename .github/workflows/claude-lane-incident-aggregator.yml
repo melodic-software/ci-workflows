@@ -40,10 +40,13 @@ name: claude-lane-incident-aggregator
 # DEFAULT-DENY partition over the workflow parsed as YAML rather than scanned as
 # text: every step of every write-scoped job must be either a registered writer
 # carrying the gate, or a step that affirmatively matches a read-only shape — a
-# pinned allowlisted action, an inline script naming only read endpoints, or a
+# pinned allowlisted action, an inline script whose every free identifier is
+# allowlisted and whose every capability path is an exact read endpoint, or a
 # `run:` holding no credential and invoking only read-only commands. A step
 # matching neither is a violation, so the audit never clears one for merely
-# failing to look dangerous.
+# failing to look dangerous. The inline-script rule is the load-bearing one:
+# `actions/github-script` defaults its token to the ambient one, so every such
+# step already holds write capability and only its code decides what it spends.
 #
 # What that proves is bounded, and the bound matters: no step other than the two
 # registered writers can mutate anything, and both writers carry the gate.
