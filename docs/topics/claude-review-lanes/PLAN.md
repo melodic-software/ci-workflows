@@ -904,9 +904,11 @@ Ordered pre-steps, then waved rollout.
   costs a second browser action by whoever holds org ownership, even when that
   is the same person.
 
-  WAVE-TARGET SET — UNRATIFIED PROPOSAL (measured 2026-07-31). NOT A DECISION
-  AND NOT APPROVED: recorded for operator ratification. Until ratified,
-  3d(ii)'s target set stands exactly as Approval-record item 5 approved it.
+  WAVE-TARGET SET — RATIFIED 2026-08-01 (measured 2026-07-31). Adopted as put:
+  a code-review lane belongs on code repositories, and running it over
+  untrusted scraped content is a prompt-injection surface rather than a
+  code-quality one. This supersedes Approval-record item 5's target set, and
+  reverses item 1's ci-runner exemption.
 
   CENSUS. 13 non-archived org repos; SEVEN carry a claude-review lane —
   ci-workflows, claude-code-plugins, dotfiles, github-iac, medley,
@@ -952,6 +954,21 @@ Ordered pre-steps, then waved rollout.
   chosen; retargeting changes only WHICH repositories are added, never whether
   an extension is needed. The correction above therefore applies to the
   proposal unchanged.
+
+  RATIFIED BUT NOT YET LANDABLE (measured 2026-08-01): none of the three
+  adoptions can become a MANAGED `claude-review-caller` target today, so the
+  standards manifest records each with its blocker instead of adding it
+  (melodic-software/standards, `distribution/sync-manifest.yml`). ci-runner
+  and cursor-plugins are both PUBLIC, and the manifest's own private-only
+  constraint bites: `runner-policy.mjs` emits `public-self-hosted-routing` for
+  a selector-routed caller on a public repository, and
+  `components/runner-policy/runner-policy.test.mjs` fails the build outright if
+  such a component is `managed` for a public target. Their gate is therefore the
+  SAME removal trigger the parked security caller carries — the runner
+  indirection moving inside the reusable — not the App grant. claude-code-proxy
+  is private and clears that constraint, leaving only the installation
+  extension above; it also needs its `TARGET_VISIBILITY` entry, whose lookup
+  fails closed. The removals landed; the adoptions did not.
 
   DEFERRED WITH TRIGGER, per this plan's own convention rather than dropped:
   knowledge-corpus ingests external documents that agents later read, which is
