@@ -34,14 +34,22 @@ name: claude-lane-incident-aggregator
 # `WRITES_ENABLED`, derived from the `dry-run` dispatch input and from nothing
 # else; every step permitted to mutate this repository opens its `if:` with that
 # one expression, and the step that renders the dry-run report is gated on its
-# negation. .github/scripts/claude-lane-incident-aggregator.test.cjs enforces the
-# partition rather than a hand-listed pair of steps: it enumerates EVERY step in
-# the job and requires each one to be either a registered writer whose `if:`
-# leads with the gate, or a step carrying no mutating API surface and no action
-# outside a read-only allowlist. A new write step therefore cannot reach main
-# ungated — unregistered it fails the no-mutation check, registered it fails the
-# gate check. A reviewer confirms "a dry run cannot write" by reading one env
-# line and one test, not by tracing every branch.
+# negation.
+#
+# .github/scripts/claude-lane-incident-write-gate.cjs enforces that as a
+# DEFAULT-DENY partition over the workflow parsed as YAML rather than scanned as
+# text: every step of every write-scoped job must be either a registered writer
+# carrying the gate, or a step that affirmatively matches a read-only shape — a
+# pinned allowlisted action, an inline script naming only read endpoints, or a
+# `run:` holding no credential and invoking only read-only commands. A step
+# matching neither is a violation, so the audit never clears one for merely
+# failing to look dangerous.
+#
+# What that proves is bounded, and the bound matters: no step other than the two
+# registered writers can mutate anything, and both writers carry the gate.
+# Whether the gate is the RIGHT condition, and whether each writer's remaining
+# conditions are right, are read here — the audit does not read this file for
+# you.
 #
 # POLLING SCOPE is the App credential's own installation (`GET
 # /installation/repositories`, one call): the org owner grants the App access to
