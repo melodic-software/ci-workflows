@@ -72,6 +72,10 @@ test("block scalar chomping and folding follow the style indicator", () => {
   b
 stripped: |-
   a
+kept: |+
+  a
+
+
 folded: >-
   a
   b
@@ -83,6 +87,7 @@ more-indented: >-
 `);
   assert.equal(document.literal, "a\n\nb\n");
   assert.equal(document.stripped, "a");
+  assert.equal(document.kept, "a\n\n\n");
   assert.equal(document.folded, "a b\nc");
   assert.equal(document["more-indented"], "a\n  b");
 });
@@ -93,6 +98,10 @@ enabled: true
 disabled: false
 missing:
 count: 12
+padded: 007
+exponent: 1e3
+hex: 0x1f
+version: 24.18.0
 quoted: '17 * * * *'
 escaped: "a\\nb"
 apostrophe: 'it''s'
@@ -107,6 +116,10 @@ flow-mapping: {}
     disabled: false,
     missing: null,
     count: 12,
+    padded: 7,
+    exponent: 1000,
+    hex: 31,
+    version: "24.18.0",
     quoted: "17 * * * *",
     escaped: "a\nb",
     apostrophe: "it's",

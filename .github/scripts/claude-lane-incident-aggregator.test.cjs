@@ -308,12 +308,12 @@ test("every registered writer leads its condition with the shared gate and autho
 
 // --- The write gate cannot be walked past ----------------------------------
 //
-// Each entry is an ungated write an independent verifier landed on the earlier
-// pattern-matching gate while leaving both actionlint and the suite green. They
-// are kept as source transformations rather than prose so the claim "this shape
-// is now caught" is executed rather than asserted, and so the reason each is
-// caught is pinned: a fix that happened to reject the mutation for an unrelated
-// reason would not satisfy the expectation beside it.
+// Each entry is an ungated write that a gate matching patterns against raw
+// workflow text admits while staying actionlint-clean — none is hypothetical.
+// They are source transformations rather than prose so "this shape is caught"
+// is executed rather than asserted, and each expectation names the mechanism
+// that catches it: a fix rejecting the mutation for an unrelated reason would
+// not satisfy the expectation beside it.
 const UNGATED_WRITE = `            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -349,8 +349,9 @@ function spliceAfter(source, anchor, addition) {
 
 const DEFEATS = [
   {
-    // A bullet with no space after the hyphen is still a sequence item. Placed
-    // past the last writer it used to be absorbed into that writer's text.
+    // A bullet with no space after the hyphen is still a sequence item, and a
+    // pattern requiring `- ` never sees it. Past the last writer there is no
+    // following bullet either, so its text falls inside that writer's slice.
     what: "a bare-hyphen step appended past the last writer",
     caught: /step 10 .* reaches 'github\.rest\.issues\.createComment'/u,
     mutate: (source) => `${source}
@@ -364,8 +365,8 @@ ${UNGATED_WRITE}
 `,
   },
   {
-    // Step names need not be unique, so a second step reusing a writer's name
-    // used to be answered by the genuine writer's gated text.
+    // Step names need not be unique, so a by-name lookup answers a second step
+    // reusing a writer's name with the genuine writer's gated text.
     what: "a second step reusing a registered writer's name",
     caught:
       /declares the registered writer 'Close the recovered incident issue' 2 times/u,

@@ -41,8 +41,8 @@ const SEQUENCE_ITEM = /^-(?:\s|$)/u;
 const MERGE_KEY = /^<<\s*:/u;
 const PLAIN_KEY = /^([^\s:#][^:#]*?)\s*:(?:\s+(.*))?$/u;
 const BLOCK_SCALAR_HEADER = /^([|>])((?:[+-]|[1-9])*)$/u;
-const INTEGER = /^[+-]?(?:0|[1-9][0-9]*)$/u;
-const FLOAT = /^[+-]?(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/u;
+const INTEGER = /^[+-]?(?:[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$/u;
+const FLOAT = /^[+-]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][+-]?[0-9]+)?$/u;
 
 /**
  * Resolve a plain scalar with the YAML 1.2 core schema, which is the schema the
@@ -332,7 +332,9 @@ class Reader {
       while (body.length > 0 && body.at(-1) === "") body.pop();
     }
     const text = header.style === "|" ? body.join("\n") : foldLines(body);
-    return text !== "" && header.chomp === "clip" ? `${text}\n` : text;
+    // Clip keeps one trailing break, keep keeps the break after every retained
+    // line including the blank ones, strip keeps none.
+    return text !== "" && header.chomp !== "strip" ? `${text}\n` : text;
   }
 }
 
