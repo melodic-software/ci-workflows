@@ -56,6 +56,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      # `issues: write` is the only WRITE, and it is the whole authority this
+      # job needs. `contents: read` is carried because the previous single-job
+      # form ran these two actions with it and neither documents its scope
+      # requirement; a read can widen nothing that matters here, and dropping it
+      # on an inference would trade a security property for a runtime risk.
+      contents: read
       issues: write
     steps:
       - name: Download the rendered incident body

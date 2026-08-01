@@ -334,7 +334,13 @@ test("exactly one job holds a write scope, and it is the pinned one", () => {
     .map(([jobId]) => jobId);
   assert.deepEqual(scoped, [WRITE_JOB_ID]);
   assert.deepEqual(Object.keys(document.jobs), JOB_IDS);
-  assert.deepEqual(writeJob.permissions, { issues: "write" });
+  // `issues` is the only WRITE. `contents: read` is carried because the two
+  // actions this job runs previously ran with it and neither documents its
+  // scope requirement; a read widens nothing that matters here.
+  assert.deepEqual(writeJob.permissions, {
+    contents: "read",
+    issues: "write",
+  });
 });
 
 test("the pinned file is the workflow's own write job, byte for byte", () => {
