@@ -112,7 +112,15 @@ const FORBIDDEN_JOB_KEYS = [
   "continue-on-error",
 ];
 
-const SECRET_REFERENCE = /secrets\.[A-Za-z_][A-Za-z0-9_]*/gu;
+// The bare WORD, not a dotted path. Expressions reach a context by property
+// de-reference OR by the `[ ]` index operator, so `secrets['NAME']` names a
+// secret without a dot; the docs do not state whether context names are
+// case-sensitive, which is a reason to match case-insensitively rather than a
+// reason to assume; and `toJSON(secrets)` names none of them individually while
+// dumping all of them. Matching the word covers every spelling at once. A
+// comment that merely says "secrets" trips this too — a red build and a
+// reworded comment, which is the safe direction to be wrong in.
+const SECRET_REFERENCE = /(?<![\w-])secrets(?![\w-])/giu;
 
 // The only credential expressions permitted OUTSIDE the pinned regions, as
 // exact whole expressions rather than as secret names. The presence probe

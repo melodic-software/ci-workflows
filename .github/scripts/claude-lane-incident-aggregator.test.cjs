@@ -293,8 +293,17 @@ const CORPUS = new Map([
     "secret-at-workflow-level",
     /is a credential expression outside the pinned regions/u,
   ],
+  ["secret-bracket", /is a credential expression outside the pinned regions/u],
   [
     "secret-in-job-outputs",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "secret-tojson-dump",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "secret-uppercase",
     /is a credential expression outside the pinned regions/u,
   ],
   ["services-job", /job 'poll' declares 'services:'/u],
