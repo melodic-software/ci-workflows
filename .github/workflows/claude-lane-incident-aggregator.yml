@@ -58,8 +58,16 @@ name: claude-lane-incident-aggregator
 # refuses a token minted with a write permission anywhere in this file, which is
 # the one way a job holding no write scope can still write.
 #
-# TRUST BOUNDARY: `write` consumes a file `poll` produced and never inspects it.
-# The body's safety is `poll`'s sanitization, not anything `write` checks.
+# TRUST BOUNDARY, stated precisely. `poll` cannot mutate anything itself, but it
+# does decide two things `write` then acts on, and neither is checked by `write`
+# or by the audit:
+#   - the BODY, through the artifact it uploads. Its safety is `poll`'s own
+#     sanitization (claude-lane-incident.cjs), not anything downstream.
+#   - the TARGET, through `issue-number`. `write` updates, comments on and closes
+#     whatever number that output carries; the only guard is that it parses as a
+#     positive safe integer. A wrong number is a wrong issue in this repository.
+# So "nothing in `poll` can mutate anything" is about `poll`'s own token. What
+# `poll` selects, `write` performs.
 #
 # POLLING SCOPE is the App credential's own installation (`GET
 # /installation/repositories`, one call): the org owner grants the App access to
@@ -140,6 +148,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # THE ONLY CREDENTIAL-MINTING STEP, and the only place either App secret
+      # is spent. Pinned byte-for-byte alongside the write job, because a minted
+      # token is authority `permissions:` does not govern: any step that can
+      # mint one can write regardless of this job holding no write scope.
+      #
       # Minted without `repositories:` so the token carries the installation's
       # full access, which is also what defines the polling scope below. Every
       # permission requested is READ: this token exists to reach private

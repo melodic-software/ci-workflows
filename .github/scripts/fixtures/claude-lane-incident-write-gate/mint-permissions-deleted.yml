@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -59,9 +59,6 @@ jobs:
           client-id: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          permission-checks: read
-          permission-pull-requests: read
-          permission-issues: read
 
       - name: Poll consumer repositories for lane failure signals
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

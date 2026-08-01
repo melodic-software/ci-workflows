@@ -24,7 +24,8 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    continue-on-error: true
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read

@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -37,7 +37,7 @@ jobs:
     env:
       HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
     steps:
-      # THE ONLY CREDENTIAL-MINTING STEP, and the only place either App secret
+      # A minting step, and the only place either App secret
       # is spent. Pinned byte-for-byte alongside the write job, because a minted
       # token is authority `permissions:` does not govern: any step that can
       # mint one can write regardless of this job holding no write scope.

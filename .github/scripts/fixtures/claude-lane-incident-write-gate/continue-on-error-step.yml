@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -71,6 +71,7 @@ jobs:
             core.setOutput("cycle", "clean");
 
       - name: Publish the dry-run report
+        continue-on-error: true
         if: github.event.inputs.dry-run == 'true'
         run: echo dry run
 

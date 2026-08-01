@@ -14,6 +14,10 @@ on:
         type: string
         default: ''
 
+concurrency:
+  group: claude-lane-incident-aggregator
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -24,6 +28,7 @@ jobs:
       run:
         shell: pwsh
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       checks: read
       contents: read
@@ -32,13 +37,42 @@ jobs:
     outputs:
       action: ${{ steps.state.outputs.action }}
       issue-number: ${{ steps.incident.outputs.number }}
+    env:
+      HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
     steps:
+      # THE ONLY CREDENTIAL-MINTING STEP, and the only place either App secret
+      # is spent. Pinned byte-for-byte alongside the write job, because a minted
+      # token is authority `permissions:` does not govern: any step that can
+      # mint one can write regardless of this job holding no write scope.
+      #
+      # Minted without `repositories:` so the token carries the installation's
+      # full access, which is also what defines the polling scope below. Every
+      # permission requested is READ: this token exists to reach private
+      # consumer repositories the ambient token 404s on, and it authors no write,
+      # so asking for `issues: write` would be authority nothing spends.
+      #
+      # Minted on a dry run too, so a dry run polls the full installation and
+      # renders the body a live run would have written — which is what the
+      # `dry-run` input's own description promises.
       - name: Mint the aggregator App token
+        id: credential
+        if: env.HAS_APP_CREDENTIAL == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-checks: read
+          permission-pull-requests: read
           permission-issues: read
+
+      - name: Poll consumer repositories for lane failure signals
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}
+          script: |
+            core.setOutput("cycle", "clean");
+
       - name: Publish the dry-run report
         if: github.event.inputs.dry-run == 'true'
         run: echo dry run

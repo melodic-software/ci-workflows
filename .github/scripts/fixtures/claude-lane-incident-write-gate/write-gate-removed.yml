@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -92,7 +92,6 @@ jobs:
   write:
     name: Maintain the incident issue
     needs: poll
-    if: github.event.inputs.dry-run != 'true' && needs.poll.outputs.action != 'none'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

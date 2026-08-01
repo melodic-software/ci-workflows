@@ -17,17 +17,22 @@
 //   - that job matches its pinned text BYTE FOR BYTE, so any edit to it fails
 //     CI and is read by a human rather than judged safe by a scanner;
 //   - every other job's effective permissions contain no write at all;
-//   - nothing anywhere mints a credential that writes regardless of
-//     `permissions:` — a job with no write scope still writes if it holds an
-//     App token minted with one, or a PAT.
+//   - every `secrets.` reference in the WHOLE FILE lies inside one of two
+//     pinned regions. A credential is authority `permissions:` does not
+//     govern: any step able to mint an App token, or to bind a PAT into a job
+//     `env:`, writes regardless of its job holding no write scope. Naming the
+//     one mint ACTION is not enough — a different App-token action spends the
+//     same private key — so the rule is over the SECRET, not the action.
 //
 // It takes SOURCE TEXT rather than a path so the fixture corpus can feed it
 // deliberately-broken workflows.
 //
 // WHAT IT DOES NOT PROVE. Whether `poll`'s own steps are correct, and whether
-// the gate is the RIGHT condition, are read here by a person. `write` consumes
-// a file `poll` produced and never inspects it: the body's safety is `poll`'s
-// sanitization, not anything this audit or that job checks.
+// the gate is the RIGHT condition, are read here by a person. And `poll` still
+// decides what `write` acts on: the incident BODY, through the artifact, and
+// the TARGET issue, through the `issue-number` output. Neither is checked here.
+// `poll` cannot mutate anything with its own token; what it selects, `write`
+// performs.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -44,6 +49,24 @@ const PINNED_WRITE_JOB = fs.readFileSync(
   "utf8",
 );
 const WRITE_JOB_MARKER = "  # THE ONLY WRITE-SCOPED JOB.";
+
+// The mint step is pinned for the same reason and by the same means: it is the
+// only place either App secret is spent, and a token minted with a write
+// permission defeats a read-only job outright.
+const PINNED_MINT_STEP = fs.readFileSync(
+  path.join(__dirname, "claude-lane-incident-mint-step.pinned.yml"),
+  "utf8",
+);
+const MINT_MARKER = "      # THE ONLY CREDENTIAL-MINTING STEP,";
+const MINT_END =
+  "\n      - name: Poll consumer repositories for lane failure signals";
+
+// Overlapping cycles would race on one issue body, and a rewritten group or a
+// cancel-in-progress turns the serialization off, so it is pinned too.
+const PINNED_CONCURRENCY = {
+  group: "claude-lane-incident-aggregator",
+  "cancel-in-progress": false,
+};
 
 // Adding a trigger is how a write-scoped job starts running in a context an
 // outsider influences, so the trigger set is pinned rather than filtered.
@@ -84,29 +107,22 @@ const FORBIDDEN_JOB_KEYS = [
   "defaults",
   "strategy",
   "environment",
+  // `continue-on-error` on a job makes a FAILED job conclude success, so a
+  // poll that hit its own fail-closed guard would still let `write` run.
+  "continue-on-error",
 ];
 
-const MINT_ACTION = "actions/create-github-app-token";
-
-// The only secrets any step may name. A PAT, or an App key handed somewhere
-// unexpected, reaches past `permissions:` entirely — so the set is closed.
-const ALLOWED_SECRETS = new Set([
-  "secrets.GITHUB_TOKEN",
-  "secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID",
-  "secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY",
-]);
 const SECRET_REFERENCE = /secrets\.[A-Za-z_][A-Za-z0-9_]*/gu;
 
-/** Collect every scalar string reachable from a node. */
-function scalarStrings(node, found = []) {
-  if (typeof node === "string") found.push(node);
-  else if (Array.isArray(node))
-    for (const item of node) scalarStrings(item, found);
-  else if (node !== null && typeof node === "object") {
-    for (const value of Object.values(node)) scalarStrings(value, found);
-  }
-  return found;
-}
+// The only credential expressions permitted OUTSIDE the pinned regions, as
+// exact whole expressions rather than as secret names. The presence probe
+// discloses whether a secret is set and never its value; the read fallback
+// binds the ambient token into a job the audit has already proved holds no
+// write scope. Any other spelling of either is a violation.
+const PINNED_POLL_CREDENTIALS = new Set([
+  `\${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}`,
+  `\${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}`,
+]);
 
 /**
  * Whether a resolved `permissions:` value can mutate anything.
@@ -158,28 +174,35 @@ function auditJobShape(jobId, job, violations) {
         `${stepLabel} must pin 'uses:' to owner/repo@<40-hex sha>; found '${step.uses}'`,
       );
     }
-    const action =
-      typeof step.uses === "string" && step.uses.includes("@")
-        ? step.uses.slice(0, step.uses.indexOf("@"))
-        : null;
-    if (action === MINT_ACTION) {
-      // A minted token is authority `permissions:` does not govern, so one
-      // write permission here defeats a read-only job outright.
-      for (const [input, value] of Object.entries(step.with ?? {})) {
-        if (input.startsWith("permission-") && value !== "read") {
-          violations.push(`${stepLabel} mints '${input}: ${value}'`);
-        }
-      }
+    if (step["continue-on-error"] !== undefined) {
+      violations.push(`${stepLabel} declares 'continue-on-error:'`);
     }
-    for (const value of scalarStrings(step)) {
-      for (const [secret] of value.matchAll(SECRET_REFERENCE)) {
-        if (!ALLOWED_SECRETS.has(secret)) {
-          violations.push(
-            `${stepLabel} names '${secret}', which is not an allowed credential`,
-          );
-        }
-      }
-    }
+  }
+}
+
+/**
+ * Every `secrets.` reference in the file must sit inside a pinned region.
+ *
+ * Scanning steps alone is not enough: a workflow-level `env:`, a job-level
+ * `env:`, and a job `outputs:` block each bind a secret without being a step,
+ * and each reaches every `run:` in scope.
+ */
+function auditCredentialSurface(source, regions, violations) {
+  for (const match of source.matchAll(SECRET_REFERENCE)) {
+    const inside = regions.some(
+      ([from, to]) => match.index >= from && match.index < to,
+    );
+    if (inside) continue;
+    // Widen to the whole `${{ … }}` the reference sits in, so the check is on
+    // the expression rather than on the secret's name.
+    const opened = source.lastIndexOf("${{", match.index);
+    const closed = source.indexOf("}}", match.index);
+    const expression =
+      opened < 0 || closed < 0 ? match[0] : source.slice(opened, closed + 2);
+    if (PINNED_POLL_CREDENTIALS.has(expression)) continue;
+    violations.push(
+      `'${expression}' is a credential expression outside the pinned regions`,
+    );
   }
 }
 
@@ -207,6 +230,11 @@ function auditWriteGate(source) {
   if (JSON.stringify(workflow.on) !== JSON.stringify(PINNED_TRIGGERS)) {
     violations.push("the trigger block is not the pinned one");
   }
+  if (
+    JSON.stringify(workflow.concurrency) !== JSON.stringify(PINNED_CONCURRENCY)
+  ) {
+    violations.push("the concurrency block is not the pinned one");
+  }
 
   const jobs = workflow.jobs ?? {};
   const jobIds = Object.keys(jobs);
@@ -223,6 +251,12 @@ function auditWriteGate(source) {
       continue;
     }
     auditJobShape(jobId, job, violations);
+    if (
+      !Number.isInteger(job["timeout-minutes"]) ||
+      job["timeout-minutes"] <= 0
+    ) {
+      violations.push(`job '${jobId}' must declare a positive timeout-minutes`);
+    }
     if (isWriteScoped(effectivePermissions(job, workflow))) {
       writeScoped.push(jobId);
     }
@@ -236,14 +270,33 @@ function auditWriteGate(source) {
     );
   }
 
+  const regions = [];
   const at = source.indexOf(WRITE_JOB_MARKER);
   if (at < 0) {
     violations.push("the pinned write job is missing");
-  } else if (source.slice(at) !== PINNED_WRITE_JOB) {
-    violations.push(
-      "the write job does not match claude-lane-incident-write-job.pinned.yml byte for byte",
-    );
+  } else {
+    regions.push([at, source.length]);
+    if (source.slice(at) !== PINNED_WRITE_JOB) {
+      violations.push(
+        "the write job does not match claude-lane-incident-write-job.pinned.yml byte for byte",
+      );
+    }
   }
+
+  const mintAt = source.indexOf(MINT_MARKER);
+  const mintEnd = mintAt < 0 ? -1 : source.indexOf(MINT_END, mintAt);
+  if (mintAt < 0 || mintEnd < 0) {
+    violations.push("the pinned mint step is missing");
+  } else {
+    regions.push([mintAt, mintEnd]);
+    if (source.slice(mintAt, mintEnd) !== PINNED_MINT_STEP) {
+      violations.push(
+        "the mint step does not match claude-lane-incident-mint-step.pinned.yml byte for byte",
+      );
+    }
+  }
+
+  auditCredentialSurface(source, regions, violations);
 
   const writeJob = jobs[WRITE_JOB_ID];
   if (typeof writeJob?.if !== "string") {

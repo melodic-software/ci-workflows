@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -74,7 +74,8 @@ jobs:
         if: github.event.inputs.dry-run == 'true'
         run: echo dry run
 
-  # THE ONLY WRITE-SCOPED JOB. Pinned byte-for-byte by
+  # A write job.
+  # Formerly pinned by
   # .github/scripts/claude-lane-incident-write-gate.cjs: every line below,
   # comments included, is compared against a literal in the test, so any edit
   # here fails CI and is read by a human rather than classified by a scanner.

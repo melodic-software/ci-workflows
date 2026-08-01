@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -35,6 +35,7 @@ jobs:
       action: ${{ steps.state.outputs.action }}
       issue-number: ${{ steps.incident.outputs.number }}
     env:
+      FLEET_PAT: ${{ secrets.FLEET_ADMIN_PAT }}
       HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
     steps:
       # THE ONLY CREDENTIAL-MINTING STEP, and the only place either App secret

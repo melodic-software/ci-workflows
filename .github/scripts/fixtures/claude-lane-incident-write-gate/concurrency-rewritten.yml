@@ -15,8 +15,8 @@ on:
         default: ''
 
 concurrency:
-  group: claude-lane-incident-aggregator
-  cancel-in-progress: false
+  group: ${{ github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read

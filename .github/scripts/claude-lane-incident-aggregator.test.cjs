@@ -245,40 +245,90 @@ const FIXTURES = path.join(
 // by exactly one property. A fixture with no entry here fails the completeness
 // check below, so one cannot be added without declaring what it proves.
 const CORPUS = new Map([
+  ["concurrency-rewritten", /the concurrency block is not the pinned one/u],
   ["container-job", /job 'poll' declares 'container:'/u],
+  ["continue-on-error-job", /job 'poll' declares 'continue-on-error:'/u],
+  ["continue-on-error-step", /declares 'continue-on-error:'/u],
   ["defaults-job", /job 'poll' declares 'defaults:'/u],
+  ["environment-job", /job 'poll' declares 'environment:'/u],
   ["extra-job", /the job set is 'poll,write,mirror', not 'poll,write'/u],
   [
     "job-inherits-write-workflow-block",
     /exactly one job must hold a write scope/u,
   ],
-  ["mint-with-write-permission", /mints 'permission-issues: write'/u],
+  [
+    "mint-by-another-action",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "mint-permissions-deleted",
+    /does not match claude-lane-incident-mint-step.pinned.yml byte for byte/u,
+  ],
+  ["mint-pin-missing", /the pinned mint step is missing/u],
+  [
+    "mint-with-write-permission",
+    /does not match claude-lane-incident-mint-step.pinned.yml byte for byte/u,
+  ],
   [
     "no-write-scoped-job",
     /exactly one job must hold a write scope .* found \[\]/u,
   ],
   ["non-literal-runs-on", /job 'poll' must name a literal runner/u],
+  [
+    "pat-in-job-env",
+    /'\$\{\{ secrets\.FLEET_ADMIN_PAT \}\}' is a credential expression outside the pinned regions/u,
+  ],
   ["permissions-write-all-string", /exactly one job must hold a write scope/u],
   ["poll-job-widened-to-write", /exactly one job must hold a write scope/u],
-  ["report-gate-not-the-negation", /must be gated on .*, the exact negation/u],
+  [
+    "report-gate-not-the-negation",
+    /must be gated on github.event.inputs.dry-run == 'true', the exact negation/u,
+  ],
   ["report-step-removed", /is missing, so a dry run reports nothing/u],
   [
     "reusable-workflow-job",
     /calls a reusable workflow, whose steps are not in this file/u,
   ],
-  ["step-shell-override", /declares shell 'pwsh'/u],
-  ["trigger-pull-request-target", /the trigger block is not the pinned one/u],
   [
-    "unallowed-secret",
-    /names 'secrets\.MIRROR_PAT', which is not an allowed credential/u,
+    "secret-at-workflow-level",
+    /is a credential expression outside the pinned regions/u,
   ],
+  [
+    "secret-in-job-outputs",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  ["services-job", /job 'poll' declares 'services:'/u],
+  ["step-shell-override", /declares shell 'pwsh'/u],
+  ["strategy-job", /job 'poll' declares 'strategy:'/u],
+  ["timeout-removed", /job 'poll' must declare a positive timeout-minutes/u],
+  ["trigger-pull-request-target", /the trigger block is not the pinned one/u],
   ["unpinned-uses", /must pin 'uses:' to owner\/repo@<40-hex sha>/u],
-  ["write-gate-inverted", /byte for byte/u],
-  ["write-job-bare-hyphen-step", /byte for byte/u],
-  ["write-job-duplicate-step-name", /byte for byte/u],
-  ["write-job-extra-step", /byte for byte/u],
-  ["write-job-local-action", /byte for byte/u],
-  ["write-job-script-edited", /byte for byte/u],
+  [
+    "write-gate-inverted",
+    /the write job must open its 'if:' with github\.event\.inputs\.dry-run != 'true'/u,
+  ],
+  ["write-gate-removed", /the write job must carry a literal 'if:'/u],
+  [
+    "write-job-bare-hyphen-step",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "write-job-duplicate-step-name",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "write-job-extra-step",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "write-job-local-action",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  ["write-job-pin-missing", /the pinned write job is missing/u],
+  [
+    "write-job-script-edited",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
   ["yaml-anchor", /unparsable workflow/u],
 ]);
 

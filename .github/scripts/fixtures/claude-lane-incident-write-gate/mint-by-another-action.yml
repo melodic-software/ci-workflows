@@ -24,7 +24,7 @@ permissions:
 jobs:
   poll:
     name: Poll
-    runs-on: ${{ inputs.repositories }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       checks: read
@@ -37,6 +37,13 @@ jobs:
     env:
       HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
     steps:
+      - name: Mint the fleet writer token
+        id: writer
+        uses: tibdex/github-app-token@0af3325639c0a60612b2eeaf010f0f88e468e800 # v2.1.0
+        with:
+          app_id: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID }}
+          private_key: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY }}
+          permissions: '{"issues": "write"}'
       # THE ONLY CREDENTIAL-MINTING STEP, and the only place either App secret
       # is spent. Pinned byte-for-byte alongside the write job, because a minted
       # token is authority `permissions:` does not govern: any step that can
