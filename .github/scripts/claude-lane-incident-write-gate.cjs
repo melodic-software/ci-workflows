@@ -182,9 +182,15 @@ const JAVASCRIPT_KEYWORDS = new Set([
   "yield",
 ]);
 
-// An identifier in reference position: not a member name (`.foo`) and not an
-// object-literal key (`foo:`).
-const IDENTIFIER = /(?<![\w$.])([A-Za-z_$][\w$]*)(?![\w$])(?!\s*:)/gu;
+// Every identifier that is not a member name (`.foo`).
+const IDENTIFIER = /(?<![\w$.])([A-Za-z_$][\w$]*)(?![\w$])/gu;
+
+// An object-literal key is written, not evaluated, so it is exempt — but a
+// trailing colon alone does not make one: `cond ? fetch : null` also puts a
+// colon after an identifier, and there the identifier IS evaluated. A key is
+// the token that opens an entry, so it also has `{` or `,` before it.
+const KEY_FOLLOWS = /^\s*:/u;
+const KEY_PRECEDES = /[{,]\s*$/u;
 const MEMBER_PATH =
   /(?<![\w$.])([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*)*)/gu;
 
@@ -481,9 +487,13 @@ function auditScript(script, label, violations) {
   // token, so each of these steps holds write capability and this scan is the
   // only thing standing between that capability and a `fetch`.
   const declared = declaredNames(code);
-  for (const [, name] of code.matchAll(IDENTIFIER)) {
+  for (const match of code.matchAll(IDENTIFIER)) {
+    const name = match[1];
     if (JAVASCRIPT_KEYWORDS.has(name) || declared.has(name)) continue;
     if (PERMITTED_GLOBALS.has(name)) continue;
+    const after = code.slice(match.index + name.length);
+    const before = code.slice(0, match.index);
+    if (KEY_FOLLOWS.test(after) && KEY_PRECEDES.test(before)) continue;
     violations.push(
       `${label} names '${name}', which is neither declared in the script nor a permitted global`,
     );

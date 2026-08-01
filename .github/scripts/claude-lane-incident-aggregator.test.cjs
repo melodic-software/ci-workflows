@@ -521,6 +521,25 @@ ${UNGATED_WRITE}
       ),
   },
   {
+    // An object-literal key is written rather than evaluated, so a scan that
+    // exempts every identifier followed by a colon exempts the true branch of a
+    // ternary too — where the identifier IS evaluated.
+    what: "a denied global disguised as an object key by a ternary's colon",
+    caught:
+      /names 'fetch', which is neither declared in the script nor a permitted global/u,
+    mutate: (source) =>
+      spliceAfter(
+        source,
+        STATE_SCRIPT_TAIL,
+        [
+          "",
+          "            const send = true ? fetch : null;",
+          '            await send("https://api.github.com", { method: "POST" });',
+          "",
+        ].join("\n"),
+      ),
+  },
+  {
     what: "a local ./ action, which carries no pin to check",
     caught:
       /must pin 'uses:' to owner\/repo@<40-hex sha>; found '\.\/\.github\/actions\/incident-mirror'/u,
