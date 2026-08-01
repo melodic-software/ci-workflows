@@ -48,11 +48,14 @@ name: claude-lane-incident-aggregator
 # `actions/github-script` defaults its token to the ambient one, so every such
 # step already holds write capability and only its code decides what it spends.
 #
-# What that proves is bounded, and the bound matters: no step other than the two
-# registered writers can mutate anything, and both writers carry the gate.
-# Whether the gate is the RIGHT condition, and whether each writer's remaining
-# conditions are right, are read here — the audit does not read this file for
-# you.
+# What that proves is bounded, and the bound matters. The step partition is
+# structural — it reads a parsed document — but the scan it applies to an inline
+# script is a lexical approximation with no scope resolution, so for the two
+# reading script steps it is defence in depth rather than a proof; the audit's
+# own header records why their capability cannot be removed. Whether the gate is
+# the RIGHT condition, whether each writer's remaining conditions are right, and
+# what the inline scripts actually do are all read here. The audit does not read
+# this file for you.
 #
 # POLLING SCOPE is the App credential's own installation (`GET
 # /installation/repositories`, one call): the org owner grants the App access to

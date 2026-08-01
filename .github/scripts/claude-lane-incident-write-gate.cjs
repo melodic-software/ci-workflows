@@ -14,6 +14,22 @@
 //
 // It takes SOURCE TEXT rather than a path so the regression suite can feed it
 // deliberately-mutated copies of the shipped workflow.
+//
+// WHAT THIS DOES NOT PROVE. The step partition is structural: it reads a parsed
+// document, so its enumeration of steps, `uses:` pins, conditions and job shape
+// are facts about the file. The scan it applies to an INLINE SCRIPT is not. That
+// scan is a lexical approximation over code with comments and string literals
+// blanked — it has no scope resolution and no expression grammar, so a binding
+// form it does not recognize is a false positive (a red build), and a construct
+// it mislexes is a false negative (an admission). It is defence in depth with a
+// ceiling, not a proof.
+//
+// That ceiling is load-bearing for exactly two steps. `actions/github-script`
+// reads `github-token` as a REQUIRED input, so a script step cannot be given an
+// unauthenticated client; with no App credential configured the poll and the
+// issue lookup therefore hold the ambient token, which carries `issues: write`.
+// Their capability cannot be removed, only their code read — so read it, at
+// review time, rather than treating a green audit as a substitute.
 
 const { WorkflowYamlError, parseWorkflow } = require("./workflow-yaml.cjs");
 
