@@ -27,35 +27,39 @@ name: claude-lane-incident-aggregator
 #     is configured: cross-repository reads of PRIVATE consumers. It is minted
 #     READ-ONLY and authors nothing. Absent it, the poll scopes to this
 #     repository alone (see POLLING SCOPE) and the write path is unaffected.
+#     Minting it with any write permission would hand a write-capable
+#     credential to a job that holds no write scope, so the audit refuses one
+#     anywhere in this file.
 #
-# THE WRITE GATE — ONE NAMED CONDITION, SHARED BY EVERY WRITER, TESTED.
-# Granting `issues: write` retires the older guarantee that rested on the token
-# holding no write scope at all. Its replacement is a single job-level boolean,
-# `WRITES_ENABLED`, derived from the `dry-run` dispatch input and from nothing
-# else; every step permitted to mutate this repository opens its `if:` with that
-# one expression, and the step that renders the dry-run report is gated on its
-# negation.
+# THE WRITE GATE IS THE JOB SPLIT.
+# `poll` does the work and holds NO write scope, so nothing in it can mutate
+# this repository however its steps are wired — the structural guarantee the
+# dry-run-only design had, kept rather than replaced. `write` holds
+# `issues: write` and is three steps long: download the body `poll` rendered,
+# hand it to create-issue-from-file, close a recovered incident. It checks out
+# nothing, runs no shell, and loads no repository code.
 #
-# .github/scripts/claude-lane-incident-write-gate.cjs enforces that as a
-# DEFAULT-DENY partition over the workflow parsed as YAML rather than scanned as
-# text: every step of every write-scoped job must be either a registered writer
-# carrying the gate, or a step that affirmatively matches a read-only shape — a
-# pinned allowlisted action, an inline script whose every free identifier is
-# allowlisted and whose every capability path is an exact read endpoint, or a
-# `run:` holding no credential and invoking only read-only commands. A step
-# matching neither is a violation, so the audit never clears one for merely
-# failing to look dangerous. The inline-script rule is the load-bearing one:
-# `actions/github-script` defaults its token to the ambient one, so every such
-# step already holds write capability and only its code decides what it spends.
+# The dry-run gate is `write`'s job-level `if:`, written inline rather than
+# shared through a job env var because `env` is NOT an available context in
+# `jobs.<job_id>.if` — that key sees only `github`, `needs`, `vars` and
+# `inputs`. The dry-run report step in `poll` is gated on the exact negation,
+# so no run can both write the issue and report that it wrote nothing; the test
+# pins both conditions and asserts one is the negation of the other.
 #
-# What that proves is bounded, and the bound matters. The step partition is
-# structural — it reads a parsed document — but the scan it applies to an inline
-# script is a lexical approximation with no scope resolution, so for the two
-# reading script steps it is defence in depth rather than a proof; the audit's
-# own header records why their capability cannot be removed. Whether the gate is
-# the RIGHT condition, whether each writer's remaining conditions are right, and
-# what the inline scripts actually do are all read here. The audit does not read
-# this file for you.
+# `!= 'true'` FAILS OPEN, deliberately: anything that is not exactly the string
+# `true` enables writes. `github.event.inputs` is absent on `schedule`, so the
+# hourly cycle writes, and only a dispatch that explicitly asked for a dry run
+# does not.
+#
+# .github/scripts/claude-lane-incident-write-gate.cjs holds that shape. It
+# resolves every job's effective permissions, requires EXACTLY ONE write-scoped
+# job, and pins that job byte-for-byte against a literal — so any edit to it, of
+# any kind, fails CI rather than being classified as safe or unsafe. It also
+# refuses a token minted with a write permission anywhere in this file, which is
+# the one way a job holding no write scope can still write.
+#
+# TRUST BOUNDARY: `write` consumes a file `poll` produced and never inspects it.
+# The body's safety is `poll`'s sanitization, not anything `write` checks.
 #
 # POLLING SCOPE is the App credential's own installation (`GET
 # /installation/repositories`, one call): the org owner grants the App access to
@@ -65,7 +69,7 @@ name: claude-lane-incident-aggregator
 # consumer of its own lanes (claude-review-self.yml), so it still exercises the
 # whole pipeline against live data rather than a fixture. "Uncredentialed" is a
 # statement about polling breadth only: such a run writes exactly as a
-# credentialed one does, because the write gate does not consult the App token.
+# credentialed one does, because `write` never sees the App token at all.
 #
 # PUBLIC-SAFETY: this repository is public and the incident body is its output.
 # Annotation text is untrusted (any workflow in any polled repository can write
@@ -103,42 +107,33 @@ permissions:
   contents: read
 
 jobs:
-  aggregate:
-    name: Aggregate Claude lane infrastructure failures
+  poll:
+    name: Poll the Claude lanes and render the incident body
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       # Declaring `permissions:` at all sets every scope not listed to `none`,
-      # so this block IS the ambient token's whole authority. `issues: write` is
-      # the ONLY write here, and it is sufficient because the incident issue
-      # lives in this same repository — a same-repo issue write needs no App and
-      # no PAT. Every other scope is read, and adding a read never widens what
-      # the token can mutate. What stops a dry run from writing is not this
-      # block but the write gate documented in the header; the exact scope set
-      # below is pinned by the aggregator test so a widening cannot land quietly.
+      # so this block IS this job's whole authority — and every entry is READ.
+      # That is the guarantee the whole design rests on: no step here can mutate
+      # anything however it is wired, so none of them has to be classified.
       #
       # `checks` and `pull-requests` are what the poll reads — the check-run and
       # annotation endpoints require Checks:read and carry no public-repository
       # exemption, so without them the poll 403s on its first read and reports
-      # `indeterminate` forever. `issues` covers both halves: finding and
-      # parsing the open incident issue, and maintaining it.
+      # `indeterminate` forever. `issues: read` finds and parses the open
+      # incident issue; maintaining it is `write`'s job.
       checks: read
       contents: read
-      issues: write
+      issues: read
       pull-requests: read
+    outputs:
+      action: ${{ steps.state.outputs.action }}
+      issue-number: ${{ steps.incident.outputs.number }}
     env:
       # Same presence-probe seam select-runner.yml uses for its observer
       # credential: the secret's existence, not a checked-in flag, decides
       # whether this run can reach PRIVATE consumer repositories.
       HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
-      # THE WRITE GATE. One expression, defined once, referenced verbatim as the
-      # leading conjunct of every writing step's `if:` — so suppressing writes is
-      # a property of this line rather than of each step remembering to ask.
-      # `github.event.inputs` values are strings on every event and the whole
-      # object is absent on `schedule`, so this is false only on a dispatch that
-      # explicitly asked for a dry run. It deliberately does not consult the App
-      # credential: writes are the ambient token's job and must work without one.
-      WRITES_ENABLED: ${{ github.event.inputs.dry-run != 'true' }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -151,11 +146,9 @@ jobs:
       # consumer repositories the ambient token 404s on, and it authors no write,
       # so asking for `issues: write` would be authority nothing spends.
       #
-      # Minted on a dry run too. The old workflow skipped it there because the
-      # write gate WAS this token's presence, so minting would have armed the
-      # writers; now that the gate is independent, a dry run can poll the full
-      # installation and render the body a live run would have written — which
-      # is what the `dry-run` input already promises.
+      # Minted on a dry run too, so a dry run polls the full installation and
+      # renders the body a live run would have written — which is what the
+      # `dry-run` input's own description promises.
       - name: Mint the aggregator App token
         id: credential
         if: env.HAS_APP_CREDENTIAL == 'true'
@@ -544,12 +537,12 @@ jobs:
           echo "claude-lane-incident: api-calls=${api_calls} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} action=${ACTION}"
 
       # The dry run's deliverable: the exact body a live run would have written,
-      # in the job summary, where it costs nothing and leaks nothing. Gated on
-      # the negation of the write gate, so the report and the writers are
-      # mutually exclusive by construction — no run can both write the issue and
-      # claim it wrote nothing.
+      # in the job summary, where it costs nothing and leaks nothing. This
+      # condition is the exact negation of the `write` job's, so the report and
+      # the writes are mutually exclusive by construction — no run can both
+      # write the issue and claim it wrote nothing. The test pins both.
       - name: Publish the dry-run report
-        if: env.WRITES_ENABLED != 'true'
+        if: github.event.inputs.dry-run == 'true'
         env:
           ACTION: ${{ steps.state.outputs.action }}
         run: |
@@ -571,34 +564,62 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # `labels` is applied on creation only. `claude-lane-incident` does not
-      # exist in this repository's label taxonomy yet, and that taxonomy is
-      # managed by github-iac (Labels.cs) — see the PR body: it must be declared
-      # there or the next apply prunes it. Issue SELECTION never keys on the
-      # label (the body marker and bot authorship do), so a pruned label
-      # degrades PLAN.md's `--label` sanity query and nothing else.
-      # `repository` is left at its default of `${{ github.repository }}`, which
-      # is what makes `issues: write` on the ambient token sufficient: the
-      # incident issue is created and updated in the repository this workflow
-      # runs in. Setting it elsewhere would need a credential this job does not
-      # have and must not acquire.
+      # The hand-off. `write` holds no checkout and no repository code, so the
+      # rendered body reaches it as an artifact rather than as a path. Skipped
+      # when there is nothing to write, which is also when `write` is skipped.
+      - name: Publish the rendered incident body
+        if: steps.state.outputs.action != 'none'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: claude-lane-incident-body
+          path: .claude-lane-incident.md
+          if-no-files-found: error
+          retention-days: 1
+
+  # THE ONLY WRITE-SCOPED JOB. Pinned byte-for-byte by
+  # .github/scripts/claude-lane-incident-write-gate.cjs: every line below,
+  # comments included, is compared against a literal in the test, so any edit
+  # here fails CI and is read by a human rather than classified by a scanner.
+  #
+  # `labels` is applied on creation only. `claude-lane-incident` does not exist
+  # in this repository's label taxonomy yet, and that taxonomy is managed by
+  # github-iac (Labels.cs): it must be declared there or the next apply prunes
+  # it. Issue SELECTION never keys on the label (the body marker and bot
+  # authorship do), so a pruned label degrades a sanity query and nothing else.
+  #
+  # `repository` is left at its default of `${{ github.repository }}`, which is
+  # what makes `issues: write` on the ambient token sufficient: the incident
+  # issue is created and updated in the repository this workflow runs in.
+  # Setting it elsewhere would need a credential this job does not have.
+  write:
+    name: Maintain the incident issue
+    needs: poll
+    if: github.event.inputs.dry-run != 'true' && needs.poll.outputs.action != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Download the rendered incident body
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: claude-lane-incident-body
+
       - name: Open or update the incident issue
-        if: env.WRITES_ENABLED == 'true' && (steps.state.outputs.action == 'open' || steps.state.outputs.action == 'update')
+        if: needs.poll.outputs.action == 'open' || needs.poll.outputs.action == 'update'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           title: '[Incident] Claude lane infrastructure failure'
-          issue-number: ${{ steps.incident.outputs.number }}
+          issue-number: ${{ needs.poll.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.claude-lane-incident.md
           labels: claude-lane-incident
 
-      # Every call below names `context.repo` — this repository — which is why
-      # the ambient token's same-repo `issues: write` carries all three.
       - name: Close the recovered incident issue
-        if: env.WRITES_ENABLED == 'true' && steps.state.outputs.action == 'close'
+        if: needs.poll.outputs.action == 'close'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          ISSUE_NUMBER: ${{ steps.incident.outputs.number }}
+          ISSUE_NUMBER: ${{ needs.poll.outputs.issue-number }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

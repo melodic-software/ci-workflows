@@ -1,0 +1,114 @@
+name: fixture
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Poll and render the report without writing the incident issue, even when the credential is present.
+        type: boolean
+        default: false
+      repositories:
+        description: Comma-separated owner/name list to poll instead of the credential's installation (smoke tests).
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  poll:
+    name: Poll
+    runs-on: ubuntu-24.04
+    permissions: write-all
+    outputs:
+      action: ${{ steps.state.outputs.action }}
+      issue-number: ${{ steps.incident.outputs.number }}
+    steps:
+      - name: Mint the aggregator App token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY }}
+          permission-issues: read
+      - name: Publish the dry-run report
+        if: github.event.inputs.dry-run == 'true'
+        run: echo dry run
+
+  # THE ONLY WRITE-SCOPED JOB. Pinned byte-for-byte by
+  # .github/scripts/claude-lane-incident-write-gate.cjs: every line below,
+  # comments included, is compared against a literal in the test, so any edit
+  # here fails CI and is read by a human rather than classified by a scanner.
+  #
+  # `labels` is applied on creation only. `claude-lane-incident` does not exist
+  # in this repository's label taxonomy yet, and that taxonomy is managed by
+  # github-iac (Labels.cs): it must be declared there or the next apply prunes
+  # it. Issue SELECTION never keys on the label (the body marker and bot
+  # authorship do), so a pruned label degrades a sanity query and nothing else.
+  #
+  # `repository` is left at its default of `${{ github.repository }}`, which is
+  # what makes `issues: write` on the ambient token sufficient: the incident
+  # issue is created and updated in the repository this workflow runs in.
+  # Setting it elsewhere would need a credential this job does not have.
+  write:
+    name: Maintain the incident issue
+    needs: poll
+    if: github.event.inputs.dry-run != 'true' && needs.poll.outputs.action != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Download the rendered incident body
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: claude-lane-incident-body
+
+      - name: Open or update the incident issue
+        if: needs.poll.outputs.action == 'open' || needs.poll.outputs.action == 'update'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: '[Incident] Claude lane infrastructure failure'
+          issue-number: ${{ needs.poll.outputs.issue-number }}
+          content-filepath: ${{ github.workspace }}/.claude-lane-incident.md
+          labels: claude-lane-incident
+
+      - name: Close the recovered incident issue
+        if: needs.poll.outputs.action == 'close'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ISSUE_NUMBER: ${{ needs.poll.outputs.issue-number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) return;
+
+            // The final body lands before the close so the closed issue is a
+            // complete record rather than one cycle stale.
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: fs.readFileSync(
+                path.join(process.env.GITHUB_WORKSPACE, ".claude-lane-incident.md"),
+                "utf8",
+              ),
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: "The Claude lanes have reported three consecutive clean cycles with no escalating failure class; closing this rolling incident.",
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: "closed",
+              state_reason: "completed",
+            });
