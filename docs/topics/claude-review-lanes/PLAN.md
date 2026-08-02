@@ -975,8 +975,10 @@ Ordered pre-steps, then waved rollout.
   `managed:` list adds no repository to the expected access set: the attest
   step derives that set from the target repositories alone
   (`[.include[].repo]` over the unfiltered matrix), never from component
-  membership. ci-runner's gate is therefore the removal trigger and nothing
-  else. cursor-plugins is NOT a manifest target, so adopting it is a NEW
+  membership. ci-runner's gate is therefore the removal trigger, NOT the App
+  grant (see STILL LIVE below for the second consideration its adoption must
+  clear — a merits question, not a mechanical gate).
+  cursor-plugins is NOT a manifest target, so adopting it is a NEW
   target and the correction above applies to it in full — it needs the
   installation extension TOO, exactly like claude-code-proxy. Adding it
   without the grant would fail the sync for all 8 existing targets, not just
