@@ -251,7 +251,7 @@ const CORPUS = new Map([
   ["continue-on-error-step", /declares 'continue-on-error:'/u],
   ["defaults-job", /job 'poll' declares 'defaults:'/u],
   ["environment-job", /job 'poll' declares 'environment:'/u],
-  ["extra-job", /the job set is 'poll,write,mirror', not 'poll,write'/u],
+  ["extra-job", /the job set is 'poll,mirror,write', not 'poll,write'/u],
   [
     "job-inherits-write-workflow-block",
     /exactly one job must hold a write scope/u,
@@ -280,7 +280,12 @@ const CORPUS = new Map([
     /'\$\{\{ secrets\.FLEET_ADMIN_PAT \}\}' is a credential expression outside the pinned regions/u,
   ],
   ["permissions-write-all-string", /exactly one job must hold a write scope/u],
+  [
+    "poll-job-local-action",
+    /must pin 'uses:' to owner\/repo@<40-hex sha>; found '\.\/\.github\/actions\/incident-mirror'/u,
+  ],
   ["poll-job-widened-to-write", /exactly one job must hold a write scope/u],
+  ["proto-job", /the job set is 'poll,__proto__,write'/u],
   [
     "report-gate-not-the-negation",
     /must be gated on github.event.inputs.dry-run == 'true', the exact negation/u,
@@ -312,7 +317,7 @@ const CORPUS = new Map([
     /is a credential expression outside the pinned regions/u,
   ],
   ["services-job", /job 'poll' declares 'services:'/u],
-  ["step-not-a-mapping", /is not a mapping/u],
+  ["step-not-a-mapping", /job 'poll' step 4 is not a mapping/u],
   ["step-shell-override", /declares shell 'pwsh'/u],
   ["strategy-job", /job 'poll' declares 'strategy:'/u],
   ["timeout-removed", /job 'poll' must declare a positive timeout-minutes/u],
@@ -335,15 +340,12 @@ const CORPUS = new Map([
     "write-job-extra-step",
     /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
   ],
-  [
-    "write-job-local-action",
-    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
-  ],
   ["write-job-pin-missing", /the pinned write job is missing/u],
   [
     "write-job-script-edited",
     /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
   ],
+  ["workflow-not-a-mapping", /the workflow is not a mapping/u],
   ["yaml-anchor", /unparsable workflow/u],
 ]);
 
@@ -376,6 +378,60 @@ test("every fixture on disk is declared in the corpus", () => {
     .filter((name) => name !== "base")
     .sort();
   assert.deepEqual(onDisk, [...CORPUS.keys()].sort());
+});
+
+test("a write hidden from the parse is still caught by the raw-text scan", () => {
+  // `__proto__` was a total break: the parser bound the job onto the prototype,
+  // so `Object.keys` returned exactly 'poll,write' and the write-scope count
+  // read 1 — the "looked, found nothing, passed" shape again, one layer lower.
+  // Keys are bound as data now, so the parse itself catches it. The assertion
+  // that matters is the SECOND one: the raw-text scan never learns what a job
+  // is, so it holds whatever a future parser bug does to the projection.
+  const violations = auditWriteGate(fixture("proto-job"));
+  assert.ok(
+    violations.some((violation) => /the job set is/u.test(violation)),
+    `the parse must name the hidden job; got ${JSON.stringify(violations)}`,
+  );
+  assert.ok(
+    violations.some((violation) =>
+      /'issues: write' grants a write outside the pinned regions/u.test(
+        violation,
+      ),
+    ),
+    `the raw-text scan must name the grant; got ${JSON.stringify(violations)}`,
+  );
+});
+
+test("the workflow carries no write grant outside the pinned regions", () => {
+  // Raw text, no parser in the path. `permission-<scope>: write` on the App
+  // token is the same shape and is covered by the same rule: a minted write is
+  // authority `permissions:` does not govern.
+  assert.doesNotMatch(workflow, /permission-[a-z-]+\s*:\s*write/u);
+  assert.doesNotMatch(workflow, /write-all/u);
+  assert.doesNotMatch(workflow, /\t/u, "a tab is not YAML indentation");
+  assert.doesNotMatch(
+    workflow,
+    /uses:\s*\.\//u,
+    "a local action's code is not pinned by a sha",
+  );
+});
+
+test("the write job reads the file the poll job uploads", () => {
+  // create-issue-from-file EXITS SILENTLY when `content-filepath` does not
+  // exist, so a rename on either side is a green run that writes nothing —
+  // the exact failure this whole design exists to make impossible.
+  // download-artifact with a `name:` and no `path:` extracts into the
+  // workspace root, so the uploaded path IS the downloaded path.
+  const uploaded = step("Publish the rendered incident body").with.path;
+  const consumed = writeJob.steps
+    .find((declared) => declared.name === "Open or update the incident issue")
+    .with["content-filepath"].replace(`\${{ github.workspace }}/`, "");
+  assert.equal(consumed, uploaded);
+  assert.equal(
+    writeJob.steps[0].with.name,
+    step("Publish the rendered incident body").with.name,
+    "the write job must download the artifact the poll job uploads",
+  );
 });
 
 test("the poll job holds no write scope at all", () => {

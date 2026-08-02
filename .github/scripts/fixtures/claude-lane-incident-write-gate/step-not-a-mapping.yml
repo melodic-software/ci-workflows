@@ -70,6 +70,10 @@ jobs:
           script: |
             core.setOutput("cycle", "clean");
 
+      - name: Publish the dry-run report
+        if: github.event.inputs.dry-run == 'true'
+        run: echo dry run
+
       - a-bare-scalar
 
   # THE ONLY WRITE-SCOPED JOB. Pinned byte-for-byte by

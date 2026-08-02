@@ -193,10 +193,31 @@ function parseFlow(text, lineNumber) {
     if (Object.hasOwn(mapping, key)) {
       throw new WorkflowYamlError(`duplicate key '${key}'`, lineNumber);
     }
-    mapping[key] = parseFlow(entry.slice(separator + 1), lineNumber);
+    setKey(mapping, key, parseFlow(entry.slice(separator + 1), lineNumber));
   }
   return mapping;
 }
+
+/**
+ * Bind a mapping key as OWN DATA, never as a prototype assignment.
+ *
+ * `mapping[key] = value` is not key-agnostic: for `__proto__` with an object
+ * value it reassigns the prototype instead of creating a property, so the entry
+ * vanishes from `Object.keys` and `JSON.stringify` while its contents leak onto
+ * the parent. A job named `__proto__` is a legal job id the runner enumerates
+ * and a caller counting jobs would not see — a projection that silently omits a
+ * node, which is the one thing this parser exists not to do. `defineProperty`
+ * is key-agnostic, and is what `JSON.parse` does with the same input: a mapping
+ * is data. `Object.hasOwn` then reports the key too, so the duplicate-key guard
+ * covers it without a second rule.
+ */
+const setKey = (mapping, key, value) =>
+  Object.defineProperty(mapping, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
 
 function parseInline(text, lineNumber) {
   const trimmed = text.trim();
@@ -413,38 +434,44 @@ function parseMapping(reader, indent) {
     if (header) {
       const indicators = header[2];
       const explicitIndent = /[1-9]/u.exec(indicators);
-      mapping[key] = reader.takeBlockScalar(
-        {
-          style: header[1],
-          chomp: indicators.includes("+")
-            ? "keep"
-            : indicators.includes("-")
-              ? "strip"
-              : "clip",
-          indent: explicitIndent === null ? null : Number(explicitIndent[0]),
-        },
-        indent,
+      setKey(
+        mapping,
+        key,
+        reader.takeBlockScalar(
+          {
+            style: header[1],
+            chomp: indicators.includes("+")
+              ? "keep"
+              : indicators.includes("-")
+                ? "strip"
+                : "clip",
+            indent: explicitIndent === null ? null : Number(explicitIndent[0]),
+          },
+          indent,
+        ),
       );
       continue;
     }
     if (inline !== "") {
-      mapping[key] = parseInline(classified.inline, line.number);
+      setKey(mapping, key, parseInline(classified.inline, line.number));
       continue;
     }
     const next = reader.peek();
     if (next === null || next.indent < indent) {
-      mapping[key] = null;
+      setKey(mapping, key, null);
       continue;
     }
     // A sequence may sit at its parent key's own column; anything else must be
     // indented past it or it belongs to an enclosing node.
     if (next.indent === indent) {
-      mapping[key] = SEQUENCE_ITEM.test(next.text)
-        ? parseSequence(reader, indent)
-        : null;
+      setKey(
+        mapping,
+        key,
+        SEQUENCE_ITEM.test(next.text) ? parseSequence(reader, indent) : null,
+      );
       continue;
     }
-    mapping[key] = parseNode(reader, next.indent);
+    setKey(mapping, key, parseNode(reader, next.indent));
   }
   return mapping;
 }

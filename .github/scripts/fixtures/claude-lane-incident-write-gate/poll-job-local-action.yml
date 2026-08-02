@@ -64,7 +64,7 @@ jobs:
           permission-issues: read
 
       - name: Poll consumer repositories for lane failure signals
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: ./.github/actions/incident-mirror
         with:
           github-token: ${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}
           script: |
@@ -73,16 +73,6 @@ jobs:
       - name: Publish the dry-run report
         if: github.event.inputs.dry-run == 'true'
         run: echo dry run
-
-  mirror:
-    name: Mirror
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Noop
-        run: echo noop
 
   # THE ONLY WRITE-SCOPED JOB. Pinned byte-for-byte by
   # .github/scripts/claude-lane-incident-write-gate.cjs: every line below,

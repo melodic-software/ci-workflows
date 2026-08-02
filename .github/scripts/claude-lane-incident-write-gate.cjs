@@ -17,6 +17,10 @@
 //   - that job matches its pinned text BYTE FOR BYTE, so any edit to it fails
 //     CI and is read by a human rather than judged safe by a scanner;
 //   - every other job's effective permissions contain no write at all;
+//   - every grant of a write in the RAW TEXT lies inside a pinned region. The
+//     rule above reads a projection of the file, so a projection that drops a
+//     node hides a write from it; this one never learns what a job is, so no
+//     parse can hide a grant from it. Two mechanisms, one property;
 //   - every credential reference in the WHOLE FILE — the `secrets` context in
 //     any spelling, and `github.token` — lies inside one of two
 //     pinned regions. A credential is authority `permissions:` does not
@@ -131,6 +135,34 @@ const AMBIENT_TOKEN_REFERENCE =
 
 const CREDENTIAL_PATTERNS = [SECRET_REFERENCE, AMBIENT_TOKEN_REFERENCE];
 
+// Every grant of a write in the WHOLE FILE, matched over raw text. This says
+// the same thing the effective-permissions walk says, by a route that does not
+// go through the parser — and that redundancy is the point. The permissions
+// walk reads a PROJECTION of the file, so a projection that drops a node hides
+// a write from it; a job keyed `__proto__` did exactly that, landing on the
+// prototype instead of becoming a property, invisible to `Object.keys` while
+// the runner enumerated it normally. The parser no longer binds keys that way,
+// which is the primary fix. This is the second pair of eyes: it never learns
+// what a job is, so no parse can hide a grant from it.
+//
+// It also subsumes the App-token rule. A minted `permission-<scope>: write` is
+// authority `permissions:` does not govern, and it is a `<key>: write` like any
+// other, so one pattern covers both.
+//
+// Deliberately loose: an optional quote either side, whitespace around the
+// colon, and no line anchor, so `issues: 'write'`, `issues: write # comment`
+// and the flow form `permissions: {issues: write}` all match. Prose in a
+// comment matches too, which costs a reworded comment — the safe direction.
+// NOT airtight: `write` is a plain scalar with other spellings, so this is
+// defence in depth over a demonstrated break shape, never a proof.
+const WRITE_PERMISSION = /(?<![\w-])[\w-]+\s*:\s*['"]?write['"]?(?![\w-])/giu;
+
+// `write-all` grants every scope and is a STRING, so it is neither a mapping
+// entry the walk enumerates nor a `<key>: write` the pattern above matches.
+const WRITE_ALL = /(?<![\w-])write-all(?![\w-])/giu;
+
+const WRITE_GRANT_PATTERNS = [WRITE_PERMISSION, WRITE_ALL];
+
 // The only credential expressions permitted OUTSIDE the pinned regions, as
 // exact whole expressions rather than as secret names. The allowlist is
 // position-independent, so either may be reused in a new poll step; that is
@@ -231,6 +263,28 @@ function auditCredentialSurface(source, regions, violations) {
 }
 
 /**
+ * Every grant of a write must sit inside a byte-pinned region.
+ *
+ * Both regions are compared against a pin, so a grant inside one is a grant
+ * somebody reviewed as a diff. A grant anywhere else is one this file's
+ * structure does not account for, whatever the parse says about it.
+ */
+function auditWriteGrants(source, regions, violations) {
+  const matches = WRITE_GRANT_PATTERNS.flatMap((pattern) => [
+    ...source.matchAll(pattern),
+  ]);
+  for (const match of matches) {
+    const inside = regions.some(
+      ([from, to]) => match.index >= from && match.index < to,
+    );
+    if (inside) continue;
+    violations.push(
+      `'${match[0].trim()}' grants a write outside the pinned regions`,
+    );
+  }
+}
+
+/**
  * Audit the aggregator's write gate.
  *
  * @param {string} source the workflow file's text.
@@ -325,6 +379,7 @@ function auditWriteGate(source) {
   }
 
   auditCredentialSurface(source, regions, violations);
+  auditWriteGrants(source, regions, violations);
 
   const writeJob = jobs[WRITE_JOB_ID];
   if (typeof writeJob?.if !== "string") {

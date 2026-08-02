@@ -195,3 +195,33 @@ test("a line the grammar cannot place is an error, never a silent skip", () => {
     /trailing content|indentation/u,
   );
 });
+
+test("a mapping key is data, never a prototype assignment", () => {
+  // `mapping[key] = value` is not key-agnostic: for `__proto__` with an object
+  // value it reassigns the prototype, so the entry vanishes from `Object.keys`
+  // and `JSON.stringify` while its contents leak onto the parent. `__proto__`
+  // is a legal job id, so that is a projection silently omitting a node the
+  // runner enumerates — which a caller counting jobs would never see.
+  const parsed = parseWorkflow(
+    "jobs:\n  a: 1\n  __proto__:\n    permissions:\n      issues: write\n  b: 2\n",
+  );
+  assert.deepEqual(Object.keys(parsed.jobs), ["a", "__proto__", "b"]);
+  assert.ok(Object.hasOwn(parsed.jobs, "__proto__"));
+  assert.equal(
+    parsed.jobs.permissions,
+    undefined,
+    "nothing may leak onto the parent",
+  );
+
+  // The flow form binds through a different branch, and had the same bug.
+  assert.deepEqual(
+    Object.keys(parseWorkflow("jobs: {__proto__: {a: 1}, b: 2}\n").jobs),
+    ["__proto__", "b"],
+  );
+
+  // Own-property binding is also what lets the duplicate-key guard see it.
+  rejects(
+    "jobs:\n  __proto__: 1\n  __proto__: 2\n",
+    /duplicate key '__proto__'/u,
+  );
+});

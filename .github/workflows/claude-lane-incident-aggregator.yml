@@ -15,8 +15,8 @@ name: claude-lane-incident-aggregator
 #
 # TOKEN MATRIX — TWO CREDENTIALS, DISJOINT ROLES.
 # The incident issue lives in THIS repository, so maintaining it is a same-repo
-# write, and `issues: write` on the ambient GITHUB_TOKEN is the entire authority
-# it needs. What the ambient token CANNOT do is read a private repository it is
+# write, and the `issues` write scope on the ambient GITHUB_TOKEN is the entire
+# authority it needs. What the ambient token CANNOT do is read a private repository it is
 # not scoped to — those reads 404 — and that, and only that, is what the App
 # credential seam exists for:
 #
@@ -34,10 +34,10 @@ name: claude-lane-incident-aggregator
 # THE WRITE GATE IS THE JOB SPLIT.
 # `poll` does the work and holds NO write scope, so nothing in it can mutate
 # this repository however its steps are wired — the structural guarantee the
-# dry-run-only design had, kept rather than replaced. `write` holds
-# `issues: write` and is three steps long: download the body `poll` rendered,
-# hand it to create-issue-from-file, close a recovered incident. It checks out
-# nothing, runs no shell, and loads no repository code.
+# dry-run-only design had, kept rather than replaced. `write` holds the
+# `issues` write scope and is three steps long: download the body `poll`
+# rendered, hand it to create-issue-from-file, close a recovered incident. It
+# checks out nothing, runs no shell, and loads no repository code.
 #
 # The dry-run gate is `write`'s job-level `if:`, written inline rather than
 # shared through a job env var because `env` is NOT an available context in
