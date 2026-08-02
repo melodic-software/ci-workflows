@@ -977,16 +977,15 @@ Ordered pre-steps, then waved rollout.
   (`[.include[].repo]` over the unfiltered matrix), never from component
   membership. ci-runner's gate is therefore the removal trigger, NOT the App
   grant (see STILL LIVE below for the second consideration its adoption must
-  clear — a merits question, not a mechanical gate).
-  cursor-plugins is NOT a manifest target, so adopting it is a NEW
-  target and the correction above applies to it in full — it needs the
-  installation extension TOO, exactly like claude-code-proxy. Adding it
-  without the grant would fail the sync for all 8 existing targets, not just
-  for cursor-plugins. claude-code-proxy is private and clears the visibility
-  constraint, leaving only the installation extension; it also needs its
-  `TARGET_VISIBILITY` entry, whose lookup fails closed. (For a public repo
-  that entry unblocks nothing on its own — it only makes the failure legible
-  instead of a fail-closed assert.)
+  clear — a merits question, not a mechanical gate). cursor-plugins is NOT a
+  manifest target, so adopting it is a NEW target and the correction above
+  applies to it in full — it needs the installation extension TOO, exactly
+  like claude-code-proxy. Adding it without the grant would fail the sync for
+  all 8 existing targets, not just for cursor-plugins. claude-code-proxy is
+  private and clears the visibility constraint, leaving only the installation
+  extension; it also needs its `TARGET_VISIBILITY` entry, whose lookup fails
+  closed. (For a public repo that entry unblocks nothing on its own — it only
+  makes the failure legible instead of a fail-closed assert.)
 
   THE PUBLIC BAR IS NOT ABSOLUTE, recorded so it is not overstated: it is a
   property of the SELECTOR-ROUTED caller shape, not of public visibility as
