@@ -21,8 +21,8 @@
 //     rule above reads a projection of the file, so a projection that drops a
 //     node hides a write from it; this one never learns what a job is, so no
 //     parse can hide a grant from it. Two mechanisms, one property;
-//   - every credential reference in the WHOLE FILE — the `secrets` context in
-//     any spelling, and `github.token` — lies inside one of two
+//   - every credential reference in the WHOLE FILE — the `secrets` and `vars`
+//     contexts in any spelling, and `github.token` — lies inside one of two
 //     pinned regions. A credential is authority `permissions:` does not
 //     govern: any step able to mint an App token, or to bind a PAT into a job
 //     `env:`, writes regardless of its job holding no write scope. Naming the
@@ -32,7 +32,16 @@
 // It takes SOURCE TEXT rather than a path so the fixture corpus can feed it
 // deliberately-broken workflows.
 //
-// WHAT IT DOES NOT PROVE. Whether `poll`'s own steps are correct, and whether
+// WHAT IT DOES NOT PROVE. Two bounds worth naming, both of which stay harmless
+// only because `poll` holds no write scope — weaken that and they are holes:
+//   - `uses:` is checked for SHAPE, not identity. `evil/pwn@<40 hex>` is a
+//     valid pin. What a third-party action in `poll` receives is `poll`'s
+//     credentials, and those are read-only by the job's own permissions;
+//   - the credential scan matches the three context WORDS. An expression that
+//     names none of them — `github[format('tok{0}','en')]` — reaches the
+//     ambient token without being seen, and that token is likewise read-only
+//     in `poll`.
+// Whether `poll`'s own steps are correct, and whether
 // the gate is the RIGHT condition, are read here by a person. And `poll` still
 // decides what `write` acts on: the incident BODY, through the artifact, and
 // the TARGET issue, through the `issue-number` output. Neither is checked here.
@@ -133,7 +142,20 @@ const SECRET_REFERENCE = /(?<![\w-])secrets(?![\w-])/giu;
 const AMBIENT_TOKEN_REFERENCE =
   /(?<![\w-])github\s*(?:\.\s*token(?![\w-])|\[\s*['"]token['"]\s*\])/giu;
 
-const CREDENTIAL_PATTERNS = [SECRET_REFERENCE, AMBIENT_TOKEN_REFERENCE];
+// `vars` is the third channel a token can arrive on. Variables are NOT secret,
+// so a write-capable token in one is a misconfiguration rather than a designed
+// seam — but this file's rule is over the CHANNEL, not over whether using it
+// was wise, and a PAT bound into a job `env:` from `vars` reaches every `run:`
+// in scope exactly as one from `secrets` does. Nothing here reads a variable,
+// so the rule costs nothing and closes the gap between what the header claims
+// and what it checked.
+const VARIABLE_REFERENCE = /(?<![\w-])vars(?![\w-])/giu;
+
+const CREDENTIAL_PATTERNS = [
+  SECRET_REFERENCE,
+  AMBIENT_TOKEN_REFERENCE,
+  VARIABLE_REFERENCE,
+];
 
 // Every grant of a write in the WHOLE FILE, matched over raw text. This says
 // the same thing the effective-permissions walk says, by a route that does not
@@ -177,8 +199,20 @@ const PINNED_POLL_CREDENTIALS = new Set([
   `\${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}`,
 ]);
 
+// The scope values that grant nothing. Everything else counts as a write.
+const READ_ONLY_SCOPES = new Set(["read", "none"]);
+
 /**
  * Whether a resolved `permissions:` value can mutate anything.
+ *
+ * ALLOWLIST, not a search for `"write"`. Asking `includes("write")` decides
+ * safety by failing to recognize a value, so every spelling the scan does not
+ * anticipate reads as safe — `issues: >` with `write` on the next line resolves
+ * to `"write\n"`, which is not `"write"`, and the job reads as read-only. An
+ * allowlist inverts that: a value this file cannot prove is read-only is a
+ * write, so an unanticipated spelling costs a red build instead of a silent
+ * pass. That also removes any need to decide whether the runner trims a scalar
+ * before matching its enum — a question the docs do not answer.
  *
  * `write-all` is a STRING, not a mapping, so a scan that only walked mapping
  * values would read it as granting nothing. Absent, the scopes come from
@@ -190,7 +224,9 @@ function isWriteScoped(permissions) {
   if (typeof permissions === "string") return permissions !== "read-all";
   if (typeof permissions !== "object" || Array.isArray(permissions))
     return true;
-  return Object.values(permissions).includes("write");
+  return Object.values(permissions).some(
+    (scope) => typeof scope !== "string" || !READ_ONLY_SCOPES.has(scope),
+  );
 }
 
 /** A job with no `permissions:` of its own runs under the workflow's block. */

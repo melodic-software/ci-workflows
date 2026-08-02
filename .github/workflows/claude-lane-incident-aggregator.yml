@@ -41,8 +41,10 @@ name: claude-lane-incident-aggregator
 #
 # The dry-run gate is `write`'s job-level `if:`, written inline rather than
 # shared through a job env var because `env` is NOT an available context in
-# `jobs.<job_id>.if` — that key sees only `github`, `needs`, `vars` and
-# `inputs`. The dry-run report step in `poll` is gated on the exact negation,
+# `jobs.<job_id>.if` — that key sees four contexts and `env` is not among them.
+# The list is upstream's to change, so read it there rather than here:
+# https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
+# The dry-run report step in `poll` is gated on the exact negation,
 # so no run can both write the issue and report that it wrote nothing; the test
 # pins both conditions and asserts one is the negation of the other.
 #

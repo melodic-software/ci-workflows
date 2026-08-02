@@ -284,6 +284,10 @@ const CORPUS = new Map([
     "poll-job-local-action",
     /must pin 'uses:' to owner\/repo@<40-hex sha>; found '\.\/\.github\/actions\/incident-mirror'/u,
   ],
+  [
+    "poll-permission-block-scalar",
+    /exactly one job must hold a write scope .* found \[poll, write\]/u,
+  ],
   ["poll-job-widened-to-write", /exactly one job must hold a write scope/u],
   ["proto-job", /the job set is 'poll,__proto__,write'/u],
   [
@@ -344,6 +348,10 @@ const CORPUS = new Map([
   [
     "write-job-script-edited",
     /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "vars-in-job-env",
+    /'\$\{\{ vars\.FLEET_ADMIN_TOKEN \}\}' is a credential expression outside the pinned regions/u,
   ],
   ["workflow-not-a-mapping", /the workflow is not a mapping/u],
   ["yaml-anchor", /unparsable workflow/u],
