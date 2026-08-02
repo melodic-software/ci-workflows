@@ -17,7 +17,8 @@
 //   - that job matches its pinned text BYTE FOR BYTE, so any edit to it fails
 //     CI and is read by a human rather than judged safe by a scanner;
 //   - every other job's effective permissions contain no write at all;
-//   - every `secrets.` reference in the WHOLE FILE lies inside one of two
+//   - every credential reference in the WHOLE FILE — the `secrets` context in
+//     any spelling, and `github.token` — lies inside one of two
 //     pinned regions. A credential is authority `permissions:` does not
 //     govern: any step able to mint an App token, or to bind a PAT into a job
 //     `env:`, writes regardless of its job holding no write scope. Naming the
@@ -122,8 +123,20 @@ const FORBIDDEN_JOB_KEYS = [
 // reworded comment, which is the safe direction to be wrong in.
 const SECRET_REFERENCE = /(?<![\w-])secrets(?![\w-])/giu;
 
+// `github.token` is the ambient credential under another name — it reaches no
+// `secrets` context at all, so the scan above never sees it. Matched in both
+// spellings for the same reason as above.
+const AMBIENT_TOKEN_REFERENCE =
+  /(?<![\w-])github\s*(?:\.\s*token(?![\w-])|\[\s*['"]token['"]\s*\])/giu;
+
+const CREDENTIAL_PATTERNS = [SECRET_REFERENCE, AMBIENT_TOKEN_REFERENCE];
+
 // The only credential expressions permitted OUTSIDE the pinned regions, as
-// exact whole expressions rather than as secret names. The presence probe
+// exact whole expressions rather than as secret names. The allowlist is
+// position-independent, so either may be reused in a new poll step; that is
+// safe only because BOTH halves are provably read-only — the ambient token by
+// `poll`'s all-read permissions, the App token by the byte-pinned mint step.
+// Weakening either of those rules turns this allowlist into a bypass. The presence probe
 // discloses whether a secret is set and never its value; the read fallback
 // binds the ambient token into a job the audit has already proved holds no
 // write scope. Any other spelling of either is a violation.
@@ -196,7 +209,10 @@ function auditJobShape(jobId, job, violations) {
  * and each reaches every `run:` in scope.
  */
 function auditCredentialSurface(source, regions, violations) {
-  for (const match of source.matchAll(SECRET_REFERENCE)) {
+  const matches = CREDENTIAL_PATTERNS.flatMap((pattern) => [
+    ...source.matchAll(pattern),
+  ]);
+  for (const match of matches) {
     const inside = regions.some(
       ([from, to]) => match.index >= from && match.index < to,
     );
@@ -278,6 +294,10 @@ function auditWriteGate(source) {
     );
   }
 
+  // The SAME offset feeds both the exempt region and the byte comparison. That
+  // coupling is what stops a forged marker planted earlier from widening the
+  // exempt span: widening it also moves the slice that must equal the pin, so
+  // the pin fails. Do not split these into two independent lookups.
   const regions = [];
   const at = source.indexOf(WRITE_JOB_MARKER);
   if (at < 0) {

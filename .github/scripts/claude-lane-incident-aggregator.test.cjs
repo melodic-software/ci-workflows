@@ -256,6 +256,7 @@ const CORPUS = new Map([
     "job-inherits-write-workflow-block",
     /exactly one job must hold a write scope/u,
   ],
+  ["job-not-a-mapping", /job 'poll' is not a mapping/u],
   [
     "mint-by-another-action",
     /is a credential expression outside the pinned regions/u,
@@ -290,6 +291,10 @@ const CORPUS = new Map([
     /calls a reusable workflow, whose steps are not in this file/u,
   ],
   [
+    "secret-ambient-github-token",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
     "secret-at-workflow-level",
     /is a credential expression outside the pinned regions/u,
   ],
@@ -307,6 +312,7 @@ const CORPUS = new Map([
     /is a credential expression outside the pinned regions/u,
   ],
   ["services-job", /job 'poll' declares 'services:'/u],
+  ["step-not-a-mapping", /is not a mapping/u],
   ["step-shell-override", /declares shell 'pwsh'/u],
   ["strategy-job", /job 'poll' declares 'strategy:'/u],
   ["timeout-removed", /job 'poll' must declare a positive timeout-minutes/u],
