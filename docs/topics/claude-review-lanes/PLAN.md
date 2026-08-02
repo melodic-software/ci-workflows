@@ -956,19 +956,61 @@ Ordered pre-steps, then waved rollout.
   proposal unchanged.
 
   RATIFIED BUT NOT YET LANDABLE (measured 2026-08-01): none of the three
-  adoptions can become a MANAGED `claude-review-caller` target today, so the
-  standards manifest records each with its blocker instead of adding it
-  (melodic-software/standards, `distribution/sync-manifest.yml`). ci-runner
-  and cursor-plugins are both PUBLIC, and the manifest's own private-only
-  constraint bites: `runner-policy.mjs` emits `public-self-hosted-routing` for
-  a selector-routed caller on a public repository, and
-  `components/runner-policy/runner-policy.test.mjs` fails the build outright if
-  such a component is `managed` for a public target. Their gate is therefore the
-  SAME removal trigger the parked security caller carries — the runner
-  indirection moving inside the reusable — not the App grant. claude-code-proxy
-  is private and clears that constraint, leaving only the installation
-  extension above; it also needs its `TARGET_VISIBILITY` entry, whose lookup
-  fails closed. The removals landed; the adoptions did not.
+  adoptions can become a MANAGED `claude-review-caller` target on the caller
+  shape as written, so the standards manifest records each with its blocker
+  instead of adding it (melodic-software/standards,
+  `distribution/sync-manifest.yml`). The blockers do NOT partition by
+  visibility alone.
+
+  VISIBILITY, ci-runner and cursor-plugins: both are PUBLIC, and the
+  manifest's own private-only constraint bites. `runner-policy.mjs` emits
+  `public-self-hosted-routing` for a selector-routed caller on a public
+  repository, and `components/runner-policy/runner-policy.test.mjs` fails the
+  build outright if a `components/claude-lanes/` component is `managed` for a
+  public target. Their shared gate is the SAME removal trigger the parked
+  security caller carries — the runner indirection moving inside the reusable.
+
+  APP GRANT, where the two diverge. ci-runner is ALREADY one of the 8 manifest
+  targets the installation attests, so adding this component to its existing
+  `managed:` list adds no repository to the expected access set: the attest
+  step derives that set from the target repositories alone
+  (`[.include[].repo]` over the unfiltered matrix), never from component
+  membership. ci-runner's gate is therefore the removal trigger and nothing
+  else. cursor-plugins is NOT a manifest target, so adopting it is a NEW
+  target and the correction above applies to it in full — it needs the
+  installation extension TOO, exactly like claude-code-proxy. Adding it
+  without the grant would fail the sync for all 8 existing targets, not just
+  for cursor-plugins. claude-code-proxy is private and clears the visibility
+  constraint, leaving only the installation extension; it also needs its
+  `TARGET_VISIBILITY` entry, whose lookup fails closed. (For a public repo
+  that entry unblocks nothing on its own — it only makes the failure legible
+  instead of a fail-closed assert.)
+
+  THE PUBLIC BAR IS NOT ABSOLUTE, recorded so it is not overstated: it is a
+  property of the SELECTOR-ROUTED caller shape, not of public visibility as
+  such. A public-safe shape already exists in the fleet — claude-code-plugins
+  owns hand-written hosted-only callers passing `runner: ubuntu-24.04`
+  directly with no caller-side selector, which runner-policy admits on a
+  public repository. CONSIDERED AND REJECTED here because it forks the
+  reviewed caller into a second per-visibility variant, which standards
+  deliberately declined pending the reusable-side indirection; it would
+  additionally require revisiting `runner-policy.test.mjs`, whose "every
+  managed target of a claude lane caller admits that caller" test rejects a
+  public managed target for EVERY component sourced from
+  `components/claude-lanes/`, selector-using or not — so a hosted-only
+  component in that directory would still trip it.
+
+  STILL LIVE, not erased by the reversal: Approval-record item 1 exempted
+  ci-runner because it is runner infrastructure where a wedged lane job could
+  block its own substrate. That concern is orthogonal to visibility and was
+  never rebutted — visibility merely became the nearer blocker. When the
+  removal trigger fires, ci-runner's adoption must clear the self-block
+  concern on its own merits rather than inheriting a pass.
+
+  What landed is the RETIREMENT OF THE PLANNED-TARGET RECORD for
+  knowledge-corpus and songwriting, plus their `TARGET_VISIBILITY` entries;
+  nothing left the manifest's `targets:` map, because neither repo ever held a
+  target block. The adoptions did not land.
 
   DEFERRED WITH TRIGGER, per this plan's own convention rather than dropped:
   knowledge-corpus ingests external documents that agents later read, which is
