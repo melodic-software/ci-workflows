@@ -91,8 +91,10 @@ on:
       prompt:
         description: >-
           The review-criteria body. A REPO / PR NUMBER / HEAD SHA header and
-          commit-permalink guidance are prepended automatically, so this input
-          is just the instructions for what to look for.
+          the lane's reporting mechanics — inline-comment anchoring, and the
+          commit-permalink form for findings no changed line can carry — wrap
+          it automatically, so this input is just the instructions for what to
+          look for.
         type: string
         default: >-
           This is the CODE-REVIEW lane. Review this pull request for
@@ -467,7 +469,13 @@ jobs:
           claude_args: ${{ steps.compose-args.outputs.args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
-          # header + permalink guidance live here and wrap the consumer's body.
+          # header + reporting mechanics live here and wrap the consumer's body.
+          #
+          # The inline-comment tool is NAMED, not merely granted in claude_args:
+          # the action's base prompt routes every response into the single
+          # sticky comment ("Never create new comments") and lists submitting a
+          # PR review under what the agent cannot do, so a grant the prompt
+          # never mentions reads as unusable and goes uncalled.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -475,8 +483,17 @@ jobs:
 
             ${{ inputs.prompt }}
 
-            When referencing specific code locations in findings, link to the
-            commit blob (not the PR) using a permalink with line numbers:
+            Report findings as a pull request review: call
+            mcp__github_inline_comment__create_inline_comment to anchor each
+            finding to the changed line it is about. That tool is granted to
+            this lane, and a line-anchored comment is what puts a finding next
+            to the code it concerns. Keep your summary comment for the
+            overview.
+
+            A finding no changed line can carry — cross-file, or about the PR
+            as a whole — goes in the summary comment instead; link its code
+            locations to the commit blob (not the PR) with a line-numbered
+            permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # ONE bounded, gated retry: this lane is advisory, but a zero-turn blip
@@ -690,9 +707,9 @@ jobs:
           allowed_bots: ${{ inputs.allowed-bots }}
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           claude_args: ${{ steps.compose-args.outputs.args }}
-          # github-context expressions must appear directly in the step (a value
-          # carried in via inputs.prompt is NOT re-evaluated), so the structural
-          # header + permalink guidance live here and wrap the consumer's body.
+          # Verbatim copy of the first attempt's prompt (see its comment for why
+          # the reporting mechanics live here rather than in inputs.prompt); the
+          # two must not diverge.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -700,8 +717,17 @@ jobs:
 
             ${{ inputs.prompt }}
 
-            When referencing specific code locations in findings, link to the
-            commit blob (not the PR) using a permalink with line numbers:
+            Report findings as a pull request review: call
+            mcp__github_inline_comment__create_inline_comment to anchor each
+            finding to the changed line it is about. That tool is granted to
+            this lane, and a line-anchored comment is what puts a finding next
+            to the code it concerns. Keep your summary comment for the
+            overview.
+
+            A finding no changed line can carry — cross-file, or about the PR
+            as a whole — goes in the summary comment instead; link its code
+            locations to the commit blob (not the PR) with a line-numbered
+            permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # Collapse the two attempts into the one pair of facts the outcome step
