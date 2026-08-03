@@ -53,7 +53,8 @@ lanes never overlap.
 2. **ci-workflows**: all workflow changes below + release tag.
 3. **Fleet rollout**: callers become standards sync-manifest managed components; both
    lanes to every org repo (github-iac first among missing; `.github`/ci-runner/
-   ci-runner-canary exemption decided + documented); normalized triggers/skip-actors/
+   ci-runner-canary exemption decided + documented — ci-runner leg superseded
+   2026-08-01, see Phase 3d); normalized triggers/skip-actors/
    pins; kill-switch + draft-payload + queue-syntax smoke tests.
 4. **Observability**: #237 failure-class token → #238 canary/aggregator.
 5. **Follow-ups**: filed issues (see mapping).
@@ -734,7 +735,16 @@ Ordered pre-steps, then waved rollout.
   be another push to standards `main`, so if it is ever needed, it happens
   before the grant, never inside the window. Restore it only AFTER (0) is in
   place, and expect to merge any still-open wave PRs by hand. (ii) for NEW
-  targets knowledge-corpus + songwriting [USER-APPROVAL GATE]: extend the App's
+  targets knowledge-corpus + songwriting [USER-APPROVAL GATE] — TARGET SET
+  SUPERSEDED 2026-08-01 (see WAVE-TARGET SET — RATIFIED below): both repos are
+  retired as planned targets, so this gate is UNREACHED rather than removed. No
+  adopted target is landable yet (see RATIFIED BUT NOT YET LANDABLE below), and
+  the mechanism and ordering analysis through the end of this step stay live for
+  whichever NEW target eventually lands — cursor-plugins or claude-code-proxy,
+  NOT ci-runner, which is already a manifest target and whose gate is the
+  removal trigger rather than this grant (see APP GRANT and RATIFIED BUT NOT
+  YET LANDABLE below). The step as approved, and still the procedure for a new
+  target: extend the App's
   selected access BEFORE the manifest PR merges, in the tightest window that
   ordering allows. The ordering stands; its ORIGINAL RATIONALE was wrong.
   Attestation never reaches the both-directions comparison first: the operative
@@ -799,7 +809,10 @@ Ordered pre-steps, then waved rollout.
   after which the extension is an API call sequenceable to seconds inside the
   window. Installation `144867070` is `repository_selection: selected`, so an
   extension IS required; repository ids: knowledge-corpus `1300170946`,
-  songwriting `1297959888`. Selection is NOT the same surface as installation
+  songwriting `1297959888` — THESE TWO IDS ARE SUPERSEDED 2026-08-01 with the
+  target set (see WAVE-TARGET SET — RATIFIED below); the selected-access
+  mechanism itself is unchanged, and a future target supplies its own id.
+  Selection is NOT the same surface as installation
   PERMISSIONS — 3a0's `workflows: write` grant stays the org-owner action it is
   documented as, and this endpoint does not touch it. UNDOCUMENTED, do not
   resolve by inference: whether org-owned installations gate above repo-admin —
@@ -820,7 +833,13 @@ Ordered pre-steps, then waved rollout.
   then new targets.
   `.github` + ci-runner per the USER-RESERVED exemption decision (both already
   manifest targets; plan default: exempt from lane components, one-line targets
-  comment).
+  comment). ci-runner's EXEMPTION BASIS IS SUPERSEDED 2026-08-01 (see
+  WAVE-TARGET SET — RATIFIED below, which reverses Approval-record item 1). The
+  OUTCOME is unchanged for now: ci-runner still carries no lane, because its
+  adoption is blocked on the public-visibility removal trigger and must
+  additionally clear item 1's self-block concern on its own merits (see
+  RATIFIED BUT NOT YET LANDABLE and STILL LIVE below). `.github` stays exempt,
+  untouched by the ratification.
   standards repo is the manifest SOURCE, not a target — its caller stays
   repo-local, equivalence-checked in Phase 5 modulo its documented deviations
   (byte equality is impossible: standards is public and cannot call the
@@ -904,9 +923,11 @@ Ordered pre-steps, then waved rollout.
   costs a second browser action by whoever holds org ownership, even when that
   is the same person.
 
-  WAVE-TARGET SET — UNRATIFIED PROPOSAL (measured 2026-07-31). NOT A DECISION
-  AND NOT APPROVED: recorded for operator ratification. Until ratified,
-  3d(ii)'s target set stands exactly as Approval-record item 5 approved it.
+  WAVE-TARGET SET — RATIFIED 2026-08-01 (measured 2026-07-31). Adopted as put:
+  a code-review lane belongs on code repositories, and running it over
+  untrusted scraped content is a prompt-injection surface rather than a
+  code-quality one. This supersedes Approval-record item 5's target set, and
+  reverses item 1's ci-runner exemption.
 
   CENSUS. 13 non-archived org repos; SEVEN carry a claude-review lane —
   ci-workflows, claude-code-plugins, dotfiles, github-iac, medley,
@@ -952,6 +973,64 @@ Ordered pre-steps, then waved rollout.
   chosen; retargeting changes only WHICH repositories are added, never whether
   an extension is needed. The correction above therefore applies to the
   proposal unchanged.
+
+  RATIFIED BUT NOT YET LANDABLE (measured 2026-08-01): none of the three
+  adoptions can become a MANAGED `claude-review-caller` target on the caller
+  shape as written, so the standards manifest records each with its blocker
+  instead of adding it (melodic-software/standards,
+  `distribution/sync-manifest.yml`). The blockers do NOT partition by
+  visibility alone.
+
+  VISIBILITY, ci-runner and cursor-plugins: both are PUBLIC, and the
+  manifest's own private-only constraint bites. `runner-policy.mjs` emits
+  `public-self-hosted-routing` for a selector-routed caller on a public
+  repository, and `components/runner-policy/runner-policy.test.mjs` fails the
+  build outright if a `components/claude-lanes/` component is `managed` for a
+  public target. Their shared gate is the SAME removal trigger the parked
+  security caller carries — the runner indirection moving inside the reusable.
+
+  APP GRANT, where the two diverge. ci-runner is ALREADY one of the 8 manifest
+  targets the installation attests, so adding this component to its existing
+  `managed:` list adds no repository to the expected access set: the attest
+  step derives that set from the target repositories alone
+  (`[.include[].repo]` over the unfiltered matrix), never from component
+  membership. ci-runner's gate is therefore the removal trigger, NOT the App
+  grant (see STILL LIVE below for the second consideration its adoption must
+  clear — a merits question, not a mechanical gate). cursor-plugins is NOT a
+  manifest target, so adopting it is a NEW target and the correction above
+  applies to it in full — it needs the installation extension TOO, exactly
+  like claude-code-proxy. Adding it without the grant would fail the sync for
+  all 8 existing targets, not just for cursor-plugins. claude-code-proxy is
+  private and clears the visibility constraint, leaving only the installation
+  extension; it also needs its `TARGET_VISIBILITY` entry, whose lookup fails
+  closed. (For a public repo that entry unblocks nothing on its own — it only
+  makes the failure legible instead of a fail-closed assert.)
+
+  THE PUBLIC BAR IS NOT ABSOLUTE, recorded so it is not overstated: it is a
+  property of the SELECTOR-ROUTED caller shape, not of public visibility as
+  such. A public-safe shape already exists in the fleet — claude-code-plugins
+  owns hand-written hosted-only callers passing `runner: ubuntu-24.04`
+  directly with no caller-side selector, which runner-policy admits on a
+  public repository. CONSIDERED AND REJECTED here because it forks the
+  reviewed caller into a second per-visibility variant, which standards
+  deliberately declined pending the reusable-side indirection; it would
+  additionally require revisiting `runner-policy.test.mjs`, whose "every
+  managed target of a claude lane caller admits that caller" test rejects a
+  public managed target for EVERY component sourced from
+  `components/claude-lanes/`, selector-using or not — so a hosted-only
+  component in that directory would still trip it.
+
+  STILL LIVE, not erased by the reversal: Approval-record item 1 exempted
+  ci-runner because it is runner infrastructure where a wedged lane job could
+  block its own substrate. That concern is orthogonal to visibility and was
+  never rebutted — visibility merely became the nearer blocker. When the
+  removal trigger fires, ci-runner's adoption must clear the self-block
+  concern on its own merits rather than inheriting a pass.
+
+  What landed is the RETIREMENT OF THE PLANNED-TARGET RECORD for
+  knowledge-corpus and songwriting, plus their `TARGET_VISIBILITY` entries;
+  nothing left the manifest's `targets:` map, because neither repo ever held a
+  target block. The adoptions did not land.
 
   DEFERRED WITH TRIGGER, per this plan's own convention rather than dropped:
   knowledge-corpus ingests external documents that agents later read, which is
@@ -1713,7 +1792,9 @@ nothing depends on agent parallelism.
 their RECOMMENDED options:
 
 1. `.github` + ci-runner: EXEMPT from lane components (targets comment documents);
-   ci-runner-canary N/A.
+   ci-runner-canary N/A. — ci-runner leg SUPERSEDED 2026-08-01 by the ratified
+   wave-target set (Phase 3d, WAVE-TARGET SET — RATIFIED); its self-block
+   concern survives as a merits gate (STILL LIVE). `.github` unaffected.
 2. claude-e2e-verify: mechanical currency only (2h); marker/class adoption deferred
    with dated trigger note (first real consumer or next audit).
 3. actionlint disposition: repo-local `.github/actionlint.yaml` suppression scoped
@@ -1726,6 +1807,10 @@ their RECOMMENDED options:
    (cardinality gate, and merge-first self-triggers) — via the REST selection
    endpoint under a classic PAT (precaution: have an org owner hold it), after
    draining in-flight sync runs and re-checking before the merge (3d).
+   — TARGET SET SUPERSEDED 2026-08-01 by the ratified wave-target set (Phase
+   3d, WAVE-TARGET SET — RATIFIED): both repos are retired as planned targets.
+   The App-access ordering and mechanism this item approved are unaffected and
+   still govern whichever target lands.
 6. Phase 4 credential: reuse runner-observer App if permissions fit, else new
    minimal App — proceed per that order, report which at implementation.
 7. Retry gate: zero assistant turns AND class != auth.
@@ -1742,7 +1827,8 @@ Original decision text (recommendations + alternatives) retained below for conte
 - [USER-RESERVED] `.github` / ci-runner lane components: RECOMMENDED exempt both
   (near-zero PR traffic; ci-runner is runner infra where a wedged lane job could
   block its own substrate). ci-runner-canary: N/A — does not exist. One-line
-  targets change either way, documented in manifest comments.
+  targets change either way, documented in manifest comments. ci-runner leg
+  superseded 2026-08-01 — see Approval-record item 1.
 - [USER-RESERVED] claude-e2e-verify park/deprecate: RECOMMENDED keep mechanical
   currency only now (2h) and DEFER its marker/class adoption into this decision;
   dated trigger note in the reusable header + README (decide at first real
@@ -1753,7 +1839,8 @@ Original decision text (recommendations + alternatives) retained below for conte
 - [GATE] sync App `workflows: write` grant (Phase 3a0; authority widening stated).
 - [GATE] knowledge-corpus + songwriting as new sync targets (App access BEFORE
   manifest merge, via the REST selection endpoint under a classic PAT —
-  precaution: have an org owner hold it).
+  precaution: have an org owner hold it). Superseded 2026-08-01 — see
+  Approval-record item 5.
 - [GATE] Phase 4 credential (reuse runner-observer App vs new App).
 - [FALLBACK — confirm or override] retry gate = zero-turns AND class != auth
   (2d; minor refinement of locked B24).
