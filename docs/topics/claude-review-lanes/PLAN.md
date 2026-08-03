@@ -1366,10 +1366,11 @@ deliverable still existed. Caught by review on the tag-flip PR. The list below
 now carries it explicitly, and a phase's close-out must enumerate its
 DELIVERABLES, not just its checks — otherwise the sanity check certifies its own
 blind spot.
-SATISFIED — 3g implementation: NOT built; DECISION resolved (Approval record
-item 12) and the work tracked OUTSIDE this phase in standards#314, with its
-credential branch operator-gated. Tracked-elsewhere, not done: closing Phase 3
-strands nothing only because that issue exists.
+3g IMPLEMENTATION — **NOT BUILT**, enumerated here so it cannot be lost again.
+Its DECISION is resolved (Approval record item 12); the WORK is tracked OUTSIDE
+this phase in standards#314, with its credential branch operator-gated. This
+item is dispositioned tracked-elsewhere, never done — closing Phase 3 strands
+nothing only because that issue exists.
 SATISFIED: `sync-manifest.sh validate` exits 0; per-target blob-hash
 equivalence 4/4 (all managed targets at `a9dfe7f4`); the 3c gate invariant
 re-read intact with the single documented break-glass delta (see the re-read
