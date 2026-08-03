@@ -1104,3 +1104,217 @@ test("two genuine bot-authored incident issues fail the lookup closed", async ()
   ]);
   assert.match(failedWith, /found 2 open issues carrying the incident marker/u);
 });
+
+/**
+ * Execute the shipped state-advance script.
+ *
+ * The coverage check that keeps a narrowed poll from auto-closing an incident
+ * is DECIDED in claude-lane-incident.cjs but ASSEMBLED here, out of `env:`
+ * entries wired to step outputs. A unit test calling `nextState` directly
+ * cannot see a mis-wired env key or an unparsed scope, and either one makes the
+ * check silently vacuous while every unit test stays green — so the step's own
+ * text is what runs here, exactly as the poll's is.
+ */
+async function runState({
+  cycle,
+  tally,
+  issueBody = "",
+  issueNumber = "",
+  polledRepositories,
+}) {
+  const keys = [
+    "CYCLE",
+    "TALLY",
+    "ISSUE_BODY",
+    "ISSUE_NUMBER",
+    "POLLED_REPOSITORIES",
+    "GITHUB_WORKSPACE",
+  ];
+  const originalValues = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]]),
+  );
+  // The step renders into the workspace, which here is the repository the
+  // module is required from; restored so a test run leaves no working-tree file.
+  const bodyPath = path.join(repositoryRoot, ".claude-lane-incident.md");
+  const bodyExisted = fs.existsSync(bodyPath);
+  Object.assign(process.env, {
+    CYCLE: cycle,
+    TALLY: JSON.stringify(tally),
+    ISSUE_BODY: issueBody,
+    ISSUE_NUMBER: issueNumber,
+    GITHUB_WORKSPACE: repositoryRoot,
+  });
+  // Distinguishes "the workflow passed nothing" from "the workflow passed an
+  // empty scope"; the step must hold the incident either way.
+  if (polledRepositories === undefined) delete process.env.POLLED_REPOSITORIES;
+  else process.env.POLLED_REPOSITORIES = polledRepositories;
+
+  const outputs = {};
+  const warnings = [];
+  try {
+    const core = {
+      setOutput: (key, value) => (outputs[key] = value),
+      setFailed: (message) => assert.fail(`unexpected setFailed: ${message}`),
+      warning: (message) => warnings.push(message),
+      info: () => {},
+    };
+    const execute = new AsyncFunction(
+      "core",
+      "require",
+      "process",
+      extractStepScript("Advance the incident state"),
+    );
+    await execute(core, require, process);
+    return {
+      outputs,
+      warnings,
+      renderedBody: fs.existsSync(bodyPath)
+        ? fs.readFileSync(bodyPath, "utf8")
+        : null,
+    };
+  } finally {
+    if (!bodyExisted && fs.existsSync(bodyPath)) fs.rmSync(bodyPath);
+    for (const key of keys) {
+      if (originalValues[key] === undefined) delete process.env[key];
+      else process.env[key] = originalValues[key];
+    }
+  }
+}
+
+const {
+  renderIssueBody,
+  tallyObservations,
+} = require("./claude-lane-incident.cjs");
+
+// An open incident implicating a repository only the App installation token can
+// read — the shape the credential-loss finding is about.
+const privateIncidentBody = renderIssueBody({
+  v: 1,
+  firstSeen: "2026-07-27T00:00:00.000Z",
+  lastSeen: "2026-07-27T00:00:00.000Z",
+  cleanCycles: 0,
+  classCounts: { auth: 1 },
+  statusCounts: { 401: 1 },
+  repositories: {
+    "melodic-software/private-consumer": {
+      classes: ["auth"],
+      pulls: [3],
+      pullsSeen: 1,
+    },
+  },
+  repositoriesSeen: 1,
+  unrecognized: 0,
+});
+
+test("the poll publishes the scope it observed, not just how many", async () => {
+  const { outputs } = await runPoll({ hasInstallation: false });
+  assert.deepEqual(JSON.parse(outputs["polled-repositories"]), [
+    "melodic-software/ci-workflows",
+  ]);
+  assert.equal(
+    outputs.repositories,
+    String(JSON.parse(outputs["polled-repositories"]).length),
+    "the published scope and the reported count must describe the same poll",
+  );
+});
+
+test("the poll publishes the installation's scope when it has one", async () => {
+  const { outputs } = await runPoll({
+    hasInstallation: true,
+    installationRepositories: [
+      { full_name: "melodic-software/medley", archived: false },
+      { full_name: "melodic-software/retired", archived: true },
+    ],
+  });
+  assert.deepEqual(JSON.parse(outputs["polled-repositories"]), [
+    "melodic-software/medley",
+  ]);
+});
+
+test("a self-only cycle cannot close an incident that implicates a private consumer", async () => {
+  const { outputs, warnings, renderedBody } = await runState({
+    cycle: "clean",
+    tally: tallyObservations([]),
+    issueBody: privateIncidentBody,
+    issueNumber: "42",
+    polledRepositories: JSON.stringify(["melodic-software/ci-workflows"]),
+  });
+  // `action: none` is what keeps this out of the write job at all: both the
+  // artifact upload and the whole `write` job are gated on it.
+  assert.equal(outputs.action, "none");
+  assert.equal(outputs.coverage, "incomplete");
+  assert.match(
+    renderedBody,
+    /Consecutive clean cycles: 0 of 3/u,
+    "a held cycle must not advance the counter it renders",
+  );
+  assert.match(warnings.join("\n"), /melodic-software\/private-consumer/u);
+});
+
+test("the same cycle over the full scope advances the incident toward close", async () => {
+  const { outputs, warnings } = await runState({
+    cycle: "clean",
+    tally: tallyObservations([]),
+    issueBody: privateIncidentBody,
+    issueNumber: "42",
+    polledRepositories: JSON.stringify([
+      "melodic-software/ci-workflows",
+      "melodic-software/private-consumer",
+    ]),
+  });
+  assert.equal(outputs.action, "update");
+  assert.equal(outputs.coverage, "complete");
+  assert.deepEqual(warnings, []);
+});
+
+test("a scope the step never received or could not parse holds the incident", async () => {
+  for (const polledRepositories of [undefined, "", "not json", "{}"]) {
+    const { outputs } = await runState({
+      cycle: "clean",
+      tally: tallyObservations([]),
+      issueBody: privateIncidentBody,
+      issueNumber: "42",
+      polledRepositories,
+    });
+    assert.equal(outputs.action, "none", String(polledRepositories));
+    assert.equal(outputs.coverage, "incomplete", String(polledRepositories));
+  }
+});
+
+test("the state step reads the scope from the env key the poll step writes", () => {
+  // The two halves of the wiring, checked against each other rather than
+  // against a literal repeated in both places.
+  assert.equal(
+    step("Advance the incident state").env?.POLLED_REPOSITORIES,
+    `\${{ steps.poll.outputs.polled-repositories }}`,
+    "the state step must read the poll step's published scope",
+  );
+  assert.match(
+    extractStepScript("Poll consumer repositories for lane failure signals"),
+    /core\.setOutput\("polled-repositories"/u,
+    "the poll step must publish the scope the state step reads",
+  );
+});
+
+test("an escalating cycle is never gated on coverage", async () => {
+  // A failure that WAS observed is real regardless of how narrow the poll was,
+  // so the incident still updates and its body still rebuilds.
+  const { outputs, renderedBody } = await runState({
+    cycle: "incident",
+    tally: tallyObservations([
+      {
+        repository: "melodic-software/ci-workflows",
+        pullNumber: 1,
+        classes: ["auth"],
+        unrecognized: 0,
+        apiErrorStatus: 401,
+      },
+    ]),
+    issueBody: privateIncidentBody,
+    issueNumber: "42",
+    polledRepositories: JSON.stringify(["melodic-software/ci-workflows"]),
+  });
+  assert.equal(outputs.action, "update");
+  assert.equal(outputs.coverage, "complete");
+  assert.match(renderedBody, /melodic-software\/private-consumer/u);
+});

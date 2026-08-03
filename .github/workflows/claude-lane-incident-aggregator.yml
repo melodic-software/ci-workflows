@@ -81,6 +81,20 @@ name: claude-lane-incident-aggregator
 # statement about polling breadth only: such a run writes exactly as a
 # credentialed one does, because `write` never sees the App token at all.
 #
+# SCOPE IS NOT FIXED, AND A NARROWED SCOPE CANNOT CLOSE AN INCIDENT. Because
+# the scope IS the installation, it narrows to this repository alone the moment
+# the App credential goes missing — a deleted or rotated secret skips the mint
+# step — and that narrowing raises no read error, because nothing failed. So an
+# incident caused by PRIVATE consumer repositories would meet three clean
+# cycles that never read those repositories at all, and close itself. The poll
+# therefore publishes the scope it observed, not just how many repositories
+# were in it, and a clean cycle advances the clean-cycle counter only when that
+# scope covers every repository the open incident's own evidence names.
+# Anything less holds the incident open and annotates the run with what went
+# unobserved. The rule, its limits, and why it fails toward holding rather than
+# closing live with the check: see coverageGap in
+# .github/scripts/claude-lane-incident.cjs.
+#
 # PUBLIC-SAFETY: this repository is public and the incident body is its output.
 # Annotation text is untrusted (any workflow in any polled repository can write
 # one) and embeds a projection of model-authored content, so nothing derived
@@ -444,6 +458,13 @@ jobs:
 
             core.setOutput("cycle", cycle);
             core.setOutput("tally", JSON.stringify(tally));
+            // The scope this cycle actually observed, not a count of it. A
+            // clean verdict is only as wide as the poll behind it, and this
+            // scope narrows silently when the App credential goes missing, so
+            // the state step needs the names to check them against the open
+            // incident's own evidence. See coverageGap in
+            // claude-lane-incident.cjs.
+            core.setOutput("polled-repositories", JSON.stringify(repositories));
             core.setOutput("api-calls", String(apiCalls));
             core.setOutput("read-errors", String(readErrors));
             core.setOutput("lane-runs", String(laneRunsObserved));
@@ -510,23 +531,38 @@ jobs:
           TALLY: ${{ steps.poll.outputs.tally }}
           ISSUE_BODY: ${{ steps.incident.outputs.body }}
           ISSUE_NUMBER: ${{ steps.incident.outputs.number }}
+          POLLED_REPOSITORIES: ${{ steps.poll.outputs.polled-repositories }}
         with:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
-            const { nextState, parseStateBlock, renderIssueBody } = require(
+            const { describeCoverageGap, nextState, parseStateBlock, renderIssueBody } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
             );
 
-            const { state, action } = nextState({
+            // Defaulted rather than trusted: an absent or malformed scope
+            // parses to an empty one, which proves no coverage and therefore
+            // closes nothing. A plumbing mistake here must hold incidents
+            // open, never auto-close them.
+            let polledRepositories = [];
+            try {
+              polledRepositories = JSON.parse(process.env.POLLED_REPOSITORIES || "[]");
+            } catch (error) {
+              core.warning(`polled repository scope did not parse: ${error.message}`);
+            }
+
+            const { state, action, coverageGap } = nextState({
               previous: parseStateBlock(process.env.ISSUE_BODY),
               tally: JSON.parse(process.env.TALLY),
               cycle: process.env.CYCLE,
               now: new Date().toISOString(),
               issueOpen: process.env.ISSUE_NUMBER !== "",
+              polledRepositories,
             });
 
             core.setOutput("action", action);
+            core.setOutput("coverage", coverageGap ? "incomplete" : "complete");
+            if (coverageGap) core.warning(describeCoverageGap(coverageGap));
             if (state === null) return;
             fs.writeFileSync(
               path.join(process.env.GITHUB_WORKSPACE, ".claude-lane-incident.md"),
@@ -546,10 +582,14 @@ jobs:
           PULLS: ${{ steps.poll.outputs.pulls }}
           CYCLE: ${{ steps.poll.outputs.cycle }}
           ACTION: ${{ steps.state.outputs.action }}
+          # `cycle=clean action=none` is the shape of a held incident, and
+          # without this it is also the shape of nothing having happened. The
+          # step's own warning names the repositories.
+          COVERAGE: ${{ steps.state.outputs.coverage }}
         run: |
           set -euo pipefail
           api_calls=$(( POLL_API_CALLS + LOOKUP_API_CALLS ))
-          echo "claude-lane-incident: api-calls=${api_calls} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} action=${ACTION}"
+          echo "claude-lane-incident: api-calls=${api_calls} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} coverage=${COVERAGE} action=${ACTION}"
 
       # The dry run's deliverable: the exact body a live run would have written,
       # in the job summary, where it costs nothing and leaks nothing. This

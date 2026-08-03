@@ -12,6 +12,8 @@ const {
   RECOGNIZED_CLASSES,
   SELECTOR_MARKER,
   classifyCycle,
+  coverageGap,
+  describeCoverageGap,
   extractSignals,
   isLaneCheckRun,
   nextState,
@@ -373,6 +375,11 @@ const incidentTally = tallyObservations([
   },
 ]);
 
+// The scope that covers everything `incidentTally` implicates, so the clean
+// cycles below exercise counter advancement rather than coverage. Coverage has
+// its own tests.
+const COVERING_SCOPE = ["melodic-software/medley"];
+
 function openIncident() {
   return nextState({
     previous: null,
@@ -488,6 +495,7 @@ test("three consecutive clean cycles close the incident, and only the third", ()
       cycle: "clean",
       now: `2026-07-27T0${cycle + 1}:00:00Z`,
       issueOpen: true,
+      polledRepositories: COVERING_SCOPE,
     });
     actions.push(result.action);
     state = result.state;
@@ -504,6 +512,7 @@ test("an indeterminate cycle neither advances nor resets the clean counter", () 
     cycle: "clean",
     now: "2026-07-27T01:00:00Z",
     issueOpen: true,
+    polledRepositories: COVERING_SCOPE,
   }).state;
 
   const quiet = nextState({
@@ -517,19 +526,37 @@ test("an indeterminate cycle neither advances nor resets the clean counter", () 
   assert.equal(quiet.state.cleanCycles, 1);
 });
 
-test("recovery still renders when the open issue lost its state block", () => {
-  // A hand-edited body (or one from an older schema) parses to no prior state.
-  // The clean cycle that follows must still produce a renderable body — this is
-  // the recovery path, so throwing here would wedge the aggregator permanently.
-  const { state, action } = nextState({
+test("an open issue that lost its state block holds instead of counting toward close", () => {
+  // A hand-edited body (or one from an older schema) parses to no prior state,
+  // so it names no repository and no clean cycle can contradict it. Counting
+  // toward the auto-close from there closes an incident on evidence that was
+  // never checked against anything.
+  const { state, action, coverageGap } = nextState({
     previous: null,
     tally: tallyObservations([]),
     cycle: "clean",
     now: "2026-07-27T00:00:00Z",
     issueOpen: true,
+    polledRepositories: COVERING_SCOPE,
+  });
+  assert.equal(action, "none");
+  assert.equal(state, null);
+  assert.equal(coverageGap.unparsableState, true);
+});
+
+test("an escalating cycle still rebuilds a body that lost its state block", () => {
+  // The recovery path, which coverage does not gate: a failure that WAS
+  // observed is real, so the incident's durable record is rewritten from it
+  // rather than left wedged.
+  const { state, action } = nextState({
+    previous: null,
+    tally: incidentTally,
+    cycle: "incident",
+    now: "2026-07-27T00:00:00Z",
+    issueOpen: true,
   });
   assert.equal(action, "update");
-  assert.equal(state.cleanCycles, 1);
+  assert.equal(state.cleanCycles, 0);
   assert.doesNotThrow(() => renderIssueBody(state));
 });
 
@@ -541,6 +568,7 @@ test("a fresh escalating cycle resets the clean counter", () => {
     cycle: "clean",
     now: "2026-07-27T01:00:00Z",
     issueOpen: true,
+    polledRepositories: COVERING_SCOPE,
   }).state;
   assert.equal(afterClean.cleanCycles, 1);
 
@@ -553,6 +581,140 @@ test("a fresh escalating cycle resets the clean counter", () => {
   });
   assert.equal(relapse.state.cleanCycles, 0);
   assert.equal(relapse.action, "update");
+});
+
+test("losing the App credential mid-incident cannot auto-close the incident", () => {
+  // The finding this whole coverage check exists for, walked end to end.
+  //
+  // An incident opens on failures in a PRIVATE consumer repository, which only
+  // the App installation token can read. The credential then goes away — the
+  // secret is deleted or rotated, so the mint step is skipped and
+  // HAS_INSTALLATION is false — and the poll's uncredentialed fallback narrows
+  // the scope to this repository alone. Nothing FAILED, so readErrors stays 0
+  // and this repository's own healthy lanes make every cycle look clean.
+  //
+  // Without coverage, three of those cycles close an incident whose root cause
+  // was never re-read. With it, every cycle holds, forever, and says so.
+  let state = nextState({
+    previous: null,
+    tally: tallyObservations([
+      {
+        repository: "melodic-software/private-consumer",
+        pullNumber: 3,
+        classes: ["auth"],
+        unrecognized: 0,
+        apiErrorStatus: 401,
+      },
+    ]),
+    cycle: "incident",
+    now: "2026-07-27T00:00:00Z",
+    issueOpen: false,
+  }).state;
+
+  const narrowedScope = ["melodic-software/ci-workflows"];
+  for (let cycle = 0; cycle < CLEAN_CYCLES_TO_CLOSE + 2; cycle += 1) {
+    const result = nextState({
+      previous: state,
+      tally: tallyObservations([]),
+      // What a self-only poll of a healthy repository classifies as: no
+      // escalating class, lane runs observed, and no read errors at all.
+      cycle: classifyCycle({
+        laneRunsObserved: 4,
+        escalating: false,
+        readErrors: 0,
+      }),
+      now: `2026-07-27T0${cycle + 1}:00:00Z`,
+      issueOpen: true,
+      polledRepositories: narrowedScope,
+    });
+    assert.equal(result.action, "none");
+    assert.deepEqual(result.coverageGap.unobserved, [
+      "melodic-software/private-consumer",
+    ]);
+    assert.match(
+      describeCoverageGap(result.coverageGap),
+      /melodic-software\/private-consumer/u,
+    );
+    assert.equal(result.state.cleanCycles, 0);
+    state = result.state;
+  }
+
+  // And the moment the credential returns, the same evidence closes it.
+  let recovered = state;
+  const actions = [];
+  for (let cycle = 0; cycle < CLEAN_CYCLES_TO_CLOSE; cycle += 1) {
+    const result = nextState({
+      previous: recovered,
+      tally: tallyObservations([]),
+      cycle: "clean",
+      now: `2026-07-28T0${cycle + 1}:00:00Z`,
+      issueOpen: true,
+      polledRepositories: [
+        "melodic-software/ci-workflows",
+        "melodic-software/private-consumer",
+      ],
+    });
+    actions.push(result.action);
+    recovered = result.state;
+  }
+  assert.deepEqual(actions, ["update", "update", "close"]);
+});
+
+test("coverage is complete only when the polled scope contains every implicated repository", () => {
+  const previous = parseStateBlock(renderStateBlock(openIncident().state));
+
+  assert.equal(
+    coverageGap({ previous, polledRepositories: COVERING_SCOPE }),
+    null,
+  );
+  assert.equal(
+    coverageGap({
+      previous,
+      polledRepositories: [...COVERING_SCOPE, "melodic-software/other"],
+    }),
+    null,
+    "a wider scope still covers the incident",
+  );
+  // GitHub repository names are case-insensitive and the `repositories`
+  // dispatch input is typed by a human, so an exact compare would report every
+  // smoke run as a gap.
+  assert.equal(
+    coverageGap({
+      previous,
+      polledRepositories: [" Melodic-Software/Medley "],
+    }),
+    null,
+  );
+  assert.deepEqual(
+    coverageGap({ previous, polledRepositories: [] }).unobserved,
+    ["melodic-software/medley"],
+  );
+});
+
+test("a scope that did not parse proves nothing rather than everything", () => {
+  const previous = parseStateBlock(renderStateBlock(openIncident().state));
+  for (const scope of [undefined, null, "melodic-software/medley", 7, {}]) {
+    assert.deepEqual(
+      coverageGap({ previous, polledRepositories: scope }).unobserved,
+      ["melodic-software/medley"],
+      JSON.stringify(scope ?? null),
+    );
+  }
+});
+
+test("a truncated repository index cannot prove coverage of what it dropped", () => {
+  // mergeRepositories caps the persisted index at MAX_TRACKED_REPOSITORIES
+  // while `repositoriesSeen` keeps counting the whole incident, so a large
+  // enough incident names only its alphabetical head. Coverage over the
+  // remainder is unprovable, and an incident that big is one a human closes.
+  const previous = {
+    ...parseStateBlock(renderStateBlock(openIncident().state)),
+    repositoriesSeen: 200,
+  };
+  const gap = coverageGap({ previous, polledRepositories: COVERING_SCOPE });
+  assert.deepEqual(gap.unobserved, []);
+  assert.equal(gap.unlisted, 199);
+  assert.match(describeCoverageGap(gap), /199 further implicated/u);
 });
 
 test("with no incident open, a clean or quiet cycle writes nothing", () => {
