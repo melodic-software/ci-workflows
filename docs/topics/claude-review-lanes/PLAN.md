@@ -53,7 +53,8 @@ lanes never overlap.
 2. **ci-workflows**: all workflow changes below + release tag.
 3. **Fleet rollout**: callers become standards sync-manifest managed components; both
    lanes to every org repo (github-iac first among missing; `.github`/ci-runner/
-   ci-runner-canary exemption decided + documented); normalized triggers/skip-actors/
+   ci-runner-canary exemption decided + documented — ci-runner leg superseded
+   2026-08-01, see Phase 3d); normalized triggers/skip-actors/
    pins; kill-switch + draft-payload + queue-syntax smoke tests.
 4. **Observability**: #237 failure-class token → #238 canary/aggregator.
 5. **Follow-ups**: filed issues (see mapping).
@@ -739,8 +740,11 @@ Ordered pre-steps, then waved rollout.
   retired as planned targets, so this gate is UNREACHED rather than removed. No
   adopted target is landable yet (see RATIFIED BUT NOT YET LANDABLE below), and
   the mechanism and ordering analysis through the end of this step stay live for
-  whichever target lands when the removal trigger fires. The step as approved,
-  still to be followed for that target: extend the App's
+  whichever NEW target eventually lands — cursor-plugins or claude-code-proxy,
+  NOT ci-runner, which is already a manifest target and whose gate is the
+  removal trigger rather than this grant (see APP GRANT and RATIFIED BUT NOT
+  YET LANDABLE below). The step as approved, and still the procedure for a new
+  target: extend the App's
   selected access BEFORE the manifest PR merges, in the tightest window that
   ordering allows. The ordering stands; its ORIGINAL RATIONALE was wrong.
   Attestation never reaches the both-directions comparison first: the operative
