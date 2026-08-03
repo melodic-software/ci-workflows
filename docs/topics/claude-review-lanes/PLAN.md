@@ -1356,17 +1356,85 @@ independently verified twice); automerge restored — `grep -c automerge` on
 standards `main` returns 0, the pre-window shape, since the restore was a key
 REMOVAL and absent means true; wave-1 and #227 smoke transcripts recorded
 above.
-NOT SATISFIED, and the only thing blocking the tag: the **kill-switch org-var
-flip smoke** has never been executed. It requires mutating an org Actions
-variable (`CLAUDE_REVIEW_DISABLED` to `true`, observe a caller run with the
-inner job skipping, restore to `false`), which is an operator action. The
-queue-overflow probe is separately recorded as SUPERSEDED rather than
+SATISFIED 2026-08-03 — the **kill-switch org-var flip smoke** [DONE], the last
+item that was blocking the tag; transcript in the KILL-SWITCH FLIP SMOKE block
+below. The queue-overflow probe is separately recorded as SUPERSEDED rather than
 outstanding: 3e produced a real contention observation on medley — three PRs
 opened within 16 minutes drove queue depth to 3 in the repo-wide group, all
 three review jobs waited simultaneously and were then strictly serialized,
 with one run queued ~2h against a 6m48s job — which is stronger evidence than
 the synthetic probe was designed to manufacture, and it confirms the
 serializer queues rather than cancels.
+
+**KILL-SWITCH FLIP SMOKE (2026-08-03, executed; independently verified).** Both
+arms ran on dotfiles PR #401 against the pinned reusable
+`c136b27f404dd32ce3873f39a6f3443891d1c16e` (v0.9.1), head
+`b83a47f3f29524a6697d13600bf3f625dbfa680b`. All times UTC.
+
+ARM A — `CLAUDE_REVIEW_DISABLED=true`: PATCH 22:12:42Z, readback `true`
+(`updated_at` 22:12:43Z) with `CLAUDE_LANES_DISABLED=false`; `ready_for_review`
+22:12:51Z; run `30857789171` CREATED 22:12:54Z (**3s**, inside the ≤30s
+run-creation gate); concluded `success` 22:16:51Z with jobs
+`Select runner / Select runner` = `success` and `review / review` = **`skipped`**
+— the name-stable job-level skip the design predicts. RESTORE: PATCH `false`
+22:17:07Z, readback `false` (`updated_at` 22:17:09Z); PR back to draft 22:17:22Z.
+**True-window 22:12:43Z → 22:17:09Z = 4m26s.**
+
+ARM B — `CLAUDE_REVIEW_DISABLED=false`: `ready_for_review` 22:18:07Z; run
+`30858125013` CREATED 22:18:09Z (**2s**); `review / review` observed `queued`
+22:18:28Z then `in_progress` 22:19:20Z, and it ran to completion `success` with
+20 executed steps including `Claude review` and `Post Claude review`. A job whose
+`if:` is false is materialized directly as `completed`/`skipped` and never enters
+`queued`, so `queued` alone already decides the arm; the executed steps make it
+unambiguous.
+
+CONTROLLED COMPARISON: both arms used the same PR, the same trigger
+(`ready_for_review`), the same actor (`kyle-sexton`), the same non-draft payload
+state, and — verified — the same head SHA with no intervening push. The only
+variable that changed was `CLAUDE_REVIEW_DISABLED`, so the switch is the
+operative cause of the skip rather than a confound.
+
+TARGET SUBSTITUTION: the briefed target (dotfiles #400) had merged
+2026-08-03T21:53:12Z, and dotfiles held no other open draft PR — the only open PR
+(#375) is `CONFLICTING`/`DIRTY`, the documented conflict-suppression fingerprint,
+and every recently closed PR was MERGED so `reopened` had no candidate
+either. PR #401 was therefore purpose-built as a disposable draft (scratch note
+under `docs/`, which dotfiles `.chezmoiignore` excludes, so no chezmoi-managed
+target was touched), labeled `do-not-merge`, torn down at 22:20:01Z — PR closed,
+branch `chore/kill-switch-flip-smoke` deleted (ref 404). All four
+`CLAUDE_*_DISABLED` org vars confirmed `false` post-teardown. Because arm B ran a
+real review to completion, a review comment on the now-closed #401 is expected
+and is not drift.
+
+TWO `if:`-CLAUSE FINDINGS, recorded because they constrain how this smoke — and
+any future re-run — must be designed. The reusable's `review` job gates on FOUR
+conjuncts, not just the two kill-switches:
+
+1. `github.event.pull_request.draft == false` shares the `if:` with the
+   kill-switches, so a newly-OPENED draft PR fires `pull_request:opened` but skips
+   for the DRAFT reason, producing a job table byte-identical to a kill-switch
+   skip. Measured here: PR #401's own open event produced run `30857697384`
+   (created 22:11:27Z) whose `review / review` was `skipped` while
+   `CLAUDE_REVIEW_DISABLED` was still `false`. A draft-PR-open arm is therefore
+   UNATTRIBUTABLE; only a `ready_for_review` toggle isolates the switch.
+2. `!contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))`
+   means an actor in `skip-actors` makes BOTH arms skip — arm A passing
+   spuriously while arm B fails for an unrelated cause. Cleared before the flip:
+   the dotfiles caller passes no `skip-actors`, so the reusable default
+   (`dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]`)
+   governs, and the acting identity `kyle-sexton` is not in it. Any re-run must
+   re-clear this first, or a failed arm B is uninterpretable.
+
+Also confirmed pre-flight: dotfiles carries ZERO repo-level Actions variables
+(`total_count: 0`), so no repo-level value shadows the org ones — the reusable's
+own comment notes repo-level overrides org-level, making this load-bearing.
+
+INDEPENDENT VERIFICATION: a fresh-context verifier, given only the run ids and
+the claimed conclusions with the rationale withheld, re-fetched both job tables,
+the PR timeline, the org-variable state, and the branch ref, and returned
+CONFIRMED on all seven claims — including that both runs carry the identical
+`headSha` and that each run's creation immediately follows a distinct
+`ready_for_review` event separated by the 22:17:22Z `convert_to_draft`.
 
 3c INVARIANT RE-READ (2026-07-30): the canonicalized-JSON read of ruleset
 19388547 shows `bypass_actors: []`, `conditions` intact
