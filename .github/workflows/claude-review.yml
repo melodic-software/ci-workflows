@@ -76,8 +76,10 @@ name: claude-review
 #     lane already drives the same tool. Do not mistake the action's own
 #     controls for injection defences — it sanitizes bodies (hidden markup,
 #     invisible characters, leaked tokens) but not their meaning, and its
-#     buffer-and-classify step drops test/probe comments, not malicious ones,
-#     and is skipped outright when the agent passes `confirmed: true`.
+#     buffer-and-classify step filters nothing HERE: classification needs
+#     ANTHROPIC_API_KEY, which this lane never passes (OAuth only), so it fails
+#     open and posts every buffered comment — and `confirmed: true` skips the
+#     buffer outright anyway.
 #   - The standards-ref mount is opt-in and unenforced HERE by design (see the
 #     CONSUMER CONTRACT note above): this workflow has no reliable way to know
 #     a calling repo's own visibility from within a reusable-workflow context,
@@ -138,7 +140,8 @@ on:
           read-only diff-enumeration command, matching the minimal-grant pattern
           the action's own security docs recommend for `gh` subcommands. The
           inline-comment tool grant is deliberately NOT here — the compose step
-          appends it so an override cannot drop it.
+          appends it, so replacing this default cannot drop it (an explicit
+          `--disallowedTools` for that tool still wins, as it should).
         type: string
         default: >-
           --model claude-sonnet-5 --max-turns 75
@@ -491,11 +494,13 @@ jobs:
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
           # header + reporting mechanics live here and wrap the consumer's body.
           #
-          # The inline-comment tool is NAMED, not merely granted in claude_args:
-          # the action's base prompt routes every response into the single
-          # sticky comment ("Never create new comments") and lists submitting a
-          # PR review under what the agent cannot do, so a grant the prompt
-          # never mentions reads as unusable and goes uncalled.
+          # The prompt has to ask for findings AS A PR REVIEW: the action's base
+          # prompt routes every response into the single sticky comment ("Never
+          # create new comments") and lists submitting a PR review under what
+          # the agent cannot do, so without a counter-instruction the grant goes
+          # uncalled. That instruction is the load-bearing part — the security
+          # lane carries it, never names the tool, and does post inline
+          # comments. Naming the tool here is belt-and-braces, not the mechanism.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
