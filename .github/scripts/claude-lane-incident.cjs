@@ -411,13 +411,13 @@ function coverageGap({ previous, polledRepositories }) {
 
 /**
  * Render a coverage gap as the warning the workflow annotates the run with.
+ * Takes a gap, never `null` — there is nothing to say about complete coverage.
  *
  * A held cycle otherwise logs `cycle=clean action=none` and nothing says why,
  * which is precisely the diagnosis an operator needs on the cycles that go
  * wrong.
  */
 function describeCoverageGap(gap) {
-  if (!gap) return "coverage complete";
   if (gap.namesNothing) {
     return (
       "the open incident's state names no repository, so this cycle cannot " +
@@ -664,7 +664,7 @@ function renderIssueBody(state) {
     "",
     `- First seen: ${state.firstSeen ?? "unknown"}`,
     `- Last seen: ${state.lastSeen ?? "unknown"}`,
-    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE})`,
+    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE}; only cycles that polled every repository below count)`,
     `- Observed \`api_error_status\`: ${statusLine}`,
     `- Repositories affected: ${Math.max(state.repositoriesSeen ?? 0, repositoryNames.length)}`,
     `- Unrecognized \`class=\` tokens seen: ${state.unrecognized ?? 0}${
@@ -701,8 +701,15 @@ function renderIssueBody(state) {
     "   kill-switched lane still publishes a name-stable skipped check, and a",
     "   skip is not evidence the lanes ran — so while `CLAUDE_LANES_DISABLED`",
     "   (or a per-lane switch) is set, this issue can never auto-close.",
-    "4. Re-run the affected lane jobs once the cause is fixed, then let this",
-    `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive clean cycles; it closes itself.`,
+    "4. A clean cycle only counts if it polled every repository listed above.",
+    "   Polling scope is the aggregator App's installation, so a missing App",
+    "   credential narrows it to this repository and stops the count without",
+    "   failing anything; the run log's `coverage=` field and its warning",
+    "   annotation name what went unobserved. A repository that is gone for",
+    "   good — archived, or removed from the installation — can never be",
+    "   covered again, so close this by hand once you have confirmed recovery.",
+    "5. Re-run the affected lane jobs once the cause is fixed, then let this",
+    `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive covered clean cycles; it closes itself.`,
     "",
     "---",
     "*Maintained automatically by `.github/workflows/claude-lane-incident-aggregator.yml`.*",

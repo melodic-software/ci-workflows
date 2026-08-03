@@ -458,11 +458,14 @@ jobs:
 
             core.setOutput("cycle", cycle);
             core.setOutput("tally", JSON.stringify(tally));
-            // The scope this cycle actually observed, not a count of it. A
-            // clean verdict is only as wide as the poll behind it, and this
-            // scope narrows silently when the App credential goes missing, so
-            // the state step needs the names to check them against the open
-            // incident's own evidence. See coverageGap in
+            // The scope this cycle set out to read, by name rather than as a
+            // count. A clean verdict is only as wide as the poll behind it,
+            // and this scope narrows silently when the App credential goes
+            // missing, so the state step needs the names to check them against
+            // the open incident's own evidence. Attempted and observed coincide
+            // wherever this list is consulted: anything the poll failed to read
+            // raises a read error, and that caps the cycle at `indeterminate`
+            // before coverage is reached. See coverageGap in
             // claude-lane-incident.cjs.
             core.setOutput("polled-repositories", JSON.stringify(repositories));
             core.setOutput("api-calls", String(apiCalls));
