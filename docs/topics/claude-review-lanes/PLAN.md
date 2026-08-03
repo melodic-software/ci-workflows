@@ -570,7 +570,7 @@ re-trigger claude-review but DOES run the security lane's `changes` job.
   (run 30267095737). Deferred into the Phase 3c smoke: the forced-failure
   sandbox probe and the second-push cadence observation.
 
-### Phase 3: fleet rollout via standards sync-manifest [DOING]
+### Phase 3: fleet rollout via standards sync-manifest [DONE]
 
 Ordered pre-steps, then waved rollout.
 
@@ -1344,12 +1344,14 @@ overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
 or matches only deliberate standing opt-outs).
 
-**PHASE 3 CLOSE-OUT LEDGER (2026-07-31; last item cleared 2026-08-03).** Every
-item this Sanity Check names is now satisfied. The one item that had kept the
-tag `[DOING]` — the kill-switch org-var flip smoke — was executed 2026-08-03 and
-is recorded below, so the tag is UNBLOCKED but deliberately NOT flipped here:
-closing the phase is an operator judgment, not a side effect of the last
-evidence landing, and it stays `[DOING]` until that call is made.
+**PHASE 3 CLOSE-OUT LEDGER (2026-07-31; last item cleared 2026-08-03; tag
+advanced to `[DONE]` 2026-08-03).** Every item this Sanity Check names is
+satisfied. The one item that had kept the tag `[DOING]` — the kill-switch
+org-var flip smoke — was executed 2026-08-03 and is recorded below. The tag was
+then advanced on operator authority: the session handoff's remaining-actions
+item 2 pre-committed the sequencing, "record the transcript in PLAN.md, then
+advance Phase 3's tag to `[DONE]`". The two `if:`-clause findings the smoke
+surfaced refine smoke METHODOLOGY and weaken no Phase 3 goal.
 SATISFIED: `sync-manifest.sh validate` exits 0; per-target blob-hash
 equivalence 4/4 (all managed targets at `a9dfe7f4`); the 3c gate invariant
 re-read intact with the single documented break-glass delta (see the re-read
@@ -1683,7 +1685,7 @@ contains the trailer-parsing note.
   component drift filed as standards#298, companion reusable-header claim as
   ci-workflows#311). Remaining: the final bullet — tags advanced + topic
   close-out — which this PR performs for everything except Phase 3's own tag
-  (still `[DOING]` pending its closure evidence) and Phase 4.
+  (then `[DOING]` pending its closure evidence; closed 2026-08-03) and Phase 4.
   - **medley REVIEW.md equivalence — DRIFT, filed as medley#1671.** The
     comparison does not run the way the bullet's framing implies. medley's
     `REVIEW.md` is not a drifted copy of the managed source: it is an
@@ -1781,7 +1783,8 @@ contains the trailer-parsing note.
     equivalence check (since completed, drift filed as standards#298 +
     ci-workflows#311). What remains is only the final bullet — tags advanced +
     topic close-out — performed by the PR carrying this edit for every phase
-    except Phase 3 (`[DOING]` pending closure evidence) and Phase 4.
+    except Phase 3 (then `[DOING]` pending closure evidence; closed
+    2026-08-03) and Phase 4.
     Verification:
     FOUR fresh-context verifier rounds ran against the comments, the
     equivalence verdict, and this evidence block; all four returned REJECT and
