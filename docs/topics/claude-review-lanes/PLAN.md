@@ -1268,8 +1268,11 @@ Ordered pre-steps, then waved rollout.
   untouched; medley's `--model claude-sonnet-4-6` pin is still stale (its
   action pin has since moved to v1.0.180 via Dependabot, recorded to prevent a
   false staleness re-report).
-- **3g. Fleet action-currency follow-through [RESOLVED — Approval record
-  item 12]:** the Brief's "Dependabot keeps it same-day current" reaches
+- **3g. Fleet action-currency follow-through [DECISION RESOLVED — Approval
+  record item 12; IMPLEMENTATION TRACKED IN standards#314]:** the tag covers the
+  DECISION only — the job is specified but unbuilt, so the work is tracked
+  outside this phase rather than closed with it. The Brief's
+  "Dependabot keeps it same-day current" reaches
   ci-workflows only — every consumer `ignore`s ci-workflows refs, so fleet
   currency moves through release-tag → component re-pin → sync, all manual
   today (devils-advocate F10). Resolved to the recommended option,
@@ -1299,7 +1302,11 @@ Ordered pre-steps, then waved rollout.
   minimal new App [USER-APPROVAL GATE per org precedent — no silent App
   creation]. The alternative (accept lag + README SLA + #257 as sole
   detector) is dead; #257 remains the belt-and-suspenders staleness
-  detector.
+  detector. Implementation tracked in standards#314, which carries the
+  credential branch forward as OPERATOR-GATED and flags one discrepancy to
+  reconcile: a prior settled-decisions ledger records that the standards-sync
+  App must NOT be widened to cover standards itself — which would foreclose the
+  reuse branch this bullet still presents as open pending verification.
 
 **Sanity Check:** `bash distribution/sync-manifest.sh validate` exits 0; per
 target, blob-hash equivalence (loop recorded verbatim; count of mismatches ==
@@ -1352,6 +1359,17 @@ then advanced on operator authority: the session handoff's remaining-actions
 item 2 pre-committed the sequencing, "record the transcript in PLAN.md, then
 advance Phase 3's tag to `[DONE]`". The two `if:`-clause findings the smoke
 surfaced refine smoke METHODOLOGY and weaken no Phase 3 goal.
+ENUMERATION FIX (2026-08-03): this Sanity Check listed only the VERIFICATION
+items and never enumerated 3g's implementation, which is why "the only thing
+blocking the tag" read as complete while a specified-but-unbuilt Phase 3
+deliverable still existed. Caught by review on the tag-flip PR. The list below
+now carries it explicitly, and a phase's close-out must enumerate its
+DELIVERABLES, not just its checks — otherwise the sanity check certifies its own
+blind spot.
+SATISFIED — 3g implementation: NOT built; DECISION resolved (Approval record
+item 12) and the work tracked OUTSIDE this phase in standards#314, with its
+credential branch operator-gated. Tracked-elsewhere, not done: closing Phase 3
+strands nothing only because that issue exists.
 SATISFIED: `sync-manifest.sh validate` exits 0; per-target blob-hash
 equivalence 4/4 (all managed targets at `a9dfe7f4`); the 3c gate invariant
 re-read intact with the single documented break-glass delta (see the re-read
