@@ -68,6 +68,18 @@ name: claude-review
 #   - The action gates triggering on the actor's write access; bots are blocked
 #     unless named in `allowed-bots`.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
+#   - The inline-comment tool is now on the hot path (the prompt routes every
+#     line-anchorable finding through it), so untrusted diff content — including
+#     an `allowed-bots` actor's third-party changelog text — reaches a rendered
+#     comment that can carry a one-click-appliable ```suggestion block. This is
+#     a WIDENED surface, not a new one: the grant predates this and the security
+#     lane already drives the same tool. Do not mistake the action's own
+#     controls for injection defences — it sanitizes bodies (hidden markup,
+#     invisible characters, leaked tokens) but not their meaning, and its
+#     buffer-and-classify step filters nothing HERE: classification needs
+#     ANTHROPIC_API_KEY, which this lane never passes (OAuth only), so it fails
+#     open and posts every buffered comment — and `confirmed: true` skips the
+#     buffer outright anyway.
 #   - The standards-ref mount is opt-in and unenforced HERE by design (see the
 #     CONSUMER CONTRACT note above): this workflow has no reliable way to know
 #     a calling repo's own visibility from within a reusable-workflow context,
@@ -91,8 +103,10 @@ on:
       prompt:
         description: >-
           The review-criteria body. A REPO / PR NUMBER / HEAD SHA header and
-          commit-permalink guidance are prepended automatically, so this input
-          is just the instructions for what to look for.
+          the lane's reporting mechanics — inline-comment anchoring, and the
+          commit-permalink form for findings no changed line can carry — wrap
+          it automatically, so this input is just the instructions for what to
+          look for.
         type: string
         default: >-
           This is the CODE-REVIEW lane. Review this pull request for
@@ -120,16 +134,18 @@ on:
           Passed through to the Claude CLI. The universal extension point: model,
           turn budget, allowed tools, system prompt, MCP config all ride here
           (the standalone model / max_turns / allowed_tools action inputs are
-          deprecated upstream). The default allows the inline-comment MCP tool
-          so findings can land as line-anchored review comments, and a scoped
-          `Bash(gh pr diff:*)` grant so the prompt's "use `gh pr diff`"
-          instruction is actually sanctioned — a read-only diff-enumeration
-          command, matching the minimal-grant pattern the action's own
-          security docs recommend for `gh` subcommands.
+          deprecated upstream). A caller's value REPLACES this default outright,
+          so only overridable choices live here: the scoped `Bash(gh pr diff:*)`
+          grant that sanctions the prompt's "use `gh pr diff`" instruction — a
+          read-only diff-enumeration command, matching the minimal-grant pattern
+          the action's own security docs recommend for `gh` subcommands. The
+          inline-comment tool grant is deliberately NOT here — the compose step
+          appends it, so replacing this default cannot drop it (an explicit
+          `--disallowedTools` for that tool still wins, as it should).
         type: string
         default: >-
           --model claude-sonnet-5 --max-turns 75
-          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*)"
+          --allowedTools "Bash(gh pr diff:*)"
       track-progress:
         description: >-
           Create one tracking comment with progress checkboxes, sticky-updated
@@ -435,6 +451,15 @@ jobs:
           if [ -n "$STANDARDS_REF" ]; then
             args="$args --add-dir $MOUNT_PATH"
           fi
+          # The prompt below names the inline-comment tool unconditionally, so
+          # the grant has to be unconditional too — it cannot sit in the
+          # claude-args default, which a caller replaces wholesale. Dropping it
+          # does not merely un-grant the tool: the action derives which MCP
+          # servers to install from these same args, so the server would never
+          # be installed and the prompt would direct findings at a tool that is
+          # not there. Repeated --allowedTools flags accumulate and dedupe, so
+          # this only ever adds to whatever the caller passed.
+          args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
           # claude-args may be multiline (callers can pass YAML `|`), so emit it
           # with the heredoc output form and a random delimiter — a single-line
           # `args=$args` write corrupts $GITHUB_OUTPUT on any newline.
@@ -467,7 +492,15 @@ jobs:
           claude_args: ${{ steps.compose-args.outputs.args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
-          # header + permalink guidance live here and wrap the consumer's body.
+          # header + reporting mechanics live here and wrap the consumer's body.
+          #
+          # The prompt has to ask for findings AS A PR REVIEW: the action's base
+          # prompt routes every response into the single sticky comment ("Never
+          # create new comments") and lists submitting a PR review under what
+          # the agent cannot do, so without a counter-instruction the grant goes
+          # uncalled. That instruction is the load-bearing part — the security
+          # lane carries it, never names the tool, and does post inline
+          # comments. Naming the tool here is belt-and-braces, not the mechanism.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -475,8 +508,17 @@ jobs:
 
             ${{ inputs.prompt }}
 
-            When referencing specific code locations in findings, link to the
-            commit blob (not the PR) using a permalink with line numbers:
+            Report findings as a pull request review: call
+            mcp__github_inline_comment__create_inline_comment to anchor each
+            finding to the changed line it is about. That tool is granted to
+            this lane, and a line-anchored comment is what puts a finding next
+            to the code it concerns. Keep your summary comment for the
+            overview.
+
+            A finding no changed line can carry — cross-file, or about the PR
+            as a whole — goes in the summary comment instead; link its code
+            locations to the commit blob (not the PR) with a line-numbered
+            permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # ONE bounded, gated retry: this lane is advisory, but a zero-turn blip
@@ -690,9 +732,9 @@ jobs:
           allowed_bots: ${{ inputs.allowed-bots }}
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           claude_args: ${{ steps.compose-args.outputs.args }}
-          # github-context expressions must appear directly in the step (a value
-          # carried in via inputs.prompt is NOT re-evaluated), so the structural
-          # header + permalink guidance live here and wrap the consumer's body.
+          # Verbatim copy of the first attempt's prompt (see its comment for why
+          # the reporting mechanics live here rather than in inputs.prompt); the
+          # two must not diverge.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -700,8 +742,17 @@ jobs:
 
             ${{ inputs.prompt }}
 
-            When referencing specific code locations in findings, link to the
-            commit blob (not the PR) using a permalink with line numbers:
+            Report findings as a pull request review: call
+            mcp__github_inline_comment__create_inline_comment to anchor each
+            finding to the changed line it is about. That tool is granted to
+            this lane, and a line-anchored comment is what puts a finding next
+            to the code it concerns. Keep your summary comment for the
+            overview.
+
+            A finding no changed line can carry — cross-file, or about the PR
+            as a whole — goes in the summary comment instead; link its code
+            locations to the commit blob (not the PR) with a line-numbered
+            permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       # Collapse the two attempts into the one pair of facts the outcome step
