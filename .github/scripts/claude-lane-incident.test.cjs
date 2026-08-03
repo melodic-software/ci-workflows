@@ -526,22 +526,53 @@ test("an indeterminate cycle neither advances nor resets the clean counter", () 
   assert.equal(quiet.state.cleanCycles, 1);
 });
 
-test("an open issue that lost its state block holds instead of counting toward close", () => {
-  // A hand-edited body (or one from an older schema) parses to no prior state,
-  // so it names no repository and no clean cycle can contradict it. Counting
-  // toward the auto-close from there closes an incident on evidence that was
-  // never checked against anything.
-  const { state, action, coverageGap } = nextState({
-    previous: null,
-    tally: tallyObservations([]),
-    cycle: "clean",
-    now: "2026-07-27T00:00:00Z",
-    issueOpen: true,
-    polledRepositories: COVERING_SCOPE,
-  });
-  assert.equal(action, "none");
-  assert.equal(state, null);
-  assert.equal(coverageGap.unparsableState, true);
+test("an open incident whose state names no repository holds however it got that way", () => {
+  // Two routes to an index that names nothing, and the reason must not change
+  // the answer: a body that did not parse (hand-edited, or an older schema) and
+  // one that parsed to an empty index both claim nothing, so no clean cycle can
+  // contradict them. Counting toward the auto-close from either closes an
+  // incident on evidence that was never checked against anything.
+  const emptyIndex = {
+    ...parseStateBlock(renderStateBlock(openIncident().state)),
+    repositories: {},
+    repositoriesSeen: 0,
+  };
+  for (const previous of [null, emptyIndex]) {
+    const { action, coverageGap } = nextState({
+      previous,
+      tally: tallyObservations([]),
+      cycle: "clean",
+      now: "2026-07-27T00:00:00Z",
+      issueOpen: true,
+      polledRepositories: COVERING_SCOPE,
+    });
+    assert.equal(action, "none", JSON.stringify(previous));
+    assert.equal(coverageGap.namesNothing, true, JSON.stringify(previous));
+    assert.match(describeCoverageGap(coverageGap), /names no repository/u);
+  }
+});
+
+test("an empty index cannot be walked to a close over three cycles", () => {
+  // The gap must hold on EVERY cycle, not merely fail to advance on one: a
+  // check that let the counter climb would still close on the third.
+  let state = {
+    ...parseStateBlock(renderStateBlock(openIncident().state)),
+    repositories: {},
+    repositoriesSeen: 0,
+  };
+  for (let cycle = 0; cycle < CLEAN_CYCLES_TO_CLOSE; cycle += 1) {
+    const result = nextState({
+      previous: state,
+      tally: tallyObservations([]),
+      cycle: "clean",
+      now: `2026-07-27T0${cycle + 1}:00:00Z`,
+      issueOpen: true,
+      polledRepositories: COVERING_SCOPE,
+    });
+    assert.equal(result.action, "none");
+    assert.equal(result.state.cleanCycles, 0);
+    state = result.state;
+  }
 });
 
 test("an escalating cycle still rebuilds a body that lost its state block", () => {

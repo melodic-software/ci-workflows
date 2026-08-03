@@ -361,28 +361,34 @@ function classifyCycle({ laneRunsObserved, escalating, readErrors }) {
  *   - `unlisted` — the persisted index is bounded (MAX_TRACKED_REPOSITORIES)
  *     while `repositoriesSeen` counts the whole incident, so a truncated index
  *     cannot name what it dropped and coverage over it cannot be established.
- *   - `unparsableState` — an open incident whose state block did not parse
- *     names nothing, so it proves nothing.
+ *   - `namesNothing` — the incident's index names no repository at all, so no
+ *     cycle can contradict it and none may count toward closing it.
  *
- * `unparsableState` covers a hand-edited body and one written by an older
- * schema alike. Rebuilding either from an empty state and counting toward close
- * from zero would be the same silent close by another route, because a body
- * that names no repositories cannot contradict any cycle. An incident whose
- * durable record was lost is one a human closes. The escalating path still
- * rebuilds the block, so a live incident's body self-repairs.
+ * `namesNothing` turns on what the index CONTAINS, never on why: a state block
+ * that did not parse (hand-edited, or written by an older schema, both of which
+ * `parseStateBlock` degrades to null) and one that parsed to an empty index are
+ * the same claim — nothing — and get the same answer. Rebuilding either from an
+ * empty state and counting toward close from zero would be the same silent
+ * close by another route. An incident whose durable record was lost is one a
+ * human closes; the escalating path still rebuilds the block, so a live
+ * incident's body self-repairs.
  *
- * A gap holds the incident open indefinitely, including when an implicated
- * repository is legitimately gone — archived, or dropped from the installation
- * — because neither is distinguishable here from a credential that vanished.
- * That is the deliberate direction to fail: a held incident is visible and a
- * human closes it, whereas the silent close this prevents looks exactly like
- * recovery.
+ * A gap holds the incident open indefinitely, and three cases make that a
+ * standing operator cost rather than a transient one: an implicated repository
+ * that is legitimately gone (archived, or dropped from the installation, which
+ * is not distinguishable here from a credential that vanished); an incident
+ * wider than MAX_TRACKED_REPOSITORIES, whose `unlisted` remainder never
+ * resolves; and a STATE_SCHEMA_VERSION bump, which strands every incident open
+ * at the time. Each is the deliberate direction to fail: a held incident is
+ * visible and a human closes it, whereas the silent close this prevents looks
+ * exactly like recovery.
  *
  * Returns `null` when coverage is complete.
  */
 function coverageGap({ previous, polledRepositories }) {
-  if (previous === null || previous === undefined) {
-    return { unobserved: [], unlisted: 0, unparsableState: true };
+  const implicated = Object.keys(previous?.repositories ?? {});
+  if (implicated.length === 0) {
+    return { unobserved: [], unlisted: 0, namesNothing: true };
   }
   // Case-insensitive for the same reason the poll's fork check is: GitHub
   // repository names are, and the `repositories` dispatch input is typed by a
@@ -392,7 +398,6 @@ function coverageGap({ previous, polledRepositories }) {
       .filter((name) => typeof name === "string")
       .map((name) => name.trim().toLowerCase()),
   );
-  const implicated = Object.keys(previous.repositories ?? {});
   const unobserved = implicated.filter(
     (name) => !polled.has(name.toLowerCase()),
   );
@@ -401,7 +406,7 @@ function coverageGap({ previous, polledRepositories }) {
     (toPositiveInteger(previous.repositoriesSeen) ?? 0) - implicated.length,
   );
   if (unobserved.length === 0 && unlisted === 0) return null;
-  return { unobserved, unlisted, unparsableState: false };
+  return { unobserved, unlisted, namesNothing: false };
 }
 
 /**
@@ -413,11 +418,11 @@ function coverageGap({ previous, polledRepositories }) {
  */
 function describeCoverageGap(gap) {
   if (!gap) return "coverage complete";
-  if (gap.unparsableState) {
+  if (gap.namesNothing) {
     return (
-      "the open incident carries no parsable state block, so this cycle " +
-      "cannot prove it observed what the incident implicates; holding it " +
-      "open for a human to close."
+      "the open incident's state names no repository, so this cycle cannot " +
+      "prove it observed what the incident implicates; holding it open for a " +
+      "human to close."
     );
   }
   const parts = [];
