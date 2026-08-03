@@ -1344,8 +1344,12 @@ overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
 or matches only deliberate standing opt-outs).
 
-**PHASE 3 CLOSE-OUT LEDGER (2026-07-31).** The tag stays `[DOING]` for exactly
-one unexecuted item; everything else this Sanity Check names is satisfied.
+**PHASE 3 CLOSE-OUT LEDGER (2026-07-31; last item cleared 2026-08-03).** Every
+item this Sanity Check names is now satisfied. The one item that had kept the
+tag `[DOING]` — the kill-switch org-var flip smoke — was executed 2026-08-03 and
+is recorded below, so the tag is UNBLOCKED but deliberately NOT flipped here:
+closing the phase is an operator judgment, not a side effect of the last
+evidence landing, and it stays `[DOING]` until that call is made.
 SATISFIED: `sync-manifest.sh validate` exits 0; per-target blob-hash
 equivalence 4/4 (all managed targets at `a9dfe7f4`); the 3c gate invariant
 re-read intact with the single documented break-glass delta (see the re-read
@@ -1374,7 +1378,13 @@ arms ran on dotfiles PR #401 against the pinned reusable
 ARM A — `CLAUDE_REVIEW_DISABLED=true`: PATCH 22:12:42Z, readback `true`
 (`updated_at` 22:12:43Z) with `CLAUDE_LANES_DISABLED=false`; `ready_for_review`
 22:12:51Z; run `30857789171` CREATED 22:12:54Z (**3s**, inside the ≤30s
-run-creation gate); concluded `success` 22:16:51Z with jobs
+run-creation gate — a smoke-local DISCARD rule, not a platform SLA and not a
+documented bound: it exists because of the #227 `pull_request` event-delivery
+gap recorded above, where delivery is 0-5s typically but was observed at 2m19s,
+~42min, and ~13h31m with root cause still unknown. An arm that produces no run
+therefore cannot be read as a skip — the event may simply not have arrived — so
+it is discarded rather than scored. Delivery here was 3s / 3s / 2s across the
+three runs this smoke created); concluded `success` 22:16:51Z with jobs
 `Select runner / Select runner` = `success` and `review / review` = **`skipped`**
 — the name-stable job-level skip the design predicts. RESTORE: PATCH `false`
 22:17:07Z, readback `false` (`updated_at` 22:17:09Z); PR back to draft 22:17:22Z.
@@ -1396,9 +1406,9 @@ operative cause of the skip rather than a confound.
 
 TARGET SUBSTITUTION: the briefed target (dotfiles #400) had merged
 2026-08-03T21:53:12Z, and dotfiles held no other open draft PR — the only open PR
-(#375) is `CONFLICTING`/`DIRTY`, the documented conflict-suppression fingerprint,
-and every recently closed PR was MERGED so `reopened` had no candidate
-either. PR #401 was therefore purpose-built as a disposable draft (scratch note
+(#375) is not a draft at all (and is additionally `CONFLICTING`/`DIRTY`), so it
+affords no draft→ready toggle, and every recently closed PR was MERGED so
+`reopened` had no candidate either. PR #401 was therefore purpose-built as a disposable draft (scratch note
 under `docs/`, which dotfiles `.chezmoiignore` excludes, so no chezmoi-managed
 target was touched), labeled `do-not-merge`, torn down at 22:20:01Z — PR closed,
 branch `chore/kill-switch-flip-smoke` deleted (ref 404). All four
