@@ -68,6 +68,16 @@ name: claude-review
 #   - The action gates triggering on the actor's write access; bots are blocked
 #     unless named in `allowed-bots`.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
+#   - The inline-comment tool is now on the hot path (the prompt routes every
+#     line-anchorable finding through it), so untrusted diff content — including
+#     an `allowed-bots` actor's third-party changelog text — reaches a rendered
+#     comment that can carry a one-click-appliable ```suggestion block. This is
+#     a WIDENED surface, not a new one: the grant predates this and the security
+#     lane already drives the same tool. Do not mistake the action's own
+#     controls for injection defences — it sanitizes bodies (hidden markup,
+#     invisible characters, leaked tokens) but not their meaning, and its
+#     buffer-and-classify step drops test/probe comments, not malicious ones,
+#     and is skipped outright when the agent passes `confirmed: true`.
 #   - The standards-ref mount is opt-in and unenforced HERE by design (see the
 #     CONSUMER CONTRACT note above): this workflow has no reliable way to know
 #     a calling repo's own visibility from within a reusable-workflow context,
@@ -122,16 +132,17 @@ on:
           Passed through to the Claude CLI. The universal extension point: model,
           turn budget, allowed tools, system prompt, MCP config all ride here
           (the standalone model / max_turns / allowed_tools action inputs are
-          deprecated upstream). The default allows the inline-comment MCP tool
-          so findings can land as line-anchored review comments, and a scoped
-          `Bash(gh pr diff:*)` grant so the prompt's "use `gh pr diff`"
-          instruction is actually sanctioned — a read-only diff-enumeration
-          command, matching the minimal-grant pattern the action's own
-          security docs recommend for `gh` subcommands.
+          deprecated upstream). A caller's value REPLACES this default outright,
+          so only overridable choices live here: the scoped `Bash(gh pr diff:*)`
+          grant that sanctions the prompt's "use `gh pr diff`" instruction — a
+          read-only diff-enumeration command, matching the minimal-grant pattern
+          the action's own security docs recommend for `gh` subcommands. The
+          inline-comment tool grant is deliberately NOT here — the compose step
+          appends it so an override cannot drop it.
         type: string
         default: >-
           --model claude-sonnet-5 --max-turns 75
-          --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*)"
+          --allowedTools "Bash(gh pr diff:*)"
       track-progress:
         description: >-
           Create one tracking comment with progress checkboxes, sticky-updated
@@ -437,6 +448,15 @@ jobs:
           if [ -n "$STANDARDS_REF" ]; then
             args="$args --add-dir $MOUNT_PATH"
           fi
+          # The prompt below names the inline-comment tool unconditionally, so
+          # the grant has to be unconditional too — it cannot sit in the
+          # claude-args default, which a caller replaces wholesale. Dropping it
+          # does not merely un-grant the tool: the action derives which MCP
+          # servers to install from these same args, so the server would never
+          # be installed and the prompt would direct findings at a tool that is
+          # not there. Repeated --allowedTools flags accumulate and dedupe, so
+          # this only ever adds to whatever the caller passed.
+          args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
           # claude-args may be multiline (callers can pass YAML `|`), so emit it
           # with the heredoc output form and a random delimiter — a single-line
           # `args=$args` write corrupts $GITHUB_OUTPUT on any newline.
