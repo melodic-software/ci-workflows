@@ -387,20 +387,23 @@ test("a human author impersonating the bot's login string is ignored (__typename
 // runner the caller selected, so its issue lookup/close steps must not
 // assume the gh CLI is on PATH (a self-hosted image is not guaranteed to
 // ship it) — they run on actions/github-script instead.
+function stepText(name) {
+  const stepIndex = workflow.indexOf(`- name: ${name}`);
+  assert.ok(stepIndex >= 0, `step '${name}' is missing`);
+  const nextStepOffset = workflow
+    .slice(stepIndex + 1)
+    .search(/\n\s*(?:#[^\n]*\n\s*)*- name:/u);
+  return nextStepOffset >= 0
+    ? workflow.slice(stepIndex, stepIndex + 1 + nextStepOffset)
+    : workflow.slice(stepIndex);
+}
+
 test("the tracking-issue lookup and close steps run on github-script, not the gh CLI", () => {
   for (const name of [
     "Find existing tracking issue",
     "Close recovered tracking issue",
   ]) {
-    const stepIndex = workflow.indexOf(`- name: ${name}`);
-    assert.ok(stepIndex >= 0, `step '${name}' is missing`);
-    const nextStepOffset = workflow
-      .slice(stepIndex + 1)
-      .search(/\n\s*(?:#[^\n]*\n\s*)*- name:/u);
-    const step =
-      nextStepOffset >= 0
-        ? workflow.slice(stepIndex, stepIndex + 1 + nextStepOffset)
-        : workflow.slice(stepIndex);
+    const step = stepText(name);
     assert.match(
       step,
       /uses: actions\/github-script@/u,
@@ -758,9 +761,22 @@ const MARKER =
   "<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->";
 const ISSUE_TITLE = "[Alert] standards-sync stuck auto-merge PR(s)";
 
+// The caller repository and the tracking-issue repository are deliberately
+// different fixtures everywhere below: the defect these steps were changed for
+// is that they addressed the CALLER, which the App is not installed on
+// (melodic-software/standards#273). Identical values would let a regression to
+// `context.repo.repo` keep every assertion green.
+const CALLER_REPO = "standards";
+const TRACKING_ISSUE_REPOSITORY = "medley";
+
 async function runLookup({ openIssues = [], envOverrides = {} } = {}) {
   const script = extractStepScript("Find existing tracking issue");
-  const keys = ["MARKER", "ISSUE_TITLE", "ISSUE_AUTHOR_LOGIN"];
+  const keys = [
+    "MARKER",
+    "ISSUE_TITLE",
+    "ISSUE_AUTHOR_LOGIN",
+    "TRACKING_ISSUE_REPOSITORY",
+  ];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
@@ -768,20 +784,27 @@ async function runLookup({ openIssues = [], envOverrides = {} } = {}) {
     MARKER,
     ISSUE_TITLE,
     ISSUE_AUTHOR_LOGIN: "github-actions[bot]",
+    TRACKING_ISSUE_REPOSITORY,
     ...envOverrides,
   });
   const outputs = {};
+  const listParams = [];
   let failedWith = null;
   try {
     const github = {
-      paginate: async (_fn, _params) => openIssues,
+      paginate: async (_fn, params) => {
+        listParams.push(params);
+        return openIssues;
+      },
       rest: { issues: { listForRepo: () => {} } },
     };
     const core = {
       setOutput: (key, value) => (outputs[key] = value),
       setFailed: (message) => (failedWith = message),
     };
-    const context = { repo: { owner: "melodic-software", repo: "dotfiles" } };
+    const context = {
+      repo: { owner: "melodic-software", repo: CALLER_REPO },
+    };
     const execute = new AsyncFunction(
       "github",
       "core",
@@ -790,7 +813,7 @@ async function runLookup({ openIssues = [], envOverrides = {} } = {}) {
       script,
     );
     await execute(github, core, context, process);
-    return { outputs, failedWith };
+    return { outputs, failedWith, listParams };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -801,19 +824,24 @@ async function runLookup({ openIssues = [], envOverrides = {} } = {}) {
 
 async function runClose({ openIssues = [] } = {}) {
   const script = extractStepScript("Close recovered tracking issue");
-  const keys = ["MARKER", "ISSUE_AUTHOR_LOGIN"];
+  const keys = ["MARKER", "ISSUE_AUTHOR_LOGIN", "TRACKING_ISSUE_REPOSITORY"];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
   Object.assign(process.env, {
     MARKER,
     ISSUE_AUTHOR_LOGIN: "github-actions[bot]",
+    TRACKING_ISSUE_REPOSITORY,
   });
   const comments = [];
   const updates = [];
+  const listParams = [];
   try {
     const github = {
-      paginate: async (_fn, _params) => openIssues,
+      paginate: async (_fn, params) => {
+        listParams.push(params);
+        return openIssues;
+      },
       rest: {
         issues: {
           listForRepo: () => {},
@@ -823,7 +851,9 @@ async function runClose({ openIssues = [] } = {}) {
       },
     };
     const core = {};
-    const context = { repo: { owner: "melodic-software", repo: "dotfiles" } };
+    const context = {
+      repo: { owner: "melodic-software", repo: CALLER_REPO },
+    };
     const execute = new AsyncFunction(
       "github",
       "core",
@@ -832,7 +862,7 @@ async function runClose({ openIssues = [] } = {}) {
       script,
     );
     await execute(github, core, context, process);
-    return { comments, updates };
+    return { comments, updates, listParams };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -937,11 +967,94 @@ test("close comments on and closes the genuine bot-authored tracking issue", asy
   assert.equal(updates.length, 1);
   assert.deepEqual(updates[0], {
     owner: "melodic-software",
-    repo: "dotfiles",
+    repo: TRACKING_ISSUE_REPOSITORY,
     issue_number: 5,
     state: "closed",
     state_reason: "completed",
   });
+});
+
+// --- the tracking issue's destination repository ---------------------------
+// The App that authors the issue is installed on the sync TARGETS, and the
+// caller (melodic-software/standards) is the sync SOURCE, deliberately not one
+// of them. Addressing the caller made the token mint 404 on all 254 scheduled
+// runs (melodic-software/standards#273), so every step that touches the issue
+// must address `tracking-issue-repository`, never `context.repo.repo`.
+
+test("the lookup reads issues from the tracking-issue repository, not the caller", async () => {
+  const { listParams } = await runLookup({
+    openIssues: [issue({ number: 5, body: `${MARKER}\nreport` })],
+  });
+  assert.equal(listParams.length, 1);
+  assert.equal(listParams[0].owner, "melodic-software");
+  assert.equal(listParams[0].repo, TRACKING_ISSUE_REPOSITORY);
+  assert.notEqual(listParams[0].repo, CALLER_REPO);
+});
+
+test("close reads and writes the tracking-issue repository, not the caller", async () => {
+  const { listParams, comments } = await runClose({
+    openIssues: [issue({ number: 5, body: `${MARKER}\nreport` })],
+  });
+  assert.equal(listParams[0].repo, TRACKING_ISSUE_REPOSITORY);
+  assert.equal(comments[0].owner, "melodic-software");
+  assert.equal(comments[0].repo, TRACKING_ISSUE_REPOSITORY);
+});
+
+test("the tracking-issue repository is a required workflow_call input, never defaulted", () => {
+  const inputBlock =
+    /\n {6}tracking-issue-repository:\n((?: {8}.*\n|\n)+)/u.exec(workflow);
+  assert.ok(inputBlock, "tracking-issue-repository input must be declared");
+  assert.match(inputBlock[1], /^ {8}required: true$/mu);
+  // A default would restore the defect's shape: a caller that says nothing
+  // gets a destination the App may not be installed on, and finds out only
+  // when the alert first has something to report.
+  assert.doesNotMatch(inputBlock[1], /^ {8}default:/mu);
+});
+
+test("the issue token is scoped to the named repository and the issue write targets it", () => {
+  const mintStep = stepText("Mint App token for the tracking-issue repository");
+  assert.match(
+    mintStep,
+    /repositories: \$\{\{ inputs\.tracking-issue-repository \}\}/u,
+    "leaving owner AND repositories unset is what scoped the token to the caller",
+  );
+  const writeStep = stepText("Open or update tracking issue");
+  assert.match(
+    writeStep,
+    /repository: \$\{\{ github\.repository_owner \}\}\/\$\{\{ inputs\.tracking-issue-repository \}\}/u,
+    "create-issue-from-file defaults `repository` to the caller",
+  );
+});
+
+// The three consumers of the issue token partition the outcome space: the
+// lookup and the open/update run when a count is non-zero, and the recovery
+// close runs when BOTH are zero. So the mint cannot carry the non-zero
+// condition — that would leave the close branch tokenless on exactly the runs
+// it exists for — and it cannot be dropped on a clean run either.
+test("the issue-token mint is unconditional, because the close branch is the complement of the other two", () => {
+  const mintStep = stepText("Mint App token for the tracking-issue repository");
+  assert.doesNotMatch(
+    mintStep,
+    /^ {8}if:/mu,
+    "guarding the mint on the alert condition strands the recovery-close branch",
+  );
+  const alerting =
+    "if: steps.scan.outputs.stuck-count != '0' || steps.scan.outputs.unarmed-count != '0'";
+  const recovering =
+    "if: steps.scan.outputs.stuck-count == '0' && steps.scan.outputs.unarmed-count == '0'";
+  for (const name of [
+    "Find existing tracking issue",
+    "Open or update tracking issue",
+  ]) {
+    assert.ok(
+      stepText(name).includes(alerting),
+      `'${name}' must run only when there is something to report`,
+    );
+  }
+  assert.ok(
+    stepText("Close recovered tracking issue").includes(recovering),
+    "the close branch must be the exact complement of the alerting condition",
+  );
 });
 
 // --- never-armed detection -------------------------------------------------
