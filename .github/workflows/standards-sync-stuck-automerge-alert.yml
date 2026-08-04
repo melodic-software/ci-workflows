@@ -121,6 +121,22 @@ jobs:
     permissions:
       contents: read # The ambient token no longer authors any issue write; see ISSUE_AUTHOR_LOGIN above.
     steps:
+      # First step, before the checkout and the scan: a malformed destination
+      # otherwise fails LATE and confusingly rather than not at all. An
+      # `owner/repo` value mints a token fine (create-github-app-token accepts
+      # that form and checks the owner half matches), then breaks downstream —
+      # `listForRepo` 404s on a repo name containing a slash, and the issue
+      # write concatenates a second owner onto it.
+      - name: Reject a malformed tracking-issue repository
+        env:
+          TRACKING_ISSUE_REPOSITORY: ${{ inputs.tracking-issue-repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TRACKING_ISSUE_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::tracking-issue-repository must be a bare repository name under the caller's own owner, not '${TRACKING_ISSUE_REPOSITORY}'."
+            exit 1
+          fi
+
       - name: Check out standards
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

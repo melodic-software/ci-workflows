@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -1009,6 +1010,61 @@ test("the tracking-issue repository is a required workflow_call input, never def
   // gets a destination the App may not be installed on, and finds out only
   // when the alert first has something to report.
   assert.doesNotMatch(inputBlock[1], /^ {8}default:/mu);
+});
+
+// Executed rather than pattern-matched, the way
+// claude-security-review-fail-closed.test.cjs runs its own `run:` blocks: the
+// guard's whole value is what bash does with a given value.
+function runRepositoryGuard(value) {
+  const step = stepText("Reject a malformed tracking-issue repository");
+  const marker = "        run: |\n";
+  const start = step.indexOf(marker);
+  assert.notEqual(start, -1, "the guard step has no literal run block");
+  const lines = step.slice(start + marker.length).split("\n");
+  const end = lines.findIndex(
+    (line) => line !== "" && !line.startsWith("          "),
+  );
+  const body = (end === -1 ? lines : lines.slice(0, end))
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
+  assert.doesNotMatch(
+    body,
+    /\$\{\{/u,
+    "the guard interpolates a github expression, so running it here would not match CI",
+  );
+  return spawnSync("bash", ["-c", body], {
+    encoding: "utf8",
+    env: { ...process.env, TRACKING_ISSUE_REPOSITORY: value },
+  });
+}
+
+test("the repository guard is the job's first step, so a bad value fails before the scan", () => {
+  const firstStep =
+    /\n {4}steps:\n {6}(?:#[^\n]*\n {6})*- name: ([^\n]+)\n/u.exec(workflow);
+  assert.equal(firstStep?.[1], "Reject a malformed tracking-issue repository");
+});
+
+test("the repository guard accepts a bare repository name", () => {
+  assert.equal(runRepositoryGuard("medley").status, 0);
+  assert.equal(runRepositoryGuard("ci-workflows").status, 0);
+  assert.equal(runRepositoryGuard(".github").status, 0);
+});
+
+// An `owner/repo` value is the trap worth failing fast on: the mint ACCEPTS it
+// (create-github-app-token parses an owner-qualified entry), so the run gets
+// past the credential and dies later and less legibly — `listForRepo` 404s on
+// a name containing a slash, and the issue write concatenates a second owner.
+test("the repository guard rejects owner/repo, a URL, an empty value, and stray whitespace", () => {
+  for (const value of [
+    "melodic-software/medley",
+    "https://github.com/melodic-software/medley",
+    "",
+    "medley ",
+  ]) {
+    const result = runRepositoryGuard(value);
+    assert.equal(result.status, 1, `'${value}' must be rejected`);
+    assert.match(result.stdout + result.stderr, /::error::/u);
+  }
 });
 
 test("the issue token is scoped to the named repository and the issue write targets it", () => {
