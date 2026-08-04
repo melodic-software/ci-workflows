@@ -903,7 +903,10 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   // The other two standing causes of a permanent hold, which step 4 attributed
   // to a gone repository alone.
   assert.match(flattened, /an incident wider than the tracked index/u);
-  assert.match(flattened, /a state-schema bump strands every incident open/u);
+  assert.match(
+    flattened,
+    /an index this watchdog can no longer read — hand-edited, or written by an older schema/u,
+  );
 });
 
 test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
