@@ -799,24 +799,19 @@ async function runLookup({ openIssues = [], envOverrides = {} } = {}) {
   }
 }
 
-async function runClose({ openIssues = [] } = {}) {
+async function runClose({ issueNumber } = {}) {
   const script = extractStepScript("Close recovered tracking issue");
-  const keys = ["MARKER", "ISSUE_AUTHOR_LOGIN"];
+  const keys = ["ISSUE_NUMBER"];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
-  Object.assign(process.env, {
-    MARKER,
-    ISSUE_AUTHOR_LOGIN: "github-actions[bot]",
-  });
+  Object.assign(process.env, { ISSUE_NUMBER: String(issueNumber) });
   const comments = [];
   const updates = [];
   try {
     const github = {
-      paginate: async (_fn, _params) => openIssues,
       rest: {
         issues: {
-          listForRepo: () => {},
           createComment: async (params) => comments.push(params),
           update: async (params) => updates.push(params),
         },
@@ -913,25 +908,39 @@ test("the lookup still fails closed on a genuine ambiguity between two bot-autho
   assert.match(failedWith, /found 2 issues carrying marker/u);
 });
 
-test("close ignores a decoy issue and takes no action when none of the candidates are bot-authored", async () => {
-  const { comments, updates } = await runClose({
-    openIssues: [
-      issue({
-        number: 5,
-        login: "some-random-user",
-        type: "User",
-        body: `${MARKER}\ndecoy`,
-      }),
-    ],
-  });
-  assert.equal(comments.length, 0);
-  assert.equal(updates.length, 0);
+// The close step resolves no issue of its own — it acts on the number the
+// lookup above already author-filtered. That makes its `if:` the whole of its
+// decoy protection: without the `issue-number != ''` conjunct it would run
+// with an empty number on every healthy run, and without the lookup running
+// unconditionally the number would always be empty on exactly those runs. The
+// two halves are only correct together, so both are asserted structurally —
+// no mock can reach an `if:` expression.
+test("the close step acts only on the author-filtered lookup result, and only when there is one", () => {
+  const closeStep = workflow.slice(
+    workflow.indexOf("- name: Close recovered tracking issue"),
+  );
+  const closeCondition = /\n\s+if: ([^\n]*)/u.exec(closeStep)[1];
+  assert.match(closeCondition, /steps\.scan\.outputs\.stuck-count == '0'/u);
+  assert.match(closeCondition, /steps\.scan\.outputs\.unarmed-count == '0'/u);
+  assert.match(
+    closeCondition,
+    /steps\.tracking\.outputs\.issue-number != ''/u,
+    "the close step must be guarded on the lookup having resolved an issue",
+  );
+
+  const lookupStep = workflow.slice(
+    workflow.indexOf("- name: Find existing tracking issue"),
+  );
+  const lookupHeader = lookupStep.slice(0, lookupStep.indexOf("script: |"));
+  assert.doesNotMatch(
+    lookupHeader,
+    /\n\s+if:/u,
+    "the lookup must run unconditionally, or the close step is starved on every healthy run",
+  );
 });
 
-test("close comments on and closes the genuine bot-authored tracking issue", async () => {
-  const { comments, updates } = await runClose({
-    openIssues: [issue({ number: 5, body: `${MARKER}\nreport` })],
-  });
+test("close comments on and closes the tracking issue the lookup resolved", async () => {
+  const { comments, updates } = await runClose({ issueNumber: 5 });
   assert.equal(comments.length, 1);
   assert.equal(comments[0].issue_number, 5);
   assert.equal(updates.length, 1);

@@ -33,11 +33,19 @@ name: standards-sync-stuck-automerge-alert
 # scattered across the 8 targets.
 #
 # CONSUMER CONTRACT: the caller's job must grant `issues: write` (a called
-# workflow can only downgrade the caller's grant, never elevate it), the same
-# way link-check.yml's and pulumi-version-drift-check.yml's callers do. The
-# App secrets below remain required — they mint the cross-repository read
-# token that scans the targets — but they no longer author the tracking
-# issue.
+# workflow can only downgrade the caller's grant, never elevate it), matching
+# link-check.yml's and pulumi-version-drift-check.yml's callers. The App
+# secrets below remain required — they mint the cross-repository read token
+# that scans the targets — but they no longer author the tracking issue.
+#
+# One asymmetry with those two, for a consumer governed by
+# melodic-software/standards' runner-policy: a reviewed contract may pin the
+# caller's grant through `allowedCallerPermissions`, but only when every
+# mapped secret's input name equals the repository secret it reads
+# (`NAME: ${{ secrets.NAME }}`) — which the kebab-case inputs below cannot
+# satisfy. Those two workflows take no secrets, so they pin the grant freely.
+# A contract for this workflow either omits that pin or renames these inputs;
+# nothing forces the pin, and granting `issues: write` does not.
 on:
   workflow_call:
     inputs:
