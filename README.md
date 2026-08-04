@@ -334,12 +334,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   GitHub itself. A target opted out with `automerge: false` is never reported
   unarmed — that is the intended state, not an incident. Neither check covers
   an armed PR reporting a non-BLOCKED unmergeable state such as `DIRTY`.
-  Consumed via `uses:` at job level from a
-  *scheduled* caller that grants `issues: write`; the tracking issue lands in
-  the caller's own repository (a marker-deduped rolling report, the same
-  mechanism `link-check.yml` and `queue-monitor-liveness.yml` use), and the run
-  fails when it finds any — both states are actionable conditions, not flaky
-  ones, so this is intentionally not advisory.
+  Consumed via `uses:` at job level from a *scheduled* caller. The tracking
+  issue (a marker-deduped rolling report, the same mechanism `link-check.yml`
+  and `queue-monitor-liveness.yml` use) is authored by the App, not by the
+  caller's ambient token, so the caller grants no `issues:` scope and instead
+  names the destination through the required `tracking-issue-repository`
+  input: a bare repository name under the caller's own owner that the App is
+  installed on. It is required rather than defaulted to the caller because the
+  caller need not be — and for `melodic-software/standards`, the sync source,
+  is not — a repository that installation covers. The run fails when it finds
+  any — both states are actionable conditions, not flaky ones, so this is
+  intentionally not advisory.
 - `.github/workflows/select-runner.yml` — the single organization-approved
   hosted/self-hosted selector. With `self-hosted-only`, the selector itself
   queues on the always-on default `melodic-ubuntu-24.04-x64` route so it never
