@@ -1,0 +1,11 @@
+# Ownership for the surfaces whose only other protection is a test that the same
+# pull request could delete. The contract lane runs `node --test` over a GLOB, so
+# removing a test file yields fewer tests and still reports green; an inventory
+# assertion inside that file cannot survive its own deletion. Review by an owner
+# is what covers that, and it is the reason these two paths are listed.
+#
+# This file names the owner. REQUIRING their review is a ruleset setting, owned
+# by github-iac, not by anything in this repository.
+
+.github/scripts/**                                    @kyle-sexton
+.github/workflows/claude-lane-incident-aggregator.yml @kyle-sexton
