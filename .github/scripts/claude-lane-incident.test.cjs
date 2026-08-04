@@ -878,6 +878,34 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
 });
 
+test("the coverage copy names the tracked index, never the rendered table", () => {
+  const { state } = nextState({
+    previous: null,
+    tally: fleetWideTally(120, 40),
+    cycle: "incident",
+    now: "2026-07-27T00:00:00Z",
+    issueOpen: false,
+  });
+  // The three sets differ exactly when the copy matters: 120 seen, 60 tracked,
+  // at most 40 rendered. `coverageGap` gates on the TRACKED index, so copy that
+  // points the operator at the table promises a close the gate will not grant.
+  const body = renderIssueBody(state);
+  const flattened = body.replace(/\s+/gu, " ");
+  assert.match(
+    flattened,
+    /only cycles that polled every repository this incident tracks count/u,
+  );
+  assert.match(
+    flattened,
+    /A clean cycle only counts if it polled every repository this incident tracks\./u,
+  );
+  assert.doesNotMatch(flattened, /every repository (?:listed above|below)/u);
+  // The other two standing causes of a permanent hold, which step 4 attributed
+  // to a gone repository alone.
+  assert.match(flattened, /an incident wider than the tracked index/u);
+  assert.match(flattened, /a state-schema bump strands every incident open/u);
+});
+
 test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
   for (const [repositories, pulls, firstPull] of [
     [40, 10, 1],
