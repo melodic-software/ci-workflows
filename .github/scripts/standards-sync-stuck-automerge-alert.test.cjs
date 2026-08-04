@@ -1078,6 +1078,23 @@ test("the issue token is scoped to the named repository and the issue write targ
     /repositories: \$\{\{ inputs\.tracking-issue-repository \}\}/u,
     "leaving owner AND repositories unset is what scoped the token to the caller",
   );
+  // The ABSENCE of `owner` is load-bearing, and it is the one property of this
+  // step nothing else would catch. With `owner` unset the action resolves a
+  // repository entry's owner to the calling repository's owner, which is what
+  // makes a bare name legal and what keeps the destination inside the caller's
+  // own installation. The sibling every-target mint two hundred lines up does
+  // the opposite deliberately, so both halves are pinned here: harmonizing
+  // them in EITHER direction fails, rather than silently undoing one of them.
+  assert.doesNotMatch(
+    mintStep,
+    /^\s*owner:/mu,
+    "`owner` must stay unset so a bare repository name resolves under the caller's own owner",
+  );
+  assert.match(
+    stepText("Mint read-only App token scoped to every target"),
+    /^\s*owner: melodic-software$/mu,
+    "the every-target mint pins its owner explicitly; the asymmetry with the tracking mint is the design",
+  );
   const writeStep = stepText("Open or update tracking issue");
   assert.match(
     writeStep,
