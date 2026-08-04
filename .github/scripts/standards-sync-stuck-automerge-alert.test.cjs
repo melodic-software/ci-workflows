@@ -764,9 +764,9 @@ const ISSUE_TITLE = "[Alert] standards-sync stuck auto-merge PR(s)";
 
 // The caller repository and the tracking-issue repository are deliberately
 // different fixtures everywhere below: the defect these steps were changed for
-// is that they addressed the CALLER, which the App is not installed on
-// (melodic-software/standards#273). Identical values would let a regression to
-// `context.repo.repo` keep every assertion green.
+// is that they addressed the CALLER, which the App is not installed on.
+// Identical values would let a regression to `context.repo.repo` keep every
+// assertion green.
 const CALLER_REPO = "standards";
 const TRACKING_ISSUE_REPOSITORY = "medley";
 
@@ -978,9 +978,9 @@ test("close comments on and closes the genuine bot-authored tracking issue", asy
 // --- the tracking issue's destination repository ---------------------------
 // The App that authors the issue is installed on the sync TARGETS, and the
 // caller (melodic-software/standards) is the sync SOURCE, deliberately not one
-// of them. Addressing the caller made the token mint 404 on all 254 scheduled
-// runs (melodic-software/standards#273), so every step that touches the issue
-// must address `tracking-issue-repository`, never `context.repo.repo`.
+// of them. Addressing the caller made the token mint 404 on every scheduled
+// run, so every step that touches the issue must address
+// `tracking-issue-repository`, never `context.repo.repo`.
 
 test("the lookup reads issues from the tracking-issue repository, not the caller", async () => {
   const { listParams } = await runLookup({
