@@ -316,7 +316,7 @@ jobs:
       # workflow and cannot work.
       - name: Check whether this head is still current
         id: freshness
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@af23f72166018b8d0534f9c2b08ff9c8ddf03c9a # b5d54bf 2026-07-27
 
       # Review-count cap (max-reviews-per-pr). The counter is the visible
       # status comment this lane upserts after each successful review — chosen
@@ -801,7 +801,7 @@ jobs:
         if: >-
           !cancelled() && steps.freshness.outputs.superseded != 'true' &&
           steps.review-count.outputs.capped != 'true'
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@af23f72166018b8d0534f9c2b08ff9c8ddf03c9a # b5d54bf 2026-07-27
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
@@ -821,7 +821,7 @@ jobs:
         # a PR, and a rejected API call must not turn the infra-failure path
         # red (see the composite's description).
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@af23f72166018b8d0534f9c2b08ff9c8ddf03c9a # b5d54bf 2026-07-27
         with:
           marker: "<!-- claude-review-infra-status -->"
           mode: post-failure
@@ -840,7 +840,7 @@ jobs:
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@af23f72166018b8d0534f9c2b08ff9c8ddf03c9a # b5d54bf 2026-07-27
         with:
           marker: "<!-- claude-review-infra-status -->"
           mode: clear-on-success

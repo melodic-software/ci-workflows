@@ -21,6 +21,6 @@ concurrency:
 jobs:
   pr-issue-linkage:
     permissions: {}
-    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@d7734df8c557084edc2df7cf578cf62ad2f261e4 # d7734df 2026-07-20
+    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@af23f72166018b8d0534f9c2b08ff9c8ddf03c9a # d7734df 2026-07-20
     with:
       exempt-authors: 'dependabot[bot]'
