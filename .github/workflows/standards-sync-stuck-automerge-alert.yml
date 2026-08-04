@@ -132,7 +132,11 @@ jobs:
           TRACKING_ISSUE_REPOSITORY: ${{ inputs.tracking-issue-repository }}
         run: |
           set -euo pipefail
-          if [[ ! "$TRACKING_ISSUE_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          # GitHub's own repository-name character set, minus the two names it
+          # forbids: `.` and `..` match the character class but would reach the
+          # REST client as a path segment rather than a name.
+          if [[ ! "$TRACKING_ISSUE_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]] \
+            || [[ "$TRACKING_ISSUE_REPOSITORY" == "." || "$TRACKING_ISSUE_REPOSITORY" == ".." ]]; then
             echo "::error::tracking-issue-repository must be a bare repository name under the caller's own owner, not '${TRACKING_ISSUE_REPOSITORY}'."
             exit 1
           fi

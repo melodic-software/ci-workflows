@@ -1054,12 +1054,16 @@ test("the repository guard accepts a bare repository name", () => {
 // (create-github-app-token parses an owner-qualified entry), so the run gets
 // past the credential and dies later and less legibly — `listForRepo` 404s on
 // a name containing a slash, and the issue write concatenates a second owner.
-test("the repository guard rejects owner/repo, a URL, an empty value, and stray whitespace", () => {
+test("the repository guard rejects owner/repo, a URL, an empty value, stray whitespace, and a relative path segment", () => {
   for (const value of [
     "melodic-software/medley",
     "https://github.com/melodic-software/medley",
     "",
     "medley ",
+    // GitHub forbids both as repository names, and both are inside the
+    // character class, so they would reach the REST client as a path segment.
+    ".",
+    "..",
   ]) {
     const result = runRepositoryGuard(value);
     assert.equal(result.status, 1, `'${value}' must be rejected`);
