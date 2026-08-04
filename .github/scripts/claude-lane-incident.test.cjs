@@ -893,11 +893,11 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   const flattened = body.replace(/\s+/gu, " ");
   assert.match(
     flattened,
-    /only cycles that polled every repository this incident tracks count/u,
+    /only cycles whose coverage of this incident is complete count/u,
   );
   assert.match(
     flattened,
-    /A clean cycle only counts if it polled every repository this incident tracks\./u,
+    /it polled every repository the incident TRACKS, and the tracked index accounts for every repository the incident has SEEN/u,
   );
   assert.doesNotMatch(flattened, /every repository (?:listed above|below)/u);
   // The other two standing causes of a permanent hold, which step 4 attributed
