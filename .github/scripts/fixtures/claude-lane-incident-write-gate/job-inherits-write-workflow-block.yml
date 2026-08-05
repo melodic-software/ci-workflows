@@ -73,11 +73,11 @@ jobs:
   # comments included, is compared against a literal in the test, so any edit
   # here fails CI and is read by a human rather than classified by a scanner.
   #
-  # `labels` is applied on creation only. `claude-lane-incident` does not exist
-  # in this repository's label taxonomy yet, and that taxonomy is managed by
-  # github-iac (Labels.cs): it must be declared there or the next apply prunes
-  # it. Issue SELECTION never keys on the label (the body marker and bot
-  # authorship do), so a pruned label degrades a sanity query and nothing else.
+  # `labels` is applied on creation only. `claude-lane-incident` is declared in
+  # github-iac (`GovernedRepositories.cs`, this repository's `ExtraLabels`), so
+  # the taxonomy apply keeps it rather than pruning it. Issue SELECTION never
+  # keys on the label (the body marker and bot authorship do), so a label that
+  # is later renamed or pruned degrades a sanity query and nothing else.
   #
   # `repository` is left at its default of `${{ github.repository }}`, which is
   # what makes `issues: write` on the ambient token sufficient: the incident
