@@ -141,11 +141,12 @@ jobs:
       # That is the guarantee the whole design rests on: no step here can mutate
       # anything however it is wired, so none of them has to be classified.
       #
-      # `checks` and `pull-requests` are what the poll reads — the check-run and
-      # annotation endpoints require Checks:read and carry no public-repository
-      # exemption, so without them the poll 403s on its first read and reports
-      # `indeterminate` forever. `issues: read` finds and parses the open
-      # incident issue; maintaining it is `write`'s job.
+      # `checks` and `pull-requests` are what the poll reads locally. Do not size
+      # the App credential from an assumption that omitting Checks:read always
+      # 403s: PUBLIC cross-repository reads work with the ambient token, while
+      # PRIVATE repositories typically 404 when that token cannot see them.
+      # `issues: read` finds and parses the open incident issue; maintaining it
+      # is `write`'s job.
       checks: read
       contents: read
       issues: read
