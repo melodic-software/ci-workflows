@@ -53,7 +53,8 @@ lanes never overlap.
 2. **ci-workflows**: all workflow changes below + release tag.
 3. **Fleet rollout**: callers become standards sync-manifest managed components; both
    lanes to every org repo (github-iac first among missing; `.github`/ci-runner/
-   ci-runner-canary exemption decided + documented); normalized triggers/skip-actors/
+   ci-runner-canary exemption decided + documented — ci-runner leg superseded
+   2026-08-01, see Phase 3d); normalized triggers/skip-actors/
    pins; kill-switch + draft-payload + queue-syntax smoke tests.
 4. **Observability**: #237 failure-class token → #238 canary/aggregator.
 5. **Follow-ups**: filed issues (see mapping).
@@ -569,7 +570,7 @@ re-trigger claude-review but DOES run the security lane's `changes` job.
   (run 30267095737). Deferred into the Phase 3c smoke: the forced-failure
   sandbox probe and the second-push cadence observation.
 
-### Phase 3: fleet rollout via standards sync-manifest [DOING]
+### Phase 3: fleet rollout via standards sync-manifest [DONE]
 
 Ordered pre-steps, then waved rollout.
 
@@ -734,7 +735,16 @@ Ordered pre-steps, then waved rollout.
   be another push to standards `main`, so if it is ever needed, it happens
   before the grant, never inside the window. Restore it only AFTER (0) is in
   place, and expect to merge any still-open wave PRs by hand. (ii) for NEW
-  targets knowledge-corpus + songwriting [USER-APPROVAL GATE]: extend the App's
+  targets knowledge-corpus + songwriting [USER-APPROVAL GATE] — TARGET SET
+  SUPERSEDED 2026-08-01 (see WAVE-TARGET SET — RATIFIED below): both repos are
+  retired as planned targets, so this gate is UNREACHED rather than removed. No
+  adopted target is landable yet (see RATIFIED BUT NOT YET LANDABLE below), and
+  the mechanism and ordering analysis through the end of this step stay live for
+  whichever NEW target eventually lands — cursor-plugins or claude-code-proxy,
+  NOT ci-runner, which is already a manifest target and whose gate is the
+  removal trigger rather than this grant (see APP GRANT and RATIFIED BUT NOT
+  YET LANDABLE below). The step as approved, and still the procedure for a new
+  target: extend the App's
   selected access BEFORE the manifest PR merges, in the tightest window that
   ordering allows. The ordering stands; its ORIGINAL RATIONALE was wrong.
   Attestation never reaches the both-directions comparison first: the operative
@@ -799,7 +809,10 @@ Ordered pre-steps, then waved rollout.
   after which the extension is an API call sequenceable to seconds inside the
   window. Installation `144867070` is `repository_selection: selected`, so an
   extension IS required; repository ids: knowledge-corpus `1300170946`,
-  songwriting `1297959888`. Selection is NOT the same surface as installation
+  songwriting `1297959888` — THESE TWO IDS ARE SUPERSEDED 2026-08-01 with the
+  target set (see WAVE-TARGET SET — RATIFIED below); the selected-access
+  mechanism itself is unchanged, and a future target supplies its own id.
+  Selection is NOT the same surface as installation
   PERMISSIONS — 3a0's `workflows: write` grant stays the org-owner action it is
   documented as, and this endpoint does not touch it. UNDOCUMENTED, do not
   resolve by inference: whether org-owned installations gate above repo-admin —
@@ -820,7 +833,13 @@ Ordered pre-steps, then waved rollout.
   then new targets.
   `.github` + ci-runner per the USER-RESERVED exemption decision (both already
   manifest targets; plan default: exempt from lane components, one-line targets
-  comment).
+  comment). ci-runner's EXEMPTION BASIS IS SUPERSEDED 2026-08-01 (see
+  WAVE-TARGET SET — RATIFIED below, which reverses Approval-record item 1). The
+  OUTCOME is unchanged for now: ci-runner still carries no lane, because its
+  adoption is blocked on the public-visibility removal trigger and must
+  additionally clear item 1's self-block concern on its own merits (see
+  RATIFIED BUT NOT YET LANDABLE and STILL LIVE below). `.github` stays exempt,
+  untouched by the ratification.
   standards repo is the manifest SOURCE, not a target — its caller stays
   repo-local, equivalence-checked in Phase 5 modulo its documented deviations
   (byte equality is impossible: standards is public and cannot call the
@@ -830,6 +849,197 @@ Ordered pre-steps, then waved rollout.
   minutes-scale); kill-switch covers the interim; the sync engine NEVER deletes
   files, so de-manifesting a component orphans it — reverting content is the
   only fleet revert.
+
+  INSTALLATION-EXTENSION MECHANISM — CORRECTION (2026-07-31). The MECHANISM
+  paragraph above already excludes App authentication and is not restated
+  here; what is new is that under a NO-CLASSIC-PAT posture the REST route is a
+  DEAD END with no substitute anywhere on the REST surface, so the classic PAT
+  is not one holder among several, it is the only one. Three live artifacts,
+  each independent of the others. The docs page for the add operation carries
+  a section headed `Fine-grained access tokens for "Add a repository to an app
+  installation"` whose entire body is "This endpoint does not work with GitHub
+  App user access tokens, GitHub App installation access tokens, or
+  fine-grained personal access tokens." — extending the exclusion to
+  FINE-GRAINED PATs, which the PAT-only sentence quoted above does not say and
+  which is the leg that actually closes this route. The public OpenAPI carries
+  `x-github.enabledForGitHubApps: false` on both operations (cited above). And
+  the docs payload's `progAccess` block for the add operation reads
+  `{"userToServerRest":false,"serverToServer":false,"fineGrainedPat":false,"permissions":[]}`
+  — every programmatic door shut, with an empty permission set because no
+  permission can open it. The operation's absence from the official
+  token-allowlist pages is that same fact read from the other side, not a
+  fourth artifact.
+
+  NO EQUIVALENT EXISTS — recorded as a sweep with counts so nobody repeats it.
+  Against the public OpenAPI: 7 mutating operations on any `installation`
+  path, of which exactly TWO are App-enabled (`POST
+  /app/installations/{id}/access_tokens` and `DELETE /installation/token`, both
+  token lifecycle, neither touching selection); 15 mutating `category: apps`
+  operations, with those same two the only App-enabled members; and exactly ONE
+  mutating operation whose description mentions `repository_selection` — the
+  DELETE half of this very pair, itself App-disabled. No org-admin route and no
+  App-authenticated route to an installation's repository selection exists.
+  ONE NEAR-MISS that is not one: the token mint accepts a `repositories` body
+  parameter, but "The installation access token cannot be granted access to
+  repositories that the installation was not granted access to." — it NARROWS a
+  token inside the existing selection and cannot widen the selection itself.
+
+  ZERO-CREDENTIAL ROUTE — the org-owner UI, whose steps the docs give in full:
+  profile picture → Your organizations → Settings next to the organization name
+  → sidebar "Third-party Access" → GitHub Apps → Configure next to the App →
+  under "Repository access" select "Only select repositories" → pick the
+  repositories in the Select repositories dropdown → "Click Save".
+
+  CONSEQUENCE FOR IaC, and it outlives this phase: under a no-classic-PAT
+  posture the Terraform/Pulumi wrappers named in MECHANISM are UNUSABLE, not
+  merely awkward. `github_app_installation_repository`'s own doc carries the
+  note "This resource is not compatible with the GitHub App Installation
+  authentication method." (`docs/resources/app_installation_repository.md:9`),
+  and the provider code does not enforce that note:
+  `resourceGithubAppInstallationRepositoryCreate` calls
+  `client.Apps.AddRepository` and returns its error unchanged, carrying none of
+  the `checkOrganization(meta)` precondition guard that other resources in the
+  same provider carry — so a wrong-auth apply fails at the API at APPLY time
+  rather than at plan time. The exact status was NOT OBSERVED; do not write a
+  code into this record. Net: installation SCOPE either stays off the IaC
+  surface as a deliberate UI-only boundary, or the no-classic-PAT constraint
+  bends far enough to mint one. THAT IS A POLICY CHOICE AND IS NOT DECIDED
+  HERE. It disturbs no approved decision: Approval-record item 5 resolved the
+  ORDERING (grant before manifest merge) and named a classic PAT as the holder;
+  all that is new is that no other holder exists, so the item-5 route requires
+  either that PAT or the UI.
+
+  Anyone changing App PERMISSIONS later (3a0's `workflows: write`, or any
+  successor) faces a different surface with its own asymmetry, verified the
+  same day: there is no REST route at all — enumerating every mutating
+  `category: apps` operation returns 15, none of which edits an App's declared
+  permissions — so the change is UI-only. REMOVALS "will take effect
+  immediately". ADDITIONS do not: "each account where the app is installed will
+  need to approve the new permissions", GitHub "will send an email to each
+  organization owner or user", and "Updated permissions won't take effect on an
+  installation or user authorization until the new permissions are approved."
+  So a removal is one action by the App owner, while an addition is a two-party
+  handshake — App owner edits, each installing account's owner approves — and
+  costs a second browser action by whoever holds org ownership, even when that
+  is the same person.
+
+  WAVE-TARGET SET — RATIFIED 2026-08-01 (measured 2026-07-31). Adopted as put:
+  a code-review lane belongs on code repositories, and running it over
+  untrusted scraped content is a prompt-injection surface rather than a
+  code-quality one. This supersedes Approval-record item 5's target set, and
+  reverses item 1's ci-runner exemption.
+
+  CENSUS. 13 non-archived org repos; SEVEN carry a claude-review lane —
+  ci-workflows, claude-code-plugins, dotfiles, github-iac, medley,
+  provisioning, standards, which reconciles with the accounting already in this
+  file rather than introducing a new population (the 4 managed
+  `claude-review-caller` targets, plus claude-code-plugins locally-owned, plus
+  standards repo-local, plus ci-workflows' own self-caller). SIX do not:
+  `.github`, ci-runner, claude-code-proxy, cursor-plugins, knowledge-corpus,
+  songwriting. TWO of those six are APPROVED EXEMPTIONS, not gaps — `.github`
+  and ci-runner, per Approval-record item 1.
+
+  THE OBSERVATION. 3d(ii)'s two new targets are the two repos where a
+  CODE-review lane has near-zero signal: knowledge-corpus is private HTML whose
+  stated purpose is consolidated corpus material for the knowledge plugin's
+  ingest pipelines, and songwriting is private with no primary language, a
+  personal working repo of lyric and song files. Meanwhile two unexempted
+  no-lane repos are genuine code: cursor-plugins (public, PowerShell, the
+  sibling Cursor plugin marketplace to claude-code-plugins, real `plugins/`,
+  `scripts/`, and `docs/` trees, pushed on the measurement date) and
+  claude-code-proxy (private; a local HTTPS proxy that captures Claude Code's
+  API traffic to disk — credential adjacent, so security-lane relevant rather
+  than merely code-review relevant, though as measured it is ONE commit holding
+  only a README, so the value is prospective rather than present). Both
+  POSTDATE the plan — created 2026-07-30 against a 2026-07-26 lock — which is
+  why neither appears anywhere above.
+
+  PROPOSAL, as put: drop knowledge-corpus + songwriting from the 3d(ii) target
+  set and adopt cursor-plugins, claude-code-proxy, and ci-runner in their
+  place. THE ci-runner LEG WOULD REVERSE APPROVAL-RECORD ITEM 1, which exempted
+  it, and item 1's reason is an argument on the merits rather than bookkeeping:
+  ci-runner is runner infrastructure where a wedged lane job could block its
+  own substrate. A ratifying operator should weigh that against ci-runner's
+  candidacy on the other side (public, Go, 8 workflows, runner image
+  infrastructure). The `.github` exemption is untouched by the proposal.
+
+  ONE CLAIM MADE FOR THE PROPOSAL DOES NOT SURVIVE CHECKING, and it is recorded
+  as refuted so it is not re-adopted: retargeting does NOT delete the
+  installation-extension problem above. Installation `144867070` is
+  `repository_selection: selected` and its selected set equals the manifest
+  target set exactly — attested live on 2026-07-31, standards run
+  `30637559324`: "Attested 8 selected repositories for melodic-standards-sync."
+  So ANY new manifest target requires the extension, whichever repositories are
+  chosen; retargeting changes only WHICH repositories are added, never whether
+  an extension is needed. The correction above therefore applies to the
+  proposal unchanged.
+
+  RATIFIED BUT NOT YET LANDABLE (measured 2026-08-01): none of the three
+  adoptions can become a MANAGED `claude-review-caller` target on the caller
+  shape as written, so the standards manifest records each with its blocker
+  instead of adding it (melodic-software/standards,
+  `distribution/sync-manifest.yml`). The blockers do NOT partition by
+  visibility alone.
+
+  VISIBILITY, ci-runner and cursor-plugins: both are PUBLIC, and the
+  manifest's own private-only constraint bites. `runner-policy.mjs` emits
+  `public-self-hosted-routing` for a selector-routed caller on a public
+  repository, and `components/runner-policy/runner-policy.test.mjs` fails the
+  build outright if a `components/claude-lanes/` component is `managed` for a
+  public target. Their shared gate is the SAME removal trigger the parked
+  security caller carries — the runner indirection moving inside the reusable.
+
+  APP GRANT, where the two diverge. ci-runner is ALREADY one of the 8 manifest
+  targets the installation attests, so adding this component to its existing
+  `managed:` list adds no repository to the expected access set: the attest
+  step derives that set from the target repositories alone
+  (`[.include[].repo]` over the unfiltered matrix), never from component
+  membership. ci-runner's gate is therefore the removal trigger, NOT the App
+  grant (see STILL LIVE below for the second consideration its adoption must
+  clear — a merits question, not a mechanical gate). cursor-plugins is NOT a
+  manifest target, so adopting it is a NEW target and the correction above
+  applies to it in full — it needs the installation extension TOO, exactly
+  like claude-code-proxy. Adding it without the grant would fail the sync for
+  all 8 existing targets, not just for cursor-plugins. claude-code-proxy is
+  private and clears the visibility constraint, leaving only the installation
+  extension; it also needs its `TARGET_VISIBILITY` entry, whose lookup fails
+  closed. (For a public repo that entry unblocks nothing on its own — it only
+  makes the failure legible instead of a fail-closed assert.)
+
+  THE PUBLIC BAR IS NOT ABSOLUTE, recorded so it is not overstated: it is a
+  property of the SELECTOR-ROUTED caller shape, not of public visibility as
+  such. A public-safe shape already exists in the fleet — claude-code-plugins
+  owns hand-written hosted-only callers passing `runner: ubuntu-24.04`
+  directly with no caller-side selector, which runner-policy admits on a
+  public repository. CONSIDERED AND REJECTED here because it forks the
+  reviewed caller into a second per-visibility variant, which standards
+  deliberately declined pending the reusable-side indirection; it would
+  additionally require revisiting `runner-policy.test.mjs`, whose "every
+  managed target of a claude lane caller admits that caller" test rejects a
+  public managed target for EVERY component sourced from
+  `components/claude-lanes/`, selector-using or not — so a hosted-only
+  component in that directory would still trip it.
+
+  STILL LIVE, not erased by the reversal: Approval-record item 1 exempted
+  ci-runner because it is runner infrastructure where a wedged lane job could
+  block its own substrate. That concern is orthogonal to visibility and was
+  never rebutted — visibility merely became the nearer blocker. When the
+  removal trigger fires, ci-runner's adoption must clear the self-block
+  concern on its own merits rather than inheriting a pass.
+
+  What landed is the RETIREMENT OF THE PLANNED-TARGET RECORD for
+  knowledge-corpus and songwriting, plus their `TARGET_VISIBILITY` entries;
+  nothing left the manifest's `targets:` map, because neither repo ever held a
+  target block. The adoptions did not land.
+
+  DEFERRED WITH TRIGGER, per this plan's own convention rather than dropped:
+  knowledge-corpus ingests external documents that agents later read, which is
+  a PROMPT-INJECTION surface, not a code-quality one. Revisit it for a security
+  or content-scanning lane, not for claude-review. Separately, claude-code-proxy
+  being private and security-lane relevant brushes PHASE 3 CLOSURE's candidate
+  (b) without touching it: (b) stays NOT taken on its recorded terms, a private
+  repo adopts the security lane on its own merits, and nothing here manufactures
+  unpark or closure evidence.
 
   WAVE-1 TARGET (measured 2026-07-29, replacing dotfiles): wave 1 named
   dotfiles as the "low-traffic private" consumer; measurement contradicts that
@@ -1058,8 +1268,11 @@ Ordered pre-steps, then waved rollout.
   untouched; medley's `--model claude-sonnet-4-6` pin is still stale (its
   action pin has since moved to v1.0.180 via Dependabot, recorded to prevent a
   false staleness re-report).
-- **3g. Fleet action-currency follow-through [RESOLVED — Approval record
-  item 12]:** the Brief's "Dependabot keeps it same-day current" reaches
+- **3g. Fleet action-currency follow-through [DECISION RESOLVED — Approval
+  record item 12; IMPLEMENTATION TRACKED IN standards#314]:** the tag covers the
+  DECISION only — the job is specified but unbuilt, so the work is tracked
+  outside this phase rather than closed with it. The Brief's
+  "Dependabot keeps it same-day current" reaches
   ci-workflows only — every consumer `ignore`s ci-workflows refs, so fleet
   currency moves through release-tag → component re-pin → sync, all manual
   today (devils-advocate F10). Resolved to the recommended option,
@@ -1089,7 +1302,11 @@ Ordered pre-steps, then waved rollout.
   minimal new App [USER-APPROVAL GATE per org precedent — no silent App
   creation]. The alternative (accept lag + README SLA + #257 as sole
   detector) is dead; #257 remains the belt-and-suspenders staleness
-  detector.
+  detector. Implementation tracked in standards#314, which carries the
+  credential branch forward as OPERATOR-GATED and flags one discrepancy to
+  reconcile: a prior settled-decisions ledger records that the standards-sync
+  App must NOT be widened to cover standards itself — which would foreclose the
+  reuse branch this bullet still presents as open pending verification.
 
 **Sanity Check:** `bash distribution/sync-manifest.sh validate` exits 0; per
 target, blob-hash equivalence (loop recorded verbatim; count of mismatches ==
@@ -1133,6 +1350,122 @@ security run (not skip) on a code-touching PR, which waves 1-2 cannot supply
 overflow, #227, wave-1) recorded here; automerge restored after rollout
 (`grep -c "automerge: false" distribution/sync-manifest.yml` == 0 post-restore,
 or matches only deliberate standing opt-outs).
+
+**PHASE 3 CLOSE-OUT LEDGER (2026-07-31; last item cleared 2026-08-03; tag
+advanced to `[DONE]` 2026-08-03).** Every item this Sanity Check names is
+satisfied. The one item that had kept the tag `[DOING]` — the kill-switch
+org-var flip smoke — was executed 2026-08-03 and is recorded below. The tag was
+then advanced on operator authority: the session handoff's remaining-actions
+item 2 pre-committed the sequencing, "record the transcript in PLAN.md, then
+advance Phase 3's tag to `[DONE]`". The two `if:`-clause findings the smoke
+surfaced refine smoke METHODOLOGY and weaken no Phase 3 goal.
+ENUMERATION FIX (2026-08-03): this Sanity Check listed only the VERIFICATION
+items and never enumerated 3g's implementation, which is why "the only thing
+blocking the tag" read as complete while a specified-but-unbuilt Phase 3
+deliverable still existed. Caught by review on the tag-flip PR. The list below
+now carries it explicitly, and a phase's close-out must enumerate its
+DELIVERABLES, not just its checks — otherwise the sanity check certifies its own
+blind spot.
+3g IMPLEMENTATION — **NOT BUILT**, enumerated here so it cannot be lost again.
+Its DECISION is resolved (Approval record item 12); the WORK is tracked OUTSIDE
+this phase in standards#314, with its credential branch operator-gated. This
+item is dispositioned tracked-elsewhere, never done — closing Phase 3 strands
+nothing only because that issue exists.
+SATISFIED: `sync-manifest.sh validate` exits 0; per-target blob-hash
+equivalence 4/4 (all managed targets at `a9dfe7f4`); the 3c gate invariant
+re-read intact with the single documented break-glass delta (see the re-read
+block below); the `requires-security-review` property set still exactly
+`{claude-code-plugins}`; the ACTUAL-security-run observation, closed via the
+routing decision and its evidence block (runs `30602103731` and `30602120481`,
+independently verified twice); automerge restored — `grep -c automerge` on
+standards `main` returns 0, the pre-window shape, since the restore was a key
+REMOVAL and absent means true; wave-1 and #227 smoke transcripts recorded
+above.
+SATISFIED 2026-08-03 — the **kill-switch org-var flip smoke** [DONE], the last
+item that was blocking the tag; transcript in the KILL-SWITCH FLIP SMOKE block
+below. The queue-overflow probe is separately recorded as SUPERSEDED rather than
+outstanding: 3e produced a real contention observation on medley — three PRs
+opened within 16 minutes drove queue depth to 3 in the repo-wide group, all
+three review jobs waited simultaneously and were then strictly serialized,
+with one run queued ~2h against a 6m48s job — which is stronger evidence than
+the synthetic probe was designed to manufacture, and it confirms the
+serializer queues rather than cancels.
+
+**KILL-SWITCH FLIP SMOKE (2026-08-03, executed; independently verified).** Both
+arms ran on dotfiles PR #401 against the pinned reusable
+`c136b27f404dd32ce3873f39a6f3443891d1c16e` (v0.9.1), head
+`b83a47f3f29524a6697d13600bf3f625dbfa680b`. All times UTC.
+
+ARM A — `CLAUDE_REVIEW_DISABLED=true`: PATCH 22:12:42Z, readback `true`
+(`updated_at` 22:12:43Z) with `CLAUDE_LANES_DISABLED=false`; `ready_for_review`
+22:12:51Z; run `30857789171` CREATED 22:12:54Z (**3s**, inside the ≤30s
+run-creation gate — a smoke-local DISCARD rule, not a platform SLA and not a
+documented bound: it exists because of the #227 `pull_request` event-delivery
+gap recorded above, where delivery is 0-5s typically but was observed at 2m19s,
+~42min, and ~13h31m with root cause still unknown. An arm that produces no run
+therefore cannot be read as a skip — the event may simply not have arrived — so
+it is discarded rather than scored. Delivery here was 3s / 3s / 2s across the
+three runs this smoke created); concluded `success` 22:16:51Z with jobs
+`Select runner / Select runner` = `success` and `review / review` = **`skipped`**
+— the name-stable job-level skip the design predicts. RESTORE: PATCH `false`
+22:17:07Z, readback `false` (`updated_at` 22:17:09Z); PR back to draft 22:17:22Z.
+**True-window 22:12:43Z → 22:17:09Z = 4m26s.**
+
+ARM B — `CLAUDE_REVIEW_DISABLED=false`: `ready_for_review` 22:18:07Z; run
+`30858125013` CREATED 22:18:09Z (**2s**); `review / review` observed `queued`
+22:18:28Z then `in_progress` 22:19:20Z, and it ran to completion `success` with
+20 executed steps including `Claude review` and `Post Claude review`. A job whose
+`if:` is false is materialized directly as `completed`/`skipped` and never enters
+`queued`, so `queued` alone already decides the arm; the executed steps make it
+unambiguous.
+
+CONTROLLED COMPARISON: both arms used the same PR, the same trigger
+(`ready_for_review`), the same actor (`kyle-sexton`), the same non-draft payload
+state, and — verified — the same head SHA with no intervening push. The only
+variable that changed was `CLAUDE_REVIEW_DISABLED`, so the switch is the
+operative cause of the skip rather than a confound.
+
+TARGET SUBSTITUTION: the briefed target (dotfiles #400) had merged
+2026-08-03T21:53:12Z, and dotfiles held no other open draft PR — the only open PR
+(#375) is not a draft at all (and is additionally `CONFLICTING`/`DIRTY`), so it
+affords no draft→ready toggle, and every recently closed PR was MERGED so
+`reopened` had no candidate either. PR #401 was therefore purpose-built as a disposable draft (scratch note
+under `docs/`, which dotfiles `.chezmoiignore` excludes, so no chezmoi-managed
+target was touched), labeled `do-not-merge`, torn down at 22:20:01Z — PR closed,
+branch `chore/kill-switch-flip-smoke` deleted (ref 404). All four
+`CLAUDE_*_DISABLED` org vars confirmed `false` post-teardown. Because arm B ran a
+real review to completion, a review comment on the now-closed #401 is expected
+and is not drift.
+
+TWO `if:`-CLAUSE FINDINGS, recorded because they constrain how this smoke — and
+any future re-run — must be designed. The reusable's `review` job gates on FOUR
+conjuncts, not just the two kill-switches:
+
+1. `github.event.pull_request.draft == false` shares the `if:` with the
+   kill-switches, so a newly-OPENED draft PR fires `pull_request:opened` but skips
+   for the DRAFT reason, producing a job table byte-identical to a kill-switch
+   skip. Measured here: PR #401's own open event produced run `30857697384`
+   (created 22:11:27Z) whose `review / review` was `skipped` while
+   `CLAUDE_REVIEW_DISABLED` was still `false`. A draft-PR-open arm is therefore
+   UNATTRIBUTABLE; only a `ready_for_review` toggle isolates the switch.
+2. `!contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))`
+   means an actor in `skip-actors` makes BOTH arms skip — arm A passing
+   spuriously while arm B fails for an unrelated cause. Cleared before the flip:
+   the dotfiles caller passes no `skip-actors`, so the reusable default
+   (`dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]`)
+   governs, and the acting identity `kyle-sexton` is not in it. Any re-run must
+   re-clear this first, or a failed arm B is uninterpretable.
+
+Also confirmed pre-flight: dotfiles carries ZERO repo-level Actions variables
+(`total_count: 0`), so no repo-level value shadows the org ones — the reusable's
+own comment notes repo-level overrides org-level, making this load-bearing.
+
+INDEPENDENT VERIFICATION: a fresh-context verifier, given only the run ids and
+the claimed conclusions with the rationale withheld, re-fetched both job tables,
+the PR timeline, the org-variable state, and the branch ref, and returned
+CONFIRMED on all seven claims — including that both runs carry the identical
+`headSha` and that each run's creation immediately follows a distinct
+`ready_for_review` event separated by the 22:17:22Z `convert_to_draft`.
 
 3c INVARIANT RE-READ (2026-07-30): the canonicalized-JSON read of ruleset
 19388547 shows `bypass_actors: []`, `conditions` intact
@@ -1260,6 +1593,81 @@ auto-resolve; scheduled-run log contains the API-call-count line;
 `gh issue list --repo melodic-software/ci-workflows --label claude-lane-incident --state open`
 returns ≤1; #228/#238 closed with pointers.
 
+**Phase 4 acceptance — what gates it, and what stopped gating it
+(2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
+for two reasons at once: repo secret `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`
+does not exist (`gh secret list` on this repo returns nothing at all), so no
+App token is minted; and the `aggregate` job's `permissions:` block grants only
+read scopes (`checks`, `contents`, `issues`, `pull-requests` — all `read`, and
+deliberately so per the block's own comment).
+
+THE FINDING THAT RESHAPES THIS: the incident issue targets
+`context.repo.owner`/`context.repo.repo` — the SAME repo the workflow runs in —
+so maintaining it needs only `issues: write` on the ambient `GITHUB_TOKEN`. No
+App, no secret, no cross-repo credential. GitHub documents exactly this shape:
+its "Automatic token authentication" example workflow declares `permissions:
+contents: read` + `issues: write` and creates an issue in its own repository
+via `gh issue --repo ${{ github.repository }} create`. The App credential is
+needed ONLY for the READ half, and only for PRIVATE consumer repos.
+
+That read boundary is verified live rather than reasoned about, and the cleanest
+evidence is a SINGLE run rather than a pair, which removes the between-run
+confound: run `30574504350` polled standards and medley in one execution on one
+token — `repositories=2`, and the log carries
+`read failed (melodic-software/medley pulls page 1): Not Found` with
+`read-errors=1`, the 404 falling on the PRIVATE repo while the PUBLIC one read
+clean. Run `30574672188` (standards alone) corroborates with `read-errors=0`.
+
+IMPORTANT QUALIFIER, and it must not be softened: GitHub does NOT document a
+public-repository exemption for `GITHUB_TOKEN`. The docs say only "The token's
+permissions are limited to the repository that contains your workflow." The
+observed public cross-repo read is CONSISTENT with public data being readable
+without any granted permission, but that reconciliation is INFERENCE, not a
+documented guarantee. Treat it as UNVERIFIED and build no guarantee on it — in
+particular, do not conclude from it that a future public-only polling scope is
+credential-free by contract.
+
+This NARROWS Approval-record item 6 rather than retiring it: the App must still
+be chosen (reuse runner-observer, else a new minimal App) and its
+[USER-APPROVAL GATE] stands, but the permission set it has to satisfy drops to
+cross-repo `checks: read` + `pull-requests: read`, with `issues: write` no
+longer part of the cross-repo ask. Whether the shipped mint
+(`claude-lane-incident-aggregator.yml`, which still requests
+`permission-issues: write`) narrows accordingly is implementation, not this
+record; ci-workflows#331 is the open PR moving the incident write to the
+ambient token.
+
+The API-call-count deliverable this phase names is SATISFIED. Scheduled run
+`30571900637` emitted, verbatim:
+`claude-lane-incident: api-calls=24 repositories=1 pull-requests=21 lane-check-runs=49 read-errors=0 cycle=clean action=none`
+
+The `claude-lane-incident` label NOW EXISTS — github-iac#252 merged
+2026-07-31T03:58Z, color `ededed` — which removes ONE of the `--label` query's
+two ambiguities, not both. Before the label existed the query returned an empty
+set whether the system was healthy or entirely absent, because `gh issue list
+--label <nonexistent>` exits 0 and prints nothing rather than erroring
+(confirmed by running it against a made-up label on this repo). That failure
+mode is gone.
+
+The REMAINING ambiguity is not fixed by the label and must not be recorded as
+if it were: a count of zero still satisfies `≤1` whether the fleet is clean OR
+the aggregator never ran, never polled, or ran and could not write. Absence of
+an incident is not evidence of health — it is the same observation either way.
+So the `≤1` query is a CEILING check (never more than one incident item open),
+never a liveness check, and it must be paired with a positive signal to mean
+anything. The positive signal is the aggregator's own deliverable line, which
+is emitted per run and states what it actually did:
+`claude-lane-incident: api-calls=<n> repositories=<n> pull-requests=<n> lane-check-runs=<n> read-errors=<n> cycle=<clean|indeterminate> action=<none|open|update|close>`
+Read `cycle` and `read-errors` together: `cycle=clean` with `read-errors=0`
+means the poll actually reached its scope and found nothing; `cycle=indeterminate`
+means at least one repository could not be read, so a zero incident count that
+round is uninformative rather than reassuring (this is the state private
+consumers produce today under the ambient token — see the Phase 4 write
+findings above). Phase 4's acceptance test is what closes the gap end-to-end,
+because it forces a real incident open and then requires it to auto-close after
+three consecutive clean cycles — exercising the write path the `≤1` query can
+never observe on its own.
+
 ### Phase 5: close-out [DOING]
 
 - ci-workflows README lane-contract section updated (new inputs, cadence,
@@ -1296,7 +1704,7 @@ contains the trailer-parsing note.
   component drift filed as standards#298, companion reusable-header claim as
   ci-workflows#311). Remaining: the final bullet — tags advanced + topic
   close-out — which this PR performs for everything except Phase 3's own tag
-  (still `[DOING]` pending its closure evidence) and Phase 4.
+  (then `[DOING]` pending its closure evidence; closed 2026-08-03) and Phase 4.
   - **medley REVIEW.md equivalence — DRIFT, filed as medley#1671.** The
     comparison does not run the way the bullet's framing implies. medley's
     `REVIEW.md` is not a drifted copy of the managed source: it is an
@@ -1394,7 +1802,8 @@ contains the trailer-parsing note.
     equivalence check (since completed, drift filed as standards#298 +
     ci-workflows#311). What remains is only the final bullet — tags advanced +
     topic close-out — performed by the PR carrying this edit for every phase
-    except Phase 3 (`[DOING]` pending closure evidence) and Phase 4.
+    except Phase 3 (then `[DOING]` pending closure evidence; closed
+    2026-08-03) and Phase 4.
     Verification:
     FOUR fresh-context verifier rounds ran against the comments, the
     equivalence verdict, and this evidence block; all four returned REJECT and
@@ -1483,7 +1892,9 @@ nothing depends on agent parallelism.
 their RECOMMENDED options:
 
 1. `.github` + ci-runner: EXEMPT from lane components (targets comment documents);
-   ci-runner-canary N/A.
+   ci-runner-canary N/A. — ci-runner leg SUPERSEDED 2026-08-01 by the ratified
+   wave-target set (Phase 3d, WAVE-TARGET SET — RATIFIED); its self-block
+   concern survives as a merits gate (STILL LIVE). `.github` unaffected.
 2. claude-e2e-verify: mechanical currency only (2h); marker/class adoption deferred
    with dated trigger note (first real consumer or next audit).
 3. actionlint disposition: repo-local `.github/actionlint.yaml` suppression scoped
@@ -1496,6 +1907,10 @@ their RECOMMENDED options:
    (cardinality gate, and merge-first self-triggers) — via the REST selection
    endpoint under a classic PAT (precaution: have an org owner hold it), after
    draining in-flight sync runs and re-checking before the merge (3d).
+   — TARGET SET SUPERSEDED 2026-08-01 by the ratified wave-target set (Phase
+   3d, WAVE-TARGET SET — RATIFIED): both repos are retired as planned targets.
+   The App-access ordering and mechanism this item approved are unaffected and
+   still govern whichever target lands.
 6. Phase 4 credential: reuse runner-observer App if permissions fit, else new
    minimal App — proceed per that order, report which at implementation.
 7. Retry gate: zero assistant turns AND class != auth.
@@ -1512,7 +1927,8 @@ Original decision text (recommendations + alternatives) retained below for conte
 - [USER-RESERVED] `.github` / ci-runner lane components: RECOMMENDED exempt both
   (near-zero PR traffic; ci-runner is runner infra where a wedged lane job could
   block its own substrate). ci-runner-canary: N/A — does not exist. One-line
-  targets change either way, documented in manifest comments.
+  targets change either way, documented in manifest comments. ci-runner leg
+  superseded 2026-08-01 — see Approval-record item 1.
 - [USER-RESERVED] claude-e2e-verify park/deprecate: RECOMMENDED keep mechanical
   currency only now (2h) and DEFER its marker/class adoption into this decision;
   dated trigger note in the reusable header + README (decide at first real
@@ -1523,7 +1939,8 @@ Original decision text (recommendations + alternatives) retained below for conte
 - [GATE] sync App `workflows: write` grant (Phase 3a0; authority widening stated).
 - [GATE] knowledge-corpus + songwriting as new sync targets (App access BEFORE
   manifest merge, via the REST selection endpoint under a classic PAT —
-  precaution: have an org owner hold it).
+  precaution: have an org owner hold it). Superseded 2026-08-01 — see
+  Approval-record item 5.
 - [GATE] Phase 4 credential (reuse runner-observer App vs new App).
 - [FALLBACK — confirm or override] retry gate = zero-turns AND class != auth
   (2d; minor refinement of locked B24).

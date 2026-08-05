@@ -5,6 +5,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const {
+  JOB_IDS,
+  REPORT_GATE,
+  WRITE_GATE,
+  WRITE_JOB_ID,
+  auditWriteGate,
+  effectivePermissions,
+  isWriteScoped,
+} = require("./claude-lane-incident-write-gate.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const repositoryRoot = path.join(__dirname, "..", "..");
 const workflowPath = path.join(
@@ -14,39 +25,26 @@ const workflowPath = path.join(
   "claude-lane-incident-aggregator.yml",
 );
 const workflow = fs.readFileSync(workflowPath, "utf8");
+const document = parseWorkflow(workflow);
+const poll = document.jobs.poll;
+const writeJob = document.jobs[WRITE_JOB_ID];
 
-// Same inline-script extraction technique standards-sync-stuck-automerge-alert
-// .test.cjs uses: pull the actions/github-script body out of the YAML by step
-// name and execute it directly against mocks, so the shipped text is the text
-// under test rather than a copy that can drift.
-function extractStepScript(stepName) {
-  const lines = workflow.split(/\r?\n/u);
-  const stepIndex = lines.findIndex((line) =>
-    line.includes(`- name: ${stepName}`),
+function step(stepName) {
+  const matches = poll.steps.filter((candidate) => candidate.name === stepName);
+  assert.equal(
+    matches.length,
+    1,
+    `exactly one step must be named '${stepName}'`,
   );
-  assert.notEqual(stepIndex, -1, `step '${stepName}' must exist`);
-  const scriptIndex = lines.findIndex(
-    (line, index) => index > stepIndex && /^ {10}script: \|$/u.test(line),
-  );
-  assert.notEqual(scriptIndex, -1, `'${stepName}' script block must exist`);
-  const body = [];
-  for (let index = scriptIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.length > 0 && !line.startsWith("            ")) break;
-    body.push(line.startsWith("            ") ? line.slice(12) : "");
-  }
-  return body.join("\n");
+  return matches[0];
 }
 
-function stepSource(stepName) {
-  const stepIndex = workflow.indexOf(`- name: ${stepName}`);
-  assert.ok(stepIndex >= 0, `step '${stepName}' is missing`);
-  const nextStepOffset = workflow
-    .slice(stepIndex + 1)
-    .search(/\n\s*(?:#[^\n]*\n\s*)*- name:/u);
-  return nextStepOffset >= 0
-    ? workflow.slice(stepIndex, stepIndex + 1 + nextStepOffset)
-    : workflow.slice(stepIndex);
+// The shipped script IS the text under test: it is read out of the parsed
+// workflow and executed directly against mocks, so no copy can drift from it.
+function extractStepScript(stepName) {
+  const script = step(stepName).with?.script;
+  assert.equal(typeof script, "string", `'${stepName}' must carry a script`);
+  return script;
 }
 
 const laneAnnotation = (failureClass, status) =>
@@ -222,87 +220,360 @@ const forkPull = (number, sha) => ({
   updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
 });
 
-// --- The dry-run guarantee -------------------------------------------------
+// --- The write gate --------------------------------------------------------
+//
+// The guarantee is the JOB SPLIT, not an analysis of what the steps do. `poll`
+// does the work and holds NO write scope, so nothing in it can mutate anything
+// however it is wired. `write` holds `issues: write`, is three steps long,
+// checks out nothing, runs no shell, and is pinned BYTE FOR BYTE — so any edit
+// to it fails here and is read by a person rather than judged by a scanner.
+//
+// The corpus below is the durable half. Each entry is a complete workflow fed
+// to the audit's entry point, asserting the message its own rule produces —
+// not merely that something was rejected, because a fixture rejected for
+// failing to parse would otherwise look identical to one that tripped its rule.
+// Fixtures are architecture-independent: they outlive a redesign of the audit
+// in a way that a test named after a defeated exploit does not.
 
-test("the job grants no write permission of any kind, so the ambient token cannot mutate this repository", () => {
-  const permissionsBlocks = [
-    ...workflow.matchAll(/permissions:\n((?: {2,}[^\n]*\n)+)/gu),
-  ];
+const FIXTURES = path.join(
+  __dirname,
+  "fixtures",
+  "claude-lane-incident-write-gate",
+);
+
+// `base.yml` conforms, so every other fixture differs from a PASSING workflow
+// by exactly one property. A fixture with no entry here fails the completeness
+// check below, so one cannot be added without declaring what it proves.
+const CORPUS = new Map([
+  ["concurrency-rewritten", /the concurrency block is not the pinned one/u],
+  ["container-job", /job 'poll' declares 'container:'/u],
+  ["continue-on-error-job", /job 'poll' declares 'continue-on-error:'/u],
+  ["continue-on-error-step", /declares 'continue-on-error:'/u],
+  ["defaults-job", /job 'poll' declares 'defaults:'/u],
+  ["environment-job", /job 'poll' declares 'environment:'/u],
+  ["extra-job", /the job set is 'poll,mirror,write', not 'poll,write'/u],
+  [
+    "job-inherits-write-workflow-block",
+    /exactly one job must hold a write scope/u,
+  ],
+  ["job-not-a-mapping", /job 'poll' is not a mapping/u],
+  [
+    "mint-by-another-action",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "mint-permissions-deleted",
+    /does not match claude-lane-incident-mint-step.pinned.yml byte for byte/u,
+  ],
+  ["mint-pin-missing", /the pinned mint step is missing/u],
+  [
+    "mint-with-write-permission",
+    /does not match claude-lane-incident-mint-step.pinned.yml byte for byte/u,
+  ],
+  [
+    "no-write-scoped-job",
+    /exactly one job must hold a write scope .* found \[\]/u,
+  ],
+  ["non-literal-runs-on", /job 'poll' must name a literal runner/u],
+  [
+    "pat-in-job-env",
+    /'\$\{\{ secrets\.FLEET_ADMIN_PAT \}\}' is a credential expression outside the pinned regions/u,
+  ],
+  ["permissions-write-all-string", /exactly one job must hold a write scope/u],
+  [
+    "poll-job-local-action",
+    /must pin 'uses:' to owner\/repo@<40-hex sha>; found '\.\/\.github\/actions\/incident-mirror'/u,
+  ],
+  [
+    "poll-permission-block-scalar",
+    /exactly one job must hold a write scope .* found \[poll, write\]/u,
+  ],
+  ["poll-job-widened-to-write", /exactly one job must hold a write scope/u],
+  ["proto-job", /the job set is 'poll,__proto__,write'/u],
+  [
+    "report-gate-not-the-negation",
+    /must be gated on github.event.inputs.dry-run == 'true', the exact negation/u,
+  ],
+  ["report-step-removed", /is missing, so a dry run reports nothing/u],
+  [
+    "reusable-workflow-job",
+    /calls a reusable workflow, whose steps are not in this file/u,
+  ],
+  [
+    "secret-ambient-github-token",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "secret-at-workflow-level",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  ["secret-bracket", /is a credential expression outside the pinned regions/u],
+  [
+    "secret-in-job-outputs",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "secret-tojson-dump",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  [
+    "secret-uppercase",
+    /is a credential expression outside the pinned regions/u,
+  ],
+  ["services-job", /job 'poll' declares 'services:'/u],
+  ["step-not-a-mapping", /job 'poll' step 4 is not a mapping/u],
+  ["step-shell-override", /declares shell 'pwsh'/u],
+  ["strategy-job", /job 'poll' declares 'strategy:'/u],
+  ["timeout-removed", /job 'poll' must declare a positive timeout-minutes/u],
+  ["trigger-pull-request-target", /the trigger block is not the pinned one/u],
+  ["unpinned-uses", /must pin 'uses:' to owner\/repo@<40-hex sha>/u],
+  [
+    "write-gate-inverted",
+    /the write job must open its 'if:' with github\.event\.inputs\.dry-run != 'true'/u,
+  ],
+  ["write-gate-removed", /the write job must carry a literal 'if:'/u],
+  [
+    "write-job-bare-hyphen-step",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "write-job-duplicate-step-name",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "write-job-extra-step",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  ["write-job-pin-missing", /the pinned write job is missing/u],
+  [
+    "write-job-script-edited",
+    /does not match claude-lane-incident-write-job.pinned.yml byte for byte/u,
+  ],
+  [
+    "vars-in-job-env",
+    /'\$\{\{ vars\.FLEET_ADMIN_TOKEN \}\}' is a credential expression outside the pinned regions/u,
+  ],
+  ["workflow-not-a-mapping", /the workflow is not a mapping/u],
+  ["yaml-anchor", /unparsable workflow/u],
+]);
+
+const fixture = (name) =>
+  fs.readFileSync(path.join(FIXTURES, `${name}.yml`), "utf8");
+
+test("the shipped workflow satisfies the write gate", () => {
+  assert.deepEqual(auditWriteGate(workflow), []);
+});
+
+test("the corpus base conforms, so each fixture differs by one property", () => {
+  assert.deepEqual(auditWriteGate(fixture("base")), []);
+});
+
+for (const [name, expected] of CORPUS) {
+  test(`the gate rejects fixture '${name}'`, () => {
+    const violations = auditWriteGate(fixture(name));
+    assert.ok(
+      violations.some((violation) => expected.test(violation)),
+      `expected a violation matching ${expected}; got ${JSON.stringify(violations, null, 2)}`,
+    );
+  });
+}
+
+test("every fixture on disk is declared in the corpus", () => {
+  const onDisk = fs
+    .readdirSync(FIXTURES)
+    .filter((name) => name.endsWith(".yml"))
+    .map((name) => name.replace(/\.yml$/u, ""))
+    .filter((name) => name !== "base")
+    .sort();
+  assert.deepEqual(onDisk, [...CORPUS.keys()].sort());
+});
+
+test("a write hidden from the parse is still caught by the raw-text scan", () => {
+  // `__proto__` was a total break: the parser bound the job onto the prototype,
+  // so `Object.keys` returned exactly 'poll,write' and the write-scope count
+  // read 1 — the "looked, found nothing, passed" shape again, one layer lower.
+  // Keys are bound as data now, so the parse itself catches it. The assertion
+  // that matters is the SECOND one: the raw-text scan never learns what a job
+  // is, so it holds whatever a future parser bug does to the projection.
+  const violations = auditWriteGate(fixture("proto-job"));
   assert.ok(
-    permissionsBlocks.length >= 2,
-    "workflow and job permissions blocks must both be declared",
+    violations.some((violation) => /the job set is/u.test(violation)),
+    `the parse must name the hidden job; got ${JSON.stringify(violations)}`,
   );
-  for (const [, block] of permissionsBlocks) {
-    assert.doesNotMatch(
-      block,
-      /:\s*write\b/u,
-      `a permissions block grants write scope:\n${block}`,
-    );
-  }
-  assert.match(workflow, /^ {6}contents: read$/mu);
-  assert.match(workflow, /^ {6}issues: read$/mu);
+  assert.ok(
+    violations.some((violation) =>
+      /'issues: write' grants a write outside the pinned regions/u.test(
+        violation,
+      ),
+    ),
+    `the raw-text scan must name the grant; got ${JSON.stringify(violations)}`,
+  );
 });
 
-test("every issue-writing step is gated on the minted token existing, so the gate and the credential are one condition", () => {
-  const writingSteps = [
-    "Open or update the incident issue",
-    "Close the recovered incident issue",
-  ];
-  for (const name of writingSteps) {
-    const step = stepSource(name);
-    assert.match(
-      step,
-      /if: steps\.credential\.outputs\.token != ''/u,
-      `'${name}' is not gated on the minted token`,
-    );
-    assert.match(
-      step,
-      /token: \$\{\{ steps\.credential\.outputs\.token \}\}/u,
-      `'${name}' does not author with the minted token`,
-    );
-    assert.doesNotMatch(
-      step,
-      /secrets\.GITHUB_TOKEN/u,
-      `'${name}' must never fall back to the ambient token`,
-    );
-  }
+test("the workflow carries no write grant outside the pinned regions", () => {
+  // Raw text, no parser in the path. `permission-<scope>: write` on the App
+  // token is the same shape and is covered by the same rule: a minted write is
+  // authority `permissions:` does not govern.
+  assert.doesNotMatch(workflow, /permission-[a-z-]+\s*:\s*write/u);
+  assert.doesNotMatch(workflow, /write-all/u);
+  assert.doesNotMatch(workflow, /\t/u, "a tab is not YAML indentation");
+  assert.doesNotMatch(
+    workflow,
+    /uses:\s*\.\//u,
+    "a local action's code is not pinned by a sha",
+  );
 });
 
-test("no step outside the gated writers can write an issue", () => {
-  const mutatingCall = /issues\.(?:create|update|createComment)\b/u;
+test("the write job reads the file the poll job uploads", () => {
+  // create-issue-from-file EXITS SILENTLY when `content-filepath` does not
+  // exist, so a rename on either side is a green run that writes nothing —
+  // the exact failure this whole design exists to make impossible.
+  // download-artifact with a `name:` and no `path:` extracts into the
+  // workspace root, so the uploaded path IS the downloaded path.
+  const uploaded = step("Publish the rendered incident body").with.path;
+  const consumed = writeJob.steps
+    .find((declared) => declared.name === "Open or update the incident issue")
+    .with["content-filepath"].replace(`\${{ github.workspace }}/`, "");
+  assert.equal(consumed, uploaded);
+  assert.equal(
+    writeJob.steps[0].with.name,
+    step("Publish the rendered incident body").with.name,
+    "the write job must download the artifact the poll job uploads",
+  );
+});
+
+test("the poll job holds no write scope at all", () => {
+  // The whole design rests on this one line: every step in `poll` — the
+  // checkout, the inline scripts, the shell — is incapable of mutating
+  // anything, so none of them has to be classified as safe.
+  assert.equal(isWriteScoped(effectivePermissions(poll, document)), false);
+  assert.deepEqual(poll.permissions, {
+    checks: "read",
+    contents: "read",
+    issues: "read",
+    "pull-requests": "read",
+  });
+});
+
+test("exactly one job holds a write scope, and it is the pinned one", () => {
+  // A POSITIVE count. "Looked, found nothing to check, passed" is the shape
+  // every bypass of the previous gate produced.
+  const scoped = Object.entries(document.jobs)
+    .filter(([, job]) => isWriteScoped(effectivePermissions(job, document)))
+    .map(([jobId]) => jobId);
+  assert.deepEqual(scoped, [WRITE_JOB_ID]);
+  assert.deepEqual(Object.keys(document.jobs), JOB_IDS);
+  // `issues` is the only WRITE. `contents: read` is carried because the two
+  // actions this job runs previously ran with it and neither documents its
+  // scope requirement; a read widens nothing that matters here.
+  assert.deepEqual(writeJob.permissions, {
+    contents: "read",
+    issues: "write",
+  });
+});
+
+test("the pinned file is the workflow's own write job, byte for byte", () => {
+  const pinned = fs.readFileSync(
+    path.join(__dirname, "claude-lane-incident-write-job.pinned.yml"),
+    "utf8",
+  );
+  assert.ok(
+    workflow.endsWith(pinned),
+    "claude-lane-incident-write-job.pinned.yml must be the tail of the workflow",
+  );
+});
+
+test("the dry-run gate and the dry-run report are exact negations", () => {
+  // The property the deleted expression-evaluator protected: no run may both
+  // write the issue and report that it wrote nothing. `env` is not an available
+  // context in `jobs.<job_id>.if`, so these are two separate strings rather
+  // than one shared variable, and nothing but this test keeps them opposed.
+  const term = /^github\.event\.inputs\.dry-run (==|!=) 'true'$/u;
+  const [, writeOperator] = term.exec(writeJob.if.split(" && ")[0]);
+  const [, reportOperator] = term.exec(step("Publish the dry-run report").if);
+  assert.equal(writeOperator, "!=");
+  assert.equal(reportOperator, "==");
+  assert.equal(writeJob.if.split(" && ")[0], WRITE_GATE);
+  assert.equal(step("Publish the dry-run report").if, REPORT_GATE);
+});
+
+test("the write job authors with the ambient token and loads no repository code", () => {
+  const source = JSON.stringify(writeJob);
+  assert.match(source, /secrets\.GITHUB_TOKEN/u);
+  assert.doesNotMatch(
+    source,
+    /steps\.credential\.outputs\.token/u,
+    "the write path must work without an App token",
+  );
+  assert.equal(writeJob.needs, "poll");
+  assert.equal(writeJob.steps.length, 3);
+  for (const declared of writeJob.steps) {
+    assert.equal(declared.run, undefined, "the write job runs no shell");
+  }
+  assert.equal(
+    writeJob.steps.some((declared) =>
+      String(declared.uses ?? "").startsWith("actions/checkout@"),
+    ),
+    false,
+    "the write job checks nothing out",
+  );
+});
+
+test("the App credential is minted read-only, whenever its secret exists", () => {
+  const mint = step("Mint the aggregator App token");
+  // No dry-run term: the token only reads, so a dry run can hold one and render
+  // the body a live run would have written against the full installation.
+  assert.equal(mint.if, "env.HAS_APP_CREDENTIAL == 'true'");
+  assert.deepEqual(
+    Object.entries(mint.with).filter(([input]) =>
+      input.startsWith("permission-"),
+    ),
+    [
+      ["permission-checks", "read"],
+      ["permission-pull-requests", "read"],
+      ["permission-issues", "read"],
+    ],
+    "a minted write permission is authority `permissions:` does not govern",
+  );
+  assert.equal(
+    poll.env.HAS_APP_CREDENTIAL,
+    `\${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}`,
+  );
+});
+
+test("the reading steps prefer the App token and fall back to the ambient one, so an App-less run still reads", () => {
   for (const name of [
     "Poll consumer repositories for lane failure signals",
     "Find the open incident issue",
-    "Advance the incident state",
   ]) {
-    assert.doesNotMatch(
-      extractStepScript(name),
-      mutatingCall,
-      `'${name}' must be read-only`,
+    assert.equal(
+      step(name).with["github-token"],
+      `\${{ steps.credential.outputs.token || secrets.GITHUB_TOKEN }}`,
+      `'${name}' must degrade to the ambient token when no App token was minted`,
     );
   }
 });
 
-test("the credential is minted only when its secret exists and no dry run was requested", () => {
-  const step = stepSource("Mint the aggregator App token");
-  assert.match(
-    step,
-    /if: env\.HAS_APP_CREDENTIAL == 'true' && env\.FORCED_DRY_RUN != 'true'/u,
-  );
-  assert.match(step, /permission-checks: read/u);
-  assert.match(step, /permission-pull-requests: read/u);
-  assert.match(step, /permission-issues: write/u);
-  assert.match(
-    workflow,
-    /HAS_APP_CREDENTIAL: \$\{\{ secrets\.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' \}\}/u,
-  );
-});
-
-test("the dry-run report is published exactly when no token was minted", () => {
-  assert.match(
-    stepSource("Publish the dry-run report"),
-    /if: steps\.credential\.outputs\.token == ''/u,
-  );
+test("the contract test files are the expected set", () => {
+  // The lane runs `node --test .github/scripts/*.test.cjs` over a GLOB, so a
+  // deleted or renamed test file yields fewer tests and still reports green.
+  // This catches a rename or an accidental deletion; deliberate deletion of
+  // THIS file is covered by CODEOWNERS on .github/scripts/**, not by an
+  // assertion that would go with it.
+  const present = fs
+    .readdirSync(__dirname)
+    .filter((name) => name.endsWith(".test.cjs"))
+    .sort();
+  for (const required of [
+    "claude-lane-incident-aggregator.test.cjs",
+    "claude-lane-incident.test.cjs",
+    "workflow-yaml.test.cjs",
+  ]) {
+    assert.ok(
+      present.includes(required),
+      `${required} is missing from the lane`,
+    );
+  }
 });
 
 test("the run logs the API-call count as an explicit deliverable line", () => {
@@ -322,31 +593,6 @@ test("the run logs the API-call count as an explicit deliverable line", () => {
   );
 });
 
-test("the workflow is scheduled and dispatched only — no push trigger can consume a clean cycle", () => {
-  const triggerBlock = workflow.slice(
-    workflow.indexOf("\non:"),
-    workflow.indexOf("\nconcurrency:"),
-  );
-  assert.doesNotMatch(triggerBlock, /^ {2}push:/mu);
-  assert.match(triggerBlock, /^ {2}schedule:/mu);
-  assert.match(triggerBlock, /^ {2}workflow_dispatch:/mu);
-});
-
-test("the issue lookup and close steps run on github-script, not the gh CLI", () => {
-  for (const name of [
-    "Find the open incident issue",
-    "Close the recovered incident issue",
-  ]) {
-    const step = stepSource(name);
-    assert.match(step, /uses: actions\/github-script@/u, name);
-    assert.doesNotMatch(
-      step.slice(step.indexOf("script: |")),
-      /\bgh (api|issue|pr)\b/u,
-      name,
-    );
-  }
-});
-
 test("the schedule and its serialization are declared", () => {
   assert.match(workflow, /- cron: '17 \* \* \* \*'/u);
   // Overlapping cycles would race on one issue body; queued-not-cancelled keeps
@@ -359,7 +605,10 @@ test("the schedule and its serialization are declared", () => {
 
 // --- Polling behavior ------------------------------------------------------
 
-test("a dry run with no installation polls this repository alone", async () => {
+test("an uncredentialed run degrades to this repository alone and still classifies the cycle", async () => {
+  // The App seam is optional by design. Without it the poll must narrow rather
+  // than fail: no installation read it cannot perform, and a real verdict from
+  // the one repository the ambient token can always reach.
   const { outputs, calls } = await runPoll({ hasInstallation: false });
   assert.equal(outputs.repositories, "1");
   assert.deepEqual(
@@ -369,7 +618,24 @@ test("a dry run with no installation polls this repository alone", async () => {
   assert.equal(
     calls.some((call) => call.kind === "installation"),
     false,
-    "a dry run must not attempt an installation read it cannot perform",
+    "an uncredentialed run must not attempt an installation read it cannot perform",
+  );
+
+  const detected = await runPoll({
+    hasInstallation: false,
+    pullsByRepo: {
+      "melodic-software/ci-workflows": [
+        [recentPull(12, "sha-a", "melodic-software/ci-workflows")],
+      ],
+    },
+    checkRunsByPull: { "sha-a": [checkRun({ id: 90, annotationsCount: 1 })] },
+    annotationsByCheckRun: { 90: [{ message: laneAnnotation("auth", 401) }] },
+  });
+  assert.equal(detected.outputs["read-errors"], "0");
+  assert.equal(
+    detected.outputs.cycle,
+    "incident",
+    "an App-less run must still detect an escalating class, not report indeterminate",
   );
 });
 
@@ -637,17 +903,15 @@ test("check runs and annotations are paginated, neither truncated at one page no
   assert.equal(outputs.cycle, "clean");
 });
 
-test("the ambient token is granted every read the poll makes, or a dry run sees nothing", () => {
+test("the ambient token is granted every read the poll makes, or an App-less run sees nothing", () => {
   // Declaring `permissions:` sets every unlisted scope to `none`. Grant the
-  // four reads the local dry-run poll uses against this repository's own
-  // lanes. Do not treat Checks:read as what makes public cross-repo dry-run
-  // reads succeed — those work with the ambient token; PRIVATE reads 404
-  // without an installation token rather than 403 without Checks:read.
+  // four reads the local poll uses. Do not treat Checks:read as what makes
+  // PUBLIC cross-repository reads succeed: those work with the ambient token;
+  // PRIVATE reads typically 404 without an installation token.
   for (const scope of ["checks", "contents", "issues", "pull-requests"]) {
-    assert.match(
-      workflow,
-      new RegExp(`^ {6}${scope}: read$`, "mu"),
-      `the job must grant ${scope}: read`,
+    assert.ok(
+      poll.permissions[scope] === "read" || poll.permissions[scope] === "write",
+      `the job must grant at least ${scope}: read`,
     );
   }
 });
@@ -839,4 +1103,218 @@ test("two genuine bot-authored incident issues fail the lookup closed", async ()
     { number: 2, user: { type: "Bot" }, body: SELECTOR_MARKER },
   ]);
   assert.match(failedWith, /found 2 open issues carrying the incident marker/u);
+});
+
+/**
+ * Execute the shipped state-advance script.
+ *
+ * The coverage check that keeps a narrowed poll from auto-closing an incident
+ * is DECIDED in claude-lane-incident.cjs but ASSEMBLED here, out of `env:`
+ * entries wired to step outputs. A unit test calling `nextState` directly
+ * cannot see a mis-wired env key or an unparsed scope, and either one makes the
+ * check silently vacuous while every unit test stays green — so the step's own
+ * text is what runs here, exactly as the poll's is.
+ */
+async function runState({
+  cycle,
+  tally,
+  issueBody = "",
+  issueNumber = "",
+  polledRepositories,
+}) {
+  const keys = [
+    "CYCLE",
+    "TALLY",
+    "ISSUE_BODY",
+    "ISSUE_NUMBER",
+    "POLLED_REPOSITORIES",
+    "GITHUB_WORKSPACE",
+  ];
+  const originalValues = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]]),
+  );
+  // The step renders into the workspace, which here is the repository the
+  // module is required from; restored so a test run leaves no working-tree file.
+  const bodyPath = path.join(repositoryRoot, ".claude-lane-incident.md");
+  const bodyExisted = fs.existsSync(bodyPath);
+  Object.assign(process.env, {
+    CYCLE: cycle,
+    TALLY: JSON.stringify(tally),
+    ISSUE_BODY: issueBody,
+    ISSUE_NUMBER: issueNumber,
+    GITHUB_WORKSPACE: repositoryRoot,
+  });
+  // Distinguishes "the workflow passed nothing" from "the workflow passed an
+  // empty scope"; the step must hold the incident either way.
+  if (polledRepositories === undefined) delete process.env.POLLED_REPOSITORIES;
+  else process.env.POLLED_REPOSITORIES = polledRepositories;
+
+  const outputs = {};
+  const warnings = [];
+  try {
+    const core = {
+      setOutput: (key, value) => (outputs[key] = value),
+      setFailed: (message) => assert.fail(`unexpected setFailed: ${message}`),
+      warning: (message) => warnings.push(message),
+      info: () => {},
+    };
+    const execute = new AsyncFunction(
+      "core",
+      "require",
+      "process",
+      extractStepScript("Advance the incident state"),
+    );
+    await execute(core, require, process);
+    return {
+      outputs,
+      warnings,
+      renderedBody: fs.existsSync(bodyPath)
+        ? fs.readFileSync(bodyPath, "utf8")
+        : null,
+    };
+  } finally {
+    if (!bodyExisted && fs.existsSync(bodyPath)) fs.rmSync(bodyPath);
+    for (const key of keys) {
+      if (originalValues[key] === undefined) delete process.env[key];
+      else process.env[key] = originalValues[key];
+    }
+  }
+}
+
+const {
+  renderIssueBody,
+  tallyObservations,
+} = require("./claude-lane-incident.cjs");
+
+// An open incident implicating a repository only the App installation token can
+// read — the shape the credential-loss finding is about.
+const privateIncidentBody = renderIssueBody({
+  v: 1,
+  firstSeen: "2026-07-27T00:00:00.000Z",
+  lastSeen: "2026-07-27T00:00:00.000Z",
+  cleanCycles: 0,
+  classCounts: { auth: 1 },
+  statusCounts: { 401: 1 },
+  repositories: {
+    "melodic-software/private-consumer": {
+      classes: ["auth"],
+      pulls: [3],
+      pullsSeen: 1,
+    },
+  },
+  repositoriesSeen: 1,
+  unrecognized: 0,
+});
+
+test("the poll publishes the scope it observed, not just how many", async () => {
+  const { outputs } = await runPoll({ hasInstallation: false });
+  assert.deepEqual(JSON.parse(outputs["polled-repositories"]), [
+    "melodic-software/ci-workflows",
+  ]);
+  assert.equal(
+    outputs.repositories,
+    String(JSON.parse(outputs["polled-repositories"]).length),
+    "the published scope and the reported count must describe the same poll",
+  );
+});
+
+test("the poll publishes the installation's scope when it has one", async () => {
+  const { outputs } = await runPoll({
+    hasInstallation: true,
+    installationRepositories: [
+      { full_name: "melodic-software/medley", archived: false },
+      { full_name: "melodic-software/retired", archived: true },
+    ],
+  });
+  assert.deepEqual(JSON.parse(outputs["polled-repositories"]), [
+    "melodic-software/medley",
+  ]);
+});
+
+test("a self-only cycle cannot close an incident that implicates a private consumer", async () => {
+  const { outputs, warnings, renderedBody } = await runState({
+    cycle: "clean",
+    tally: tallyObservations([]),
+    issueBody: privateIncidentBody,
+    issueNumber: "42",
+    polledRepositories: JSON.stringify(["melodic-software/ci-workflows"]),
+  });
+  // `action: none` is what keeps this out of the write job at all: both the
+  // artifact upload and the whole `write` job are gated on it.
+  assert.equal(outputs.action, "none");
+  assert.equal(outputs.coverage, "incomplete");
+  assert.match(
+    renderedBody,
+    /Consecutive clean cycles: 0 of 3/u,
+    "a held cycle must not advance the counter it renders",
+  );
+  assert.match(warnings.join("\n"), /melodic-software\/private-consumer/u);
+});
+
+test("the same cycle over the full scope advances the incident toward close", async () => {
+  const { outputs, warnings } = await runState({
+    cycle: "clean",
+    tally: tallyObservations([]),
+    issueBody: privateIncidentBody,
+    issueNumber: "42",
+    polledRepositories: JSON.stringify([
+      "melodic-software/ci-workflows",
+      "melodic-software/private-consumer",
+    ]),
+  });
+  assert.equal(outputs.action, "update");
+  assert.equal(outputs.coverage, "complete");
+  assert.deepEqual(warnings, []);
+});
+
+test("a scope the step never received or could not parse holds the incident", async () => {
+  for (const polledRepositories of [undefined, "", "not json", "{}"]) {
+    const { outputs } = await runState({
+      cycle: "clean",
+      tally: tallyObservations([]),
+      issueBody: privateIncidentBody,
+      issueNumber: "42",
+      polledRepositories,
+    });
+    assert.equal(outputs.action, "none", String(polledRepositories));
+    assert.equal(outputs.coverage, "incomplete", String(polledRepositories));
+  }
+});
+
+test("the state step reads the scope from the env key the poll step writes", () => {
+  // The two halves of the wiring, checked against each other rather than
+  // against a literal repeated in both places.
+  assert.equal(
+    step("Advance the incident state").env?.POLLED_REPOSITORIES,
+    `\${{ steps.poll.outputs.polled-repositories }}`,
+    "the state step must read the poll step's published scope",
+  );
+  assert.match(
+    extractStepScript("Poll consumer repositories for lane failure signals"),
+    /core\.setOutput\("polled-repositories"/u,
+    "the poll step must publish the scope the state step reads",
+  );
+});
+
+test("an escalating cycle is never gated on coverage", async () => {
+  // A failure that WAS observed is real regardless of how narrow the poll was,
+  // so the incident still updates and its body still rebuilds.
+  const { outputs, renderedBody } = await runState({
+    cycle: "incident",
+    tally: tallyObservations([
+      {
+        repository: "melodic-software/ci-workflows",
+        pullNumber: 1,
+        classes: ["auth"],
+        unrecognized: 0,
+        apiErrorStatus: 401,
+      },
+    ]),
+    issueBody: privateIncidentBody,
+    issueNumber: "42",
+    polledRepositories: JSON.stringify(["melodic-software/ci-workflows"]),
+  });
+  assert.equal(outputs.action, "update");
+  assert.equal(outputs.coverage, "complete");
+  assert.match(renderedBody, /melodic-software\/private-consumer/u);
 });

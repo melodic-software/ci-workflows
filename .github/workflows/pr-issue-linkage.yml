@@ -47,7 +47,7 @@ on:
           existing consumer. Opt in per repo by listing the bots whose generated
           PR bodies cannot carry the closing-keyword + `## Related` markers.
         type: string
-        default: ''
+        default: ""
 
 permissions: {}
 
@@ -111,18 +111,113 @@ jobs:
                   "skipping closing-keyword + Related body validation."
               );
             } else {
-              // Strip HTML comments before any check: GitHub's own closing-keyword parser and
-              // rendered Markdown both ignore commented-out text, and a PR template ships its
-              // instructional prose inside comments -- without stripping, an unedited template
-              // (which contains the literal phrase in its instructions) would pass vacuously.
+              // Strip rendered HTML comments before any check: GitHub's own closing-keyword
+              // parser and rendered Markdown both ignore commented-out text, and a PR template
+              // ships its instructional prose inside comments. Comment-looking text inside an
+              // inline code span or fenced code block is rendered literally, though, so it must
+              // not open a comment and hide valid metadata later in the body.
               const rawBody = process.env.PR_BODY || "";
-              // An unterminated `<!--` (template edited mid-comment, or the closing
-              // `-->` accidentally deleted) hides everything after it from GitHub's
-              // renderer too, so treat it as commenting out the rest of the body
-              // rather than leaving that text live for the checks below.
-              const body = rawBody
-                .replace(/<!--[\s\S]*?-->/g, "")
-                .replace(/<!--[\s\S]*$/, "");
+
+              function stripRenderedHtmlComments(text) {
+                const lines = text.split(/\r?\n/);
+                const output = [];
+                let commentOpen = false;
+                let fence = null;
+                let inlineTicks = null;
+
+                function hasClosingTickRun(startLine, startColumn, ticks) {
+                  for (let lineIndex = startLine; lineIndex < lines.length; lineIndex += 1) {
+                    const candidate = lines[lineIndex];
+                    if (lineIndex > startLine && candidate.trim() === "") return false;
+                    let column = lineIndex === startLine ? startColumn : 0;
+                    while (column < candidate.length) {
+                      if (candidate[column] !== "`") {
+                        column += 1;
+                        continue;
+                      }
+                      let end = column + 1;
+                      while (candidate[end] === "`") end += 1;
+                      if (end - column === ticks) return true;
+                      column = end;
+                    }
+                  }
+                  return false;
+                }
+
+                for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+                  const line = lines[lineIndex];
+                  if (!commentOpen && inlineTicks === null) {
+                    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+                    if (fence !== null) {
+                      output.push(line);
+                      if (
+                        marker !== null &&
+                        marker[1][0] === fence.char &&
+                        marker[1].length >= fence.length &&
+                        /^\s*$/.test(marker[2])
+                      ) {
+                        fence = null;
+                      }
+                      continue;
+                    }
+                    if (
+                      marker !== null &&
+                      !(marker[1][0] === "`" && marker[2].includes("`"))
+                    ) {
+                      fence = { char: marker[1][0], length: marker[1].length };
+                      output.push(line);
+                      continue;
+                    }
+                  }
+
+                  let rendered = "";
+                  for (let index = 0; index < line.length; ) {
+                    if (commentOpen) {
+                      const close = line.indexOf("-->", index);
+                      if (close === -1) {
+                        index = line.length;
+                        continue;
+                      }
+                      commentOpen = false;
+                      index = close + 3;
+                      continue;
+                    }
+
+                    if (line[index] === "`") {
+                      let end = index + 1;
+                      while (line[end] === "`") end += 1;
+                      const ticks = end - index;
+                      if (
+                        inlineTicks === null &&
+                        hasClosingTickRun(lineIndex, end, ticks)
+                      ) {
+                        inlineTicks = ticks;
+                      }
+                      else if (inlineTicks === ticks) inlineTicks = null;
+                      rendered += line.slice(index, end);
+                      index = end;
+                      continue;
+                    }
+
+                    if (inlineTicks === null && line.startsWith("<!--", index)) {
+                      commentOpen = true;
+                      index += 4;
+                      continue;
+                    }
+
+                    rendered += line[index];
+                    index += 1;
+                  }
+                  output.push(rendered);
+                }
+
+                return output.join("\n");
+              }
+
+              // An actual unterminated comment (template edited mid-comment, or the closing
+              // marker accidentally deleted) hides everything after it from GitHub's renderer,
+              // so the state machine discards the rest rather than leaking metadata as live.
+              const body = stripRenderedHtmlComments(rawBody);
               const errors = [];
 
               function extractSection(text, headingRe) {

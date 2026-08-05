@@ -27,12 +27,27 @@ name: standards-sync-stuck-automerge-alert
 #
 # The target repo list is derived by checking out standards and running its
 # own sync-manifest.sh interpreter, the same way standards-sync.yml's plan job
-# does — never a second, hand-maintained inventory. The tracking issue is
-# opened in the CALLING repository, authored by a second App token this
-# workflow mints for itself (scoped to issues:write on that repo only — see
-# the "Mint App token for this repository's tracking issue" step), not in any
-# scanned target: a scheduled caller in melodic-software/medley gets the
-# alert filed in medley, not scattered across the 8 targets.
+# does — never a second, hand-maintained inventory.
+#
+# The tracking issue is opened in ONE repository the caller names through
+# `tracking-issue-repository`, authored by a second App token this workflow
+# mints scoped to issues:write on exactly that repository — not scattered
+# across the scanned targets, and NOT implicitly the calling repository.
+# Naming it is required rather than defaulted because the App is what writes
+# the issue, so the destination must be a repository the App is installed on,
+# and the caller is not necessarily one: melodic-software/standards is the
+# sync SOURCE and deliberately not a target, so defaulting to the caller made
+# the token mint 404 on every run (melodic-software/standards#273). A default
+# would have made the reachable case the exception; a required input makes an
+# unreachable destination a caller-side error stated up front instead of a
+# 404 discovered when the alert first has something to report.
+#
+# The name is a bare repository name, not `owner/repo`: the mint below leaves
+# `owner` unset, which resolves it to the calling repository's owner — the
+# same owner that owns the App installation the caller's secrets belong to.
+# A tracking issue in a different owner's repository would need a different
+# installation and therefore different secrets, which is a different caller,
+# not a different input value.
 on:
   workflow_call:
     inputs:
@@ -40,6 +55,16 @@ on:
         description: Runner label selected by the caller's governed selector.
         type: string
         default: ubuntu-24.04
+      tracking-issue-repository:
+        description: >-
+          Bare name (never `owner/repo`) of the repository this workflow's
+          rolling tracking issue lives in, under the calling repository's own
+          owner. The App named by `app-client-id`/`app-private-key` must be
+          installed on it, because that App authors the issue — see the
+          header. Required, and deliberately not defaulted to the calling
+          repository.
+        type: string
+        required: true
       manifest:
         description: Repository-relative manifest path in the standards checkout.
         type: string
@@ -72,8 +97,8 @@ env:
   BOT_LOGIN: melodic-standards-sync
   # The identity that opens/updates/closes this workflow's own tracking
   # issue: a second App token (minted below, scoped to issues:write on only
-  # the calling repository) authors every REST write this workflow makes, so
-  # its bot login is the adoption filter — not the ambient GITHUB_TOKEN's
+  # `tracking-issue-repository`) authors every REST write this workflow makes,
+  # so its bot login is the adoption filter — not the ambient GITHUB_TOKEN's
   # shared github-actions[bot] identity every workflow in a repo can author
   # as. App authorship is strictly tighter decoy resistance: a decoy from any
   # other workflow in the caller repo no longer qualifies. It also drops the
@@ -96,6 +121,26 @@ jobs:
     permissions:
       contents: read # The ambient token no longer authors any issue write; see ISSUE_AUTHOR_LOGIN above.
     steps:
+      # First step, before the checkout and the scan: a malformed destination
+      # otherwise fails LATE and confusingly rather than not at all. An
+      # `owner/repo` value mints a token fine (create-github-app-token accepts
+      # that form and checks the owner half matches), then breaks downstream —
+      # `listForRepo` 404s on a repo name containing a slash, and the issue
+      # write concatenates a second owner onto it.
+      - name: Reject a malformed tracking-issue repository
+        env:
+          TRACKING_ISSUE_REPOSITORY: ${{ inputs.tracking-issue-repository }}
+        run: |
+          set -euo pipefail
+          # GitHub's own repository-name character set, minus the two names it
+          # forbids: `.` and `..` match the character class but would reach the
+          # REST client as a path segment rather than a name.
+          if [[ ! "$TRACKING_ISSUE_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]] \
+            || [[ "$TRACKING_ISSUE_REPOSITORY" == "." || "$TRACKING_ISSUE_REPOSITORY" == ".." ]]; then
+            echo "::error::tracking-issue-repository must be a bare repository name under the caller's own owner, not '${TRACKING_ISSUE_REPOSITORY}'."
+            exit 1
+          fi
+
       - name: Check out standards
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -438,17 +483,27 @@ jobs:
 
             require('node:fs').writeFileSync(process.env.GITHUB_WORKSPACE + '/.stuck-automerge-report.md', reportBody);
 
-      # owner/repositories intentionally omitted: create-github-app-token
-      # defaults both to the current (calling) repository when unset — the
-      # exact narrow scope this token needs, distinct from the read-only
-      # every-target token minted above. Runs unconditionally: both the
-      # open/update and close branches below need it.
-      - name: Mint App token for this repository's tracking issue
+      # `owner` omitted, `repositories` named: with `owner` unset the action
+      # resolves a repository entry's owner to the current (calling)
+      # repository's owner, so this scopes to exactly one repository under the
+      # caller's own owner — the narrow scope this token needs, distinct from
+      # the read-only every-target token minted above. Leaving BOTH unset is
+      # what defaulted the scope to the calling repository and 404'd on every
+      # run (melodic-software/standards#273).
+      #
+      # Runs unconditionally, and must: the three consumers below partition
+      # the outcome space rather than sharing one condition — the lookup and
+      # the open/update run when a count is non-zero, and the recovery close
+      # runs when BOTH are zero. Guarding this step on the non-zero condition
+      # would leave the close branch with no token on exactly the runs it is
+      # for.
+      - name: Mint App token for the tracking-issue repository
         id: issue-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.app-client-id }}
           private-key: ${{ secrets.app-private-key }}
+          repositories: ${{ inputs.tracking-issue-repository }}
           permission-issues: write
 
       # A marker embedded in the body (not a title search) is exact and
@@ -468,16 +523,24 @@ jobs:
         env:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
           ISSUE_TITLE: '[Alert] standards-sync auto-merge PR(s) needing attention'
+          # Read through env, never interpolated into the script text: an
+          # input reaching a `script:` body as `${{ }}` is template injection
+          # by construction, however trusted the value looks.
+          TRACKING_ISSUE_REPOSITORY: ${{ inputs.tracking-issue-repository }}
         with:
           github-token: ${{ steps.issue-token.outputs.token }}
           script: |
             const marker = process.env.MARKER;
             const issueTitle = process.env.ISSUE_TITLE;
             const issueAuthorLogin = process.env.ISSUE_AUTHOR_LOGIN;
+            // The caller's owner, not the caller's repository: the token above
+            // is scoped to `tracking-issue-repository` under that same owner.
+            const owner = context.repo.owner;
+            const repo = process.env.TRACKING_ISSUE_REPOSITORY;
 
             const openIssues = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               state: 'open',
               per_page: 100,
             });
@@ -517,6 +580,9 @@ jobs:
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
           token: ${{ steps.issue-token.outputs.token }}
+          # Defaults to ${{ github.repository }} — the caller — so naming it is
+          # what keeps this write on the same repository the token is scoped to.
+          repository: ${{ github.repository_owner }}/${{ inputs.tracking-issue-repository }}
           title: '[Alert] standards-sync auto-merge PR(s) needing attention'
           issue-number: ${{ steps.tracking.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
@@ -528,14 +594,17 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
+          TRACKING_ISSUE_REPOSITORY: ${{ inputs.tracking-issue-repository }}
         with:
           github-token: ${{ steps.issue-token.outputs.token }}
           script: |
             const marker = process.env.MARKER;
             const issueAuthorLogin = process.env.ISSUE_AUTHOR_LOGIN;
+            const owner = context.repo.owner;
+            const repo = process.env.TRACKING_ISSUE_REPOSITORY;
             const openIssues = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               state: 'open',
               per_page: 100,
             });
@@ -550,14 +619,14 @@ jobs:
             );
             if (!match) return;
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               issue_number: match.number,
               body: 'No standards-sync pull request is currently armed and blocked, or unarmed past the threshold; closing this rolling report.',
             });
             await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               issue_number: match.number,
               state: 'closed',
               state_reason: 'completed',

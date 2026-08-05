@@ -13,41 +13,87 @@ name: claude-lane-incident-aggregator
 # incident issue in this repository: opened on the first escalating class, kept
 # current in place, closed by itself after three consecutive clean cycles.
 #
-# CREDENTIAL SEAM — THIS WORKFLOW IS DRY-RUN UNTIL A HUMAN GRANTS IT ONE.
-# Credential sizing is asymmetric: PUBLIC dry-run reads (pulls + check runs)
-# work with the ambient GITHUB_TOKEN; PRIVATE cross-repository reads and all
-# writes need an installation token (`checks: read`, `pull-requests: read`,
-# `metadata: read`, plus `issues: write` here for the incident item). No
-# existing App holds that set — the runner-observer App holds
-# actions/administration/metadata/organization_self_hosted_runners read only —
-# and widening an App or creating one is an org-owner decision, not an
-# automation's. So the credential is a seam, not a hardcoded identity:
+# TOKEN MATRIX — TWO CREDENTIALS, DISJOINT ROLES.
+# The incident issue lives in THIS repository, so maintaining it is a same-repo
+# write, and the `issues` write scope on the ambient GITHUB_TOKEN is the entire
+# authority it needs. What the ambient token CANNOT do is read a private repository it is
+# not scoped to — those reads 404 — and that, and only that, is what the App
+# credential seam exists for:
 #
-#   - Absent `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`, no App token is minted and
-#     the run is a DRY RUN. It polls with the ambient GITHUB_TOKEN — which this
-#     workflow grants four READ scopes and NOTHING ELSE — and renders the issue
-#     body it WOULD have written into the job summary. A dry run is a real
-#     poll, not a no-op: it reads this repository's own lane check runs, and
-#     can also read PUBLIC cross-repo lanes when `repositories` is overridden.
-#   - Present, it mints an installation token and that token authors every
-#     write (and every PRIVATE cross-repo read). Nothing else changes; there
-#     is no second code path to review.
+#   - Ambient GITHUB_TOKEN, always present: authors every write to this
+#     repository's incident issue, and performs every cross-repository read of a
+#     PUBLIC consumer.
+#   - App installation token, only when `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`
+#     is configured: cross-repository reads of PRIVATE consumers. It is minted
+#     READ-ONLY and authors nothing. Absent it, the poll scopes to this
+#     repository alone (see POLLING SCOPE) and the write path is unaffected.
+#     Minting it with any write permission would hand a write-capable
+#     credential to a job that holds no write scope, so the audit refuses one
+#     anywhere in this file.
 #
-# The dry-run guarantee is structural, not a flag. The job's `permissions:`
-# block grants no write scope of any kind, so the ambient token is incapable of
-# creating, editing, or closing an issue however the steps are wired; and every
-# write step is gated on the minted token being non-empty, so the gate and the
-# write credential are the same condition and cannot drift apart. A reviewer
-# confirms "this cannot write" by reading the permissions block, not by tracing
-# every branch.
+# THE WRITE GATE IS THE JOB SPLIT.
+# `poll` does the work and holds NO write scope, so nothing in it can mutate
+# this repository however its steps are wired — the structural guarantee the
+# dry-run-only design had, kept rather than replaced. `write` holds the
+# `issues` write scope and is three steps long: download the body `poll`
+# rendered, hand it to create-issue-from-file, close a recovered incident. It
+# checks out nothing, runs no shell, and loads no repository code.
 #
-# POLLING SCOPE is the credential's own installation (`GET
+# The dry-run gate is `write`'s job-level `if:`, written inline rather than
+# shared through a job env var because `env` is NOT an available context in
+# `jobs.<job_id>.if` — that key sees four contexts and `env` is not among them.
+# The list is upstream's to change, so read it there rather than here:
+# https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
+# The dry-run report step in `poll` is gated on the exact negation,
+# so no run can both write the issue and report that it wrote nothing; the test
+# pins both conditions and asserts one is the negation of the other.
+#
+# `!= 'true'` FAILS OPEN, deliberately: anything that is not exactly the string
+# `true` enables writes. `github.event.inputs` is absent on `schedule`, so the
+# hourly cycle writes, and only a dispatch that explicitly asked for a dry run
+# does not.
+#
+# .github/scripts/claude-lane-incident-write-gate.cjs holds that shape. It
+# resolves every job's effective permissions, requires EXACTLY ONE write-scoped
+# job, and pins that job byte-for-byte against a literal — so any edit to it, of
+# any kind, fails CI rather than being classified as safe or unsafe. It also
+# refuses a token minted with a write permission anywhere in this file, which is
+# the one way a job holding no write scope can still write.
+#
+# TRUST BOUNDARY, stated precisely. `poll` cannot mutate anything itself, but it
+# does decide two things `write` then acts on, and neither is checked by `write`
+# or by the audit:
+#   - the BODY, through the artifact it uploads. Its safety is `poll`'s own
+#     sanitization (claude-lane-incident.cjs), not anything downstream.
+#   - the TARGET, through `issue-number`. `write` updates, comments on and closes
+#     whatever number that output carries; the only guard is that it parses as a
+#     positive safe integer. A wrong number is a wrong issue in this repository.
+# So "nothing in `poll` can mutate anything" is about `poll`'s own token. What
+# `poll` selects, `write` performs.
+#
+# POLLING SCOPE is the App credential's own installation (`GET
 # /installation/repositories`, one call): the org owner grants the App access to
 # exactly the consumer repositories, and this workflow polls exactly those.
-# There is no second, hand-maintained inventory to drift. A dry run has no
-# installation, so it scopes to this repository alone — which is a real
-# consumer of its own lanes (claude-review-self.yml), so the dry run exercises
-# the whole pipeline against live data rather than a fixture.
+# There is no second, hand-maintained inventory to drift. An uncredentialed run
+# has no installation, so it scopes to this repository alone — which is a real
+# consumer of its own lanes (claude-review-self.yml), so it still exercises the
+# whole pipeline against live data rather than a fixture. "Uncredentialed" is a
+# statement about polling breadth only: such a run writes exactly as a
+# credentialed one does, because `write` never sees the App token at all.
+#
+# SCOPE IS NOT FIXED, AND A NARROWED SCOPE CANNOT CLOSE AN INCIDENT. Because
+# the scope IS the installation, it narrows to this repository alone the moment
+# the App credential goes missing — a deleted or rotated secret skips the mint
+# step — and that narrowing raises no read error, because nothing failed. So an
+# incident caused by PRIVATE consumer repositories would meet three clean
+# cycles that never read those repositories at all, and close itself. The poll
+# therefore publishes the scope it observed, not just how many repositories
+# were in it, and a clean cycle advances the clean-cycle counter only when that
+# scope covers every repository the open incident's own evidence names.
+# Anything less holds the incident open and annotates the run with what went
+# unobserved. The rule, its limits, and why it fails toward holding rather than
+# closing live with the check: see coverageGap in
+# .github/scripts/claude-lane-incident.cjs.
 #
 # PUBLIC-SAFETY: this repository is public and the incident body is its output.
 # Annotation text is untrusted (any workflow in any polled repository can write
@@ -85,54 +131,57 @@ permissions:
   contents: read
 
 jobs:
-  aggregate:
-    name: Aggregate Claude lane infrastructure failures
+  poll:
+    name: Poll the Claude lanes and render the incident body
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      # EVERY SCOPE HERE IS READ, DELIBERATELY — and declaring `permissions:` at
-      # all sets every scope not listed to `none`, so this block IS the ambient
-      # token's whole authority. The no-write guarantee is the ABSENCE of any
-      # write scope, not the shortness of the list: adding a read never weakens
-      # it; the grants below keep the local dry-run poll sharp against this
-      # repository's own lanes.
+      # Declaring `permissions:` at all sets every scope not listed to `none`,
+      # so this block IS this job's whole authority — and every entry is READ.
+      # That is the guarantee the whole design rests on: no step here can mutate
+      # anything however it is wired, so none of them has to be classified.
       #
-      # `checks` and `pull-requests` are what the poll reads. Do not size the
-      # App credential from an assumption that omitting Checks:read always
-      # 403s: on PUBLIC repositories the check-run and annotation endpoints are
-      # readable with the ambient token even without Checks:read (dispatch with
-      # repositories=<public> and zero write scopes returned read-errors=0).
-      # PRIVATE repositories fail differently — typically 404 Not Found when
-      # the token cannot see them, not 403. So: public dry-run reads work with
-      # the ambient token; PRIVATE reads and all writes need the installation
-      # token. `issues: read` lets it find and parse the incident issue and
-      # render an accurate would-be body.
+      # `checks` and `pull-requests` are what the poll reads locally. Do not size
+      # the App credential from an assumption that omitting Checks:read always
+      # 403s: PUBLIC cross-repository reads work with the ambient token, while
+      # PRIVATE repositories typically 404 when that token cannot see them.
+      # `issues: read` finds and parses the open incident issue; maintaining it
+      # is `write`'s job.
       checks: read
       contents: read
       issues: read
       pull-requests: read
+    outputs:
+      action: ${{ steps.state.outputs.action }}
+      issue-number: ${{ steps.incident.outputs.number }}
     env:
       # Same presence-probe seam select-runner.yml uses for its observer
       # credential: the secret's existence, not a checked-in flag, decides
-      # whether this run can write.
+      # whether this run can reach PRIVATE consumer repositories.
       HAS_APP_CREDENTIAL: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY != '' }}
-      # `github.event.inputs` values are strings on every event, and the whole
-      # object is absent on `schedule` — so this compares equal to 'true' only
-      # on a dispatch that explicitly asked for a dry run.
-      FORCED_DRY_RUN: ${{ github.event.inputs.dry-run == 'true' }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # THE ONLY CREDENTIAL-MINTING STEP, and the only place either App secret
+      # is spent. Pinned byte-for-byte alongside the write job, because a minted
+      # token is authority `permissions:` does not govern: any step that can
+      # mint one can write regardless of this job holding no write scope.
+      #
       # Minted without `repositories:` so the token carries the installation's
-      # full access, which is also what defines the polling scope below. Skipped
-      # entirely on a dry run: the token output is then empty, and every write
-      # step's gate reads that same emptiness.
+      # full access, which is also what defines the polling scope below. Every
+      # permission requested is READ: this token exists to reach private
+      # consumer repositories the ambient token 404s on, and it authors no write,
+      # so asking for `issues: write` would be authority nothing spends.
+      #
+      # Minted on a dry run too, so a dry run polls the full installation and
+      # renders the body a live run would have written — which is what the
+      # `dry-run` input's own description promises.
       - name: Mint the aggregator App token
         id: credential
-        if: env.HAS_APP_CREDENTIAL == 'true' && env.FORCED_DRY_RUN != 'true'
+        if: env.HAS_APP_CREDENTIAL == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CLAUDE_LANE_INCIDENT_APP_CLIENT_ID }}
@@ -140,7 +189,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           permission-checks: read
           permission-pull-requests: read
-          permission-issues: write
+          permission-issues: read
 
       - name: Poll consumer repositories for lane failure signals
         id: poll
@@ -258,9 +307,9 @@ jobs:
                 .filter((repository) => !repository.archived)
                 .map((repository) => repository.full_name);
             } else {
-              // Dry run: no installation exists, so default scope is this
-              // repository alone. (Public cross-repo dry-run reads still work
-              // when `repositories` is overridden; private ones need the App.)
+              // Uncredentialed: no installation exists, so the only repository
+              // the ambient token is guaranteed to read is this one. This says
+              // nothing about writing — see the workflow header's write gate.
               repositories = [`${context.repo.owner}/${context.repo.repo}`];
             }
 
@@ -410,6 +459,16 @@ jobs:
 
             core.setOutput("cycle", cycle);
             core.setOutput("tally", JSON.stringify(tally));
+            // The scope this cycle set out to read, by name rather than as a
+            // count. A clean verdict is only as wide as the poll behind it,
+            // and this scope narrows silently when the App credential goes
+            // missing, so the state step needs the names to check them against
+            // the open incident's own evidence. Attempted and observed coincide
+            // wherever this list is consulted: anything the poll failed to read
+            // raises a read error, and that caps the cycle at `indeterminate`
+            // before coverage is reached. See coverageGap in
+            // claude-lane-incident.cjs.
+            core.setOutput("polled-repositories", JSON.stringify(repositories));
             core.setOutput("api-calls", String(apiCalls));
             core.setOutput("read-errors", String(readErrors));
             core.setOutput("lane-runs", String(laneRunsObserved));
@@ -476,23 +535,38 @@ jobs:
           TALLY: ${{ steps.poll.outputs.tally }}
           ISSUE_BODY: ${{ steps.incident.outputs.body }}
           ISSUE_NUMBER: ${{ steps.incident.outputs.number }}
+          POLLED_REPOSITORIES: ${{ steps.poll.outputs.polled-repositories }}
         with:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
-            const { nextState, parseStateBlock, renderIssueBody } = require(
+            const { describeCoverageGap, nextState, parseStateBlock, renderIssueBody } = require(
               path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/claude-lane-incident.cjs"),
             );
 
-            const { state, action } = nextState({
+            // Defaulted rather than trusted: an absent or malformed scope
+            // parses to an empty one, which proves no coverage and therefore
+            // closes nothing. A plumbing mistake here must hold incidents
+            // open, never auto-close them.
+            let polledRepositories = [];
+            try {
+              polledRepositories = JSON.parse(process.env.POLLED_REPOSITORIES || "[]");
+            } catch (error) {
+              core.warning(`polled repository scope did not parse: ${error.message}`);
+            }
+
+            const { state, action, coverageGap } = nextState({
               previous: parseStateBlock(process.env.ISSUE_BODY),
               tally: JSON.parse(process.env.TALLY),
               cycle: process.env.CYCLE,
               now: new Date().toISOString(),
               issueOpen: process.env.ISSUE_NUMBER !== "",
+              polledRepositories,
             });
 
             core.setOutput("action", action);
+            core.setOutput("coverage", coverageGap ? "incomplete" : "complete");
+            if (coverageGap) core.warning(describeCoverageGap(coverageGap));
             if (state === null) return;
             fs.writeFileSync(
               path.join(process.env.GITHUB_WORKSPACE, ".claude-lane-incident.md"),
@@ -512,15 +586,22 @@ jobs:
           PULLS: ${{ steps.poll.outputs.pulls }}
           CYCLE: ${{ steps.poll.outputs.cycle }}
           ACTION: ${{ steps.state.outputs.action }}
+          # `cycle=clean action=none` is the shape of a held incident, and
+          # without this it is also the shape of nothing having happened. The
+          # step's own warning names the repositories.
+          COVERAGE: ${{ steps.state.outputs.coverage }}
         run: |
           set -euo pipefail
           api_calls=$(( POLL_API_CALLS + LOOKUP_API_CALLS ))
-          echo "claude-lane-incident: api-calls=${api_calls} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} action=${ACTION}"
+          echo "claude-lane-incident: api-calls=${api_calls} repositories=${REPOSITORIES} pull-requests=${PULLS} lane-check-runs=${LANE_RUNS} read-errors=${READ_ERRORS} cycle=${CYCLE} coverage=${COVERAGE} action=${ACTION}"
 
-      # The dry run's deliverable: the exact body a credentialed run would have
-      # written, in the job summary, where it costs nothing and leaks nothing.
+      # The dry run's deliverable: the exact body a live run would have written,
+      # in the job summary, where it costs nothing and leaks nothing. This
+      # condition is the exact negation of the `write` job's, so the report and
+      # the writes are mutually exclusive by construction — no run can both
+      # write the issue and claim it wrote nothing. The test pins both.
       - name: Publish the dry-run report
-        if: steps.credential.outputs.token == ''
+        if: github.event.inputs.dry-run == 'true'
         env:
           ACTION: ${{ steps.state.outputs.action }}
         run: |
@@ -528,8 +609,8 @@ jobs:
           {
             echo "## Claude lane incident aggregator — DRY RUN"
             echo
-            echo "No App credential is configured, so this run wrote nothing. The"
-            echo "incident issue write it would have performed is \`${ACTION}\`."
+            echo "This run was dispatched with \`dry-run\`, so it wrote nothing."
+            echo "The incident issue write it would have performed is \`${ACTION}\`."
             echo
             if [ -f .claude-lane-incident.md ]; then
               echo '<details><summary>Rendered incident body</summary>'
@@ -542,29 +623,70 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # `labels` is applied on creation only. `claude-lane-incident` does not
-      # exist in this repository's label taxonomy yet, and that taxonomy is
-      # managed by github-iac (Labels.cs) — see the PR body: it must be declared
-      # there or the next apply prunes it. Issue SELECTION never keys on the
-      # label (the body marker and bot authorship do), so a pruned label
-      # degrades PLAN.md's `--label` sanity query and nothing else.
+      # The hand-off. `write` holds no checkout and no repository code, so the
+      # rendered body reaches it as an artifact rather than as a path. Skipped
+      # when there is nothing to write, which is also when `write` is skipped.
+      - name: Publish the rendered incident body
+        if: steps.state.outputs.action != 'none'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: claude-lane-incident-body
+          path: .claude-lane-incident.md
+          if-no-files-found: error
+          retention-days: 1
+
+  # THE ONLY WRITE-SCOPED JOB. Pinned byte-for-byte by
+  # .github/scripts/claude-lane-incident-write-gate.cjs: every line below,
+  # comments included, is compared against a literal in the test, so any edit
+  # here fails CI and is read by a human rather than classified by a scanner.
+  #
+  # `labels` is applied on creation only. `claude-lane-incident` is declared in
+  # github-iac (`GovernedRepositories.cs`, this repository's `ExtraLabels`), so
+  # the taxonomy apply keeps it rather than pruning it. Issue SELECTION never
+  # keys on the label (the body marker and bot authorship do), so a label that
+  # is later renamed or pruned degrades a sanity query and nothing else.
+  #
+  # `repository` is left at its default of `${{ github.repository }}`, which is
+  # what makes `issues: write` on the ambient token sufficient: the incident
+  # issue is created and updated in the repository this workflow runs in.
+  # Setting it elsewhere would need a credential this job does not have.
+  write:
+    name: Maintain the incident issue
+    needs: poll
+    if: github.event.inputs.dry-run != 'true' && needs.poll.outputs.action != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # `issues: write` is the only WRITE, and it is the whole authority this
+      # job needs. `contents: read` is carried because the previous single-job
+      # form ran these two actions with it and neither documents its scope
+      # requirement; a read can widen nothing that matters here, and dropping it
+      # on an inference would trade a security property for a runtime risk.
+      contents: read
+      issues: write
+    steps:
+      - name: Download the rendered incident body
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: claude-lane-incident-body
+
       - name: Open or update the incident issue
-        if: steps.credential.outputs.token != '' && (steps.state.outputs.action == 'open' || steps.state.outputs.action == 'update')
+        if: needs.poll.outputs.action == 'open' || needs.poll.outputs.action == 'update'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
-          token: ${{ steps.credential.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           title: '[Incident] Claude lane infrastructure failure'
-          issue-number: ${{ steps.incident.outputs.number }}
+          issue-number: ${{ needs.poll.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.claude-lane-incident.md
           labels: claude-lane-incident
 
       - name: Close the recovered incident issue
-        if: steps.credential.outputs.token != '' && steps.state.outputs.action == 'close'
+        if: needs.poll.outputs.action == 'close'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          ISSUE_NUMBER: ${{ steps.incident.outputs.number }}
+          ISSUE_NUMBER: ${{ needs.poll.outputs.issue-number }}
         with:
-          github-token: ${{ steps.credential.outputs.token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require("node:fs");
             const path = require("node:path");

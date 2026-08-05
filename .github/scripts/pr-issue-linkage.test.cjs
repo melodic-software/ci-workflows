@@ -139,6 +139,38 @@ test("an unterminated HTML comment hides the rest of the body instead of leaking
   assert.match(failedWith, /closing keyword/);
 });
 
+test("a literal HTML-comment opener in inline code does not hide later linkage metadata", () => {
+  const failedWith = runScript(
+    "The parser handles an unclosed `<!--` marker.\n\nNo linked issue\n\n## Related\n\n- #123",
+  );
+  assert.equal(failedWith, null);
+});
+
+test("a literal HTML-comment opener in a multiline code span does not hide later linkage metadata", () => {
+  const failedWith = runScript(
+    "The parser handles `an unclosed\n<!-- marker` safely.\n\nNo linked issue\n\n## Related\n\n- #123",
+  );
+  assert.equal(failedWith, null);
+});
+
+test("HTML-comment syntax in a fenced code block does not hide later linkage metadata", () => {
+  const failedWith = runScript(
+    "```md\n<!-- example without a closer\n```\n\nNo linked issue\n\n## Related\n\n- #123",
+  );
+  assert.equal(failedWith, null);
+});
+
+test("an unmatched backtick does not expose linkage metadata hidden in a later HTML comment", () => {
+  const failedWith = runScript(
+    "A stray ` delimiter.\n\n<!-- Closes #1 -->\n\n## Related\n\nn/a",
+  );
+  assert.ok(
+    failedWith,
+    "commented-out linkage must remain hidden after an unmatched backtick",
+  );
+  assert.match(failedWith, /closing keyword/);
+});
+
 test("a nested subsection under ## Related counts as content, not a section boundary", () => {
   const failedWith = runScript(
     "Closes #1\n\n## Related\n\n### Issues\n\n- #123",

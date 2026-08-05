@@ -338,6 +338,110 @@ function classifyCycle({ laneRunsObserved, escalating, readErrors }) {
 }
 
 /**
+ * Name what an open incident implicates that this cycle did not observe.
+ *
+ * A clean cycle is a claim about the fleet, and that claim is only ever as wide
+ * as the poll that produced it. Polling scope is not fixed: it IS the App
+ * installation's repository list, and it narrows — to this repository alone —
+ * the moment the App credential goes missing (see the workflow's POLLING
+ * SCOPE). That narrowing raises no read error, because nothing failed; the poll
+ * simply asked a smaller question and got a clean answer to it. So a clean
+ * verdict from a narrowed poll is not evidence that the incident's root cause
+ * recovered, it is evidence that nobody looked — and letting it advance the
+ * clean-cycle counter is how an incident caused by private consumer
+ * repositories auto-closes three cycles after those repositories stopped being
+ * read at all. `classifyCycle` cannot see this: scope is not an error, and the
+ * incident's own evidence is not in its inputs.
+ *
+ * Coverage is therefore proven against the incident's OWN persisted evidence:
+ * every repository its index names must appear in this cycle's polled scope.
+ * Three ways that proof fails, all of which hold the incident open:
+ *
+ *   - `unobserved` — a named implicated repository was not polled this cycle.
+ *   - `unlisted` — the persisted index is bounded (MAX_TRACKED_REPOSITORIES)
+ *     while `repositoriesSeen` counts the whole incident, so a truncated index
+ *     cannot name what it dropped and coverage over it cannot be established.
+ *   - `namesNothing` — the incident's index names no repository at all, so no
+ *     cycle can contradict it and none may count toward closing it.
+ *
+ * `namesNothing` turns on what the index CONTAINS, never on why: a state block
+ * that did not parse (hand-edited, or written by an older schema, both of which
+ * `parseStateBlock` degrades to null) and one that parsed to an empty index are
+ * the same claim — nothing — and get the same answer. Rebuilding either from an
+ * empty state and counting toward close from zero would be the same silent
+ * close by another route. An incident whose durable record was lost is one a
+ * human closes; the escalating path still rebuilds the block, so a live
+ * incident's body self-repairs.
+ *
+ * A gap holds the incident open indefinitely, and three cases make that a
+ * standing operator cost rather than a transient one: an implicated repository
+ * that is legitimately gone (archived, or dropped from the installation, which
+ * is not distinguishable here from a credential that vanished); an incident
+ * wider than MAX_TRACKED_REPOSITORIES, whose `unlisted` remainder never
+ * resolves; and a STATE_SCHEMA_VERSION bump, which strands every incident open
+ * at the time. Each is the deliberate direction to fail: a held incident is
+ * visible and a human closes it, whereas the silent close this prevents looks
+ * exactly like recovery.
+ *
+ * Returns `null` when coverage is complete.
+ */
+function coverageGap({ previous, polledRepositories }) {
+  const implicated = Object.keys(previous?.repositories ?? {});
+  if (implicated.length === 0) {
+    return { unobserved: [], unlisted: 0, namesNothing: true };
+  }
+  // Case-insensitive for the same reason the poll's fork check is: GitHub
+  // repository names are, and the `repositories` dispatch input is typed by a
+  // human, so an exact compare would report every smoke run as a coverage gap.
+  const polled = new Set(
+    (Array.isArray(polledRepositories) ? polledRepositories : [])
+      .filter((name) => typeof name === "string")
+      .map((name) => name.trim().toLowerCase()),
+  );
+  const unobserved = implicated.filter(
+    (name) => !polled.has(name.toLowerCase()),
+  );
+  const unlisted = Math.max(
+    0,
+    (toPositiveInteger(previous.repositoriesSeen) ?? 0) - implicated.length,
+  );
+  if (unobserved.length === 0 && unlisted === 0) return null;
+  return { unobserved, unlisted, namesNothing: false };
+}
+
+/**
+ * Render a coverage gap as the warning the workflow annotates the run with.
+ * Takes a gap, never `null` — there is nothing to say about complete coverage.
+ *
+ * A held cycle otherwise logs `cycle=clean action=none` and nothing says why,
+ * which is precisely the diagnosis an operator needs on the cycles that go
+ * wrong.
+ */
+function describeCoverageGap(gap) {
+  if (gap.namesNothing) {
+    return (
+      "the open incident's state names no repository, so this cycle cannot " +
+      "prove it observed what the incident implicates; holding it open for a " +
+      "human to close."
+    );
+  }
+  const parts = [];
+  if (gap.unobserved.length > 0) {
+    parts.push(`not polled this cycle: ${gap.unobserved.join(", ")}`);
+  }
+  if (gap.unlisted > 0) {
+    parts.push(
+      `${gap.unlisted} further implicated repositories are not named in the incident's bounded index`,
+    );
+  }
+  return (
+    "this cycle did not observe every repository the open incident " +
+    `implicates (${parts.join("; ")}), so it does not count toward the ` +
+    "auto-close."
+  );
+}
+
+/**
  * Advance the persisted incident state by one cycle and name the write the
  * workflow should perform.
  *
@@ -353,8 +457,20 @@ function classifyCycle({ laneRunsObserved, escalating, readErrors }) {
  * issues only: a previously closed incident is superseded by a fresh one rather
  * than reopened, which keeps the "at most one OPEN incident item" contract
  * without paginating the repository's closed-issue history every cycle.
+ *
+ * `polledRepositories` is this cycle's polling scope, and it gates the clean
+ * path: a clean cycle advances the counter only when it observed what the
+ * incident implicates. Omitting it proves nothing and so closes nothing, which
+ * is the direction a plumbing mistake should fail. See coverageGap.
  */
-function nextState({ previous, tally, cycle, now, issueOpen }) {
+function nextState({
+  previous,
+  tally,
+  cycle,
+  now,
+  issueOpen,
+  polledRepositories,
+}) {
   const timestamp = now;
 
   if (cycle === "incident") {
@@ -386,17 +502,19 @@ function nextState({ previous, tally, cycle, now, issueOpen }) {
 
   if (cycle === "indeterminate") return { state: previous, action: "none" };
 
-  // `previous` is null whenever the open issue carries no parsable state block —
-  // a hand-edited body, or one written by an older schema. That is exactly when
-  // the recovery path runs, so it must not hand `renderIssueBody` a state with
-  // no counts to render; start from the empty shape instead of spreading null.
-  const cleanCycles = (previous?.cleanCycles ?? 0) + 1;
-  const state = {
-    ...emptyState(),
-    ...previous,
-    v: STATE_SCHEMA_VERSION,
-    cleanCycles,
-  };
+  // A clean cycle counts toward the auto-close only if it actually observed
+  // what the incident implicates. A gap holds — it neither advances the counter
+  // nor resets it, exactly as `indeterminate` does — and is returned so the
+  // workflow can say why on a cycle that would otherwise log `cycle=clean
+  // action=none` with no explanation.
+  const gap = coverageGap({ previous, polledRepositories });
+  if (gap !== null)
+    return { state: previous, action: "none", coverageGap: gap };
+
+  // Coverage cannot hold for a null `previous`, so everything below has a
+  // parsed state block to advance.
+  const cleanCycles = previous.cleanCycles + 1;
+  const state = { ...previous, v: STATE_SCHEMA_VERSION, cleanCycles };
   return {
     state,
     action: cleanCycles >= CLEAN_CYCLES_TO_CLOSE ? "close" : "update",
@@ -546,7 +664,7 @@ function renderIssueBody(state) {
     "",
     `- First seen: ${state.firstSeen ?? "unknown"}`,
     `- Last seen: ${state.lastSeen ?? "unknown"}`,
-    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE})`,
+    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE}; only cycles whose coverage of this incident is complete count — see step 4)`,
     `- Observed \`api_error_status\`: ${statusLine}`,
     `- Repositories affected: ${Math.max(state.repositoriesSeen ?? 0, repositoryNames.length)}`,
     `- Unrecognized \`class=\` tokens seen: ${state.unrecognized ?? 0}${
@@ -583,8 +701,25 @@ function renderIssueBody(state) {
     "   kill-switched lane still publishes a name-stable skipped check, and a",
     "   skip is not evidence the lanes ran — so while `CLAUDE_LANES_DISABLED`",
     "   (or a per-lane switch) is set, this issue can never auto-close.",
-    "4. Re-run the affected lane jobs once the cause is fixed, then let this",
-    `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive clean cycles; it closes itself.`,
+    "4. A clean cycle counts only when its coverage of this incident is",
+    "   complete: it polled every repository the incident TRACKS, and the",
+    "   tracked index accounts for every repository the incident has SEEN.",
+    "   That index is the durable record behind this report, not the table",
+    "   above — the table is capped separately, so a fleet-wide incident",
+    "   tracks more repositories than it lists, and can have seen more still.",
+    "   Polling scope is the aggregator App's installation, so a missing App",
+    "   credential narrows it to this repository and stops the count without",
+    "   failing anything; the run log's `coverage=` field and its warning",
+    "   annotation name what went unobserved. Three causes hold an incident",
+    "   open for good, and each is closed by hand once you have confirmed",
+    "   recovery: a repository that is gone — archived, or removed from the",
+    "   installation — can never be covered again; an incident wider than the",
+    "   tracked index can never account for what the index dropped; and an",
+    "   index this watchdog can no longer read — hand-edited, or written by an",
+    "   older schema, which a version bump does to every open incident at",
+    "   once — names nothing a cycle could cover.",
+    "5. Re-run the affected lane jobs once the cause is fixed, then let this",
+    `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive covered clean cycles; it closes itself.`,
     "",
     "---",
     "*Maintained automatically by `.github/workflows/claude-lane-incident-aggregator.yml`.*",
@@ -654,6 +789,8 @@ module.exports = Object.freeze({
   SELECTOR_MARKER,
   STATE_SCHEMA_VERSION,
   classifyCycle,
+  coverageGap,
+  describeCoverageGap,
   extractSignals,
   isLaneCheckRun,
   nextState,
