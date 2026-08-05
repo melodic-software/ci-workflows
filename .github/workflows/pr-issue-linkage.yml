@@ -115,7 +115,8 @@ jobs:
               // parser and rendered Markdown both ignore commented-out text, and a PR template
               // ships its instructional prose inside comments. Comment-looking text inside an
               // inline code span or fenced code block is rendered literally, though, so it must
-              // not open a comment and hide valid metadata later in the body.
+              // not open a comment and hide valid metadata later in the body. Code contents are
+              // masked from the returned text so example linkage markers cannot satisfy the gate.
               const rawBody = process.env.PR_BODY || "";
 
               function stripRenderedHtmlComments(text) {
@@ -149,7 +150,7 @@ jobs:
                   if (!commentOpen && inlineTicks === null) {
                     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
                     if (fence !== null) {
-                      output.push(line);
+                      output.push("");
                       if (
                         marker !== null &&
                         marker[1][0] === fence.char &&
@@ -165,7 +166,11 @@ jobs:
                       !(marker[1][0] === "`" && marker[2].includes("`"))
                     ) {
                       fence = { char: marker[1][0], length: marker[1].length };
-                      output.push(line);
+                      output.push("");
+                      continue;
+                    }
+                    if (/^(?: {4}|\t)/.test(line)) {
+                      output.push("");
                       continue;
                     }
                   }
@@ -187,14 +192,17 @@ jobs:
                       let end = index + 1;
                       while (line[end] === "`") end += 1;
                       const ticks = end - index;
+                      const wasInline = inlineTicks !== null;
                       if (
-                        inlineTicks === null &&
+                        !wasInline &&
                         hasClosingTickRun(lineIndex, end, ticks)
                       ) {
                         inlineTicks = ticks;
                       }
                       else if (inlineTicks === ticks) inlineTicks = null;
-                      rendered += line.slice(index, end);
+                      if (!wasInline && inlineTicks === null) {
+                        rendered += line.slice(index, end);
+                      }
                       index = end;
                       continue;
                     }
@@ -205,7 +213,7 @@ jobs:
                       continue;
                     }
 
-                    rendered += line[index];
+                    if (inlineTicks === null) rendered += line[index];
                     index += 1;
                   }
                   output.push(rendered);
