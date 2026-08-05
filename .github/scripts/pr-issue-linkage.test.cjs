@@ -160,6 +160,17 @@ test("HTML-comment syntax in a fenced code block does not hide later linkage met
   assert.equal(failedWith, null);
 });
 
+test("an unmatched backtick does not expose linkage metadata hidden in a later HTML comment", () => {
+  const failedWith = runScript(
+    "A stray ` delimiter.\n\n<!-- Closes #1 -->\n\n## Related\n\nn/a",
+  );
+  assert.ok(
+    failedWith,
+    "commented-out linkage must remain hidden after an unmatched backtick",
+  );
+  assert.match(failedWith, /closing keyword/);
+});
+
 test("a nested subsection under ## Related counts as content, not a section boundary", () => {
   const failedWith = runScript(
     "Closes #1\n\n## Related\n\n### Issues\n\n- #123",

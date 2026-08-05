@@ -47,7 +47,7 @@ on:
           existing consumer. Opt in per repo by listing the bots whose generated
           PR bodies cannot carry the closing-keyword + `## Related` markers.
         type: string
-        default: ''
+        default: ""
 
 permissions: {}
 
@@ -125,7 +125,27 @@ jobs:
                 let fence = null;
                 let inlineTicks = null;
 
-                for (const line of lines) {
+                function hasClosingTickRun(startLine, startColumn, ticks) {
+                  for (let lineIndex = startLine; lineIndex < lines.length; lineIndex += 1) {
+                    const candidate = lines[lineIndex];
+                    if (lineIndex > startLine && candidate.trim() === "") return false;
+                    let column = lineIndex === startLine ? startColumn : 0;
+                    while (column < candidate.length) {
+                      if (candidate[column] !== "`") {
+                        column += 1;
+                        continue;
+                      }
+                      let end = column + 1;
+                      while (candidate[end] === "`") end += 1;
+                      if (end - column === ticks) return true;
+                      column = end;
+                    }
+                  }
+                  return false;
+                }
+
+                for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+                  const line = lines[lineIndex];
                   if (!commentOpen && inlineTicks === null) {
                     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
                     if (fence !== null) {
@@ -167,7 +187,12 @@ jobs:
                       let end = index + 1;
                       while (line[end] === "`") end += 1;
                       const ticks = end - index;
-                      if (inlineTicks === null) inlineTicks = ticks;
+                      if (
+                        inlineTicks === null &&
+                        hasClosingTickRun(lineIndex, end, ticks)
+                      ) {
+                        inlineTicks = ticks;
+                      }
                       else if (inlineTicks === ticks) inlineTicks = null;
                       rendered += line.slice(index, end);
                       index = end;
