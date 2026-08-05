@@ -183,6 +183,18 @@ test("linkage markers inside a fenced code block do not satisfy the gate", () =>
   assert.match(failedWith, /closing keyword/);
 });
 
+test("linkage markers inside an indented code block do not satisfy the gate", () => {
+  const failedWith = runScript(
+    "    No linked issue\n\n    ## Related\n\n    - #123",
+  );
+  assert.ok(
+    failedWith,
+    "indented linkage text must not count as rendered metadata",
+  );
+  assert.match(failedWith, /Related/);
+  assert.match(failedWith, /closing keyword/);
+});
+
 test("an unmatched backtick does not expose linkage metadata hidden in a later HTML comment", () => {
   const failedWith = runScript(
     "A stray ` delimiter.\n\n<!-- Closes #1 -->\n\n## Related\n\nn/a",

@@ -169,6 +169,10 @@ jobs:
                       output.push("");
                       continue;
                     }
+                    if (/^(?: {4}|\t)/.test(line)) {
+                      output.push("");
+                      continue;
+                    }
                   }
 
                   let rendered = "";
@@ -188,14 +192,17 @@ jobs:
                       let end = index + 1;
                       while (line[end] === "`") end += 1;
                       const ticks = end - index;
+                      const wasInline = inlineTicks !== null;
                       if (
-                        inlineTicks === null &&
+                        !wasInline &&
                         hasClosingTickRun(lineIndex, end, ticks)
                       ) {
                         inlineTicks = ticks;
                       }
                       else if (inlineTicks === ticks) inlineTicks = null;
-                      if (inlineTicks === null) rendered += line.slice(index, end);
+                      if (!wasInline && inlineTicks === null) {
+                        rendered += line.slice(index, end);
+                      }
                       index = end;
                       continue;
                     }
