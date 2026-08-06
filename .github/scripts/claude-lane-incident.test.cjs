@@ -878,33 +878,33 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
 });
 
-// A heuristic backstop, NOT the pin. `coverageGap` is the pin — the assertions
-// below prove what the gate requires and that the copy states it. This only
-// catches a contradictory clarification added ALONGSIDE correct copy, and it
-// catches it by vocabulary rather than by meaning: its firing is a real finding,
-// its silence proves nothing.
+// The counting rule is PINNED, not pattern-matched. A vocabulary check cannot
+// work here: it enumerates an open set, so every synonym for the rendered report
+// is a fresh escape, and widening it far enough to close those starts firing on
+// correct copy that names the durable index. Exact equality has neither failure
+// mode, and byte-exact comparison is already this repo's discipline for text it
+// cannot afford to drift.
 //
-// The membership rule: a word earns a place here only if, inside the counting
-// rule, it can ONLY mean the rendered report — a position (`above`), the artifact
-// (`table`), or the document itself (`here`). Participles like `listed` and
-// `shown` are excluded because they read correctly of the durable index
-// ("every repository listed in the tracked index"), as do `following`, `earlier`,
-// and `later`, which also read temporally.
+// The cost is deliberate. ANY edit to this sentence fails here, including a good
+// one — and the editor is then standing next to the `coverageGap` assertions
+// below, having to confirm the new wording still states what the gate actually
+// requires. That review is what this copy did not get the first time.
 //
-// That exclusion costs nothing only because pointing at the report REQUIRES
-// naming one of these targets: "listed here", "shown in this report", "listed
-// above" are each caught by their target, not by the participle. It is a real
-// trade, though, not a free one — the fixtures below hold both directions, and
-// the negative fixtures are what keep the exclusions honest.
-const REFERS_TO_THE_RENDERED_TABLE =
-  /\b(?:above|below|preceding|tables?|lists?|rows?|columns?|rendered|displayed|here|this report|this issue)\b/iu;
+// It bounds one sentence, not the whole step: the sentences after it name the
+// rendered table in order to disclaim it, and pinning those would freeze prose
+// that carries no gate condition. A contradictory clarification added to one of
+// them is therefore out of scope — catching that needs meaning, not text — which
+// is why `coverageGap` is the pin and this is a fence around the one sentence
+// that states the rule.
+const COUNTING_RULE =
+  "A clean cycle counts only when its coverage of this incident is complete: " +
+  "it polled every repository the incident TRACKS, and the tracked index " +
+  "accounts for every repository the incident has SEEN.";
 
-// Step 4's first sentence: the one that says when a cycle counts. The scope is
-// deliberately this narrow. Step 4's later sentences name the table in order to
-// DISCLAIM it, and the prologue names the rendered repositories as well, so the
-// same vocabulary check over any wider span fires on correct copy. Returns null
-// rather than an empty string, so copy that moves this sentence fails an
-// assertion instead of quietly emptying the scope and passing.
+// Step 4's first sentence. Returns null rather than an empty string, so copy that
+// moves it fails an assertion instead of quietly emptying the scope and passing —
+// and because the caller compares for equality, an extraction that runs long or
+// stops short fails too, rather than silently checking the wrong span.
 function countingRuleOf(flattened) {
   const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
   // A period ends the sentence only when a NON-LOWERCASE character follows, so a
@@ -950,21 +950,10 @@ test("the coverage copy names the tracked index, never the rendered table", () =
     flattened,
     /only cycles whose coverage of this incident is complete count/u,
   );
-  // Both halves of the condition `gap` just proved, in that order.
-  assert.match(
-    flattened,
-    /it polled every repository the incident TRACKS, and the tracked index accounts for every repository the incident has SEEN/u,
-  );
-  // Proven non-empty before it is used, because an extraction that silently
-  // returned nothing would satisfy the negative assertion while checking nothing
-  // — the same vacuum this test exists to have escaped.
-  const countingRule = countingRuleOf(flattened);
-  assert.notEqual(countingRule, null);
-  assert.match(countingRule, /coverage of this incident is complete/u);
-  // Anchored at BOTH ends, so an extraction that stopped early is a failure
-  // rather than a silently narrower scope.
-  assert.match(countingRule, /the incident has SEEN\.$/u);
-  assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
+  // The counting rule states both halves of the condition `gap` just proved, in
+  // that order, and states NOTHING ELSE — so a clarification appended to it,
+  // which is how correct copy acquires a contradiction, fails here.
+  assert.equal(countingRuleOf(flattened), COUNTING_RULE);
   // The other two standing causes of a permanent hold, which step 4 attributed
   // to a gone repository alone.
   assert.match(flattened, /an incident wider than the tracked index/u);
@@ -974,68 +963,10 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   );
 });
 
-test("the table-vocabulary backstop survives a reworded counting rule", () => {
-  // Whole counting rules rather than fragments, and varied along every axis the
-  // previous guard was pinned to — quantifier, singular/plural, `repo`
-  // shorthand, case, and clause order — because those were the shapes that
-  // escaped it, not exotic ones.
-  for (const countingRule of [
-    "it polled every repository listed above, and the index agrees.",
-    "it polled every repository below.",
-    "it polled every repository in the table above.",
-    "it polled EVERY REPOSITORY SHOWN ABOVE.",
-    "it polled all repositories in the list above.",
-    "it polled each repository named in the table below.",
-    "it polled every repo listed above.",
-    "it polled all repos shown below.",
-    "every single repository listed above was polled.",
-    "all of the repositories in the preceding table were polled.",
-    // Deictic first, which no phrasing-keyed guard catches: the sentence never
-    // reaches for a quantifier before naming the table.
-    "the table above lists every repository that must be polled.",
-    "the rows above name what a counting cycle must cover.",
-    "coverage is complete when the list above is fully polled.",
-    "coverage is complete when the preceding rows are covered.",
-    "it covered everything displayed above.",
-    "it polled the repositories rendered in this report.",
-    "a cycle counts once every column above is accounted for.",
-    "it polled every repository in the following table.",
-    "it polled each of the repos in the table earlier.",
-    // Pointing at the DOCUMENT rather than at a position in it. These are the
-    // shape a clarification actually takes — appended to correct copy, which
-    // stays intact and keeps every other assertion green — so they are the ones
-    // this backstop exists for.
-    "it polled every repository listed here.",
-    "it polled every repository shown in this report.",
-    "it polled every repository listed here — that is, it polled every repository the incident TRACKS.",
-    "it polled every repository in the list.",
-    "it polled each repository named here.",
-    "coverage is complete when everything listed here has been polled.",
-  ]) {
-    assert.match(countingRule, REFERS_TO_THE_RENDERED_TABLE);
-  }
-
-  // Correct copy may name the durable index in any of these ways, none of which
-  // points at the rendered report. A backstop that fired on them would be worse
-  // than none: it would teach the next editor to loosen the check rather than
-  // fix the copy.
-  for (const countingRule of [
-    "it polled every repository listed in the tracked index.",
-    "it polled every repository the tracked index names.",
-    "it polled every repository shown by the tracked index.",
-    "it polled each repository the index accounts for.",
-    "coverage is complete when the tracked index accounts for everything seen.",
-    "it polled all repositories the incident tracks, and nothing was unobserved.",
-  ]) {
-    assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
-  }
-
-  // The narrow scope is load-bearing, not decoration. Step 4 as a whole DOES
-  // name the table — legitimately, to disclaim it — so this same vocabulary
-  // check fires on correct copy the moment it is given a wider span. That is the
-  // trade being made deliberately: a backstop that cannot tell endorsement from
-  // disclaimer is confined to the one sentence where naming the table is always
-  // wrong.
+test("the counting-rule pin bounds exactly that sentence", () => {
+  // The pin is only as good as the span it reads, so the extractor is tested
+  // rather than trusted: over-run and it would freeze the disclaimer prose too,
+  // stop short and a clarification could sit outside the fence.
   const { state } = nextState({
     previous: null,
     tally: fleetWideTally(120, 40),
@@ -1044,24 +975,44 @@ test("the table-vocabulary backstop survives a reworded counting rule", () => {
     issueOpen: false,
   });
   const flattened = renderIssueBody(state).replace(/\s+/gu, " ");
+  assert.equal(countingRuleOf(flattened), COUNTING_RULE);
+
+  // Step 4 continues past the pin, and what follows names the rendered table in
+  // order to disclaim it. That prose is deliberately NOT pinned — freezing it
+  // would be freezing wording that carries no gate condition.
   const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
   assert.notEqual(stepFour, null);
-  assert.match(stepFour[1], REFERS_TO_THE_RENDERED_TABLE);
-  const countingRule = countingRuleOf(flattened);
-  assert.notEqual(countingRule, null);
-  assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
+  assert.ok(stepFour[1].length > COUNTING_RULE.length);
+  assert.match(stepFour[1], /not the table above/u);
 
-  // The extractor reads a sentence, not a period-free run: a clarification
-  // hidden behind a dotted abbreviation stays inside the scope.
-  assert.match(
-    countingRuleOf(
-      flattened.replace(
-        "the tracked index accounts for every repository the incident has SEEN.",
-        "the tracked index accounts for it, i.e. every row above.",
-      ),
-    ),
-    REFERS_TO_THE_RENDERED_TABLE,
+  // Each of these is how the counting rule could acquire a contradiction while
+  // every other assertion in this file stays green: the canonical clause survives
+  // intact and a clarification rides along beside it. Vocabulary checks let these
+  // through one synonym at a time; equality does not.
+  for (const clarification of [
+    "it polled every repository listed here — that is, it polled",
+    "it polled every repository shown in the report — that is, it polled",
+    "it polled every repository named in the body — that is, it polled",
+    "it polled every visible repository — that is, it polled",
+    "it polled every repository you can see — that is, it polled",
+    "it polled every repository the summary enumerates — that is, it polled",
+  ]) {
+    const contradicted = flattened.replace("it polled", clarification);
+    assert.notEqual(countingRuleOf(contradicted), COUNTING_RULE);
+  }
+
+  // A dotted abbreviation must not end the sentence early, or a clarification
+  // could hide behind it outside the fence.
+  const abbreviated = flattened.replace(
+    "the tracked index accounts for every repository the incident has SEEN.",
+    "the tracked index accounts for it, i.e. every row above.",
   );
+  const abbreviatedRule = countingRuleOf(abbreviated);
+  assert.notEqual(abbreviatedRule, COUNTING_RULE);
+  assert.match(abbreviatedRule, /i\.e\. every row above\.$/u);
+
+  // And a renumbered step is a loud null, never a silently empty scope.
+  assert.equal(countingRuleOf(flattened.replace(" 4. ", " 9. ")), null);
 });
 
 test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
