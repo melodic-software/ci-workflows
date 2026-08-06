@@ -884,13 +884,20 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
 // catches it by vocabulary rather than by meaning: its firing is a real finding,
 // its silence proves nothing.
 //
-// Only vocabulary that can ONLY mean the rendered report. `listed` and `shown`
-// are deliberately absent — "every repository listed in the tracked index" is
-// correct copy — and so are `following`, `earlier`, and `later`, which read
-// temporally. Every defective phrasing those would have caught reaches the
-// rendered report through a word that is still here.
+// The membership rule: a word earns a place here only if, inside the counting
+// rule, it can ONLY mean the rendered report — a position (`above`), the artifact
+// (`table`), or the document itself (`here`). Participles like `listed` and
+// `shown` are excluded because they read correctly of the durable index
+// ("every repository listed in the tracked index"), as do `following`, `earlier`,
+// and `later`, which also read temporally.
+//
+// That exclusion costs nothing only because pointing at the report REQUIRES
+// naming one of these targets: "listed here", "shown in this report", "listed
+// above" are each caught by their target, not by the participle. It is a real
+// trade, though, not a free one — the fixtures below hold both directions, and
+// the negative fixtures are what keep the exclusions honest.
 const REFERS_TO_THE_RENDERED_TABLE =
-  /\b(?:above|below|preceding|tables?|rows?|columns?|rendered|displayed)\b/iu;
+  /\b(?:above|below|preceding|tables?|lists?|rows?|columns?|rendered|displayed|here|this report|this issue)\b/iu;
 
 // Step 4's first sentence: the one that says when a cycle counts. The scope is
 // deliberately this narrow. Step 4's later sentences name the table in order to
@@ -900,11 +907,13 @@ const REFERS_TO_THE_RENDERED_TABLE =
 // assertion instead of quietly emptying the scope and passing.
 function countingRuleOf(flattened) {
   const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
-  // A period ends the sentence only when a capital follows, so a dotted
-  // abbreviation cannot cut the scope short: treating every period as a
+  // A period ends the sentence only when a NON-LOWERCASE character follows, so a
+  // dotted abbreviation cannot cut the scope short — treating every period as a
   // terminator would let a clarification hide behind `i.e.` and leave this
-  // assertion inspecting a truncated string that no longer contains it.
-  const sentence = stepFour?.[1].match(/^.*?\.(?=\s+[A-Z]|\s*$)/u);
+  // assertion inspecting a truncated string that no longer contains it — while a
+  // sentence opening on a backticked identifier, idiomatic in this copy, still
+  // terminates the one before it.
+  const sentence = stepFour?.[1].match(/^.*?\.(?=\s+[^a-z]|\s*$)/u);
   return sentence ? sentence[0] : null;
 }
 
@@ -992,6 +1001,16 @@ test("the table-vocabulary backstop survives a reworded counting rule", () => {
     "a cycle counts once every column above is accounted for.",
     "it polled every repository in the following table.",
     "it polled each of the repos in the table earlier.",
+    // Pointing at the DOCUMENT rather than at a position in it. These are the
+    // shape a clarification actually takes — appended to correct copy, which
+    // stays intact and keeps every other assertion green — so they are the ones
+    // this backstop exists for.
+    "it polled every repository listed here.",
+    "it polled every repository shown in this report.",
+    "it polled every repository listed here — that is, it polled every repository the incident TRACKS.",
+    "it polled every repository in the list.",
+    "it polled each repository named here.",
+    "coverage is complete when everything listed here has been polled.",
   ]) {
     assert.match(countingRule, REFERS_TO_THE_RENDERED_TABLE);
   }
@@ -1003,8 +1022,10 @@ test("the table-vocabulary backstop survives a reworded counting rule", () => {
   for (const countingRule of [
     "it polled every repository listed in the tracked index.",
     "it polled every repository the tracked index names.",
+    "it polled every repository shown by the tracked index.",
     "it polled each repository the index accounts for.",
     "coverage is complete when the tracked index accounts for everything seen.",
+    "it polled all repositories the incident tracks, and nothing was unobserved.",
   ]) {
     assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
   }
