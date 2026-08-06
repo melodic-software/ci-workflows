@@ -878,6 +878,14 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
 });
 
+// The defect shape: tying the counting rule to a position in the document
+// instead of to the tracked index. `[^.]` bounds the match to one sentence,
+// which is the unit that carries the claim — it keeps the copy's own contrastive
+// "not the table above", a separate sentence, legal without capping how wordy a
+// defective paraphrase is allowed to be.
+const POINTS_AT_THE_RENDERED_TABLE =
+  /(?:every|all|each) repositor(?:y|ies)[^.]*\b(?:above|below)\b/u;
+
 test("the coverage copy names the tracked index, never the rendered table", () => {
   const { state } = nextState({
     previous: null,
@@ -886,26 +894,72 @@ test("the coverage copy names the tracked index, never the rendered table", () =
     now: "2026-07-27T00:00:00Z",
     issueOpen: false,
   });
-  // The three sets differ exactly when the copy matters: 120 seen, 60 tracked,
-  // at most 40 rendered. `coverageGap` gates on the TRACKED index, so copy that
-  // points the operator at the table promises a close the gate will not grant.
+  // The fixture earns its keep only while the three sets disagree — 120 seen,
+  // 60 tracked, at most 40 rendered — so that is asserted against the state
+  // rather than assumed. Collapse the sets and prose-only assertions would still
+  // pass while proving nothing.
+  const tracked = Object.keys(state.repositories);
+  assert.equal(state.repositoriesSeen, 120);
+  assert.equal(tracked.length, 60);
+  assert.ok(tracked.length > 40);
+
+  // The GATE, not the wording: asserting the copy against itself is how wrong
+  // copy passed a green test. Polling every tracked repository still leaves a
+  // gap, because the index cannot account for the 60 it dropped, so the whole
+  // condition is the polled scope AND the index's own accounting.
+  const gap = coverageGap({ previous: state, polledRepositories: tracked });
+  assert.notEqual(gap, null);
+  assert.deepEqual(gap.unobserved, []);
+  assert.equal(gap.unlisted, state.repositoriesSeen - tracked.length);
+  assert.equal(gap.namesNothing, false);
+
   const body = renderIssueBody(state);
   const flattened = body.replace(/\s+/gu, " ");
   assert.match(
     flattened,
     /only cycles whose coverage of this incident is complete count/u,
   );
+  // Both halves of the condition `gap` just proved, in that order.
   assert.match(
     flattened,
     /it polled every repository the incident TRACKS, and the tracked index accounts for every repository the incident has SEEN/u,
   );
-  assert.doesNotMatch(flattened, /every repository (?:listed above|below)/u);
+  assert.doesNotMatch(flattened, POINTS_AT_THE_RENDERED_TABLE);
   // The other two standing causes of a permanent hold, which step 4 attributed
   // to a gone repository alone.
   assert.match(flattened, /an incident wider than the tracked index/u);
   assert.match(
     flattened,
     /an index this watchdog can no longer read — hand-edited, or written by an older schema/u,
+  );
+});
+
+test("the table-pointing guard rejects the shape, not two literal sentences", () => {
+  // A guard pinned to the exact sentences that happened to ship lets an
+  // equivalent rewording reintroduce the defect while staying green, so it is
+  // held to the paraphrases a future editor would plausibly reach for.
+  for (const phrasing of [
+    "every repository listed above",
+    "every repository below",
+    "every repository in the table above",
+    "every repository shown above",
+    "every repository in the list above",
+    "every repository named in the table below",
+    "every repository in the rows above",
+    // Equivalent quantifiers, which read as guidance rather than a reword and so
+    // are the likeliest way a clarification reintroduces the defect.
+    "poll all repositories listed above",
+    "each repository shown below",
+    "all repositories in the table above",
+    // Wordier than any fixture above, to keep the sentence bound honest.
+    "every repository that this report currently has listed in the table you can see above",
+  ]) {
+    assert.match(phrasing, POINTS_AT_THE_RENDERED_TABLE);
+  }
+  // And it does not fire on naming the index itself, which is the correct copy.
+  assert.doesNotMatch(
+    "it polled every repository the incident TRACKS",
+    POINTS_AT_THE_RENDERED_TABLE,
   );
 });
 
