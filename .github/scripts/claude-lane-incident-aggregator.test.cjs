@@ -450,21 +450,25 @@ test("the body survives the upload with its dot-prefixed name intact", () => {
   const upload = step("Publish the rendered incident body");
   assert.equal(upload.with["if-no-files-found"], "error");
 
-  // One `path:` entry, so a multi-line or glob path is a shape this assertion
-  // cannot reason about rather than one it should silently pass.
+  // One `path:` entry, so a multi-line or pattern path is a shape this
+  // assertion cannot reason about rather than one it should silently pass.
+  // The rejected set is @actions/glob's syntax, which upload-artifact resolves
+  // `path` through: wildcards, character classes, brace expansion, and a
+  // leading `!` marking an exclude pattern.
   const uploadPath = upload.with.path;
   assert.equal(
     typeof uploadPath,
     "string",
     "the body path must be a single literal path",
   );
+  const trimmedPath = uploadPath.trim();
   assert.ok(
-    !/[\n*?[\]]/.test(uploadPath.trim()),
-    `the body path must be one literal file, not a list or glob; got ${JSON.stringify(uploadPath)}`,
+    !/[\n*?[\]{}]/.test(trimmedPath) && !trimmedPath.startsWith("!"),
+    `the body path must be one literal file, not a list or pattern; got ${JSON.stringify(uploadPath)}`,
   );
 
   // Hidden files are excluded by default, and the body's name is dot-prefixed.
-  if (path.basename(uploadPath.trim()).startsWith(".")) {
+  if (path.basename(trimmedPath).startsWith(".")) {
     assert.equal(
       upload.with["include-hidden-files"],
       true,
@@ -477,11 +481,18 @@ test("the body survives the upload with its dot-prefixed name intact", () => {
   // `archive` input is `false`, the name of the file uploaded will be the
   // artifact name." The pinned `content-filepath` would then never resolve, and
   // the run would stay green while writing nothing.
-  assert.notEqual(
-    upload.with.archive,
-    false,
-    "archiving off would store the body under the artifact name, not its own",
-  );
+  //
+  // Compared as text, not against `false`: an action input is a string by the
+  // time it reaches the runner, so the quoted `archive: "false"` a maintainer
+  // may well write disables archiving just as the bare boolean does, while
+  // comparing to `false` would let it through.
+  if (upload.with.archive !== undefined) {
+    assert.notEqual(
+      String(upload.with.archive).trim().toLowerCase(),
+      "false",
+      "archiving off would store the body under the artifact name, not its own",
+    );
+  }
 });
 
 test("the poll job holds no write scope at all", () => {
