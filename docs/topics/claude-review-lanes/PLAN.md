@@ -1621,10 +1621,10 @@ SATISFIED — all four lane artifacts plus auto-resolve, on real lane output:
 unverified choice, the bad-token VALUE, is now CONFIRMED to reach the API and be
 rejected rather than degrading to the non-escalating `other`; (4) incident
 issue #361 opened (aggregator run `31082662762`,
-`cycle=incident coverage=complete read-errors=0 action=open`). Restore then
+`read-errors=0 cycle=incident coverage=complete action=open`). Restore then
 auto-resolved it: runs `31083255896` and `31083299991` (`action=update`) and
-`31083359365` (`action=close`), each `cycle=clean coverage=complete
-read-errors=0`, closing #361 with a recovery comment. SC2's API-call line is
+`31083359365` (`action=close`), each `read-errors=0 cycle=clean
+coverage=complete`, closing #361 with a recovery comment. SC2's API-call line is
 carried by every one of those deliverable lines. SC3 returns 0, recorded as a
 CEILING check only, now paired with the positive `cycle`/`read-errors` signal
 the acceptance runs supply. The incident body surfaced the observed
@@ -1639,12 +1639,12 @@ evidence that covers the shipped product:
 
 - forced failure re-armed, head `3052601`: green `review / review` carrying
   `class=auth` with `api_error_status: 401`
-- `31095551306` (ref `main`): `cycle=incident coverage=complete read-errors=0
+- `31095551306` (ref `main`): `read-errors=0 cycle=incident coverage=complete
   action=open` → incident #365 opened
 - credential restored, head `81ad1ac`: genuine `claude[bot]` review, zero
   annotations
 - `31096144924`, `31096193502` (`action=update`), `31096244305`
-  (`action=close`), each `cycle=clean coverage=complete read-errors=0` — #365
+  (`action=close`), each `read-errors=0 cycle=clean coverage=complete` — #365
   closed `COMPLETED` with the recovery comment, `cleanCycles: 3`, zero incidents
   left open
 
@@ -1675,17 +1675,24 @@ hidden files unless `include-hidden-files` is set, so the upload collected
 nothing, `if-no-files-found: error` failed the step, and the `write` job was
 skipped. The step is guarded by `if: action != 'none'`, so it was reachable only
 on a cycle with something to write, and no prior cycle ever was. That is
-established structurally rather than by sampling: on `main`'s code a run
-reaching `action != none` MUST fail at the upload, and across all 146 runs of
-this workflow exactly ONE ever failed — `31080200369`, the dispatch that forced
-this incident. Every other run on `main` succeeded, therefore every one of them
-reported `action=none`. The sampled deliverable lines corroborate it: each
-emitted `cycle=clean read-errors=0` — the exact positive signal this file
-identifies as the antidote to the `≤1` ceiling check — while the write path was
-dead the entire time.
+established structurally rather than by sampling, and the corpus is pinned by
+CODE STATE rather than by a run count, so it does not drift as the schedule
+keeps firing: while `main` carried the pre-fix code, a run reaching
+`action != none` MUST have failed at the upload. Every `main` run BEFORE
+`058ed1a` succeeded except `31080200369` — the dispatch that forced this
+incident — therefore every one of those runs reported `action=none`, and the
+write path was never once exercised. Runs at or after `058ed1a` are outside
+that corpus by construction: the four `main` re-demo runs below report
+`action != none` AND succeed, which is the fix working rather than a
+counterexample. (Observed 2026-08-06, as a dated data point and not as the
+argument: 152 runs total, one failure.) The sampled deliverable lines
+corroborate the pre-fix corpus: each emitted `read-errors=0 cycle=clean` — the
+exact positive signal this file identifies as the antidote to the `≤1` ceiling
+check — while the write path was dead the entire time.
 Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
-the opt-in whenever the body path is dot-prefixed; the name is not ours there,
-sitting inside the write-gate's byte-pinned region). MERGED as `058ed1a`, and
+the opt-in whenever the body path is dot-prefixed; renaming instead would have
+had to change the byte-pinned write job and its pin file, so keeping the fix
+outside that region keeps the diff off the one write-scoped surface). MERGED as `058ed1a`, and
 the incident lifecycle re-demonstrated on `main` afterwards — so the write path
 is live in production rather than only on a branch. Hardened in #367
 (`fe1b880`) after review found the first fix pinned only its own input: three
@@ -1777,11 +1784,28 @@ acceptance drove ONE repo (`repositoriesSeen: 1`). The per-repo tally and
 repo-list rendering are unit-tested, but the live multi-repo shape the criterion
 literally names is a known coverage gap, recorded rather than claimed.
 
-REMAINING TO CLOSE PHASE 4 (the write-path item is DONE — #359 merged and
-re-demonstrated on `main`): land #364 (lane routing); settle the two spec
+SIXTH-BULLET DELIVERABLES — the two downstream comment actions this phase names
+alongside closing #228/#238, both PERFORMED 2026-08-06 and both left OPEN:
+claude-code-plugins#1327 received its root-cause-plus-pointer comment, and the
+record states the uncomfortable half rather than implying coverage — that
+signature classifies as `other`, which is NON-ESCALATING by design, so
+detection is proven while no incident opens. It is NOT comment-closed: it carries
+`needs-human`, which bars autonomous resolution, and whether the instant-fail
+signature deserves its own escalating class is exactly the human decision left
+on it. provisioning#215 received its folded-into-the-taxonomy comment, carrying
+the same honesty: `class=runner` is an escalating class in the taxonomy, and
+NOTHING IN PRODUCTION EMITS IT — the only occurrences are the aggregator's unit
+tests, so that substrate-silence would still be silent today. Its unpark trigger
+is caller-side selector-failure emission shipping.
+
+REMAINING TO CLOSE PHASE 4 (the write-path item is DONE — #359 merged, hardened
+in #367, and re-demonstrated on `main`; the two sixth-bullet comment actions are
+DONE per the block above): land #364 (lane routing); settle the two spec
 conflicts on #238 (reopen-vs-supersede, and the close-condition wording); land
 the lane defects in #363; exercise or consciously waive the multi-repo shape;
-then close #228/#238 with pointers and advance the tag. Both issues carry `needs-human`, which bars
+land caller-side `class=runner` emission or consciously defer it with
+provisioning#215's trigger recorded; then close #228/#238 with pointers and
+advance the tag. #228, #238, #1327 and #215 all carry `needs-human`, which bars
 autonomous closure independently of the evidence.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
