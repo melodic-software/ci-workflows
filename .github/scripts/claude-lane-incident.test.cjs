@@ -929,10 +929,12 @@ test("the coverage copy names the tracked index, never the rendered table", () =
     issueOpen: false,
   });
   // The fixture earns its keep only while the three sets disagree — 120 seen,
-  // 60 tracked, at most 40 rendered. Seen and tracked are read off the state
-  // rather than assumed; the rendered cap is compared as a literal, because all
-  // that matters here is that the tracked set exceeds it. Collapse the sets and
-  // prose-only assertions would still pass while proving nothing.
+  // 60 tracked, at most 40 rendered. Seen and tracked are read off the state;
+  // the rendered cap is a literal because the constant is not exported. That
+  // literal is a proxy, not a guarantee: a cap raised past the tracked bound
+  // would keep passing here, and what actually catches it is the sibling
+  // remainder test. Collapse the sets and prose-only assertions would still pass
+  // while proving nothing.
   const tracked = Object.keys(state.repositories);
   assert.equal(state.repositoriesSeen, 120);
   assert.equal(tracked.length, 60);
