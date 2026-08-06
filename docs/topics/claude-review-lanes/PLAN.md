@@ -1559,7 +1559,7 @@ first movers), never to manufacture closure evidence. (c) NOT taken: moving
 the observation to a later phase relabels (a)'s evidence without producing
 it.
 
-### Phase 4: observability — #238 aggregator [TODO]
+### Phase 4: observability — #238 aggregator [DOING]
 
 Issue #237 shipped (#248/#249/#251; closed). This phase consumes it. Can be
 developed in parallel with Phase 3 (disjoint files); its acceptance test runs
@@ -1592,6 +1592,115 @@ after wave 1.
 auto-resolve; scheduled-run log contains the API-call-count line;
 `gh issue list --repo melodic-software/ci-workflows --label claude-lane-incident --state open`
 returns ≤1; #228/#238 closed with pointers.
+
+**PHASE 4 CLOSE-OUT LEDGER (2026-08-06; acceptance EXECUTED, tag held at
+`[DOING]`).** The acceptance test ran end to end for the first time. It did what
+an acceptance test is for: it found two defects that every prior green signal
+had hidden. The tag is NOT advanced, because SC4 ("#228/#238 closed with
+pointers") is unmet and two Phase 4 DELIVERABLES are unbuilt. Per Phase 3's
+ENUMERATION FIX, the deliverables are listed below and each is dispositioned —
+checks alone would certify this phase's own blind spot.
+
+Wiring: `melodic-software/claude-lane-sandbox` was created by the operator's
+github-iac apply (run `31068866753`, 2026-08-06T03:35Z; the earlier attempt
+`31067896456` failed 03:14Z on an UNRELATED resource — a 422
+`Default value must be present` on the `requires-security-review` org custom
+property — and nothing sandbox-scoped was implicated). The caller, README, and
+probe fixture were wired PR-only via sandbox#1, squash-merged as `d53fcec`
+(GitHub-signed). All three blobs are byte-identical to the staged bundle in the
+#349 runbook comment. LOCALLY OWNED, not a sync-manifest target; still pinned to
+v0.9.1 = `c136b27f`, matching claude-code-plugins' caller and the standards
+component. The fleet pin has NOT moved, so the fixture is fleet-consistent even
+though v0.10.2 is now the latest release; repinning it is a by-hand follow-up.
+
+SATISFIED — all four lane artifacts plus auto-resolve, on real lane output:
+(1) the `review / review` check concluded GREEN on the dead credential
+(sandbox run `31079823199`); (2) the marker comment posted, carrying
+`Failure class: auth`; (3) the check-run annotation carried
+`class=auth` with `api_error_status: 401` — the runbook's one empirically
+unverified choice, the bad-token VALUE, is now CONFIRMED to reach the API and be
+rejected rather than degrading to the non-escalating `other`; (4) incident issue
+#361 opened (aggregator run `31082662762`,
+`cycle=incident coverage=complete read-errors=0 action=open`). Restore then
+auto-resolved it: runs `31083255896` and `31083299991` (`action=update`) and
+`31083359365` (`action=close`), each `cycle=clean coverage=complete
+read-errors=0`, closing #361 with a recovery comment. SC2's API-call line is
+carried by every one of those deliverable lines. SC3 returns 0, recorded as a
+CEILING check only, now paired with the positive `cycle`/`read-errors` signal
+the acceptance runs supply. The incident body surfaced the observed
+`api_error_status` per #238's fifth criterion.
+
+A GENUINE-REVIEW BASELINE HAD TO MOVE, and the runbook's Step 1 expectation is
+wrong as written: it says the wiring PR's own run will be "GREEN and genuinely
+reviewed", which is structurally impossible on the PR that INTRODUCES the
+caller. claude-code-action validates that the workflow file matches the default
+branch, so sandbox#1's run (`31077349229`) was skipped with a warning
+annotation and reviewed nothing. The baseline was therefore taken post-merge on
+the probe PR before any credential was broken (run `31079254310`, a real
+`claude[bot]` review), which is what makes the later `class=auth` unambiguous
+rather than confoundable with a wiring gap. Probe drive is three pushes
+(`probe-run: 1/2/3`), not the runbook's two.
+
+FIRST DEFECT — THE WRITE PATH HAD NEVER ONCE EXECUTED. The poll renders the
+incident body to `.claude-lane-incident.md`; `actions/upload-artifact` ignores
+hidden files unless `include-hidden-files` is set, so the upload collected
+nothing, `if-no-files-found: error` failed the step, and the `write` job was
+skipped. The step is guarded by `if: action != 'none'`, and EVERY scheduled run
+in the workflow's history reported `action=none`, so it was never reached: run
+`31080200369` is the first `action != none` cycle this workflow has ever had,
+and it failed immediately. Twenty-five consecutive green runs each emitted
+`cycle=clean read-errors=0` — the exact positive signal this file identifies
+as the antidote to the `≤1` ceiling check — while the write path was dead.
+Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
+the opt-in whenever the body path is dot-prefixed; the name is not ours there,
+sitting inside the write-gate's byte-pinned region). All acceptance evidence
+above was produced by dispatching that BRANCH; the write path stays dead on
+`main` until #359 merges.
+
+SECOND DEFECT / UNBUILT DELIVERABLE — LANE ROUTING WAS NEVER IMPLEMENTED.
+#238's Contract requires the incident issue to carry the human-gated role label
+PLUS a machine escalation-marker comment (`kind=routed-advisory`) so it surfaces
+as `[escalated]` in the attended queue. #361 carried only
+`claude-lane-incident` and no escalation comment. The label is applied inside
+the byte-pinned write region, so this is deliberately NOT patched here.
+Dispositioned NOT BUILT and tracked-elsewhere-pending: it needs its own issue
+before #238 can close, because closing #238 is what would otherwise strand it.
+
+UNBUILT DELIVERABLE — the App credential choice (reuse runner-observer, else a
+new minimal App) remains parked behind its [USER-APPROVAL GATE], narrowed but
+not retired: cross-repo `checks: read` + `pull-requests: read`. Unchanged by
+this round. The observed public cross-repo read stays an OBSERVATION
+(`read-errors=0` throughout), never a contract; Approval-record item 6 stands.
+
+CANARY DEFERRAL, with a dated trigger. #238 recorded synthetic canary probes as
+"rejected for now, deferred with trigger 'a quiet-period credential death causes
+real missed-review harm'". This round STRENGTHENS the case rather than leaving
+it neutral, and the reason must not be softened: the acceptance test uncovered a
+silent-green shape the class taxonomy CANNOT see at all. A workflow-validation
+skip concludes the check green, reviews nothing, and emits NO `class=` token
+(observed on run `31077349229`; the outcome action took its `success` path), so
+an annotation-based aggregator is structurally incapable of detecting it. A
+synthetic canary is the only proposed mechanism that would. RE-EVALUATE
+2026-11-06 (three months), or earlier on either original trigger, or on a first
+observed no-token silent-green in a consumer repo. This deferral must live in an
+open issue before #228/#238 close — the trigger cannot survive only in the
+body of a closed issue.
+
+NOT BLOCKING, recorded so it is not mistaken for a gate: org secret
+`CLAUDE_CODE_OAUTH_TOKEN` visibility is still `all`, NOT the
+selected-repositories flip. That flip is operator-only UI work and remains
+PENDING. It blocked nothing here — under `all` the sandbox reads the org
+credential and the selected-repositories list is legitimately empty, which is
+exactly the runbook's Step 0 disposition. It is a hardening item, not an
+acceptance gate. The secret was never edited or re-scoped; `updated_at` stayed
+`2026-08-05T13:32:31Z` across the whole exercise, and the forced failure came
+from a repo-level override that was set and then deleted.
+
+REMAINING TO CLOSE PHASE 4: merge #359 so the write path works on `main`; file
+and land the lane-routing deliverable (role label + `routed-advisory` marker);
+open the canary-deferral tracking issue; exercise or cite coverage for #238's
+"a second incident reopens the same marker-selected issue" criterion, which this
+round did not exercise; then close #228/#238 with pointers and advance the tag.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
