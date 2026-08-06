@@ -1630,6 +1630,21 @@ CEILING check only, now paired with the positive `cycle`/`read-errors` signal
 the acceptance runs supply. The incident body surfaced the observed
 `api_error_status` per #238's fifth criterion.
 
+READ THAT EVIDENCE WITH ONE QUALIFIER, which is not a detail: every incident
+WRITE above ran on the unmerged branch of #359. On `main` the aggregator could
+not write an incident at all, and its single attempt (`31080200369`) failed. So
+the four incident-lifecycle artifacts evidence the FIX BRANCH's code, not the
+shipped product, until #359 merges and one open→close cycle is re-demonstrated
+on `main`. Recorded this way deliberately: the acceptance test's own purpose is
+defeated if its evidence is read as covering code that never ran it.
+
+The three clean cycles completed in roughly 92 seconds. The hysteresis is
+counter arithmetic, not a temporal soak — three CYCLES however fast they arrive,
+not three periods of quiet. The auto-close is therefore evidence that recovery
+was OBSERVED three times, never that it HELD for any duration. Nothing in the
+spec asks for spacing, so this is a correct pass; it is recorded so a reader
+does not infer a soak test that was never run.
+
 A GENUINE-REVIEW BASELINE HAD TO MOVE, and the runbook's Step 1 expectation is
 wrong as written: it says the wiring PR's own run will be "GREEN and genuinely
 reviewed", which is structurally impossible on the PR that INTRODUCES the
@@ -1665,10 +1680,24 @@ SECOND DEFECT / UNBUILT DELIVERABLE — LANE ROUTING WAS NEVER IMPLEMENTED.
 The #238 Contract requires the incident issue to carry the human-gated role
 label PLUS a machine escalation-marker comment (`kind=routed-advisory`) so it
 surfaces as `[escalated]` in the attended queue. #361 carried only
-`claude-lane-incident` and no escalation comment. The label is applied inside
-the byte-pinned write region, so this is deliberately NOT patched here.
-Dispositioned NOT BUILT and tracked-elsewhere-pending: it needs its own issue
-before #238 can close, because closing #238 is what would otherwise strand it.
+`claude-lane-incident` and no escalation comment. Neither `needs-human` nor
+`routed-advisory` appears ANYWHERE in this repository, on either branch — so
+this is unbuilt, not misconfigured. The label is applied inside the byte-pinned
+write region, so this is deliberately NOT patched here. Dispositioned NOT BUILT
+and tracked-elsewhere in #364, which is what keeps closing #238 from stranding
+it. Operationally this is the sharp end: an `auth` incident inherently REQUIRES
+a human at the provider layer, and the issue does not wear the label that routes
+it to one.
+
+THIRD DEFECT — A SILENT GREEN THE TAXONOMY CANNOT SEE, tracked in #363. A
+`claude-code-action` workflow-validation skip exits 0: the check concludes green,
+nothing is reviewed, and NO `class=` token is emitted. The aggregator's entire
+detection mechanism is that token, so this failure mode is invisible to it by
+construction rather than by tuning. Same issue records two lesser findings from
+the same run — the review-count comment counted a review that never happened
+("reviewed 1 time" on sandbox#1, where the action had skipped), and the marker
+comment's copy asserts "A new push does not re-trigger this lane", which is
+false for any `synchronize`-wired caller and was disproved by run `31083096934`.
 
 UNBUILT DELIVERABLE — the App credential choice (reuse runner-observer, else a
 new minimal App) remains parked behind its [USER-APPROVAL GATE], narrowed but
@@ -1686,9 +1715,11 @@ skip concludes the check green, reviews nothing, and emits NO `class=` token
 an annotation-based aggregator is structurally incapable of detecting it. A
 synthetic canary is the only proposed mechanism that would. RE-EVALUATE
 2026-11-06 (three months), or earlier on either original trigger, or on a first
-observed no-token silent-green in a consumer repo. This deferral must live in an
-open issue before #228/#238 close — the trigger cannot survive only in the
-body of a closed issue.
+observed no-token silent-green in a consumer repo — a trigger this round ADDS,
+and one that by definition arrives with no signal attached. Its anchor today is
+issue #228 itself, which stays open; recorded there 2026-08-06. The moment that
+issue closes, the deferral needs a home first — the trigger cannot survive only
+in the body of a closed issue.
 
 NOT BLOCKING, recorded so it is not mistaken for a gate: org secret
 `CLAUDE_CODE_OAUTH_TOKEN` visibility is still `all`, NOT the
@@ -1713,11 +1744,25 @@ side is wrong is a decision: amend the criterion to the supersede-not-reopen
 shape the implementation documents, or implement reopen. Until that is settled,
 closing #238 as "acceptance met" would misreport.
 
-REMAINING TO CLOSE PHASE 4: merge #359 so the write path works on `main`; file
-and land the lane-routing deliverable (`needs-human` + `routed-advisory` marker
-— neither string appears anywhere in this repository today); open the
-canary-deferral tracking issue; settle the reopen-vs-supersede contradiction
-above; then close #228/#238 with pointers and advance the tag.
+A SECOND SPEC CONFLICT, same shape, recorded on #238 for adjudication: its
+Contract says the incident auto-closes on the "first window whose review runs
+include a success and no `auth` class", while this phase specifies — and the
+code implements — three consecutive clean cycles. The stricter shape is what
+ran, so nothing is broken, but two ratified authorities state different
+conditions and #238's wording is the stale one.
+
+MULTI-REPO SHAPE NOT EXERCISED. #238's first criterion describes auth-class
+annotations "across multiple consumer repos in one window" (the #1122 replay);
+acceptance drove ONE repo (`repositoriesSeen: 1`). The per-repo tally and
+repo-list rendering are unit-tested, but the live multi-repo shape the criterion
+literally names is a known coverage gap, recorded rather than claimed.
+
+REMAINING TO CLOSE PHASE 4: merge #359 and re-demonstrate one open→close cycle
+on `main`; land #364 (lane routing); settle the two spec conflicts on #238
+(reopen-vs-supersede, and the close-condition wording); land #363; exercise or
+consciously waive the multi-repo shape; then close #228/#238 with pointers and
+advance the tag. Both issues carry `needs-human`, which bars autonomous closure
+independently of the evidence.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
@@ -1783,7 +1828,13 @@ So the `≤1` query is a CEILING check (never more than one incident item open),
 never a liveness check, and it must be paired with a positive signal to mean
 anything. The positive signal is the aggregator's own deliverable line, which
 is emitted per run and states what it actually did:
-`claude-lane-incident: api-calls=<n> repositories=<n> pull-requests=<n> lane-check-runs=<n> read-errors=<n> cycle=<clean|indeterminate> action=<none|open|update|close>`
+`claude-lane-incident: api-calls=<n> repositories=<n> pull-requests=<n> lane-check-runs=<n> read-errors=<n> cycle=<clean|incident|indeterminate> coverage=<complete|incomplete> action=<none|open|update|close>`
+(CORRECTED 2026-08-06 against the shipped emitter, observed live during Phase 4
+acceptance: `cycle` has a third value `incident`, which this line had omitted,
+and a `coverage=` field this line had never carried at all. The omission
+mattered — `incident` is the value that says the watchdog FIRED, so a reader
+checking their run against the documented enum would have found the one
+outcome that matters missing from it.)
 Read `cycle` and `read-errors` together: `cycle=clean` with `read-errors=0`
 means the poll actually reached its scope and found nothing; `cycle=indeterminate`
 means at least one repository could not be read, so a zero incident count that
