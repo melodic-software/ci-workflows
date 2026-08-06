@@ -1559,7 +1559,7 @@ first movers), never to manufacture closure evidence. (c) NOT taken: moving
 the observation to a later phase relabels (a)'s evidence without producing
 it.
 
-### Phase 4: observability — #238 aggregator [TODO]
+### Phase 4: observability — #238 aggregator [DOING]
 
 Issue #237 shipped (#248/#249/#251; closed). This phase consumes it. Can be
 developed in parallel with Phase 3 (disjoint files); its acceptance test runs
@@ -1592,6 +1592,268 @@ after wave 1.
 auto-resolve; scheduled-run log contains the API-call-count line;
 `gh issue list --repo melodic-software/ci-workflows --label claude-lane-incident --state open`
 returns ≤1; #228/#238 closed with pointers.
+
+**PHASE 4 CLOSE-OUT LEDGER (2026-08-06; acceptance EXECUTED, tag held at
+`[DOING]`).** The acceptance test ran end to end for the first time. It did what
+an acceptance test is for: it found three defects and two spec conflicts that
+every prior green signal had hidden. The tag is NOT advanced, because SC4
+("#228/#238 closed with pointers") is unmet and Phase 4 DELIVERABLES remain
+unbuilt — enumerated individually below rather than counted, so the number
+cannot drift out of step with the list. Per Phase 3's ENUMERATION FIX, every
+deliverable this phase names is dispositioned below, including the ones that are
+NOT built and the canary-property targets that were not exercised — checks alone
+would certify this phase's own blind spot.
+
+Wiring: `melodic-software/claude-lane-sandbox` was created by the operator's
+github-iac apply (run `31068866753`, 2026-08-06T03:35Z; the earlier attempt
+`31067896456` failed 03:14Z on an UNRELATED resource — a 422
+`Default value must be present` on the `requires-security-review` org custom
+property — and nothing sandbox-scoped was implicated). The caller, README, and
+probe fixture were wired PR-only via sandbox#1, squash-merged as `d53fcec`
+(GitHub-signed). All three blobs are byte-identical to the staged bundle in
+the #349 runbook comment. LOCALLY OWNED, not a sync-manifest target; pinned to
+v0.9.1 = `c136b27f`, matching claude-code-plugins' caller and the standards
+component. The fleet pin has NOT moved, so the fixture is fleet-consistent even
+though v0.10.2 is now the latest release; repinning it is a by-hand follow-up.
+
+SATISFIED — all four lane artifacts plus auto-resolve, on real lane output:
+(1) the `review / review` check concluded GREEN on the dead credential
+(sandbox run `31079823199`); (2) the marker comment posted, carrying
+`Failure class: auth` — READ IT IN THAT RUN'S LOG, not on the pull request: the
+next successful review ran the lane's own "Clear stale failure comment after
+successful review" step and deleted it, exactly as designed, so a reader
+checking sandbox#2 today finds no marker and should not read its absence as
+fabrication; (3) the check-run annotation carried
+`class=auth` with `api_error_status: 401` — the runbook's one empirically
+unverified choice, the bad-token VALUE, is now CONFIRMED to reach the API and be
+rejected rather than degrading to the non-escalating `other`; (4) incident
+issue #361 opened (aggregator run `31082662762`,
+`read-errors=0 cycle=incident coverage=complete action=open`). Restore then
+auto-resolved it: runs `31083255896` and `31083299991` (`action=update`) and
+`31083359365` (`action=close`), each `read-errors=0 cycle=clean
+coverage=complete`, closing #361 with a recovery comment. SC2's API-call line is
+carried by every one of those deliverable lines. SC3 returns 0, recorded as a
+CEILING check only, now paired with the positive `cycle`/`read-errors` signal
+the acceptance runs supply. The incident body surfaced the observed
+`api_error_status` per #238's fifth criterion.
+
+THAT FIRST PASS PROVED A BRANCH, NOT THE PRODUCT, and the gap was closed rather
+than argued away. Every incident WRITE in the runs above executed on the
+unmerged branch of #359; on `main` the aggregator could not write an incident at
+all, and its single attempt (`31080200369`) failed. #359 merged as `058ed1a`,
+and the whole open→close cycle was then RE-DEMONSTRATED ON `main` — this is the
+evidence that covers the shipped product:
+
+- forced failure re-armed, head `3052601`: green `review / review` carrying
+  `class=auth` with `api_error_status: 401`
+- `31095551306` (ref `main`): `read-errors=0 cycle=incident coverage=complete
+  action=open` → incident #365 opened
+- credential restored, head `81ad1ac`: genuine `claude[bot]` review, zero
+  annotations
+- `31096144924`, `31096193502` (`action=update`), `31096244305`
+  (`action=close`), each `read-errors=0 cycle=clean coverage=complete` — #365
+  closed `COMPLETED` with the recovery comment, `cleanCycles: 3`, zero incidents
+  left open
+
+Recorded this way deliberately: an acceptance test whose evidence is read as
+covering code that never ran it defeats its own purpose.
+
+The three clean cycles completed in under two minutes. The hysteresis is
+counter arithmetic, not a temporal soak — three CYCLES however fast they arrive,
+not three periods of quiet. The auto-close is therefore evidence that recovery
+was OBSERVED three times, never that it HELD for any duration. Nothing in the
+spec asks for spacing, so this is a correct pass; it is recorded so a reader
+does not infer a soak test that was never run.
+
+A GENUINE-REVIEW BASELINE HAD TO MOVE, and the runbook's Step 1 expectation is
+wrong as written: it says the wiring PR's own run will be "GREEN and genuinely
+reviewed", which is structurally impossible on the PR that INTRODUCES the
+caller. claude-code-action validates that the workflow file matches the default
+branch, so sandbox#1's run (`31077349229`) was skipped with a warning
+annotation and reviewed nothing. The baseline was therefore taken post-merge on
+the probe PR before any credential was broken (run `31079254310`, a real
+`claude[bot]` review), which is what makes the later `class=auth` unambiguous
+rather than confoundable with a wiring gap. Probe drive is three pushes
+(`probe-run: 1/2/3`), not the runbook's two.
+
+FIRST DEFECT — THE WRITE PATH HAD NEVER ONCE EXECUTED. The poll renders the
+incident body to `.claude-lane-incident.md`; `actions/upload-artifact` ignores
+hidden files unless `include-hidden-files` is set, so the upload collected
+nothing, `if-no-files-found: error` failed the step, and the `write` job was
+skipped. The step is guarded by `if: action != 'none'`, so it was reachable only
+on a cycle with something to write, and no prior cycle ever was. That is
+established structurally rather than by sampling, and the corpus is pinned by
+CODE STATE rather than by a run count, so it does not drift as the schedule
+keeps firing: while `main` carried the pre-fix code, a run reaching
+`action != none` MUST have failed at the upload. Every `main` run BEFORE
+`058ed1a` succeeded except `31080200369` — the dispatch that forced this
+incident — therefore every one of those runs reported `action=none`, and the
+write path was never once exercised. Runs at or after `058ed1a` are outside
+that corpus by construction: the four `main` re-demo runs recorded above report
+`action != none` AND succeed, which is the fix working rather than a
+counterexample. (Dated data point, deliberately not load-bearing: 143 such
+pre-fix `main` runs as of 2026-08-06.) The sampled deliverable lines
+corroborate the pre-fix corpus: each emitted `read-errors=0 cycle=clean` — the
+exact positive signal this file identifies as the antidote to the `≤1` ceiling
+check — while the write path was dead the entire time.
+Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
+the opt-in whenever the body path is dot-prefixed; renaming instead would have
+had to change the byte-pinned write job and its pin file, so keeping the fix
+outside that region keeps the diff off the one write-scoped surface). MERGED as
+`058ed1a`, and
+the incident lifecycle re-demonstrated on `main` afterwards — so the write path
+is live in production rather than only on a branch. Hardened in #367
+(`fe1b880`) after review found the first fix pinned only its own input: three
+further ways to break the same round trip SILENTLY are now asserted — `archive`
+off (which stores the body under the ARTIFACT name, so the pinned
+`content-filepath` never resolves), a non-literal `path:` that made the
+hidden-file check degrade quietly, and `if-no-files-found` itself. Every one is
+a green run that writes no incident, which is the failure shape this whole
+watchdog exists to eliminate.
+
+SECOND DEFECT / UNBUILT DELIVERABLE — LANE ROUTING WAS NEVER IMPLEMENTED.
+The #238 Contract requires the incident issue to carry the human-gated role
+label PLUS a machine escalation-marker comment (`kind=routed-advisory`) so it
+surfaces as `[escalated]` in the attended queue. #361 carried only
+`claude-lane-incident` and no escalation comment. Neither `needs-human` nor
+`routed-advisory` appears in any WORKFLOW OR SCRIPT in this repository, on
+either branch — so this is unbuilt, not misconfigured. (Scoped to sources
+deliberately: `needs-human` plainly exists as a GitHub label, worn by every
+issue this ledger routes to a human, and this ledger names both strings in
+prose. Neither is emitted by code, which is the claim.) The label is applied
+inside the byte-pinned write region, so this is deliberately NOT patched here.
+Dispositioned NOT BUILT
+and tracked-elsewhere in #364, which is what keeps closing #238 from stranding
+it. Operationally this is the sharp end: an `auth` incident inherently REQUIRES
+a human at the provider layer, and the issue does not wear the label that routes
+it to one.
+
+THIRD DEFECT — A SILENT GREEN THE TAXONOMY CANNOT SEE, tracked in #363. A
+`claude-code-action` workflow-validation skip exits 0: the check concludes green,
+nothing is reviewed, and NO `class=` token is emitted. The aggregator's entire
+detection mechanism is that token, so this failure mode is invisible to it by
+construction rather than by tuning. Same issue records two lesser findings from
+the same run — the review-count comment counted a review that never happened
+("reviewed 1 time" on sandbox#1, where the action had skipped), and the marker
+comment's copy asserts "A new push does not re-trigger this lane", which is
+false for any `synchronize`-wired caller and was disproved by run `31083096934`.
+
+UNBUILT DELIVERABLE — the App credential choice (reuse runner-observer, else a
+new minimal App) remains parked behind its [USER-APPROVAL GATE], narrowed but
+not retired: cross-repo `checks: read` + `pull-requests: read`. Unchanged by
+this round. The observed public cross-repo read stays an OBSERVATION
+(`read-errors=0` throughout), never a contract; Approval-record item 6 stands.
+
+CANARY DEFERRAL, with a dated trigger. #238 recorded synthetic canary probes as
+"rejected for now, deferred with trigger 'a quiet-period credential death causes
+real missed-review harm'". This round STRENGTHENS the case rather than leaving
+it neutral, and the reason must not be softened: the acceptance test uncovered a
+silent-green shape the class taxonomy CANNOT see at all. A workflow-validation
+skip concludes the check green, reviews nothing, and emits NO `class=` token
+(observed on run `31077349229`; the outcome action took its `success` path), so
+an annotation-based aggregator is structurally incapable of detecting it. A
+synthetic canary is the only proposed mechanism that would. RE-EVALUATE
+2026-11-06 (three months), or earlier on either original trigger, or on a first
+observed no-token silent-green in a consumer repo — a trigger this round ADDS,
+and one that by definition arrives with no signal attached. Its anchor today is
+issue #228 itself, which stays open; recorded there 2026-08-06. The moment that
+issue closes, the deferral needs a home first — the trigger cannot survive only
+in the body of a closed issue.
+
+NOT BLOCKING, recorded so it is not mistaken for a gate: org secret
+`CLAUDE_CODE_OAUTH_TOKEN` visibility is still `all`, NOT the
+selected-repositories flip. That flip is operator-only UI work and remains
+PENDING. It blocked nothing here — under `all` the sandbox reads the org
+credential and the selected-repositories list is legitimately empty, which is
+exactly the runbook's Step 0 disposition. It is a hardening item, not an
+acceptance gate. The secret was never edited or re-scoped; `updated_at` stayed
+`2026-08-05T13:32:31Z` across the whole exercise, and the forced failure came
+from a repo-level override that was set and then deleted.
+
+SPEC-VS-IMPLEMENTATION CONTRADICTION, needing a decision rather than a fix.
+The third acceptance criterion in #238 says "a second incident reopens the same
+marker-selected issue (no duplicate)". The shipped aggregator DELIBERATELY does
+not do that: the lookup step queries `state: "open"` only, and its own comment
+states the design — "A closed incident is superseded by a fresh one rather than
+reopened, so this never paginates closed history". A second episode therefore
+opens a NEW issue. The "no duplicate" half still holds (never more than one
+OPEN incident, which is what SC3 ceilings), but "reopens the same issue" is
+contradicted by design, not merely unexercised. Not patched here, because which
+side is wrong is a decision: amend the criterion to the supersede-not-reopen
+shape the implementation documents, or implement reopen. Until that is settled,
+closing #238 as "acceptance met" would misreport.
+
+A SECOND SPEC CONFLICT, same shape, recorded on #238 for adjudication: its
+Contract says the incident auto-closes on the "first window whose review runs
+include a success and no `auth` class", while this phase specifies — and the
+code implements — three consecutive clean cycles. The stricter shape is what
+ran, so nothing is broken, but two ratified authorities state different
+conditions and #238's wording is the stale one.
+
+CANARY-PROPERTY TARGETS, one verdict each. The canary bullet names FOUR, and
+its headline ("asserts on REAL lane output") IS satisfied — which is exactly why
+the per-target verdicts have to be written down, or the satisfied headline reads
+as if all four were covered.
+
+1. Upstream #1501 silent-green plus seat/credential death — COVERED, and it is
+   the round's strongest result: a dead credential produced a green check, a
+   marker comment, and a `class=auth` annotation carrying `api_error_status:
+   401`, which the aggregator escalated into an incident and then auto-resolved.
+   One variant of this target is NOT covered and is the THIRD DEFECT above: a
+   silent green that emits no class token at all.
+2. claude-code-plugins#1327 SDK instant-fail — DETECTED BUT NOT ESCALATING, by
+   design. It classifies as `other`, which is tallied and reported and opens no
+   incident. So detection is genuinely covered while routing is not, and no
+   reader should expect an incident from a repeat of #1327.
+3. provisioning#215 runner mismatch — NOT EXERCISED, and it cannot be today:
+   `class=runner` is an escalating class in the taxonomy that NOTHING IN
+   PRODUCTION EMITS. Its only occurrences are the aggregator's own unit tests.
+4. The caller-side `class=runner` selector-failure marker from 3a — NOT SHIPPED,
+   so likewise not exercised. Targets 3 and 4 stand or fall together: 4 is the
+   emission 3 needs, so caller-side emission is the single unblock for both.
+
+MULTI-REPO SHAPE NOT EXERCISED. #238's first criterion describes auth-class
+annotations "across multiple consumer repos in one window" (the #1122 replay);
+acceptance drove ONE repo (`repositoriesSeen: 1`). The per-repo tally and
+repo-list rendering are unit-tested, but the live multi-repo shape the criterion
+literally names is a known coverage gap, recorded rather than claimed.
+
+SIXTH-BULLET DELIVERABLES — the two downstream comment actions this phase names
+alongside closing #228/#238, both PERFORMED 2026-08-06 and both left OPEN:
+claude-code-plugins#1327 received its root-cause-plus-pointer comment, and the
+record states the uncomfortable half rather than implying coverage — that
+signature classifies as `other`, which is NON-ESCALATING by design, so
+detection is proven while no incident opens. It is NOT comment-closed: it carries
+`needs-human`, which bars autonomous resolution, and whether the instant-fail
+signature deserves its own escalating class is exactly the human decision left
+on it. provisioning#215 received its folded-into-the-taxonomy comment, carrying
+the same honesty: `class=runner` is an escalating class in the taxonomy, and
+NOTHING IN PRODUCTION EMITS IT — the only occurrences are the aggregator's unit
+tests, so that substrate-silence would still be silent today. Its unpark trigger
+is caller-side selector-failure emission shipping.
+
+REMAINING TO CLOSE PHASE 4 (the write-path item is DONE — #359 merged, hardened
+in #367, and re-demonstrated on `main`; the two sixth-bullet COMMENT halves are
+DONE per the block above, and only the closure half of the
+claude-code-plugins#1327 item is outstanding):
+
+- land #364 (lane routing)
+- settle the two spec conflicts recorded on #238 — reopen-vs-supersede, and the
+  close-condition wording
+- land the lane defects in #363
+- exercise or consciously waive the multi-repo shape
+- land caller-side `class=runner` emission, which is the single unblock for
+  canary targets 3 and 4, or consciously defer it with provisioning#215's
+  trigger recorded
+- comment-CLOSE claude-code-plugins#1327, which this phase's sixth bullet
+  requires and which is HUMAN-ONLY work
+- then close #228/#238 with pointers and advance the tag
+
+Every issue in that list except #363 and #364 carries `needs-human`, which bars
+autonomous closure independently of how good the evidence is. So this phase
+cannot be closed out by an autonomous session at all — the remaining work is
+either code (#363, #364, caller-side emission) or a human's judgement, and no
+amount of further acceptance evidence changes that.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
@@ -1657,7 +1919,13 @@ So the `≤1` query is a CEILING check (never more than one incident item open),
 never a liveness check, and it must be paired with a positive signal to mean
 anything. The positive signal is the aggregator's own deliverable line, which
 is emitted per run and states what it actually did:
-`claude-lane-incident: api-calls=<n> repositories=<n> pull-requests=<n> lane-check-runs=<n> read-errors=<n> cycle=<clean|indeterminate> action=<none|open|update|close>`
+`claude-lane-incident: api-calls=<n> repositories=<n> pull-requests=<n> lane-check-runs=<n> read-errors=<n> cycle=<clean|incident|indeterminate> coverage=<complete|incomplete> action=<none|open|update|close>`
+(CORRECTED 2026-08-06 against the shipped emitter, observed live during Phase 4
+acceptance: `cycle` has a third value `incident`, which this line had omitted,
+and a `coverage=` field this line had never carried at all. The omission
+mattered — `incident` is the value that says the watchdog FIRED, so a reader
+checking their run against the documented enum would have found the one
+outcome that matters missing from it.)
 Read `cycle` and `read-errors` together: `cycle=clean` with `read-errors=0`
 means the poll actually reached its scope and found nothing; `cycle=indeterminate`
 means at least one repository could not be read, so a zero incident count that
