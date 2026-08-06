@@ -442,23 +442,46 @@ test("the write job reads the file the poll job uploads", () => {
   );
 });
 
-test("a dot-prefixed body is uploaded despite upload-artifact hiding such files", () => {
-  // upload-artifact ignores hidden files unless told otherwise, and the body's
-  // name is dot-prefixed, so omitting `include-hidden-files` collects nothing
-  // and `if-no-files-found: error` fails the run — the incident issue can then
-  // never be written. Reachable only when there IS something to write, so
-  // every `action=none` cycle passes over it and the fleet looks healthy.
-  // The name is not ours to change: the write job's `content-filepath` is
-  // inside the byte-pinned region.
+test("the body survives the upload with its dot-prefixed name intact", () => {
+  // Both halves below decide whether the artifact arrives at the path the
+  // byte-pinned write job reads. Neither failure is loud: create-issue-from-file
+  // exits silently on a missing `content-filepath`, and the sibling test above
+  // only pins that both sides NAME the same file, not that it survives transit.
   const upload = step("Publish the rendered incident body");
   assert.equal(upload.with["if-no-files-found"], "error");
-  if (path.basename(upload.with.path).startsWith(".")) {
+
+  // One `path:` entry, so a multi-line or glob path is a shape this assertion
+  // cannot reason about rather than one it should silently pass.
+  const uploadPath = upload.with.path;
+  assert.equal(
+    typeof uploadPath,
+    "string",
+    "the body path must be a single literal path",
+  );
+  assert.ok(
+    !/[\n*?[\]]/.test(uploadPath.trim()),
+    `the body path must be one literal file, not a list or glob; got ${JSON.stringify(uploadPath)}`,
+  );
+
+  // Hidden files are excluded by default, and the body's name is dot-prefixed.
+  if (path.basename(uploadPath.trim()).startsWith(".")) {
     assert.equal(
       upload.with["include-hidden-files"],
       true,
       "a hidden body path must opt into hidden-file collection",
     );
   }
+
+  // `archive: false` renames the stored entry to the ARTIFACT name
+  // (`claude-lane-incident-body`), per upload-artifact's `name` input: "If the
+  // `archive` input is `false`, the name of the file uploaded will be the
+  // artifact name." The pinned `content-filepath` would then never resolve, and
+  // the run would stay green while writing nothing.
+  assert.notEqual(
+    upload.with.archive,
+    false,
+    "archiving off would store the body under the artifact name, not its own",
+  );
 });
 
 test("the poll job holds no write scope at all", () => {

@@ -632,12 +632,13 @@ jobs:
         with:
           name: claude-lane-incident-body
           path: .claude-lane-incident.md
-          # The body's name is dot-prefixed, and upload-artifact ignores hidden
-          # files by default, so without this the upload collects nothing and
-          # `if-no-files-found: error` fails the run. The write job's
-          # `content-filepath` is inside the byte-pinned region, so the name is
-          # not ours to change here. Governs collection only, never the stored
-          # path, so the artifact still restores as `.claude-lane-incident.md`.
+          # Required, not decorative: the body's name is dot-prefixed and
+          # upload-artifact ignores hidden files by default, so without this the
+          # upload collects nothing and `if-no-files-found: error` fails the run.
+          # Renaming the file instead would also have to change the byte-pinned
+          # write job and its pin file; keeping the fix here leaves the diff off
+          # the one write-scoped surface. Do not set `archive: false` alongside
+          # it — see the test that pins both.
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
