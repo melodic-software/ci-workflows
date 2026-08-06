@@ -1607,8 +1607,8 @@ github-iac apply (run `31068866753`, 2026-08-06T03:35Z; the earlier attempt
 `Default value must be present` on the `requires-security-review` org custom
 property — and nothing sandbox-scoped was implicated). The caller, README, and
 probe fixture were wired PR-only via sandbox#1, squash-merged as `d53fcec`
-(GitHub-signed). All three blobs are byte-identical to the staged bundle in the
-#349 runbook comment. LOCALLY OWNED, not a sync-manifest target; still pinned to
+(GitHub-signed). All three blobs are byte-identical to the staged bundle in
+the #349 runbook comment. LOCALLY OWNED, not a sync-manifest target; pinned to
 v0.9.1 = `c136b27f`, matching claude-code-plugins' caller and the standards
 component. The fleet pin has NOT moved, so the fixture is fleet-consistent even
 though v0.10.2 is now the latest release; repinning it is a by-hand follow-up.
@@ -1619,8 +1619,8 @@ SATISFIED — all four lane artifacts plus auto-resolve, on real lane output:
 `Failure class: auth`; (3) the check-run annotation carried
 `class=auth` with `api_error_status: 401` — the runbook's one empirically
 unverified choice, the bad-token VALUE, is now CONFIRMED to reach the API and be
-rejected rather than degrading to the non-escalating `other`; (4) incident issue
-#361 opened (aggregator run `31082662762`,
+rejected rather than degrading to the non-escalating `other`; (4) incident
+issue #361 opened (aggregator run `31082662762`,
 `cycle=incident coverage=complete read-errors=0 action=open`). Restore then
 auto-resolved it: runs `31083255896` and `31083299991` (`action=update`) and
 `31083359365` (`action=close`), each `cycle=clean coverage=complete
@@ -1658,9 +1658,9 @@ above was produced by dispatching that BRANCH; the write path stays dead on
 `main` until #359 merges.
 
 SECOND DEFECT / UNBUILT DELIVERABLE — LANE ROUTING WAS NEVER IMPLEMENTED.
-#238's Contract requires the incident issue to carry the human-gated role label
-PLUS a machine escalation-marker comment (`kind=routed-advisory`) so it surfaces
-as `[escalated]` in the attended queue. #361 carried only
+The #238 Contract requires the incident issue to carry the human-gated role
+label PLUS a machine escalation-marker comment (`kind=routed-advisory`) so it
+surfaces as `[escalated]` in the attended queue. #361 carried only
 `claude-lane-incident` and no escalation comment. The label is applied inside
 the byte-pinned write region, so this is deliberately NOT patched here.
 Dispositioned NOT BUILT and tracked-elsewhere-pending: it needs its own issue
