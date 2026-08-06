@@ -878,7 +878,7 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
 });
 
-// The #344 defect shape: tying the counting rule to a position in the document
+// The defect shape: tying the counting rule to a position in the document
 // instead of to the tracked index. Bounded to one sentence so the copy's own
 // contrastive "not the table above" — a different sentence — stays legal.
 const POINTS_AT_THE_RENDERED_TABLE =
@@ -901,10 +901,10 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   assert.equal(tracked.length, 60);
   assert.ok(tracked.length > 40);
 
-  // The GATE, not the wording — this is what #344 was: copy checked against
-  // itself. Polling every tracked repository still leaves a gap, because the
-  // index cannot account for the 60 it dropped, so the whole condition is the
-  // polled scope AND the index's own accounting.
+  // The GATE, not the wording: asserting the copy against itself is how wrong
+  // copy passed a green test. Polling every tracked repository still leaves a
+  // gap, because the index cannot account for the 60 it dropped, so the whole
+  // condition is the polled scope AND the index's own accounting.
   const gap = coverageGap({ previous: state, polledRepositories: tracked });
   assert.notEqual(gap, null);
   assert.deepEqual(gap.unobserved, []);
@@ -933,9 +933,9 @@ test("the coverage copy names the tracked index, never the rendered table", () =
 });
 
 test("the table-pointing guard rejects the shape, not two literal sentences", () => {
-  // A guard pinned to the exact sentences #331 shipped lets an equivalent
-  // rewording reintroduce #344 while staying green, so it is held to the
-  // paraphrases a future editor would plausibly reach for.
+  // A guard pinned to the exact sentences that happened to ship lets an
+  // equivalent rewording reintroduce the defect while staying green, so it is
+  // held to the paraphrases a future editor would plausibly reach for.
   for (const phrasing of [
     "every repository listed above",
     "every repository below",
