@@ -632,6 +632,13 @@ jobs:
         with:
           name: claude-lane-incident-body
           path: .claude-lane-incident.md
+          # The body's name is dot-prefixed, and upload-artifact ignores hidden
+          # files by default, so without this the upload collects nothing and
+          # `if-no-files-found: error` fails the run. The write job's
+          # `content-filepath` is inside the byte-pinned region, so the name is
+          # not ours to change here. Governs collection only, never the stored
+          # path, so the artifact still restores as `.claude-lane-incident.md`.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 

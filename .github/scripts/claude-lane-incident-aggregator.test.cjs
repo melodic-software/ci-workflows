@@ -442,6 +442,25 @@ test("the write job reads the file the poll job uploads", () => {
   );
 });
 
+test("a dot-prefixed body is uploaded despite upload-artifact hiding such files", () => {
+  // upload-artifact ignores hidden files unless told otherwise, and the body's
+  // name is dot-prefixed, so omitting `include-hidden-files` collects nothing
+  // and `if-no-files-found: error` fails the run — the incident issue can then
+  // never be written. Reachable only when there IS something to write, so
+  // every `action=none` cycle passes over it and the fleet looks healthy.
+  // The name is not ours to change: the write job's `content-filepath` is
+  // inside the byte-pinned region.
+  const upload = step("Publish the rendered incident body");
+  assert.equal(upload.with["if-no-files-found"], "error");
+  if (path.basename(upload.with.path).startsWith(".")) {
+    assert.equal(
+      upload.with["include-hidden-files"],
+      true,
+      "a hidden body path must opt into hidden-file collection",
+    );
+  }
+});
+
 test("the poll job holds no write scope at all", () => {
   // The whole design rests on this one line: every step in `poll` — the
   // checkout, the inline scripts, the shell — is incapable of mutating
