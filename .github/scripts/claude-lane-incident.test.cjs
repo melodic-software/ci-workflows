@@ -878,13 +878,25 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
   assert.ok(body.length < 65536, `body was ${body.length} characters`);
 });
 
-// The defect shape: tying the counting rule to a position in the document
-// instead of to the tracked index. `[^.]` bounds the match to one sentence,
-// which is the unit that carries the claim — it keeps the copy's own contrastive
-// "not the table above", a separate sentence, legal without capping how wordy a
-// defective paraphrase is allowed to be.
-const POINTS_AT_THE_RENDERED_TABLE =
-  /(?:every|all|each) repositor(?:y|ies)[^.]*\b(?:above|below)\b/u;
+// A heuristic backstop, NOT the pin. `coverageGap` is the pin — the assertions
+// below prove what the gate requires and that the copy states it. This only
+// catches a contradictory clarification added ALONGSIDE correct copy, and it
+// catches it by vocabulary rather than by meaning: it firing is a real finding,
+// it staying quiet proves nothing.
+const REFERS_TO_THE_RENDERED_TABLE =
+  /\b(?:above|below|preceding|following|earlier|later|tables?|lists?|listed|shown|showing|rendered|displayed|rows?|columns?)\b/iu;
+
+// Step 4's first sentence: the one that says when a cycle counts. The scope is
+// deliberately this narrow. Step 4's later sentences name the table in order to
+// DISCLAIM it, and the prologue names the rendered repositories as well, so the
+// same vocabulary check over any wider span fires on correct copy. Returns null
+// rather than an empty string, so copy that moves this sentence fails an
+// assertion instead of quietly emptying the scope and passing.
+function countingRuleOf(flattened) {
+  const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
+  const sentence = stepFour?.[1].match(/^[^.]*\./u);
+  return sentence ? sentence[0] : null;
+}
 
 test("the coverage copy names the tracked index, never the rendered table", () => {
   const { state } = nextState({
@@ -924,7 +936,13 @@ test("the coverage copy names the tracked index, never the rendered table", () =
     flattened,
     /it polled every repository the incident TRACKS, and the tracked index accounts for every repository the incident has SEEN/u,
   );
-  assert.doesNotMatch(flattened, POINTS_AT_THE_RENDERED_TABLE);
+  // Proven non-empty before it is used, because an extraction that silently
+  // returned nothing would satisfy the negative assertion while checking nothing
+  // — the same vacuum this test exists to have escaped.
+  const countingRule = countingRuleOf(flattened);
+  assert.notEqual(countingRule, null);
+  assert.match(countingRule, /coverage of this incident is complete/u);
+  assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
   // The other two standing causes of a permanent hold, which step 4 attributed
   // to a gone repository alone.
   assert.match(flattened, /an incident wider than the tracked index/u);
@@ -934,33 +952,53 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   );
 });
 
-test("the table-pointing guard rejects the shape, not two literal sentences", () => {
-  // A guard pinned to the exact sentences that happened to ship lets an
-  // equivalent rewording reintroduce the defect while staying green, so it is
-  // held to the paraphrases a future editor would plausibly reach for.
-  for (const phrasing of [
-    "every repository listed above",
-    "every repository below",
-    "every repository in the table above",
-    "every repository shown above",
-    "every repository in the list above",
-    "every repository named in the table below",
-    "every repository in the rows above",
-    // Equivalent quantifiers, which read as guidance rather than a reword and so
-    // are the likeliest way a clarification reintroduces the defect.
-    "poll all repositories listed above",
-    "each repository shown below",
-    "all repositories in the table above",
-    // Wordier than any fixture above, to keep the sentence bound honest.
-    "every repository that this report currently has listed in the table you can see above",
+test("the table-vocabulary backstop survives a reworded counting rule", () => {
+  // Whole counting rules rather than fragments, and varied along every axis the
+  // previous guard was pinned to — quantifier, singular/plural, `repo`
+  // shorthand, case, and clause order — because those were the shapes that
+  // escaped it, not exotic ones.
+  for (const countingRule of [
+    "it polled every repository listed above, and the index agrees.",
+    "it polled every repository below.",
+    "it polled every repository in the table above.",
+    "it polled EVERY REPOSITORY SHOWN ABOVE.",
+    "it polled all repositories in the list above.",
+    "it polled each repository named in the table below.",
+    "it polled every repo listed above.",
+    "it polled all repos shown below.",
+    "every single repository listed above was polled.",
+    "all of the repositories in the preceding table were polled.",
+    // Deictic first, which no phrasing-keyed guard catches: the sentence never
+    // reaches for a quantifier before naming the table.
+    "the table above lists every repository that must be polled.",
+    "the rows above name what a counting cycle must cover.",
+    "coverage is complete when the list above is fully polled.",
+    "coverage is complete when the preceding rows are covered.",
+    "it covered everything displayed above.",
+    "it polled the repositories rendered in this report.",
+    "a cycle counts once every column above is accounted for.",
   ]) {
-    assert.match(phrasing, POINTS_AT_THE_RENDERED_TABLE);
+    assert.match(countingRule, REFERS_TO_THE_RENDERED_TABLE);
   }
-  // And it does not fire on naming the index itself, which is the correct copy.
-  assert.doesNotMatch(
-    "it polled every repository the incident TRACKS",
-    POINTS_AT_THE_RENDERED_TABLE,
-  );
+
+  // The narrow scope is load-bearing, not decoration. Step 4 as a whole DOES
+  // name the table — legitimately, to disclaim it — so this same vocabulary
+  // check fires on correct copy the moment it is given a wider span. That is the
+  // trade being made deliberately: a backstop that cannot tell endorsement from
+  // disclaimer is confined to the one sentence where naming the table is always
+  // wrong.
+  const { state } = nextState({
+    previous: null,
+    tally: fleetWideTally(120, 40),
+    cycle: "incident",
+    now: "2026-07-27T00:00:00Z",
+    issueOpen: false,
+  });
+  const flattened = renderIssueBody(state).replace(/\s+/gu, " ");
+  const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
+  assert.notEqual(stepFour, null);
+  assert.match(stepFour[1], REFERS_TO_THE_RENDERED_TABLE);
+  assert.doesNotMatch(countingRuleOf(flattened), REFERS_TO_THE_RENDERED_TABLE);
 });
 
 test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
