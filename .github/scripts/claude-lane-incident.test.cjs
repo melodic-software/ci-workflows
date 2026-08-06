@@ -900,8 +900,9 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
 // that states the rule.
 const COUNTING_RULE =
   "A clean cycle counts only when its coverage of this incident is complete: " +
-  "it polled every repository the incident TRACKS, and the tracked index " +
-  "accounts for every repository the incident has SEEN.";
+  "the tracked index still names repositories, it polled every repository the " +
+  "incident TRACKS, and the tracked index accounts for every repository the " +
+  "incident has SEEN.";
 
 // Step 4's first sentence. Returns null rather than an empty string, so copy that
 // moves it fails an assertion instead of quietly emptying the scope and passing —
@@ -1051,7 +1052,85 @@ test("the body stays inside GitHub's limit at the longest repository name that c
       `${repositories}x${pulls}: body was ${body.length} characters`,
     );
     assert.match(body, /more repositories_/u);
+
+    // It has to fit by DROPPING ROWS, not by happening to be short. At the three
+    // shapes above the character budget bites before the 40-row cap does, so
+    // fewer rows render than the cap allows and the remainder accounts for every
+    // repository the incident holds — a body that fit while claiming to have
+    // rendered them all would be the real failure. Not a general law: at 40
+    // repositories the budget first bites at seven pull requests each, and all
+    // 40 rows render below that.
+    const rendered = (body.match(/^\| \[?`?o{39}\//gmu) || []).length;
+    const [, hidden] = body.match(/_\+(\d+) more repositories_/u);
+    assert.ok(
+      rendered < 40,
+      `${repositories}x${pulls}: ${rendered} rows rendered, so the character budget never bit`,
+    );
+    assert.equal(
+      rendered + Number(hidden),
+      repositories,
+      `${repositories}x${pulls}: rows + remainder must account for the whole incident`,
+    );
   }
+});
+
+test("the character budget holds at the tightest incident shape reachable", () => {
+  // Swept rather than hardcoded because the tightest shape MOVES: the budget
+  // converts epilogue growth into dropped rows, so a shape measured as tightest
+  // before a copy edit is not tightest after one. The pair that bound this body
+  // before the counting-rule sentence changed went from ~50 characters of
+  // headroom to ~1800 — pinning them would have looked like a budget gate while
+  // measuring slack, which is how this bound came to be untested at all.
+  //
+  // What it catches, verified by mutation: losing the `fixedLength` deduction, or
+  // budgeting by rows instead of characters. What it does NOT catch is copy
+  // growth on its own — twelve added epilogue lines stay green, because rows drop
+  // to pay for them. That is the bound being structural, not the test being weak.
+  let worst = { length: 0, label: "" };
+  for (const repositories of [30, 36, 40, 44, 48, 54, 58, 60]) {
+    for (const pulls of [9, 12, 17, 20, 24, 29]) {
+      for (const firstPull of [1, 100000, 900000000]) {
+        const observations = [];
+        for (let repository = 0; repository < repositories; repository += 1) {
+          for (let pull = 0; pull < pulls; pull += 1) {
+            observations.push({
+              repository: longestRepositoryName(repository),
+              pullNumber: firstPull + pull,
+              classes: ["auth", "runner"],
+              apiErrorStatus: 401,
+            });
+          }
+        }
+        const { state } = nextState({
+          previous: null,
+          tally: tallyObservations(observations),
+          cycle: "incident",
+          now: "2026-07-27T00:00:00Z",
+          issueOpen: false,
+        });
+        const body = renderIssueBody(state);
+        if (body.length > worst.length) {
+          worst = {
+            length: body.length,
+            label: `${repositories}x${pulls}@${firstPull}`,
+          };
+        }
+      }
+    }
+  }
+
+  assert.ok(
+    worst.length < 65536,
+    `${worst.label} rendered ${worst.length} characters, over GitHub's limit`,
+  );
+  // At least one shape in the grid must land in the row-dropping regime, where
+  // the budget packs the body up against the ceiling. A grid where every shape
+  // sat comfortable would be sweeping the wrong region and proving nothing about
+  // the bound — the inert-fixture failure, in budget form.
+  assert.ok(
+    65536 - worst.length < 400,
+    `tightest shape ${worst.label} left ${65536 - worst.length} characters spare, so no shape in the grid exercises the budget; re-sweep onto the bound`,
+  );
 });
 
 test("a hand-edited timestamp is re-derived from an instant, never echoed", () => {
