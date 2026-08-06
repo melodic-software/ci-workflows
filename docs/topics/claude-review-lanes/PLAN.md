@@ -1687,7 +1687,14 @@ Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
 the opt-in whenever the body path is dot-prefixed; the name is not ours there,
 sitting inside the write-gate's byte-pinned region). MERGED as `058ed1a`, and
 the incident lifecycle re-demonstrated on `main` afterwards — so the write path
-is live in production rather than only on a branch.
+is live in production rather than only on a branch. Hardened in #367
+(`fe1b880`) after review found the first fix pinned only its own input: three
+further ways to break the same round trip SILENTLY are now asserted — `archive`
+off (which stores the body under the ARTIFACT name, so the pinned
+`content-filepath` never resolves), a non-literal `path:` that made the
+hidden-file check degrade quietly, and `if-no-files-found` itself. Every one is
+a green run that writes no incident, which is the failure shape this whole
+watchdog exists to eliminate.
 
 SECOND DEFECT / UNBUILT DELIVERABLE — LANE ROUTING WAS NEVER IMPLEMENTED.
 The #238 Contract requires the incident issue to carry the human-gated role
