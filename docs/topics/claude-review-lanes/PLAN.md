@@ -1696,11 +1696,24 @@ acceptance gate. The secret was never edited or re-scoped; `updated_at` stayed
 `2026-08-05T13:32:31Z` across the whole exercise, and the forced failure came
 from a repo-level override that was set and then deleted.
 
+SPEC-VS-IMPLEMENTATION CONTRADICTION, needing a decision rather than a fix.
+#238's third acceptance criterion says "a second incident reopens the same
+marker-selected issue (no duplicate)". The shipped aggregator DELIBERATELY does
+not do that: the lookup step queries `state: "open"` only, and its own comment
+states the design — "A closed incident is superseded by a fresh one rather than
+reopened, so this never paginates closed history". A second episode therefore
+opens a NEW issue. The "no duplicate" half still holds (never more than one
+OPEN incident, which is what SC3 ceilings), but "reopens the same issue" is
+contradicted by design, not merely unexercised. Not patched here, because which
+side is wrong is a decision: amend the criterion to the supersede-not-reopen
+shape the implementation documents, or implement reopen. Until it is settled,
+#238 cannot be closed as "acceptance met" without misreporting.
+
 REMAINING TO CLOSE PHASE 4: merge #359 so the write path works on `main`; file
-and land the lane-routing deliverable (role label + `routed-advisory` marker);
-open the canary-deferral tracking issue; exercise or cite coverage for #238's
-"a second incident reopens the same marker-selected issue" criterion, which this
-round did not exercise; then close #228/#238 with pointers and advance the tag.
+and land the lane-routing deliverable (`needs-human` + `routed-advisory` marker
+— neither string appears anywhere in this repository today); open the
+canary-deferral tracking issue; settle the reopen-vs-supersede contradiction
+above; then close #228/#238 with pointers and advance the tag.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
