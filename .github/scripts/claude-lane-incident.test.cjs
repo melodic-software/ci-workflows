@@ -1053,11 +1053,13 @@ test("the body stays inside GitHub's limit at the longest repository name that c
     );
     assert.match(body, /more repositories_/u);
 
-    // It has to fit by DROPPING ROWS, not by happening to be short. At the
-    // longest name that can exist the character budget always bites before the
-    // 40-row cap does, so fewer rows render than the cap allows and the
-    // remainder accounts for every repository the incident holds — a body that
-    // fit while claiming to have rendered them all would be the real failure.
+    // It has to fit by DROPPING ROWS, not by happening to be short. At the three
+    // shapes above the character budget bites before the 40-row cap does, so
+    // fewer rows render than the cap allows and the remainder accounts for every
+    // repository the incident holds — a body that fit while claiming to have
+    // rendered them all would be the real failure. Not a general law: at 40
+    // repositories the budget first bites at seven pull requests each, and all
+    // 40 rows render below that.
     const rendered = (body.match(/^\| \[?`?o{39}\//gmu) || []).length;
     const [, hidden] = body.match(/_\+(\d+) more repositories_/u);
     assert.ok(
