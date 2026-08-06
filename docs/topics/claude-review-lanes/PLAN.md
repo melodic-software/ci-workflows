@@ -1645,12 +1645,16 @@ FIRST DEFECT — THE WRITE PATH HAD NEVER ONCE EXECUTED. The poll renders the
 incident body to `.claude-lane-incident.md`; `actions/upload-artifact` ignores
 hidden files unless `include-hidden-files` is set, so the upload collected
 nothing, `if-no-files-found: error` failed the step, and the `write` job was
-skipped. The step is guarded by `if: action != 'none'`, and EVERY scheduled run
-in the workflow's history reported `action=none`, so it was never reached: run
-`31080200369` is the first `action != none` cycle this workflow has ever had,
-and it failed immediately. Twenty-five consecutive green runs each emitted
-`cycle=clean read-errors=0` — the exact positive signal this file identifies
-as the antidote to the `≤1` ceiling check — while the write path was dead.
+skipped. The step is guarded by `if: action != 'none'`, so it was reachable only
+on a cycle with something to write, and no prior cycle ever was. That is
+established structurally rather than by sampling: on `main`'s code a run
+reaching `action != none` MUST fail at the upload, and across all 146 runs of
+this workflow exactly ONE ever failed — `31080200369`, the dispatch that forced
+this incident. Every other run on `main` succeeded, therefore every one of them
+reported `action=none`. The sampled deliverable lines corroborate it: each
+emitted `cycle=clean read-errors=0` — the exact positive signal this file
+identifies as the antidote to the `≤1` ceiling check — while the write path was
+dead the entire time.
 Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
 the opt-in whenever the body path is dot-prefixed; the name is not ours there,
 sitting inside the write-gate's byte-pinned region). All acceptance evidence
