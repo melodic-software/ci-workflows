@@ -881,10 +881,16 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
 // A heuristic backstop, NOT the pin. `coverageGap` is the pin — the assertions
 // below prove what the gate requires and that the copy states it. This only
 // catches a contradictory clarification added ALONGSIDE correct copy, and it
-// catches it by vocabulary rather than by meaning: it firing is a real finding,
-// it staying quiet proves nothing.
+// catches it by vocabulary rather than by meaning: its firing is a real finding,
+// its silence proves nothing.
+//
+// Only vocabulary that can ONLY mean the rendered report. `listed` and `shown`
+// are deliberately absent — "every repository listed in the tracked index" is
+// correct copy — and so are `following`, `earlier`, and `later`, which read
+// temporally. Every defective phrasing those would have caught reaches the
+// rendered report through a word that is still here.
 const REFERS_TO_THE_RENDERED_TABLE =
-  /\b(?:above|below|preceding|following|earlier|later|tables?|lists?|listed|shown|showing|rendered|displayed|rows?|columns?)\b/iu;
+  /\b(?:above|below|preceding|tables?|rows?|columns?|rendered|displayed)\b/iu;
 
 // Step 4's first sentence: the one that says when a cycle counts. The scope is
 // deliberately this narrow. Step 4's later sentences name the table in order to
@@ -894,7 +900,11 @@ const REFERS_TO_THE_RENDERED_TABLE =
 // assertion instead of quietly emptying the scope and passing.
 function countingRuleOf(flattened) {
   const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
-  const sentence = stepFour?.[1].match(/^[^.]*\./u);
+  // A period ends the sentence only when a capital follows, so a dotted
+  // abbreviation cannot cut the scope short: treating every period as a
+  // terminator would let a clarification hide behind `i.e.` and leave this
+  // assertion inspecting a truncated string that no longer contains it.
+  const sentence = stepFour?.[1].match(/^.*?\.(?=\s+[A-Z]|\s*$)/u);
   return sentence ? sentence[0] : null;
 }
 
@@ -942,6 +952,9 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   const countingRule = countingRuleOf(flattened);
   assert.notEqual(countingRule, null);
   assert.match(countingRule, /coverage of this incident is complete/u);
+  // Anchored at BOTH ends, so an extraction that stopped early is a failure
+  // rather than a silently narrower scope.
+  assert.match(countingRule, /the incident has SEEN\.$/u);
   assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
   // The other two standing causes of a permanent hold, which step 4 attributed
   // to a gone repository alone.
@@ -977,8 +990,23 @@ test("the table-vocabulary backstop survives a reworded counting rule", () => {
     "it covered everything displayed above.",
     "it polled the repositories rendered in this report.",
     "a cycle counts once every column above is accounted for.",
+    "it polled every repository in the following table.",
+    "it polled each of the repos in the table earlier.",
   ]) {
     assert.match(countingRule, REFERS_TO_THE_RENDERED_TABLE);
+  }
+
+  // Correct copy may name the durable index in any of these ways, none of which
+  // points at the rendered report. A backstop that fired on them would be worse
+  // than none: it would teach the next editor to loosen the check rather than
+  // fix the copy.
+  for (const countingRule of [
+    "it polled every repository listed in the tracked index.",
+    "it polled every repository the tracked index names.",
+    "it polled each repository the index accounts for.",
+    "coverage is complete when the tracked index accounts for everything seen.",
+  ]) {
+    assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
   }
 
   // The narrow scope is load-bearing, not decoration. Step 4 as a whole DOES
@@ -998,7 +1026,21 @@ test("the table-vocabulary backstop survives a reworded counting rule", () => {
   const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
   assert.notEqual(stepFour, null);
   assert.match(stepFour[1], REFERS_TO_THE_RENDERED_TABLE);
-  assert.doesNotMatch(countingRuleOf(flattened), REFERS_TO_THE_RENDERED_TABLE);
+  const countingRule = countingRuleOf(flattened);
+  assert.notEqual(countingRule, null);
+  assert.doesNotMatch(countingRule, REFERS_TO_THE_RENDERED_TABLE);
+
+  // The extractor reads a sentence, not a period-free run: a clarification
+  // hidden behind a dotted abbreviation stays inside the scope.
+  assert.match(
+    countingRuleOf(
+      flattened.replace(
+        "the tracked index accounts for every repository the incident has SEEN.",
+        "the tracked index accounts for it, i.e. every row above.",
+      ),
+    ),
+    REFERS_TO_THE_RENDERED_TABLE,
+  );
 });
 
 test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
