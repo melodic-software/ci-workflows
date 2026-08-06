@@ -1630,13 +1630,26 @@ CEILING check only, now paired with the positive `cycle`/`read-errors` signal
 the acceptance runs supply. The incident body surfaced the observed
 `api_error_status` per #238's fifth criterion.
 
-READ THAT EVIDENCE WITH ONE QUALIFIER, which is not a detail: every incident
-WRITE above ran on the unmerged branch of #359. On `main` the aggregator could
-not write an incident at all, and its single attempt (`31080200369`) failed. So
-the four incident-lifecycle artifacts evidence the FIX BRANCH's code, not the
-shipped product, until #359 merges and one open→close cycle is re-demonstrated
-on `main`. Recorded this way deliberately: the acceptance test's own purpose is
-defeated if its evidence is read as covering code that never ran it.
+THAT FIRST PASS PROVED A BRANCH, NOT THE PRODUCT, and the gap was closed rather
+than argued away. Every incident WRITE in the runs above executed on the
+unmerged branch of #359; on `main` the aggregator could not write an incident at
+all, and its single attempt (`31080200369`) failed. #359 merged as `058ed1a`,
+and the whole open→close cycle was then RE-DEMONSTRATED ON `main` — this is the
+evidence that covers the shipped product:
+
+- forced failure re-armed, head `3052601`: green `review / review` carrying
+  `class=auth` with `api_error_status: 401`
+- `31095551306` (ref `main`): `cycle=incident coverage=complete read-errors=0
+  action=open` → incident #365 opened
+- credential restored, head `81ad1ac`: genuine `claude[bot]` review, zero
+  annotations
+- `31096144924`, `31096193502` (`action=update`), `31096244305`
+  (`action=close`), each `cycle=clean coverage=complete read-errors=0` — #365
+  closed `COMPLETED` with the recovery comment, `cleanCycles: 3`, zero incidents
+  left open
+
+Recorded this way deliberately: an acceptance test whose evidence is read as
+covering code that never ran it defeats its own purpose.
 
 The three clean cycles completed in roughly 92 seconds. The hysteresis is
 counter arithmetic, not a temporal soak — three CYCLES however fast they arrive,
@@ -1672,9 +1685,9 @@ identifies as the antidote to the `≤1` ceiling check — while the write path 
 dead the entire time.
 Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
 the opt-in whenever the body path is dot-prefixed; the name is not ours there,
-sitting inside the write-gate's byte-pinned region). All acceptance evidence
-above was produced by dispatching that BRANCH; the write path stays dead on
-`main` until #359 merges.
+sitting inside the write-gate's byte-pinned region). MERGED as `058ed1a`, and
+the incident lifecycle re-demonstrated on `main` afterwards — so the write path
+is live in production rather than only on a branch.
 
 SECOND DEFECT / UNBUILT DELIVERABLE — LANE ROUTING WAS NEVER IMPLEMENTED.
 The #238 Contract requires the incident issue to carry the human-gated role
@@ -1757,12 +1770,12 @@ acceptance drove ONE repo (`repositoriesSeen: 1`). The per-repo tally and
 repo-list rendering are unit-tested, but the live multi-repo shape the criterion
 literally names is a known coverage gap, recorded rather than claimed.
 
-REMAINING TO CLOSE PHASE 4: merge #359 and re-demonstrate one open→close cycle
-on `main`; land #364 (lane routing); settle the two spec conflicts on #238
-(reopen-vs-supersede, and the close-condition wording); land #363; exercise or
-consciously waive the multi-repo shape; then close #228/#238 with pointers and
-advance the tag. Both issues carry `needs-human`, which bars autonomous closure
-independently of the evidence.
+REMAINING TO CLOSE PHASE 4 (the write-path item is DONE — #359 merged and
+re-demonstrated on `main`): land #364 (lane routing); settle the two spec
+conflicts on #238 (reopen-vs-supersede, and the close-condition wording); land
+the lane defects in #363; exercise or consciously waive the multi-repo shape;
+then close #228/#238 with pointers and advance the tag. Both issues carry `needs-human`, which bars
+autonomous closure independently of the evidence.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
