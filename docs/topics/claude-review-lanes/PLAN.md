@@ -1697,7 +1697,7 @@ acceptance gate. The secret was never edited or re-scoped; `updated_at` stayed
 from a repo-level override that was set and then deleted.
 
 SPEC-VS-IMPLEMENTATION CONTRADICTION, needing a decision rather than a fix.
-#238's third acceptance criterion says "a second incident reopens the same
+The third acceptance criterion in #238 says "a second incident reopens the same
 marker-selected issue (no duplicate)". The shipped aggregator DELIBERATELY does
 not do that: the lookup step queries `state: "open"` only, and its own comment
 states the design — "A closed incident is superseded by a fresh one rather than
@@ -1706,8 +1706,8 @@ opens a NEW issue. The "no duplicate" half still holds (never more than one
 OPEN incident, which is what SC3 ceilings), but "reopens the same issue" is
 contradicted by design, not merely unexercised. Not patched here, because which
 side is wrong is a decision: amend the criterion to the supersede-not-reopen
-shape the implementation documents, or implement reopen. Until it is settled,
-#238 cannot be closed as "acceptance met" without misreporting.
+shape the implementation documents, or implement reopen. Until that is settled,
+closing #238 as "acceptance met" would misreport.
 
 REMAINING TO CLOSE PHASE 4: merge #359 so the write path works on `main`; file
 and land the lane-routing deliverable (`needs-human` + `routed-advisory` marker
