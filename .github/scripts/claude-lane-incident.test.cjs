@@ -879,10 +879,12 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
 });
 
 // The defect shape: tying the counting rule to a position in the document
-// instead of to the tracked index. Bounded to one sentence so the copy's own
-// contrastive "not the table above" — a different sentence — stays legal.
+// instead of to the tracked index. `[^.]` bounds the match to one sentence,
+// which is the unit that carries the claim — it keeps the copy's own contrastive
+// "not the table above", a separate sentence, legal without capping how wordy a
+// defective paraphrase is allowed to be.
 const POINTS_AT_THE_RENDERED_TABLE =
-  /every repository[^.]{0,60}\b(?:above|below)\b/u;
+  /(?:every|all|each) repositor(?:y|ies)[^.]*\b(?:above|below)\b/u;
 
 test("the coverage copy names the tracked index, never the rendered table", () => {
   const { state } = nextState({
@@ -944,6 +946,13 @@ test("the table-pointing guard rejects the shape, not two literal sentences", ()
     "every repository in the list above",
     "every repository named in the table below",
     "every repository in the rows above",
+    // Equivalent quantifiers, which read as guidance rather than a reword and so
+    // are the likeliest way a clarification reintroduces the defect.
+    "poll all repositories listed above",
+    "each repository shown below",
+    "all repositories in the table above",
+    // Wordier than any fixture above, to keep the sentence bound honest.
+    "every repository that this report currently has listed in the table you can see above",
   ]) {
     assert.match(phrasing, POINTS_AT_THE_RENDERED_TABLE);
   }
