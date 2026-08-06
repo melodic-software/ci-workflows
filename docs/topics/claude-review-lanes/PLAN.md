@@ -1682,7 +1682,7 @@ keeps firing: while `main` carried the pre-fix code, a run reaching
 `058ed1a` succeeded except `31080200369` — the dispatch that forced this
 incident — therefore every one of those runs reported `action=none`, and the
 write path was never once exercised. Runs at or after `058ed1a` are outside
-that corpus by construction: the four `main` re-demo runs below report
+that corpus by construction: the four `main` re-demo runs recorded above report
 `action != none` AND succeed, which is the fix working rather than a
 counterexample. (Observed 2026-08-06, as a dated data point and not as the
 argument: 152 runs total, one failure.) The sampled deliverable lines
@@ -1692,7 +1692,8 @@ check — while the write path was dead the entire time.
 Fixed in #359 (`include-hidden-files: true`, plus a regression test asserting
 the opt-in whenever the body path is dot-prefixed; renaming instead would have
 had to change the byte-pinned write job and its pin file, so keeping the fix
-outside that region keeps the diff off the one write-scoped surface). MERGED as `058ed1a`, and
+outside that region keeps the diff off the one write-scoped surface). MERGED as
+`058ed1a`, and
 the incident lifecycle re-demonstrated on `main` afterwards — so the write path
 is live in production rather than only on a branch. Hardened in #367
 (`fe1b880`) after review found the first fix pinned only its own input: three
