@@ -881,9 +881,11 @@ test("a fleet-wide incident renders a bounded body whose remainders tell the tru
 // The counting rule is PINNED, not pattern-matched. A vocabulary check cannot
 // work here: it enumerates an open set, so every synonym for the rendered report
 // is a fresh escape, and widening it far enough to close those starts firing on
-// correct copy that names the durable index. Exact equality has neither failure
-// mode, and byte-exact comparison is already this repo's discipline for text it
-// cannot afford to drift.
+// correct copy that names the durable index. Two rounds of independent review
+// demonstrated both directions before this replaced it. Equality has neither
+// failure mode — inside the pinned sentence nothing escapes, and outside it
+// nothing is judged — and byte-exact comparison is already this repo's discipline
+// for text it cannot afford to drift.
 //
 // The cost is deliberate. ANY edit to this sentence fails here, including a good
 // one — and the editor is then standing next to the `coverageGap` assertions
@@ -907,12 +909,13 @@ const COUNTING_RULE =
 // stops short fails too, rather than silently checking the wrong span.
 function countingRuleOf(flattened) {
   const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
-  // A period ends the sentence only when a NON-LOWERCASE character follows, so a
-  // dotted abbreviation cannot cut the scope short — treating every period as a
-  // terminator would let a clarification hide behind `i.e.` and leave this
-  // assertion inspecting a truncated string that no longer contains it — while a
-  // sentence opening on a backticked identifier, idiomatic in this copy, still
-  // terminates the one before it.
+  // A period ends the sentence only when a non-lowercase character follows, which
+  // keeps the ordinary dotted abbreviation (`i.e. every …`) inside the span while
+  // still letting a sentence that opens on a backticked identifier, idiomatic in
+  // this copy, terminate the one before it. A heuristic, not a guarantee: an
+  // abbreviation followed by a capital does truncate. What makes that safe is the
+  // caller's equality check, which fails on a truncated span exactly as it fails
+  // on a reworded one — the terminator only decides how legible the failure is.
   const sentence = stepFour?.[1].match(/^.*?\.(?=\s+[^a-z]|\s*$)/u);
   return sentence ? sentence[0] : null;
 }
@@ -926,9 +929,10 @@ test("the coverage copy names the tracked index, never the rendered table", () =
     issueOpen: false,
   });
   // The fixture earns its keep only while the three sets disagree — 120 seen,
-  // 60 tracked, at most 40 rendered — so that is asserted against the state
-  // rather than assumed. Collapse the sets and prose-only assertions would still
-  // pass while proving nothing.
+  // 60 tracked, at most 40 rendered. Seen and tracked are read off the state
+  // rather than assumed; the rendered cap is compared as a literal, because all
+  // that matters here is that the tracked set exceeds it. Collapse the sets and
+  // prose-only assertions would still pass while proving nothing.
   const tracked = Object.keys(state.repositories);
   assert.equal(state.repositoriesSeen, 120);
   assert.equal(tracked.length, 60);
