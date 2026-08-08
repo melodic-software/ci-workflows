@@ -172,10 +172,13 @@ test("the outcome composite reads the resolved attempt, not just the first one",
 test("an in-scope non-run fails the job through the fail-closed step", () => {
   const step = stepSource("Fail closed on an in-scope non-run");
 
-  // The red is raised deliberately, on the one signal that means "in scope
-  // and did not run": the outcome composite recorded a failure AND this is a
-  // pull_request run (only a pull_request run gates a merge — the action
-  // rejects merge_group and, with track_progress on, every non-PR event, so
+  // The red is raised deliberately, on the two signals that mean "in scope
+  // and did not run": the outcome composite recorded a failure, OR it
+  // recorded a green with no execution evidence (review-ran == 'false' — the
+  // action skipped itself, so nothing was reviewed and a green would certify
+  // an execution that never happened). Both are AND-ed with pull_request
+  // presence (only a pull_request run gates a merge — the action rejects
+  // merge_group and, with track_progress on, every non-PR event, so
   // reddening those would wedge a consumer's merge queue on a cause no head
   // change can fix; they keep the historical pass-through by skipping this
   // step). !cancelled() keeps the step reachable after the failed review
@@ -183,8 +186,8 @@ test("an in-scope non-run fails the job through the fail-closed step", () => {
   // retired by a newer one and must not raise a red of its own.
   assert.match(
     step,
-    /^ {8}if: >-\n {10}!cancelled\(\) && steps\.review-outcome\.outputs\.review-failed == 'true' &&\n {10}github\.event\.pull_request\.number != ''$/mu,
-    "the fail-closed condition must key on review-failed and pull_request presence exactly",
+    /^ {8}if: >-\n {10}!cancelled\(\) && \(steps\.review-outcome\.outputs\.review-failed == 'true' \|\|\n {10}steps\.review-outcome\.outputs\.review-ran == 'false'\) &&\n {10}github\.event\.pull_request\.number != ''$/mu,
+    "the fail-closed condition must key on review-failed OR a no-evidence green, and pull_request presence, exactly",
   );
   assert.match(step, /^ {10}exit 1$/mu, "the step must conclude failure");
   assert.doesNotMatch(
@@ -192,10 +195,41 @@ test("an in-scope non-run fails the job through the fail-closed step", () => {
     /continue-on-error/u,
     "continue-on-error here would revert #266 wholesale",
   );
+
+  // The skip shape gets its own log explanation: no re-run retries a
+  // validation skip, so telling the author to re-run would be wrong. The env
+  // wiring and the branch are both pinned so the message cannot silently
+  // detach from the signal it explains.
+  assert.match(
+    step,
+    /^ {10}REVIEW_RAN: \$\{\{ steps\.review-outcome\.outputs\.review-ran \}\}$/mu,
+    "the run block must read the review-ran output through env, never by interpolation",
+  );
+  assert.match(
+    step,
+    /if \[ "\$REVIEW_RAN" = "false" \]/u,
+    "the skip shape must get the merge-the-caller-change explanation, not re-run guidance",
+  );
+});
+
+test("a validation skip cannot clear a prior failure warning", () => {
+  // review-failed == 'false' is also true of a validation skip, which
+  // reviewed nothing; only review-ran distinguishes a review that happened.
+  // A skip clearing the stale marker would erase the record of a failure it
+  // did not resolve.
+  const step = stepSource(
+    "Clear stale failure comment after successful review",
+  );
+  assert.match(
+    step,
+    /^ {8}if: "!cancelled\(\) && steps\.review-outcome\.outputs\.review-ran == 'true'"$/mu,
+    "the clear-stale step must gate on review-ran, not on not-failed",
+  );
 });
 
 // Everything below pins the three no-verdict paths that must NOT reach the
-// failing step. Each is the reason the mapping keys on review-failed rather
+// failing step. Each is the reason the mapping keys on the composite's
+// explicit outputs — an empty output matches neither comparison — rather
 // than on "no verdict was produced".
 test("fork PRs skip the job instead of failing closed forever", () => {
   const jobCondition = workflow.slice(
