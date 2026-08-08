@@ -1,14 +1,24 @@
 name: claude-lane-outcome
 description: >-
-  Outcome reporter for the Claude lanes. On a successful action outcome it
-  records review-failed=false and stops. On any other outcome it projects the
-  last SDK result message from the execution file into safe, structured
-  metadata (classify.cjs — the sole reader of the file's free-text fields;
-  see its header for the projection and classification contract), emits the
-  machine-readable `class=<token>` ::error annotation the downstream
-  aggregator polls for, and records the failure class and detail for the
-  marker-comment step. Runs entirely on the github-script Node runtime — no
-  jq or other runner-image tool dependency.
+  Outcome reporter for the Claude lanes. On a successful action outcome WITH
+  execution evidence it records review-failed=false / review-ran=true and
+  stops. A successful outcome WITHOUT an execution file is the shape of
+  claude-code-action skipping itself — its workflow-validation guard exits 0
+  with only a warning annotation when the caller's workflow file differs from
+  the default branch's copy, so the step concludes green while nothing ran
+  and nothing was reviewed (ci-workflows#363); that shape gets the distinct
+  `class=skipped-validation` warning annotation so the silent no-review is
+  machine-visible, with review-failed staying false (the skip is expected on
+  exactly the PRs that edit the caller workflow, and self-corrects on merge)
+  and review-ran false (so callers do not count or credit a review that never
+  happened). On any other outcome it projects the last SDK result message
+  from the execution file into safe, structured metadata (classify.cjs — the
+  sole reader of the file's free-text fields; see its header for the
+  projection and classification contract), emits the machine-readable
+  `class=<token>` ::error annotation the downstream aggregator polls for, and
+  records the failure class and detail for the marker-comment step. Runs
+  entirely on the github-script Node runtime — no jq or other runner-image
+  tool dependency.
 
 inputs:
   outcome:
@@ -30,10 +40,23 @@ inputs:
 
 outputs:
   review-failed:
-    description: '"true" on a genuine infrastructure failure, else "false".'
+    description: >-
+      "true" on a genuine infrastructure failure, else "false". A
+      validation skip is NOT a failure (it is expected on caller-editing
+      PRs), so it reports "false" here and "false" on review-ran.
     value: ${{ steps.outcome.outputs.review_failed }}
+  review-ran:
+    description: >-
+      "true" only when the action succeeded WITH execution evidence — the
+      one shape in which a review actually happened. Gate anything that
+      counts, credits, or tidies up after "a successful review" on this,
+      not on review-failed == "false", or a validation skip reads as a
+      review.
+    value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
-    description: "auth | rate-limit | overloaded | other (empty on success)."
+    description: >-
+      auth | rate-limit | overloaded | other (empty on a genuine success;
+      skipped-validation when the action skipped itself).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -54,6 +77,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
+          const fs = require("node:fs");
           const path = require("node:path");
           const { classifyExecutionFile } = require(
             path.join(process.env.ACTION_PATH, "classify.cjs"),
@@ -61,16 +85,40 @@ runs:
 
           const outcome = process.env.LANE_OUTCOME ?? "";
           const lane = process.env.LANE_NAME ?? "Claude review";
+          const executionFile = process.env.EXECUTION_FILE ?? "";
 
           if (outcome === "success") {
-            core.info(`${lane} completed. Findings (if any) are in the PR comments.`);
+            if (executionFile !== "" && fs.existsSync(executionFile)) {
+              core.info(`${lane} completed. Findings (if any) are in the PR comments.`);
+              core.setOutput("review_failed", "false");
+              core.setOutput("review_ran", "true");
+              return;
+            }
+            // A green step with NO execution evidence: claude-code-action
+            // skipped itself before running anything — its workflow-validation
+            // guard exits 0 when the caller's workflow file differs from the
+            // default branch's copy (any PR editing the caller hits this, as
+            // does the PR first adding it). Nothing was reviewed, so this must
+            // not read as a review: the class token below makes the shape
+            // visible to the downstream aggregator, which is otherwise blind
+            // to it by construction (its whole detection surface is the
+            // `class=` annotation, and a skip emits none). A warning, not an
+            // error: the skip is expected and self-correcting on the PRs that
+            // edit the caller, and this lane's checks stay green by contract.
+            core.warning(
+              `${lane} concluded: ${outcome} class=skipped-validation with no ` +
+                "execution evidence — the action skipped itself before running " +
+                "(workflow-validation skip: the caller's workflow file must " +
+                "match the default branch's copy). Nothing was reviewed.",
+            );
+            core.setOutput("failure_class", "skipped-validation");
+            core.setOutput("review_detail", "(no execution file was produced)");
             core.setOutput("review_failed", "false");
+            core.setOutput("review_ran", "false");
             return;
           }
 
-          const { reviewDetail, failureClass } = classifyExecutionFile(
-            process.env.EXECUTION_FILE ?? "",
-          );
+          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile);
 
           // `class=<token>` is a machine-readable term, not prose: this
           // annotation is the detection surface a receiver polls through the
@@ -91,3 +139,4 @@ runs:
           core.setOutput("failure_class", failureClass);
           core.setOutput("review_detail", reviewDetail);
           core.setOutput("review_failed", "true");
+          core.setOutput("review_ran", "false");

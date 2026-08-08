@@ -810,9 +810,13 @@ jobs:
       # Runs only on a genuine infra failure (never on a clean review). The
       # composite owns the ID-safe marker lifecycle, the fork guard, and the
       # no-PR no-op — clobbering an unrelated bot comment is the failure mode
-      # this whole change exists to fix. body-copy is explicit because this
-      # lane drops `synchronize`: a push does not re-trigger it, so the
-      # "pushing a new commit will retry" wording would be wrong here. The
+      # this whole change exists to fix. body-copy is explicit because the
+      # default copy's re-run guidance is incomplete for this lane, and
+      # whether a push re-triggers it is the CALLER's trigger choice — the
+      # canonical caller drops `synchronize`, but a caller may keep it — so
+      # the copy states that condition instead of asserting either way
+      # (ci-workflows#363 disproved the old unconditional "a push does not
+      # re-trigger" claim against a `synchronize`-wired caller). The
       # continuation line carries its own `> ` blockquote prefix (the
       # composite prefixes only the first line).
       - name: Comment on genuine review failure
@@ -828,7 +832,7 @@ jobs:
           failure-class: ${{ steps.review-outcome.outputs.failure-class }}
           review-detail: ${{ steps.review-outcome.outputs.review-detail }}
           body-copy: |-
-            Re-run the job to retry the review. A new push does **not** re-trigger this lane.
+            Re-run the job to retry the review. A new push re-triggers this lane only if the caller's `pull_request` triggers include `synchronize` (the canonical caller omits it).
             > An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator (`auth`).
 
       # Symmetric counterpart to the failure step above: a transient infra

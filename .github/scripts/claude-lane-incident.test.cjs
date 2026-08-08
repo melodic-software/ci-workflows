@@ -56,6 +56,31 @@ test("the not-yet-emitted runner token is recognized ahead of its emitter", () =
   assert.deepEqual(extractSignals("class=runner").classes, ["runner"]);
 });
 
+test("the composite-emitted skipped-validation token is recognized and does not escalate", () => {
+  // The outcome composite emits it when a lane concluded green with no
+  // execution evidence: claude-code-action skipped itself, so nothing was
+  // reviewed. Recognition is what turns that silent no-review from invisible
+  // into counted and rendered; non-escalation is deliberate — the skip fires
+  // legitimately on exactly the PRs that edit the caller workflow and
+  // self-corrects on merge, and the poll cannot tell that benign shape from
+  // a real one.
+  assert.ok(RECOGNIZED_CLASSES.has("skipped-validation"));
+  assert.deepEqual(extractSignals("class=skipped-validation").classes, [
+    "skipped-validation",
+  ]);
+  const tally = tallyObservations([
+    {
+      repository: "melodic-software/medley",
+      pullNumber: 7,
+      classes: ["skipped-validation"],
+      unrecognized: 0,
+      apiErrorStatus: null,
+    },
+  ]);
+  assert.equal(tally.escalating, false);
+  assert.deepEqual(tally.classCounts, { "skipped-validation": 1 });
+});
+
 test("an unallowlisted token is counted, never captured", () => {
   const signals = extractSignals("class=auth class=totally-made-up class=x");
   assert.deepEqual(signals.classes, ["auth"]);
