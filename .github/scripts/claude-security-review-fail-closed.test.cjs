@@ -217,7 +217,9 @@ test("a validation skip cannot clear a prior failure warning", () => {
   // reviewed nothing; only review-ran distinguishes a review that happened.
   // A skip clearing the stale marker would erase the record of a failure it
   // did not resolve.
-  const step = stepSource("Clear stale failure comment after successful review");
+  const step = stepSource(
+    "Clear stale failure comment after successful review",
+  );
   assert.match(
     step,
     /^ {8}if: "!cancelled\(\) && steps\.review-outcome\.outputs\.review-ran == 'true'"$/mu,
