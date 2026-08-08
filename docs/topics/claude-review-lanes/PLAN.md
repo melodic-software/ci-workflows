@@ -1991,11 +1991,10 @@ This NARROWS Approval-record item 6 rather than retiring it: the App must still
 be chosen (reuse runner-observer, else a new minimal App) and its
 [USER-APPROVAL GATE] stands, but the permission set it has to satisfy drops to
 cross-repo `checks: read` + `pull-requests: read`, with `issues: write` no
-longer part of the cross-repo ask. Whether the shipped mint
-(`claude-lane-incident-aggregator.yml`, which still requests
-`permission-issues: write`) narrows accordingly is implementation, not this
-record; ci-workflows#331 (since merged, `a90ff43`) moved the incident write to
-the ambient token.
+longer part of the cross-repo ask. The shipped mint has since narrowed
+accordingly: ci-workflows#331 (merged, `a90ff43`) moved the incident write to
+the ambient token, and `claude-lane-incident-aggregator.yml`'s mint step now
+requests `permission-issues: read`.
 
 The API-call-count deliverable this phase names is SATISFIED. Scheduled run
 `30571900637` emitted, verbatim:
