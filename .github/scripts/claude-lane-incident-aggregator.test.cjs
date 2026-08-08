@@ -588,20 +588,25 @@ test("the incident issue wears the human-gated role label, re-asserted on every 
   );
 });
 
-test("an opened incident posts the escalation-marker comment, and only an opened one", () => {
+test("the escalation-marker step runs on open and update, keyed to the upsert's issue", () => {
   // The role label alone reads as operator-PARKED; the attended queue lists an
   // item as [escalated] only when a machine-marked escalation comment joins
-  // the label. Gated on 'open' alone: a relapsed incident is superseded by a
-  // fresh issue rather than reopened, so one comment covers an incident's
-  // whole life, and an update re-posting it would be a non-transition write.
+  // the label. Running on update as well is the repair path: gated on 'open'
+  // alone, one failed post after the upsert leaves every later cycle at
+  // 'update' and the marker never retried — an incident parked forever. The
+  // at-most-once property lives in the script's presence check, not in the
+  // gate.
   const marker = writeJob.steps.find(
     (declared) => declared.name === "Post the escalation-marker comment",
   );
-  assert.equal(marker.if, "needs.poll.outputs.action == 'open'");
+  assert.equal(
+    marker.if,
+    "needs.poll.outputs.action == 'open' || needs.poll.outputs.action == 'update'",
+  );
   assert.equal(
     marker.env.ISSUE_NUMBER,
     `\${{ steps.upsert.outputs.issue-number }}`,
-    "the marker must land on the issue the upsert step just created",
+    "the marker must land on the issue the upsert step just created or updated",
   );
   const upsert = writeJob.steps.find(
     (declared) => declared.name === "Open or update the incident issue",
@@ -614,15 +619,17 @@ test("an opened incident posts the escalation-marker comment, and only an opened
 });
 
 /** Execute the shipped escalation-marker script against a mock Octokit. */
-async function runMarker(issueNumber) {
+async function runMarker(issueNumber, existingComments = []) {
   const original = process.env.ISSUE_NUMBER;
   process.env.ISSUE_NUMBER = issueNumber;
-  const comments = [];
+  const posted = [];
   try {
     const github = {
+      paginate: async (endpoint, parameters) => endpoint(parameters),
       rest: {
         issues: {
-          createComment: async (parameters) => void comments.push(parameters),
+          listComments: () => existingComments,
+          createComment: async (parameters) => void posted.push(parameters),
         },
       },
     };
@@ -640,7 +647,7 @@ async function runMarker(issueNumber) {
       marker.with.script,
     );
     await execute(github, context, require, process);
-    return comments;
+    return posted;
   } finally {
     if (original === undefined) delete process.env.ISSUE_NUMBER;
     else process.env.ISSUE_NUMBER = original;
@@ -659,6 +666,41 @@ test("the escalation marker is the comment's first line, in the org's marker gra
     comments[0].body.split("\n")[0],
     /^<!-- work-items:escalation lane=[a-z-]+ kind=routed-advisory -->$/u,
   );
+});
+
+test("a marker the bot already posted is never posted twice", async () => {
+  // The idempotence seam: the step now runs on every update cycle for as long
+  // as the incident stays open, and each must be a read that writes nothing.
+  // The existing comment is the one THIS script posts, so the presence check
+  // and the write cannot drift apart without this test seeing it.
+  const [alreadyPosted] = await runMarker("42");
+  const secondCycle = await runMarker("42", [
+    { user: { type: "Bot" }, body: alreadyPosted.body },
+  ]);
+  assert.deepEqual(secondCycle, []);
+});
+
+test("an update cycle repairs a missing marker", async () => {
+  // The failure the open-or-update gate exists for: the upsert created the
+  // issue, the marker post then failed (rate limit, 5xx, cancelled run), and
+  // every later poll emits 'update'. A non-marker bot comment must not read
+  // as the marker being present.
+  const posted = await runMarker("42", [
+    { user: { type: "Bot" }, body: "unrelated bot comment" },
+  ]);
+  assert.equal(posted.length, 1);
+});
+
+test("a human-planted decoy marker does not suppress the real one", async () => {
+  // The attended queue requires a MACHINE-marked comment, so a human pasting
+  // the marker text does not escalate the item — and must not stop the bot
+  // from posting the comment that does. Bot authorship is the same filter the
+  // issue lookup applies to the selector marker.
+  const [alreadyPosted] = await runMarker("42");
+  const posted = await runMarker("42", [
+    { user: { type: "User" }, body: alreadyPosted.body },
+  ]);
+  assert.equal(posted.length, 1);
 });
 
 test("a missing issue number posts no marker rather than commenting on issue 0", async () => {
