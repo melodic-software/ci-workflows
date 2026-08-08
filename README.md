@@ -592,7 +592,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
   without failing); consumed via `uses:` at job level. The
   workflow downloads the official x86_64 GNU/Linux archive for the reviewed
-  [v1.27.0 release][zizmor-release-v1-27-0], verifies its committed SHA-256
+  [v1.28.0 release][zizmor-release-v1-28-0], verifies its committed SHA-256
   before extraction, and verifies the CLI-reported version before auditing.
   `latest` remains accepted for compatibility but resolves to that reviewed
   default rather than a mutable release. zizmor runs in its own native
@@ -1156,4 +1156,4 @@ mirrors of the standards catalog.
 [semver]: https://semver.org/
 [triggering-a-workflow-from-a-workflow]: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
 [workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
-[zizmor-release-v1-27-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.27.0
+[zizmor-release-v1-28-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.28.0
