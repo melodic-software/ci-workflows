@@ -1024,19 +1024,24 @@ jobs:
       # both read as success, so neither can express "in scope and did not
       # run". Two signals mean exactly that, and both raise the red:
       #   - review-failed == 'true'  — the action ran and failed; the failure
-      #     marker step below posts the PR-visible explanation.
-      #   - review-ran == 'false'   — the action concluded GREEN with no
-      #     execution evidence: it skipped itself (workflow-validation skip,
-      #     the caller's workflow file differs from the default branch's
-      #     copy), so nothing was reviewed and a green here would certify an
-      #     execution that never happened. This red's explanation is the log
-      #     message below plus the composite's `class=skipped-validation`
-      #     warning annotation — the failure marker step deliberately does not
-      #     post for it, because its retry guidance does not apply: no re-run
-      #     retries a validation skip, only merging the caller change clears
-      #     it. Expected on exactly the PRs that edit the caller workflow;
-      #     fail-closed is the ratified posture (the check certifies
-      #     execution), and those PRs are rare and high-scrutiny.
+      #     marker step below posts the PR-visible explanation, and the log
+      #     keeps its retry-appropriate message.
+      #   - review-ran == 'false'   — no completed review. The composite sets
+      #     this on the genuine-failure path too, so alone it does not
+      #     identify the skip; the SKIP shape is review-ran == 'false' AND
+      #     review-failed != 'true': the action concluded GREEN with no
+      #     execution evidence because it skipped itself (workflow-validation
+      #     skip, the caller's workflow file differs from the default
+      #     branch's copy), so nothing was reviewed and a green here would
+      #     certify an execution that never happened. That shape's
+      #     explanation is the skip branch of the log message below plus the
+      #     composite's `class=skipped-validation` warning annotation — the
+      #     failure marker step deliberately does not post for it, because
+      #     its retry guidance does not apply: no re-run retries a validation
+      #     skip, only merging the caller change clears it. Expected on
+      #     exactly the PRs that edit the caller workflow; fail-closed is the
+      #     ratified posture (the check certifies execution), and those PRs
+      #     are rare and high-scrutiny.
       # An empty output matches neither comparison, so a superseded run —
       # whose outcome step never ran — still skips this step entirely.
       #
@@ -1060,11 +1065,12 @@ jobs:
           github.event.pull_request.number != ''
         env:
           REVIEW_RAN: ${{ steps.review-outcome.outputs.review-ran }}
+          REVIEW_FAILED: ${{ steps.review-outcome.outputs.review-failed }}
         run: |
-          if [ "$REVIEW_RAN" = "false" ]; then
+          if [ "$REVIEW_RAN" = "false" ] && [ "$REVIEW_FAILED" != "true" ]; then
             echo "The security review was in scope and the action skipped itself without reviewing anything (workflow-validation skip: the caller's workflow file must match the default branch's copy). The required check certifies execution, so it cannot report success (see POSTURE); merging the caller-workflow change is what clears this shape — a re-run cannot."
           else
-            echo "The security review was in scope and did not run; the required check cannot report success (see POSTURE)."
+            echo "The security review was in scope and did not run; the required check cannot report success (see POSTURE). Re-run the job to retry once the cause is addressed — the marker comment on the PR carries the failure class and its remediation."
           fi
           exit 1
 

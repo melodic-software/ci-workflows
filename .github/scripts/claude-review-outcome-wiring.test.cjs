@@ -23,10 +23,32 @@ const repositoryRoot = path.join(__dirname, "..", "..");
 
 const COMPOSITE_PATH = ".github/actions/claude-lane-outcome/action.yml";
 
-// Every lane workflow that invokes the outcome composite under the
-// `review-outcome` step id. A lane added to the composite's consumers joins
-// this list, or its wiring goes unchecked.
-const LANES = ["claude-review.yml", "claude-security-review.yml"];
+// Every lane workflow that invokes the outcome composite, discovered by
+// scanning the workflows directory for its `uses:` reference — a new consumer
+// is covered the moment it exists, rather than joining a hand-kept list.
+const workflowsDir = path.join(repositoryRoot, ".github", "workflows");
+const LANES = fs
+  .readdirSync(workflowsDir)
+  .filter(
+    (name) =>
+      name.endsWith(".yml") &&
+      fs
+        .readFileSync(path.join(workflowsDir, name), "utf8")
+        .includes("/.github/actions/claude-lane-outcome@"),
+  )
+  .sort();
+
+test("lane discovery finds the outcome composite's consumers", () => {
+  assert.ok(
+    LANES.length >= 2,
+    `expected at least the review and security lanes, found: ${LANES.join(", ")}`,
+  );
+  assert.ok(
+    LANES.includes("claude-review.yml") &&
+      LANES.includes("claude-security-review.yml"),
+    `known consumers missing from discovery: ${LANES.join(", ")}`,
+  );
+});
 
 const laneSource = (lane) =>
   fs.readFileSync(
