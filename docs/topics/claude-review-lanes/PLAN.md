@@ -1902,7 +1902,7 @@ fresh-context-verifier-gated.
   ships. Canary-property targets 3 and 4 above remain not exercised; nothing in
   production emits `class=runner` today.
 - SIXTH-BULLET CLOSURES DONE: claude-code-plugins#1327 comment-closed
-  2026-08-07 (operator-delegated; root cause + pointer stand in its thread).
+  2026-08-08 (operator-delegated; root cause + pointer stand in its thread).
   #228 and #238 closed with pointers 2026-08-07 — SC4 met.
 - CANARY DEFERRAL REHOMED — this paragraph is now the deferral's home, per the
   CANARY DEFERRAL block's own rule, since #228 (its previous anchor) is closed.
@@ -1930,6 +1930,23 @@ fresh-context-verifier-gated.
   #1992), and claude-lane-sandbox #3. Every merge fresh-context-verifier-gated;
   standards' scheduled `claude-lanes-repin` job still lacks its App credential
   and no-ops daily (operator item, recorded on the batch).
+- CROSS-REPO READ CREDENTIAL (the UNBUILT DELIVERABLE above) DISPOSITIONED
+  DEFERRED-BEHIND-ITS-GATE, not silently dropped: the App choice (widen
+  runner-observer, else the minimal 3g App per standards#314) stays parked
+  behind its [USER-APPROVAL GATE] (Approval-record item 6), narrowed to
+  cross-repo `checks: read` + `pull-requests: read`. The operational
+  consequence is stated plainly rather than implied: while
+  `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY` is absent, the aggregator polls only
+  what the ambient token can read — this repo plus public consumers — so
+  failures in PRIVATE consumer repositories are unobserved, and each run
+  publishes the scope it actually observed (the `coverage=` deliverable token)
+  precisely so that gap stays visible instead of reading as fleet health. The
+  tag advances with this recorded because the item is the same class as the
+  retired secret item — hardening parked behind a human gate, not an
+  acceptance criterion (SC1–SC4 are met; acceptance never depended on private
+  reads) — and it is already queued on the operator batch. Unpark trigger: the
+  operator's App decision; on landing, the credential wiring is the shipped
+  mint step plus the org-owner installation grant, nothing new to design.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
