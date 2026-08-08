@@ -1003,28 +1003,47 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       # Also gated on the guard: a superseded run has no outcome to report, and
-      # skipping this step leaves review-failed empty so the fail-closed step
-      # and both marker-comment steps below skip too — a retired run must not
-      # touch the newer run's PR comment state. The composite owns the
-      # classification (classify.cjs — the sole reader of the execution file's
-      # free-text fields) and the machine-readable `class=<token>` annotation;
-      # it records the failure WITHOUT failing, so the fail-closed step below
-      # owns the red.
+      # skipping this step leaves review-failed AND review-ran empty so the
+      # fail-closed step and both marker-comment steps below skip too — a
+      # retired run must not touch the newer run's PR comment state. The
+      # composite owns the classification (classify.cjs — the sole reader of
+      # the execution file's free-text fields) and the machine-readable
+      # `class=<token>` annotation; it records the failure WITHOUT failing, so
+      # the fail-closed step below owns the red.
       - name: Report review outcome
         id: review-outcome
         if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@7415d4e8e33564b7997763805583e5ad1b062dbe # 7415d4e 2026-08-08
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
           lane: Claude security review
 
-      # FAIL CLOSED (#266). Failure is the only conclusion a required check
-      # does not accept — `neutral` and `skipped` both read as success, so
-      # neither can express "in scope and did not run". The composite above
-      # already wrote the class and detail outputs, and both marker-comment
-      # steps below are `!cancelled()`-gated, so the PR still gets its
-      # infra-status comment.
+      # FAIL CLOSED (#266, extended by ci-workflows#388). Failure is the only
+      # conclusion a required check does not accept — `neutral` and `skipped`
+      # both read as success, so neither can express "in scope and did not
+      # run". Two signals mean exactly that, and both raise the red:
+      #   - review-failed == 'true'  — the action ran and failed; the failure
+      #     marker step below posts the PR-visible explanation, and the log
+      #     keeps its retry-appropriate message.
+      #   - review-ran == 'false'   — no completed review. The composite sets
+      #     this on the genuine-failure path too, so alone it does not
+      #     identify the skip; the SKIP shape is review-ran == 'false' AND
+      #     review-failed != 'true': the action concluded GREEN with no
+      #     execution evidence because it skipped itself (workflow-validation
+      #     skip, the caller's workflow file differs from the default
+      #     branch's copy), so nothing was reviewed and a green here would
+      #     certify an execution that never happened. That shape's
+      #     explanation is the skip branch of the log message below plus the
+      #     composite's `class=skipped-validation` warning annotation — the
+      #     failure marker step deliberately does not post for it, because
+      #     its retry guidance does not apply: no re-run retries a validation
+      #     skip, only merging the caller change clears it. Expected on
+      #     exactly the PRs that edit the caller workflow; fail-closed is the
+      #     ratified posture (the check certifies execution), and those PRs
+      #     are rare and high-scrutiny.
+      # An empty output matches neither comparison, so a superseded run —
+      # whose outcome step never ran — still skips this step entirely.
       #
       # Only a pull_request run gates a merge, so only a pull_request run
       # fails closed. The action rejects other events outright — `merge_group`
@@ -1035,17 +1054,24 @@ jobs:
       # PR-gated too, so the red would carry no explanation. They keep the
       # historical pass-through: still annotated, still classified, not fatal.
       #
-      # Reached only when the review was in scope, the head is still current,
-      # and both attempts failed. The three legitimate no-verdict paths never
-      # arrive here: out-of-scope and fork/skip-actor PRs skip the whole job,
-      # and a superseded head skips the outcome step above, leaving
-      # review-failed unset — which skips this step too.
+      # The three legitimate no-verdict paths never arrive here: out-of-scope
+      # and fork/skip-actor PRs skip the whole job, and a superseded head
+      # skips the outcome step above, leaving both outputs unset — which skips
+      # this step too.
       - name: Fail closed on an in-scope non-run
         if: >-
-          !cancelled() && steps.review-outcome.outputs.review-failed == 'true' &&
+          !cancelled() && (steps.review-outcome.outputs.review-failed == 'true' ||
+          steps.review-outcome.outputs.review-ran == 'false') &&
           github.event.pull_request.number != ''
+        env:
+          REVIEW_RAN: ${{ steps.review-outcome.outputs.review-ran }}
+          REVIEW_FAILED: ${{ steps.review-outcome.outputs.review-failed }}
         run: |
-          echo "The security review was in scope and did not run; the required check cannot report success (see POSTURE)."
+          if [ "$REVIEW_RAN" = "false" ] && [ "$REVIEW_FAILED" != "true" ]; then
+            echo "The security review was in scope and the action skipped itself without reviewing anything (workflow-validation skip: the caller's workflow file must match the default branch's copy). The required check certifies execution, so it cannot report success (see POSTURE); merging the caller-workflow change is what clears this shape — a re-run cannot."
+          else
+            echo "The security review was in scope and did not run; the required check cannot report success (see POSTURE). Re-run the job to retry once the cause is addressed — the marker comment on the PR carries the failure class and its remediation."
+          fi
           exit 1
 
       # Runs only on a genuine infra failure (never on a clean review). The
@@ -1070,7 +1096,7 @@ jobs:
           body-copy: |-
             **The check is red on purpose.** It certifies that a security pass ran, and this one did not complete, so it cannot report success. Where this check is required, merging is blocked until a review actually finishes.
             >
-            > Re-running the job, or pushing a new commit, will retry the review. An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator.
+            > Re-run the job to retry the review; a new push also retries it only if the caller's `pull_request` triggers include `synchronize` (the canonical security caller keeps it). An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator.
             >
             > Re-running does NOT help for every class:
             > - `rate-limit` that persists across re-runs, or `auth` — the credential or usage budget needs an **operator**; retrying will not clear it.
@@ -1079,9 +1105,12 @@ jobs:
       # Symmetric counterpart to the failure step above: a transient infra
       # failure (e.g. an OIDC blip) can leave the marker comment behind on the
       # PR. Once a retry (rerun or new push) succeeds, clear that stale
-      # warning so it is not mistaken for a still-open problem.
+      # warning so it is not mistaken for a still-open problem. Gated on
+      # review-ran, not review-failed == 'false': a validation skip is also
+      # "not failed", but it reviewed nothing, and letting it clear the
+      # warning would erase the record of a failure it did not resolve.
       - name: Clear stale failure comment after successful review
-        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
+        if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
