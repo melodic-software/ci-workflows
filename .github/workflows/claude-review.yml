@@ -801,7 +801,7 @@ jobs:
         if: >-
           !cancelled() && steps.freshness.outputs.superseded != 'true' &&
           steps.review-count.outputs.capped != 'true'
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@7415d4e8e33564b7997763805583e5ad1b062dbe # 7415d4e 2026-08-08
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
@@ -838,9 +838,13 @@ jobs:
       # Symmetric counterpart to the failure step above: a transient infra
       # failure (e.g. an OIDC blip) can leave the marker comment behind on the
       # PR. Once a retry (rerun or new push) succeeds, clear that stale
-      # warning so it is not mistaken for a still-open problem.
+      # warning so it is not mistaken for a still-open problem. Gated on
+      # review-ran, not review-failed == 'false': a validation skip is also
+      # "not failed", but it reviewed nothing, and letting it clear the
+      # warning would erase the one PR-visible signal that review has not
+      # been happening.
       - name: Clear stale failure comment after successful review
-        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
+        if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
@@ -850,11 +854,14 @@ jobs:
           mode: clear-on-success
 
       # The visible counter the review-count gate reads. Upserted only after a
-      # successful review (review-failed == 'false' implies the outcome step
-      # ran, so the run was neither superseded nor capped), so failed and
-      # skipped runs never inflate the count.
+      # review that actually RAN (review-ran == 'true' implies the outcome
+      # step ran, so the run was neither superseded nor capped), so failed
+      # runs, validation skips, and skipped runs never inflate the count: the
+      # comment is the human "was this reviewed" signal and it charges the
+      # max-reviews-per-pr budget, so counting a run that reviewed nothing
+      # both misinforms the reader and burns allowance on nothing.
       - name: Update the review-count status comment
-        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'false'"
+        if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
         # Housekeeping: a rejected API call must not redden a successful
         # advisory review.
         continue-on-error: true
