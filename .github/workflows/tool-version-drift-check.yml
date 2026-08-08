@@ -418,6 +418,19 @@ jobs:
             echo "pins together) only after reviewing the stable patch. Never auto-merge these"
             echo "updates."
             echo
+            echo "### Fleet-led pins absorb in a fixed order"
+            echo
+            echo "\`ruff\`, \`pyright\`, \`check-jsonschema\`, \`zizmor\`, \`golangci-lint\`, and the"
+            echo "Python and Node runtimes are ALSO pinned by the fleet inventory in"
+            echo "melodic-software/dotfiles (\`.chezmoidata/uv-tools.yaml\`, \`.node-version\`),"
+            echo "which is what installs every developer's local toolchain. Raise the fleet pin"
+            echo "there FIRST, then bump this repository to match — never past it. Bumping here"
+            echo "alone puts CI on a version no developer has, which is how CI came to lint with"
+            echo "a ruff nobody ran (melodic-software/ci-workflows#372). Everything else above"
+            echo "has a single authority, and absorbing upstream latest for it is correct as"
+            echo "written. melodic-software/dotfiles reports a consumer that lags the fleet, or"
+            echo "one bumped ahead of it, on its own schedule."
+            echo
             echo "### Why advisory"
             echo
             echo "Dependabot cannot bump these — its github-actions ecosystem updates only"
