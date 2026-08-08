@@ -29,11 +29,19 @@ jobs:
   # comments included, is compared against a literal in the test, so any edit
   # here fails CI and is read by a human rather than classified by a scanner.
   #
-  # `labels` is applied on creation only. `claude-lane-incident` is declared in
-  # github-iac (`GovernedRepositories.cs`, this repository's `ExtraLabels`), so
-  # the taxonomy apply keeps it rather than pruning it. Issue SELECTION never
-  # keys on the label (the body marker and bot authorship do), so a label that
-  # is later renamed or pruned degrades a sanity query and nothing else.
+  # `labels` is applied by create-issue-from-file on the create AND the update
+  # path — the action runs addLabels after either branch — so every write to an
+  # open incident re-asserts both labels. For `needs-human`, the org's
+  # human-gated role label (ci-workflows#364), that re-assertion is deliberate
+  # and fail-closed: an incident only ever opens on an escalating class, every
+  # escalating class needs a human at the provider or fleet layer, so an open
+  # incident not wearing the label is routing drift rather than a decision to
+  # respect; the re-assertion stops the moment the incident closes.
+  # `claude-lane-incident` is declared in github-iac (`GovernedRepositories.cs`,
+  # this repository's `ExtraLabels`), so the taxonomy apply keeps it rather
+  # than pruning it. Issue SELECTION never keys on either label (the body
+  # marker and bot authorship do), so a label that is later renamed or pruned
+  # degrades routing or a sanity query and nothing else.
   #
   # `repository` is left at its default of `${{ github.repository }}`, which is
   # what makes `issues: write` on the ambient token sufficient: the incident
@@ -60,6 +68,7 @@ jobs:
           name: claude-lane-incident-body
 
       - name: Open or update the incident issue
+        id: upsert
         if: needs.poll.outputs.action == 'open' || needs.poll.outputs.action == 'update'
         uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
         with:
@@ -67,7 +76,48 @@ jobs:
           title: '[Incident] Claude lane infrastructure failure'
           issue-number: ${{ needs.poll.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.claude-lane-incident.md
-          labels: claude-lane-incident
+          labels: claude-lane-incident, needs-human
+
+      # The role label alone only PARKS the incident: the attended queue lists
+      # an item as `[escalated]` when a machine escalation-marker comment joins
+      # the label, and it is the marker that separates a machine-routed item
+      # from an operator-parked one (ci-workflows#238's lane-routing contract).
+      # Posted once, on open — a recovered incident that relapses is superseded
+      # by a FRESH issue, never reopened, so one comment covers an incident's
+      # whole life and an update never re-posts it: transition-edge writes
+      # only, like every write this job performs. The comment is fixed text;
+      # nothing derived from an annotation, or from any other API string, is
+      # rendered into it.
+      - name: Post the escalation-marker comment
+        if: needs.poll.outputs.action == 'open'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ISSUE_NUMBER: ${{ steps.upsert.outputs.issue-number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                "<!-- work-items:escalation lane=incident-aggregator kind=routed-advisory -->",
+                "",
+                "**Routed to the attended queue: this incident needs a human.**",
+                "",
+                "An incident opens only on an escalating failure class, and every",
+                "escalating class is dead until a human acts — `auth`: rotate,",
+                "re-entitle, or re-permission the org credential; `runner`: repair",
+                "the governed runner fleet. No autonomous session can do either,",
+                "so this issue carries the human-gated role label plus this",
+                "marker, which together surface it as `[escalated]` in the",
+                "attended queue.",
+                "",
+                "*Posted automatically by `.github/workflows/claude-lane-incident-aggregator.yml`.*",
+              ].join("\n"),
+            });
 
       - name: Close the recovered incident issue
         if: needs.poll.outputs.action == 'close'

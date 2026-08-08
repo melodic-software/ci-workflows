@@ -224,7 +224,7 @@ const forkPull = (number, sha) => ({
 //
 // The guarantee is the JOB SPLIT, not an analysis of what the steps do. `poll`
 // does the work and holds NO write scope, so nothing in it can mutate anything
-// however it is wired. `write` holds `issues: write`, is three steps long,
+// however it is wired. `write` holds `issues: write`, is four steps long,
 // checks out nothing, runs no shell, and is pinned BYTE FOR BYTE — so any edit
 // to it fails here and is read by a person rather than judged by a scanner.
 //
@@ -559,7 +559,7 @@ test("the write job authors with the ambient token and loads no repository code"
     "the write path must work without an App token",
   );
   assert.equal(writeJob.needs, "poll");
-  assert.equal(writeJob.steps.length, 3);
+  assert.equal(writeJob.steps.length, 4);
   for (const declared of writeJob.steps) {
     assert.equal(declared.run, undefined, "the write job runs no shell");
   }
@@ -570,6 +570,101 @@ test("the write job authors with the ambient token and loads no repository code"
     false,
     "the write job checks nothing out",
   );
+});
+
+test("the incident issue wears the human-gated role label, re-asserted on every write", () => {
+  // The lane-routing half of #238's Contract, filed as #364: an incident only
+  // ever opens on an escalating class, and every escalating class needs a
+  // human at the provider or fleet layer, so the incident must wear the role
+  // label that routes it to one. create-issue-from-file runs addLabels on the
+  // update path as well as the create path, so the label is re-asserted
+  // fail-closed for as long as the incident stays open.
+  const upsert = writeJob.steps.find(
+    (declared) => declared.name === "Open or update the incident issue",
+  );
+  assert.deepEqual(
+    upsert.with.labels.split(",").map((label) => label.trim()),
+    ["claude-lane-incident", "needs-human"],
+  );
+});
+
+test("an opened incident posts the escalation-marker comment, and only an opened one", () => {
+  // The role label alone reads as operator-PARKED; the attended queue lists an
+  // item as [escalated] only when a machine-marked escalation comment joins
+  // the label. Gated on 'open' alone: a relapsed incident is superseded by a
+  // fresh issue rather than reopened, so one comment covers an incident's
+  // whole life, and an update re-posting it would be a non-transition write.
+  const marker = writeJob.steps.find(
+    (declared) => declared.name === "Post the escalation-marker comment",
+  );
+  assert.equal(marker.if, "needs.poll.outputs.action == 'open'");
+  assert.equal(
+    marker.env.ISSUE_NUMBER,
+    `\${{ steps.upsert.outputs.issue-number }}`,
+    "the marker must land on the issue the upsert step just created",
+  );
+  const upsert = writeJob.steps.find(
+    (declared) => declared.name === "Open or update the incident issue",
+  );
+  assert.equal(
+    upsert.id,
+    "upsert",
+    "the upsert step must carry the id the marker step's env reads",
+  );
+});
+
+/** Execute the shipped escalation-marker script against a mock Octokit. */
+async function runMarker(issueNumber) {
+  const original = process.env.ISSUE_NUMBER;
+  process.env.ISSUE_NUMBER = issueNumber;
+  const comments = [];
+  try {
+    const github = {
+      rest: {
+        issues: {
+          createComment: async (parameters) => void comments.push(parameters),
+        },
+      },
+    };
+    const context = {
+      repo: { owner: "melodic-software", repo: "ci-workflows" },
+    };
+    const marker = writeJob.steps.find(
+      (declared) => declared.name === "Post the escalation-marker comment",
+    );
+    const execute = new AsyncFunction(
+      "github",
+      "context",
+      "require",
+      "process",
+      marker.with.script,
+    );
+    await execute(github, context, require, process);
+    return comments;
+  } finally {
+    if (original === undefined) delete process.env.ISSUE_NUMBER;
+    else process.env.ISSUE_NUMBER = original;
+  }
+}
+
+test("the escalation marker is the comment's first line, in the org's marker grammar", async () => {
+  // The attended queue discriminates on the comment's FIRST line starting with
+  // the escalation marker, and kind=routed-advisory is what lists the row as
+  // [escalated] rather than [ratify]. Anything above the marker unroutes the
+  // incident.
+  const comments = await runMarker("42");
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0].issue_number, 42);
+  assert.match(
+    comments[0].body.split("\n")[0],
+    /^<!-- work-items:escalation lane=[a-z-]+ kind=routed-advisory -->$/u,
+  );
+});
+
+test("a missing issue number posts no marker rather than commenting on issue 0", async () => {
+  // The same guard the close step carries: create-issue-from-file exits
+  // silently when the body file is missing, and then no issue exists to mark.
+  assert.deepEqual(await runMarker(""), []);
 });
 
 test("the App credential is minted read-only, whenever its secret exists", () => {
