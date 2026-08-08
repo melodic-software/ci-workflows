@@ -6,7 +6,7 @@
 // checkout, the App-token mint, the polls, the inline scripts, the shell —
 // happens in `poll`, which holds no write scope and therefore cannot mutate
 // anything however its steps are wired. Exactly one job holds a write scope,
-// and that job is three steps long, checks out nothing, runs no shell, and
+// and that job is four steps long, checks out nothing, runs no shell, and
 // loads no repository code.
 //
 // So this audit does not classify steps. It proves the shape:
