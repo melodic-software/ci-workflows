@@ -23,17 +23,28 @@
 // leak this note exists to prevent.
 "use strict";
 
-// The token vocabulary is owned by .github/actions/claude-lane-outcome/classify.cjs
-// — that module is the only emitter, and this set mirrors what it can produce.
-// `runner` is the caller-side selector-failure token the review lanes will emit
-// once the select-runner surfacing lands; it is listed now so the aggregator
-// recognises it the moment it appears rather than counting it as unrecognised.
-// PLAN.md's early sketch also names a `concurrency` token; classify.cjs never
-// emits one, so it is deliberately absent — an aspirational token in a
-// narrative paragraph is not a contract, and an unemitted allowlist entry is
-// indistinguishable from a forged one.
+// The token vocabulary is owned by .github/actions/claude-lane-outcome: its
+// classify.cjs emits the failure classes, and the composite's own outcome step
+// emits `skipped-validation` when a lane concluded green with no execution
+// evidence — the shape of claude-code-action skipping itself (workflow
+// validation), a silent no-review this aggregator is otherwise blind to by
+// construction (ci-workflows#363). This set mirrors what those two emitters
+// can produce. `runner` is the caller-side selector-failure token the review
+// lanes will emit once the select-runner surfacing lands; it is listed ahead
+// of its emitter so the aggregator recognises it the moment it appears rather
+// than counting it as unrecognised. PLAN.md's early sketch also names a
+// `concurrency` token; no emitter produces one, so it is deliberately absent —
+// an aspirational token in a narrative paragraph is not a contract, and an
+// unemitted allowlist entry is indistinguishable from a forged one.
 const RECOGNIZED_CLASSES = Object.freeze(
-  new Set(["auth", "rate-limit", "overloaded", "other", "runner"]),
+  new Set([
+    "auth",
+    "rate-limit",
+    "overloaded",
+    "other",
+    "runner",
+    "skipped-validation",
+  ]),
 );
 
 // Classes that by themselves open (or hold open) the incident. Both are dead
@@ -43,6 +54,14 @@ const RECOGNIZED_CLASSES = Object.freeze(
 // are transient or benign — they self-heal, so escalating them would page a
 // human for weather. They are still counted and rendered whenever an incident
 // is open, which is what makes a storm visible in context.
+// `skipped-validation` is deliberately non-escalating: it fires legitimately
+// on exactly the PRs that edit the caller workflow (including the PR that
+// first adds it — upstream's own skip message calls that normal) and
+// self-corrects on merge, and this poll cannot see which files a PR touches,
+// so it cannot tell the benign shape from a real silent no-review on an
+// unrelated PR. Recognising it makes the skip countable and rendered instead
+// of invisible; the synthetic canary deferred in ci-workflows#228 remains the
+// mechanism that would prove a review actually happened.
 const ESCALATING_CLASSES = Object.freeze(new Set(["auth", "runner"]));
 
 // Gate 1 for the class token: a bounded lowercase-and-hyphen run, anchored on
