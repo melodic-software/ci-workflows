@@ -1559,7 +1559,7 @@ first movers), never to manufacture closure evidence. (c) NOT taken: moving
 the observation to a later phase relabels (a)'s evidence without producing
 it.
 
-### Phase 4: observability — #238 aggregator [DOING]
+### Phase 4: observability — #238 aggregator [DONE]
 
 Issue #237 shipped (#248/#249/#251; closed). This phase consumes it. Can be
 developed in parallel with Phase 3 (disjoint files); its acceptance test runs
@@ -1854,6 +1854,82 @@ autonomous closure independently of how good the evidence is. So this phase
 cannot be closed out by an autonomous session at all — the remaining work is
 either code (#363, #364, caller-side emission) or a human's judgement, and no
 amount of further acceptance evidence changes that.
+
+**PHASE 4 CLOSE-OUT AMENDMENT (2026-08-08; tag advanced `[DOING]`→`[DONE]`).**
+The list above is kept verbatim as the 2026-08-06 record; every item is now
+dispositioned. The human judgements were made by the operator in an interactive
+session (2026-08-07) and under the operator's goal directive of 2026-08-08
+("go with your recommendations"); the code items landed
+fresh-context-verifier-gated.
+
+- #364 SHIPPED — PR #385 (merge `bcf48a0`): the incident issue wears
+  `needs-human` (re-asserted fail-closed on every open/update — the pinned
+  action runs `addLabels` on both branches, and the workflow's prior
+  "creation only" comment was corrected as factually wrong) and carries the
+  `kind=routed-advisory` escalation marker, published idempotently: at-most-once
+  via a bot-authored presence check, with a repair path for a post that failed
+  after issue creation (both review lanes caught the open-only gate's
+  unrecoverable-failure window independently). The SECOND DEFECT block above is
+  thereby resolved. Verification mutation-tested the new assertions and proved
+  the fixture corpus' one-property-differs invariant restored. Recorded bound:
+  no test distinguishes `startsWith` from `includes` in the presence check.
+- The two SPEC CONFLICTS above are SETTLED, adjudication recorded in #238's
+  closing comment (2026-08-07, operator-delegated): supersede-not-reopen is
+  ratified as shipped, and the three-consecutive-clean-cycles close condition is
+  ratified as shipped — #238's "first clean window" wording was the stale side
+  both times.
+- #363 SHIPPED — PR #387 (merge `7415d4e`, A1) + PR #389 (merge `9f9757e`, A2,
+  split per this plan's own PR-A1/PR-A2 convention after verification caught the
+  caller gating on an output its pinned composite could not yet produce): a
+  validation self-skip now emits `class=skipped-validation` (recognized,
+  counted, deliberately NON-escalating — it fires legitimately on caller-edit
+  PRs; the check stays green per the advisory contract); the review-count upsert
+  and stale-comment clear gate on `review-ran == 'true'` so skips no longer
+  inflate the count, burn the max-reviews-per-pr budget, or clear warnings; the
+  marker copy states re-triggering accurately for both caller shapes; and a
+  wiring test asserts every consumed outcome output is declared by the composite
+  at the pinned SHA. The THIRD DEFECT above is visible to the taxonomy now —
+  for the review lane. The SECURITY lane's variant (its REQUIRED check goes
+  green on a skip; its clear-stale gates on `review-failed` only; its own
+  outcome-pin repoint) is #388, where it composes with the fail-closed policy
+  decision.
+- MULTI-REPO SHAPE WAIVED (operator-authorized): the per-repo tally and
+  repo-list rendering are unit-tested; exercising the live shape costs another
+  credential dance for marginal evidence. Revisit trigger: the first live
+  multi-repo incident anomaly.
+- Caller-side `class=runner` EMISSION DEFERRED (operator-authorized), carrying
+  provisioning#215's trigger: unpark when caller-side selector-failure emission
+  ships. Canary-property targets 3 and 4 above remain not exercised; nothing in
+  production emits `class=runner` today.
+- SIXTH-BULLET CLOSURES DONE: claude-code-plugins#1327 comment-closed
+  2026-08-07 (operator-delegated; root cause + pointer stand in its thread).
+  #228 and #238 closed with pointers 2026-08-07 — SC4 met.
+- CANARY DEFERRAL REHOMED — this paragraph is now the deferral's home, per the
+  CANARY DEFERRAL block's own rule, since #228 (its previous anchor) is closed.
+  Synthetic canary probes remain rejected-deferred. RE-EVALUATE 2026-11-06, or
+  earlier on any of: (1) a quiet-period credential death causing real
+  missed-review harm; (2) real missed-review harm from any silent green;
+  (3) a first observed no-token silent-green in a consumer repo. #363's fix
+  narrows trigger 3 for the review lane but does not retire it: lanes whose
+  outcome pin predates `7415d4e` (security, e2e, all external consumers until
+  they repin) still emit no token on a skip, and a canary remains the only
+  proposed mechanism that catches a no-token green independent of lane
+  instrumentation.
+- SECRET VISIBILITY ITEM RETIRED — the NOT BLOCKING block above is superseded:
+  the operator decided 2026-08-07 to keep org secret `CLAUDE_CODE_OAUTH_TOKEN`
+  at visibility `all` (claude reviews enabled for every repo). This was already
+  the recorded fleet decision in github-iac: PR #269 retired the Pulumi
+  selected-repositories binding (changing visibility via the API requires
+  re-supplying the encrypted value, so the secret is deliberately not
+  IaC-managed), PR #270 removed the retirement scaffolding, and issue #266
+  (restore selected visibility) is closed. No flip is pending; there is nothing
+  left to harden.
+- FLEET REPIN DONE (2026-08-08), closing the Wiring paragraph's "by-hand
+  follow-up": v0.9.1 → v0.10.2 (`e9443874`) across standards #337 (component +
+  runner-policy allowlist), claude-code-plugins #1990 (+ managed-policy sync
+  #1992), and claude-lane-sandbox #3. Every merge fresh-context-verifier-gated;
+  standards' scheduled `claude-lanes-repin` job still lacks its App credential
+  and no-ops daily (operator item, recorded on the batch).
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
