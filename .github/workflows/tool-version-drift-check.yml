@@ -418,6 +418,35 @@ jobs:
             echo "pins together) only after reviewing the stable patch. Never auto-merge these"
             echo "updates."
             echo
+            echo "### Fleet-led pins absorb in a fixed order"
+            echo
+            echo "\`ruff\`, \`pyright\`, \`check-jsonschema\`, \`golangci-lint\`, and the Python and"
+            echo "Node runtimes are ALSO pinned by the fleet inventory in"
+            echo "melodic-software/dotfiles — \`.chezmoidata/uv-tools.yaml\` for the uv tools and"
+            echo "the interpreter, \`.chezmoidata/golangci-lint.yaml\` for golangci-lint, and"
+            echo "\`.node-version\` for Node — which is what installs every developer's local"
+            echo "toolchain. Raise the fleet pin there FIRST, then bump this repository to"
+            echo "match — never past it. Bumping here alone puts CI on a version no developer"
+            echo "has, which is how CI came to lint with a ruff nobody ran"
+            echo "(melodic-software/ci-workflows#372)."
+            echo
+            echo "\`biome\` follows the same ordering against a different authority. The fleet"
+            echo "does not pin it, but a consumer carrying \`@biomejs/biome\` in \`package.json\`"
+            echo "has a Dependabot-owned pin its own lanes run, and"
+            echo "\`.github/actions/biome/action.yml\` tracks the newest such pin rather than"
+            echo "upstream latest (melodic-software/ci-workflows#375; whether the action should"
+            echo "derive that version instead of carrying a second copy is"
+            echo "melodic-software/ci-workflows#377)."
+            echo
+            echo "\`zizmor\` is fleet-led too — pinned here in \`.github/workflows/zizmor.yml\`"
+            echo "and there in \`.chezmoidata/uv-tools.yaml\` — but this workflow does not watch"
+            echo "it yet, so it never appears in the list above"
+            echo "(melodic-software/ci-workflows#379)."
+            echo
+            echo "Everything else above has a single authority, and absorbing upstream latest"
+            echo "for it is correct as written. melodic-software/dotfiles reports a consumer"
+            echo "that lags the fleet, or one bumped ahead of it, on its own schedule."
+            echo
             echo "### Why advisory"
             echo
             echo "Dependabot cannot bump these — its github-actions ecosystem updates only"
