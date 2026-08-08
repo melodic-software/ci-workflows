@@ -17,7 +17,14 @@ inputs:
     default: biome.json
   version:
     description: Exact Biome version to run.
-    default: 2.5.4
+    # This default governs only a caller with no Biome pin of its own. A caller
+    # that carries @biomejs/biome in package.json already has a
+    # Dependabot-maintained pin, and that is the version its own lanes run — so
+    # keep this in step with the newest such pin in the fleet rather than with
+    # upstream latest, or the two disagree about what a finding is. Whether this
+    # action should derive the version from the caller's package.json instead of
+    # carrying a second authority is #377.
+    default: 2.5.6
   node-version:
     description: Node.js version to set up.
     default: 24.18.0
