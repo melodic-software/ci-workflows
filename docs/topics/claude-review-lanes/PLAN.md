@@ -1876,8 +1876,10 @@ fresh-context-verifier-gated.
 - The two SPEC CONFLICTS above are SETTLED, adjudication recorded in #238's
   closing comment (2026-08-07, operator-delegated): supersede-not-reopen is
   ratified as shipped, and the three-consecutive-clean-cycles close condition is
-  ratified as shipped — #238's "first clean window" wording was the stale side
-  both times.
+  ratified as shipped — #238's wording was the stale side both times: its
+  reopen criterion ("a second incident reopens the same marker-selected
+  issue") on the first, its "first clean window" close condition on the
+  second.
 - #363 SHIPPED — PR #387 (merge `7415d4e`, A1) + PR #389 (merge `9f9757e`, A2,
   split per this plan's own PR-A1/PR-A2 convention after verification caught the
   caller gating on an output its pinned composite could not yet produce): a
@@ -1908,22 +1910,25 @@ fresh-context-verifier-gated.
   CANARY DEFERRAL block's own rule, since #228 (its previous anchor) is closed.
   Synthetic canary probes remain rejected-deferred. RE-EVALUATE 2026-11-06, or
   earlier on any of: (1) a quiet-period credential death causing real
-  missed-review harm; (2) real missed-review harm from any silent green;
-  (3) a first observed no-token silent-green in a consumer repo. #363's fix
-  narrows trigger 3 for the review lane but does not retire it: lanes whose
-  outcome pin predates `7415d4e` (security, e2e, all external consumers until
-  they repin) still emit no token on a skip, and a canary remains the only
-  proposed mechanism that catches a no-token green independent of lane
+  missed-review harm — the original trigger; (2) real missed-review harm from
+  any silent green — recorded here as a deliberate BROADENING of (1), not
+  carried from the prior record; (3) a first observed no-token silent-green in
+  a consumer repo — the trigger the 2026-08-06 round added. #363's fix narrows
+  trigger 3 for the review lane but does not retire it: the security lane's
+  outcome pin predates `7415d4e`, every external consumer's does until it
+  repins, and the e2e lane consumes no outcome composite at all — all of those
+  still produce no token on a skip, and a canary remains the only proposed
+  mechanism that catches a no-token green independent of lane
   instrumentation.
 - SECRET VISIBILITY ITEM RETIRED — the NOT BLOCKING block above is superseded:
   the operator decided 2026-08-07 to keep org secret `CLAUDE_CODE_OAUTH_TOKEN`
   at visibility `all` (claude reviews enabled for every repo). This was already
-  the recorded fleet decision in github-iac: PR #269 retired the Pulumi
+  the recorded fleet decision in github-iac: github-iac#269 retired the Pulumi
   selected-repositories binding (changing visibility via the API requires
   re-supplying the encrypted value, so the secret is deliberately not
-  IaC-managed), PR #270 removed the retirement scaffolding, and issue #266
-  (restore selected visibility) is closed. No flip is pending; there is nothing
-  left to harden.
+  IaC-managed), github-iac#270 removed the retirement scaffolding, and
+  github-iac#266 (restore selected visibility) is closed. No flip is pending;
+  there is nothing left to harden.
 - FLEET REPIN DONE (2026-08-08), closing the Wiring paragraph's "by-hand
   follow-up": v0.9.1 → v0.10.2 (`e9443874`) across standards #337 (component +
   runner-policy allowlist), claude-code-plugins #1990 (+ managed-policy sync
