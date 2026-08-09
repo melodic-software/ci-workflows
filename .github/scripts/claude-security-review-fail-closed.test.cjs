@@ -337,10 +337,10 @@ test("a validation skip cannot clear a prior failure warning", () => {
 });
 
 // Everything below pins the three no-verdict paths that must NOT reach the
-// failing step. Each is the reason the mapping keys on the composite's
+// ruling step. Each is the reason the mapping keys on the composite's
 // explicit outputs — an empty output matches neither comparison — rather
 // than on "no verdict was produced".
-test("fork PRs skip the job instead of failing closed forever", () => {
+test("fork, out-of-scope and skip-actor PRs never reach the ruling step", () => {
   const jobCondition = workflow.slice(
     workflow.indexOf("  security-review:"),
     workflow.indexOf("      - name: Reject privileged triggers"),
@@ -542,7 +542,7 @@ test("both pattern inputs empty keeps every call relevant", () => {
   assert.equal(relevant, "true");
 });
 
-test("a superseded head reports nothing, so it cannot fail closed", () => {
+test("a superseded head reports nothing, so it cannot be ruled on", () => {
   const step = stepSource("Report review outcome");
   // !cancelled() rather than always(): cancellation is the concurrency
   // group's retirement mechanism, so a cancelled run must skip the outcome
@@ -585,7 +585,7 @@ test("the review retry is configured identically to the first attempt", () => {
   assert.match(
     retry,
     /^ {8}continue-on-error: true$/mu,
-    "the retry must not fail the job itself; the fail-closed step owns the red",
+    "the retry must not conclude the job itself; the ruling step owns that",
   );
   assert.match(
     retry,

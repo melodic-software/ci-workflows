@@ -163,9 +163,12 @@ name: claude-security-review
 #     two events; every other event is allowed (the consumer keeps flexibility).
 #   - Fork PRs receive no secrets and a read-only token by design, so they are
 #     simply not reviewed — that is correct, not a gap to "fix". The job SKIPS
-#     them at job level rather than letting a doomed, secretless action run: with
-#     the fail-closed mapping above, running would turn every fork PR red for a
-#     cause no push can fix. A skipped job is name-stable and a ruleset reads it
+#     them at job level rather than letting a doomed, secretless action run:
+#     every fork PR would otherwise burn a runner reaching a foregone failure
+#     and stamp an infra-failure marker comment no push can act on. (Under the
+#     two-tier ruling above the check would land GREEN, not red, so the skip
+#     buys quiet and runner minutes rather than availability.) A skipped job is
+#     name-stable and a ruleset reads it
 #     as success, exactly as for an out-of-scope PR — so a required check does
 #     NOT prove a fork PR was reviewed, and a human must review fork changes to
 #     security-sensitive surfaces before merge.
@@ -618,10 +621,13 @@ jobs:
     # changes merge, so paying for a run beats a silent evidence gap. always()
     # is deliberately avoided — a cancelled workflow should still stop.
     #
-    # The fork clause is load-bearing for the FAIL-CLOSED mapping (see POSTURE):
-    # a fork-triggered pull_request run gets no secrets, so the SDK call cannot
-    # succeed no matter how often it is retried. Without this skip the mapping
-    # would pin every fork PR red permanently.
+    # The fork clause spares a foregone failure: a fork-triggered pull_request
+    # run gets no secrets, so the SDK call cannot succeed no matter how often
+    # it is retried. Without this skip every fork PR would spend a runner
+    # reaching that failure and carry an infra-failure marker comment its
+    # author cannot act on. It no longer buys availability — under the
+    # two-tier ruling (see POSTURE) that failure classifies as external and
+    # lands GREEN — so do not restore it citing a red that would not occur.
     #
     # It is scoped to `pull_request` for a security reason, not a stylistic one.
     # An unscoped fork test also matches a fork PR arriving via
