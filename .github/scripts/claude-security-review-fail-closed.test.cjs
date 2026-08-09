@@ -1,15 +1,19 @@
 "use strict";
 
-// The security lane's required check certifies EXECUTION, so "in scope and could
-// not run" must conclude failure — `neutral` and `skipped` both satisfy a
-// required check and cannot express it (#266). The classification itself lives
-// in the claude-lane-outcome composite (its corpus runs in
-// .github/actions/claude-lane-outcome/classify.test.cjs); what this workflow
-// owns — and what these tests pin — is the wiring around it: the retry gate
-// that decides whether a second attempt is safe (zero assistant turns) and
+// The security lane's required check certifies EXECUTION, and "in scope and
+// could not run" is ruled on in two tiers (#266, narrowed by the availability
+// amendment in the workflow's POSTURE). Caller drift concludes FAILURE —
+// `neutral` and `skipped` both satisfy a required check and cannot express it,
+// and the PR that caused it clears it by merging. An external failure concludes
+// SUCCESS behind a loud warning annotation, because a required context that
+// reddens on a provider outage locks every merge for the length of it. The
+// classification itself lives in the claude-lane-outcome composite (its corpus
+// runs in .github/actions/claude-lane-outcome/classify.test.cjs); what this
+// workflow owns — and what these tests pin — is the wiring around it: the retry
+// gate that decides whether a second attempt is safe (zero assistant turns) and
 // useful (not auth-class), the resolve step that picks the effective attempt,
-// the outcome composite reading that attempt, and the fail-closed step that
-// raises the red on the one signal that means "in scope and did not run".
+// the outcome composite reading that attempt, and the ruling step that maps
+// each non-run shape to a conclusion.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -169,31 +173,48 @@ test("the outcome composite reads the resolved attempt, not just the first one",
   );
 });
 
-test("an in-scope non-run fails the job through the fail-closed step", () => {
-  const step = stepSource("Fail closed on an in-scope non-run");
+test("an in-scope non-run reaches the ruling step on both signals", () => {
+  const step = stepSource("Rule on an in-scope non-run");
 
-  // The red is raised deliberately, on the two signals that mean "in scope
-  // and did not run": the outcome composite recorded a failure, OR it
-  // recorded a green with no execution evidence (review-ran == 'false' — the
-  // action skipped itself, so nothing was reviewed and a green would certify
-  // an execution that never happened). Both are AND-ed with pull_request
-  // presence (only a pull_request run gates a merge — the action rejects
-  // merge_group and, with track_progress on, every non-PR event, so
-  // reddening those would wedge a consumer's merge queue on a cause no head
-  // change can fix; they keep the historical pass-through by skipping this
-  // step). !cancelled() keeps the step reachable after the failed review
-  // step while still skipping it on cancellation — a cancelled run is
-  // retired by a newer one and must not raise a red of its own.
+  // The step is REACHED on the two signals that mean "in scope and did not
+  // run": the outcome composite recorded a failure, OR it recorded a green
+  // with no execution evidence (review-ran == 'false' — the action skipped
+  // itself, so nothing was reviewed and a green would certify an execution
+  // that never happened). What each shape then CONCLUDES is the two-tier
+  // posture, executed below. Both are AND-ed with pull_request presence (only
+  // a pull_request run gates a merge — the action rejects merge_group and,
+  // with track_progress on, every non-PR event, so ruling on those would
+  // wedge a consumer's merge queue on a cause no head change can fix; they
+  // keep the historical pass-through by skipping this step). !cancelled()
+  // keeps the step reachable after the failed review step while still
+  // skipping it on cancellation — a cancelled run is retired by a newer one
+  // and must not raise a red of its own.
   assert.match(
     step,
     /^ {8}if: >-\n {10}!cancelled\(\) && \(steps\.review-outcome\.outputs\.review-failed == 'true' \|\|\n {10}steps\.review-outcome\.outputs\.review-ran == 'false'\) &&\n {10}github\.event\.pull_request\.number != ''$/mu,
-    "the fail-closed condition must key on review-failed OR a no-evidence green, and pull_request presence, exactly",
+    "the condition must key on review-failed OR a no-evidence green, and pull_request presence, exactly",
   );
-  assert.match(step, /^ {10}exit 1$/mu, "the step must conclude failure");
   assert.doesNotMatch(
     step,
     /continue-on-error/u,
-    "continue-on-error here would revert #266 wholesale",
+    "continue-on-error here would decouple the conclusion from the ruling entirely",
+  );
+
+  // The loud-open tier reports green, so its annotation is the only thing on
+  // the check run that says a review was missed. A bare `echo` would print to
+  // the log and annotate nothing.
+  assert.match(
+    step,
+    /echo "::warning::/u,
+    "the loud-open tier must emit a warning ANNOTATION, not a plain log line",
+  );
+  // The aggregator extracts `class=<token>` from every annotation on this
+  // check run, so a token here would double-count the incident it reports.
+  const runBlock = runScript("Rule on an in-scope non-run");
+  assert.doesNotMatch(
+    runBlock,
+    /class=/u,
+    "a class= token in this step's output would pollute the incident aggregator's tally",
   );
 
   // The skip shape gets its own log explanation: no re-run retries a
@@ -221,44 +242,83 @@ test("an in-scope non-run fails the job through the fail-closed step", () => {
   );
 });
 
-// The fail-closed run block is expression-free shell, so the branch choosing
-// between the skip explanation and the failure explanation is EXECUTED over
-// both shapes rather than pattern-matched — a regex cannot prove which
-// message a given output combination prints, and printing the skip message
-// for a genuine failure was a shipped defect, not a hypothetical.
+// The ruling run block is expression-free shell, so the branch choosing
+// between the two tiers is EXECUTED over every shape rather than
+// pattern-matched — a regex cannot prove which message a given output
+// combination prints or what it exits with, and printing the skip message for
+// a genuine failure was a shipped defect, not a hypothetical.
 function runFailClosed({ reviewRan, reviewFailed }) {
-  return spawnSync(
-    "bash",
-    ["-c", runScript("Fail closed on an in-scope non-run")],
-    {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        REVIEW_RAN: reviewRan,
-        REVIEW_FAILED: reviewFailed,
-      },
+  return spawnSync("bash", ["-c", runScript("Rule on an in-scope non-run")], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REVIEW_RAN: reviewRan,
+      REVIEW_FAILED: reviewFailed,
     },
-  );
+  });
 }
 
-test("the fail-closed step tells the skip shape and a genuine failure apart", () => {
+test("caller drift stays fail-closed and keeps its merge-the-change remedy", () => {
+  // The one shape enforcement still bites: the PR itself caused it, and
+  // merging the PR is what clears it. Softening this to a warning would let a
+  // caller edit disable its own required security check.
   const skip = runFailClosed({ reviewRan: "false", reviewFailed: "false" });
-  assert.equal(skip.status, 1, "the skip shape must conclude failure");
+  assert.equal(skip.status, 1, "the caller-drift shape must conclude failure");
   assert.match(skip.stdout, /workflow-validation skip/u);
   assert.match(skip.stdout, /a re-run cannot/u);
-
-  const failure = runFailClosed({ reviewRan: "false", reviewFailed: "true" });
-  assert.equal(failure.status, 1, "a genuine failure must conclude failure");
   assert.doesNotMatch(
+    skip.stdout,
+    /::warning::/u,
+    "the fail-closed tier speaks through its red, not through a loud-open warning",
+  );
+});
+
+test("an external failure opens loudly instead of blocking the merge", () => {
+  // Availability posture: the cause is outside the PR's and the org's
+  // control, so the required check must not lock the fleet for the length of
+  // the outage. The warning ANNOTATION is what carries the alarm on a check
+  // run that now concludes green.
+  const failure = runFailClosed({ reviewRan: "false", reviewFailed: "true" });
+  assert.equal(
+    failure.status,
+    0,
+    "an external failure must not block the merge",
+  );
+  assert.match(
     failure.stdout,
-    /workflow-validation skip/u,
-    "a genuine failure printed the skip explanation — the inverse of its remedy",
+    /^::warning::/mu,
+    "the annotation prefix is what makes GitHub surface this on the check run",
+  );
+  assert.match(
+    failure.stdout,
+    /Merging is deliberately NOT blocked/u,
+    "the warning must say the green is deliberate, not incidental",
+  );
+  assert.match(
+    failure.stdout,
+    /marker comment/u,
+    "the warning must point at where the failure class and remediation live",
   );
   assert.match(
     failure.stdout,
     /Re-run the job/u,
-    "a genuine failure must keep retry-appropriate guidance",
+    "an external failure must keep retry-appropriate guidance",
   );
+  assert.doesNotMatch(
+    failure.stdout,
+    /workflow-validation skip/u,
+    "an external failure printed the skip explanation — the inverse of its remedy",
+  );
+});
+
+test("a failure reported without review-ran still opens rather than blocks", () => {
+  // The composite pairs review-failed 'true' with review-ran 'false' today,
+  // but the step's `if:` admits review-failed 'true' on its own. That shape
+  // is an external failure too, so a refactor of the branch condition must
+  // not silently redden it.
+  const failure = runFailClosed({ reviewRan: "", reviewFailed: "true" });
+  assert.equal(failure.status, 0, "an unset review-ran must not block a merge");
+  assert.match(failure.stdout, /^::warning::/mu);
 });
 
 test("a validation skip cannot clear a prior failure warning", () => {
@@ -277,10 +337,10 @@ test("a validation skip cannot clear a prior failure warning", () => {
 });
 
 // Everything below pins the three no-verdict paths that must NOT reach the
-// failing step. Each is the reason the mapping keys on the composite's
+// ruling step. Each is the reason the mapping keys on the composite's
 // explicit outputs — an empty output matches neither comparison — rather
 // than on "no verdict was produced".
-test("fork PRs skip the job instead of failing closed forever", () => {
+test("fork, out-of-scope and skip-actor PRs never reach the ruling step", () => {
   const jobCondition = workflow.slice(
     workflow.indexOf("  security-review:"),
     workflow.indexOf("      - name: Reject privileged triggers"),
@@ -482,7 +542,7 @@ test("both pattern inputs empty keeps every call relevant", () => {
   assert.equal(relevant, "true");
 });
 
-test("a superseded head reports nothing, so it cannot fail closed", () => {
+test("a superseded head reports nothing, so it cannot be ruled on", () => {
   const step = stepSource("Report review outcome");
   // !cancelled() rather than always(): cancellation is the concurrency
   // group's retirement mechanism, so a cancelled run must skip the outcome
@@ -525,7 +585,7 @@ test("the review retry is configured identically to the first attempt", () => {
   assert.match(
     retry,
     /^ {8}continue-on-error: true$/mu,
-    "the retry must not fail the job itself; the fail-closed step owns the red",
+    "the retry must not conclude the job itself; the ruling step owns that",
   );
   assert.match(
     retry,

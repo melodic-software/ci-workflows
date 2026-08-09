@@ -973,25 +973,40 @@ the agent's context — prompt-injection hygiene, not a trigger gate.
 its own context (`<caller job> / security-review`), never through `ci-status`.
 Its claim is narrow: a security pass RAN at this head, or the PR was judged not
 applicable. The verdict stays advisory — findings never fail the job. Execution
-is what **fails closed**: when the PR is in scope and the review could not run
-at all (usage limit, dead credential, SDK crash), the check reports FAILURE,
-because `success`, `neutral` and `skipped` all satisfy a required check, so
-failure is the only conclusion that does not silently authorize a merge on
-absent evidence. That mapping is scoped to `pull_request` runs; a non-PR event
-cannot run the review at all and keeps the historical pass-through, and a fork
-PR skips the job outright — neither green is execution evidence.
+is enforced in **two tiers**, split by whether the PR can clear the cause.
+**Caller drift** — the action skipping itself because the caller's workflow file
+differs from the default branch's copy — reports FAILURE, because `success`,
+`neutral` and `skipped` all satisfy a required check, so failure is the only
+conclusion that does not silently authorize a merge on absent evidence, and the
+PR that caused it clears it by merging. An **external failure** — usage limit,
+dead credential, rate limit, overload, SDK crash, runner fault — emits a loud
+`::warning` annotation and reports SUCCESS: the cause is outside the author's
+and the org's control, and a required context that reddens on a provider outage
+locks every merge in the fleet for the length of that outage. That mapping is
+scoped to `pull_request` runs; a non-PR event cannot run the review at all and
+keeps the historical pass-through, and a fork PR skips the job outright —
+neither green is execution evidence.
 
-The corollary is what the check does not prove. Every legitimate non-run reads
-as success to a ruleset. Four are name-stable job-level skips: a fork PR, an
-out-of-scope PR, a skip-listed actor, a kill-switched lane. A fifth is not a
-skip at all — a run whose head was superseded while it queued retires itself
-step by step and reports a **green** job having reviewed nothing, on the
-premise that the newer run for the current head reports the same context. So a
-green required check is not by itself proof that this head was reviewed, and it
-never establishes that a fork PR was: review fork changes to security-sensitive
-surfaces by hand. Availability is bought back by the bounded retry below, and a
-sustained outage is meant to be handled by an explicit, logged, attributable
-break-glass on the consumer's ruleset — never by weakening the check.
+The corollary is what the check does not prove. Every non-run reads as success
+to a ruleset. Four are name-stable job-level skips: a fork PR, an out-of-scope
+PR, a skip-listed actor, a kill-switched lane. A fifth is not a skip at all — a
+run whose head was superseded while it queued retires itself step by step and
+reports a **green** job having reviewed nothing, on the premise that the newer
+run for the current head reports the same context. The sixth is the
+external-failure tier above: a classified infrastructure failure now also
+reports green, deliberately. So a green required check is not by itself proof
+that this head was reviewed, and it never establishes that a fork PR was:
+review fork changes to security-sensitive surfaces by hand.
+
+What that sixth shape costs is worth stating plainly: during a provider outage,
+merges land unreviewed behind a green required check. The alarm moves off the
+conclusion onto three surfaces that never depended on it — the outcome
+composite's machine-readable `class=<token>` annotation, the failure marker
+comment on the PR, and the incident aggregator, which reads lane annotations
+regardless of check-run conclusion and escalates the auth class to the attended
+queue. Availability on that tier is bought by the loud-open itself, helped by
+the bounded retry below; break-glass on the consumer's ruleset remains the
+override for caller drift and for any other red an operator must clear by hand.
 
 **Trigger cadence is per lane, deliberately.** `claude-review` runs on
 `opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
@@ -1018,8 +1033,9 @@ The gate also honors the same guards the first attempt does, so a superseded
 run (and, on the code-review lane, a capped one) never spends a retry. Between
 the attempts the lane backs off `retry-delay-seconds` plus a 0–29 second
 jitter, so lanes retrying against the same contended seat do not re-collide in
-lockstep. What this buys is availability against the sporadic-429 class without
-weakening the security lane's fail-closed execution claim.
+lockstep. What this buys on the security lane is a real review against the
+sporadic-429 class, rather than the evidence gap its loud-open tier would
+otherwise leave behind.
 
 One divergence is worth knowing. The two review lanes demand **proof** of zero
 turns: a missing or unparsable execution file is not proof — a hard kill can

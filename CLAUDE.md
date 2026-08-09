@@ -21,9 +21,10 @@ These rules are load-bearing; changing any of them needs explicit review.
 - **Fork PRs are intentionally not reviewed.** GitHub passes no secrets and a
   read-only token to fork-triggered `pull_request` runs, so the agent cannot
   run. `claude-review` and `claude-e2e-verify` let it degrade to a warning;
-  `claude-security-review` skips the job at job level instead, because its
-  fail-closed mapping would otherwise pin every fork PR red for a cause no push
-  can fix — and because that skip reads as success, its required check does not
+  `claude-security-review` skips the job at job level instead, so a fork PR
+  neither burns a runner reaching a foregone failure nor carries an
+  infra-failure marker comment its author cannot act on — and because that
+  skip reads as success, its required check does not
   prove a fork PR was reviewed, so fork changes to security-sensitive surfaces
   need a human. The no-secrets guarantee is the safety property, not a bug —
   never "fix" it by reaching for `pull_request_target`.
