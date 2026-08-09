@@ -28,13 +28,15 @@ name: claude-security-review
 #     conclusion that does not silently authorize a merge on absent evidence —
 #     and here it is a conclusion the PR itself can act on.
 #
-#     EXTERNAL FAILURE — every class the outcome composite names (usage limit,
-#     dead credential, rate limit, overload, SDK crash, runner fault). Outside
-#     the PR author's control and outside the org's. The check emits a LOUD
-#     `::warning` annotation and reports SUCCESS. Operator-ratified trade: a
-#     required context that reddens on a provider outage locks every merge in
-#     the fleet for the length of that outage, and an availability floor the
-#     operator can rely on is worth more than a red nobody can clear.
+#     EXTERNAL FAILURE — every class classify.cjs actually emits: `auth`
+#     (dead credential, billing), `rate-limit` (usage limit), `overloaded`
+#     (5xx), and `other`, the catch-all that also takes an unparsable or
+#     missing execution file. Outside the PR author's control and outside the
+#     org's. The check emits a LOUD `::warning` annotation and reports SUCCESS.
+#     Operator-ratified trade: a required context that reddens on a provider
+#     outage locks every merge in the fleet for the length of that outage, and
+#     an availability floor the operator can rely on is worth more than a red
+#     nobody can clear.
 #
 #   WHAT THE SECOND TIER COSTS, stated plainly: the required check reports
 #   green with NO execution evidence, so merges can and will land unreviewed
@@ -45,6 +47,17 @@ name: claude-security-review
 #   aggregator, which reads lane annotations REGARDLESS of check-run conclusion
 #   and escalates the auth class to the attended queue. Auditing whether a
 #   given head was actually reviewed means reading those, never the green.
+#
+#   WHERE THE FLOOR ENDS: it covers what the lane can CLASSIFY, which means the
+#   ruling step has to be reached. A run that dies before it still reddens —
+#   a genuine runner fault, the job-level `timeout-minutes` above being hit, or
+#   any pre-ruling step throwing (`Resolve the effective review attempt` and
+#   `Report review outcome` carry no continue-on-error, deliberately: a crashed
+#   classifier must not pass through). Step-level timeouts ARE inside the floor
+#   — each attempt is bounded at 18 minutes behind continue-on-error, and the
+#   retry budget (2x18 + delay + slack = 43) fits under the job's 45. So the
+#   availability guarantee is "no classified failure blocks a merge", not "no
+#   infrastructure problem ever blocks one".
 #
 #   CARVE-OUT — the claim holds for `pull_request` runs, and ONLY those.
 #   Fork PRs and non-PR events (`merge_group`, `workflow_dispatch`, `schedule`)
@@ -164,11 +177,10 @@ name: claude-security-review
 #   - Fork PRs receive no secrets and a read-only token by design, so they are
 #     simply not reviewed — that is correct, not a gap to "fix". The job SKIPS
 #     them at job level rather than letting a doomed, secretless action run:
-#     every fork PR would otherwise burn a runner reaching a foregone failure
-#     and stamp an infra-failure marker comment no push can act on. (Under the
-#     two-tier ruling above the check would land GREEN, not red, so the skip
-#     buys quiet and runner minutes rather than availability.) A skipped job is
-#     name-stable and a ruleset reads it
+#     every fork PR would otherwise burn a runner reaching a foregone failure.
+#     That is the whole of it — the skip buys runner minutes, not availability,
+#     because under the two-tier ruling above the check would land GREEN, not
+#     red. A skipped job is name-stable and a ruleset reads it
 #     as success, exactly as for an out-of-scope PR — so a required check does
 #     NOT prove a fork PR was reviewed, and a human must review fork changes to
 #     security-sensitive surfaces before merge.
@@ -623,11 +635,11 @@ jobs:
     #
     # The fork clause spares a foregone failure: a fork-triggered pull_request
     # run gets no secrets, so the SDK call cannot succeed no matter how often
-    # it is retried. Without this skip every fork PR would spend a runner
-    # reaching that failure and carry an infra-failure marker comment its
-    # author cannot act on. It no longer buys availability — under the
-    # two-tier ruling (see POSTURE) that failure classifies as external and
-    # lands GREEN — so do not restore it citing a red that would not occur.
+    # it is retried, and without this skip every fork PR would spend a runner
+    # reaching that failure. Runner minutes are the whole of what it buys. It
+    # does NOT buy availability — under the two-tier ruling (see POSTURE) that
+    # failure classifies as external and lands GREEN — so do not restore it
+    # citing a red that would not occur.
     #
     # It is scoped to `pull_request` for a security reason, not a stylistic one.
     # An unscoped fork test also matches a fork PR arriving via

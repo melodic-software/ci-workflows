@@ -978,8 +978,10 @@ is enforced in **two tiers**, split by whether the PR can clear the cause.
 differs from the default branch's copy — reports FAILURE, because `success`,
 `neutral` and `skipped` all satisfy a required check, so failure is the only
 conclusion that does not silently authorize a merge on absent evidence, and the
-PR that caused it clears it by merging. An **external failure** — usage limit,
-dead credential, rate limit, overload, SDK crash, runner fault — emits a loud
+PR that caused it clears it by merging. An **external failure** — every class
+the classifier emits: `auth` (dead credential, billing), `rate-limit` (usage
+limit), `overloaded` (5xx), and the `other` catch-all, which also takes an
+unparsable or missing execution file — emits a loud
 `::warning` annotation and reports SUCCESS: the cause is outside the author's
 and the org's control, and a required context that reddens on a provider outage
 locks every merge in the fleet for the length of that outage. That mapping is
@@ -1007,6 +1009,16 @@ regardless of check-run conclusion and escalates the auth class to the attended
 queue. Availability on that tier is bought by the loud-open itself, helped by
 the bounded retry below; break-glass on the consumer's ruleset remains the
 override for caller drift and for any other red an operator must clear by hand.
+
+That floor has an edge worth knowing. It covers what the lane can **classify**,
+which means the ruling step has to be reached — a run that dies before it still
+reddens the check. A genuine runner fault, the job hitting its 45-minute
+`timeout-minutes`, or a pre-ruling step throwing (the resolve and outcome steps
+carry no `continue-on-error`, so a crashed classifier fails rather than passing
+through) all land outside the floor. Step-level timeouts are inside it: each
+attempt is bounded at 18 minutes behind `continue-on-error`, and the retry
+budget fits under the job's. The guarantee is "no classified failure blocks a
+merge", not "no infrastructure problem ever blocks one".
 
 **Trigger cadence is per lane, deliberately.** `claude-review` runs on
 `opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
