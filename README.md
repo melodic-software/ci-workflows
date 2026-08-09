@@ -1015,9 +1015,12 @@ which means the ruling step has to be reached — a run that dies before it stil
 reddens the check. A genuine runner fault, the job hitting its 45-minute
 `timeout-minutes`, or a pre-ruling step throwing (the resolve and outcome steps
 carry no `continue-on-error`, so a crashed classifier fails rather than passing
-through) all land outside the floor. Step-level timeouts are inside it: each
-attempt is bounded at 18 minutes behind `continue-on-error`, and the retry
-budget fits under the job's. The guarantee is "no classified failure blocks a
+through) all land outside the floor. Step-level timeouts are inside it at the
+default configuration: each attempt is bounded at 18 minutes behind
+`continue-on-error`, and at the default `retry-delay-seconds` the retry budget
+fits under the job's 45-minute ceiling. A caller that raises
+`retry-delay-seconds` far enough can push the retry past that ceiling, landing
+the run in the job-timeout shape above — outside the floor. The guarantee is "no classified failure blocks a
 merge", not "no infrastructure problem ever blocks one".
 
 **Trigger cadence is per lane, deliberately.** `claude-review` runs on

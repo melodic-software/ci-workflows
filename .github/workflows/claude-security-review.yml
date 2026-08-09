@@ -50,7 +50,8 @@ name: claude-security-review
 #
 #   WHERE THE FLOOR ENDS: it covers what the lane can CLASSIFY, which means the
 #   ruling step has to be reached. A run that dies before it still reddens —
-#   a genuine runner fault, the job-level `timeout-minutes` above being hit, or
+#   a genuine runner fault, the review job's `timeout-minutes: 45` (declared on
+#   the job below) being hit, or
 #   any pre-ruling step throwing (`Resolve the effective review attempt` and
 #   `Report review outcome` carry no continue-on-error, deliberately: a crashed
 #   classifier must not pass through). Step-level timeouts ARE inside the floor
