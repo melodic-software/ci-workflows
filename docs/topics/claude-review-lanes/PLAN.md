@@ -1953,8 +1953,10 @@ fresh-context-verifier-gated.
   operator's App decision; on landing, the credential wiring is the shipped
   mint step plus the org-owner installation grant, nothing new to design.
 - SECURITY-LANE POSTURE SUPERSEDED (2026-08-09, operator-directed) — #392's
-  single-tier fail-closed is replaced by #397's (merge `ba3e2e7`) two-tier
-  ruling: the required check reddens ONLY on the caller-drift validation skip,
+  single-tier fail-closed is replaced by #397's two-tier ruling (merge
+  `ba3e2e76de048932aade21950f4aa511a4afcd6d`, spelled in full because the
+  abbreviation trips the spell-check word splitter): the required check
+  reddens ONLY on the caller-drift validation skip,
   and loud-opens (a `::warning` annotation, conclusion SUCCESS) on any
   classified failure. The driver is availability, stated by the operator: an
   account or usage rotation must never lock merges fleet-wide, which is what a
