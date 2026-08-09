@@ -1952,6 +1952,25 @@ fresh-context-verifier-gated.
   reads) — and it is already queued on the operator batch. Unpark trigger: the
   operator's App decision; on landing, the credential wiring is the shipped
   mint step plus the org-owner installation grant, nothing new to design.
+- SECURITY-LANE POSTURE SUPERSEDED (2026-08-09, operator-directed) — #392's
+  single-tier fail-closed is replaced by #397's two-tier ruling (merge
+  `ba3e2e76de048932aade21950f4aa511a4afcd6d`, spelled in full because the
+  abbreviation trips the spell-check word splitter): the required check
+  reddens ONLY on the caller-drift validation skip,
+  and loud-opens (a `::warning` annotation, conclusion SUCCESS) on any
+  classified failure. The driver is availability, stated by the operator: an
+  account or usage rotation must never lock merges fleet-wide, which is what a
+  required context reddening for the length of an outage does. The compensating
+  control is this phase's own deliverable — the aggregator reads lane
+  annotations REGARDLESS of check-run conclusion, so the `class=<token>`
+  annotation, the marker comment, and the auth escalation to the attended queue
+  all survive the conclusion flip untouched; the advisory review lane had
+  already proven that path. What the trade costs is recorded in the workflow's
+  POSTURE and the README rather than implied: on the loud-open tier merges can
+  land unreviewed, and the floor covers only failures the lane can CLASSIFY —
+  a runner fault, the job timeout, or a pre-ruling step throwing still reddens.
+  Note for the CANARY DEFERRAL above: this deliberately BROADENS its
+  silent-green surface, which trigger (2) already covers as written.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,

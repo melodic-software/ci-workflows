@@ -22,12 +22,11 @@ These rules are load-bearing; changing any of them needs explicit review.
   read-only token to fork-triggered `pull_request` runs, so the agent cannot
   run. `claude-review` and `claude-e2e-verify` let it degrade to a warning;
   `claude-security-review` skips the job at job level instead, so a fork PR
-  neither burns a runner reaching a foregone failure nor carries an
-  infra-failure marker comment its author cannot act on — and because that
-  skip reads as success, its required check does not
-  prove a fork PR was reviewed, so fork changes to security-sensitive surfaces
-  need a human. The no-secrets guarantee is the safety property, not a bug —
-  never "fix" it by reaching for `pull_request_target`.
+  does not burn a runner reaching a foregone failure — and because that skip
+  reads as success, its required check does not prove a fork PR was reviewed,
+  so fork changes to security-sensitive surfaces need a human. The no-secrets
+  guarantee is the safety property, not a bug — never "fix" it by reaching for
+  `pull_request_target`.
 - **SHA-pin both layers.** Consumers pin this reusable workflow `@<40-char-sha>`;
   this workflow pins `anthropics/claude-code-action@<sha>` (mutable tags were the
   tj-actions/CVE-2025-30066 vector). Dependabot bumps the inner pin.
