@@ -6,7 +6,7 @@ name: claude-security-review
 # ADVISORY VERDICT. A whole-job concern (own job permissions + secrets
 # interface), so a reusable workflow, not a composite action.
 #
-# POSTURE — advisory VERDICT, FAIL-CLOSED EXECUTION check:
+# POSTURE — advisory VERDICT, AVAILABILITY-AWARE FAIL-CLOSED EXECUTION check:
 #   This lane POSTS a security review as PR comments. The VERDICT (what the
 #   review says) stays ADVISORY: findings never fail the job, and the intended
 #   promotion path for the verdict itself is to flip to blocking on CRITICAL
@@ -14,21 +14,43 @@ name: claude-security-review
 #   earned promotion (trust-before-scale), mirroring the guardrail-matrix
 #   verification-promotion discipline.
 #
-#   EXECUTION is different, and it FAILS CLOSED. A consumer's ruleset may make
-#   the `security-review` check REQUIRED, so the check's whole claim is that a
+#   EXECUTION is different, and it is enforced in TWO TIERS split by whether
+#   the PR can clear the cause. A consumer's ruleset may make the
+#   `security-review` check REQUIRED, so the check's whole claim is that a
 #   security pass RAN — or was judged not-applicable. When the PR IS in scope
-#   and the review could not run at all (usage limit, dead credential, SDK
-#   crash), the check therefore reports FAILURE: it cannot certify an execution
-#   that did not happen. `success`, `neutral` and `skipped` all satisfy a
-#   required check, so failure is the only conclusion that does not silently
-#   authorize a merge on absent evidence.
+#   and no review happened, that claim is unmet either way; what differs is who
+#   is able to act on the red.
+#
+#     CALLER DRIFT — the action skipped itself because the caller's workflow
+#     file differs from the default branch's copy. Self-inflicted by the PR and
+#     cleared by merging it, so the check reports FAILURE. `success`, `neutral`
+#     and `skipped` all satisfy a required check, making failure the only
+#     conclusion that does not silently authorize a merge on absent evidence —
+#     and here it is a conclusion the PR itself can act on.
+#
+#     EXTERNAL FAILURE — every class the outcome composite names (usage limit,
+#     dead credential, rate limit, overload, SDK crash, runner fault). Outside
+#     the PR author's control and outside the org's. The check emits a LOUD
+#     `::warning` annotation and reports SUCCESS. Operator-ratified trade: a
+#     required context that reddens on a provider outage locks every merge in
+#     the fleet for the length of that outage, and an availability floor the
+#     operator can rely on is worth more than a red nobody can clear.
+#
+#   WHAT THE SECOND TIER COSTS, stated plainly: the required check reports
+#   green with NO execution evidence, so merges can and will land unreviewed
+#   during an outage. The alarm does not disappear — it moves off the check
+#   conclusion onto three surfaces that never depended on it: the outcome
+#   composite's machine-readable `class=<token>` ::error annotation, the
+#   failure marker comment on the PR (class + remediation), and the incident
+#   aggregator, which reads lane annotations REGARDLESS of check-run conclusion
+#   and escalates the auth class to the attended queue. Auditing whether a
+#   given head was actually reviewed means reading those, never the green.
 #
 #   CARVE-OUT — the claim holds for `pull_request` runs, and ONLY those.
 #   Fork PRs and non-PR events (`merge_group`, `workflow_dispatch`, `schedule`)
 #   cannot run the review at all — no secrets, or an event the action rejects —
 #   so they keep the pass-through and their green is NOT execution evidence.
-#   See the fork bullet below and the `Fail closed on an in-scope non-run`
-#   step.
+#   See the fork bullet below and the `Rule on an in-scope non-run` step.
 #
 #   The merge-queue half of that carve-out is TRACKED, not accepted forever:
 #   melodic-software/ci-workflows#272, blocked on claude-code-action supporting
@@ -45,13 +67,16 @@ name: claude-security-review
 #   does not transfer here, where the check is the sole required security
 #   context. Required execution-evidence contexts fail closed. Measured before
 #   the change: 55 of 129 in-scope merges (42.6%) carried a green required check
-#   with no security pass at the merge head.
+#   with no security pass at the merge head. That measurement still stands and
+#   still motivates the caller-drift tier; what the availability amendment
+#   above narrows is which non-runs it applies to.
 #
-#   Availability is bought back by break-glass, not by retrying: a sustained
-#   outage is meant to be overridden by an explicit, logged, attributable
-#   break-glass on the consumer's ruleset — never by a check that lies. The
+#   Availability on the external tier is bought by that loud-open, not by
+#   retrying and no longer by break-glass alone. Break-glass on the consumer's
+#   ruleset remains the override for the caller-drift tier and for any other
+#   red an operator must clear by hand — explicit, logged, attributable. The
 #   bounded in-job retry below is a best-effort second chance at the sporadic
-#   class, NOT a second availability mechanism, and this line previously
+#   class, NOT an availability mechanism, and this line previously
 #   claimed otherwise. It has never been observed to absorb anything: across
 #   251 lane attempts org-wide on 2026-07-29 the retry step executed zero
 #   times, because the gate was unreachable for the dominant failure class in
@@ -605,7 +630,7 @@ jobs:
     # privileged triggers` could hard-fail it, turning a consumer's dangerous
     # misconfiguration into a green skipped check. Every non-pull_request event
     # must reach that tripwire; the ones it allows through then take the
-    # pass-through path past `Fail closed on an in-scope non-run`.
+    # pass-through path past `Rule on an in-scope non-run`.
     if: >-
       ${{ !cancelled()
           && vars.CLAUDE_LANES_DISABLED != 'true'
@@ -707,12 +732,12 @@ jobs:
         # findings go to PR comments, not the exit code.
         #
         # continue-on-error stays, but its job here is NOT to hide the failure
-        # (this lane fails closed — see POSTURE). It keeps the ACTION step from
-        # ending the job so the retry below gets its turn and `Report review
-        # outcome` can classify the failure into a machine-readable class. The
-        # red conclusion is raised deliberately by that outcome step, on the one
-        # signal that means "in scope and did not run", instead of incidentally
-        # by whichever step happened to exit first.
+        # (this lane enforces execution — see POSTURE). It keeps the ACTION step
+        # from ending the job so the retry below gets its turn and `Report
+        # review outcome` can classify the failure into a machine-readable
+        # class. What the run then concludes is decided deliberately by `Rule on
+        # an in-scope non-run`, per shape, instead of incidentally by whichever
+        # step happened to exit first.
         #
         # The step timeout bounds each attempt so the job budget above always
         # leaves room for the retry (see the retry formula there).
@@ -744,8 +769,9 @@ jobs:
             commit blob (not the PR) using a permalink with line numbers:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
-      # ONE bounded, gated retry, because this lane fails closed: a sporadic
-      # failure that a re-run would clear must not block a merge.
+      # ONE bounded, gated retry, because this lane's check certifies
+      # execution: a sporadic failure that a re-run would clear should buy a
+      # real review rather than the evidence gap a loud-open leaves behind.
       #
       # THE DELAY IS NOT CALIBRATED, and the citation that used to appear here
       # could not calibrate it. That citation read: "run 30217744377 failed in
@@ -1049,46 +1075,54 @@ jobs:
           execution-file: ${{ steps.attempt.outputs.execution_file }}
           lane: Claude security review
 
-      # FAIL CLOSED (#266, extended by ci-workflows#388). Failure is the only
-      # conclusion a required check does not accept — `neutral` and `skipped`
-      # both read as success, so neither can express "in scope and did not
-      # run". Two signals mean exactly that, and both raise the red:
-      #   - review-failed == 'true'  — the action ran and failed; the failure
-      #     marker step below posts the PR-visible explanation, and the log
-      #     keeps its retry-appropriate message.
-      #   - review-ran == 'false'   — no completed review. The composite sets
-      #     this on the genuine-failure path too, so alone it does not
-      #     identify the skip; the SKIP shape is review-ran == 'false' AND
-      #     review-failed != 'true': the action concluded GREEN with no
-      #     execution evidence because it skipped itself (workflow-validation
-      #     skip, the caller's workflow file differs from the default
-      #     branch's copy), so nothing was reviewed and a green here would
-      #     certify an execution that never happened. That shape's
-      #     explanation is the skip branch of the log message below plus the
-      #     composite's `class=skipped-validation` warning annotation — the
-      #     failure marker step deliberately does not post for it, because
-      #     its retry guidance does not apply: no re-run retries a validation
-      #     skip, only merging the caller change clears it. Expected on
-      #     exactly the PRs that edit the caller workflow; fail-closed is the
-      #     ratified posture (the check certifies execution), and those PRs
-      #     are rare and high-scrutiny.
+      # TWO-TIER EXECUTION ENFORCEMENT (#266, extended by ci-workflows#388 and
+      # by the availability amendment in POSTURE). The step's `if:` still
+      # catches both signals that mean "in scope and did not run"; what differs
+      # is the EXIT, because only one of the two shapes is something the PR can
+      # act on:
+      #   - review-ran == 'false' AND review-failed != 'true' — CALLER DRIFT.
+      #     The action concluded GREEN with no execution evidence because it
+      #     skipped itself (workflow-validation skip: the caller's workflow
+      #     file differs from the default branch's copy), so nothing was
+      #     reviewed and a green here would certify an execution that never
+      #     happened. EXIT 1. Both outputs are needed to identify it — the
+      #     composite sets review-ran 'false' on the genuine-failure path too.
+      #     Its explanation is the skip branch below plus the composite's
+      #     `class=skipped-validation` warning annotation; the failure marker
+      #     step deliberately does not post for it, because its retry guidance
+      #     does not apply — no re-run retries a validation skip, only merging
+      #     the caller change clears it. Expected on exactly the PRs that edit
+      #     the caller workflow: rare, high-scrutiny, and self-clearing.
+      #   - review-failed == 'true' — EXTERNAL FAILURE, every class the
+      #     composite names. EXIT 0 behind a loud `::warning` annotation. The
+      #     red is withheld deliberately: this cause is outside the PR's and
+      #     the org's control, and a required context that reddens on it locks
+      #     the fleet for the length of the outage. The alarm rides the
+      #     composite's `class=<token>` ::error annotation, the failure marker
+      #     comment below, and the incident aggregator that reads both
+      #     regardless of conclusion — see POSTURE for what this costs.
+      # The warning text carries no `class=` token of its own: the aggregator
+      # extracts class signals from every annotation on this check run, and a
+      # second token here would double-count the incident.
+      #
       # An empty output matches neither comparison, so a superseded run —
       # whose outcome step never ran — still skips this step entirely.
       #
-      # Only a pull_request run gates a merge, so only a pull_request run
-      # fails closed. The action rejects other events outright — `merge_group`
-      # is not a supported event type at all, and `track_progress` (hardcoded
-      # on above) rejects every non-PR event — so those runs fail for a reason
-      # the head cannot fix and no retry can clear. Reddening them would wedge
-      # a consumer's merge queue permanently, and the comment steps below are
-      # PR-gated too, so the red would carry no explanation. They keep the
-      # historical pass-through: still annotated, still classified, not fatal.
+      # Only a pull_request run gates a merge, so only a pull_request run is
+      # ruled on at all. The action rejects other events outright —
+      # `merge_group` is not a supported event type at all, and
+      # `track_progress` (hardcoded on above) rejects every non-PR event — so
+      # those runs fail for a reason the head cannot fix and no retry can
+      # clear. Reddening them would wedge a consumer's merge queue
+      # permanently, and the comment steps below are PR-gated too, so the red
+      # would carry no explanation. They keep the historical pass-through:
+      # still annotated, still classified, not fatal.
       #
       # The three legitimate no-verdict paths never arrive here: out-of-scope
       # and fork/skip-actor PRs skip the whole job, and a superseded head
       # skips the outcome step above, leaving both outputs unset — which skips
       # this step too.
-      - name: Fail closed on an in-scope non-run
+      - name: Rule on an in-scope non-run
         if: >-
           !cancelled() && (steps.review-outcome.outputs.review-failed == 'true' ||
           steps.review-outcome.outputs.review-ran == 'false') &&
@@ -1099,10 +1133,10 @@ jobs:
         run: |
           if [ "$REVIEW_RAN" = "false" ] && [ "$REVIEW_FAILED" != "true" ]; then
             echo "The security review was in scope and the action skipped itself without reviewing anything (workflow-validation skip: the caller's workflow file must match the default branch's copy). The required check certifies execution, so it cannot report success (see POSTURE); merging the caller-workflow change is what clears this shape — a re-run cannot."
-          else
-            echo "The security review was in scope and did not run; the required check cannot report success (see POSTURE). Re-run the job to retry once the cause is addressed — the marker comment on the PR carries the failure class and its remediation."
+            exit 1
           fi
-          exit 1
+          echo "::warning::The security review was in scope and did not run, so nothing was reviewed at this head. Merging is deliberately NOT blocked: the cause is outside this PR's control, and a required check that reddens on it would lock every merge for the length of the outage (see POSTURE). The marker comment on this PR names the failure class and its remediation. Re-run the job to retry once the cause is addressed."
+          exit 0
 
       # Runs only on a genuine infra failure (never on a clean review). The
       # composite owns the ID-safe marker lifecycle, the fork guard, and the
@@ -1113,8 +1147,12 @@ jobs:
       - name: Comment on genuine review failure
         if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'true'"
         # Reporting an outage must never become one: this step only annotates
-        # a PR, and a rejected API call must not fail the job on top of the
-        # deliberate red the fail-closed step already raised.
+        # a PR, and a rejected API call must not turn a deliberately-green
+        # loud-open run red for a reason no one on the PR can act on.
+        #
+        # This step and the loud-open tier fire on the same signal, so this
+        # comment is the PR-visible half of an alarm whose check is GREEN. It
+        # has to carry the weight the conclusion no longer does.
         continue-on-error: true
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
         with:
@@ -1124,7 +1162,7 @@ jobs:
           failure-class: ${{ steps.review-outcome.outputs.failure-class }}
           review-detail: ${{ steps.review-outcome.outputs.review-detail }}
           body-copy: |-
-            **The check is red on purpose.** It certifies that a security pass ran, and this one did not complete, so it cannot report success. Where this check is required, merging is blocked until a review actually finishes.
+            **The check is green on purpose, and it is not evidence.** It certifies that a security pass ran, and this one did not complete — but the cause is outside this PR's control, so merging is deliberately left unblocked rather than locking every merge for the length of the outage. **Nothing was reviewed at this head.** Where this check is required, it is satisfied without that evidence; a human should review security-sensitive changes here before merging.
             >
             > Re-run the job to retry the review; a new push also retries it only if the caller's `pull_request` triggers include `synchronize` (the canonical security caller keeps it). An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator.
             >
