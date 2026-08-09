@@ -19,7 +19,7 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const INLINE_COMMENT_GRANT =
   "--allowedTools mcp__github_inline_comment__create_inline_comment";
-const COMPOSED_ARGS = "${{ steps.compose-args.outputs.args }}";
+const COMPOSED_ARGS = `\${{ steps.compose-args.outputs.args }}`;
 
 const workflowsDirectory = path.join(__dirname, "..", "workflows");
 
@@ -58,9 +58,7 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
   const workflow = parseWorkflow(
     fs.readFileSync(path.join(workflowsDirectory, fileName), "utf8"),
   );
-  const steps = Object.values(workflow.jobs).flatMap(
-    (job) => job.steps ?? [],
-  );
+  const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
   const claudeArgsInput = workflow.on.workflow_call.inputs["claude-args"];
   const composeStep = steps.find((step) => step?.id === "compose-args");
 
