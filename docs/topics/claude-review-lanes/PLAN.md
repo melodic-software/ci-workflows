@@ -1971,6 +1971,34 @@ fresh-context-verifier-gated.
   a runner fault, the job timeout, or a pre-ruling step throwing still reddens.
   Note for the CANARY DEFERRAL above: this deliberately BROADENS its
   silent-green surface, which trigger (2) already covers as written.
+- SECURITY-REVIEW-GATE ENFORCEMENT ACTIVE (2026-08-10, operator-directed) —
+  org ruleset `19388547` flipped `enforcement: disabled` to `active` on the
+  operator's explicit "enable", closing the availability hold that kept it
+  disabled since the two-tier ruling. Pre-flip state verified this turn:
+  required status check `security-review / security-review` (integration
+  15368, non-strict), conditions `~DEFAULT_BRANCH` plus repository property
+  `requires-security-review == "true"`, empty `bypass_actors`; the property
+  set at flip time is still exactly `{claude-code-plugins}`. The operator's
+  standing concern (account/usage rotation locking merges) is answered by the
+  #397 posture the bullet above records: classified failures loud-open, only
+  the caller-drift validation skip reddens, and that red self-clears on the
+  offending PR's own merge. Residual accepted as-is: failures the lane cannot
+  CLASSIFY (runner fault, job timeout, pre-ruling step throw) and an Actions
+  platform outage leaving the required context unreported still block, as
+  with any required check. This resolves operator-checklist item 2 from the
+  2026-08-10 handoff as ENABLED, not declined.
+- DESIGN A PROBE DROPPED (2026-08-10, operator decision) — the exploratory
+  second-account credential fallback (second Max account login plus `claude
+  setup-token`) is dropped as moot: manual account rotation on usage
+  exhaustion is the operator's standing practice, and the two-tier posture
+  keeps merges open through a rotation window, so an automated fallback
+  credential buys nothing the posture does not already cover. This was the
+  last unresolved operator-batch item; with it and the two items above (repin
+  App pem deleted from Downloads 2026-08-10; gate enabled), the operator
+  checklist from the 2026-08-10 handoff chain is CLOSED and the program has
+  no open items beyond its recorded date/event triggers (ciw#400 canary
+  re-evaluation 2026-11-06; medley label declarations at the next
+  label-touching github-iac change).
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
