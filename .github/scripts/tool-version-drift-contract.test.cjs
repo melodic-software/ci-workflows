@@ -85,9 +85,15 @@ test("drift workflow protects runtime agreement", () => {
   assert.match(workflow, /"markdown:version:npm:markdownlint-cli2"/u);
   assert.match(
     workflow,
-    /markdown\\` is standards-led:[\s\S]*?melodic-software\/standards' markdownlint-cli2 pin[\s\S]*?ci-workflows#394/u,
+    /markdown\\` is standards-led:[\s\S]*?melodic-software\/standards' markdownlint-cli2 pin[\s\S]*?#394/u,
     "absorb procedure must record standards as markdownlint authority (#394)",
   );
+  assert.match(
+    workflow,
+    /zizmor_file=\.github\/workflows\/zizmor\.yml/u,
+    "drift workflow must watch zizmor version+digest (#379)",
+  );
+  assert.match(workflow, /repos\/zizmorcore\/zizmor\/releases\/latest/u);
   assert.match(workflow, /\^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/u);
   assert.match(
     workflow,

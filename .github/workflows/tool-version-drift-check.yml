@@ -19,6 +19,7 @@ on:
     paths:
       - '.github/workflows/tool-version-drift-check.yml'
       - '.github/workflows/osv-scanner.yml'
+      - '.github/workflows/zizmor.yml'
       - '.github/workflows/claude-e2e-verify.yml'
       - 'global.json'
       - '.github/osv-scanner-pin.json'
@@ -326,6 +327,38 @@ jobs:
             done
           fi
 
+          # zizmor is a shell-installed release asset in a reusable workflow
+          # (not an action.yml default), so Dependabot cannot track it. Same
+          # shape as OSV: compare latest stable release + GitHub-reported
+          # asset digest against the reviewed version/sha256 defaults.
+          zizmor_file=.github/workflows/zizmor.yml
+          zizmor_current="$(yq '.on.workflow_call.inputs.version.default' "$zizmor_file")"
+          zizmor_current="${zizmor_current#v}"
+          zizmor_digest="$(yq '.on.workflow_call.inputs.sha256.default' "$zizmor_file")"
+          zizmor_asset="$(yq '.jobs.zizmor.steps[] | select(.name == "Run zizmor") | .env.ASSET_NAME' "$zizmor_file")"
+          if [[ -z "$zizmor_current" || "$zizmor_current" == "null" || -z "$zizmor_digest" || "$zizmor_digest" == "null" || -z "$zizmor_asset" || "$zizmor_asset" == "null" ]]; then
+            echo "::error::could not read zizmor version/sha256/ASSET_NAME from ${zizmor_file}"
+            exit 1
+          fi
+          zizmor_release="$(bounded_read 60 gh api repos/zizmorcore/zizmor/releases/latest)" || zizmor_release=''
+          zizmor_tag="$(jq -r '.tag_name // empty' <<<"$zizmor_release" 2>/dev/null)" || zizmor_tag=''
+          zizmor_latest="${zizmor_tag#v}"
+          zizmor_latest_digest="$(printf '%s' "$zizmor_release" | bash .github/scripts/osv-release-digest.sh "$zizmor_asset")"
+
+          if [[ -z "$zizmor_latest" ]]; then
+            echo "::warning::could not resolve latest zizmorcore/zizmor release; skipping zizmor drift"
+          elif [[ "$zizmor_current" != "$zizmor_latest" ]]; then
+            drift_lines+="- **zizmor**: pinned \`${zizmor_current}\` (digest \`${zizmor_digest}\`), upstream latest \`${zizmor_latest}\` (digest \`${zizmor_latest_digest:-unresolved}\`)"$'\n'
+            echo "DRIFT zizmor: ${zizmor_current} -> ${zizmor_latest}"
+          elif [[ -z "$zizmor_latest_digest" ]]; then
+            echo "::warning::could not resolve ${zizmor_asset} digest for ${zizmor_tag}; skipping zizmor digest drift"
+          elif [[ "$zizmor_digest" != "$zizmor_latest_digest" ]]; then
+            drift_lines+="- **zizmor digest**: release \`${zizmor_current}\` still current, but reviewed digest \`${zizmor_digest}\` differs from release digest \`${zizmor_latest_digest}\`"$'\n'
+            echo "DRIFT zizmor digest: ${zizmor_digest} -> ${zizmor_latest_digest}"
+          else
+            echo "ok    zizmor: ${zizmor_current} (${zizmor_digest})"
+          fi
+
           # Go quality binaries are embedded in a reusable workflow rather than
           # an action, so track their authoritative upstream release channels
           # explicitly. Consumers receive reviewed bumps only through a new
@@ -414,6 +447,10 @@ jobs:
             echo "version, sum.golang.org module sum, origin tag, and commit before changing the"
             echo "exact module pin. For Playwright, bump the \`PLAYWRIGHT_VERSION\` env value in"
             echo "\`.github/workflows/claude-e2e-verify.yml\` (an npm lane, no checksum)."
+            echo "For zizmor, bump \`.github/workflows/zizmor.yml\`'s \`version\` and \`sha256\`"
+            echo "defaults together after verifying the GitHub-reported release-asset digest"
+            echo "(same absorb shape as OSV), and only after raising the fleet pin in"
+            echo "dotfiles \`.chezmoidata/uv-tools.yaml\` first."
             echo "For runtime drift, update every action's matching exact-patch"
             echo "input default (and the root global.json plus the dotnet actions' fallback"
             echo "pins together) only after reviewing the stable patch. Never auto-merge these"
@@ -447,9 +484,9 @@ jobs:
             echo "(melodic-software/ci-workflows#394)."
             echo
             echo "\`zizmor\` is fleet-led too — pinned here in \`.github/workflows/zizmor.yml\`"
-            echo "and there in \`.chezmoidata/uv-tools.yaml\` — but this workflow does not watch"
-            echo "it yet, so it never appears in the list above"
-            echo "(melodic-software/ci-workflows#379)."
+            echo "and there in \`.chezmoidata/uv-tools.yaml\`. Raise the fleet pin in dotfiles"
+            echo "FIRST, then bump this repository's version+sha256 defaults together to match"
+            echo "— never past the fleet (melodic-software/ci-workflows#379)."
             echo
             echo "Everything else above has a single authority, and absorbing upstream latest"
             echo "for it is correct as written. melodic-software/dotfiles reports a consumer"
