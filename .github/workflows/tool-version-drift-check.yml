@@ -235,8 +235,9 @@ jobs:
           # `.markdownlint-cli2.jsonc` is deliberately absent from these
           # in-repo agreement checks: it is a standards-managed materialization
           # whose `$schema` URL pins that repository's own markdownlint-cli2
-          # devDependency, not the version the `markdown` action runs here. The
-          # action default is still watched against npm by the tools list above.
+          # devDependency. The `markdown` action default must absorb to that
+          # standards pin (never past it); this workflow still watches the
+          # action default against npm latest, which can lead standards (#394).
           # dotnet-build and dotnet-format resolve their fallback SDK version
           # by pointing setup-dotnet's global-json-file input at this repo's
           # own root global.json (via github.action_path), so they can never
@@ -437,6 +438,13 @@ jobs:
             echo "upstream latest (melodic-software/ci-workflows#375; whether the action should"
             echo "derive that version instead of carrying a second copy is"
             echo "melodic-software/ci-workflows#377)."
+            echo
+            echo "\`markdown\` is standards-led: absorb \`.github/actions/markdown/action.yml\`'s"
+            echo "\`version\` default to match melodic-software/standards' markdownlint-cli2 pin"
+            echo "(package.json / \$schema), never past it. This report flags npm latest, which"
+            echo "can lead that pin — do not absorb past standards. SHA-pinned consumers pick"
+            echo "the new default up only on their next re-pin of this repository"
+            echo "(melodic-software/ci-workflows#394)."
             echo
             echo "\`zizmor\` is fleet-led too — pinned here in \`.github/workflows/zizmor.yml\`"
             echo "and there in \`.chezmoidata/uv-tools.yaml\` — but this workflow does not watch"

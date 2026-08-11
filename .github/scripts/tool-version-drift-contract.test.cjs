@@ -58,11 +58,10 @@ test("Python action defaults are the same exact patch release", () => {
 });
 
 // `.markdownlint-cli2.jsonc` is a standards-managed materialization. Its
-// `$schema` URL pins the standards repository's own markdownlint-cli2
-// devDependency for authoring-time validation there, and makes no claim about
-// the version the `markdown` action runs here, so this repository asserts no
-// agreement between the two. The action default's own drift is still watched
-// via the `markdown:version:npm:markdownlint-cli2` entry below.
+// `$schema` URL pins the standards repository's markdownlint-cli2
+// devDependency. That pin is the absorb authority for the `markdown` action
+// version default (match it, never pass it); this workflow still only watches
+// the action default against npm latest via the entry below (#394).
 
 test("drift workflow protects runtime agreement", () => {
   const workflow = read(
@@ -84,6 +83,11 @@ test("drift workflow protects runtime agreement", () => {
 
   assert.match(workflow, /"ruff:version:github:astral-sh\/ruff"/u);
   assert.match(workflow, /"markdown:version:npm:markdownlint-cli2"/u);
+  assert.match(
+    workflow,
+    /markdown\\` is standards-led:[\s\S]*?melodic-software\/standards' markdownlint-cli2 pin[\s\S]*?ci-workflows#394/u,
+    "absorb procedure must record standards as markdownlint authority (#394)",
+  );
   assert.match(workflow, /\^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/u);
   assert.match(
     workflow,
