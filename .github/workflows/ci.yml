@@ -486,8 +486,7 @@ jobs:
           exclude: ':(exclude).github/actions/comment-hygiene/**'
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
-  # ci-status yet — promote after a clean soak once standards#354 (dest-paths)
-  # is merged and this lane has run clean. Exempts standards-sync labelled /
+  # ci-status yet — promote after a clean soak. Exempts standards-sync labelled /
   # melodic-standards-sync[bot] PRs.
   managed-files-guard:
     if: ${{ github.event_name == 'pull_request' }}
@@ -502,8 +501,8 @@ jobs:
       - name: Guard managed files
         uses: ./.github/actions/managed-files-guard
         with:
-          # Track standards#354 until dest-paths lands on main, then re-pin.
-          standards-ref: cursor/issue-208-dest-paths-9b36
+          # standards#354 (dest-paths) on main.
+          standards-ref: 3288035feb70d7985e1337c2e39421ae3c8b9655
 
   shellcheck:
     needs: changes
