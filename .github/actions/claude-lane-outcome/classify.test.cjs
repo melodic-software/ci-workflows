@@ -198,3 +198,22 @@ test("no execution file at all (the action failed before producing one)", () => 
   assert.equal(result.failureClass, "other");
   assert.equal(result.reviewDetail, "(no execution file was produced)");
 });
+
+test("error_type carries the matched allowlist token on the substring path only", () => {
+  const substring = run(
+    errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]),
+  );
+  const substringProjection = JSON.parse(substring.reviewDetail);
+  assert.equal(substring.failureClass, "auth");
+  assert.equal(substringProjection.error_type, "billing_error");
+
+  const status = run(resultMessage(401));
+  const statusProjection = JSON.parse(status.reviewDetail);
+  assert.equal(status.failureClass, "auth");
+  assert.equal(statusProjection.error_type, null);
+
+  const unmatched = run(errorMessage([DIAGNOSTIC]));
+  const unmatchedProjection = JSON.parse(unmatched.reviewDetail);
+  assert.equal(unmatched.failureClass, "other");
+  assert.equal(unmatchedProjection.error_type, null);
+});
