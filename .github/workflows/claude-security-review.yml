@@ -314,8 +314,7 @@ on:
         default: dependabot,dependabot[bot]
       skip-actors:
         description: >-
-          Comma-separated actors (no spaces) for whom the job skips entirely, to
-          save runner minutes on PRs that never need review.
+          Comma-separated actors (no spaces) for whom the job skips entirely.
 
           Empty reviews all — but removing the default `dependabot[bot]` carries
           a SECRET CONTRACT. A Dependabot-triggered run reads from the separate
@@ -327,10 +326,14 @@ on:
           then blocks every Dependabot PR until an operator provisions it.
           Mirror the secret first, or keep dependabot[bot] in this list.
 
-          The default also bans self-triggering: Claude and the org's
-          automation bots must never trigger their own review lanes.
+          `melodic-standards-sync[bot]` stays skipped: sync PRs materialize
+          byte-exact upstream-reviewed content. `claude[bot]` and
+          `melodic-ai[bot]` are deliberately NOT in the default — AI-authored
+          changes are exactly the provenance class this required lane exists to
+          cover (ci-workflows#330). Callers that still need those actors skipped
+          must pass them explicitly.
         type: string
-        default: dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]
+        default: dependabot[bot],melodic-standards-sync[bot]
       retry-delay-seconds:
         description: >-
           Base delay before the single automatic retry attempt, in seconds. A
