@@ -6,7 +6,7 @@
 # Required env: URL, SHA256, BIN, RUNNER_TEMP, GITHUB_PATH, RUNNER_OS,
 # RUNNER_ARCH.
 # Optional env: ARCHIVE_MEMBER, STRIP_COMPONENTS (default 0), VERSION_CMD
-# (default --version).
+# (default --version), ASSET_CACHE_DIR (reuse/persist the verified download).
 set -euo pipefail
 
 : "${URL:?install-release: URL is required}"
@@ -69,11 +69,29 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 asset="$work/asset"
-curl -q --fail --silent --show-error --location \
-  --proto '=https' --proto-redir '=https' \
-  --connect-timeout 10 --max-time 120 \
-  --retry 2 --retry-max-time 300 \
-  --output "$asset" -- "$URL"
+cache_dir="${ASSET_CACHE_DIR:-}"
+cached_asset=""
+if [[ -n "$cache_dir" ]]; then
+  install -d -m 0755 -- "$cache_dir"
+  cached_asset="$cache_dir/asset"
+fi
+
+if [[ -n "$cached_asset" && -f "$cached_asset" ]] &&
+  printf '%s  %s\n' "$SHA256" "$cached_asset" | sha256sum -c - >/dev/null 2>&1; then
+  # Cache hit: reuse the already-verified release asset (skip the network).
+  cp -- "$cached_asset" "$asset"
+else
+  curl -q --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' \
+    --connect-timeout 10 --max-time 120 \
+    --retry 2 --retry-max-time 300 \
+    --output "$asset" -- "$URL"
+  printf '%s  %s\n' "$SHA256" "$asset" | sha256sum -c -
+  if [[ -n "$cached_asset" ]]; then
+    cp -- "$asset" "$cached_asset"
+  fi
+fi
+# Re-check after copy so a corrupted cache cannot install.
 printf '%s  %s\n' "$SHA256" "$asset" | sha256sum -c -
 
 if [[ -z "$member" ]]; then
