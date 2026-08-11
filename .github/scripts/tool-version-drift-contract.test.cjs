@@ -60,7 +60,7 @@ test("Python action defaults are the same exact patch release", () => {
 // `.markdownlint-cli2.jsonc` is a standards-managed materialization. Its
 // `$schema` URL pins the standards repository's markdownlint-cli2
 // devDependency. That pin is the absorb authority for the `markdown` action
-// version default (match it, never pass it); this workflow still only watches
+// version default (match it, never past it); this workflow still only watches
 // the action default against npm latest via the entry below (#394).
 
 test("drift workflow protects runtime agreement", () => {
