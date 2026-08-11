@@ -106,7 +106,8 @@ jobs:
       - name: Mint read-only observer token
         id: observer-token
         if: >-
-          inputs.policy == 'prefer-self-hosted' &&
+          (inputs.policy == 'prefer-self-hosted' ||
+          inputs.policy == 'self-hosted-only') &&
           (inputs.self-hosted-label != '' || inputs.self-hosted-labels-json != '') &&
           inputs.hosted-runner != '' &&
           (inputs.scope == 'organization' || inputs.scope == 'repository') &&
@@ -750,7 +751,8 @@ jobs:
                   return Object.freeze({
                     runner: selection.selectedLabel,
                     route: "self-hosted",
-                    reason: input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
+                    reason:
+                      input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
                     onlineRunnerCount: selection.onlineRunnerCount,
                   });
                 } catch (error) {

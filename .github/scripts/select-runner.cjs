@@ -577,7 +577,8 @@ async function selectRunner(input, dependencies = {}) {
     return Object.freeze({
       runner: selection.selectedLabel,
       route: "self-hosted",
-      reason: input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
+      reason:
+        input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
       onlineRunnerCount: selection.onlineRunnerCount,
     });
   } catch (error) {

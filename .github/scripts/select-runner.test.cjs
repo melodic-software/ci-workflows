@@ -192,6 +192,49 @@ test("self-hosted-only selects an online review-tier runner after probing", asyn
   });
 });
 
+test("self-hosted-only fails closed when the review-tier probe request fails", async () => {
+  // Probe failures are new strict-routing behavior for the capped review tier:
+  // prefer-self-hosted still host-falls-back, but self-hosted-only must not
+  // emit a label after an inventory error (ci-workflows#386).
+  for (const [status, reason] of [
+    [401, "auth-error"],
+    [403, "auth-error"],
+    [500, "api-error"],
+    [503, "api-error"],
+  ]) {
+    await assert.rejects(
+      selectRunner(
+        input({
+          policy: "self-hosted-only",
+          selfHostedLabel: "melodic-review-ubuntu-24.04-x64",
+        }),
+        {
+          request: async () => {
+            throw Object.assign(new Error(`HTTP ${status}`), { status });
+          },
+        },
+      ),
+      (error) => error.name === "StrictRoutingError" && error.reason === reason,
+      `HTTP ${status}`,
+    );
+  }
+});
+
+test("self-hosted-only fails closed when review-tier token mint does not succeed", async () => {
+  await assert.rejects(
+    selectRunner(
+      input({
+        policy: "self-hosted-only",
+        selfHostedLabel: "melodic-review-ubuntu-24.04-x64",
+        tokenOutcome: "failure",
+      }),
+      { request: requestMustNotRun },
+    ),
+    (error) =>
+      error.name === "StrictRoutingError" && error.reason === "auth-error",
+  );
+});
+
 test("self-hosted-only rejects a provisioned-but-unadmitted tier label instead of spending hosted minutes", async () => {
   // The dormant build tier matches the broad managed-label namespace yet is
   // not admitted here: exact-set admission, not the broad namespace, is the
@@ -1093,8 +1136,10 @@ test("token mint is statically guarded before the App action runs", () => {
     workflow.indexOf("- name: Mint read-only observer token"),
     workflow.indexOf("- name: Select runner"),
   );
+  // prefer-self-hosted always probes; self-hosted-only must also mint when
+  // the capped review tier needs an online-capacity check (ci-workflows#386).
   assert.match(tokenStep, /inputs\.policy == 'prefer-self-hosted'/u);
-  assert.doesNotMatch(tokenStep, /inputs\.policy == 'self-hosted-only'/u);
+  assert.match(tokenStep, /inputs\.policy == 'self-hosted-only'/u);
   for (const requiredGuard of [
     "(inputs.scope == 'organization' || inputs.scope == 'repository')",
     "github.event_name == 'push'",
