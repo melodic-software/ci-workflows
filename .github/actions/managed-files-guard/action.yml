@@ -1,0 +1,63 @@
+name: managed-files-guard
+description: >-
+  Fail when a PR hand-edits files managed by melodic-software/standards'
+  sync-manifest (ci-workflows#208). Advisory-first: wire into ci-status only
+  after a clean soak.
+
+inputs:
+  standards-ref:
+    description: >-
+      Git ref of melodic-software/standards to resolve the sync-manifest from.
+      Pin to a full SHA in callers once soak completes.
+    default: main
+  repository:
+    description: Target repository identity OWNER/REPO (defaults to this repo).
+    default: ${{ github.repository }}
+  base-ref:
+    description: Git ref to diff against for changed files.
+    default: ${{ github.event.pull_request.base.sha || github.sha }}
+  head-ref:
+    description: Git ref of the PR head (or current SHA for non-PR runs).
+    default: ${{ github.event.pull_request.head.sha || github.sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Skip standards-sync PRs
+      id: skip
+      shell: bash
+      env:
+        PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        PR_ACTOR: ${{ github.event.pull_request.user.login || github.actor }}
+      run: |
+        set -euo pipefail
+        skip=false
+        if [[ ",${PR_LABELS}," == *",standards-sync,"* ]]; then
+          skip=true
+        fi
+        case "$PR_ACTOR" in
+          melodic-standards-sync[bot]|melodic-standards-sync) skip=true ;;
+        esac
+        echo "skip=$skip" >>"$GITHUB_OUTPUT"
+        if [[ "$skip" == true ]]; then
+          echo "Exempt sync PR/actor — managed-files-guard no-ops."
+        fi
+
+    - name: Check out standards manifest source
+      if: steps.skip.outputs.skip != 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: melodic-software/standards
+        ref: ${{ inputs.standards-ref }}
+        path: .managed-files-guard-standards
+        persist-credentials: false
+
+    - name: Reject hand-edits of managed files
+      if: steps.skip.outputs.skip != 'true'
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
