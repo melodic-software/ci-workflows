@@ -116,7 +116,7 @@ jobs:
             "check-jsonschema:version:pypi:check-jsonschema"
             "pyright:version:pypi:pyright"
             "markdown:version:npm:markdownlint-cli2"
-            "biome:version:npm:@biomejs/biome"
+            "biome:fallback-version:npm:@biomejs/biome"
             "tsc:version:npm:typescript"
           )
 
@@ -468,13 +468,12 @@ jobs:
             echo "has, which is how CI came to lint with a ruff nobody ran"
             echo "(melodic-software/ci-workflows#372)."
             echo
-            echo "\`biome\` follows the same ordering against a different authority. The fleet"
-            echo "does not pin it, but a consumer carrying \`@biomejs/biome\` in \`package.json\`"
-            echo "has a Dependabot-owned pin its own lanes run, and"
-            echo "\`.github/actions/biome/action.yml\` tracks the newest such pin rather than"
-            echo "upstream latest (melodic-software/ci-workflows#375; whether the action should"
-            echo "derive that version instead of carrying a second copy is"
-            echo "melodic-software/ci-workflows#377)."
+            echo "\`biome\` is caller-derived at runtime (#377): an exact \`@biomejs/biome\` pin"
+            echo "in the caller's root \`package.json\` wins; otherwise the reviewed"
+            echo "\`fallback-version\` default applies. This drift row monitors that fallback"
+            echo "only (pin-less callers / fixture lanes). Absorb npm latest into"
+            echo "\`fallback-version\` like any single-authority npm tool — do not treat a"
+            echo "consumer Dependabot bump as a second authority to chase."
             echo
             echo "\`markdown\` is standards-led: absorb \`.github/actions/markdown/action.yml\`'s"
             echo "\`version\` default to match melodic-software/standards' markdownlint-cli2 pin"
