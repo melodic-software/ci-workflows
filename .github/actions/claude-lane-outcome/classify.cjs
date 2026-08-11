@@ -79,10 +79,6 @@ function matchErrorType(text) {
   return { errorType: null, failureClass: "other" };
 }
 
-function classFromErrorText(text) {
-  return matchErrorType(text).failureClass;
-}
-
 // Mirrors jq's `tostring`: strings pass through, everything else serializes
 // compactly — an object error entry must expose its `"type":"..."` body to the
 // substring pass exactly as the jq implementation did.
