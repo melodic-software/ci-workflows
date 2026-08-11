@@ -732,9 +732,17 @@ jobs:
           allowed_bots: ${{ inputs.allowed-bots }}
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           claude_args: ${{ steps.compose-args.outputs.args }}
-          # Verbatim copy of the first attempt's prompt (see its comment for why
-          # the reporting mechanics live here rather than in inputs.prompt); the
-          # two must not diverge.
+          # github-context expressions must appear directly in the step (a value
+          # carried in via inputs.prompt is NOT re-evaluated), so the structural
+          # header + reporting mechanics live here and wrap the consumer's body.
+          #
+          # The prompt has to ask for findings AS A PR REVIEW: the action's base
+          # prompt routes every response into the single sticky comment ("Never
+          # create new comments") and lists submitting a PR review under what
+          # the agent cannot do, so without a counter-instruction the grant goes
+          # uncalled. That instruction is the load-bearing part — the security
+          # lane carries it, never names the tool, and does post inline
+          # comments. Naming the tool here is belt-and-braces, not the mechanism.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}

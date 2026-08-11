@@ -18,6 +18,14 @@ const workflowSource = fs.readFileSync(
   "utf8",
 );
 
+function stepSource(stepName) {
+  const start = workflowSource.indexOf(`      - name: ${stepName}\n`);
+  assert.notEqual(start, -1, `step not found: ${stepName}`);
+  const rest = workflowSource.slice(start + 1);
+  const next = rest.indexOf("\n      - name: ");
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
 test("the review concurrency group is keyed per head, not per PR", () => {
   assert.match(
     workflowSource,
@@ -64,4 +72,62 @@ test("every review-producing step also gates on the review-count cap", () => {
     ),
   ].length;
   assert.equal(gates, 9);
+});
+
+// Actions cannot loop a `uses:` step, so the retry is a verbatim copy of the
+// first attempt. Divergence between the two would mean the retry reviews under
+// different rules than the attempt it replaces — asserted, not trusted.
+test("the review retry is configured identically to the first attempt", () => {
+  // A step's source runs up to the next `- name:`, which drags in that step's
+  // leading comment block — trailing blanks and comments are trimmed so the
+  // comparison is over inputs only.
+  const withBlock = (stepName) => {
+    const step = stepSource(stepName);
+    const start = step.indexOf("        with:\n");
+    assert.notEqual(start, -1, `${stepName} has no with: block`);
+    const lines = step.slice(start).split("\n");
+    while (
+      lines.length > 0 &&
+      /^\s*(#.*)?$/u.test(lines[lines.length - 1] ?? "")
+    ) {
+      lines.pop();
+    }
+    return lines.join("\n");
+  };
+
+  assert.equal(
+    withBlock("Claude review (retry)"),
+    withBlock("Claude review"),
+    "the retry's inputs have drifted from the first attempt's",
+  );
+
+  const first = stepSource("Claude review");
+  const retry = stepSource("Claude review (retry)");
+  assert.match(
+    retry,
+    /^ {8}continue-on-error: true$/mu,
+    "the retry must not conclude the job itself; the outcome step owns that",
+  );
+  assert.match(
+    retry,
+    /^ {8}if: steps\.retry-gate\.outputs\.retry == 'true'$/mu,
+    "the retry must run only when the gate elected to retry",
+  );
+
+  // timeout-minutes sits beside `with:`, not inside it — compare explicitly so
+  // a step-budget drift cannot slip past the with-block equality above.
+  const timeout = /^ {8}timeout-minutes: (.+)$/mu;
+  assert.equal(
+    retry.match(timeout)?.[1],
+    first.match(timeout)?.[1],
+    "the retry's timeout-minutes has drifted from the first attempt's",
+  );
+
+  // Same pin, or the retry is a different action than the one that was reviewed.
+  const pin = /uses: (anthropics\/claude-code-action@[0-9a-f]{40})/u;
+  assert.equal(
+    retry.match(pin)?.[1],
+    first.match(pin)?.[1],
+    "the retry must pin the same action SHA as the first attempt",
+  );
 });
