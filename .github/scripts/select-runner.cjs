@@ -266,9 +266,25 @@ function preflight(input) {
     ) {
       throw new StrictRoutingError("unapproved-label");
     }
+    const label = candidates.labels[0];
+    const reviewTier =
+      normalizedLabel(label) === "melodic-review-ubuntu-24.04-x64";
+    // CI tier may blind-queue so a scale-set can wake. The capped review tier
+    // must not: an offline review fleet queues forever with no signal
+    // (ci-workflows#386). Probe inventory when credentials exist; otherwise
+    // fail closed rather than emit a label nothing will ever claim.
+    if (reviewTier) {
+      if (!input.hasObserverSecret) {
+        throw new StrictRoutingError("missing-secret");
+      }
+      if (input.tokenOutcome !== "success") {
+        throw new StrictRoutingError("auth-error");
+      }
+      return { hostedRunner, labels: candidates.labels };
+    }
     return {
       result: Object.freeze({
-        runner: candidates.labels[0],
+        runner: label,
         route: "self-hosted",
         reason: "self-hosted-only",
         onlineRunnerCount: 0,
@@ -498,18 +514,20 @@ function selectOnlineCandidate(runners, labels, managedRunnerPrefix) {
   };
 }
 
-function errorResult(error, controller, hostedRunner) {
+function errorResult(error, controller, hostedRunner, selfHostedOnly = false) {
   const status = Number(error?.status);
+  let reason = "api-error";
   if (error instanceof InvalidResponseError) {
-    return hostedResult(hostedRunner, "invalid-response");
+    reason = "invalid-response";
+  } else if (error?.name === "AbortError" || controller.signal.aborted) {
+    reason = "api-timeout";
+  } else if (status === 401 || status === 403) {
+    reason = "auth-error";
   }
-  if (error?.name === "AbortError" || controller.signal.aborted) {
-    return hostedResult(hostedRunner, "api-timeout");
+  if (selfHostedOnly) {
+    throw new StrictRoutingError(reason);
   }
-  if (status === 401 || status === 403) {
-    return hostedResult(hostedRunner, "auth-error");
-  }
-  return hostedResult(hostedRunner, "api-error");
+  return hostedResult(hostedRunner, reason);
 }
 
 async function selectRunner(input, dependencies = {}) {
@@ -545,19 +563,33 @@ async function selectRunner(input, dependencies = {}) {
       input.managedRunnerPrefix,
     );
     if (selection.labelNamespaceInvalid) {
+      if (input.policy === "self-hosted-only") {
+        throw new StrictRoutingError("invalid-response");
+      }
       return hostedResult(prepared.hostedRunner, "invalid-response");
     }
     if (!selection.selectedLabel) {
+      if (input.policy === "self-hosted-only") {
+        throw new StrictRoutingError("no-online-runner");
+      }
       return hostedResult(prepared.hostedRunner, "no-online-runner");
     }
     return Object.freeze({
       runner: selection.selectedLabel,
       route: "self-hosted",
-      reason: "online",
+      reason: input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
       onlineRunnerCount: selection.onlineRunnerCount,
     });
   } catch (error) {
-    return errorResult(error, controller, prepared.hostedRunner);
+    if (error instanceof StrictRoutingError) {
+      throw error;
+    }
+    return errorResult(
+      error,
+      controller,
+      prepared.hostedRunner,
+      input.policy === "self-hosted-only",
+    );
   } finally {
     clearTimer(timeout);
   }
@@ -588,6 +620,12 @@ async function runGitHubScript({ github, core, env }) {
   const result = await selectRunner(inputsFromEnvironment(env), {
     request: (...args) => github.request(...args),
   });
+  // Empty runner must never be published as a successful selection: GitHub
+  // Actions treats "" as falsy in `success && runner || fallback`, which is
+  // billing-leak mechanism B (ci-workflows#278).
+  if (typeof result.runner !== "string" || result.runner.trim() === "") {
+    throw new Error("select-runner produced an empty runner label");
+  }
   core.setOutput("runner", result.runner);
   core.setOutput("route", result.route);
   core.setOutput("reason", result.reason);
