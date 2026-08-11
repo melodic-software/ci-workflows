@@ -85,6 +85,16 @@ test("drift workflow protects runtime agreement", () => {
   assert.match(workflow, /"markdown:version:npm:markdownlint-cli2"/u);
   assert.match(
     workflow,
+    /"biome:fallback-version:npm:@biomejs\/biome"/u,
+    "drift must watch biome fallback-version after #377 derivation",
+  );
+  assert.match(
+    workflow,
+    /biome\\` is caller-derived at runtime \(#377\)/u,
+    "absorb procedure must record biome caller-derivation (#377)",
+  );
+  assert.match(
+    workflow,
     /markdown\\` is standards-led:[\s\S]*?melodic-software\/standards' markdownlint-cli2 pin[\s\S]*?#394/u,
     "absorb procedure must record standards as markdownlint authority (#394)",
   );

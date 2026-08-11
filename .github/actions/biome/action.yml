@@ -16,14 +16,15 @@ inputs:
       --config-path.
     default: biome.json
   version:
-    description: Exact Biome version to run.
-    # This default governs only a caller with no Biome pin of its own. A caller
-    # that carries @biomejs/biome in package.json already has a
-    # Dependabot-maintained pin, and that is the version its own lanes run — so
-    # keep this in step with the newest such pin in the fleet rather than with
-    # upstream latest, or the two disagree about what a finding is. Whether this
-    # action should derive the version from the caller's package.json instead of
-    # carrying a second authority is #377.
+    description: >-
+      Exact Biome version to run. Empty (default) derives from an exact
+      `@biomejs/biome` pin in the caller root package.json, else
+      fallback-version (#377).
+    default: ''
+  fallback-version:
+    description: >-
+      Reviewed default when version is empty and the caller has no exact
+      `@biomejs/biome` pin. Drift-check monitors this input only.
     default: 2.5.6
   node-version:
     description: Node.js version to set up.
@@ -37,12 +38,22 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
 
+    - name: Resolve Biome version
+      id: resolve
+      shell: bash
+      env:
+        VERSION_INPUT: ${{ inputs.version }}
+        FALLBACK_VERSION: ${{ inputs.fallback-version }}
+        PACKAGE_NAME: '@biomejs/biome'
+        PACKAGE_JSON: package.json
+      run: node "$GITHUB_ACTION_PATH/../../scripts/resolve-npm-tool-version.cjs"
+
     - name: Lint and format-check
       shell: bash
       env:
         PATHS: ${{ inputs.paths }}
         CONFIG: ${{ inputs.config }}
-        VERSION: ${{ inputs.version }}
+        VERSION: ${{ steps.resolve.outputs.version }}
       # `biome ci` is the read-only CI command — formatter, linter and import
       # sorting in one non-mutating pass. --error-on-warnings makes any warning
       # fail the build (strict posture, the analog of pyright --warnings).
