@@ -101,6 +101,7 @@ test("the review retry is configured identically to the first attempt", () => {
     "the retry's inputs have drifted from the first attempt's",
   );
 
+  const first = stepSource("Claude review");
   const retry = stepSource("Claude review (retry)");
   assert.match(
     retry,
@@ -113,11 +114,20 @@ test("the review retry is configured identically to the first attempt", () => {
     "the retry must run only when the gate elected to retry",
   );
 
+  // timeout-minutes sits beside `with:`, not inside it — compare explicitly so
+  // a step-budget drift cannot slip past the with-block equality above.
+  const timeout = /^ {8}timeout-minutes: (.+)$/mu;
+  assert.equal(
+    retry.match(timeout)?.[1],
+    first.match(timeout)?.[1],
+    "the retry's timeout-minutes has drifted from the first attempt's",
+  );
+
   // Same pin, or the retry is a different action than the one that was reviewed.
   const pin = /uses: (anthropics\/claude-code-action@[0-9a-f]{40})/u;
   assert.equal(
     retry.match(pin)?.[1],
-    stepSource("Claude review").match(pin)?.[1],
+    first.match(pin)?.[1],
     "the retry must pin the same action SHA as the first attempt",
   );
 });
