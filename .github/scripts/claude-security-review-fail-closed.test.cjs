@@ -668,3 +668,15 @@ test("the backoff is jittered and gated on the retry decision", () => {
     "the base delay must ride the retry-delay-seconds input",
   );
 });
+
+test("security skip-actors default omits AI bots (#330)", () => {
+  assert.match(
+    workflow,
+    /^ {8}default: dependabot\[bot\],melodic-standards-sync\[bot\]$/mu,
+    "security lane must not inherit the review lane's AI-bot skip default",
+  );
+  assert.doesNotMatch(
+    workflow,
+    /^ {8}default: dependabot\[bot\],claude\[bot\],melodic-ai\[bot\],melodic-standards-sync\[bot\]$/mu,
+  );
+});
