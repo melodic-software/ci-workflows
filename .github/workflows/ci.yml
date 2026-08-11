@@ -485,6 +485,26 @@ jobs:
         with:
           exclude: ':(exclude).github/actions/comment-hygiene/**'
 
+  # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
+  # ci-status yet — promote after a clean soak once standards#354 (dest-paths)
+  # is merged and this lane has run clean. Exempts standards-sync labelled /
+  # melodic-standards-sync[bot] PRs.
+  managed-files-guard:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Guard managed files
+        uses: ./.github/actions/managed-files-guard
+        with:
+          # Track standards#354 until dest-paths lands on main, then re-pin.
+          standards-ref: cursor/issue-208-dest-paths-9b36
+
   shellcheck:
     needs: changes
     if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
