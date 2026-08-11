@@ -278,3 +278,41 @@ test("unsupported runners fail before network access", (t) => {
   assert.match(result.stderr, /only GitHub Actions Linux X64 runners/u);
   assert.ok(!fs.existsSync(state.curlLog));
 });
+
+test("ASSET_CACHE_DIR reuses a verified download and skips curl on hit", (t) => {
+  const state = fixtureWithCleanup(t);
+  const source = path.join(state.root, "raw-tool");
+  writeExecutable(source, toolSource("cached"));
+  const cacheDir = path.join(state.root, "asset-cache");
+  const env = {
+    ...baseEnv(state, source),
+    ASSET_CACHE_DIR: bashPath(cacheDir),
+  };
+
+  const miss = run(env);
+  assert.equal(miss.status, 0, miss.stderr);
+  assert.ok(fs.existsSync(path.join(cacheDir, "asset")));
+  const missCalls = fs
+    .readFileSync(state.curlLog, "utf8")
+    .split("\0")
+    .filter(Boolean);
+  assert.ok(missCalls.length > 0, "cache miss must download once");
+
+  fs.writeFileSync(state.curlLog, "");
+  const nextGithubPath = path.join(state.root, "cache-hit-github-path");
+  fs.writeFileSync(nextGithubPath, "");
+  const hit = run({
+    ...env,
+    GITHUB_PATH: bashPath(nextGithubPath),
+    TEST_RUNTIME_PATH: bashPath(
+      path.join(state.runnerTemp, "ci-workflows", "bin"),
+    ),
+  });
+  assert.equal(hit.status, 0, hit.stderr);
+  assert.match(hit.stdout, /cached --version/u);
+  assert.equal(
+    fs.readFileSync(state.curlLog, "utf8"),
+    "",
+    "cache hit must not invoke curl",
+  );
+});

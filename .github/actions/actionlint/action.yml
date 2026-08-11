@@ -46,6 +46,14 @@ runs:
         ARCHIVE_MEMBER: actionlint
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
+    # Same cache key shape as the shellcheck action so both lanes share the
+    # verified tarball when the fleet pin is unchanged (#156).
+    - name: Cache ShellCheck release asset
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/shellcheck
+        key: shellcheck-${{ runner.os }}-${{ runner.arch }}-${{ inputs.shellcheck-version }}-${{ inputs.shellcheck-sha256 }}
+
     - name: Install ShellCheck for embedded scripts
       shell: bash
       env:
@@ -53,6 +61,7 @@ runs:
         SHA256: ${{ inputs.shellcheck-sha256 }}
         BIN: shellcheck
         ARCHIVE_MEMBER: shellcheck-v${{ inputs.shellcheck-version }}/shellcheck
+        ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/shellcheck
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Lint workflows

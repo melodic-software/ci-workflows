@@ -54,6 +54,14 @@ inputs:
 runs:
   using: composite
   steps:
+    # Persist the verified tarball across jobs so every consumer skips the
+    # ~53s download when the version+sha256 pin is unchanged (#156).
+    - name: Cache ShellCheck release asset
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/shellcheck
+        key: shellcheck-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
     - name: Install ShellCheck
       shell: bash
       env:
@@ -61,6 +69,7 @@ runs:
         SHA256: ${{ inputs.sha256 }}
         BIN: shellcheck
         ARCHIVE_MEMBER: shellcheck-v${{ inputs.version }}/shellcheck
+        ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/shellcheck
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Run ShellCheck
