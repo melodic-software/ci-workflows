@@ -58,23 +58,25 @@ function classFromStatus(status) {
   return "other";
 }
 
-function classFromErrorText(text) {
-  if (
-    text.includes('"type":"authentication_error"') ||
-    text.includes('"type":"billing_error"') ||
-    text.includes('"type":"permission_error"')
-  ) {
-    return "auth";
+// Closed published-type allowlist. Values projected as error_type come ONLY
+// from this list — never from raw model/SDK text — so public-log hygiene holds.
+const ERROR_TYPE_ALLOWLIST = [
+  ["authentication_error", "auth"],
+  ["billing_error", "auth"],
+  ["permission_error", "auth"],
+  ["rate_limit_error", "rate-limit"],
+  ["overloaded_error", "overloaded"],
+  ["timeout_error", "overloaded"],
+  ["api_error", "overloaded"],
+];
+
+function matchErrorType(text) {
+  for (const [errorType, failureClass] of ERROR_TYPE_ALLOWLIST) {
+    if (text.includes(`"type":"${errorType}"`)) {
+      return { errorType, failureClass };
+    }
   }
-  if (text.includes('"type":"rate_limit_error"')) return "rate-limit";
-  if (
-    text.includes('"type":"overloaded_error"') ||
-    text.includes('"type":"timeout_error"') ||
-    text.includes('"type":"api_error"')
-  ) {
-    return "overloaded";
-  }
-  return "other";
+  return { errorType: null, failureClass: "other" };
 }
 
 // Mirrors jq's `tostring`: strings pass through, everything else serializes
@@ -108,13 +110,19 @@ function classifyExecutionFile(executionFilePath) {
 
   const status = last.api_error_status;
   let failureClass;
+  // error_type is set only on the substring path (allowlist token matched).
+  // Numeric-status classification already has api_error_status as its
+  // discriminator, so error_type stays null there (ci-workflows#253).
+  let errorType = null;
   if (typeof status === "number") {
     failureClass = classFromStatus(status);
   } else {
     const text = (Array.isArray(last.errors) ? last.errors : [])
       .map(toStringLikeJq)
       .join("\n");
-    failureClass = classFromErrorText(text);
+    const matched = matchErrorType(text);
+    failureClass = matched.failureClass;
+    errorType = matched.errorType;
   }
 
   const projection = {
@@ -124,6 +132,7 @@ function classifyExecutionFile(executionFilePath) {
     duration_ms: last.duration_ms ?? null,
     total_cost_usd: last.total_cost_usd ?? null,
     api_error_status: status ?? null,
+    error_type: errorType,
     class: failureClass,
   };
 
