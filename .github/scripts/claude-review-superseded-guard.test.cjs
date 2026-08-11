@@ -131,3 +131,11 @@ test("the review retry is configured identically to the first attempt", () => {
     "the retry must pin the same action SHA as the first attempt",
   );
 });
+
+test("track-progress=false is rejected (#343)", () => {
+  assert.match(
+    workflowSource,
+    /^ {6}- name: Reject unsupported track-progress=false$/mu,
+  );
+  assert.match(workflowSource, /^ {8}if: inputs\.track-progress == false$/mu);
+});

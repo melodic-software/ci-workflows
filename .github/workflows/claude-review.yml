@@ -148,9 +148,11 @@ on:
           --allowedTools "Bash(gh pr diff:*)"
       track-progress:
         description: >-
-          Create one tracking comment with progress checkboxes, sticky-updated
-          across pushes. Mitigates upstream #1071 (clean reviews otherwise
-          produce no visible output).
+          Must remain true. This lane's non-overridable prompt asserts a
+          summary comment that only exists when track-progress keeps the run
+          in tag mode (ci-workflows#343). `false` is unsupported and rejected
+          by the job. Default true; the security lane hardcodes the same
+          posture.
         type: boolean
         default: true
       display-report:
@@ -305,6 +307,17 @@ jobs:
           echo "::error::claude-review must not be called from '${{ github.event_name }}'." \
             "Call it from a 'pull_request' workflow. pull_request_target/workflow_run run" \
             "with base-repo secrets over untrusted code (token exfiltration risk)."
+          exit 1
+
+      # track-progress:false drops the summary-comment artifact the
+      # non-overridable prompt still points at (#343). Reject rather than
+      # silently half-break reporting; callers that need no tracking comment
+      # are unsupported on this lane.
+      - name: Reject unsupported track-progress=false
+        if: inputs.track-progress == false
+        run: |
+          echo "::error::claude-review does not support track-progress=false" \
+            "(ci-workflows#343). Keep the default (true), or omit the input."
           exit 1
 
       # A stale run must retire itself, not rely on being cancelled: with the
