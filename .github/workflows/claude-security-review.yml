@@ -762,7 +762,7 @@ jobs:
         # leaves room for the retry (see the retry formula there).
         continue-on-error: true
         timeout-minutes: 18
-        uses: anthropics/claude-code-action@1623c36729ac1cd5895198cded705a287de7db79 # v1.0.187
+        uses: anthropics/claude-code-action@5ef2e550a465a721f4f45e4a7d3c340c873e1dcc # v1.0.190
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A clean security pass otherwise produces no visible output (upstream
@@ -1021,7 +1021,7 @@ jobs:
         # and the same step timeout keeps the retry inside the job budget.
         continue-on-error: true
         timeout-minutes: 18
-        uses: anthropics/claude-code-action@1623c36729ac1cd5895198cded705a287de7db79 # v1.0.187
+        uses: anthropics/claude-code-action@5ef2e550a465a721f4f45e4a7d3c340c873e1dcc # v1.0.190
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # A clean security pass otherwise produces no visible output (upstream
