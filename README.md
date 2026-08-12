@@ -683,6 +683,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   concern (its own runner OS + checkout), so a reusable workflow: the caller
   passes a `run` command and owns discovery/reporting/exit; this supplies the
   hosted runner, pinned Pester, and checkout. Inputs are documented inline.
+- `.github/workflows/approval-agent.yml` — **disabled V1 scaffold** for the
+  Approval Agent lane ([ci-workflows#256](https://github.com/melodic-software/ci-workflows/issues/256)).
+  Posts a `COMMENTED` placeholder only (never `APPROVE`). Do not add it to
+  production required checks. Dogfood caller `approval-agent-self.yml` is
+  `workflow_dispatch`-only. ADR + probe: `docs/topics/claude-review-lanes/approval-agent-ADR.md`.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. All inputs have public-safe defaults
   documented inline in the workflow header (the authoritative list). Consume

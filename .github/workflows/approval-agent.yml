@@ -1,0 +1,105 @@
+name: approval-agent
+
+# Reusable workflow — Approval Agent V1 scaffold (ci-workflows#256).
+#
+# Posts a COMMENTED placeholder review so wiring is reviewable. Does NOT
+# submit APPROVE. Does NOT create a GitHub App. Do NOT add this check to
+# production required-checks / rulesets yet.
+#
+# Guardrails (must hold before any later live APPROVE PR — documented here so
+# callers cannot miss them; enforcement lands in ordered follow-ups):
+#   1. NEVER approve PRs that modify this agent's own policy/routing/workflow
+#      files (otherwise the gate is auto-approvable by the thing it gates).
+#   2. Approver App never pushes; approver / author / pusher identities are
+#      strictly distinct (require_last_push_approval compatible).
+#   3. Refuse when findings need human review or exceed a risk threshold.
+#   4. Posture: does not replace full code review.
+#
+# Probe (2026-08-12): custom App APPROVED DOES satisfy native
+# required_approving_review_count — see
+# docs/topics/claude-review-lanes/app-approval-count-probe.md (VERDICT=YES).
+# ADR: docs/topics/claude-review-lanes/approval-agent-ADR.md.
+#
+# CONSUMER CONTRACT: caller owns triggers. Canonical early caller is
+# workflow_dispatch-only (approval-agent-self.yml). Do not wire pull_request
+# auto-trigger or required checks while this remains a COMMENTED scaffold.
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: Pull request number to receive the COMMENTED placeholder
+        type: string
+        required: true
+      runner:
+        description: >-
+          Runner label selected by the caller. Direct callers that omit it use
+          the public hosted default.
+        type: string
+        default: ubuntu-24.04
+
+permissions: {}
+
+jobs:
+  # Job id forms the check context with the caller's job id
+  # (`<caller job id> / approval-agent`). Kept equal to the workflow name so a
+  # future required-check string is obvious — but this scaffold must not be
+  # required yet.
+  approval-agent:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Refuse empty or non-numeric PR number
+        env:
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::pr-number must be a positive integer (got: ${PR_NUMBER})"
+            exit 1
+          fi
+
+      - name: Log scaffold guardrails (no-op; live APPROVE disabled)
+        run: |
+          echo "Scaffold only — live APPROVE is disabled in this workflow."
+          echo "Guardrails required before enabling APPROVE:"
+          echo "  - never approve own policy/routing/workflow files"
+          echo "  - approver identity != PR author != last pusher"
+          echo "  - refuse on human-risk findings"
+          echo "  - posture != full code review"
+          echo "Probe YES: App APPROVE satisfies required_approving_review_count."
+
+      - name: Post COMMENTED placeholder (never APPROVE)
+        # actions/github-script rather than `gh api`: self-hosted images are
+        # not guaranteed to ship the gh CLI.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ inputs.pr-number }}
+        with:
+          script: |
+            const raw = process.env.PR_NUMBER;
+            const pull_number = Number(raw);
+            if (!Number.isInteger(pull_number) || pull_number < 1) {
+              core.setFailed(`pr-number must be a positive integer (got: ${raw})`);
+              return;
+            }
+            // Intentionally COMMENTED — never APPROVE in this scaffold.
+            const body = [
+              "### Approval Agent scaffold (ci-workflows#256)",
+              "",
+              "This is a **COMMENTED** placeholder from the disabled V1 scaffold.",
+              "",
+              "- Live `APPROVE` is not enabled.",
+              "- No new GitHub App was created for this scaffold.",
+              "- Guardrails (never approve own policy files; approver≠author/pusher; refuse on human-risk findings) are documented in `docs/topics/claude-review-lanes/approval-agent-ADR.md`.",
+              "- Sandbox probe: App APPROVE satisfies `required_approving_review_count` (**YES**). See `docs/topics/claude-review-lanes/app-approval-count-probe.md`.",
+              "",
+              "Do not treat this comment as an approval.",
+            ].join("\n");
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number,
+              event: "COMMENT",
+              body,
+            });

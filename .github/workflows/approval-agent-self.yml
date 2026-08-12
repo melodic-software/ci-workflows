@@ -1,0 +1,26 @@
+name: approval-agent-self
+
+# workflow_dispatch-only dogfood caller for the approval-agent scaffold
+# (ci-workflows#256). Intentionally NOT on pull_request / merge_group — keeps
+# autonomous approve disabled and avoids any required-check surface.
+#
+# Manual exercise:
+#   Actions → approval-agent-self → Run workflow → PR number
+# Expect a COMMENTED placeholder review on that PR (never APPROVE).
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to receive the COMMENTED placeholder
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  approval-agent:
+    permissions:
+      pull-requests: write
+    uses: ./.github/workflows/approval-agent.yml
+    with:
+      pr-number: ${{ inputs.pr-number }}
