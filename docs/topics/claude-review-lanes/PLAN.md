@@ -2076,6 +2076,22 @@ carries, and no production deploy ran between 2026-08-06T03:38Z and
 2026-08-11T23:26Z at all. So the revert was NOT a Pulumi apply reasserting the
 declared state; it was a hand correction that happened to restore it.
 
+Version `45582580` is the same shape and belongs in the same account, which
+the paragraph above omitted. It carries the `kyle-sexton` actor, not the
+`melodic-software-github-iac[bot]` actor, so it too was made OUT OF BAND —
+seventeen minutes before the bot-applied `45584301` that the prose credits
+with the PR #282 disable. The reading the timestamps support is a hand
+disable that the Pulumi apply then codified, which is why nothing looked
+wrong afterwards: the declared state agreed with it. That agreement is the
+only thing separating it from the 2026-08-10 flip, and it is luck, not a
+mechanism.
+
+So the count is three out-of-band changes to this ruleset, not two —
+`45582580`, `46092646`, `46262852` — across three separate weeks. That is a
+pattern, not an incident, and it is the strongest evidence in this record
+that the UI remains a live write path to settings the org treats as
+Pulumi-managed.
+
 LESSON — the self-healing everyone assumes here does not exist. The org
 convention is that these settings are Pulumi-managed and changed in
 `github-iac`, never in the UI or by ad-hoc `gh`; this is a textbook instance of
