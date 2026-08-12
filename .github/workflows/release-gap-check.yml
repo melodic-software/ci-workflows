@@ -134,6 +134,9 @@ jobs:
             exit 0
           fi
 
+          # shellcheck disable=SC2016  # `%h` and `%s` are git's own format
+          # specifiers, consumed by git rather than the shell — single quotes
+          # are required here precisely so the shell does NOT expand them.
           unreleased_list="$(git log --max-count=20 --format='- `%h` %s' "refs/tags/${tag}..HEAD")"
           more_note=""
           if ((commits_ahead > 20)); then
