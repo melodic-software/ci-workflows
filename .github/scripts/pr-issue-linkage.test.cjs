@@ -102,7 +102,10 @@ test("Fixes/Resolves and the plural/past-tense forms are all recognized", () => 
 
 test("a cross-repo closing keyword (owner/repo#N) is recognized", () => {
   const failedWith = runScript(
-    contractBody({ closing: "Closes melodic-software/medley#123", related: "n/a" }),
+    contractBody({
+      closing: "Closes melodic-software/medley#123",
+      related: "n/a",
+    }),
   );
   assert.equal(failedWith, null);
 });
