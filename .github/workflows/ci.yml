@@ -8,13 +8,15 @@ on:
 permissions:
   contents: read
 
-# The PR number is only set on pull_request, so PR pushes cancel superseded
-# runs while main pushes get a unique run_id group and always run to
-# completion. Keying on the PR number (not head_ref) keeps fork PRs that share
-# a branch name from cancelling each other's required runs.
+# PR pushes cancel superseded runs (cancel-in-progress: true on the PR number
+# group). Main pushes share group <workflow>-${{ github.ref }} with
+# cancel-in-progress: false so the documented queue:single default cancels only
+# superseded *pending* runs while the in-progress run finishes (main-push burst
+# collapse; #122). Keying PRs on the number (not head_ref) keeps fork PRs that
+# share a branch name from cancelling each other's required runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Dogfood: this repo is the first consumer of its own composite actions. Each
 # lane checks out this repo and runs a lane action against either a root-native
@@ -30,10 +32,11 @@ concurrency:
 # failed or unset detection output runs the lane rather than skipping it, and
 # `changes` itself is aggregated by `ci-status` so a broken detection goes
 # red instead of riding fail-open to silent green forever. Content-agnostic
-# lanes (typos, editorconfig, gitleaks, links, exec-bit,
-# action-metadata-filename, machine-specific-paths, eol-renormalize,
-# comment-hygiene) stay unconditional: any file can carry the defect they
-# gate on, so no path filter over them is conservative. osv-scanner is also
+# cheapest hygiene checks (editorconfig, exec-bit, machine-specific-paths,
+# eol-renormalize, comment-hygiene) share one `hygiene` lane with
+# continue-on-error + final outcome aggregation. Other unconditional dogfood
+# lanes (typos, gitleaks, links, action-metadata-filename) stay separate so
+# each composite keeps a dedicated failure surface. osv-scanner is also
 # ungated — see its job comment.
 jobs:
   changes:
@@ -310,17 +313,6 @@ jobs:
       - name: Spell-check
         uses: ./.github/actions/typos
 
-  editorconfig:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check editorconfig conformance
-        uses: ./.github/actions/editorconfig
-
   gitleaks:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -416,17 +408,6 @@ jobs:
           builtin-schema: vendor.github-actions
           files: .github/actions/*/action.yml
 
-  exec-bit:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Verify shebang files are executable
-        uses: ./.github/actions/exec-bit
-
   action-metadata-filename:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -438,7 +419,12 @@ jobs:
       - name: Reject action.yaml metadata (action.yml is enforced exclusively)
         uses: ./.github/actions/action-metadata-filename
 
-  machine-specific-paths:
+  # Cheapest unconditional hygiene composites share one worker (#122). Each
+  # check step is continue-on-error with an id; the final aggregation fails on
+  # any steps.<id>.outcome == 'failure' (run-everything-fail-at-end). Language
+  # / toolchain dogfood jobs stay separate so composite contracts keep a
+  # dedicated failure surface.
+  hygiene:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -446,44 +432,74 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check editorconfig conformance
+        id: editorconfig
+        continue-on-error: true
+        uses: ./.github/actions/editorconfig
+      - name: Verify shebang files are executable
+        id: exec_bit
+        continue-on-error: true
+        uses: ./.github/actions/exec-bit
       - name: Check for machine-specific paths
+        id: machine_specific_paths
+        continue-on-error: true
         # The bundled pattern script contains the literal regex bodies, so skip
         # the action's own dir to avoid self-matching.
         uses: ./.github/actions/machine-specific-paths
         with:
           exclude: ':(exclude).github/actions/machine-specific-paths/**'
-
-  eol-renormalize:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - name: Check index-level EOL drift
+        id: eol_renormalize
+        continue-on-error: true
         uses: ./.github/actions/eol-renormalize
-
-  comment-hygiene:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - name: Verify prefilter is a superset of the policy library
+        id: comment_hygiene_superset
+        continue-on-error: true
         # Self-enforces the scan's load-bearing invariant: the coarse git-grep
         # prefilter must admit every line the bundled default policy flags, or
         # the gate fails open.
         shell: bash
         run: bash .github/actions/comment-hygiene/superset-test.sh
       - name: Scan comment hygiene
+        id: comment_hygiene
+        continue-on-error: true
         # The bundled scan and policy reference the literal marker tokens in
         # their own comments, so skip the action's source to avoid self-matching.
         uses: ./.github/actions/comment-hygiene
         with:
           exclude: ':(exclude).github/actions/comment-hygiene/**'
+      - name: Aggregate hygiene checks
+        if: always()
+        shell: bash
+        env:
+          EDITORCONFIG: ${{ steps.editorconfig.outcome }}
+          EXEC_BIT: ${{ steps.exec_bit.outcome }}
+          MACHINE_SPECIFIC_PATHS: ${{ steps.machine_specific_paths.outcome }}
+          EOL_RENORMALIZE: ${{ steps.eol_renormalize.outcome }}
+          COMMENT_HYGIENE_SUPERSET: ${{ steps.comment_hygiene_superset.outcome }}
+          COMMENT_HYGIENE: ${{ steps.comment_hygiene.outcome }}
+        run: |
+          set -euo pipefail
+          failed=0
+          report() {
+            local name="$1"
+            local outcome="$2"
+            if [[ "$outcome" == failure ]]; then
+              echo "::error::$name failed (outcome=$outcome)."
+              failed=1
+            else
+              echo "$name: $outcome"
+            fi
+          }
+          report editorconfig "$EDITORCONFIG"
+          report exec-bit "$EXEC_BIT"
+          report machine-specific-paths "$MACHINE_SPECIFIC_PATHS"
+          report eol-renormalize "$EOL_RENORMALIZE"
+          report comment-hygiene-superset "$COMMENT_HYGIENE_SUPERSET"
+          report comment-hygiene "$COMMENT_HYGIENE"
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
   # ci-status yet — promote after a clean soak. Exempts standards-sync labelled /
@@ -640,7 +656,7 @@ jobs:
     # `changes` is aggregated alongside the lanes it gates: a failed detection
     # job fails ci-status even though every gated lane fails open and runs, so
     # a broken filter config cannot ride the fallback to green indefinitely.
-    needs: [changes, markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, editorconfig, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, exec-bit, action-metadata-filename, machine-specific-paths, eol-renormalize, comment-hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [changes, markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -651,4 +667,4 @@ jobs:
       - name: Aggregate lane results
         uses: ./.github/actions/ci-status
         with:
-          results: ${{ needs.changes.result }} ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.editorconfig.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.exec-bit.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.machine-specific-paths.result }} ${{ needs.eol-renormalize.result }} ${{ needs.comment-hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.changes.result }} ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

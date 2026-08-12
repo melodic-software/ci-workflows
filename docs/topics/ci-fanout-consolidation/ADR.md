@@ -1,6 +1,6 @@
 # ADR — CI fan-out consolidation (#122)
 
-Status: accepted for Shape A; remaining slices deferred under `needs-human`
+Status: **COMPLETED** (operator override 2026-08-12)
 
 Parent: [melodic-software/github-iac#78](https://github.com/melodic-software/github-iac/issues/78)
 Issue: [melodic-software/ci-workflows#122](https://github.com/melodic-software/ci-workflows/issues/122)
@@ -29,46 +29,73 @@ to ~3.4s and narrowed the durable case once capacity supply is fixed
 3. **`ci-status` remains the single required check.** Keep lane skips as
    in-workflow `if:` conditionals; never workflow-level `paths:` on required
    workflows.
-4. **This repo's `ci.yml` keeps per-action dogfood jobs for now.**
-   `.github/workflows/ci.yml` is the first consumer of each composite under
-   `.github/actions/*`. Collapsing those micro-jobs into a hygiene lane would
-   hide per-action failure granularity that dogfood depends on. Consumer lane
-   consolidation is the valuable fan-out cut; local dogfood collapse is a
-   later, separate judgment call — not this slice.
+4. **Main-push burst collapse wins over standards#151 forever-conflict.**
+   Operator override (2026-08-12): pick the issue-body item 5 pattern, not the
+   `pull_request.number || run_id` + always-cancel block from
+   [standards#151](https://github.com/melodic-software/standards/issues/151).
+   Canonical concurrency for push+PR workflows in this repo:
 
-## Explicit non-goals for this slice
+   ```yaml
+   concurrency:
+     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+   ```
 
-- No collapse of `ruff`/`pyright`, `biome`/`tsc`, `shellcheck`/`shfmt`,
-  `dotnet-build`/`dotnet-format`, or the unconditional hygiene jobs in this
-  repo's `ci.yml`.
-- No main-push concurrency rewrite here. Issue body item 5
-  (`group: <workflow>-${{ github.ref }}`, `cancel-in-progress: false`)
-  conflicts with the canonical PR-safe block closed in
-  [standards#151](https://github.com/melodic-software/standards/issues/151)
-  (`pull_request.number || run_id`, `cancel-in-progress: true`), which this
-  repo's `ci.yml` already follows. Choosing burst collapse vs that canonical
-  block needs a human ruling under the issue's `needs-human` label.
+   PR runs keep cancel-in-progress true on the PR-number group. Main pushes
+   share `<workflow>-${{ github.ref }}` with cancel-in-progress false so the
+   documented `queue: single` default cancels only superseded *pending* runs
+   while the in-progress run finishes. Applied to `.github/workflows/ci.yml`
+   and `.github/workflows/selector-conformance.yml`. Push/schedule/dispatch
+   workflows that already keyed on `github.ref`
+   (`tool-version-drift-check.yml`, `queue-monitor-liveness.yml`) set
+   `cancel-in-progress: false` for the same burst semantics.
+5. **Hygiene lane consolidation (compatible cheapest set).**
+   Full mega-lane collapse of every dogfood micro-job would hide per-composite
+   failure surfaces this repo depends on. Instead, collapse the cheapest
+   unconditional hygiene set into one `hygiene` job with `continue-on-error:
+   true` + step `id:` + final aggregation on `steps.<id>.outcome ==
+   'failure'`:
+
+   - `editorconfig`
+   - `exec-bit`
+   - `machine-specific-paths`
+   - `eol-renormalize`
+   - `comment-hygiene` (including the prefilter-superset self-test)
+
+6. **Remaining dogfood jobs stay separate.** Language/toolchain and other
+   unconditional composites keep dedicated jobs so each `.github/actions/*`
+   contract retains a clear failure surface: `markdown`, `powershell`,
+   `links`, `reference-integrity`, `ruff`, `pyright`, `biome`, `tsc`,
+   `dotnet-build`, `dotnet-format`, `typos`, `gitleaks`, `actionlint`,
+   `lefthook-validate`, `jsonschema`, `action-metadata-filename`,
+   `shellcheck`, `shfmt`, `selector-contract`, plus reusable-workflow dogfood
+   (`pester`, `go-quality-dogfood`, `zizmor`, `osv-scanner`).
+
+## Explicit non-goals (still deferred outside this issue)
+
 - No reliance on parallel steps (`background` / `wait`) until fleet-tested.
 - No 2 CPU / 4GiB lane sizing until
   [provisioning#133](https://github.com/melodic-software/provisioning/issues/133)
   / [#134](https://github.com/melodic-software/provisioning/issues/134) land.
+- Consumer-repo lane redesigns (`dotfiles` further consolidation,
+  `standards` fixtures lane, `medley` lane pass) are follow-on work in those
+  repos — not blockers for closing #122 here.
 
-## Ordered follow-up PRs
+## Completion checklist
 
-| Order | PR | Repo | What | Gate |
-| --- | --- | --- | --- | --- |
-| 1 | Human: priority / concurrency ruling | ci-workflows#122 | Decide whether residual hosted-minute + starvation case still justifies medium+ effort; pick main-push burst collapse vs standards#151 canonical | `needs-human` |
-| 2 | Dotfiles hygiene lane | `melodic-software/dotfiles` | Collapse lint/hygiene micro-jobs into one worker: `continue-on-error: true` + step `id:` + final aggregation on `steps.<id>.outcome == 'failure'`; keep language/build lanes only where toolchain isolation differs; keep Shape A selector + `ci-status` | After (1) |
-| 3 | Dotfiles main-push concurrency (if (1) chooses burst collapse) | `melodic-software/dotfiles` | Apply the chosen concurrency block; do not invent a third pattern | After (1)+(2) or with (2) |
-| 4 | Optional ci-workflows dogfood pilot | `melodic-software/ci-workflows` | If (1) wants a reusable pattern proven here first: collapse one same-filter pair only (e.g. `shellcheck`+`shfmt` or `ruff`+`pyright`) behind `continue-on-error` aggregation, update `ci-status` `needs`, add a contract test — still not a full hygiene mega-lane | Optional; after (1) |
-| 5 | Standards fixtures lane | `melodic-software/standards` | Fold fixture matrix cells into an in-job fixtures lane (each matrix cell is a separate job) | After (2) proves the pattern |
-| 6 | Medley lane pass | `melodic-software/medley` | Medley already has detect-changes + most lanes; consolidate last. Also absorb comment-2 concurrency defects (`ci-status.yml` / `onboard-drift.yml` / `comment-review-gate.yml`) per standards#151 | After (5) |
+| Item | Status |
+| --- | --- |
+| Shape A (dotfiles single selector) | Done (confirmed on `dotfiles` `main`) |
+| Main-push burst concurrency (this repo) | Done |
+| Hygiene lane (compatible cheapest set) | Done |
+| ADR records #122 COMPLETED | Done (this document) |
 
 ## Consequences
 
-- Shape A checklist item is recorded as complete in-repo; #122 stays open for
-  lane consolidation and concurrency follow-through.
-- No consumer behavior change from this ADR alone.
-- Next autonomous coding slice should be PR (2) or optional (4) only after a
-  human clears (1); until then prefer plan comments over structural `ci.yml`
-  edits.
+- #122 is **COMPLETED** for this repository. Consumer follow-ons may land
+  separately without reopening this issue.
+- `ci-status` still aggregates one required check; `needs` now lists `hygiene`
+  instead of the five collapsed micro-jobs.
+- Contract test
+  `.github/scripts/ci-fanout-consolidation.test.cjs` pins the concurrency
+  expression and the hygiene-lane aggregation shape.
