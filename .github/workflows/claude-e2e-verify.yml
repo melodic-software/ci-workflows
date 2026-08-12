@@ -226,7 +226,7 @@ permissions:
 # keeping the library version and its browser build revision in lockstep. See the
 # PIN NOTE in the header for the drift-watch convention.
 env:
-  PLAYWRIGHT_VERSION: 1.61.1
+  PLAYWRIGHT_VERSION: 1.62.1
   # The dedicated unprivileged account that executes ALL PR-controlled code
   # (setup-command + app-start-command) — the uid boundary the header's
   # persisted-credential section rests on.
