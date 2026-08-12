@@ -10,17 +10,37 @@ description: >-
   open — `!= 'true'` step gates treat a missing output as fresh, and only a
   response shaped like a commit SHA may retire the run (a degenerate success
   such as a literal `null` must not) — so an API anomaly degrades to
-  reviewing a possibly-stale head, never to silence. actions/github-script
+  reviewing a possibly-stale head, never to silence. actions/  github-script
   rather than a `gh api` run step: the calling reusable runs on whatever
   runner its caller selected, and a self-hosted image is not guaranteed to
   ship the gh CLI (same pattern as do-not-merge-gate.yml).
+
+  Optional pull-number / head-sha inputs cover workflow_dispatch re-review
+  (ci-workflows#254), where github.event.pull_request is absent and the
+  caller resolved the PR via API first. When those inputs are empty, the
+  composite falls back to the pull_request event payload (unchanged).
+
+inputs:
+  pull-number:
+    description: >-
+      PR number to freshness-check. When empty, uses
+      github.event.pull_request.number (pull_request runs).
+    required: false
+    default: ""
+  head-sha:
+    description: >-
+      Head SHA this run intends to review. When empty, uses
+      github.event.pull_request.head.sha (pull_request runs).
+    required: false
+    default: ""
 
 outputs:
   superseded:
     description: >-
       "true" when the PR head moved past this event's head, "false" when the
       head is current or the check could not be made, empty when the step
-      skipped (no PR in the event). Gate downstream steps with `!= 'true'`.
+      skipped (no PR in the event and no pull-number input). Gate downstream
+      steps with `!= 'true'`.
     value: ${{ steps.freshness.outputs.superseded }}
 
 runs:
@@ -28,18 +48,24 @@ runs:
   steps:
     - name: Check whether this head is still current
       id: freshness
-      if: github.event.pull_request.number != ''
+      if: inputs.pull-number != '' || github.event.pull_request.number != ''
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
-        EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EVENT_HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
+        PULL_NUMBER: ${{ inputs.pull-number || github.event.pull_request.number }}
       with:
         script: |
+          const pullNumber = Number(process.env.PULL_NUMBER);
+          if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+            core.setOutput("superseded", "false");
+            return;
+          }
           let liveHead = "";
           try {
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
+              pull_number: pullNumber,
             });
             liveHead = pr.head.sha;
           } catch (error) {
