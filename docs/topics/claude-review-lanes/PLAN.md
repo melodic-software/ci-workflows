@@ -1485,6 +1485,33 @@ ruleset by design; after it applies, the canonical compare must expect exactly
 that delta and nothing else — an empty `bypass_actors` read post-merge would
 itself be drift.
 
+**3c INVARIANT RE-READ AMENDMENT (2026-08-12; ciw#447).** The re-read above is
+kept verbatim as the 2026-07-30 record. Every reading in it was TRUE when
+taken, and the ruleset's own version history proves it: version `44922452`
+(2026-07-30 15:18:56 -0400) and `44942752` (19:54:55 -0400) both carry
+`enforcement: active`. What has since changed is the ruleset, not the accuracy
+of that record. Two things a reader must NOT carry forward from it:
+
+- `enforcement: active` NO LONGER HOLDS. github-iac PR #282
+  (`fix(governance): make agentic reviews advisory`, 2026-08-05) redeclared this
+  ruleset `Enforcement = "disabled"`, and live agrees. Current declared
+  rationale, from `OrgRulesets.cs`: "Agentic review is advisory. GitHub Team
+  does not offer evaluation mode, so disabled is the only declarative state that
+  cannot make a model-backed action a merge dependency." A canonical compare run
+  today must expect `disabled`.
+- The EXPECTED DOCUMENTED DELTA instruction is SUPERSEDED and is now inverted.
+  PR #282 also REMOVED the break-glass bypass that PR #247 added and superseded
+  ADR 0010. `bypass_actors: []` is therefore the CORRECT expected state today —
+  the exact reading the paragraph above tells you to treat as drift. Following
+  it as written would diagnose correct state as a disarm.
+
+The rest of the re-read — `conditions` intact, the `security-review /
+security-review` required check present in `rules`, and the property set
+regenerating to exactly `claude-code-plugins` — still verifies as written. Note
+that the required check being present in `rules` is NOT the same as it being
+enforced: with `enforcement: disabled` the rule is declared but binds nothing,
+so `security-review / security-review` is a required check on no repository.
+
 **PHASE 3 CLOSURE — the ACTUAL-security-run observation is not reachable from
 any wave [ROUTED 2026-07-29 — decision recorded below].** Measured 2026-07-29. Exactly two org
 repos run a security lane at all — `claude-code-plugins` and `ci-workflows`;
@@ -2004,6 +2031,70 @@ fresh-context-verifier-gated.
   no open items beyond its recorded date/event triggers (ciw#400 canary
   re-evaluation 2026-11-06; medley label declarations at the next
   label-touching github-iac change).
+
+**PHASE 4 CLOSE-OUT AMENDMENT (2026-08-12; ciw#447 — gate enforcement
+REVERTED).** The bullets above are kept verbatim as the 2026-08-09/08-10
+record. The `SECURITY-REVIEW-GATE ENFORCEMENT ACTIVE (2026-08-10)` bullet
+recorded a flip that DID happen, and then did not last. It no longer describes
+the world and must not be read as current state.
+
+CURRENT STATE (read 2026-08-12): org ruleset `19388547` is `enforcement:
+disabled`. `melodic-software/github-iac` declares the same, deliberately —
+`OrgRulesets.cs` carries `Enforcement = "disabled"` with the rationale
+"Agentic review is advisory. GitHub Team does not offer evaluation mode, so
+disabled is the only declarative state that cannot make a model-backed action a
+merge dependency." Live and IaC AGREE; there is no drift to correct, and
+re-arming the gate would be a policy change only the operator can authorize.
+Consequently `security-review / security-review` is a required status check on
+NO repository: `claude-code-plugins` — still the only repo carrying
+`requires-security-review == "true"` — requires exactly `pr-title / pr-title`,
+`pr-issue-linkage / pr-issue-linkage`, `do-not-merge / do-not-merge`, and
+`ci-status`.
+
+WHAT ACTUALLY HAPPENED, from the ruleset's own version history
+(`gh api orgs/melodic-software/rulesets/19388547/history`, and each
+`.../history/<version_id>` for its state — an API that works on Team, unlike
+the org audit log, which is Enterprise-only and returns 404):
+
+| version | when (-0400) | actor | enforcement | bypass |
+| --- | --- | --- | --- | --- |
+| `43890669` | 2026-07-21 06:44:16 | `melodic-software-github-iac[bot]` | active | 0 |
+| `44922452` | 2026-07-30 15:18:56 | `melodic-software-github-iac[bot]` | active | 1 |
+| `44942752` | 2026-07-30 19:54:55 | `melodic-software-github-iac[bot]` | active | 1 |
+| `45582580` | 2026-08-05 23:21:08 | `kyle-sexton` | disabled | 1 |
+| `45584301` | 2026-08-05 23:38:29 | `melodic-software-github-iac[bot]` | disabled | 0 |
+| `46092646` | 2026-08-10 10:13:39 | `kyle-sexton` | **active** | 0 |
+| `46262852` | 2026-08-11 19:29:45 | `kyle-sexton` | **disabled** | 0 |
+
+The 2026-08-10 flip is version `46092646`, made by the operator's own user
+account eleven minutes before the ledger bullet above was committed
+(`53bba06`, 2026-08-10 10:24:37 -0400). It was reverted 33 hours later by
+version `46262852`, again by the same user account. Both the flip AND the
+revert were made OUT OF BAND — neither carries the
+`melodic-software-github-iac[bot]` actor that every Pulumi-applied version
+carries, and no production deploy ran between 2026-08-06T03:38Z and
+2026-08-11T23:26Z at all. So the revert was NOT a Pulumi apply reasserting the
+declared state; it was a hand correction that happened to restore it.
+
+LESSON — the self-healing everyone assumes here does not exist. The org
+convention is that these settings are Pulumi-managed and changed in
+`github-iac`, never in the UI or by ad-hoc `gh`; this is a textbook instance of
+why. But note the sharper half: Pulumi did not and COULD NOT have caught this
+drift. The production deploy's `pulumi refresh` step is TARGETED at nine
+`ci-runner-*` organization variables (its output reads `9 unchanged`), so no
+ruleset is ever refreshed; `pulumi up` then diffs desired state against
+recorded state rather than live, and duly reported this ruleset `unchanged`
+while live disagreed. A UI or ad-hoc change to any ruleset is therefore
+invisible to the pipeline and persists until a human notices. Recorded here as
+an operator-facing observation only — no `github-iac` change is proposed by
+this amendment.
+
+Also corrected, from the `DESIGN A PROBE DROPPED` bullet: the program does NOT
+have "no open items". ciw#448 is open — a design question, addressed to the
+operator, asking whether the two-tier availability ruling in
+`.github/workflows/claude-security-review.yml` is still the right shape now
+that the required check it manages binds nothing. That question is deliberately
+NOT resolved here, and no workflow was changed.
 
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
