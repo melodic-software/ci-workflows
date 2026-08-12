@@ -84,11 +84,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # `|| true`: grep exits 1 when no release matches (a repository with
-          # none yet), which pipefail would otherwise turn into a failed
-          # assignment under errexit. The `v0.0.0` default below covers it.
-          latest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+          # The API call is deliberately SEPARATE from the filtering pipe.
+          # Folding them together and appending `|| true` — the earlier shape —
+          # tolerated far more than intended: under `pipefail` that trailing
+          # `|| true` masks a failing `gh api` (auth, rate limit, transient 5xx,
+          # or a mid-pagination error on any of the additional sequential
+          # requests `--paginate` makes) exactly as if grep had simply found no
+          # releases. The run would then fall through to the `v0.0.0` default
+          # and compute a version from the wrong baseline — cutting `v0.1.0` on
+          # a repository that already has a v0.14.0, or colliding with an
+          # existing tag. For the workflow that decides what the whole fleet
+          # pins to, a transient API blip must never silently rebase the
+          # version. So: an API failure aborts under errexit, and only grep's
+          # expected exit 1 (no release matches, on a repository with none yet)
+          # is tolerated.
+          releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+          latest="$(printf '%s\n' "$releases" \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
           latest="${latest:-v0.0.0}"
           IFS=. read -r major minor patch <<< "${latest#v}"
