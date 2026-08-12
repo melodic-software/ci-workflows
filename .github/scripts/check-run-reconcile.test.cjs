@@ -22,7 +22,15 @@ const REQUIRED = Object.freeze([
   "ci-status",
 ]);
 
-function job(name, { conclusion = "success", status = "completed", at = "2026-08-10T02:00:00Z", id = 1 } = {}) {
+function job(
+  name,
+  {
+    conclusion = "success",
+    status = "completed",
+    at = "2026-08-10T02:00:00Z",
+    id = 1,
+  } = {},
+) {
   return {
     id,
     name,
@@ -33,7 +41,15 @@ function job(name, { conclusion = "success", status = "completed", at = "2026-08
   };
 }
 
-function check(name, { conclusion = "success", status = "completed", at = "2026-08-10T02:00:00Z", id = 1 } = {}) {
+function check(
+  name,
+  {
+    conclusion = "success",
+    status = "completed",
+    at = "2026-08-10T02:00:00Z",
+    id = 1,
+  } = {},
+) {
   return {
     id,
     name,
@@ -126,20 +142,17 @@ test("#399 divergence: workflow job succeeded but check-run never attached", () 
   assert.equal(report.divergences[0].verdict, "divergence");
   assert.match(report.divergences[0].detail, /ci-workflows#399/);
   assert.equal(report.absentCheckRuns.length, 1);
-  assert.equal(report.absentCheckRuns[0].context, "do-not-merge / do-not-merge");
+  assert.equal(
+    report.absentCheckRuns[0].context,
+    "do-not-merge / do-not-merge",
+  );
 });
 
 test("missing: required context has neither job nor check-run", () => {
   const report = reconcileRequiredChecks({
     requiredContexts: REQUIRED,
-    workflowJobs: [
-      job("pr-title / pr-title"),
-      job("ci-status"),
-    ],
-    checkRuns: [
-      check("pr-title / pr-title"),
-      check("ci-status"),
-    ],
+    workflowJobs: [job("pr-title / pr-title"), job("ci-status")],
+    checkRuns: [check("pr-title / pr-title"), check("ci-status")],
   });
   assert.equal(report.ok, false);
   const row = report.results.find(
@@ -233,10 +246,7 @@ test("CLI fixture mode detects divergence and exits 1", () => {
   fs.writeFileSync(
     checksPath,
     JSON.stringify({
-      check_runs: [
-        check("pr-title / pr-title"),
-        check("ci-status"),
-      ],
+      check_runs: [check("pr-title / pr-title"), check("ci-status")],
     }),
   );
   fs.writeFileSync(

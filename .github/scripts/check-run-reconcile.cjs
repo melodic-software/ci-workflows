@@ -37,7 +37,11 @@ class UsageError extends Error {
 /**
  * Prefer the newest record when several share a name (reopen / rerun churn).
  */
-function pickLatestByName(items, nameKey = "name", timeKeys = ["completed_at", "started_at"]) {
+function pickLatestByName(
+  items,
+  nameKey = "name",
+  timeKeys = ["completed_at", "started_at"],
+) {
   if (!Array.isArray(items)) {
     throw new UsageError("expected an array of named records");
   }
@@ -183,8 +187,7 @@ function classifyContext(context, job, checkRun) {
       verdict: "check_only",
       job,
       checkRun,
-      detail:
-        `check-run present (${checkConclusion ?? checkStatus}); no matching workflow job observed`,
+      detail: `check-run present (${checkConclusion ?? checkStatus}); no matching workflow job observed`,
     };
   }
 
@@ -194,8 +197,7 @@ function classifyContext(context, job, checkRun) {
       verdict: "mismatch",
       job,
       checkRun,
-      detail:
-        `workflow job conclusion=${jobConclusion} vs check-run conclusion=${checkConclusion}`,
+      detail: `workflow job conclusion=${jobConclusion} vs check-run conclusion=${checkConclusion}`,
     };
   }
 
@@ -285,7 +287,9 @@ function formatReconcileReport(report, { sha = null, repo = null } = {}) {
       `::error::required-check reconcile found ${report.problems.length} problem(s).`,
     );
   } else {
-    lines.push("ok: every required context is present on the commit check-run list.");
+    lines.push(
+      "ok: every required context is present on the commit check-run list.",
+    );
   }
   return `${lines.join("\n")}\n`;
 }
@@ -508,9 +512,7 @@ function main(argv = process.argv.slice(2)) {
     checkRuns = Array.isArray(checkPayload)
       ? checkPayload
       : checkPayload.check_runs;
-    workflowJobs = Array.isArray(jobsPayload)
-      ? jobsPayload
-      : jobsPayload.jobs;
+    workflowJobs = Array.isArray(jobsPayload) ? jobsPayload : jobsPayload.jobs;
     if (!Array.isArray(checkRuns) || !Array.isArray(workflowJobs)) {
       throw new UsageError(
         "fixture JSON must be an array or an object with check_runs/jobs arrays",
