@@ -1,12 +1,13 @@
 name: pr-issue-linkage-self
 
 # Requires the PR body to carry a native closing keyword (or the literal
-# "No linked issue") and a non-empty "## Related" section. Dogfood caller of
-# this repo's own pr-issue-linkage reusable (pinned to its merged SHA, not the
-# PR head — the gate must not be redefinable by the change it gates); the
-# emitted required-check context is `pr-issue-linkage / pr-issue-linkage`.
-# pull_request_target runs the base-branch definition; `edited` re-validates
-# on a body edit. Public repo: runs on the reusable's hosted default runner.
+# "No linked issue") and non-empty "## Summary", "## Fix", "## Verification",
+# and "## Related" sections. Dogfood caller of this repo's own pr-issue-linkage
+# reusable (pinned to its merged SHA, not the PR head — the gate must not be
+# redefinable by the change it gates); the emitted required-check context is
+# `pr-issue-linkage / pr-issue-linkage`. pull_request_target runs the
+# base-branch definition; `edited` re-validates on a body edit. Public repo:
+# runs on the reusable's hosted default runner.
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]

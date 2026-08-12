@@ -816,7 +816,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
 - `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
   a native closing keyword (`Closes`/`Fixes`/`Resolves #N`, including
   `owner/repo#N`, or the literal `No linked issue` when the PR closes nothing)
-  and a non-empty `## Related` section. **Gating**: a non-conforming body fails
+  and non-empty `## Summary`, `## Fix`, `## Verification`, and `## Related`
+  sections (the four contract headers). **Gating**: a non-conforming body fails
   the job. HTML comments are stripped before either check, so an unedited PR
   template (whose instructional prose lives in comments) fails rather than
   passing vacuously. Generalizes
@@ -855,8 +856,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `*[bot]` pattern, so no unknown future bot is silently skipped on the gate.
   It is **fail-closed**: the empty default exempts no one, so bumping the
   pinned SHA changes nothing until a caller opts in. Use it for bots whose
-  generated PR bodies cannot carry the closing-keyword + `## Related` markers
-  (dependabot/renovate); the caller passes
+  generated PR bodies cannot carry the closing-keyword + contract-header
+  markers (dependabot/renovate); the caller passes
   `exempt-authors: 'dependabot[bot]'` alongside the `uses:` line.
 - `.github/workflows/do-not-merge-gate.yml` — fails the job while the calling PR
   carries a configured label (default `do-not-merge`). **Gating**: the label's

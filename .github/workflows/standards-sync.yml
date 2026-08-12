@@ -439,17 +439,20 @@ jobs:
         run: |
           set -euo pipefail
           {
+            printf '## Summary\n\n'
             printf 'Automated exact-file synchronization from '
             printf "[\`melodic-software/standards@%s\`](https://github.com/melodic-software/standards/commit/%s)" \
               "$STANDARDS_SHA" "$STANDARDS_SHA"
             printf " (requested ref \`%s\`).\n\n" "$STANDARDS_REF"
             printf 'No linked issue — recurring automated distribution, not tied to a tracked change.\n\n'
+            printf '## Fix\n\n'
             printf "Managed component mappings applied to \`%s\`:\n\n" "$TARGET"
             bash .standards-src/distribution/sync-manifest.sh mappings \
               --source-root .standards-src \
               --manifest "$MANIFEST" \
               --target "$TARGET"
-            printf '\nReview and merge this PR normally. '
+            printf '\n## Verification\n\n'
+            printf 'Review and merge this PR normally. '
             printf 'Do not hand-edit these managed files downstream; change their standards source instead.\n\n'
             printf '## Related\n\n'
             printf -- "- [\`melodic-software/standards@%s\`](https://github.com/melodic-software/standards/commit/%s) — source commit this sync distributes.\n" \

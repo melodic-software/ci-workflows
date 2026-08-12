@@ -22,7 +22,7 @@ const prerequisiteGateContracts = [
     fileName: "pr-issue-linkage.yml",
     jobId: "pr-issue-linkage",
     validationStep:
-      "Validate PR body against the closing-keyword + Related convention",
+      "Validate PR body against the closing-keyword + contract-header convention",
   },
 ];
 
