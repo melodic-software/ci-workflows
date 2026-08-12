@@ -9,9 +9,10 @@ const test = require("node:test");
 const repositoryRoot = path.join(__dirname, "..", "..");
 // link-check.yml runs on a caller-selected runner and was ported to
 // actions/github-script, so it is no longer a consumer of this generated
-// bash block; the other two still run on a fixed hosted runner and keep it.
+// bash block; the rest still run on a fixed hosted runner and keep it.
 const consumers = [
   "queue-monitor-liveness.yml",
+  "release-tag-drift-check.yml",
   "tool-version-drift-check.yml",
 ];
 

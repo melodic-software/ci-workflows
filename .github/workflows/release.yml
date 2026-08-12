@@ -54,13 +54,42 @@ jobs:
             exit 1
           fi
 
+      # SINGLE SOURCE OF TRUTH: the newest PUBLISHED RELEASE, not the newest tag.
+      #
+      # These were two different artefacts until 2026-08-12. This step computed
+      # from the newest tag, while the fleet's re-pin lane
+      # (melodic-software/standards `components/claude-lanes/repin-callers.sh
+      # resolve`) reads `releases/latest`. Tag `v0.13.0` (036c390) exists with no
+      # Release, so it silently advanced the counter here — a `minor` bump on
+      # 2026-08-12 produced `v0.14.0`, skipping a version the fleet could never
+      # reach — and nothing alarmed on the divergence.
+      #
+      # A Release is the artefact both halves consume and the deliberate act
+      # this workflow exists to perform; a tag is a side effect any pusher can
+      # create out-of-band. So the Release wins, and a stray tag no longer moves
+      # the counter. The "tag does not already exist" guard below then FAILS
+      # CLOSED on a stray tag at the computed version: releases stop until the
+      # operator reconciles it, rather than silently stepping over it.
+      #
+      # Selection is by highest SemVer among published releases, deliberately
+      # NOT the `releases/latest` endpoint: that endpoint orders by `created_at`,
+      # which GitHub sets from the tag target's COMMIT date, so a release cut
+      # from an older commit would rank ahead of a newer version. Highest-SemVer
+      # is the rule the re-pin lane's `resolve` now applies too, so both halves
+      # share one artefact AND one ordering.
       - name: Compute next version
         id: ver
         env:
           BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)"
+          # `|| true`: grep exits 1 when no release matches (a repository with
+          # none yet), which pipefail would otherwise turn into a failed
+          # assignment under errexit. The `v0.0.0` default below covers it.
+          latest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
           latest="${latest:-v0.0.0}"
           IFS=. read -r major minor patch <<< "${latest#v}"
           case "$BUMP" in
@@ -70,15 +99,19 @@ jobs:
           esac
           next="v${major}.${minor}.${patch}"
           echo "next=${next}" >> "$GITHUB_OUTPUT"
-          echo "Next release: ${next} (from ${latest}, bump=${BUMP})"
+          echo "Next release: ${next} (from newest published release ${latest}, bump=${BUMP})"
 
+      # The checkout above is still `fetch-depth: 0` because this guard reads
+      # local tags. It is now also the fail-closed half of the source-of-truth
+      # change: with the version computed from Releases, a tag that exists
+      # without one lands here as a hard stop instead of being stepped over.
       - name: Guard — tag does not already exist
         env:
           NEXT: ${{ steps.ver.outputs.next }}
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/${NEXT}" >/dev/null; then
-            echo "::error::Tag ${NEXT} already exists."
+            echo "::error::Tag ${NEXT} already exists but is not a published Release, so the version computed from Releases collides with it. Reconcile the two — publish the missing Release for ${NEXT} or delete the stray tag — then re-run. See .github/workflows/release-tag-drift-check.yml and its tracking issue."
             exit 1
           fi
 

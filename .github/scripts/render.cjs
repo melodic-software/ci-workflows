@@ -118,6 +118,7 @@ const TARGETS = Object.freeze({
     // gh/jq-driven source. Only fixed-hosted-runner consumers stay here.
     workflows: Object.freeze([
       "queue-monitor-liveness.yml",
+      "release-tag-drift-check.yml",
       "tool-version-drift-check.yml",
     ]),
     beginMarker:

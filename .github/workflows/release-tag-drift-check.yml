@@ -1,0 +1,204 @@
+name: Release Tag Drift Check
+
+# Advisory — NOT in any ci-status gate; never blocks a merge. Surfaces a rolling
+# tracking issue, and fails the scheduled run so it notifies, when this
+# repository's version TAGS and published RELEASES stop agreeing.
+#
+# Why this exists (melodic-software/ci-workflows, 2026-08-12): the version was
+# published through two artefacts that nothing kept in agreement. `release.yml`
+# computed the next version from the newest TAG; the fleet's re-pin lane
+# (melodic-software/standards `components/claude-lanes/repin-callers.sh
+# resolve`) reads the newest RELEASE. Tag `v0.13.0` (036c390) exists with no
+# Release, so it advanced the version counter — the next `minor` bump produced
+# `v0.14.0` — while being invisible to every consumer. Nothing alarmed for the
+# whole time it was true.
+#
+# `release.yml` now computes from the newest published Release, so both halves
+# read the same artefact. This workflow is the alarm that says so out loud when
+# they diverge anyway: a tag can still be created out-of-band by anyone with
+# push access, and a Release can still be deleted.
+#
+# It checks the DURABLE invariant (set equality between `v*.*.*` tags and
+# published Releases), not only the newest pair. The newest-pair comparison is
+# also reported, but on its own it is transient: on 2026-08-12 it was true for
+# roughly twelve hours and then self-healed the moment `v0.14.0` was released,
+# while the orphaned `v0.13.0` persisted. Set equality is what stays red.
+#
+# This workflow never creates, deletes, or back-dates a tag or a Release. Both
+# remediations are operator decisions on a published ref; the tracking issue
+# states them and stops there.
+
+on:
+  schedule:
+    # Daily 07:20 UTC. Deliberately clear of tool-version-drift-check's 07:00
+    # and queue-monitor-liveness's ':41' slots, and of the top of the hour and
+    # each quarter-hour, which are the platform's most contended dispatch slots.
+    - cron: '20 7 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-tag-drift-check.yml'
+      - '.github/workflows/release.yml'
+      - '.github/scripts/release-tag-drift.sh'
+      - '.github/scripts/release-tag-drift.test.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: release-tag-drift-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    name: Detect release/tag drift
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # Rolling tracking issue create/update via create-issue-from-file.
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Read both artefacts through the API rather than a `fetch-depth: 0`
+      # checkout: the Releases half has no git representation at all, so the
+      # tag half is read the same way to keep one failure mode instead of two.
+      - name: Compare version tags against published Releases
+        id: drift
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+
+          # A read failure must never read as "no drift", so neither call is
+          # softened: an unreachable API fails the job loudly instead.
+          gh_read api --paginate "repos/${GH_REPO}/git/matching-refs/tags/v" \
+            --jq '.[].ref' > tags.txt
+          gh_read api --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            > releases.txt
+
+          echo "Tags read: $(wc -l < tags.txt); published Releases read: $(wc -l < releases.txt)"
+
+          # 0 = in sync, 1 = drift, anything else = the comparison itself broke.
+          status=0
+          bash .github/scripts/release-tag-drift.sh tags.txt releases.txt > drift.md || status=$?
+          cat drift.md
+          case "$status" in
+            0) echo 'drift_detected=false' >> "$GITHUB_OUTPUT" ;;
+            1) echo 'drift_detected=true' >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::release-tag-drift.sh exited ${status}; the comparison did not run."
+              exit "$status"
+              ;;
+          esac
+
+      # A marker embedded in the body (not a title search) is exact and survives
+      # a retitle, and matches the mechanism the sibling drift checks use.
+      - name: Find existing tracking issue
+        id: find-issue
+        if: steps.drift.outputs.drift_detected == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          MARKER: '<!-- ci-workflows:release-tag-drift-check:v1:active -->'
+          ISSUE_TITLE: '[Maintenance] Release/tag drift'
+          # This job authors the rolling issue with the ambient GITHUB_TOKEN, so
+          # its author.login is github-actions[bot] (type Bot) — the adoption
+          # filter the generated block applies before marker/title matching.
+          ISSUE_AUTHOR_LOGIN: 'github-actions[bot]'
+        run: |
+          set -euo pipefail
+          open_issues="$(gh api --paginate --slurp "repos/${GH_REPO}/issues?state=open&per_page=100")"
+          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT
+          # Source: .github/scripts/find-tracking-issue.sh
+          # Resolve the one open tracking issue this workflow owns into issue-number
+          # (empty if none), given open_issues (gh api --slurp JSON), MARKER,
+          # ISSUE_TITLE, ISSUE_AUTHOR_LOGIN. More than one match is never
+          # auto-resolvable, so it fails closed.
+          #
+          # The marker and title strings are public in workflow source, so matching on
+          # them alone would let anyone able to open an issue in the repo craft a decoy
+          # this automation adopts — then overwrites or closes — or a duplicate decoy
+          # that trips the fail-closed ambiguity guard to suppress a real report.
+          # Candidates are first restricted to issues authored by this workflow's own
+          # token identity (ISSUE_AUTHOR_LOGIN, a Bot), so an issue it did not author is
+          # never a candidate whatever text it carries.
+          #
+          # All four inputs are required: an unset MARKER would match every issue body
+          # (an empty needle) and an unset ISSUE_AUTHOR_LOGIN would drop the author
+          # restriction, so assert them up front to keep the fail-closed posture set -u
+          # gave the pre-extraction inline blocks.
+          : "${MARKER:?MARKER is required}"
+          : "${ISSUE_TITLE:?ISSUE_TITLE is required}"
+          : "${ISSUE_AUTHOR_LOGIN:?ISSUE_AUTHOR_LOGIN is required}"
+          : "${open_issues:?open_issues is required}"
+          matches="$(jq -ce --arg marker "$MARKER" --arg author "$ISSUE_AUTHOR_LOGIN" '
+            [.[][]
+              | select(.pull_request? == null)
+              | select(.user.login == $author and .user.type == "Bot")
+              | select((.body // "") | contains($marker))
+              | .number]
+          ' <<<"$open_issues")"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
+            exit 1
+          fi
+          if ((count == 0)); then
+            # One-time migration fallback: a still-open issue created by the pre-marker,
+            # title-search version of this workflow has no marker yet, so the search above
+            # can't find it. Adopt it by exact title match so the update step below reuses
+            # (and marker-backfills) that issue instead of orphaning it behind a newly
+            # opened duplicate.
+            matches="$(jq -ce --arg title "$ISSUE_TITLE" --arg author "$ISSUE_AUTHOR_LOGIN" '
+              [.[][]
+                | select(.pull_request? == null)
+                | select(.user.login == $author and .user.type == "Bot")
+                | select(.title == $title)
+                | .number]
+            ' <<<"$open_issues")"
+            count="$(jq -r 'length' <<<"$matches")"
+            if ((count > 1)); then
+              echo "::error::found ${count} pre-marker issues titled '${ISSUE_TITLE}'; reconcile them manually."
+              exit 1
+            fi
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >>"${GITHUB_OUTPUT:?}"
+          # END GENERATED FIND TRACKING ISSUE
+
+      - name: Open or update tracking issue
+        if: steps.drift.outputs.drift_detected == 'true'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          issue-number: ${{ steps.find-issue.outputs.issue-number }}
+          title: '[Maintenance] Release/tag drift'
+          content-filepath: ./drift.md
+
+      - name: Fail so the scheduled run notifies
+        if: steps.drift.outputs.drift_detected == 'true'
+        run: |
+          echo '::error::Version tags and published Releases disagree; see the tracking issue.'
+          exit 1
