@@ -48,7 +48,9 @@ const TOOL_FLOOR_FRAGMENTS = [
 ];
 
 function composeArgs(script, baseArgs) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "assistant-compose-"));
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "assistant-compose-"),
+  );
   try {
     const githubOutput = path.join(directory, "github-output");
     fs.writeFileSync(githubOutput, "");
@@ -167,7 +169,7 @@ test("compose step appends the V1 tool-allowlist floor", () => {
 
   const cases = [
     claudeArgsDefault.trim(),
-    '--model claude-sonnet-5 --max-turns 10',
+    "--model claude-sonnet-5 --max-turns 10",
     "--model claude-sonnet-5\n--max-turns 5",
   ];
   for (const baseArgs of cases) {
@@ -195,13 +197,13 @@ test("Claude action pin and advisory continue-on-error", () => {
   );
   assert.equal(
     assist.with.claude_args,
-    "${{ steps.compose-args.outputs.args }}",
+    `\${{ steps.compose-args.outputs.args }}`,
   );
   assert.equal(
     assist.with.claude_code_oauth_token,
-    "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    `\${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`,
   );
-  assert.equal(assist.with.allowed_bots, "${{ inputs.allowed-bots }}");
+  assert.equal(assist.with.allowed_bots, `\${{ inputs.allowed-bots }}`);
   assert.ok(!("allowed_non_write_users" in (assist.with ?? {})));
   assert.ok(!("use_commit_signing" in (assist.with ?? {})));
 });
