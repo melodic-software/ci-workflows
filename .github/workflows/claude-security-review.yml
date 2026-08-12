@@ -134,6 +134,18 @@ name: claude-security-review
 #     on:
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
+#       # workflow_dispatch re-entry for ci-workflows#227: when an intermittent
+#       # pull_request delivery gap leaves the required check ABSENT, a
+#       # schedule/dispatch companion (security-review-absent-mitigate) or an
+#       # operator re-runs this caller with pr-number. Do NOT replace
+#       # pull_request with pull_request_target / workflow_run — those trip the
+#       # privileged-trigger tripwire below.
+#       workflow_dispatch:
+#         inputs:
+#           pr-number:
+#             description: Pull request number to (re)run security-review for
+#             required: true
+#             type: string
 #       # NO `merge_group:` — deliberately not recommended, see #272. The pinned
 #       # action cannot serve that event (it throws `Unsupported event type`), so
 #       # adding the trigger buys a check that reports GREEN WITHOUT REVIEWING.
@@ -152,7 +164,7 @@ name: claude-security-review
 #     # the code-review caller's (which cancels superseded runs and queues
 #     # repo-wide) — do not normalize the two.
 #     concurrency:
-#       group: claude-security-review-${{ github.event.pull_request.number || github.run_id }}
+#       group: claude-security-review-${{ github.event.pull_request.number || inputs.pr-number || github.run_id }}
 #       cancel-in-progress: false
 #     jobs:
 #       security-review:
@@ -163,6 +175,7 @@ name: claude-security-review
 #                                  # (required even with an OAuth/API-key credential)
 #         uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@<sha>
 #         with:
+#           pr-number: ${{ inputs.pr-number }}
 #           # Each repo OWNS its pattern file at this conventional path:
 #           # root-anchored gitignore patterns, one per line (`#` comments and
 #           # blank lines ignored; `!`, `?` and `+` are REJECTED — see the
@@ -352,6 +365,17 @@ on:
           the same contended seat do not re-collide in lockstep.
         type: number
         default: 90
+      pr-number:
+        description: >-
+          Pull request number for workflow_dispatch re-entry when an
+          intermittent pull_request delivery gap left the required check
+          ABSENT (ci-workflows#227; same shape as claude-review #254). Empty
+          on pull_request — the event payload supplies number and head SHA.
+          When github.event.pull_request is absent, this input is required and
+          the reusable resolves the live head SHA via the API before freshness
+          and review steps run. Prefer this over privileged triggers.
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
@@ -789,18 +813,13 @@ jobs:
       # before the `if` above evaluates, so a skipped actor could cancel an
       # in-progress review.
       #
-      # Keyed per (PR, head SHA), not per PR: GitHub orders a concurrency
-      # group by when jobs start WAITING on it, not by event time, and callers
-      # gate this job behind a runner-selector job whose queue delay varies
-      # per run. Under a shared per-PR group, an older run whose selector was
-      # delayed could enter the group AFTER the newer head's review had
-      # started, cancel it, and review an obsolete head. Runs for different
-      # heads therefore never share a group; the superseded-head guard step
-      # below is what retires a stale run instead. Same-head duplicates
-      # (reopen, ready_for_review, reruns) still supersede each other — there
-      # the entry order is harmless because every member reviews identical
-      # content. Non-PR events degrade to a per-commit group via the fallbacks.
-      group: claude-security-review-${{ github.event.pull_request.number || github.sha }}-${{ github.event.pull_request.head.sha || github.sha }}
+      # content. workflow_dispatch has no event head SHA at concurrency
+      # evaluation time (head is resolved in a later step), so it keys the
+      # second half on pr-number — effectively per-PR cancel for dispatch
+      # re-entry (ci-workflows#227), which is the desired "latest dispatch
+      # wins" behavior. Other non-PR events degrade to a per-commit group via
+      # the fallbacks.
+      group: claude-security-review-${{ github.event.pull_request.number || inputs.pr-number || github.sha }}-${{ github.event.pull_request.head.sha || inputs.pr-number || github.sha }}
       cancel-in-progress: true
     steps:
       # Tripwire: this workflow handles secrets, so it must never run in a
@@ -815,16 +834,78 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
+      # Resolve PR number + head SHA for both pull_request and
+      # workflow_dispatch. Dispatch has no github.event.pull_request, so the
+      # caller passes pr-number and we fetch the live head (and head-repo)
+      # via the API before freshness / review steps consume them
+      # (ci-workflows#227; same shape as claude-review #254).
+      - name: Resolve PR context
+        id: resolve-pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER_INPUT: ${{ inputs.pr-number }}
+        with:
+          script: |
+            const fromEvent = context.payload.pull_request;
+            let number = fromEvent?.number;
+            let headSha = fromEvent?.head?.sha ?? "";
+            let headRepo = fromEvent?.head?.repo?.full_name ?? "";
+            let draft = Boolean(fromEvent?.draft);
+
+            if (!number) {
+              const parsed = Number(process.env.PR_NUMBER_INPUT);
+              if (!Number.isInteger(parsed) || parsed <= 0) {
+                core.setFailed(
+                  "pr-number is required when github.event.pull_request is absent " +
+                    "(workflow_dispatch re-entry; ci-workflows#227).",
+                );
+                return;
+              }
+              number = parsed;
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: number,
+                });
+                headSha = pr.head.sha;
+                headRepo = pr.head.repo?.full_name ?? `${context.repo.owner}/${context.repo.repo}`;
+                draft = Boolean(pr.draft);
+                if (pr.state !== "open") {
+                  core.setFailed(`PR #${number} is ${pr.state}; refusing to review a non-open pull request.`);
+                  return;
+                }
+              } catch (error) {
+                core.setFailed(`Could not resolve PR #${number}: ${error.message}`);
+                return;
+              }
+            }
+
+            if (!/^[0-9a-f]{40}$/.test(headSha)) {
+              core.setFailed(`Resolved head SHA for PR #${number} is not a full commit SHA: "${headSha}"`);
+              return;
+            }
+
+            core.setOutput("number", String(number));
+            core.setOutput("head-sha", headSha);
+            core.setOutput("head-repo", headRepo);
+            core.setOutput("draft", draft ? "true" : "false");
+            core.info(`Resolved PR #${number} at ${headSha}${draft ? " (draft)" : ""}`);
+
       # A stale run must retire itself, not rely on being cancelled: with the
       # per-head concurrency key above, nothing cancels a run whose head was
       # superseded while it sat in a queue. The composite owns the live-head
       # check and its fail-open contract — downstream `!= 'true'` gates treat
       # a missing output as fresh. Pinned to this repo's own merged SHA: a
       # local ./ ref resolves against the CALLER's checkout in a reusable
-      # workflow and cannot work.
+      # workflow and cannot work. Pass the resolved PR context so
+      # workflow_dispatch freshness works when the event has no pull_request.
       - name: Check whether this head is still current
         id: freshness
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@3c37af40fe1d90b16222a2887a27c87022fe111e # 3c37af4 2026-08-12
+        with:
+          pull-number: ${{ steps.resolve-pr.outputs.number }}
+          head-sha: ${{ steps.resolve-pr.outputs.head-sha }}
 
       # persist-credentials stays at its default (true) until upstream
       # claude-code-action#1236 ships: the action's setupBranch runs
@@ -832,11 +913,13 @@ jobs:
       # persist-credentials:false makes that fetch fail and leaves an orphan
       # tracking comment. The final strip step below scrubs the persisted token
       # to restore zizmor `artipacked` compliance. Reversible when #1236 lands.
+      # Explicit head SHA so workflow_dispatch checks out the PR under review.
       - name: Check out
         if: steps.freshness.outputs.superseded != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           filter: blob:none
+          ref: ${{ steps.resolve-pr.outputs.head-sha }}
 
       # Composed in a plain shell step, not a GitHub Actions expression, so
       # the composition is testable and reads like ordinary code.
@@ -845,17 +928,21 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           args="$BASE_ARGS"
-          # This lane's findings land as line-anchored review comments, so the
-          # grant has to be unconditional — it cannot sit in the claude-args
-          # default, which a caller replaces wholesale. Dropping it does not
-          # merely un-grant the tool: the action derives which MCP servers to
-          # install from these same args, so the server would never be
-          # installed and findings would have no tool to anchor them to lines.
-          # Repeated --allowedTools flags accumulate and dedupe, so this only
-          # ever adds to whatever the caller passed.
-          args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
+          # This lane's findings land as line-anchored review comments on
+          # pull_request, so the inline MCP grant has to be unconditional for
+          # that event — it cannot sit in the claude-args default, which a
+          # caller replaces wholesale. On workflow_dispatch the inline-comment
+          # MCP server is not installed (automation context has no entity PR),
+          # so grant gh comment/review/diff instead (ci-workflows#227 / #254).
+          # Repeated --allowedTools flags accumulate and dedupe.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
+          else
+            args="$args --allowedTools Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)"
+          fi
           # claude-args may be multiline (callers can pass YAML `|`), so emit it
           # with the heredoc output form and a random delimiter — a single-line
           # `args=$args` write corrupts $GITHUB_OUTPUT on any newline.
@@ -887,9 +974,11 @@ jobs:
         uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126 # v1.0.191
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # A clean security pass otherwise produces no visible output (upstream
-          # #1071); the tracking comment guarantees a "no findings" signal.
-          track_progress: true
+          # track_progress is pull_request-only upstream; forcing it on
+          # workflow_dispatch throws. Keep it on for pull_request (the
+          # always-report tracking comment) and narrow the action input for
+          # dispatch re-entry (ci-workflows#227).
+          track_progress: ${{ github.event_name == 'pull_request' }}
           # Off on this public lane (log-leak risk); hardcoded, not a flippable
           # input, so a consumer cannot turn it on.
           display_report: false
@@ -899,16 +988,18 @@ jobs:
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
           # header + permalink guidance live here and wrap the consumer's body.
+          # PR number / head SHA come from resolve-pr so workflow_dispatch
+          # re-entry (ci-workflows#227) still names the PR under review.
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+            PR NUMBER: ${{ steps.resolve-pr.outputs.number }}
+            HEAD SHA: ${{ steps.resolve-pr.outputs.head-sha }}
 
             ${{ inputs.prompt }}
 
             When referencing specific code locations in findings, link to the
             commit blob (not the PR) using a permalink with line numbers:
-            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+            https://github.com/${{ github.repository }}/blob/${{ steps.resolve-pr.outputs.head-sha }}/<path>#L<line>
 
       # ONE bounded, gated retry, because this lane's check certifies
       # execution: a sporadic failure that a re-run would clear should buy a
@@ -1146,9 +1237,11 @@ jobs:
         uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126 # v1.0.191
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # A clean security pass otherwise produces no visible output (upstream
-          # #1071); the tracking comment guarantees a "no findings" signal.
-          track_progress: true
+          # track_progress is pull_request-only upstream; forcing it on
+          # workflow_dispatch throws. Keep it on for pull_request (the
+          # always-report tracking comment) and narrow the action input for
+          # dispatch re-entry (ci-workflows#227).
+          track_progress: ${{ github.event_name == 'pull_request' }}
           # Off on this public lane (log-leak risk); hardcoded, not a flippable
           # input, so a consumer cannot turn it on.
           display_report: false
@@ -1158,16 +1251,18 @@ jobs:
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
           # header + permalink guidance live here and wrap the consumer's body.
+          # PR number / head SHA come from resolve-pr so workflow_dispatch
+          # re-entry (ci-workflows#227) still names the PR under review.
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+            PR NUMBER: ${{ steps.resolve-pr.outputs.number }}
+            HEAD SHA: ${{ steps.resolve-pr.outputs.head-sha }}
 
             ${{ inputs.prompt }}
 
             When referencing specific code locations in findings, link to the
             commit blob (not the PR) using a permalink with line numbers:
-            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+            https://github.com/${{ github.repository }}/blob/${{ steps.resolve-pr.outputs.head-sha }}/<path>#L<line>
 
       # Collapse the two attempts into the one pair of facts the outcome step
       # needs. Reading the retry's fields directly would be wrong: when it is
@@ -1250,14 +1345,12 @@ jobs:
       # whose outcome step never ran — still skips this step entirely.
       #
       # Only a pull_request run gates a merge, so only a pull_request run is
-      # ruled on at all. The action rejects other events outright —
-      # `merge_group` is not a supported event type at all, and
-      # `track_progress` (hardcoded on above) rejects every non-PR event — so
-      # those runs fail for a reason the head cannot fix and no retry can
-      # clear. Reddening them would wedge a consumer's merge queue
-      # permanently, and the comment steps below are PR-gated too, so the red
-      # would carry no explanation. They keep the historical pass-through:
-      # still annotated, still classified, not fatal.
+      # ruled on at all. Other events (including workflow_dispatch re-entry
+      # for ci-workflows#227) keep the historical pass-through: still
+      # annotated, still classified, not fatal via this step — dispatch
+      # attaches a check by completing the job, and merge_group remains
+      # unsupported upstream. Reddening non-pull_request runs would wedge a
+      # consumer's merge queue on a cause no head change can fix.
       #
       # The three legitimate no-verdict paths never arrive here: out-of-scope
       # and fork/skip-actor PRs skip the whole job, and a superseded head
@@ -1295,17 +1388,18 @@ jobs:
         # comment is the PR-visible half of an alarm whose check is GREEN. It
         # has to carry the weight the conclusion no longer does.
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@3c37af40fe1d90b16222a2887a27c87022fe111e # 3c37af4 2026-08-12
         with:
           marker: "<!-- claude-security-review-infra-status -->"
           mode: post-failure
           headline: Automated security review did not complete
           failure-class: ${{ steps.review-outcome.outputs.failure-class }}
           review-detail: ${{ steps.review-outcome.outputs.review-detail }}
+          pull-number: ${{ steps.resolve-pr.outputs.number }}
           body-copy: |-
             **The check is green on purpose, and it is not evidence.** It certifies that a security pass ran, and this one did not complete — but the cause is outside this PR's control, so merging is deliberately left unblocked rather than locking every merge for the length of the outage. **Nothing was reviewed at this head.** Where this check is required, it is satisfied without that evidence; a human should review security-sensitive changes here before merging.
             >
-            > Re-run the job to retry the review; a new push also retries it only if the caller's `pull_request` triggers include `synchronize` (the canonical security caller keeps it). An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator.
+            > Re-run the job, or workflow_dispatch this workflow with the PR number, to retry the review (ci-workflows#227). A new push also retries it only if the caller's `pull_request` triggers include `synchronize` (the canonical security caller keeps it). An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator.
             >
             > Re-running does NOT help for every class:
             > - `rate-limit` that persists across re-runs, or `auth` — the credential or usage budget needs an **operator**; retrying will not clear it.
@@ -1323,10 +1417,11 @@ jobs:
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@b5d54bf7cb386b1f2c35426c6c5fb8d1686671bd # b5d54bf 2026-07-27
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@3c37af40fe1d90b16222a2887a27c87022fe111e # 3c37af4 2026-08-12
         with:
           marker: "<!-- claude-security-review-infra-status -->"
           mode: clear-on-success
+          pull-number: ${{ steps.resolve-pr.outputs.number }}
 
       # Incremental relevance state (#259). Upserted only after a review that
       # actually RAN — the same gate as clearing the infra-status marker — so
@@ -1338,18 +1433,31 @@ jobs:
         if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RESOLVED_NUMBER: ${{ steps.resolve-pr.outputs.number }}
+          RESOLVED_HEAD_SHA: ${{ steps.resolve-pr.outputs.head-sha }}
+          RESOLVED_HEAD_REPO: ${{ steps.resolve-pr.outputs.head-repo }}
         with:
           script: |
-            const pr = context.payload.pull_request;
-            if (!pr?.number) {
+            const number = Number(
+              process.env.RESOLVED_NUMBER || context.payload.pull_request?.number,
+            );
+            if (!Number.isInteger(number) || number <= 0) {
               core.info("No pull request in this event; nothing to persist.");
               return;
             }
-            if (pr.head?.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+            const headRepo =
+              process.env.RESOLVED_HEAD_REPO ||
+              context.payload.pull_request?.head?.repo?.full_name ||
+              "";
+            if (headRepo && headRepo !== `${context.repo.owner}/${context.repo.repo}`) {
               core.info("Fork-triggered run has a read-only token; skipping last-reviewed-head persist.");
               return;
             }
-            const headSha = pr.head?.sha;
+            const headSha =
+              process.env.RESOLVED_HEAD_SHA ||
+              context.payload.pull_request?.head?.sha ||
+              "";
             if (!headSha || !/^[0-9a-f]{40}$/u.test(headSha)) {
               core.warning(`Refusing to persist a non-SHA head ref: ${headSha}`);
               return;
@@ -1366,7 +1474,7 @@ jobs:
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: pr.number,
+                issue_number: number,
                 per_page: 100,
               });
               const marked = comments.filter(
@@ -1386,7 +1494,7 @@ jobs:
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: pr.number,
+                  issue_number: number,
                   body,
                 });
               }

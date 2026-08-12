@@ -1,0 +1,54 @@
+name: Security review absent mitigate
+
+# Dogfood caller for security-review-absent-mitigate.yml (ci-workflows#227).
+# schedule + workflow_dispatch only — never pull_request_target / workflow_run
+# with secrets over the security lane. Pairs with claude-security-review-self.yml
+# which exposes workflow_dispatch + pr-number for the preferred re-dispatch path.
+#
+# Default mode posts a FAILED check under a missing required security-review
+# context so an ABSENT required check becomes visible. Operators can dispatch
+# with mode=dispatch once adopting repos expose the matching workflow_dispatch
+# input on their Claude Security Review caller.
+
+on:
+  schedule:
+    # Four times an hour is enough to bound a #227-shaped wedge well under the
+    # multi-hour outages observed, without racing the typical seconds-to-minutes
+    # pull_request delivery (grace-minutes defaults to 15).
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: report | post-failure-check | dispatch
+        required: false
+        default: post-failure-check
+        type: choice
+        options:
+          - report
+          - post-failure-check
+          - dispatch
+      dry-run:
+        description: Print planned writes without calling Checks/Actions APIs
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-review-absent-mitigate-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  mitigate:
+    permissions:
+      contents: read
+      checks: write
+      actions: write
+      pull-requests: read
+    uses: ./.github/workflows/security-review-absent-mitigate.yml
+    with:
+      mode: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'post-failure-check' }}
+      dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || false }}
+      workflow-name: Claude Security Review
