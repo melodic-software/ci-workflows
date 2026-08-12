@@ -10,6 +10,7 @@ const {
   MitigateUsageError,
   filterSecurityReviewContexts,
   pastGracePeriod,
+  resolveGraceAnchor,
   findAbsentSecurityReview,
   failureCheckPayload,
   parseArgs,
@@ -146,6 +147,8 @@ test("mitigatePull skips drafts, grace, and present checks", () => {
         number: 1,
         sha: "a".repeat(40),
         openedAt: "2026-07-23T07:00:00Z",
+        updatedAt: "2026-07-23T07:00:00Z",
+        headRef: "chore/standards-sync",
         baseRef: "main",
         title: "draft",
         draft: true,
@@ -160,6 +163,9 @@ test("mitigatePull skips drafts, grace, and present checks", () => {
         number: 2,
         sha: "b".repeat(40),
         openedAt: "2026-07-23T07:50:00Z",
+        updatedAt: "2026-07-23T07:50:00Z",
+        headCommittedAt: "2026-07-23T07:50:00Z",
+        headRef: "chore/standards-sync",
         baseRef: "main",
         title: "fresh",
         draft: false,
@@ -170,12 +176,23 @@ test("mitigatePull skips drafts, grace, and present checks", () => {
   assert.equal(
     mitigatePull({
       ...base,
-      checkRuns: [check("security-review / security-review")],
-      workflowJobs: [job("security-review / security-review")],
+      checkRuns: [
+        check("security-review / security-review", {
+          at: "2026-07-23T07:00:00Z",
+        }),
+      ],
+      workflowJobs: [
+        job("security-review / security-review", {
+          at: "2026-07-23T07:00:00Z",
+        }),
+      ],
       pull: {
         number: 3,
         sha: "c".repeat(40),
-        openedAt: "2026-07-23T07:00:00Z",
+        openedAt: "2026-07-22T07:00:00Z",
+        updatedAt: "2026-07-23T07:00:00Z",
+        headCommittedAt: "2026-07-23T07:00:00Z",
+        headRef: "chore/standards-sync",
         baseRef: "main",
         title: "present",
         draft: false,
@@ -183,6 +200,83 @@ test("mitigatePull skips drafts, grace, and present checks", () => {
     }).skipped,
     "security-review-present",
   );
+});
+
+test("grace anchors to head activity, not ancient PR created_at", () => {
+  const now = Date.parse("2026-07-24T08:00:00Z");
+  // PR opened yesterday; new head just got sibling pull_request_target checks.
+  const result = mitigatePull({
+    repo: "melodic-software/claude-code-plugins",
+    pull: {
+      number: 1103,
+      sha: "d".repeat(40),
+      openedAt: "2026-07-23T07:39:05Z",
+      updatedAt: "2026-07-24T07:55:00Z",
+      headCommittedAt: "2026-07-24T07:55:00Z",
+      headRef: "chore/standards-sync",
+      baseRef: "main",
+      title: "sync",
+      draft: false,
+    },
+    requiredContexts: ["security-review / security-review"],
+    checkRuns: [
+      check("do-not-merge / do-not-merge", { at: "2026-07-24T07:55:10Z" }),
+    ],
+    workflowJobs: [
+      job("do-not-merge / do-not-merge", { at: "2026-07-24T07:55:10Z" }),
+    ],
+    contextPattern: /security-review/iu,
+    graceMinutes: 15,
+    mode: "report",
+    workflow: "Claude Security Review",
+    dryRun: true,
+    now,
+  });
+  assert.equal(result.skipped, "within-grace");
+  assert.equal(
+    resolveGraceAnchor(
+      {
+        number: 1103,
+        openedAt: "2026-07-23T07:39:05Z",
+        updatedAt: "2026-07-24T07:55:00Z",
+        headCommittedAt: "2026-07-24T07:55:00Z",
+      },
+      [check("do-not-merge / do-not-merge", { at: "2026-07-24T07:55:10Z" })],
+      [],
+    ),
+    "2026-07-24T07:55:10.000Z",
+  );
+});
+
+test("dispatch dry-run records the PR head ref for --ref", () => {
+  const result = mitigatePull({
+    repo: "melodic-software/claude-code-plugins",
+    pull: {
+      number: 1103,
+      sha: "67ffa66f9742c6c483698165aa6d8b190d315fb1",
+      openedAt: "2026-07-23T07:39:05Z",
+      updatedAt: "2026-07-23T07:39:05Z",
+      headCommittedAt: "2026-07-23T07:39:03Z",
+      headRef: "chore/standards-sync",
+      baseRef: "main",
+      title: "chore: sync",
+      draft: false,
+    },
+    requiredContexts: ["security-review / security-review"],
+    checkRuns: [
+      check("do-not-merge / do-not-merge", { at: "2026-07-23T07:39:11Z" }),
+    ],
+    workflowJobs: [],
+    contextPattern: /security-review/iu,
+    graceMinutes: 15,
+    mode: "dispatch",
+    workflow: "Claude Security Review",
+    dryRun: true,
+    now: Date.parse("2026-07-23T21:00:00Z"),
+  });
+  assert.equal(result.skipped, null);
+  assert.equal(result.actions[0].status, "dry-run");
+  assert.equal(result.actions[0].ref, "chore/standards-sync");
 });
 
 test("mitigatePull report mode records absent actions without writing", () => {

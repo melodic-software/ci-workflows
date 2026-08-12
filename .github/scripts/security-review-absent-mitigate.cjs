@@ -61,10 +61,12 @@ function filterSecurityReviewContexts(
 
 /**
  * Whether an absent security-review row is old enough to mitigate.
- * `openedAt` is the PR created_at (ISO). Grace covers normal delivery lag
- * (seconds to a few minutes) so we do not race a healthy pull_request run.
+ * `anchorAt` must reflect when the *current head* appeared (committer date,
+ * earliest sibling check-run/job on the SHA, or updated_at) — not PR
+ * created_at, which never moves on synchronize and would defeat the race
+ * guard on any PR older than the grace window.
  */
-function pastGracePeriod(openedAt, graceMinutes, now = Date.now()) {
+function pastGracePeriod(anchorAt, graceMinutes, now = Date.now()) {
   if (
     typeof graceMinutes !== "number" ||
     !Number.isFinite(graceMinutes) ||
@@ -72,11 +74,48 @@ function pastGracePeriod(openedAt, graceMinutes, now = Date.now()) {
   ) {
     throw new MitigateUsageError("graceMinutes must be a non-negative number");
   }
-  const opened = Date.parse(openedAt);
-  if (!Number.isFinite(opened)) {
-    throw new MitigateUsageError(`invalid openedAt timestamp: ${openedAt}`);
+  const anchor = Date.parse(anchorAt);
+  if (!Number.isFinite(anchor)) {
+    throw new MitigateUsageError(`invalid grace anchor timestamp: ${anchorAt}`);
   }
-  return now - opened >= graceMinutes * 60 * 1000;
+  return now - anchor >= graceMinutes * 60 * 1000;
+}
+
+/**
+ * Earliest observed activity on this head SHA among sibling check-runs / jobs,
+ * falling back to the pull's headCommittedAt / updatedAt / openedAt. Prefers
+ * evidence that the head already reached Actions so we wait grace from delivery
+ * start rather than from an ancient PR open time.
+ */
+function resolveGraceAnchor(pull, checkRuns, workflowJobs) {
+  const stamps = [];
+  for (const item of [...(checkRuns ?? []), ...(workflowJobs ?? [])]) {
+    for (const key of ["started_at", "completed_at", "created_at"]) {
+      const value = item?.[key];
+      if (typeof value === "string" && value.length > 0) {
+        const ms = Date.parse(value);
+        if (Number.isFinite(ms)) {
+          stamps.push(ms);
+        }
+      }
+    }
+  }
+  if (stamps.length > 0) {
+    return new Date(Math.min(...stamps)).toISOString();
+  }
+  for (const key of ["headCommittedAt", "updatedAt", "openedAt"]) {
+    const value = pull?.[key];
+    if (
+      typeof value === "string" &&
+      value.length > 0 &&
+      Number.isFinite(Date.parse(value))
+    ) {
+      return value;
+    }
+  }
+  throw new MitigateUsageError(
+    `PR #${pull?.number ?? "?"} has no usable grace anchor timestamp`,
+  );
 }
 
 /**
@@ -276,7 +315,12 @@ function ghApiJson(
   }
 }
 
-function ghWorkflowDispatch(repo, workflow, prNumber) {
+function ghWorkflowDispatch(repo, workflow, prNumber, ref) {
+  if (typeof ref !== "string" || ref.length === 0) {
+    throw new MitigateUsageError(
+      "workflow_dispatch requires the PR head ref so the check attaches to the PR head SHA (ci-workflows#227)",
+    );
+  }
   const result = spawnSync(
     "gh",
     [
@@ -285,6 +329,8 @@ function ghWorkflowDispatch(repo, workflow, prNumber) {
       workflow,
       "--repo",
       repo,
+      "--ref",
+      ref,
       "-f",
       `pr-number=${prNumber}`,
     ],
@@ -309,6 +355,11 @@ function collectCheckRuns(repo, sha) {
     const payload = ghApiJson(
       `repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`,
     );
+    if (payload === null || typeof payload !== "object") {
+      throw new MitigateUsageError(
+        `check-runs response for ${sha} was empty or not an object`,
+      );
+    }
     const batch = Array.isArray(payload.check_runs) ? payload.check_runs : [];
     runs.push(...batch);
     if (batch.length < 100) {
@@ -329,6 +380,11 @@ function collectWorkflowJobs(repo, sha) {
     const payload = ghApiJson(
       `repos/${repo}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100&page=${page}`,
     );
+    if (payload === null || typeof payload !== "object") {
+      throw new MitigateUsageError(
+        `workflow runs response for ${sha} was empty or not an object`,
+      );
+    }
     const runs = Array.isArray(payload.workflow_runs)
       ? payload.workflow_runs
       : [];
@@ -338,6 +394,11 @@ function collectWorkflowJobs(repo, sha) {
         const jobPayload = ghApiJson(
           `repos/${repo}/actions/runs/${run.id}/jobs?per_page=100&page=${jobPage}`,
         );
+        if (jobPayload === null || typeof jobPayload !== "object") {
+          throw new MitigateUsageError(
+            `jobs response for run ${run.id} was empty or not an object`,
+          );
+        }
         const batch = Array.isArray(jobPayload.jobs) ? jobPayload.jobs : [];
         for (const job of batch) {
           jobs.push({
@@ -444,6 +505,8 @@ function normalizePull(pull) {
   const number = pull?.number;
   const sha = pull?.head?.sha;
   const openedAt = pull?.created_at;
+  const updatedAt = pull?.updated_at;
+  const headRef = pull?.head?.ref;
   const baseRef = pull?.base?.ref;
   if (!Number.isInteger(number) || number <= 0) {
     throw new MitigateUsageError("pull.number must be a positive integer");
@@ -458,10 +521,24 @@ function normalizePull(pull) {
     number,
     sha,
     openedAt,
+    updatedAt: typeof updatedAt === "string" ? updatedAt : openedAt,
+    headRef: typeof headRef === "string" && headRef.length > 0 ? headRef : null,
+    headCommittedAt:
+      typeof pull?.headCommittedAt === "string" ? pull.headCommittedAt : null,
     baseRef: typeof baseRef === "string" ? baseRef : null,
     title: typeof pull?.title === "string" ? pull.title : "",
     draft: Boolean(pull?.draft),
   };
+}
+
+function resolveHeadCommittedAt(repo, sha) {
+  const commit = ghApiJson(`repos/${repo}/commits/${sha}`);
+  const stamp =
+    commit?.commit?.committer?.date ?? commit?.commit?.author?.date ?? null;
+  if (typeof stamp !== "string" || stamp.length === 0) {
+    return null;
+  }
+  return stamp;
 }
 
 function mitigatePull({
@@ -486,11 +563,13 @@ function mitigatePull({
       actions,
     };
   }
-  if (!pastGracePeriod(pull.openedAt, graceMinutes, now)) {
+  const graceAnchor = resolveGraceAnchor(pull, checkRuns, workflowJobs);
+  if (!pastGracePeriod(graceAnchor, graceMinutes, now)) {
     return {
       pull: pull.number,
       sha: pull.sha,
       skipped: "within-grace",
+      graceAnchor,
       actions,
     };
   }
@@ -543,14 +622,21 @@ function mitigatePull({
         action.checkRunId = created?.id ?? null;
       }
     } else if (mode === "dispatch") {
+      if (!pull.headRef) {
+        throw new MitigateUsageError(
+          `PR #${pull.number} has no head ref; cannot workflow_dispatch onto the PR head`,
+        );
+      }
       if (dryRun) {
         action.status = "dry-run";
         action.workflow = workflow;
         action.prNumber = pull.number;
+        action.ref = pull.headRef;
       } else {
-        ghWorkflowDispatch(repo, workflow, String(pull.number));
+        ghWorkflowDispatch(repo, workflow, String(pull.number), pull.headRef);
         action.status = "dispatched";
         action.workflow = workflow;
+        action.ref = pull.headRef;
       }
     } else {
       throw new MitigateUsageError(
@@ -717,6 +803,8 @@ function main(argv = process.argv.slice(2)) {
       }
       const checkRuns = collectCheckRuns(repo, pull.sha);
       const workflowJobs = collectWorkflowJobs(repo, pull.sha);
+      pull.headCommittedAt =
+        pull.headCommittedAt ?? resolveHeadCommittedAt(repo, pull.sha);
       results.push(
         mitigatePull({
           repo,
@@ -794,6 +882,7 @@ module.exports = Object.freeze({
   SECURITY_CONTEXT_HINT,
   filterSecurityReviewContexts,
   pastGracePeriod,
+  resolveGraceAnchor,
   findAbsentSecurityReview,
   failureCheckPayload,
   parseArgs,
