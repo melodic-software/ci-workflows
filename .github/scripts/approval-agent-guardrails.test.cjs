@@ -210,7 +210,10 @@ test("parseBooleanInput treats Actions string booleans", () => {
 
 test("reusable workflow defaults enable-approve to false and wires secrets", () => {
   const reusable = parseWorkflow(reusableSource);
-  assert.equal(reusable.on.workflow_call.inputs["enable-approve"].default, false);
+  assert.equal(
+    reusable.on.workflow_call.inputs["enable-approve"].default,
+    false,
+  );
   assert.equal(
     reusable.on.workflow_call.inputs["refuse-on-human-risk"].default,
     true,
@@ -233,7 +236,10 @@ test("reusable workflow defaults enable-approve to false and wires secrets", () 
   assert.match(reusableSource, /"APPROVE"/u);
   assert.match(reusableSource, /create-github-app-token@/u);
   // Default path remains safe: APPROVE only after enable-approve + guardrails.
-  assert.match(reusableSource, /ENABLE_APPROVE: \$\{\{ inputs\.enable-approve \}\}/u);
+  assert.match(
+    reusableSource,
+    /ENABLE_APPROVE: \$\{\{ inputs\.enable-approve \}\}/u,
+  );
 });
 
 test("self caller stays workflow_dispatch-only and does not auto-enable approve", () => {
