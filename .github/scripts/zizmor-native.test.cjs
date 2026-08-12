@@ -206,11 +206,13 @@ test("opt-in upload-sarif generates SARIF without replacing github gating", () =
   assert.match(step, /if \(\(sarif_status != 0\)\); then[\s\S]*exit 2/u);
 
   // Gating still keys off the --format=github status, not the SARIF run.
-  const githubTee = step.indexOf(
-    'GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}" | tee -- "$annotations"',
+  // Use RegExp (not a quoted `${...}` literal) so biome's
+  // noTemplateCurlyInString --error-on-warnings gate stays green.
+  const githubTee = step.search(
+    /GH_TOKEN="\$token" "\$binary" "\$\{args\[@\]\}" -- "\$\{targets\[@\]\}" \| tee -- "\$annotations"/u,
   );
-  const sarifRedirect = step.indexOf(
-    'GH_TOKEN="$token" "$binary" "${sarif_args[@]}" -- "${targets[@]}" >"$sarif_path"',
+  const sarifRedirect = step.search(
+    /GH_TOKEN="\$token" "\$binary" "\$\{sarif_args\[@\]\}" -- "\$\{targets\[@\]\}" >"\$sarif_path"/u,
   );
   const blockingCheck = step.indexOf(
     "if ((status >= 11)); then blocking=true; fi",
