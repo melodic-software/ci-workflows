@@ -12,9 +12,9 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
-const pinnedVersion = "1.28.0";
+const pinnedVersion = "1.29.0";
 const pinnedSha256 =
-  "e87b67160194884e375a46a12c57ccc904f762b53845f254fab7f17d98809c09";
+  "dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839";
 const assetName = "zizmor-x86_64-unknown-linux-gnu.tar.gz";
 
 function inputDefault(inputName) {

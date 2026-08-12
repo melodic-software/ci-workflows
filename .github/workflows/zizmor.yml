@@ -44,13 +44,13 @@ on:
         # (.chezmoidata/uv-tools.yaml). A developer auditing locally with the
         # fleet zizmor while this lane runs an older one gets findings the lane
         # cannot see, and misses findings the lane raises.
-        default: v1.28.0
+        default: v1.29.0
       sha256:
         description: >-
           SHA-256 of the x86_64-unknown-linux-gnu release archive. Change
           together with version.
         type: string
-        default: e87b67160194884e375a46a12c57ccc904f762b53845f254fab7f17d98809c09
+        default: dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839
       online-audits:
         description: Run online audits (uses the workflow token).
         type: boolean
@@ -122,7 +122,7 @@ jobs:
           FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
           UPLOAD_SARIF: ${{ inputs.upload-sarif }}
           ZIZMOR_TOKEN: ${{ github.token }}
-          PINNED_VERSION: 1.28.0
+          PINNED_VERSION: 1.29.0
           ASSET_NAME: zizmor-x86_64-unknown-linux-gnu.tar.gz
         run: |
           set -euo pipefail
