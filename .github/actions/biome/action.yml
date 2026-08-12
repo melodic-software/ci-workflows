@@ -25,7 +25,7 @@ inputs:
     description: >-
       Reviewed default when version is empty and the caller has no exact
       `@biomejs/biome` pin. Drift-check monitors this input only.
-    default: 2.5.6
+    default: 2.5.8
   node-version:
     description: Node.js version to set up.
     default: 24.18.0
