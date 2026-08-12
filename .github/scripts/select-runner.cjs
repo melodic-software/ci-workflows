@@ -60,11 +60,62 @@ class InvalidResponseError extends Error {
 }
 
 class StrictRoutingError extends Error {
-  constructor(reason) {
-    super(`self-hosted-only selection failed: ${reason}`);
+  constructor(reason, detail = null) {
+    super(
+      exactNonEmptyString(detail)
+        ? detail
+        : `self-hosted-only selection failed: ${reason}`,
+    );
     this.name = "StrictRoutingError";
     this.reason = reason;
   }
+}
+
+// Operator-facing text for zero ONLINE managed capacity (ci-workflows#246).
+// GitHub sometimes annotates a drained self-hosted queue as a billing failure;
+// this wording names the real cause so operators check the runner host first.
+function formatNoOnlineRunnerMessage({
+  labels = [],
+  failingClosed = false,
+} = {}) {
+  const labelList = Array.isArray(labels)
+    ? labels.filter((label) => exactNonEmptyString(label))
+    : [];
+  let labelPart = "";
+  if (labelList.length === 1) {
+    labelPart = ` for \`${labelList[0]}\``;
+  } else if (labelList.length > 1) {
+    labelPart = ` for \`${labelList.join("`, `")}\``;
+  }
+  const disposition = failingClosed
+    ? "Failing closed so the check names local capacity instead of hanging or falling through."
+    : "Falling back to the configured hosted runner; downstream work is not on the drained self-hosted pool.";
+  return (
+    `No ONLINE managed self-hosted runner${labelPart}. ` +
+    "This is local/self-hosted capacity offline — not a GitHub billing failure. " +
+    "Check `ci-runner host status` (enable with `ci-runner host enable --wait`). " +
+    disposition
+  );
+}
+
+async function announceNoOnlineRunner(core, { labels, failingClosed }) {
+  const message = formatNoOnlineRunnerMessage({ labels, failingClosed });
+  // Prefer-self-hosted still succeeds with a hosted route; use warning so the
+  // annotation is visible without painting a green selector red. Strict
+  // fail-closed paths rethrow after error so the check fails on the real cause.
+  if (failingClosed) {
+    core.error(message);
+  } else {
+    core.warning(message);
+  }
+  if (core.summary && typeof core.summary.addRaw === "function") {
+    await core.summary
+      .addHeading("Self-hosted capacity offline")
+      .addRaw(message)
+      .addEOL()
+      .write();
+  }
+  return message;
 }
 
 function hostedResult(hostedRunner, reason) {
@@ -269,8 +320,11 @@ function preflight(input) {
     const label = candidates.labels[0];
     const reviewTier =
       normalizedLabel(label) === "melodic-review-ubuntu-24.04-x64";
-    // CI tier may blind-queue so a scale-set can wake. The capped review tier
-    // must not: an offline review fleet queues forever with no signal
+    // CI tier may blind-queue so a scale-set can wake (scale-from-zero). Do not
+    // move that selector onto hosted or inventorize the default tier here —
+    // that is Option A on ci-workflows#246 and would spend hosted minutes on
+    // every self-hosted-only invocation. The capped review tier must not
+    // blind-queue: an offline review fleet hangs forever with no signal
     // (ci-workflows#386). Probe inventory when credentials exist; otherwise
     // fail closed rather than emit a label nothing will ever claim.
     if (reviewTier) {
@@ -570,7 +624,13 @@ async function selectRunner(input, dependencies = {}) {
     }
     if (!selection.selectedLabel) {
       if (input.policy === "self-hosted-only") {
-        throw new StrictRoutingError("no-online-runner");
+        throw new StrictRoutingError(
+          "no-online-runner",
+          formatNoOnlineRunnerMessage({
+            labels: prepared.labels,
+            failingClosed: true,
+          }),
+        );
       }
       return hostedResult(prepared.hostedRunner, "no-online-runner");
     }
@@ -617,10 +677,32 @@ function inputsFromEnvironment(env) {
   };
 }
 
+function configuredLabelsForAnnouncement(env) {
+  const parsed = parseCandidateLabels(inputsFromEnvironment(env));
+  return "labels" in parsed ? parsed.labels : [];
+}
+
 async function runGitHubScript({ github, core, env }) {
-  const result = await selectRunner(inputsFromEnvironment(env), {
-    request: (...args) => github.request(...args),
-  });
+  let result;
+  try {
+    result = await selectRunner(inputsFromEnvironment(env), {
+      request: (...args) => github.request(...args),
+    });
+  } catch (error) {
+    // Surface a check annotation + job summary before the step fails so the
+    // operator sees local capacity offline instead of a GitHub billing lead
+    // (ci-workflows#246). Prefer-self-hosted uses the success path below.
+    if (
+      error instanceof StrictRoutingError &&
+      error.reason === "no-online-runner"
+    ) {
+      await announceNoOnlineRunner(core, {
+        labels: configuredLabelsForAnnouncement(env),
+        failingClosed: true,
+      });
+    }
+    throw error;
+  }
   // Empty runner must never be published as a successful selection: GitHub
   // Actions treats "" as falsy in `success && runner || fallback`, which is
   // billing-leak mechanism B (ci-workflows#278).
@@ -631,12 +713,20 @@ async function runGitHubScript({ github, core, env }) {
   core.setOutput("route", result.route);
   core.setOutput("reason", result.reason);
   core.setOutput("online-runner-count", String(result.onlineRunnerCount));
+  if (result.reason === "no-online-runner") {
+    await announceNoOnlineRunner(core, {
+      labels: configuredLabelsForAnnouncement(env),
+      failingClosed: false,
+    });
+  }
   return result;
 }
 
 module.exports = Object.freeze({
   InvalidResponseError,
   StrictRoutingError,
+  announceNoOnlineRunner,
+  formatNoOnlineRunnerMessage,
   inputsFromEnvironment,
   parseCandidateLabels,
   permitsLocalExecution,

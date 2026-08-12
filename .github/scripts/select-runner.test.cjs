@@ -6,7 +6,11 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
-const { selectRunner } = require("./select-runner.cjs");
+const {
+  runGitHubScript,
+  selectRunner,
+  formatNoOnlineRunnerMessage,
+} = require("./select-runner.cjs");
 
 const workflowPath = path.join(
   __dirname,
@@ -164,8 +168,158 @@ test("self-hosted-only probes review-tier inventory and fails when offline", asy
     ),
     (error) =>
       error.name === "StrictRoutingError" &&
+      error.reason === "no-online-runner" &&
+      /not a GitHub billing failure/u.test(error.message) &&
+      /ci-runner host status/u.test(error.message) &&
+      /melodic-review-ubuntu-24\.04-x64/u.test(error.message),
+  );
+});
+
+test("no-online-runner operator message names local capacity not billing", () => {
+  const message = formatNoOnlineRunnerMessage({
+    labels: ["melodic-ubuntu-24.04-x64"],
+    failingClosed: false,
+  });
+  assert.match(message, /No ONLINE managed self-hosted runner/u);
+  assert.match(message, /melodic-ubuntu-24\.04-x64/u);
+  assert.match(message, /not a GitHub billing failure/u);
+  assert.match(message, /ci-runner host status/u);
+  assert.match(message, /Falling back to the configured hosted runner/u);
+  assert.match(
+    formatNoOnlineRunnerMessage({
+      labels: ["melodic-review-ubuntu-24.04-x64"],
+      failingClosed: true,
+    }),
+    /Failing closed/u,
+  );
+});
+
+function recordingCore() {
+  const outputs = {};
+  const warnings = [];
+  const errors = [];
+  const summaryChunks = [];
+  const summary = {
+    addHeading(text) {
+      summaryChunks.push(`# ${text}`);
+      return summary;
+    },
+    addRaw(text) {
+      summaryChunks.push(text);
+      return summary;
+    },
+    addEOL() {
+      summaryChunks.push("\n");
+      return summary;
+    },
+    async write() {
+      return undefined;
+    },
+  };
+  return {
+    outputs,
+    warnings,
+    errors,
+    summaryChunks,
+    core: {
+      setOutput(name, value) {
+        outputs[name] = value;
+      },
+      warning(message) {
+        warnings.push(message);
+      },
+      error(message) {
+        errors.push(message);
+      },
+      summary,
+    },
+  };
+}
+
+test("prefer-self-hosted no-online-runner announces capacity offline on the job", async () => {
+  const { core, outputs, warnings, errors, summaryChunks } = recordingCore();
+  const result = await runGitHubScript({
+    github: {
+      request: async () => response([runner({ status: "offline" })]),
+    },
+    core,
+    env: {
+      POLICY: "prefer-self-hosted",
+      SELF_HOSTED_LABEL: "melodic-ubuntu-24.04-x64",
+      SELF_HOSTED_LABELS_JSON: "",
+      HOSTED_RUNNER: "ubuntu-24.04",
+      RUNNER_SCOPE: "organization",
+      MANAGED_RUNNER_PREFIX: "ci-runner-melo-",
+      OBSERVER_CLIENT_ID: "Iv23observer",
+      HAS_OBSERVER_SECRET: "true",
+      TOKEN_OUTCOME: "success",
+      REPOSITORY_OWNER: "melodic-software",
+      REPOSITORY_NAME: "medley",
+      API_TIMEOUT_SECONDS: "10",
+      REPOSITORY_PRIVATE: "true",
+      EVENT_NAME: "push",
+      IS_FORK_PULL_REQUEST: "false",
+      ADMITS_ANCILLARY_EVENTS: "false",
+    },
+  });
+  assert.equal(result.reason, "no-online-runner");
+  assert.equal(outputs.reason, "no-online-runner");
+  assert.equal(outputs.route, "hosted");
+  assert.equal(errors.length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /not a GitHub billing failure/u);
+  assert.match(warnings[0], /ci-runner host status/u);
+  assert.match(summaryChunks.join(""), /Self-hosted capacity offline/u);
+});
+
+test("self-hosted-only review-tier offline announces then fails closed", async () => {
+  const { core, warnings, errors, summaryChunks } = recordingCore();
+  await assert.rejects(
+    runGitHubScript({
+      github: {
+        request: async () =>
+          response([
+            runner({
+              status: "offline",
+              labels: [{ name: "melodic-review-ubuntu-24.04-x64" }],
+            }),
+          ]),
+      },
+      core,
+      env: {
+        POLICY: "self-hosted-only",
+        SELF_HOSTED_LABEL: "melodic-review-ubuntu-24.04-x64",
+        SELF_HOSTED_LABELS_JSON: "",
+        HOSTED_RUNNER: "ubuntu-24.04",
+        RUNNER_SCOPE: "organization",
+        MANAGED_RUNNER_PREFIX: "ci-runner-melo-",
+        OBSERVER_CLIENT_ID: "Iv23observer",
+        HAS_OBSERVER_SECRET: "true",
+        TOKEN_OUTCOME: "success",
+        REPOSITORY_OWNER: "melodic-software",
+        REPOSITORY_NAME: "medley",
+        API_TIMEOUT_SECONDS: "10",
+        REPOSITORY_PRIVATE: "true",
+        EVENT_NAME: "push",
+        IS_FORK_PULL_REQUEST: "false",
+        ADMITS_ANCILLARY_EVENTS: "false",
+      },
+    }),
+    (error) =>
+      error.name === "StrictRoutingError" &&
       error.reason === "no-online-runner",
   );
+  assert.equal(warnings.length, 0);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /not a GitHub billing failure/u);
+  assert.match(summaryChunks.join(""), /Self-hosted capacity offline/u);
+});
+
+test("workflow documents CI-tier scale-from-zero vs prefer-self-hosted capacity signal", () => {
+  const workflow = fs.readFileSync(workflowPath, "utf8");
+  assert.match(workflow, /CI-tier scale-from-zero \(ci-workflows#246\)/u);
+  assert.match(workflow, /Option B/u);
+  assert.match(workflow, /not a GitHub billing/u);
 });
 
 test("self-hosted-only selects an online review-tier runner after probing", async () => {
