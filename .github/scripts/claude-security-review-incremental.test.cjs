@@ -76,7 +76,7 @@ async function runListing({
     info: (message) => infos.push(message),
   };
   const github = {
-    paginate: async (fn, params) => {
+    paginate: async (fn, _params) => {
       if (fn === github.rest.issues.listComments) {
         return comments;
       }
