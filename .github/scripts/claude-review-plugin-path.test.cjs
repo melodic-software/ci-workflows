@@ -75,7 +75,9 @@ for (const lane of LANES) {
     assert.match(compose, /cmd_trim=/);
     assert.match(compose, /Invoke \$\{PLUGIN_COMMAND\}/);
     assert.match(compose, /printf '%s\\n' "\$PROMPT"/);
-    assert.match(compose, /REVIEW_BODY<<REVIEW_BODY_EOF/);
+    assert.match(compose, /delimiter="gha_\$\{RANDOM\}\$\{RANDOM\}_EOF"/);
+    assert.match(compose, /REVIEW_BODY<<\$delimiter/);
+    assert.doesNotMatch(compose, /REVIEW_BODY<<REVIEW_BODY_EOF/);
   });
 
   test(`${lane.file} both attempts pass plugins and use REVIEW_BODY`, () => {

@@ -914,8 +914,11 @@ jobs:
           set -euo pipefail
           plugins_trim="$(printf '%s' "$PLUGINS" | tr -d '[:space:]')"
           cmd_trim="$(printf '%s' "$PLUGIN_COMMAND" | tr -d '[:space:]')"
+          # Random delimiter — caller-controlled PROMPT can contain a fixed
+          # REVIEW_BODY_EOF line and would otherwise truncate/corrupt GITHUB_ENV.
+          delimiter="gha_${RANDOM}${RANDOM}_EOF"
           {
-            echo "REVIEW_BODY<<REVIEW_BODY_EOF"
+            echo "REVIEW_BODY<<$delimiter"
             if [ -n "$plugins_trim" ] && [ -n "$cmd_trim" ]; then
               printf '%s\n' \
                 "Invoke ${PLUGIN_COMMAND} now and follow its instructions exactly for this pull request." \
@@ -924,7 +927,7 @@ jobs:
             else
               printf '%s\n' "$PROMPT"
             fi
-            echo "REVIEW_BODY_EOF"
+            echo "$delimiter"
           } >> "$GITHUB_ENV"
 
       - name: Claude security review
