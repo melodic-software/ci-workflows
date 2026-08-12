@@ -3,18 +3,21 @@ name: zizmor
 # Reusable workflow — GitHub Actions security/static analysis with zizmor
 # (supply-chain risks, dangerous triggers, excessive permissions, template
 # injection). zizmor runs in its own native --format=github mode: it emits a
-# GitHub annotation for every finding directly (no SARIF intermediate, no
-# hand-rolled parser) and reports its own graduated exit code keyed to the
-# highest severity found (11 informational, 12 low, 13 medium, 14 high).
-# ADVISORY by default (fail-on-severity: never): findings annotate without
-# blocking. Callers opt in to blocking by raising fail-on-severity to low,
-# medium, or high; the legacy fail-on-findings boolean stays a back-compat
-# alias for low (blocks on any finding, informational and up — zizmor's own
-# note-level docs: https://docs.zizmor.sh/usage/). Uploading SARIF to the
-# Security tab remains a separate, later decision; it would add the matching
-# security-events: write permission, so this lane needs only contents: read.
-# The ci-status gateway stays consumer-local — this is a lane, not the
-# gateway.
+# GitHub annotation for every finding directly (no SARIF intermediate for
+# gating, no hand-rolled parser) and reports its own graduated exit code
+# keyed to the highest severity found (11 informational, 12 low, 13 medium,
+# 14 high). ADVISORY by default (fail-on-severity: never): findings annotate
+# without blocking. Callers opt in to blocking by raising fail-on-severity to
+# low, medium, or high; the legacy fail-on-findings boolean stays a
+# back-compat alias for low (blocks on any finding, informational and up —
+# zizmor's own note-level docs: https://docs.zizmor.sh/usage/).
+# Opt-in upload-sarif (default false) also runs --format=sarif and uploads
+# via github/codeql-action/upload-sarif for durable code-scanning alerts.
+# SARIF mode always exits 0 for findings, so it is visibility-only and
+# composes with (does not replace) fail-on-severity gating. When upload-sarif
+# is true the job grants security-events: write; otherwise contents: read
+# alone. The ci-status gateway stays consumer-local — this is a lane, not
+# the gateway.
 on:
   workflow_call:
     inputs:
@@ -72,6 +75,15 @@ on:
           fail-on-severity. Default false keeps the lane advisory.
         type: boolean
         default: false
+      upload-sarif:
+        description: >-
+          When true, also run zizmor with --format=sarif and upload results to
+          GitHub code scanning (durable, per-line, dismissable alerts).
+          Visibility-only: SARIF mode exits 0 for findings and does not replace
+          fail-on-severity / fail-on-findings gating. Default false keeps the
+          lane annotations-only and avoids granting security-events: write.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -80,6 +92,9 @@ jobs:
   zizmor:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: ${{ inputs.upload-sarif && 'write' || 'none' }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,6 +102,7 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
+        id: zizmor
         shell: bash
         env:
           PATHS: ${{ inputs.paths }}
@@ -96,6 +112,7 @@ jobs:
           PERSONA: ${{ inputs.persona }}
           FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
           FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+          UPLOAD_SARIF: ${{ inputs.upload-sarif }}
           ZIZMOR_TOKEN: ${{ github.token }}
           PINNED_VERSION: 1.28.0
           ASSET_NAME: zizmor-x86_64-unknown-linux-gnu.tar.gz
@@ -134,8 +151,8 @@ jobs:
             echo '::error::zizmor sha256 must be exactly 64 lowercase hexadecimal characters.'
             exit 2
           fi
-          case "$ONLINE_AUDITS:$FAIL_ON_FINDINGS" in
-            true:true|true:false|false:true|false:false) ;;
+          case "$ONLINE_AUDITS:$FAIL_ON_FINDINGS:$UPLOAD_SARIF" in
+            true:true:true|true:true:false|true:false:true|true:false:false|false:true:true|false:true:false|false:false:true|false:false:false) ;;
             *)
               echo '::error::zizmor boolean inputs must resolve to true or false.'
               exit 2
@@ -219,15 +236,47 @@ jobs:
           GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}" | tee -- "$annotations"
           status=${PIPESTATUS[0]}
           set -e
-          unset token
 
           case "$status" in
           0 | 11 | 12 | 13 | 14) ;;
           *)
             echo "::error::zizmor exited $status; results are not trusted."
+            unset token
             exit 2
             ;;
           esac
+
+          # Optional visibility path: --format=sarif always exits 0 for
+          # findings, so it never drives gating. Write outside work_dir so the
+          # EXIT trap does not remove the file before the upload step.
+          if [[ "$UPLOAD_SARIF" == true ]]; then
+            sarif_args=(
+              --format=sarif
+              "--persona=$PERSONA"
+              --color=never
+              "--cache-dir=$work_dir/cache"
+            )
+            if [[ "$ONLINE_AUDITS" == false ]]; then
+              sarif_args+=(--no-online-audits)
+            fi
+            sarif_path="${GITHUB_WORKSPACE:?}/zizmor.sarif"
+            set +e
+            GH_TOKEN="$token" "$binary" "${sarif_args[@]}" -- "${targets[@]}" >"$sarif_path"
+            sarif_status=$?
+            set -e
+            if ((sarif_status != 0)); then
+              echo "::error::zizmor SARIF generation exited $sarif_status; results are not trusted."
+              unset token
+              exit 2
+            fi
+            if [[ ! -s "$sarif_path" ]]; then
+              echo '::error::zizmor SARIF output was empty.'
+              unset token
+              exit 2
+            fi
+            echo "sarif-file=zizmor.sarif" >>"$GITHUB_OUTPUT"
+          fi
+          unset token
 
           # The blocking threshold maps directly onto zizmor's own graduated
           # exit codes. 'low' blocks on any finding (11-14), matching the
@@ -266,3 +315,10 @@ jobs:
           else
             echo "::notice::zizmor reported $total_count finding(s); none at or above severity $effective_severity."
           fi
+
+      - name: Upload zizmor SARIF
+        if: ${{ always() && !cancelled() && inputs.upload-sarif && steps.zizmor.outputs.sarif-file != '' }}
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: ${{ steps.zizmor.outputs.sarif-file }}
+          category: zizmor

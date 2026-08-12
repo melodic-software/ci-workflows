@@ -41,7 +41,7 @@ function runStep() {
   return workflow.slice(start);
 }
 
-test("native zizmor preserves the reusable interface and read-only boundary", () => {
+test("native zizmor preserves the reusable interface and read-only default", () => {
   assert.equal(inputDefault("runner"), "ubuntu-24.04");
   assert.equal(inputDefault("paths"), ".github/workflows");
   assert.equal(inputDefault("version"), `v${pinnedVersion}`);
@@ -50,6 +50,7 @@ test("native zizmor preserves the reusable interface and read-only boundary", ()
   assert.equal(inputDefault("persona"), "regular");
   assert.equal(inputDefault("fail-on-severity"), "never");
   assert.equal(inputDefault("fail-on-findings"), "false");
+  assert.equal(inputDefault("upload-sarif"), "false");
 
   for (const existingInput of [
     "paths",
@@ -58,12 +59,22 @@ test("native zizmor preserves the reusable interface and read-only boundary", ()
     "persona",
     "fail-on-severity",
     "fail-on-findings",
+    "upload-sarif",
   ]) {
     assert.match(workflow, new RegExp(`^ {6}${existingInput}:$`, "mu"));
   }
 
+  // Workflow-level default stays contents: read. security-events: write is
+  // granted only on the job when upload-sarif is true.
   assert.match(workflow, /^permissions:\n {2}contents: read\n\njobs:/mu);
-  assert.doesNotMatch(workflow, /(?:permissions:|^ {2,})[^\n]*write/mu);
+  assert.match(
+    workflow,
+    /^ {4}permissions:\n {6}contents: read\n {6}security-events: \$\{\{ inputs\.upload-sarif && 'write' \|\| 'none' \}\}$/mu,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /^permissions:\n(?: {2}.+\n)* {2}security-events:/mu,
+  );
   assert.match(workflow, /^ {4}runs-on: \$\{\{ inputs\.runner \}\}$/mu);
   // The exact SHA and version tag move with Dependabot bumps; only the
   // SHA-pinned-with-a-version-comment shape is the invariant under test.
@@ -137,7 +148,6 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.ok(download < verifiedExecution);
 
   assert.match(step, /--format=github/u);
-  assert.doesNotMatch(step, /--format=sarif/u);
   assert.match(step, /--cache-dir=\$work_dir\/cache/u);
   assert.match(step, /args\+=\(--no-online-audits\)/u);
   // zizmor's --format=github renderer emits annotations to stdout; the run
@@ -151,12 +161,11 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.doesNotMatch(step, /"\$binary"[^\n]*--output/u);
   assert.doesNotMatch(step, /continue-on-error/u);
 
-  // zizmor's own graduated exit codes (11-14) drive gating directly; no
-  // SARIF, no jq, no hand-rolled parser.
+  // zizmor's own graduated exit codes (11-14) drive gating directly from the
+  // --format=github run; no jq, no hand-rolled parser.
   assert.match(step, /case "\$status" in/u);
   assert.match(step, /0 \| 11 \| 12 \| 13 \| 14\) ;;/u);
   assert.doesNotMatch(step, /\bjq\b/u);
-  assert.doesNotMatch(step, /ZIZMOR_SARIF/u);
 
   // fail-on-severity wins above 'never'; fail-on-findings is the legacy alias
   // that resolves to the 'low' threshold.
@@ -172,6 +181,55 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.match(step, /if \(\(status >= 11\)\); then blocking=true; fi/u);
   assert.match(step, /if \(\(status >= 13\)\); then blocking=true; fi/u);
   assert.match(step, /if \(\(status == 14\)\); then blocking=true; fi/u);
+});
+
+test("opt-in upload-sarif generates SARIF without replacing github gating", () => {
+  const step = runStep();
+
+  assert.match(step, /UPLOAD_SARIF: \$\{\{ inputs\.upload-sarif \}\}/u);
+  assert.match(
+    step,
+    /case "\$ONLINE_AUDITS:\$FAIL_ON_FINDINGS:\$UPLOAD_SARIF" in/u,
+  );
+
+  // SARIF generation is gated on the opt-in input and writes outside work_dir
+  // so the EXIT trap cannot remove it before the upload step.
+  assert.match(step, /if \[\[ "\$UPLOAD_SARIF" == true \]\]; then/u);
+  assert.match(step, /--format=sarif/u);
+  assert.match(
+    step,
+    /GH_TOKEN="\$token" "\$binary" "\$\{sarif_args\[@\]\}" -- "\$\{targets\[@\]\}" >"\$sarif_path"/u,
+  );
+  assert.match(step, /sarif_path="\$\{GITHUB_WORKSPACE:\?\}\/zizmor\.sarif"/u);
+  assert.match(step, /echo "sarif-file=zizmor\.sarif" >>"\$GITHUB_OUTPUT"/u);
+  assert.match(
+    step,
+    /if \(\(sarif_status != 0\)\); then[\s\S]*exit 2/u,
+  );
+
+  // Gating still keys off the --format=github status, not the SARIF run.
+  const githubTee = step.indexOf(
+    'GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}" | tee -- "$annotations"',
+  );
+  const sarifRedirect = step.indexOf(
+    'GH_TOKEN="$token" "$binary" "${sarif_args[@]}" -- "${targets[@]}" >"$sarif_path"',
+  );
+  const blockingCheck = step.indexOf("if ((status >= 11)); then blocking=true; fi");
+  assert.ok(githubTee >= 0 && sarifRedirect > githubTee);
+  assert.ok(blockingCheck > sarifRedirect);
+
+  // Upload step: SHA-pinned upload-sarif, only when the run step produced a
+  // SARIF file (so a failed download/generation does not attempt upload).
+  assert.match(
+    workflow,
+    /uses: github\/codeql-action\/upload-sarif@[0-9a-f]{40} # v\d+\.\d+\.\d+/u,
+  );
+  assert.match(
+    workflow,
+    /if: \$\{\{ always\(\) && !cancelled\(\) && inputs\.upload-sarif && steps\.zizmor\.outputs\.sarif-file != '' \}\}/u,
+  );
+  assert.match(workflow, /sarif_file: \$\{\{ steps\.zizmor\.outputs\.sarif-file \}\}/u);
+  assert.match(workflow, /^ {10}category: zizmor$/mu);
 });
 
 test("zizmor no longer bundles a generated SARIF guard", () => {
@@ -217,6 +275,9 @@ test("documentation removes only the retired zizmor Docker exception", () => {
   assert.match(zizmorSection, /verifies its committed SHA-256/u);
   assert.match(zizmorSection, /without Docker/u);
   assert.match(zizmorSection, /approved selector output/u);
+  assert.match(zizmorSection, /upload-sarif: true/u);
+  assert.match(zizmorSection, /security-events: write/u);
+  assert.doesNotMatch(zizmorSection, /deferred opt-in/u);
   assert.doesNotMatch(readme, /#zizmor"\s*:\s*\{[\s\S]*?docker-socket/u);
   assert.doesNotMatch(
     readme,

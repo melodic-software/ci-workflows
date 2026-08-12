@@ -598,17 +598,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
   default rather than a mutable release. zizmor runs in its own native
   `--format=github` mode, emitting a GitHub annotation for every finding
   directly and gating on severity via zizmor's own graduated exit codes
-  (informational/low/medium/high) — no SARIF intermediate, no hand-rolled
-  parser. Callers opt into blocking by raising `fail-on-severity` to `low`,
-  `medium`, or `high`; the legacy `fail-on-findings` boolean stays a
+  (informational/low/medium/high) — no SARIF intermediate for gating, no
+  hand-rolled parser. Callers opt into blocking by raising `fail-on-severity`
+  to `low`, `medium`, or `high`; the legacy `fail-on-findings` boolean stays a
   back-compat alias for `low`. Installation, argument, and collection errors
   fail closed even in advisory mode. The verified binary
   runs from a fresh runner-temporary directory with a per-job cache and
   without Docker, a job/service container, or an installer-time privilege
   escalation.
   `runner` defaults to `ubuntu-24.04` and can consume the
-  approved selector output for eligible private, non-fork calls. SARIF upload
-  to the Security tab remains a deferred opt-in. Inputs are documented inline.
+  approved selector output for eligible private, non-fork calls. Callers may
+  opt into `upload-sarif: true` for durable code-scanning alerts (grants
+  `security-events: write` on that path only; visibility-only — does not
+  replace `fail-on-severity` gating). Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
   Google's official native OSV-Scanner v2.4.0 Linux X64 binary. The exact binary,
   its provenance, and the SLSA verifier are checksum-pinned; the verifier then
