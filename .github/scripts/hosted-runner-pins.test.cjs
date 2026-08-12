@@ -68,8 +68,7 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
   // per-PR concurrency-supersede signal and proceeds to real validation
   // (#446). Every other non-success value stays fail-closed, because those
   // mean selector breakage or a miswired caller and must stay loud.
-  const mustReject = (result) =>
-    result !== "success" && result !== "cancelled";
+  const mustReject = (result) => result !== "success" && result !== "cancelled";
 
   for (const contract of prerequisiteGateContracts) {
     const source = fs.readFileSync(
