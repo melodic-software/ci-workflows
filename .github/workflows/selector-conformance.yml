@@ -21,6 +21,9 @@ on:
       - .github/scripts/osv-release-digest.test.sh
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
+      - .github/scripts/render-compose.cjs
+      - .github/scripts/render-compose.test.cjs
+      - .github/scripts/render.cjs
       - .github/scripts/render-find-tracking-issue.cjs
       - .github/scripts/render-osv-scan-guard.cjs
       - .github/scripts/zizmor-native.test.cjs
@@ -48,6 +51,9 @@ on:
       - .github/scripts/osv-release-digest.test.sh
       - .github/scripts/osv-scan-guard.sh
       - .github/scripts/osv-scan-guard.test.sh
+      - .github/scripts/render-compose.cjs
+      - .github/scripts/render-compose.test.cjs
+      - .github/scripts/render.cjs
       - .github/scripts/render-find-tracking-issue.cjs
       - .github/scripts/render-osv-scan-guard.cjs
       - .github/scripts/zizmor-native.test.cjs
