@@ -38,7 +38,10 @@ on:
 
 concurrency:
   group: tool-version-drift-check-${{ github.ref }}
-  cancel-in-progress: true
+  # Main-push / schedule / dispatch share the ref group; cancel-in-progress
+  # false keeps the in-progress run finishing while superseded pending runs
+  # drop (main-push burst collapse; #122).
+  cancel-in-progress: false
 
 permissions:
   contents: read
