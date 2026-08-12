@@ -75,7 +75,17 @@ name: claude-review
 #   - Fork PRs receive no secrets and a read-only token by design, so they are
 #     simply not reviewed — that is correct, not a gap to "fix".
 #   - The action gates triggering on the actor's write access; bots are blocked
-#     unless named in `allowed-bots`.
+#     unless named in `allowed-bots`. The default names two org-installed apps.
+#     `dependabot[bot]` is driven by the org's own dependabot.yml. `cursor[bot]`
+#     is driven by an operator: Cursor requires whoever starts a cloud agent to
+#     be "on a paid Cursor plan and have repository permissions"
+#     (https://cursor.com/docs/cloud-agent), so an arbitrary commenter on a
+#     public PR cannot make it act. Bugbot — the one Cursor path documented as
+#     running "for all contributors ... regardless of team membership"
+#     (https://cursor.com/docs/bugbot) — is DISABLED for this org's account; if
+#     it is ever enabled, re-derive this entry rather than assuming it holds.
+#     Both apps push to SAME-REPO branches, so neither reaches a fork's
+#     privileged context, which the fork rule above already closes.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
 #   - The inline-comment tool is now on the hot path (the prompt routes every
 #     line-anchorable finding through it), so untrusted diff content — including
@@ -208,9 +218,12 @@ on:
       allowed-bots:
         description: >-
           Comma-separated bot actors permitted to trigger the review (bots are
-          blocked by default). Never set '*' on a public repo.
+          blocked by default). Never set '*' on a public repo. The action
+          normalizes both sides of the comparison (lowercase, trailing `[bot]`
+          stripped), so one spelling per actor is enough — unlike
+          `exclude-comments-by-actor` below, which needs both.
         type: string
-        default: dependabot[bot]
+        default: dependabot[bot],cursor[bot]
       exclude-comments-by-actor:
         description: >-
           Comma-separated actors whose comments are withheld from Claude's

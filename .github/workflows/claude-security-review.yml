@@ -210,7 +210,25 @@ name: claude-security-review
 #     NOT prove a fork PR was reviewed, and a human must review fork changes to
 #     security-sensitive surfaces before merge.
 #   - The action gates triggering on the actor's write access; bots are blocked
-#     unless named in `allowed_bots`.
+#     unless named in `allowed_bots`, which this lane hardcodes to the
+#     org-installed `dependabot[bot]` and `cursor[bot]`. A blocked actor is
+#     NOT a benign skip here: the action exits non-zero without reviewing, the
+#     job still reads success, and the evidence gate below fails the required
+#     check — so an un-named bot pushing to a branch blocks its own PR.
+#     Naming an app here admits it to a PRIVILEGED run (this lane's OAuth
+#     credential + the inline-comment tool), so each entry needs a trigger
+#     path an arbitrary commenter cannot drive. dependabot[bot]: the org's own
+#     dependabot.yml. cursor[bot]: starting a Cursor cloud agent requires being
+#     "on a paid Cursor plan and have repository permissions"
+#     (https://cursor.com/docs/cloud-agent). Cursor's Bugbot, which by contrast
+#     runs "for all contributors ... regardless of team membership"
+#     (https://cursor.com/docs/bugbot), is DISABLED for this org's account —
+#     re-derive this entry if that changes. Defence in depth for the residual
+#     (Cursor states these as product prerequisites, not as a security
+#     boundary) is tracked separately: gate a bot actor on the PR author's
+#     association. Note the exposure this does NOT create: cursor[bot] already
+#     holds contents:write org-wide, so an actor able to drive it could already
+#     push branches that run every same-repo workflow.
 #   - `display_report` / `show_full_output` stay off (public-repo log-leak risk).
 #
 # KILL-SWITCH SCOPE NOTE: REVIEW.md scopes security findings out of the
@@ -1046,7 +1064,11 @@ jobs:
           # Off on this public lane (log-leak risk); hardcoded, not a flippable
           # input, so a consumer cannot turn it on.
           display_report: false
-          allowed_bots: dependabot[bot]
+          # Hardcoded (no consumer input) — this lane's actor gate is org
+          # policy, not a per-repo knob. Both entries are org-installed apps
+          # that push to same-repo branches under an operator's direction; a
+          # fork PR is already secretless and skipped upstream of here.
+          allowed_bots: dependabot[bot],cursor[bot]
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
@@ -1311,7 +1333,11 @@ jobs:
           # Off on this public lane (log-leak risk); hardcoded, not a flippable
           # input, so a consumer cannot turn it on.
           display_report: false
-          allowed_bots: dependabot[bot]
+          # Hardcoded (no consumer input) — this lane's actor gate is org
+          # policy, not a per-repo knob. Both entries are org-installed apps
+          # that push to same-repo branches under an operator's direction; a
+          # fork PR is already secretless and skipped upstream of here.
+          allowed_bots: dependabot[bot],cursor[bot]
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
