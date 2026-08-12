@@ -6,7 +6,12 @@ const path = require("node:path");
 const { test } = require("node:test");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
-const ciWorkflowPath = path.join(repositoryRoot, ".github", "workflows", "ci.yml");
+const ciWorkflowPath = path.join(
+  repositoryRoot,
+  ".github",
+  "workflows",
+  "ci.yml",
+);
 const selectorConformancePath = path.join(
   repositoryRoot,
   ".github",
@@ -30,10 +35,7 @@ test("ci.yml uses main-push burst collapse concurrency (#122)", () => {
     ciWorkflow,
     /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/mu,
   );
-  assert.doesNotMatch(
-    ciWorkflow,
-    /pull_request\.number \|\| github\.run_id/u,
-  );
+  assert.doesNotMatch(ciWorkflow, /pull_request\.number \|\| github\.run_id/u);
 });
 
 test("selector-conformance.yml matches the same concurrency pattern", () => {
@@ -65,10 +67,7 @@ test("ci.yml consolidates cheapest hygiene checks into one lane", () => {
     assert.doesNotMatch(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
   }
 
-  assert.match(
-    ciWorkflow,
-    /^ {4}needs: \[[^\n]*\bhygiene\b[^\n]*\]$/mu,
-  );
+  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bhygiene\b[^\n]*\]$/mu);
   assert.match(
     ciWorkflow,
     /^ {10}results: [^\n]*\$\{\{ needs\.hygiene\.result \}\}[^\n]*$/mu,
