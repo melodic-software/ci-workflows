@@ -31,12 +31,12 @@ inputs:
     default: ''
   version:
     description: Exact editorconfig-checker version to install.
-    default: 3.8.0
+    default: 3.11.1
   sha256:
     description: >-
       SHA-256 of the ec-linux-amd64.tar.gz release asset for `version`. Change
       together with `version`.
-    default: 613bd88f34165a334adcb6b7e92a123c9de0eada65846d31af63613b779ff3be
+    default: 5a37922963248451e88149251e49f6ae08f69717a3918202a51fe9945e19691e
 
 runs:
   using: composite

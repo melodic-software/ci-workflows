@@ -138,7 +138,7 @@ test("biome action wires resolve step before npx", () => {
     "utf8",
   );
   assert.match(action, /^ {2}fallback-version:/mu);
-  assert.match(action, /^ {4}default: 2\.5\.6$/mu);
+  assert.match(action, /^ {4}default: 2\.5\.8$/mu);
   assert.match(action, /resolve-npm-tool-version\.cjs/u);
   assert.match(action, /PACKAGE_NAME: '@biomejs\/biome'/u);
   assert.match(
