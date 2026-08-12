@@ -95,7 +95,7 @@ jobs:
         # `::error` above, for whoever debugs the next incident.
         if: ${{ inputs.prerequisite-result == 'cancelled' }}
         run: |
-          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede or a manual run cancellation, not a selector fault. Proceeding with live label evaluation on the caller-resolved runner; this check reports the real gate result, not a synthetic prerequisite failure."
+          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede, a manual run cancellation, or the prerequisite job itself being cancelled/timing out (GitHub reports timeouts as cancelled). Proceeding with live label evaluation on the caller-resolved runner; this check reports the real gate result, not a synthetic prerequisite failure."
 
       - name: Reject a blocking label
         # Runs on the two PR-context events, `pull_request` AND

@@ -15,9 +15,9 @@ name: pr-issue-linkage
 # the workflow definition from the base branch, not the PR head, so a
 # fork/head cannot tamper with this gate. Trigger types must include `edited`
 # so a body edit re-validates, matching semantic-pr.yml's `edited` requirement
-# for re-titled PRs. The body is read straight from the event payload via
-# `env:` (never spliced into the script/run text), so untrusted PR-author
-# content cannot inject code. This is a standalone required check, NOT a
+# for re-titled PRs. The body is live-refetched from the API into `PR_BODY`
+# via `GITHUB_ENV` (never spliced into the script/run text), so untrusted
+# PR-author content cannot inject code. This is a standalone required check, NOT a
 # ci-status lane: body edits should not re-run the file-lint lanes.
 on:
   workflow_call:
@@ -55,7 +55,8 @@ on:
         type: string
         default: ""
 
-permissions: {}
+permissions:
+  pull-requests: read
 
 jobs:
   # Job id, not the file-level `name:` above, is what forms the check context
@@ -105,24 +106,45 @@ jobs:
         # not prove a successor covers this check — a manual run cancellation
         # has no successor — so an unvalidated green could let an unchecked PR
         # through. Validating for real is strictly stronger than both: this
-        # job is already running on the caller-resolved fallback runner, so
-        # the step below reports the real gate answer — red only when the
-        # body actually violates the contract.
-        #
-        # One caveat, unlike the sibling semantic-pr gate: the body below is
-        # read from THIS run's event payload (by design — see the injection
-        # note above), so in a body-edit supersede the validated body may be
-        # one edit behind. That never manufactures a failure out of nothing —
-        # a red here still means the event-time body genuinely violated the
-        # contract — and the superseding run validates the newer body under
-        # the same check name.
+        # job is already running on the caller-resolved fallback runner, and
+        # the step below live-refetches the PR body from the API (falling back
+        # to the event payload only when the fetch fails), so it reports the
+        # real gate answer — red only when the body actually violates the
+        # contract.
         #
         # This ::notice keeps a superseded-run validation distinguishable in
         # the job log from an ordinary success-path run, and from the hard
         # `::error` above, for whoever debugs the next incident.
         if: ${{ inputs.prerequisite-result == 'cancelled' }}
         run: |
-          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede or a manual run cancellation, not a selector fault. Proceeding with body validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
+          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede, a manual run cancellation, or the prerequisite job itself being cancelled/timing out (GitHub reports timeouts as cancelled). Proceeding with body validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
+
+      - name: Load current PR body
+        # Live-refetch matches do-not-merge-gate's label refetch and
+        # semantic-pr's live title read: a superseded run validates the same
+        # current body its successor will. PR_BODY lands in GITHUB_ENV with a
+        # random heredoc delimiter so untrusted body text cannot corrupt env
+        # ingestion; the Validate step inherits it rather than reading the
+        # stale event payload directly.
+        if: >-
+          (inputs.prerequisite-result == 'success' ||
+          inputs.prerequisite-result == 'cancelled') &&
+          (github.event_name == 'pull_request_target' || github.event_name == 'pull_request')
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FALLBACK_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          delimiter="gha_${RANDOM}${RANDOM}_PR_BODY_EOF"
+          body=""
+          if ! body="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""' 2>/dev/null)"; then
+            body="${FALLBACK_BODY:-}"
+          fi
+          {
+            echo "PR_BODY<<$delimiter"
+            printf '%s\n' "$body"
+            echo "$delimiter"
+          } >> "$GITHUB_ENV"
 
       - name: Validate PR body against the closing-keyword + contract-header convention
         # Skipped (job still green) on anything but the two PR-body-bearing
@@ -136,10 +158,10 @@ jobs:
           (github.event_name == 'pull_request_target' || github.event_name == 'pull_request')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          # Env-passed, never spliced into the script text -- matching PR_BODY's
-          # untrusted-input handling. The login is GitHub-issued (not
-          # author-editable), but keeping the same shape avoids a second pattern.
+          # PR_BODY is inherited from GITHUB_ENV (live-refetched above).
+          # Env-passed, never spliced into the script text. The login is
+          # GitHub-issued (not author-editable), but keeping the same shape
+          # avoids a second pattern.
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
         with:

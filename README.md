@@ -466,7 +466,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   below and #446). The reusable gate uses
   its `runner` input for every prerequisite outcome, so the caller also owns the
   recovery route; the cost is bounded to one caller-selected reporter run on
-  cancellation. Use the semantic-title gate's fail-closed prerequisite contract
+  cancellation. Use the semantic-title gate's fail-closed-on-failure/skipped,
+  real-validate-on-cancelled prerequisite contract
   (this public-repository example intentionally falls back to hosted Ubuntu):
 
   ```yaml
@@ -491,8 +492,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `actions: write` cancelled it manually), the reporter is by then already
   running on the caller-resolved runner, and the gates read live state where
   the mechanism allows (semantic-pr's pinned action re-fetches the PR title;
-  do-not-merge-gate re-fetches current labels; pr-issue-linkage validates its
-  own event-time body by design), so the check reports the real gate answer —
+  do-not-merge-gate re-fetches current labels; pr-issue-linkage re-fetches the
+  current PR body), so the check reports the real gate answer —
   red only when the gate is actually violated. This supersedes the earlier
   fail-closed-on-cancelled contract, which reasoned that a cancelled result
   alone does not prove a successor run will cover the same required check and
@@ -833,7 +834,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `ignore-labels`) have spec-aligned defaults documented inline. Consume it from
   a thin caller that triggers on title-relevant events. `prerequisite-result`
   defaults to `success` for direct callers; selector-dependent required callers
-  must use the fail-closed pattern above. `edited` is required so re-titling
+  must use the fail-closed-on-failure/skipped, real-validate-on-cancelled
+  prerequisite contract above. `edited` is required so re-titling
   re-validates; the gate passes on `merge_group` since the title was validated
   at PR time.
   **Adopt the canonical block below** (not the in-repo `.github/workflows/pr-title.yml`,
@@ -891,13 +893,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pull_request_target:
       types: [opened, edited, reopened, synchronize]
     merge_group:
-  permissions: {}
+  permissions:
+    pull-requests: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
   jobs:
     pr-issue-linkage:
-      permissions: {}
+      permissions:
+        pull-requests: read
       uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
   ```
 
@@ -919,8 +923,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `do-not-merge`**, not a `ci-status` lane; with the caller below the check a
   ruleset must require is **`do-not-merge / do-not-merge`** per the [shared
   adoption contract](#standalone-gate-checks--shared-adoption-contract). Inputs
-  (`runner`, `prerequisite-result`, `label`) mirror `semantic-pr`'s fail-closed
-  pattern. **Adopt the canonical block below:**
+  (`runner`, `prerequisite-result`, `label`) mirror `semantic-pr`'s
+  fail-closed-on-failure/skipped, real-validate-on-cancelled prerequisite
+  contract. **Adopt the canonical block below:**
 
   ```yaml
   on:

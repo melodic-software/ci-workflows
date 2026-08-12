@@ -147,7 +147,7 @@ jobs:
         # `::error` above, for whoever debugs the next incident.
         if: ${{ inputs.prerequisite-result == 'cancelled' }}
         run: |
-          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede or a manual run cancellation, not a selector fault. Proceeding with live-title validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
+          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede, a manual run cancellation, or the prerequisite job itself being cancelled/timing out (GitHub reports timeouts as cancelled). Proceeding with live-title validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
 
       - name: Validate PR title against Conventional Commits
         # Runs ONLY on the two PR-context events, `pull_request` AND
