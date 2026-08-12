@@ -64,12 +64,13 @@ test("native zizmor preserves the reusable interface and read-only default", () 
     assert.match(workflow, new RegExp(`^ {6}${existingInput}:$`, "mu"));
   }
 
-  // Workflow-level default stays contents: read. security-events: write is
-  // granted only on the job when upload-sarif is true.
+  // Workflow-level default stays contents: read. Job grants security-events:
+  // write statically (expressions are invalid in this permissions scope);
+  // the upload step remains gated on upload-sarif.
   assert.match(workflow, /^permissions:\n {2}contents: read\n\njobs:/mu);
   assert.match(
     workflow,
-    /^ {4}permissions:\n {6}contents: read\n {6}security-events: \$\{\{ inputs\.upload-sarif && 'write' \|\| 'none' \}\}$/mu,
+    /^ {4}permissions:\n {6}contents: read\n(?: {6}#.*\n)* {6}security-events: write$/mu,
   );
   assert.doesNotMatch(
     workflow,
