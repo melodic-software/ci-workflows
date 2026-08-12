@@ -31,8 +31,7 @@ test("manifest covers every render-*.cjs thin wrapper still shipped", () => {
     .readdirSync(scriptsDirectory)
     .filter(
       (name) =>
-        /^render-.+\.cjs$/u.test(name) &&
-        !name.startsWith("render-compose"),
+        /^render-.+\.cjs$/u.test(name) && !name.startsWith("render-compose"),
     )
     .sort();
   assert.deepEqual(wrappers, [
@@ -59,12 +58,7 @@ test("exactly-one ordered block rejects missing, reversed, and duplicate markers
     /exactly one ordered generated block/u,
   );
   assert.throws(
-    () =>
-      findExactlyOneOrderedBlock(
-        "BEGIN one END BEGIN two END",
-        begin,
-        end,
-      ),
+    () => findExactlyOneOrderedBlock("BEGIN one END BEGIN two END", begin, end),
     /exactly one ordered generated block/u,
   );
   const ok = findExactlyOneOrderedBlock("pre BEGIN body END post", begin, end);
@@ -203,9 +197,8 @@ test("manifest render matches thin-wrapper exports byte-for-byte on fixtures", (
         `${id}/${workflowName}: bundled block missing from render output`,
       );
       assert.equal(
-        filesForTarget(id).find((file) =>
-          file.filePath.endsWith(workflowName),
-        )?.expected,
+        filesForTarget(id).find((file) => file.filePath.endsWith(workflowName))
+          ?.expected,
         normalizeNewlines(expected),
       );
     }

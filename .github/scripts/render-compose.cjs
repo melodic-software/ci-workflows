@@ -25,7 +25,9 @@ function readNormalized(filePath) {
 }
 
 function indentLines(lines, indentation) {
-  return lines.map((line) => (line.length === 0 ? "" : `${indentation}${line}`));
+  return lines.map((line) =>
+    line.length === 0 ? "" : `${indentation}${line}`,
+  );
 }
 
 /**

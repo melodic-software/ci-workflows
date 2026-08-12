@@ -99,8 +99,7 @@ const TARGETS = Object.freeze({
     id: "osv-scan-guard",
     source: "osv-scan-guard.sh",
     workflows: Object.freeze(["osv-scanner.yml"]),
-    beginMarker:
-      "          # BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT",
+    beginMarker: "          # BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT",
     endMarker: "          # END GENERATED OSV SCAN GUARD",
     bundle: bundleShellWithSourceHeader({
       beginBare: "# BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT",
