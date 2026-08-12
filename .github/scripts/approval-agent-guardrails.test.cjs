@@ -11,6 +11,7 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const {
   DEFAULT_PROTECTED_PATHS,
   parseProtectedPaths,
+  collectChangedPaths,
   findProtectedPathHits,
   checkIdentitySeparation,
   checkHumanRiskFindings,
@@ -50,14 +51,49 @@ test("default protected paths cover workflow, script, and ADR", () => {
   );
 });
 
-test("parseProtectedPaths falls back to defaults on empty input", () => {
+test("parseProtectedPaths unions caller paths with defaults", () => {
   assert.deepEqual(parseProtectedPaths(""), [...DEFAULT_PROTECTED_PATHS]);
   assert.deepEqual(parseProtectedPaths(null), [...DEFAULT_PROTECTED_PATHS]);
-  assert.deepEqual(parseProtectedPaths("  a.yml , b.yml\nc.yml  "), [
-    "a.yml",
-    "b.yml",
-    "c.yml",
-  ]);
+  const merged = parseProtectedPaths("  a.yml , b.yml\nc.yml  ");
+  for (const path of DEFAULT_PROTECTED_PATHS) {
+    assert.ok(merged.includes(path), `defaults retained: ${path}`);
+  }
+  assert.ok(merged.includes("a.yml"));
+  assert.ok(merged.includes("b.yml"));
+  assert.ok(merged.includes("c.yml"));
+  // Supplying a default path again must not duplicate it.
+  const withDup = parseProtectedPaths(DEFAULT_PROTECTED_PATHS[0]);
+  assert.equal(
+    withDup.filter((path) => path === DEFAULT_PROTECTED_PATHS[0]).length,
+    1,
+  );
+});
+
+test("collectChangedPaths includes previous_filename on renames", () => {
+  assert.deepEqual(
+    collectChangedPaths([
+      { filename: "README.md" },
+      {
+        filename: "elsewhere.yml",
+        previous_filename: ".github/workflows/approval-agent.yml",
+      },
+    ]),
+    ["README.md", "elsewhere.yml", ".github/workflows/approval-agent.yml"],
+  );
+  const renamed = evaluateApproval({
+    enableApprove: true,
+    changedPaths: collectChangedPaths([
+      {
+        filename: "moved/approval-agent.yml",
+        previous_filename: ".github/workflows/approval-agent.yml",
+      },
+    ]),
+    approverLogin: "melodic-ai[bot]",
+    authorLogin: "alice",
+    lastPusherLogin: "bob",
+  });
+  assert.equal(renamed.decision, "refuse");
+  assert.match(renamed.reasons[0], /approval-agent\.yml/u);
 });
 
 test("findProtectedPathHits matches exact and directory-prefix paths", () => {
@@ -199,6 +235,14 @@ test("evaluateApproval defaults to comment; approve is opt-in", () => {
     }).decision,
     "refuse",
   );
+  assert.equal(
+    evaluateApproval({
+      ...base,
+      enableApprove: false,
+      changedPaths: [".github/workflows/approval-agent.yml"],
+    }).decision,
+    "refuse",
+  );
 });
 
 test("parseBooleanInput treats Actions string booleans", () => {
@@ -229,7 +273,9 @@ test("reusable workflow defaults enable-approve to false and wires secrets", () 
     reusable.on.workflow_call.secrets["app-private-key"].required,
     false,
   );
-  assert.match(reusableSource, /approval-agent-guardrails\.cjs/u);
+  assert.match(reusableSource, /collectChangedPaths/u);
+  assert.match(reusableSource, /previous_filename/u);
+  assert.match(reusableSource, /approvalAgent/u);
   assert.match(reusableSource, /repository: melodic-software\/ci-workflows/u);
   assert.match(reusableSource, /ref: \$\{\{ github\.job_workflow_sha \}\}/u);
   assert.match(reusableSource, /event: reviewEvent/u);

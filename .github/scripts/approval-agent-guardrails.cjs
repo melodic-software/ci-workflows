@@ -15,25 +15,65 @@ const DEFAULT_PROTECTED_PATHS = Object.freeze([
 
 /**
  * Parse a newline- or comma-separated path list. Empty / whitespace-only
- * entries are dropped. When the raw value is empty, returns the default
- * protected set.
+ * entries are dropped. Caller-supplied paths are **unioned** with
+ * DEFAULT_PROTECTED_PATHS so a fleet caller cannot drop the Approval Agent's
+ * own deny-list by accident.
  *
  * @param {string | null | undefined} raw
  * @returns {string[]}
  */
 function parseProtectedPaths(raw) {
-  if (raw == null) {
-    return [...DEFAULT_PROTECTED_PATHS];
+  const extras = [];
+  if (raw != null) {
+    const trimmed = String(raw).trim();
+    if (trimmed !== "") {
+      for (const part of trimmed.split(/[\n,]/u)) {
+        const path = part.trim();
+        if (path !== "") {
+          extras.push(path);
+        }
+      }
+    }
   }
-  const trimmed = String(raw).trim();
-  if (trimmed === "") {
-    return [...DEFAULT_PROTECTED_PATHS];
+  const seen = new Set(DEFAULT_PROTECTED_PATHS);
+  const merged = [...DEFAULT_PROTECTED_PATHS];
+  for (const path of extras) {
+    if (!seen.has(path)) {
+      seen.add(path);
+      merged.push(path);
+    }
   }
-  const parts = trimmed
-    .split(/[\n,]/u)
-    .map((part) => part.trim())
-    .filter((part) => part !== "");
-  return parts.length > 0 ? parts : [...DEFAULT_PROTECTED_PATHS];
+  return merged;
+}
+
+/**
+ * Collect every path GitHub associates with a PR file entry, including
+ * `previous_filename` on renames. Renames report only the new path in
+ * `filename`; ignoring the old path would let a PR relocate policy files past
+ * the deny-list.
+ *
+ * @param {Iterable<{ filename?: string, previous_filename?: string | null }>} files
+ * @returns {string[]}
+ */
+function collectChangedPaths(files) {
+  const paths = [];
+  const seen = new Set();
+  for (const file of files) {
+    if (!file || typeof file !== "object") {
+      continue;
+    }
+    for (const candidate of [file.filename, file.previous_filename]) {
+      if (typeof candidate !== "string" || candidate === "") {
+        continue;
+      }
+      if (seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+      paths.push(candidate);
+    }
+  }
+  return paths;
 }
 
 /**
@@ -291,6 +331,7 @@ function parseBooleanInput(value, defaultValue) {
 module.exports = {
   DEFAULT_PROTECTED_PATHS,
   parseProtectedPaths,
+  collectChangedPaths,
   findProtectedPathHits,
   normalizeLogin,
   checkIdentitySeparation,

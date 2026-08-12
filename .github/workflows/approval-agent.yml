@@ -141,6 +141,7 @@ jobs:
             const path = require("node:path");
             const {
               parseProtectedPaths,
+              collectChangedPaths,
               botLoginFromAppSlug,
               evaluateApproval,
               parseBooleanInput,
@@ -197,7 +198,9 @@ jobs:
               pull_number,
               per_page: 100,
             });
-            const changedPaths = files.map((file) => file.filename);
+            // Include previous_filename so renames of policy files still hit
+            // the deny-list (listFiles puts only the new path in filename).
+            const changedPaths = collectChangedPaths(files);
 
             const approverLogin = enableApprove
               ? botLoginFromAppSlug(process.env.APP_SLUG)
@@ -215,6 +218,20 @@ jobs:
               refuseOnHumanRisk,
             });
 
+            core.info(
+              JSON.stringify({
+                approvalAgent: {
+                  decision: result.decision,
+                  enableApprove,
+                  approverLogin,
+                  authorLogin,
+                  lastPusherLogin,
+                  protectedMatches: result.protectedMatches,
+                  reasons: result.reasons,
+                },
+              }),
+            );
+
             const customBody = (process.env.REVIEW_BODY || "").trim();
             let reviewEvent = "COMMENT";
             let body;
@@ -222,9 +239,13 @@ jobs:
             if (result.decision === "refuse") {
               reviewEvent = "COMMENT";
               body = [
-                "### Approval Agent — refused",
+                enableApprove
+                  ? "### Approval Agent — refused"
+                  : "### Approval Agent — would refuse APPROVE",
                 "",
-                "Guardrails blocked approval:",
+                enableApprove
+                  ? "Guardrails blocked approval:"
+                  : "Guardrails would block APPROVE if `enable-approve` were true:",
                 ...result.reasons.map((reason) => `- ${reason}`),
                 "",
                 "Posture: this lane does not replace full code review.",

@@ -38,7 +38,9 @@ This revision enables the live `APPROVE` path behind an explicit opt-in.
    before any `APPROVE`):**
    - Never approve PRs that modify the Approval Agent's own
      policy / routing / workflow files (default deny-list covers the reusable,
-     self caller, guardrails module, and this ADR).
+     self caller, guardrails module, and this ADR). Caller `protected-paths`
+     are unioned with that deny-list (never replace it). Renames are covered
+     via `previous_filename`.
    - Approver App never pushes; approver / author / pusher identities are
      strictly distinct (`require_last_push_approval` compatible).
    - Refuse when findings need human review (`refuse-on-human-risk`, default
