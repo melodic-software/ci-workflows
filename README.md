@@ -698,9 +698,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   scope as a pattern list of root-anchored globs (workflow files,
   permission/settings configs, hook and shell scripts, auth/token-touching code,
   network-call sites); the workflow's `changes` job evaluates it and a
-  not-applicable PR yields a name-stable skipped `security-review` check. A
-  consumer's ruleset may make that EXECUTION check required (check context
-  `<caller job> / security-review`); the VERDICT stays advisory.
+  not-applicable PR yields a name-stable skipped `security-review` check. After
+  a successful review the lane persists the reviewed head in a marker comment;
+  on later `synchronize` pushes it matches only the incremental delta, so a
+  docs-only follow-up does not re-run a full security pass (deleting the marker
+  forces a full re-review). A consumer's ruleset may make that EXECUTION check
+  required (check context `<caller job> / security-review`); the VERDICT stays
+  advisory.
 
   **Where that pattern list lives** is the caller's choice between two inputs.
   The conventional shape is `paths-file`, pointing at a repo-owned file
@@ -1043,7 +1047,10 @@ lane's verdict gates nothing. It also skips draft PRs at job level, so an
 `opened` event on a draft costs nothing and `ready_for_review` is what buys the
 review. `claude-security-review` keeps `synchronize`, because its check
 certifies that a security pass ran at the head being merged — a review of an
-earlier head is not that evidence, and it reviews drafts. `claude-e2e-verify`
+earlier head is not that evidence, and it reviews drafts. After a successful
+review it persists that head and, on later pushes, skips with a name-stable
+success when the incremental delta touches no security-relevant paths
+(ci-workflows#259). `claude-e2e-verify`
 keeps `synchronize` too, and gates on nothing but its kill-switches — no draft
 skip, no `skip-actors` input — so the most expensive lane has the loosest gate.
 Scope it with the caller's own trigger types. Take each lane's canonical caller
