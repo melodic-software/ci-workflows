@@ -364,12 +364,23 @@ GitHub continues the normal weekly patching of each hosted image generation.
   idleness. GitHub natively [queues a job until a matching runner is
   available][runner-routing], failing it only after 24 hours queued, so a busy
   fleet absorbs bursts without spending hosted minutes; only a fully offline
-  fleet falls back to the hosted route. Re-running failed jobs reuses the
+  fleet falls back to the hosted route. When that fallback fires
+  (`reason: no-online-runner`), the selector also writes a check annotation and
+  job summary that name **local/self-hosted capacity offline** and point at
+  `ci-runner host status` — GitHub sometimes surfaces a drained self-hosted
+  queue as a billing failure, which is a false lead (ci-workflows#246).
+  Re-running failed jobs reuses the
   prior attempt's successful selector output; re-running all jobs makes a
   fresh liveness decision. Neither forces the hosted route.
-  `self-hosted-only` instead returns the configured exact managed
-  label without inventory or observer credentials, so a
-  trusted private workload queues until governed capacity is available. The
+  `self-hosted-only` returns the configured exact managed label for the
+  always-on CI tier without inventoring that tier, so a trusted private
+  workload can blind-queue and wake a scale set (scale-from-zero). Moving the
+  selector itself onto hosted minutes to fail closed on a drained CI pool is
+  deliberately not done here — callers that need an offline-capacity annotation
+  for CI-tier work should use `prefer-self-hosted` instead. The capped review
+  tier is different: under `self-hosted-only` it probes inventory and fails
+  closed with `no-online-runner` (and the same operator-facing capacity text)
+  when nothing is ONLINE, rather than hanging forever (ci-workflows#386). The
   queue-only label must be one of the centrally allowlisted routes — the default
   `melodic-ubuntu-24.04-x64` tier or the capped `melodic-review-ubuntu-24.04-x64`
   review tier; adding another route requires a reviewed
