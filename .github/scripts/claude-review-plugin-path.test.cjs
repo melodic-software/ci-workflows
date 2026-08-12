@@ -42,7 +42,7 @@ function inputBlock(workflow, name) {
   const start = workflow.indexOf(`      ${name}:\n`);
   assert.notEqual(start, -1, `input not found: ${name}`);
   const rest = workflow.slice(start);
-  const end = rest.search(/\n      [a-z]/);
+  const end = rest.search(/\n {6}[a-z]/);
   return end === -1 ? rest : rest.slice(0, end);
 }
 
@@ -62,14 +62,15 @@ for (const lane of LANES) {
     const command = inputBlock(src, "plugin-command");
     assert.match(
       command,
-      new RegExp(
-        `default:\\s*${lane.defaultCommand.replace("/", "\\/")}`,
-      ),
+      new RegExp(`default:\\s*${lane.defaultCommand.replace("/", "\\/")}`),
     );
   });
 
   test(`${lane.file} composes REVIEW_BODY with dual-path preference`, () => {
-    const compose = stepSource(laneSource(lane.file), "Compose the review body");
+    const compose = stepSource(
+      laneSource(lane.file),
+      "Compose the review body",
+    );
     assert.match(compose, /plugins_trim=/);
     assert.match(compose, /cmd_trim=/);
     assert.match(compose, /Invoke \$\{PLUGIN_COMMAND\}/);
