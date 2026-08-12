@@ -320,7 +320,9 @@ function preflight(input) {
   // fleet. Phase 0 (2026-08-12) got HTTP 200 on the usage API with classic PAT
   // admin:org, so this policy path is ON (not behind a default-off kill switch).
   if (preferHostedWhileFree) {
-    const billingState = normalizeBillingMinutesState(input.billingMinutesState);
+    const billingState = normalizeBillingMinutesState(
+      input.billingMinutesState,
+    );
     if (billingState === "free") {
       return { result: hostedResult(hostedRunner, "hosted-while-free") };
     }
@@ -332,10 +334,7 @@ function preflight(input) {
     Number.isFinite(input.apiTimeoutSeconds) &&
     input.apiTimeoutSeconds >= 1 &&
     input.apiTimeoutSeconds <= 60;
-  if (
-    !fleetFirst &&
-    input.policy !== "prefer-self-hosted"
-  ) {
+  if (!fleetFirst && input.policy !== "prefer-self-hosted") {
     return { result: hostedResult(hostedRunner, "missing-config") };
   }
 
@@ -714,12 +713,7 @@ async function selectRunner(input, dependencies = {}) {
     if (error instanceof StrictRoutingError) {
       throw error;
     }
-    return errorResult(
-      error,
-      controller,
-      prepared.hostedRunner,
-      fleetFirst,
-    );
+    return errorResult(error, controller, prepared.hostedRunner, fleetFirst);
   } finally {
     clearTimer(timeout);
   }

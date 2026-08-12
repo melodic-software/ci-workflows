@@ -93,11 +93,7 @@ function ghApi(path, { method = "GET", body } = {}) {
 }
 
 function ghApiWithStatus(path) {
-  const result = spawnSync(
-    "gh",
-    ["api", "-i", path],
-    { encoding: "utf8" },
-  );
+  const result = spawnSync("gh", ["api", "-i", path], { encoding: "utf8" });
   const combined = `${result.stdout || ""}${result.stderr || ""}`;
   const statusMatch = combined.match(/^HTTP\/[\d.]+ (\d+)/mu);
   const status = statusMatch ? Number(statusMatch[1]) : null;
@@ -190,8 +186,7 @@ Required App permission (when probing with an installation token):
       docsSection: 'Organization permissions for "Administration"',
       classicPatScope: "admin:org",
       createGithubAppTokenInput: "permission-organization-administration: read",
-      note:
-        "Docs never name a dedicated 'billing' App permission; the usage endpoints sit under Organization Administration. melodic-ci-runner-observer lacks this grant today.",
+      note: "Docs never name a dedicated 'billing' App permission; the usage endpoints sit under Organization Administration. melodic-ci-runner-observer lacks this grant today.",
     },
     headroom: null,
     state: "unknown",

@@ -254,6 +254,7 @@ test("prefer-hosted-while-free exhausted rejects unapproved fleet labels", async
       { request: requestMustNotRun },
     ),
     (error) =>
-      error.name === "StrictRoutingError" && error.reason === "unapproved-label",
+      error.name === "StrictRoutingError" &&
+      error.reason === "unapproved-label",
   );
 });
