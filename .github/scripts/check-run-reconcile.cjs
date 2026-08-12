@@ -93,7 +93,7 @@ function extractRequiredContextsFromRulesets(rulesets) {
     }
     const rules = Array.isArray(ruleset.rules) ? ruleset.rules : [];
     for (const rule of rules) {
-      if (!rule || rule.type !== "required_status_checks") {
+      if (rule?.type !== "required_status_checks") {
         continue;
       }
       const checks = rule.parameters?.required_status_checks;
