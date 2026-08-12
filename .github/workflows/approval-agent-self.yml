@@ -1,26 +1,49 @@
 name: approval-agent-self
 
-# workflow_dispatch-only dogfood caller for the approval-agent scaffold
+# workflow_dispatch-only dogfood caller for the approval-agent reusable
 # (ci-workflows#256). Intentionally NOT on pull_request / merge_group — keeps
-# autonomous approve disabled and avoids any required-check surface.
+# autonomous approve opt-in and avoids any required-check surface.
 #
 # Manual exercise:
 #   Actions → approval-agent-self → Run workflow → PR number
-# Expect a COMMENTED placeholder review on that PR (never APPROVE).
+#   (optional) enable-approve: true — requires MELODIC_APP_ID / MELODIC_PRIVATE_KEY
+# Default: COMMENTED review after guardrails (never APPROVE until opted in).
 on:
   workflow_dispatch:
     inputs:
       pr-number:
-        description: Pull request number to receive the COMMENTED placeholder
+        description: Pull request number to review
         required: true
         type: string
+      enable-approve:
+        description: Submit APPROVE after guardrails (requires App secrets)
+        required: false
+        type: boolean
+        default: false
+      refuse-on-human-risk:
+        description: Refuse when human-risk-findings is non-empty
+        required: false
+        type: boolean
+        default: true
+      human-risk-findings:
+        description: Opaque findings blob or JSON array (empty = none)
+        required: false
+        type: string
+        default: ""
 
 permissions: {}
 
 jobs:
   approval-agent:
     permissions:
+      contents: read
       pull-requests: write
     uses: ./.github/workflows/approval-agent.yml
     with:
       pr-number: ${{ inputs.pr-number }}
+      enable-approve: ${{ inputs.enable-approve }}
+      refuse-on-human-risk: ${{ inputs.refuse-on-human-risk }}
+      human-risk-findings: ${{ inputs.human-risk-findings }}
+    secrets:
+      app-id: ${{ secrets.MELODIC_APP_ID }}
+      app-private-key: ${{ secrets.MELODIC_PRIVATE_KEY }}
