@@ -50,6 +50,20 @@ inputs:
 runs:
   using: composite
   steps:
+    # Persist the verified tarball across jobs so a warm version+sha256 pin
+    # never touches the network — the shellcheck action's #156 pattern,
+    # extended here as the primary defence against release-asset outages
+    # like 2026-08-12 (#444). install-release.sh re-verifies the pinned
+    # SHA-256 on every restore and re-downloads on mismatch, so the cache
+    # key is never trusted by itself. The install still fails closed: a
+    # secret-scanning gate that silently skipped would be worse than a red
+    # check.
+    - name: Cache gitleaks release asset
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/gitleaks
+        key: gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
     - name: Install gitleaks
       shell: bash
       env:
@@ -58,6 +72,7 @@ runs:
         BIN: gitleaks
         ARCHIVE_MEMBER: gitleaks
         VERSION_CMD: version
+        ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/gitleaks
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Scan for secrets

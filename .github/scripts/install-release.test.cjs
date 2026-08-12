@@ -201,11 +201,16 @@ test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
     "--connect-timeout",
     "--max-time",
     "--retry",
+    // The connection-died class (curl exit 56) observed in the 2026-08-12
+    // release-asset outage (#444) is not in curl's default transient-only
+    // retry classification, so the sledgehammer flag is required.
+    "--retry-all-errors",
     "--retry-max-time",
   ])
     assert.ok(first.includes(expected), `missing curl argument ${expected}`);
+  // A fixed delay would defeat curl's exponential backoff; the budget stays
+  // exponential and is bounded by --retry-max-time instead.
   assert.ok(!first.includes("--retry-delay"));
-  assert.ok(!first.includes("--retry-all-errors"));
 });
 
 test("checksummed tar members support stripping before installation", (t) => {
