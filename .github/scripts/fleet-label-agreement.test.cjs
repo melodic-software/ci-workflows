@@ -35,7 +35,7 @@ test("the strict-policy allowlist admits exactly the governed fleet labels", () 
 
 test("the strict-policy selector job runs on the default fleet label, not the review tier", () => {
   const match = selectorWorkflow.match(
-    /^ {4}runs-on: \$\{\{ inputs\.policy == 'self-hosted-only' && '([^']+)' \|\| '[^']+' \}\}$/mu,
+    /^ {4}runs-on: \$\{\{ \(inputs\.policy == 'self-hosted-only' \|\| inputs\.policy == 'prefer-hosted-while-free'\) && '([^']+)' \|\| '[^']+' \}\}$/mu,
   );
   assert.ok(match, "policy-conditional runs-on ternary not found");
   assert.equal(match[1], GOVERNED_FLEET_LABEL);
