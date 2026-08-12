@@ -19,8 +19,12 @@ test("semantic PR documents the validator-required fail-closed caller shape", ()
   assert.ok(prerequisiteInput, "prerequisite-result input is missing");
   assert.match(
     prerequisiteInput[1],
-    /Callers with `needs` must pass\s+its exact result and use `if: always\(\)`; any value other than success,\s+including an unverified cancelled result, fails this required check\s+before title validation\./u,
+    /Callers with `needs` must pass\s+its exact result and use `if: always\(\)`\. `failure`, `skipped`, and any\s+unrecognized value fail this required check before title validation\s+\(fail-closed: selector breakage stays loud\)\. `cancelled` instead\s+proceeds to validation/u,
   );
+  // The caller contract is still `always()`, never `!cancelled()`: the required
+  // context must MATERIALIZE on every outcome, because a skipped required job
+  // reports success. What changed is only what the gate DOES once it has
+  // materialized on a cancellation — see the dispatch test below.
   assert.doesNotMatch(prerequisiteInput[1], /!cancelled\(\)/u);
 
   const jobStart = workflow.indexOf("  pr-title:\n");
@@ -32,7 +36,7 @@ test("semantic PR documents the validator-required fail-closed caller shape", ()
   const jobContract = workflow.slice(jobStart, runsOn);
   assert.match(
     jobContract,
-    /Always honor the caller-selected runner,[\s\S]*?failed, skipped,[\s\S]*?cancelled, or empty prerequisite result[\s\S]*?caller owns any recovery[\s\S]*?public `ubuntu-24\.04` default[\s\S]*?caller's `if: always\(\)`[\s\S]*?after every prerequisite outcome[\s\S]*?required context[\s\S]*?fails closed before title validation/u,
+    /Always honor the caller-selected runner,[\s\S]*?failed, skipped,[\s\S]*?cancelled, or empty prerequisite result[\s\S]*?caller owns any recovery[\s\S]*?public `ubuntu-24\.04` default[\s\S]*?caller's `if: always\(\)`[\s\S]*?after every prerequisite outcome[\s\S]*?required context[\s\S]*?fails closed on failure\/skipped, while\s+# a cancelled prerequisite proceeds to real title validation/u,
   );
   assert.doesNotMatch(jobContract, /!cancelled\(\)/u);
 });
@@ -48,14 +52,17 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   const requiredJob = workflow.slice(workflow.indexOf("  pr-title:\n"));
   assert.match(requiredJob, /^ {4}runs-on: \$\{\{ inputs\.runner \}\}$/mu);
   assert.doesNotMatch(requiredJob, /runs-on:[^\n]*prerequisite-result/u);
-  assert.doesNotMatch(requiredJob, /Note cancelled prerequisite/u);
+  // A cancelled prerequisite is now handled explicitly rather than swept into
+  // the reject step, so the note step MUST be present — the inverse of the
+  // assertion this replaced.
+  assert.match(requiredJob, /- name: Note cancelled prerequisite/u);
   assert.match(
     requiredJob,
-    /- name: Reject failed prerequisite\n\s+if: \$\{\{ inputs\.prerequisite-result != 'success' \}\}[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?exit 1/u,
+    /- name: Reject failed prerequisite\n[\s\S]*?if: >-\n\s+inputs\.prerequisite-result != 'success' &&\n\s+inputs\.prerequisite-result != 'cancelled'[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?exit 1/u,
   );
   assert.match(
     requiredJob,
-    /- name: Validate PR title against Conventional Commits[\s\S]*?if: >-\n\s+inputs\.prerequisite-result == 'success' &&\n\s+\(github\.event_name == 'pull_request' \|\|\n\s+github\.event_name == 'pull_request_target'\)/u,
+    /- name: Validate PR title against Conventional Commits[\s\S]*?if: >-\n\s+\(inputs\.prerequisite-result == 'success' \|\|\n\s+inputs\.prerequisite-result == 'cancelled'\) &&\n\s+\(github\.event_name == 'pull_request' \|\|\n\s+github\.event_name == 'pull_request_target'\)/u,
   );
 
   const rejectIndex = requiredJob.indexOf("- name: Reject failed prerequisite");
@@ -77,14 +84,20 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   }
   assert.equal(runnerFor("failure"), "ubuntu-24.04");
 
-  // A delivered cancellation is not proof of a successor run, so every
-  // non-success value remains fail-closed.
+  // A delivered cancellation is still not proof of a successor run — which is
+  // exactly why it must not pass VACUOUSLY. It is dispatched to real
+  // validation instead: strictly stronger than the fail-closed answer it
+  // replaces, because the check still cannot go green without the title
+  // actually satisfying the contract, and strictly better than a synthetic
+  // failure on what is routine per-PR concurrency supersede. Everything else
+  // non-success stays fail-closed: those mean selector breakage or a
+  // miswired caller, which must stay loud.
   const dispatch = (result) => {
-    if (result !== "success") return "fail";
-    return "validate";
+    if (result === "success" || result === "cancelled") return "validate";
+    return "fail";
   };
   assert.equal(dispatch("success"), "validate");
-  assert.equal(dispatch("cancelled"), "fail");
+  assert.equal(dispatch("cancelled"), "validate");
   assert.equal(dispatch("failure"), "fail");
   assert.equal(dispatch("skipped"), "fail");
   assert.equal(dispatch(""), "fail");
@@ -105,6 +118,6 @@ test("documented selector composition preserves the one required check context",
   );
   assert.match(
     readme,
-    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?deliberately trades that for fail-closed reporting/u,
+    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?deliberately trades that for guaranteed reporting on every outcome —\s+fail-closed on `failure`\/`skipped`, real validation on `cancelled`/u,
   );
 });

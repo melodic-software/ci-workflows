@@ -30,9 +30,14 @@ on:
       prerequisite-result:
         description: >-
           Result of an optional prerequisite job. Callers with `needs` must pass
-          its exact result and use `if: always()`; any value other than success,
-          including an unverified cancelled result, fails this required check
-          before title validation.
+          its exact result and use `if: always()`. `failure`, `skipped`, and any
+          unrecognized value fail this required check before title validation
+          (fail-closed: selector breakage stays loud). `cancelled` instead
+          proceeds to validation — it is the routine per-PR
+          concurrency-supersede signal, this reporter is already running on the
+          caller-resolved runner, and the pinned action reads the LIVE PR title,
+          so the check reports the real gate answer instead of a synthetic
+          failure (#446).
         type: string
         default: success
       types:
@@ -92,17 +97,57 @@ jobs:
     # fallback passed through `runner`; direct callers that omit it retain the
     # public `ubuntu-24.04` default above. The caller's `if: always()` keeps this
     # reporter eligible after every prerequisite outcome so the required context
-    # materializes, then the first step fails closed before title validation.
+    # materializes; the first step then fails closed on failure/skipped, while
+    # a cancelled prerequisite proceeds to real title validation (see the
+    # cancelled-prerequisite step below and #446).
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite
-        if: ${{ inputs.prerequisite-result != 'success' }}
+        # `cancelled` is deliberately NOT rejected here — see the next step.
+        # Every other non-success result (failure, skipped, empty/unrecognized)
+        # still fails closed before title validation: those mean the runner
+        # selector broke or the caller wired the contract wrong, and masking
+        # that behind a green check would hide real infrastructure breakage.
+        if: >-
+          inputs.prerequisite-result != 'success' &&
+          inputs.prerequisite-result != 'cancelled'
         env:
           PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
         run: |
           echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
           exit 1
+
+      - name: Note cancelled prerequisite
+        # A cancelled prerequisite is normal supersede behavior, not a fault:
+        # the caller's per-PR `concurrency.cancel-in-progress` cancels the
+        # in-flight run when a newer event arrives for the same PR, and the
+        # caller's mandatory `if: always()` reporter contract (README) still
+        # materializes this required check for the superseded run.
+        #
+        # Failing closed on `cancelled` (the pre-#446 behavior) turned every
+        # routine supersede into a RED required check that operators had to
+        # clear by hand-re-running jobs (observed fleet-wide 2026-08-12:
+        # medley#1769, dotfiles#453 — the superseding run's green did NOT
+        # reliably displace the superseded run's failure in the merge box, and
+        # in medley#1769 the superseding run's own selector was cancelled too,
+        # so both runs sat red). Passing vacuously instead (skip validation,
+        # exit 0) would be worse: a cancelled result alone does not prove a
+        # successor covers this check — a manual run cancellation has no
+        # successor — so an unvalidated green could let an unchecked PR
+        # through. Validating for real is strictly stronger than both: this
+        # job is already running on the caller-resolved fallback runner, and
+        # the pinned action re-fetches the PR from the API rather than
+        # trusting the stale event payload, so the step below reports the
+        # real, current gate answer for this SHA — red only when the title is
+        # actually invalid.
+        #
+        # This ::notice keeps a superseded-run validation distinguishable in
+        # the job log from an ordinary success-path run, and from the hard
+        # `::error` above, for whoever debugs the next incident.
+        if: ${{ inputs.prerequisite-result == 'cancelled' }}
+        run: |
+          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede, a manual run cancellation, or the prerequisite job itself being cancelled/timing out (GitHub reports timeouts as cancelled). Proceeding with live-title validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
 
       - name: Validate PR title against Conventional Commits
         # Runs ONLY on the two PR-context events, `pull_request` AND
@@ -119,8 +164,12 @@ jobs:
         # queue deadlocks) reaches this job with no PR context. The title was
         # already validated when the PR was opened/edited, so on `merge_group` this
         # step is skipped and the job succeeds, reporting the required check.
+        # A `cancelled` prerequisite validates too (see the note step above and
+        # #446): the action live-fetches the PR title, so a superseded run
+        # reports the same answer its successor will.
         if: >-
-          inputs.prerequisite-result == 'success' &&
+          (inputs.prerequisite-result == 'success' ||
+          inputs.prerequisite-result == 'cancelled') &&
           (github.event_name == 'pull_request' ||
           github.event_name == 'pull_request_target')
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1

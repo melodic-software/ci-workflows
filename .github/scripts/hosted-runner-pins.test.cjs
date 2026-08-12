@@ -64,7 +64,11 @@ test("Windows Pester remains on its fixed hosted runner", () => {
 test("prerequisite-gated reusables preserve caller routing and fail closed", () => {
   const runnerFor = (_result, selectedRunner = "ubuntu-24.04") =>
     selectedRunner;
-  const mustReject = (result) => result !== "success";
+  // `cancelled` joins `success` in NOT being rejected: it is the routine
+  // per-PR concurrency-supersede signal and proceeds to real validation
+  // (#446). Every other non-success value stays fail-closed, because those
+  // mean selector breakage or a miswired caller and must stay loud.
+  const mustReject = (result) => result !== "success" && result !== "cancelled";
 
   for (const contract of prerequisiteGateContracts) {
     const source = fs.readFileSync(
@@ -95,9 +99,14 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
       `${contract.fileName} must reject the prerequisite before validation`,
     );
     const rejectStep = requiredJob.slice(rejectIndex, validationIndex);
+    // `cancelled` is excluded from the reject step on purpose: it is the
+    // routine per-PR concurrency-supersede signal, and rejecting it turned
+    // every supersede into a RED required check (#446). It proceeds to real
+    // validation instead — see the dispatch expectations below, which still
+    // require every OTHER non-success value to fail closed.
     assert.match(
       rejectStep,
-      /if: \$\{\{ inputs\.prerequisite-result != 'success' \}\}/u,
+      /if: >-\n\s+inputs\.prerequisite-result != 'success' &&\n\s+inputs\.prerequisite-result != 'cancelled'/u,
     );
     assert.match(
       rejectStep,
@@ -105,12 +114,17 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
     );
     assert.match(rejectStep, /exit 1/u);
 
+    // The runner is honored for EVERY delivered outcome, cancellation
+    // included — that half is unchanged, and is what lets a cancelled
+    // prerequisite reach real validation on the caller-resolved runner.
     for (const result of ["failure", "cancelled", "skipped", ""]) {
       assert.equal(
         runnerFor(result, "melodic-ubuntu-24.04-x64"),
         "melodic-ubuntu-24.04-x64",
         `${contract.fileName} rewrote the runner for '${result}'`,
       );
+    }
+    for (const result of ["failure", "skipped", ""]) {
       assert.equal(
         mustReject(result),
         true,
@@ -119,6 +133,11 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
     }
     assert.equal(runnerFor("failure"), "ubuntu-24.04");
     assert.equal(mustReject("success"), false);
+    assert.equal(
+      mustReject("cancelled"),
+      false,
+      `${contract.fileName} still rejects a cancelled prerequisite (#446)`,
+    );
   }
 });
 
