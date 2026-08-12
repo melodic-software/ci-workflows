@@ -426,7 +426,9 @@ jobs:
   # dedicated failure surface.
   hygiene:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Sequential steps replace five formerly-parallel 15m jobs; 20m keeps
+    # margin as the cheapest scans grow with the tree.
+    timeout-minutes: 20
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

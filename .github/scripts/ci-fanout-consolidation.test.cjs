@@ -79,7 +79,10 @@ test("ci.yml consolidates cheapest hygiene checks into one lane", () => {
 
 test("ADR records #122 COMPLETED with Shape A done", () => {
   assert.match(adr, /Status: \*\*COMPLETED\*\*/u);
-  assert.match(adr, /Shape A \(single selector\) is done/u);
+  assert.match(
+    adr,
+    /\| Shape A \(dotfiles single selector\) \| Done \(confirmed on `dotfiles` `main`\) \|/u,
+  );
   assert.match(adr, /Main-push burst collapse wins/u);
   assert.match(adr, /Hygiene lane consolidation/u);
 });
