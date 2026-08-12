@@ -94,7 +94,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      security-events: ${{ inputs.upload-sarif && 'write' || 'none' }}
+      # Always granted; the upload-sarif step remains gated on the input so
+      # annotations-only callers never call the code-scanning API. Expressions
+      # are not valid in this permissions scope (workflow fails to parse).
+      security-events: write
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
