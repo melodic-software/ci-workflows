@@ -143,7 +143,9 @@ lanes never overlap.
 
 ### Out of scope (this effort)
 
-- Assistant (@claude mention) lane build — ci-workflows#255.
+- Assistant (@claude mention) lane build — ci-workflows#255 (V1 answer/re-review
+  shipped: `claude-assistant.yml` + ADR `claude-assistant-ADR.md`; V2
+  fix-and-push remains a separate decision).
 - Approval-agent lane — ci-workflows#256 (agent-approval-check REJECTED for autonomous
   repos: bot approvals are discarded by design, author_association NONE; it requires N
   humans and would wedge solo autopilot merges).

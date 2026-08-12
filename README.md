@@ -688,6 +688,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Posts a `COMMENTED` placeholder only (never `APPROVE`). Do not add it to
   production required checks. Dogfood caller `approval-agent-self.yml` is
   `workflow_dispatch`-only. ADR + probe: `docs/topics/claude-review-lanes/approval-agent-ADR.md`.
+- `.github/workflows/claude-assistant.yml` — org `@claude` mention-responder
+  ([ci-workflows#255](https://github.com/melodic-software/ci-workflows/issues/255)).
+  V1 is **answer / re-review only** (tool-allowlist floor; no Edit/Write, no
+  commit/push/merge). Caller owns mention triggers + `@claude` guards;
+  reusable owns pin, floor tools, timeout, concurrency. Dogfood caller
+  `claude-assistant-self.yml`. ADR:
+  `docs/topics/claude-review-lanes/claude-assistant-ADR.md`.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. All inputs have public-safe defaults
   documented inline in the workflow header (the authoritative list). Consume
@@ -964,15 +971,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
 ## Claude lanes — shared consumption contract
 
-`claude-review.yml`, `claude-security-review.yml`, and `claude-e2e-verify.yml`
-share one consumption shape. Each is **advisory**: it posts PR comments and
-never gates `ci-status`. (The advisory verdict is separate from execution
-evidence: `claude-security-review.yml` scopes itself to security-sensitive
-paths, and its name-stable `security-review` check may be made a required
-status check — see its entry above.) Each is a whole-job concern (job
-`permissions:` plus a `secrets:` interface), which is why each is a reusable
-workflow rather than a composite action — the caller owns the triggers and the
-permission grant, and the workflow owns the SHA-pinned
+`claude-review.yml`, `claude-security-review.yml`, `claude-e2e-verify.yml`,
+and `claude-assistant.yml` share one consumption shape. Each is **advisory**:
+it posts PR/issue comments and never gates `ci-status`. (The advisory verdict
+is separate from execution evidence: `claude-security-review.yml` scopes itself
+to security-sensitive paths, and its name-stable `security-review` check may be
+made a required status check — see its entry above. `claude-assistant.yml` is
+mention-triggered answer/re-review, not a PR check.) Each is a whole-job
+concern (job `permissions:` plus a `secrets:` interface), which is why each is
+a reusable workflow rather than a composite action — the caller owns the
+triggers and the permission grant, and the workflow owns the SHA-pinned
 `anthropics/claude-code-action` and the safe handling. Security rules live in
 [CLAUDE.md](CLAUDE.md).
 
