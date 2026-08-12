@@ -112,7 +112,12 @@ async function runGate(lane, { executionFile, comments = [] }) {
   };
 
   const previous = process.env.EXECUTION_FILE;
+  const previousPr = process.env.PR_NUMBER;
   process.env.EXECUTION_FILE = executionFile;
+  // claude-review resolves the PR via API on workflow_dispatch and passes
+  // PR_NUMBER into the gate; keep the harness faithful for that path while
+  // security/e2e still read context.payload.pull_request.
+  process.env.PR_NUMBER = String(context.payload.pull_request.number);
   try {
     const run = new AsyncFunction(
       "core",
@@ -125,6 +130,8 @@ async function runGate(lane, { executionFile, comments = [] }) {
   } finally {
     if (previous === undefined) delete process.env.EXECUTION_FILE;
     else process.env.EXECUTION_FILE = previous;
+    if (previousPr === undefined) delete process.env.PR_NUMBER;
+    else process.env.PR_NUMBER = previousPr;
   }
   return { retry: outputs.retry, notices, deleted };
 }

@@ -19,6 +19,8 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const INLINE_COMMENT_GRANT =
   "--allowedTools mcp__github_inline_comment__create_inline_comment";
+const DISPATCH_GH_GRANT =
+  "--allowedTools Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)";
 const COMPOSED_ARGS = `\${{ steps.compose-args.outputs.args }}`;
 
 const workflowsDirectory = path.join(__dirname, "..", "workflows");
@@ -26,7 +28,7 @@ const workflowsDirectory = path.join(__dirname, "..", "workflows");
 // The compose run block is expression-free shell (env carries the ${{ }}
 // values), so the append contract is executed here rather than
 // pattern-matched.
-function composeArgs(script, baseArgs, standardsRef = "") {
+function composeArgs(script, baseArgs, standardsRef = "", eventName = "pull_request") {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "compose-args-"));
   try {
     const githubOutput = path.join(directory, "github-output");
@@ -38,6 +40,7 @@ function composeArgs(script, baseArgs, standardsRef = "") {
         BASE_ARGS: baseArgs,
         STANDARDS_REF: standardsRef,
         MOUNT_PATH: standardsRef === "" ? "" : "/tmp/standards-ref",
+        EVENT_NAME: eventName,
         GITHUB_OUTPUT: githubOutput,
       },
     });
@@ -124,4 +127,20 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
       }
     }
   });
+
+  if (fileName === "claude-review.yml") {
+    test(`${fileName}: workflow_dispatch compose grants gh delivery tools (#254)`, () => {
+      const args = composeArgs(
+        composeStep.run,
+        claudeArgsInput.default.trim(),
+        "",
+        "workflow_dispatch",
+      );
+      assert.ok(
+        args.endsWith(DISPATCH_GH_GRANT),
+        `dispatch must append gh delivery tools, not inline MCP: ${args}`,
+      );
+      assert.doesNotMatch(args, /inline_comment/u);
+    });
+  }
 }

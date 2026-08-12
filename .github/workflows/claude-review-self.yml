@@ -11,17 +11,26 @@ name: Claude Review
 on:
   pull_request:
     # No `synchronize` — dogfoods the canonical cadence: review on
-    # open/ready/reopen; re-run the job for a fresh review after a push.
+    # open/ready/reopen; re-run the job for a fresh review after a push, or
+    # dispatch with the PR number for on-demand / bot-initiated re-review
+    # (ci-workflows#254).
     types: [opened, ready_for_review, reopened]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to re-review
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-# Cancel a superseded in-flight review when the PR gets a new push; the PR
-# number is always set here (pull_request-only triggers) and, unlike head_ref,
+# Cancel a superseded in-flight review when the PR gets a new push or a
+# newer dispatch for the same PR; the PR number is set on pull_request and
+# on workflow_dispatch (via inputs.pr-number). Unlike head_ref, the number
 # is unique per PR even across forks; run_id is a non-grouping fallback.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr-number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -31,6 +40,10 @@ jobs:
       pull-requests: write
       id-token: write
     uses: ./.github/workflows/claude-review.yml
+    with:
+      # Empty on pull_request (event payload supplies the PR); required on
+      # workflow_dispatch so the reusable can resolve head SHA via API.
+      pr-number: ${{ inputs.pr-number }}
     # Pass only the one named secret (least privilege) rather than `secrets:
     # inherit`, which would forward every parent secret to the called workflow.
     secrets:
