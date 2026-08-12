@@ -311,6 +311,40 @@ on:
           findings here. This lane's value is the logic, architecture,
           data-flow, and trust-boundary security reasoning static analysis
           cannot reach. If you find no security issues, say so plainly.
+
+          Dual-path (ci-workflows#258): when `plugins` and `plugin-command`
+          are both non-empty (the defaults), the lane invokes the org
+          plugin command instead of this body. Clear `plugins` (empty) to
+          keep this V1 prompt path.
+      plugins:
+        description: >-
+          Newline-separated Claude Code plugins passed through to
+          anthropics/claude-code-action's `plugins` input (e.g.
+          `review@melodic-software`). Non-empty (after trim), together with
+          a non-empty `plugin-command`, prefers the V2 plugin-command path
+          over the V1 `prompt` body. Empty is safe — V1 prompt path stays.
+          Default installs the org review plugin (minimal).
+        type: string
+        default: |
+          review@melodic-software
+      plugin-marketplaces:
+        description: >-
+          Newline-separated marketplace Git URLs passed through to
+          `plugin_marketplaces`. Empty-safe when `plugins` is empty.
+          Marketplace name comes from `.claude-plugin/marketplace.json`
+          `name` (`melodic-software`), not the repo name. Default points at
+          the org marketplace.
+        type: string
+        default: |
+          https://github.com/melodic-software/claude-code-plugins.git
+      plugin-command:
+        description: >-
+          Slash command invoked when `plugins` is non-empty. Default is
+          `/review:security-review` in the org review plugin. Set empty
+          (with non-empty plugins) only to install plugins while staying
+          on the V1 prompt path.
+        type: string
+        default: /review:security-review
       claude-args:
         description: >-
           Passed through to the Claude CLI. The universal extension point: model,
@@ -953,6 +987,36 @@ jobs:
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
+      # Dual-path review body (ci-workflows#258): plugin command when
+      # plugins + plugin-command are configured; otherwise the V1 prompt
+      # body. Written to GITHUB_ENV so both review attempts share one
+      # body (retry-identity contract).
+      - name: Compose the review body
+        if: steps.freshness.outputs.superseded != 'true'
+        env:
+          PLUGINS: ${{ inputs.plugins }}
+          PLUGIN_COMMAND: ${{ inputs.plugin-command }}
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          set -euo pipefail
+          plugins_trim="$(printf '%s' "$PLUGINS" | tr -d '[:space:]')"
+          cmd_trim="$(printf '%s' "$PLUGIN_COMMAND" | tr -d '[:space:]')"
+          # Random delimiter — caller-controlled PROMPT can contain a fixed
+          # REVIEW_BODY_EOF line and would otherwise truncate/corrupt GITHUB_ENV.
+          delimiter="gha_${RANDOM}${RANDOM}_EOF"
+          {
+            echo "REVIEW_BODY<<$delimiter"
+            if [ -n "$plugins_trim" ] && [ -n "$cmd_trim" ]; then
+              printf '%s\n' \
+                "Invoke ${PLUGIN_COMMAND} now and follow its instructions exactly for this pull request." \
+                "The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command." \
+                "Do not substitute a different review procedure."
+            else
+              printf '%s\n' "$PROMPT"
+            fi
+            echo "$delimiter"
+          } >> "$GITHUB_ENV"
+
       - name: Claude security review
         id: claude-review
         if: steps.freshness.outputs.superseded != 'true'
@@ -984,6 +1048,8 @@ jobs:
           display_report: false
           allowed_bots: dependabot[bot]
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          plugins: ${{ inputs.plugins }}
+          plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           claude_args: ${{ steps.compose-args.outputs.args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
@@ -995,7 +1061,7 @@ jobs:
             PR NUMBER: ${{ steps.resolve-pr.outputs.number }}
             HEAD SHA: ${{ steps.resolve-pr.outputs.head-sha }}
 
-            ${{ inputs.prompt }}
+            ${{ env.REVIEW_BODY }}
 
             When referencing specific code locations in findings, link to the
             commit blob (not the PR) using a permalink with line numbers:
@@ -1247,6 +1313,8 @@ jobs:
           display_report: false
           allowed_bots: dependabot[bot]
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          plugins: ${{ inputs.plugins }}
+          plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           claude_args: ${{ steps.compose-args.outputs.args }}
           # github-context expressions must appear directly in the step (a value
           # carried in via inputs.prompt is NOT re-evaluated), so the structural
@@ -1258,7 +1326,7 @@ jobs:
             PR NUMBER: ${{ steps.resolve-pr.outputs.number }}
             HEAD SHA: ${{ steps.resolve-pr.outputs.head-sha }}
 
-            ${{ inputs.prompt }}
+            ${{ env.REVIEW_BODY }}
 
             When referencing specific code locations in findings, link to the
             commit blob (not the PR) using a permalink with line numbers:

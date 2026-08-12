@@ -149,7 +149,10 @@ lanes never overlap.
 - Approval-agent lane — ci-workflows#256 (agent-approval-check REJECTED for autonomous
   repos: bot approvals are discarded by design, author_association NONE; it requires N
   humans and would wedge solo autopilot merges).
-- V2 plugin-command review logic (org marketplace) — ci-workflows#258.
+- V2 plugin-command review logic (org marketplace) — ci-workflows#258
+  (**shipped** 2026-08-12: see [V2-PLUGIN-ARCHITECTURE.md](./V2-PLUGIN-ARCHITECTURE.md);
+  thin org skills `/review:code-review` + `/review:security-review`, dual-path
+  workflow inputs; deepen adversarial fan-out in the plugin as follow-up).
 - workflow_dispatch re-review entry — ci-workflows#254.
 - Fleet SHA-pin staleness audit — ci-workflows#257.
 - Incremental security-relevance gating — ci-workflows#259.
