@@ -86,10 +86,16 @@ jobs:
           work="$(mktemp -d "$RUNNER_TEMP/golangci-lint.XXXXXXXX")"
           trap 'rm -rf -- "$work"' EXIT
           mkdir -p -- "$runtime_root"
+          # Nine attempts under curl's exponential backoff (~4-5 minutes,
+          # capped by --retry-max-time) instead of a burst that ends within
+          # seconds, and --retry-all-errors so a mid-body connection death
+          # (curl exit 56) retries like an HTTP 5xx does — the two failure
+          # classes of the 2026-08-12 release-asset outage (#444). The
+          # pinned SHA-256 below stays the integrity gate.
           curl -q --fail --silent --show-error --location \
             --proto '=https' --proto-redir '=https' \
             --connect-timeout 10 --max-time 120 \
-            --retry 2 --retry-max-time 300 \
+            --retry 8 --retry-all-errors --retry-max-time 300 \
             --output "$work/$archive_name" -- "$url"
           printf '%s  %s\n' "$GOLANGCI_LINT_SHA256" "$work/$archive_name" |
             sha256sum --check --strict -
@@ -242,10 +248,16 @@ jobs:
           New-Item -ItemType Directory -Path $runtimeRoot, $work -Force | Out-Null
           try {
             $archive = Join-Path $work $archiveName
+            # Same widened budget as the Linux install above: nine attempts
+            # under curl's exponential backoff (~4-5 minutes, capped by
+            # --retry-max-time), with --retry-all-errors so a mid-body
+            # connection death (curl exit 56) retries like an HTTP 5xx does
+            # — the two failure classes of the 2026-08-12 release-asset
+            # outage (#444). The pinned SHA-256 below stays the gate.
             & curl.exe -q --fail --silent --show-error --location `
               --proto '=https' --proto-redir '=https' `
               --connect-timeout 10 --max-time 120 `
-              --retry 2 --retry-max-time 300 `
+              --retry 8 --retry-all-errors --retry-max-time 300 `
               --output $archive -- $url
             if ($LASTEXITCODE -ne 0) { throw "curl failed with status $LASTEXITCODE" }
             $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()

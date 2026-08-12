@@ -22,12 +22,25 @@ inputs:
 runs:
   using: composite
   steps:
+    # Persist the verified binary across jobs so a warm version+sha256 pin
+    # never touches the network — the shellcheck action's #156 pattern,
+    # extended here as the primary defence against release-asset outages
+    # like 2026-08-12 (#444). install-release.sh re-verifies the pinned
+    # SHA-256 on every restore and re-downloads on mismatch, so the cache
+    # key is never trusted by itself.
+    - name: Cache Lefthook release asset
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/lefthook
+        key: lefthook-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
     - name: Install Lefthook
       shell: bash
       env:
         URL: https://github.com/evilmartians/lefthook/releases/download/v${{ inputs.version }}/lefthook_${{ inputs.version }}_Linux_x86_64
         SHA256: ${{ inputs.sha256 }}
         BIN: lefthook
+        ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/lefthook
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Validate composed Lefthook config

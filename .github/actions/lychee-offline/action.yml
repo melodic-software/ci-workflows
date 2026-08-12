@@ -26,6 +26,18 @@ inputs:
 runs:
   using: composite
   steps:
+    # Persist the verified tarball across jobs so a warm version+sha256 pin
+    # never touches the network — the shellcheck action's #156 pattern,
+    # extended here as the primary defence against release-asset outages
+    # like 2026-08-12 (#444). install-release.sh re-verifies the pinned
+    # SHA-256 on every restore and re-downloads on mismatch, so the cache
+    # key is never trusted by itself.
+    - name: Cache lychee release asset
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/lychee
+        key: lychee-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
     - name: Install lychee
       shell: bash
       env:
@@ -34,6 +46,7 @@ runs:
         BIN: lychee
         ARCHIVE_MEMBER: lychee-x86_64-unknown-linux-gnu/lychee
         STRIP_COMPONENTS: '1'
+        ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/lychee
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
     - name: Check links (offline)

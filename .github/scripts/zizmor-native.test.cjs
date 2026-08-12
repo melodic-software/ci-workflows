@@ -99,9 +99,13 @@ test("native zizmor verifies the exact release before executing it", () => {
   assert.match(step, /--proto '=https'/u);
   assert.match(step, /--proto-redir '=https' --tlsv1\.2/u);
   assert.match(step, /--connect-timeout 10 --max-time 120/u);
-  assert.match(step, /--retry 2 --retry-max-time 300/u);
+  // Widened for the 2026-08-12 release-asset outage (#444): nine attempts
+  // under curl's exponential backoff, with --retry-all-errors covering the
+  // connection-died class (curl exit 56) that the default transient-only
+  // classification never retries. --retry-delay stays banned so the backoff
+  // remains exponential rather than fixed-interval.
+  assert.match(step, /--retry 8 --retry-all-errors --retry-max-time 300/u);
   assert.doesNotMatch(step, /--retry-delay/u);
-  assert.doesNotMatch(step, /--retry-all-errors/u);
   assert.match(step, /sha256sum --check --strict -/u);
   assert.match(step, /--no-same-owner zizmor/u);
   assert.match(step, /mkdir -- "\$work_dir\/cache"/u);

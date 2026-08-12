@@ -74,10 +74,17 @@ jobs:
           results="$work_dir/results.sarif"
 
           download() {
+            # Nine attempts under curl's exponential backoff (~4-5 minutes,
+            # capped by --retry-max-time) instead of a burst that ends
+            # within seconds, and --retry-all-errors so a mid-body
+            # connection death (curl exit 56) retries like an HTTP 5xx
+            # does — the two failure classes of the 2026-08-12
+            # release-asset outage (#444). The pinned SHA-256 checks below
+            # stay the integrity gate regardless of what a retry fetched.
             curl --fail --show-error --location --proto '=https' \
               --proto-redir '=https' --tlsv1.2 \
               --connect-timeout 10 --max-time 180 \
-              --retry 2 --retry-max-time 360 \
+              --retry 8 --retry-all-errors --retry-max-time 360 \
               --output "$2" "$1"
           }
           release="https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}"

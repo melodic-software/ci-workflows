@@ -160,9 +160,17 @@ jobs:
           set -euo pipefail
           install_dir="${RUNNER_TEMP}/standards-sync-alert-bin"
           install -d "$install_dir"
+          # Nine attempts under curl's exponential backoff (~4-5 minutes,
+          # capped by --retry-max-time) instead of a burst that ends within
+          # seconds, and --retry-all-errors so a mid-body connection death
+          # (curl exit 56) retries like an HTTP 5xx does — the two failure
+          # classes of the 2026-08-12 release-asset outage (#444). Kept
+          # flag-for-flag identical to standards-sync.yml's install per the
+          # toolchain-identical contract above. The pinned SHA-256 below
+          # stays the integrity gate.
           curl --fail --location --proto '=https' --silent --show-error \
             --connect-timeout 10 --max-time 120 \
-            --retry 2 --retry-max-time 300 \
+            --retry 8 --retry-all-errors --retry-max-time 300 \
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
             --output "$install_dir/yq"
           printf '%s  %s\n' "$YQ_LINUX_AMD64_SHA256" "$install_dir/yq" \

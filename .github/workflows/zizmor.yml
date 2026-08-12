@@ -178,10 +178,17 @@ jobs:
           trap 'rm -rf -- "$work_dir"' EXIT
           archive="$work_dir/$ASSET_NAME"
           url="https://github.com/zizmorcore/zizmor/releases/download/v${resolved_version}/${ASSET_NAME}"
+          # Nine attempts under curl's exponential backoff (~4-5 minutes,
+          # capped by --retry-max-time) instead of a burst that ends within
+          # seconds, and --retry-all-errors so a mid-body connection death
+          # (curl exit 56) retries like an HTTP 5xx does — the two failure
+          # classes of the 2026-08-12 release-asset outage (#444). The
+          # pinned SHA-256 below stays the integrity gate regardless of
+          # what a retry eventually fetched.
           curl --fail --show-error --location --proto '=https' \
             --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 120 \
-            --retry 2 --retry-max-time 300 \
+            --retry 8 --retry-all-errors --retry-max-time 300 \
             --output "$archive" "$url"
           printf '%s  %s\n' "$EXPECTED_SHA256" "$archive" \
             | sha256sum --check --strict -
