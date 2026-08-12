@@ -34,7 +34,7 @@ Three cooperating pieces, none of which privilege the security lane:
      `pr-number`
 
 3. **Companion workflows** — `security-review-absent-mitigate.yml` (reusable)
-   + `security-review-absent-mitigate-self.yml` (`schedule` +
+   and `security-review-absent-mitigate-self.yml` (`schedule` /
    `workflow_dispatch` only). Default mode posts the visibility failure check.
 
 ## Consumer adoption
