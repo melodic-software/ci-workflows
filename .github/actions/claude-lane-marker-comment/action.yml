@@ -14,6 +14,10 @@ description: >-
   continue-on-error on the step invoking this action so a rejected API call
   never turns the lane red.
 
+  Optional pull-number covers workflow_dispatch re-review (ci-workflows#254),
+  where github.event.pull_request is absent. When empty, falls back to the
+  event payload (unchanged).
+
 inputs:
   marker:
     description: >-
@@ -44,6 +48,12 @@ inputs:
       prefix, so every continuation line must carry its own `> ` prefix.
     required: false
     default: "Re-run the job to retry the review."
+  pull-number:
+    description: >-
+      PR number to comment on. When empty, uses
+      github.event.pull_request.number (pull_request runs).
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -57,6 +67,7 @@ runs:
         REVIEW_CLASS: ${{ inputs.failure-class }}
         REVIEW_DETAIL: ${{ inputs.review-detail }}
         BODY_COPY: ${{ inputs.body-copy }}
+        PULL_NUMBER: ${{ inputs.pull-number || github.event.pull_request.number }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       with:
         script: |
@@ -74,12 +85,20 @@ runs:
             return;
           }
 
-          const pr = context.payload.pull_request;
-          if (!pr?.number) {
+          const pullNumber = Number(process.env.PULL_NUMBER);
+          if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
             core.info("No pull request in this event; nothing to do.");
             return;
           }
-          if (pr.head?.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+
+          // Fork guard: only applicable when the event carries a pull_request
+          // payload (dispatch re-review always runs in the base repo with a
+          // write-capable token). Same-repo check matches the prior behavior.
+          const pr = context.payload.pull_request;
+          if (
+            pr?.head?.repo?.full_name &&
+            pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`
+          ) {
             core.info("Fork-triggered run has a read-only token; skipping comment management.");
             return;
           }
@@ -87,7 +106,7 @@ runs:
           const comments = await github.paginate(github.rest.issues.listComments, {
             owner: context.repo.owner,
             repo: context.repo.repo,
-            issue_number: pr.number,
+            issue_number: pullNumber,
           });
           const marked = comments.filter(
             (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker),
@@ -130,7 +149,7 @@ runs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pr.number,
+              issue_number: pullNumber,
               body,
             });
           }

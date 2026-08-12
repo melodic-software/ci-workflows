@@ -27,9 +27,11 @@ function stepSource(stepName) {
 }
 
 test("the review concurrency group is keyed per head, not per PR", () => {
+  // pull_request: number + head.sha. workflow_dispatch: pr-number twice
+  // (head is resolved after concurrency evaluation — latest dispatch wins).
   assert.match(
     workflowSource,
-    /^ {6}group: claude-review-\$\{\{ github\.event\.pull_request\.number \|\| github\.sha \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}$/mu,
+    /^ {6}group: claude-review-\$\{\{ github\.event\.pull_request\.number \|\| inputs\.pr-number \|\| github\.sha \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \|\| inputs\.pr-number \|\| github\.sha \}\}$/mu,
   );
   assert.match(workflowSource, /^ {6}cancel-in-progress: true$/mu);
 });
@@ -45,20 +47,32 @@ test("the superseded-head guard is the pinned freshness composite", () => {
   );
 });
 
+test("freshness receives the resolved PR context (#254)", () => {
+  const step = stepSource("Check whether this head is still current");
+  assert.match(
+    step,
+    /^ {10}pull-number: \$\{\{ steps\.resolve-pr\.outputs\.number \}\}$/mu,
+  );
+  assert.match(
+    step,
+    /^ {10}head-sha: \$\{\{ steps\.resolve-pr\.outputs\.head-sha \}\}$/mu,
+  );
+});
+
 test("every runner-consuming step gates on the guard's superseded output", () => {
   // The review-count gate, checkout, the three standards-mount steps,
-  // argument composition, the review itself, the retry gate, the
-  // attempt-resolve step, and outcome reporting (which transitively gates
-  // both marker-comment steps and the count upsert). The backoff and retry
-  // attempt key on the retry gate's output instead, so the gate carries the
-  // guard for all three. A new runner-consuming or PR-writing step must join
-  // this set deliberately.
+  // argument composition, reporting-instruction composition, the review
+  // itself, the retry gate, the attempt-resolve step, and outcome reporting
+  // (which transitively gates both marker-comment steps and the count
+  // upsert). The backoff and retry attempt key on the retry gate's output
+  // instead, so the gate carries the guard for all three. A new
+  // runner-consuming or PR-writing step must join this set deliberately.
   const gates = [
     ...workflowSource.matchAll(
       /steps\.freshness\.outputs\.superseded != 'true'/gu,
     ),
   ].length;
-  assert.equal(gates, 10);
+  assert.equal(gates, 11);
 });
 
 test("every review-producing step also gates on the review-count cap", () => {
@@ -71,7 +85,7 @@ test("every review-producing step also gates on the review-count cap", () => {
       /steps\.review-count\.outputs\.capped != 'true'/gu,
     ),
   ].length;
-  assert.equal(gates, 9);
+  assert.equal(gates, 10);
 });
 
 // Actions cannot loop a `uses:` step, so the retry is a verbatim copy of the
@@ -138,4 +152,14 @@ test("track-progress=false is rejected (#343)", () => {
     /^ {6}- name: Reject unsupported track-progress=false$/mu,
   );
   assert.match(workflowSource, /^ {8}if: inputs\.track-progress == false$/mu);
+});
+
+test("track_progress is forced off outside pull_request (#254)", () => {
+  // Upstream rejects track_progress on workflow_dispatch; the workflow_call
+  // input stays true (#343) while the action input narrows to pull_request.
+  const first = stepSource("Claude review");
+  assert.match(
+    first,
+    /^ {10}track_progress: \$\{\{ github\.event_name == 'pull_request' && inputs\.track-progress \}\}$/mu,
+  );
 });

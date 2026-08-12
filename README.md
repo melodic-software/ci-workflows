@@ -1036,7 +1036,8 @@ merge", not "no infrastructure problem ever blocks one".
 
 **Trigger cadence is per lane, deliberately.** `claude-review` runs on
 `opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
-does not re-trigger the code review, so re-run the job for a fresh pass. That
+does not re-trigger the code review, so re-run the job or `workflow_dispatch`
+with the PR number (ci-workflows#254) for a fresh pass. That
 caps per-PR spend on active branches, and it is safe precisely because the
 lane's verdict gates nothing. It also skips draft PRs at job level, so an
 `opened` event on a draft costs nothing and `ready_for_review` is what buys the
