@@ -13,11 +13,13 @@ name: zizmor
 # zizmor's own note-level docs: https://docs.zizmor.sh/usage/).
 # Opt-in upload-sarif (default false) also runs --format=sarif and uploads
 # via github/codeql-action/upload-sarif for durable code-scanning alerts.
-# SARIF mode always exits 0 for findings, so it is visibility-only and
-# composes with (does not replace) fail-on-severity gating. When upload-sarif
-# is true the job grants security-events: write; otherwise contents: read
-# alone. The ci-status gateway stays consumer-local — this is a lane, not
-# the gateway.
+# SARIF mode always exits 0 for findings (see exit-codes docs cited below),
+# so it is visibility-only and composes with (does not replace)
+# fail-on-severity gating. Callers that enable upload-sarif must grant
+# security-events: write on the calling job — reusable workflows cannot
+# elevate caller permissions. The job-level security-events: write below
+# only takes effect when the caller already granted it. The ci-status
+# gateway stays consumer-local — this is a lane, not the gateway.
 on:
   workflow_call:
     inputs:
@@ -80,8 +82,11 @@ on:
           When true, also run zizmor with --format=sarif and upload results to
           GitHub code scanning (durable, per-line, dismissable alerts).
           Visibility-only: SARIF mode exits 0 for findings and does not replace
-          fail-on-severity / fail-on-findings gating. Default false keeps the
-          lane annotations-only and avoids granting security-events: write.
+          fail-on-severity / fail-on-findings gating. Doubles audit cost (a
+          second zizmor pass). Callers must grant security-events: write on
+          the calling job — this reusable cannot elevate permissions. Default
+          false keeps the lane annotations-only. category is the static
+          literal 'zizmor' (one upload-sarif call site per ref).
         type: boolean
         default: false
 
@@ -249,8 +254,12 @@ jobs:
             ;;
           esac
 
-          # Optional visibility path: --format=sarif always exits 0 for
-          # findings, so it never drives gating. Write outside work_dir so the
+          # Optional visibility path. --format=sarif always exits 0 for
+          # findings (not graduated 11-14): docs.zizmor.sh/usage/#exit-codes
+          # ("Successful audit; no findings … (or SARIF mode enabled)" and
+          # "If you use --format=sarif, zizmor will not use exit codes 11 and
+          # above"). Non-zero here is a real tool failure. Second pass doubles
+          # audit cost when online-audits is on. Write outside work_dir so the
           # EXIT trap does not remove the file before the upload step.
           if [[ "$UPLOAD_SARIF" == true ]]; then
             sarif_args=(

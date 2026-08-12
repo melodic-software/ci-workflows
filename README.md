@@ -608,9 +608,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   escalation.
   `runner` defaults to `ubuntu-24.04` and can consume the
   approved selector output for eligible private, non-fork calls. Callers may
-  opt into `upload-sarif: true` for durable code-scanning alerts (grants
-  `security-events: write` on that path only; visibility-only — does not
-  replace `fail-on-severity` gating). Inputs are documented inline.
+  opt into `upload-sarif: true` for durable code-scanning alerts
+  (visibility-only — does not replace `fail-on-severity` gating). That opt-in
+  requires the calling job to grant `security-events: write`; reusable
+  workflows cannot elevate caller permissions, so the called job's
+  `security-events: write` only applies when the caller already granted it.
+  Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
   Google's official native OSV-Scanner v2.4.0 Linux X64 binary. The exact binary,
   its provenance, and the SLSA verifier are checksum-pinned; the verifier then

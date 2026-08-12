@@ -578,6 +578,14 @@ jobs:
     if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
+      # Dogfood stays annotations-only (upload-sarif defaults false). Callers
+      # that opt into upload-sarif: true must also grant security-events: write
+      # here — reusable workflows cannot elevate caller permissions. Example:
+      #   permissions:
+      #     contents: read
+      #     security-events: write
+      #   with:
+      #     upload-sarif: true
     # Audit this repo's own workflows AND composite actions (paths: .) — strong
     # dogfood. Advisory: findings annotate without blocking ci-status.
     uses: ./.github/workflows/zizmor.yml
