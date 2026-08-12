@@ -1035,7 +1035,10 @@ lane's verdict gates nothing. It also skips draft PRs at job level, so an
 `opened` event on a draft costs nothing and `ready_for_review` is what buys the
 review. `claude-security-review` keeps `synchronize`, because its check
 certifies that a security pass ran at the head being merged — a review of an
-earlier head is not that evidence, and it reviews drafts. `claude-e2e-verify`
+earlier head is not that evidence, and it reviews drafts. After a successful
+review it persists that head and, on later pushes, skips with a name-stable
+success when the incremental delta touches no security-relevant paths
+(ci-workflows#259). `claude-e2e-verify`
 keeps `synchronize` too, and gates on nothing but its kill-switches — no draft
 skip, no `skip-actors` input — so the most expensive lane has the loosest gate.
 Scope it with the caller's own trigger types. Take each lane's canonical caller
