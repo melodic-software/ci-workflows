@@ -34,8 +34,13 @@ on:
       prerequisite-result:
         description: >-
           Result of an optional prerequisite job. Callers with `needs` must pass
-          its exact result and use `if: always()`; any value other than success
-          fails this required check before body validation.
+          its exact result and use `if: always()`. `failure`, `skipped`, and any
+          unrecognized value fail this required check before body validation
+          (fail-closed: selector breakage stays loud). `cancelled` instead
+          proceeds to validation — it is the routine per-PR
+          concurrency-supersede signal and this reporter is already running on
+          the caller-resolved runner, so the check reports the real gate answer
+          instead of a synthetic failure (#446).
         type: string
         default: success
       exempt-authors:
@@ -64,24 +69,70 @@ jobs:
     # cancelled, or empty prerequisite result. The caller owns any recovery
     # fallback passed through `runner`; direct callers that omit it retain the
     # public `ubuntu-24.04` default above. The rejection step remains first so a
-    # non-success prerequisite fails closed before body validation.
+    # failed or skipped prerequisite fails closed before body validation, while
+    # a cancelled prerequisite proceeds to real body validation (see the
+    # cancelled-prerequisite step below and #446).
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     steps:
       - name: Reject failed prerequisite
-        if: ${{ inputs.prerequisite-result != 'success' }}
+        # `cancelled` is deliberately NOT rejected here — see the next step.
+        # Every other non-success result (failure, skipped, empty/unrecognized)
+        # still fails closed before body validation: those mean the runner
+        # selector broke or the caller wired the contract wrong, and masking
+        # that behind a green check would hide real infrastructure breakage.
+        if: >-
+          inputs.prerequisite-result != 'success' &&
+          inputs.prerequisite-result != 'cancelled'
         env:
           PREREQUISITE_RESULT: ${{ inputs.prerequisite-result }}
         run: |
           echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
           exit 1
 
+      - name: Note cancelled prerequisite
+        # A cancelled prerequisite is normal supersede behavior, not a fault:
+        # the caller's per-PR `concurrency.cancel-in-progress` cancels the
+        # in-flight run when a newer event arrives for the same PR, and the
+        # caller's mandatory `if: always()` reporter contract (README) still
+        # materializes this required check for the superseded run.
+        #
+        # Failing closed on `cancelled` (the pre-#446 behavior) turned every
+        # routine supersede into a RED required check that operators had to
+        # clear by hand-re-running jobs (observed fleet-wide 2026-08-12:
+        # medley#1769, dotfiles#453). Passing vacuously instead (skip
+        # validation, exit 0) would be worse: a cancelled result alone does
+        # not prove a successor covers this check — a manual run cancellation
+        # has no successor — so an unvalidated green could let an unchecked PR
+        # through. Validating for real is strictly stronger than both: this
+        # job is already running on the caller-resolved fallback runner, so
+        # the step below reports the real gate answer — red only when the
+        # body actually violates the contract.
+        #
+        # One caveat, unlike the sibling semantic-pr gate: the body below is
+        # read from THIS run's event payload (by design — see the injection
+        # note above), so in a body-edit supersede the validated body may be
+        # one edit behind. That never manufactures a failure out of nothing —
+        # a red here still means the event-time body genuinely violated the
+        # contract — and the superseding run validates the newer body under
+        # the same check name.
+        #
+        # This ::notice keeps a superseded-run validation distinguishable in
+        # the job log from an ordinary success-path run, and from the hard
+        # `::error` above, for whoever debugs the next incident.
+        if: ${{ inputs.prerequisite-result == 'cancelled' }}
+        run: |
+          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede or a manual run cancellation, not a selector fault. Proceeding with body validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
+
       - name: Validate PR body against the closing-keyword + contract-header convention
         # Skipped (job still green) on anything but the two PR-body-bearing
         # events -- the body was already validated when the PR was last
         # opened/edited, matching do-not-merge-gate.yml's merge_group guard.
+        # A `cancelled` prerequisite validates too (see the note step above
+        # and #446).
         if: >-
-          inputs.prerequisite-result == 'success' &&
+          (inputs.prerequisite-result == 'success' ||
+          inputs.prerequisite-result == 'cancelled') &&
           (github.event_name == 'pull_request_target' || github.event_name == 'pull_request')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
