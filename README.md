@@ -50,7 +50,11 @@ by something worth pinning to — `release.yml`'s manual `workflow_dispatch`
 (patch/minor/major) makes each release a deliberate act, and cutting one after
 every meaningful change keeps `main` at the latest tag so Dependabot's
 `github-actions` group bumps consumers to a tagged SHA instead of tracking
-`main` HEAD by drift. There is no calendar cadence; GitHub's own guidance is
+`main` HEAD by drift. Because nothing cuts a release automatically, the
+scheduled `release-gap-check` workflow watches for the failure mode of that
+deliberateness — `main` running ahead of the newest published Release for too
+long — and files an advisory rolling issue; cutting the release stays
+manual. There is no calendar cadence; GitHub's own guidance is
 silent on release frequency, and a tag-per-change policy is a closer fit for a
 repository whose only "release" event is "a consumer might need to pin to
 this." GitHub's reusable-workflow reference guidance treats a SHA, a release
