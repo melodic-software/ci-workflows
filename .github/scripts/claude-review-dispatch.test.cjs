@@ -60,10 +60,7 @@ test("canonical caller exposes workflow_dispatch with pr-number", () => {
   ]);
   assert.equal(caller.on.pull_request.types.includes("synchronize"), false);
   assert.ok(caller.on.workflow_dispatch, "workflow_dispatch entry required");
-  assert.equal(
-    caller.on.workflow_dispatch.inputs["pr-number"].required,
-    true,
-  );
+  assert.equal(caller.on.workflow_dispatch.inputs["pr-number"].required, true);
   assert.equal(caller.on.workflow_dispatch.inputs["pr-number"].type, "string");
   assert.match(
     callerSource,
@@ -77,14 +74,13 @@ test("canonical caller exposes workflow_dispatch with pr-number", () => {
 
 test("reusable accepts pr-number and resolves PR context before freshness", () => {
   const reusable = parseWorkflow(reusableSource);
-  assert.equal(
-    reusable.on.workflow_call.inputs["pr-number"].default,
-    "",
-  );
+  assert.equal(reusable.on.workflow_call.inputs["pr-number"].default, "");
   assert.match(reusableSource, /^ {6}- name: Resolve PR context$/mu);
   assert.match(reusableSource, /^ {8}id: resolve-pr$/mu);
 
-  const resolveIdx = reusableSource.indexOf("      - name: Resolve PR context\n");
+  const resolveIdx = reusableSource.indexOf(
+    "      - name: Resolve PR context\n",
+  );
   const freshnessIdx = reusableSource.indexOf(
     "      - name: Check whether this head is still current\n",
   );
@@ -118,11 +114,17 @@ test("prompts and checkout consume resolved PR outputs, not event-only fields", 
   // Review attempt prompts must not hard-depend on event.pull_request for
   // number/head (concurrency may still reference them as fallbacks).
   const first = stepSource(reusableSource, "Claude review");
-  assert.doesNotMatch(first, /github\.event\.pull_request\.(number|head\.sha)/u);
+  assert.doesNotMatch(
+    first,
+    /github\.event\.pull_request\.(number|head\.sha)/u,
+  );
 });
 
 test("marker comments receive pull-number and advertise dispatch re-review", () => {
-  const failure = stepSource(reusableSource, "Comment on genuine review failure");
+  const failure = stepSource(
+    reusableSource,
+    "Comment on genuine review failure",
+  );
   const clear = stepSource(
     reusableSource,
     "Clear stale failure comment after successful review",
@@ -132,15 +134,9 @@ test("marker comments receive pull-number and advertise dispatch re-review", () 
       step,
       /^ {10}pull-number: \$\{\{ steps\.resolve-pr\.outputs\.number \}\}$/mu,
     );
-    assert.match(
-      step,
-      /claude-lane-marker-comment@[0-9a-f]{40}/u,
-    );
+    assert.match(step, /claude-lane-marker-comment@[0-9a-f]{40}/u);
   }
-  assert.match(
-    failure,
-    /workflow_dispatch this workflow with the PR number/u,
-  );
+  assert.match(failure, /workflow_dispatch this workflow with the PR number/u);
 });
 
 test("freshness and marker composites declare optional pull-number inputs", () => {
@@ -156,10 +152,7 @@ test("freshness and marker composites declare optional pull-number inputs", () =
 test("dispatch compose grants gh delivery tools instead of inline MCP", () => {
   const compose = stepSource(reusableSource, "Compose Claude CLI arguments");
   assert.match(compose, /EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
-  assert.match(
-    compose,
-    /mcp__github_inline_comment__create_inline_comment/u,
-  );
+  assert.match(compose, /mcp__github_inline_comment__create_inline_comment/u);
   assert.match(compose, /Bash\(gh pr comment:\*\)/u);
   assert.match(compose, /Bash\(gh pr review:\*\)/u);
   assert.match(compose, /\[ "\$EVENT_NAME" = "pull_request" \]/u);

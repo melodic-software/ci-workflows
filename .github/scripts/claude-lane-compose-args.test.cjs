@@ -28,7 +28,12 @@ const workflowsDirectory = path.join(__dirname, "..", "workflows");
 // The compose run block is expression-free shell (env carries the ${{ }}
 // values), so the append contract is executed here rather than
 // pattern-matched.
-function composeArgs(script, baseArgs, standardsRef = "", eventName = "pull_request") {
+function composeArgs(
+  script,
+  baseArgs,
+  standardsRef = "",
+  eventName = "pull_request",
+) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "compose-args-"));
   try {
     const githubOutput = path.join(directory, "github-output");
