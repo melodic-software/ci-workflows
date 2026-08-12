@@ -687,9 +687,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   scope as a pattern list of root-anchored globs (workflow files,
   permission/settings configs, hook and shell scripts, auth/token-touching code,
   network-call sites); the workflow's `changes` job evaluates it and a
-  not-applicable PR yields a name-stable skipped `security-review` check. A
-  consumer's ruleset may make that EXECUTION check required (check context
-  `<caller job> / security-review`); the VERDICT stays advisory.
+  not-applicable PR yields a name-stable skipped `security-review` check. After
+  a successful review the lane persists the reviewed head in a marker comment;
+  on later `synchronize` pushes it matches only the incremental delta, so a
+  docs-only follow-up does not re-run a full security pass (deleting the marker
+  forces a full re-review). A consumer's ruleset may make that EXECUTION check
+  required (check context `<caller job> / security-review`); the VERDICT stays
+  advisory.
 
   **Where that pattern list lives** is the caller's choice between two inputs.
   The conventional shape is `paths-file`, pointing at a repo-owned file

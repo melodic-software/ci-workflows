@@ -408,10 +408,17 @@ test("the paths file is read from the base branch and its faults fail open", () 
     /ref: context\.payload\.pull_request\.base\.ref/u,
     "the paths file must be fetched at the PR's base ref",
   );
+  // Incremental relevance (#259) reads head.sha to bound the compare; the
+  // paths-file getContent call must still never take a head ref.
   assert.doesNotMatch(
     fetchStep,
-    /pull_request\.head/u,
-    "nothing in the fetch step may consult the PR head",
+    /getContent\([\s\S]*?head/u,
+    "the paths-file fetch must not consult the PR head",
+  );
+  assert.match(
+    fetchStep,
+    /compareCommitsWithBasehead/u,
+    "synchronize runs must be able to list files since the last-reviewed head",
   );
 
   // Absent (404) or unreadable file → the failed flag, which the filter step
@@ -426,6 +433,25 @@ test("the paths file is read from the base branch and its faults fail open", () 
     filterStep,
     /if \[ "\$PATHS_FILE_FAILED" = "true" \] \|\| \[ -z "\$PATHS_FILE_PATH" \]; then\n {14}echo "::warning::Could not read paths file '\$PATHS_FILE'; treating PR as security-relevant\."\n {14}echo "relevant=true" >>"\$GITHUB_OUTPUT"/u,
     "an unreadable paths file must fail open to relevant=true with a warning",
+  );
+});
+
+test("a successful review persists the last-reviewed head for incremental gating", () => {
+  const step = stepSource("Persist the last-reviewed head");
+  assert.match(
+    step,
+    /^ {8}if: "!cancelled\(\) && steps\.review-outcome\.outputs\.review-ran == 'true'"$/mu,
+    "only a review that actually ran may advance the last-reviewed-head cursor",
+  );
+  assert.match(
+    step,
+    /claude-security-review-last-head:/u,
+    "the marker comment must carry the machine-readable last-reviewed SHA",
+  );
+  assert.match(
+    step,
+    /github-actions\[bot\]/u,
+    "the marker must be author-checked so a PR author cannot spoof the cursor",
   );
 });
 

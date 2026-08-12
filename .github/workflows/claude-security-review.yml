@@ -112,6 +112,17 @@ name: claude-security-review
 #   `<caller-job-id> / security-review`. Both inputs empty (the default) means
 #   "every call is relevant", so a consumer that passes nothing is unaffected.
 #
+# INCREMENTAL RELEVANCE (#259) — synchronize pushes after a successful review
+#   do not re-evaluate the whole PR file list. The review job upserts a
+#   last-reviewed-head marker comment (`<!-- claude-security-review-last-head:
+#   <sha> -->`) only when a review actually RAN. On a later `synchronize`, the
+#   `changes` job compares that SHA to the current head and matches the
+#   incremental file list; no security-relevant path in the delta yields the
+#   same name-stable skip as a never-relevant PR. No prior head, a compare
+#   fault, a missing/deleted marker, or a non-synchronize event falls back to
+#   the whole-PR listing — fail open, never a silent evidence gap. Deleting
+#   the marker forces a full re-review on the next synchronize.
+#
 # CONSUMER CONTRACT (the caller owns these — they are NOT set here):
 #   The triggers and the GITHUB_TOKEN permission grant live in each consumer's
 #   thin caller, because a reusable workflow's `on:` is `workflow_call` and the
@@ -357,14 +368,16 @@ jobs:
   # this PR touches a security-sensitive surface, so `security-review` can skip
   # and still report a name-stable check — instead of the caller path-filtering
   # at workflow level, which would wedge a required check Pending. Both pattern
-  # inputs empty, or any non-pull_request event, is always relevant.
+  # inputs empty, or any non-pull_request event, is always relevant. On
+  # synchronize after a successful review, the listing is incremental against
+  # the last-reviewed head (see INCREMENTAL RELEVANCE in the header).
   changes:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
-    # Deliberately NO checkout: the job reads only the PR file listing
-    # (pull-requests) and, when `paths-file` is set, that one file via the
-    # contents API (contents) — fetching a single blob from the base branch
-    # instead of checking out a tree keeps the job checkout-free.
+    # Deliberately NO checkout: the job reads only the PR / compare file
+    # listing (pull-requests + contents) and, when `paths-file` is set, that
+    # one file via the contents API — fetching a single blob from the base
+    # branch instead of checking out a tree keeps the job checkout-free.
     permissions:
       contents: read
       pull-requests: read
@@ -374,10 +387,11 @@ jobs:
       # actions/github-script rather than a `gh api` run step: this job runs
       # on whatever runner the caller selected, and a self-hosted image is not
       # guaranteed to ship the gh CLI. Only the API reads live here — the PR
-      # file listing and the optional `paths-file` fetch; the pattern-matching
-      # step below still shells out, but only to `git check-ignore`, which
-      # every runner needs anyway for actions/checkout to function, so it
-      # carries no comparable availability risk.
+      # or incremental file listing, the last-reviewed-head marker, and the
+      # optional `paths-file` fetch; the pattern-matching step below still
+      # shells out, but only to `git check-ignore`, which every runner needs
+      # anyway for actions/checkout to function, so it carries no comparable
+      # availability risk.
       - name: List changed files
         id: changed-files
         if: >-
@@ -391,15 +405,120 @@ jobs:
           script: |
             const fs = require("node:fs");
             const outputPath = `${process.env.RUNNER_TEMP}/security-review-changed-files.txt`;
-            try {
+            const pr = context.payload.pull_request;
+            const headSha = pr?.head?.sha ?? "";
+            const lastHeadMarker =
+              /^<!-- claude-security-review-last-head:([0-9a-f]{40}) -->/u;
+
+            // Incremental listing only on synchronize, and only when a prior
+            // successful review left a last-reviewed-head marker. Every other
+            // shape (opened / ready_for_review / reopened, missing marker,
+            // compare fault) uses the whole-PR file list — fail open.
+            async function resolveLastReviewedHead() {
+              if (context.payload.action !== "synchronize" || !pr?.number) {
+                return null;
+              }
+              try {
+                const comments = await github.paginate(
+                  github.rest.issues.listComments,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: pr.number,
+                    per_page: 100,
+                  },
+                );
+                const marked = comments.filter(
+                  (comment) =>
+                    comment.user?.login === "github-actions[bot]" &&
+                    lastHeadMarker.test(comment.body ?? ""),
+                );
+                const existing =
+                  marked.length > 0 ? marked[marked.length - 1] : undefined;
+                if (!existing) return null;
+                const match = existing.body.match(lastHeadMarker);
+                return match?.[1] ?? null;
+              } catch (error) {
+                core.warning(
+                  `Could not read the last-reviewed-head marker; using the whole-PR file list: ${error.message}`,
+                );
+                return null;
+              }
+            }
+
+            async function listWholePrFiles() {
               const files = await github.paginate(github.rest.pulls.listFiles, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
+                pull_number: pr.number,
                 per_page: 100,
               });
-              const names = files.flatMap((file) => [file.filename, file.previous_filename].filter(Boolean));
-              fs.writeFileSync(outputPath, names.length > 0 ? `${names.join("\n")}\n` : "", "utf8");
+              // The endpoint reports at most 3,000 files; an incomplete listing
+              // could read a security-relevant path as absent. Fail OPEN.
+              if (files.length >= 3000) {
+                throw new Error(
+                  `PR file listing hit the 3,000-file API cap (${files.length} files)`,
+                );
+              }
+              return files;
+            }
+
+            async function listIncrementalFiles(lastReviewed) {
+              // Three-dot compare: commits reachable from head but not from
+              // the last-reviewed SHA. The compare API returns at most 300
+              // files; at that cap the listing may be incomplete — fail OPEN
+              // to the whole-PR list rather than skip on a truncated delta.
+              const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                basehead: `${lastReviewed}...${headSha}`,
+              });
+              const files = data.files ?? [];
+              if (files.length >= 300) {
+                throw new Error(
+                  `Incremental compare hit the 300-file API cap (${files.length} files)`,
+                );
+              }
+              core.info(
+                `Incremental relevance: comparing ${lastReviewed.slice(0, 7)}...${headSha.slice(0, 7)} (${files.length} file(s)).`,
+              );
+              return files;
+            }
+
+            try {
+              let files;
+              const lastReviewed = await resolveLastReviewedHead();
+              if (
+                lastReviewed &&
+                headSha &&
+                lastReviewed !== headSha
+              ) {
+                try {
+                  files = await listIncrementalFiles(lastReviewed);
+                } catch (error) {
+                  core.warning(
+                    `Incremental compare against ${lastReviewed.slice(0, 7)} failed; using the whole-PR file list: ${error.message}`,
+                  );
+                  files = await listWholePrFiles();
+                }
+              } else {
+                if (lastReviewed && lastReviewed === headSha) {
+                  core.info(
+                    `Head ${headSha.slice(0, 7)} already has a successful security review; incremental file list is empty.`,
+                  );
+                  files = [];
+                } else {
+                  files = await listWholePrFiles();
+                }
+              }
+              const names = files.flatMap((file) =>
+                [file.filename, file.previous_filename].filter(Boolean),
+              );
+              fs.writeFileSync(
+                outputPath,
+                names.length > 0 ? `${names.join("\n")}\n` : "",
+                "utf8",
+              );
               core.setOutput("path", outputPath);
               core.setOutput("failed", "false");
             } catch (error) {
@@ -1208,6 +1327,73 @@ jobs:
         with:
           marker: "<!-- claude-security-review-infra-status -->"
           mode: clear-on-success
+
+      # Incremental relevance state (#259). Upserted only after a review that
+      # actually RAN — the same gate as clearing the infra-status marker — so
+      # loud-open external failures and validation skips never advance the
+      # cursor. The `changes` job reads this on the next synchronize and
+      # matches only the delta; deleting the comment forces a full re-review
+      # (fail-open). Author-checked so a PR author cannot spoof the cursor.
+      - name: Persist the last-reviewed head
+        if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr?.number) {
+              core.info("No pull request in this event; nothing to persist.");
+              return;
+            }
+            if (pr.head?.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.info("Fork-triggered run has a read-only token; skipping last-reviewed-head persist.");
+              return;
+            }
+            const headSha = pr.head?.sha;
+            if (!headSha || !/^[0-9a-f]{40}$/u.test(headSha)) {
+              core.warning(`Refusing to persist a non-SHA head ref: ${headSha}`);
+              return;
+            }
+            const marker = `<!-- claude-security-review-last-head:${headSha} -->`;
+            const body =
+              `${marker}\n` +
+              `Last security-reviewed head: \`${headSha}\`. ` +
+              "On the next push, the relevance gate compares only the commits since this SHA; " +
+              "delete this comment to force a full re-review.";
+            const lastHeadMarker =
+              /^<!-- claude-security-review-last-head:[0-9a-f]{40} -->/u;
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              const marked = comments.filter(
+                (comment) =>
+                  comment.user?.login === "github-actions[bot]" &&
+                  lastHeadMarker.test(comment.body ?? ""),
+              );
+              const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body,
+                });
+              }
+            } catch (error) {
+              // Next synchronize falls back to the whole-PR listing — fail-open.
+              core.warning(`Could not persist the last-reviewed head: ${error.message}`);
+            }
 
       # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
       # persisted into .git/config (forced on by #1236, above). Drop this once
