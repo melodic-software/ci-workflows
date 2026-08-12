@@ -61,18 +61,19 @@ test("freshness receives the resolved PR context (#254)", () => {
 
 test("every runner-consuming step gates on the guard's superseded output", () => {
   // The review-count gate, checkout, the three standards-mount steps,
-  // argument composition, reporting-instruction composition, the review
-  // itself, the retry gate, the attempt-resolve step, and outcome reporting
-  // (which transitively gates both marker-comment steps and the count
-  // upsert). The backoff and retry attempt key on the retry gate's output
-  // instead, so the gate carries the guard for all three. A new
-  // runner-consuming or PR-writing step must join this set deliberately.
+  // argument composition, reporting-instruction composition, review-body
+  // composition (ci-workflows#258), the review itself, the retry gate, the
+  // attempt-resolve step, and outcome reporting (which transitively gates
+  // both marker-comment steps and the count upsert). The backoff and retry
+  // attempt key on the retry gate's output instead, so the gate carries the
+  // guard for all three. A new runner-consuming or PR-writing step must join
+  // this set deliberately.
   const gates = [
     ...workflowSource.matchAll(
       /steps\.freshness\.outputs\.superseded != 'true'/gu,
     ),
   ].length;
-  assert.equal(gates, 11);
+  assert.equal(gates, 12);
 });
 
 test("every review-producing step also gates on the review-count cap", () => {
@@ -85,7 +86,7 @@ test("every review-producing step also gates on the review-count cap", () => {
       /steps\.review-count\.outputs\.capped != 'true'/gu,
     ),
   ].length;
-  assert.equal(gates, 10);
+  assert.equal(gates, 11);
 });
 
 // Actions cannot loop a `uses:` step, so the retry is a verbatim copy of the
