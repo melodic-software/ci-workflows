@@ -1,0 +1,289 @@
+name: Release Gap Check
+
+# Advisory — NOT in any ci-status gate; never blocks a merge, and never cuts
+# a release. Surfaces a rolling tracking issue when `main` has run ahead of
+# the newest published GitHub Release for too long.
+#
+# release.yml is workflow_dispatch-only BY DESIGN: releasing is a deliberate
+# act, and every merge to main does NOT cut a release. That deliberateness
+# has a silent failure mode — nothing reminds the operator the gap exists.
+# Observed 2026-08-12: main sat 39 commits (v0.12.0..v0.14.0, three days)
+# ahead of the newest Release, including a review-lane rework and new agent
+# lanes, while every consumer kept running the old code. This workflow is the
+# missing alarm. It only ever reports; cutting the release stays a human act,
+# and release.yml's dispatch-only trigger is deliberately untouched.
+#
+# It measures against the newest published *Release* (releases/latest — which
+# also excludes drafts and prereleases), NOT the newest tag. The fleet
+# consumes Releases: the standards claude-lanes-repin lane resolves
+# releases/latest, and Dependabot bumps consumers per Release, so a tag with
+# no corresponding Release (v0.13.0, at the time of writing) moves nothing
+# downstream and would only understate the gap the fleet actually
+# experiences. Reconciling tag/Release divergence itself is a separate
+# concern this check deliberately does not own.
+
+on:
+  schedule:
+    # Daily 09:23 UTC — a gap grows over days, so daily is enough to alert
+    # the same week it forms without re-nagging hourly. Off-minute
+    # deliberately: GitHub queues every scheduled workflow platform-wide
+    # against one dispatcher, so the top of the hour and each quarter-hour
+    # are the most contended and most delayed slots (see the cron comment in
+    # standards' claude-lanes-repin.yml). :23 is neither, and avoids this
+    # repository's existing scheduled minutes (:17 hourly incident
+    # aggregator, :41 queue-monitor liveness, 07:00 tool-version drift).
+    - cron: '23 9 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-gap-check.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: release-gap-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-gap:
+    name: Measure main-vs-release gap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # Rolling tracking issue create/update via create-issue-from-file.
+    steps:
+      - name: Check out (full history + tags)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # rev-list needs the full commit graph plus the release tag; a
+          # shallow checkout would undercount (or fail to measure) the gap.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Measure the gap
+        id: gap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fire when EITHER threshold trips. Ten commits is a meaningful
+          # accumulation of unreleased change (the observed incident hit 39
+          # before anyone noticed); five days catches a slow trickle — even a
+          # single commit — that sits unreleased past the repo's own
+          # tag-per-change intent (README "Versioning": cut a release
+          # whenever main changes so HEAD stays at the latest tag). Normal
+          # cadence — merge a handful of PRs, release within a few days —
+          # trips neither, so the daily run stays quiet.
+          COMMITS_AHEAD_THRESHOLD: '10'
+          MAX_UNRELEASED_AGE_DAYS: '5'
+        run: |
+          set -euo pipefail
+
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+
+          # A failed read (rate limit, 5xx, or a repository with no Release
+          # at all) fails the run rather than filing an issue: this repo has
+          # Releases, so a failure here is transient infrastructure and a
+          # rerun is the fix, not an alert.
+          release="$(gh_read api "repos/${GITHUB_REPOSITORY}/releases/latest")"
+          tag="$(jq -er '.tag_name' <<<"$release")"
+          published_at="$(jq -er '.published_at' <<<"$release")"
+
+          if ! git rev-parse -q --verify "refs/tags/${tag}^{commit}" >/dev/null; then
+            echo "::error::release tag ${tag} is not present in the checkout; cannot measure the gap"
+            exit 1
+          fi
+
+          commits_ahead="$(git rev-list --count "refs/tags/${tag}..HEAD")"
+          if ((commits_ahead == 0)); then
+            echo "gap_detected=false" >> "$GITHUB_OUTPUT"
+            echo "No gap — HEAD carries nothing beyond Release ${tag} (published ${published_at})."
+            exit 0
+          fi
+
+          # Age of the OLDEST unreleased commit: how long changes have been
+          # waiting, not how old the Release is (a quiet repo's Release ages
+          # without any gap existing). git log lists newest first, so tail -1
+          # is the oldest; tail consumes all input, so there is no SIGPIPE
+          # for pipefail to trip on (unlike --reverse | head -1).
+          oldest_epoch="$(git log --format=%ct "refs/tags/${tag}..HEAD" | tail -1)"
+          now_epoch="$(date -u +%s)"
+          age_days=$(( (now_epoch - oldest_epoch) / 86400 ))
+
+          echo "Newest Release ${tag} (published ${published_at}); main is ${commits_ahead} commit(s) ahead; oldest unreleased commit is ${age_days} day(s) old."
+
+          if ((commits_ahead < COMMITS_AHEAD_THRESHOLD && age_days < MAX_UNRELEASED_AGE_DAYS)); then
+            echo "gap_detected=false" >> "$GITHUB_OUTPUT"
+            echo "Within tolerance (< ${COMMITS_AHEAD_THRESHOLD} commits and < ${MAX_UNRELEASED_AGE_DAYS} days)."
+            exit 0
+          fi
+
+          unreleased_list="$(git log --max-count=20 --format='- `%h` %s' "refs/tags/${tag}..HEAD")"
+          more_note=""
+          if ((commits_ahead > 20)); then
+            more_note="- …and $((commits_ahead - 20)) more"
+          fi
+
+          {
+            echo "<!-- ci-workflows:release-gap:v1:active -->"
+            echo
+            echo "## Unreleased main: release gap"
+            echo
+            echo "\`main\` has run ahead of the newest published GitHub Release past tolerance:"
+            echo
+            echo "- Newest Release: **${tag}** (published ${published_at})"
+            echo "- Commits on \`main\` beyond it: **${commits_ahead}** (threshold ${COMMITS_AHEAD_THRESHOLD})"
+            echo "- Oldest unreleased commit age: **${age_days} day(s)** (threshold ${MAX_UNRELEASED_AGE_DAYS})"
+            echo
+            echo "Until a Release is cut, none of this reaches any consumer: the fleet's"
+            echo "re-pin lane and Dependabot both follow Releases."
+            echo
+            echo "### What is waiting (newest first, up to 20)"
+            echo
+            echo "${unreleased_list}"
+            if [[ -n "$more_note" ]]; then
+              echo "${more_note}"
+            fi
+            echo
+            echo "### Cut the release"
+            echo
+            echo "Releasing stays a deliberate human act — this workflow never cuts one."
+            echo "Review the unreleased commits, pick the semantic bump, and dispatch"
+            echo "\`release.yml\` (Actions → release → Run workflow)."
+            echo
+            echo "### Why the newest Release, not the newest tag"
+            echo
+            echo "The fleet consumes Releases: standards' claude-lanes-repin resolves"
+            echo "\`releases/latest\` and Dependabot bumps consumers per Release. A tag"
+            echo "without a Release moves nothing downstream, so this check measures the"
+            echo "gap the fleet actually experiences. Tag/Release divergence itself is"
+            echo "tracked separately, not by this check."
+            echo
+            echo "### Why advisory"
+            echo
+            echo "A standing gap can persist for weeks by deliberate choice; a scheduled"
+            echo "job that fails for that whole time is a permanently red cron nobody"
+            echo "reads (the failure mode of melodic-software/standards#274). This"
+            echo "rolling issue is the alarm; runs stay green so a real infrastructure"
+            echo "failure remains distinguishable from a known, standing gap."
+            echo
+            echo "---"
+            echo "*Updated automatically by \`.github/workflows/release-gap-check.yml\`."
+            echo "Closing this issue without cutting a release re-files it on the next run.*"
+          } > gap.md
+
+          echo "gap_detected=true" >> "$GITHUB_OUTPUT"
+
+      # A marker embedded in the body (not a title search) is exact and
+      # survives a retitle, and matches the mechanism
+      # tool-version-drift-check.yml and queue-monitor-liveness.yml use.
+      - name: Find existing tracking issue
+        id: find-issue
+        if: steps.gap.outputs.gap_detected == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKER: '<!-- ci-workflows:release-gap:v1:active -->'
+          ISSUE_TITLE: '[Maintenance] Unreleased main: release gap'
+          # This job authors the rolling issue with the ambient GITHUB_TOKEN, so
+          # its author.login is github-actions[bot] (type Bot) — the adoption
+          # filter the generated block applies before marker/title matching.
+          ISSUE_AUTHOR_LOGIN: 'github-actions[bot]'
+        run: |
+          set -euo pipefail
+          gh_read() {
+            local attempt output status
+            for attempt in 1 2; do
+              if output="$(timeout --signal=TERM --kill-after=5s 60s gh "$@")"; then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if ((attempt == 1)); then
+                echo '::warning::GitHub read failed; retrying once.' >&2
+                sleep 1
+              fi
+            done
+            return "$status"
+          }
+          open_issues="$(gh_read api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100")"
+          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT
+          # Source: .github/scripts/find-tracking-issue.sh
+          # Resolve the one open tracking issue this workflow owns into issue-number
+          # (empty if none), given open_issues (gh api --slurp JSON), MARKER,
+          # ISSUE_TITLE, ISSUE_AUTHOR_LOGIN. More than one match is never
+          # auto-resolvable, so it fails closed.
+          #
+          # The marker and title strings are public in workflow source, so matching on
+          # them alone would let anyone able to open an issue in the repo craft a decoy
+          # this automation adopts — then overwrites or closes — or a duplicate decoy
+          # that trips the fail-closed ambiguity guard to suppress a real report.
+          # Candidates are first restricted to issues authored by this workflow's own
+          # token identity (ISSUE_AUTHOR_LOGIN, a Bot), so an issue it did not author is
+          # never a candidate whatever text it carries.
+          #
+          # All four inputs are required: an unset MARKER would match every issue body
+          # (an empty needle) and an unset ISSUE_AUTHOR_LOGIN would drop the author
+          # restriction, so assert them up front to keep the fail-closed posture set -u
+          # gave the pre-extraction inline blocks.
+          : "${MARKER:?MARKER is required}"
+          : "${ISSUE_TITLE:?ISSUE_TITLE is required}"
+          : "${ISSUE_AUTHOR_LOGIN:?ISSUE_AUTHOR_LOGIN is required}"
+          : "${open_issues:?open_issues is required}"
+          matches="$(jq -ce --arg marker "$MARKER" --arg author "$ISSUE_AUTHOR_LOGIN" '
+            [.[][]
+              | select(.pull_request? == null)
+              | select(.user.login == $author and .user.type == "Bot")
+              | select((.body // "") | contains($marker))
+              | .number]
+          ' <<<"$open_issues")"
+          count="$(jq -r 'length' <<<"$matches")"
+          if ((count > 1)); then
+            echo "::error::found ${count} issues carrying marker '${MARKER}'; reconcile them manually."
+            exit 1
+          fi
+          if ((count == 0)); then
+            # One-time migration fallback: a still-open issue created by the pre-marker,
+            # title-search version of this workflow has no marker yet, so the search above
+            # can't find it. Adopt it by exact title match so the update step below reuses
+            # (and marker-backfills) that issue instead of orphaning it behind a newly
+            # opened duplicate.
+            matches="$(jq -ce --arg title "$ISSUE_TITLE" --arg author "$ISSUE_AUTHOR_LOGIN" '
+              [.[][]
+                | select(.pull_request? == null)
+                | select(.user.login == $author and .user.type == "Bot")
+                | select(.title == $title)
+                | .number]
+            ' <<<"$open_issues")"
+            count="$(jq -r 'length' <<<"$matches")"
+            if ((count > 1)); then
+              echo "::error::found ${count} pre-marker issues titled '${ISSUE_TITLE}'; reconcile them manually."
+              exit 1
+            fi
+          fi
+          jq -r 'if length == 1 then "issue-number=" + (.[0] | tostring) else "issue-number=" end' <<<"$matches" >>"${GITHUB_OUTPUT:?}"
+          # END GENERATED FIND TRACKING ISSUE
+
+      - name: Open or update tracking issue
+        if: steps.gap.outputs.gap_detected == 'true'
+        uses: peter-evans/create-issue-from-file@fca9117c27cdc29c6c4db3b86c48e4115a786710 # v6.0.0
+        with:
+          issue-number: ${{ steps.find-issue.outputs.issue-number }}
+          title: '[Maintenance] Unreleased main: release gap'
+          content-filepath: ./gap.md
