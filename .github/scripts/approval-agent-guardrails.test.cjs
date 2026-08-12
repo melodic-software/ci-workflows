@@ -231,7 +231,7 @@ test("reusable workflow defaults enable-approve to false and wires secrets", () 
   );
   assert.match(reusableSource, /approval-agent-guardrails\.cjs/u);
   assert.match(reusableSource, /repository: melodic-software\/ci-workflows/u);
-  assert.match(reusableSource, /ref: \$\{\{ github\.workflow_sha \}\}/u);
+  assert.match(reusableSource, /ref: \$\{\{ github\.job_workflow_sha \}\}/u);
   assert.match(reusableSource, /event: reviewEvent/u);
   assert.match(reusableSource, /"APPROVE"/u);
   assert.match(reusableSource, /create-github-app-token@/u);

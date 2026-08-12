@@ -97,13 +97,14 @@ jobs:
             exit 1
           fi
 
-      # Trusted reusable-workflow commit (not PR head, not caller tree) so a
-      # malicious PR cannot rewrite guardrails. Changed paths are read via API.
+      # Trusted called-workflow commit (github.job_workflow_sha — not caller
+      # github.workflow_sha, not PR head) so a malicious PR cannot rewrite
+      # guardrails. Changed paths are read via API.
       - name: Check out Approval Agent guardrails (workflow ref)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: melodic-software/ci-workflows
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ github.job_workflow_sha }}
           sparse-checkout: |
             .github/scripts/approval-agent-guardrails.cjs
           sparse-checkout-cone-mode: false
