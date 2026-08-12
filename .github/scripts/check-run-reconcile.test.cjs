@@ -10,6 +10,7 @@ const {
   UsageError,
   pickLatestByName,
   extractRequiredContextsFromRulesets,
+  matchRefPattern,
   classifyContext,
   reconcileRequiredChecks,
   formatReconcileReport,
@@ -48,9 +49,10 @@ function check(
     status = "completed",
     at = "2026-08-10T02:00:00Z",
     id = 1,
+    appId = null,
   } = {},
 ) {
-  return {
+  const run = {
     id,
     name,
     status,
@@ -58,6 +60,10 @@ function check(
     started_at: at,
     completed_at: at,
   };
+  if (appId !== null) {
+    run.app = { id: appId };
+  }
+  return run;
 }
 
 test("pickLatestByName keeps the newest same-named record", () => {
@@ -75,6 +81,7 @@ test("extractRequiredContextsFromRulesets reads active required_status_checks", 
     {
       name: "ci-gate",
       enforcement: "active",
+      target: "branch",
       rules: [
         {
           type: "required_status_checks",
@@ -101,8 +108,124 @@ test("extractRequiredContextsFromRulesets reads active required_status_checks", 
         },
       ],
     },
+    {
+      name: "evaluate-gate",
+      enforcement: "evaluate",
+      rules: [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [{ context: "evaluate-only" }],
+          },
+        },
+      ],
+    },
   ]);
-  assert.deepEqual(contexts, [...REQUIRED]);
+  assert.deepEqual(
+    contexts.map((entry) => entry.context),
+    [...REQUIRED],
+  );
+  assert.equal(
+    contexts.every((entry) => entry.integrationId === null),
+    true,
+  );
+});
+
+test("extractRequiredContextsFromRulesets preserves integration_id", () => {
+  const contexts = extractRequiredContextsFromRulesets([
+    {
+      enforcement: "active",
+      target: "branch",
+      rules: [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [
+              { context: "ci-status", integration_id: 15368 },
+              { context: "external / scan", integration_id: 42 },
+            ],
+          },
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(contexts, [
+    { context: "ci-status", integrationId: 15368 },
+    { context: "external / scan", integrationId: 42 },
+  ]);
+});
+
+test("extractRequiredContextsFromRulesets filters by target ref", () => {
+  const rulesets = [
+    {
+      name: "main-gate",
+      enforcement: "active",
+      target: "branch",
+      conditions: {
+        ref_name: {
+          include: ["refs/heads/main", "~DEFAULT_BRANCH"],
+          exclude: [],
+        },
+      },
+      rules: [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [{ context: "ci-status" }],
+          },
+        },
+      ],
+    },
+    {
+      name: "release-gate",
+      enforcement: "active",
+      target: "branch",
+      conditions: {
+        ref_name: {
+          include: ["refs/heads/release/*"],
+          exclude: [],
+        },
+      },
+      rules: [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [{ context: "release-check" }],
+          },
+        },
+      ],
+    },
+  ];
+  assert.deepEqual(
+    extractRequiredContextsFromRulesets(rulesets, {
+      targetRef: "main",
+      defaultBranch: "main",
+    }).map((entry) => entry.context),
+    ["ci-status"],
+  );
+  assert.deepEqual(
+    extractRequiredContextsFromRulesets(rulesets, {
+      targetRef: "release/1.0",
+      defaultBranch: "main",
+    }).map((entry) => entry.context),
+    ["release-check"],
+  );
+});
+
+test("matchRefPattern handles ~ALL, globs, and excludes pathname *", () => {
+  assert.equal(matchRefPattern("~ALL", "refs/heads/main", "main"), true);
+  assert.equal(
+    matchRefPattern("~DEFAULT_BRANCH", "refs/heads/main", "main"),
+    true,
+  );
+  assert.equal(
+    matchRefPattern("refs/heads/release/*", "refs/heads/release/1.0", "main"),
+    true,
+  );
+  assert.equal(
+    matchRefPattern("refs/heads/release/*", "refs/heads/release/a/b", "main"),
+    false,
+  );
 });
 
 test("aligned: every required context has matching job and check-run", () => {
@@ -191,7 +314,47 @@ test("mismatch: job and check-run conclusions disagree", () => {
   assert.equal(report.results[0].verdict, "mismatch");
 });
 
-test("check_only: attached check-run without a discovered workflow job is ok", () => {
+test("failed: completed check with failure/cancelled/timed_out is not ok", () => {
+  for (const conclusion of ["failure", "cancelled", "timed_out"]) {
+    const alignedFail = reconcileRequiredChecks({
+      requiredContexts: ["ci-status"],
+      workflowJobs: [job("ci-status", { conclusion })],
+      checkRuns: [check("ci-status", { conclusion })],
+    });
+    assert.equal(alignedFail.ok, false, conclusion);
+    assert.equal(alignedFail.results[0].verdict, "failed", conclusion);
+
+    const checkOnlyFail = reconcileRequiredChecks({
+      requiredContexts: ["external / gate"],
+      workflowJobs: [],
+      checkRuns: [check("external / gate", { conclusion })],
+    });
+    assert.equal(checkOnlyFail.ok, false, conclusion);
+    assert.equal(checkOnlyFail.results[0].verdict, "failed", conclusion);
+  }
+});
+
+test("integration_id: wrong app check-run does not satisfy the requirement", () => {
+  const report = reconcileRequiredChecks({
+    requiredContexts: [{ context: "ci-status", integrationId: 15368 }],
+    workflowJobs: [job("ci-status")],
+    checkRuns: [check("ci-status", { appId: 999 })],
+  });
+  assert.equal(report.ok, false);
+  assert.equal(report.results[0].verdict, "divergence");
+});
+
+test("integration_id: matching app.id satisfies the requirement", () => {
+  const report = reconcileRequiredChecks({
+    requiredContexts: [{ context: "ci-status", integrationId: 15368 }],
+    workflowJobs: [job("ci-status")],
+    checkRuns: [check("ci-status", { appId: 15368 })],
+  });
+  assert.equal(report.ok, true);
+  assert.equal(report.results[0].verdict, "aligned");
+});
+
+test("check_only: attached successful check-run without a workflow job is ok", () => {
   const report = reconcileRequiredChecks({
     requiredContexts: ["ci-status"],
     workflowJobs: [],
@@ -336,4 +499,57 @@ test("CLI fixture mode exits 0 when surfaces align", () => {
   }
   assert.equal(code, 0);
   assert.match(stdout, /ok: every required context is present/);
+});
+
+test("CLI fixture: explicit --context wins over --rulesets-json", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "check-reconcile-"));
+  const checksPath = path.join(dir, "checks.json");
+  const jobsPath = path.join(dir, "jobs.json");
+  const rulesetsPath = path.join(dir, "rulesets.json");
+  fs.writeFileSync(
+    checksPath,
+    JSON.stringify({ check_runs: [check("ci-status")] }),
+  );
+  fs.writeFileSync(jobsPath, JSON.stringify({ jobs: [job("ci-status")] }));
+  fs.writeFileSync(
+    rulesetsPath,
+    JSON.stringify([
+      {
+        enforcement: "active",
+        target: "branch",
+        rules: [
+          {
+            type: "required_status_checks",
+            parameters: {
+              required_status_checks: [{ context: "from-ruleset" }],
+            },
+          },
+        ],
+      },
+    ]),
+  );
+  let stdout = "";
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    stdout += chunk;
+    return true;
+  };
+  let code;
+  try {
+    code = main([
+      "--check-runs-json",
+      checksPath,
+      "--jobs-json",
+      jobsPath,
+      "--rulesets-json",
+      rulesetsPath,
+      "--context",
+      "ci-status",
+    ]);
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+  assert.equal(code, 0);
+  assert.match(stdout, /ci-status: aligned/);
+  assert.doesNotMatch(stdout, /from-ruleset/);
 });
