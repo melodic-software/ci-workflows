@@ -13,7 +13,7 @@ inputs:
     default: 7.0.2
   node-version:
     description: Node.js version to set up.
-    default: 24.18.0
+    default: 24.19.0
 
 runs:
   using: composite
