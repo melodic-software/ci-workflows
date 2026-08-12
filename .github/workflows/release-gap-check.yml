@@ -41,7 +41,13 @@ on:
 
 concurrency:
   group: release-gap-check-${{ github.ref }}
-  cancel-in-progress: true
+  # Main-push / schedule / dispatch share the ref group; cancel-in-progress
+  # false keeps the in-progress run finishing while superseded pending runs
+  # drop (main-push burst collapse; #122). Matches the sibling scheduled
+  # reporters (queue-monitor-liveness, tool-version-drift-check) rather than
+  # diverging: a cancelled measurement run reports nothing at all, which for
+  # an alarm means the gap it was about to surface stays silent.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -58,6 +64,13 @@ jobs:
       - name: Check out (full history + tags)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Pinned to the default branch, NOT the event ref. `workflow_dispatch`
+          # lets the operator pick any branch or tag, and this check's whole
+          # question is "how far has MAIN run ahead of the newest Release" —
+          # measuring `refs/tags/<tag>..HEAD` against a dispatched feature
+          # branch would file a false gap issue, or hide a real one behind a
+          # branch that happens to sit closer to the tag.
+          ref: ${{ github.event.repository.default_branch }}
           # rev-list needs the full commit graph plus the release tag; a
           # shallow checkout would undercount (or fail to measure) the gap.
           fetch-depth: 0
