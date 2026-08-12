@@ -12,11 +12,41 @@ const workflow = fs.readFileSync(
   "utf8",
 );
 
+// Minimal body that satisfies closing-keyword + all four contract headers.
+// Individual tests override pieces by composing around this helper.
+function contractBody({
+  closing = "Closes #42",
+  summary = "Short summary of the change.",
+  fix = "Concrete fix description.",
+  verification = "Ran the unit tests.",
+  related = "See also #40.",
+} = {}) {
+  return [
+    closing,
+    "",
+    "## Summary",
+    "",
+    summary,
+    "",
+    "## Fix",
+    "",
+    fix,
+    "",
+    "## Verification",
+    "",
+    verification,
+    "",
+    "## Related",
+    "",
+    related,
+  ].join("\n");
+}
+
 // Extracts the inline actions/github-script body (the same technique used to
 // validate the equivalent block ported into melodic-software/medley's
 // issue-labeling.yml) and runs it in a sandbox with a stub `core`/`process`,
-// so the actual closing-keyword/Related parsing logic is exercised directly
-// rather than only checked for structural presence in the YAML text.
+// so the actual closing-keyword/contract-header parsing logic is exercised
+// directly rather than only checked for structural presence in the YAML text.
 function runScript(body, prAuthor = "", exemptAuthors = "") {
   const scriptStart = workflow.indexOf("script: |") + "script: |".length;
   const lines = workflow.slice(scriptStart).split("\n").slice(1);
@@ -48,8 +78,8 @@ function runScript(body, prAuthor = "", exemptAuthors = "") {
   return failedWith;
 }
 
-test("a body with a closing keyword and a filled Related section passes", () => {
-  const failedWith = runScript("Closes #42\n\n## Related\n\nSee also #40.");
+test("a body with a closing keyword and all four contract headers passes", () => {
+  const failedWith = runScript(contractBody());
   assert.equal(failedWith, null);
 });
 
@@ -61,7 +91,7 @@ test("Fixes/Resolves and the plural/past-tense forms are all recognized", () => 
     "Resolved #1",
     "Closed #1",
   ]) {
-    const failedWith = runScript(`${kw}\n\n## Related\n\nn/a`);
+    const failedWith = runScript(contractBody({ closing: kw }));
     assert.equal(
       failedWith,
       null,
@@ -72,42 +102,90 @@ test("Fixes/Resolves and the plural/past-tense forms are all recognized", () => 
 
 test("a cross-repo closing keyword (owner/repo#N) is recognized", () => {
   const failedWith = runScript(
-    "Closes melodic-software/medley#123\n\n## Related\n\nn/a",
+    contractBody({
+      closing: "Closes melodic-software/medley#123",
+      related: "n/a",
+    }),
   );
   assert.equal(failedWith, null);
 });
 
 test('"No linked issue" satisfies the closing-keyword requirement', () => {
-  const failedWith = runScript("No linked issue.\n\n## Related\n\nn/a");
+  const failedWith = runScript(
+    contractBody({ closing: "No linked issue.", related: "n/a" }),
+  );
   assert.equal(failedWith, null);
 });
 
 test('"No related issue:" (claude-code-plugins pull-request skill convention) also satisfies the closing-keyword requirement', () => {
   const failedWith = runScript(
-    "No related issue: refactor, nothing to link.\n\n## Related\n\nn/a",
+    contractBody({
+      closing: "No related issue: refactor, nothing to link.",
+      related: "n/a",
+    }),
   );
   assert.equal(failedWith, null);
 });
 
-test("missing both a closing keyword and a Related section fails with both messages", () => {
+test("missing closing keyword and all contract headers fails with each message", () => {
   const failedWith = runScript("Just a description, nothing else.");
   assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Summary/);
+  assert.match(failedWith, /Fix/);
+  assert.match(failedWith, /Verification/);
   assert.match(failedWith, /Related/);
   assert.match(failedWith, /closing keyword/);
 });
 
 test("a Related heading present but empty still fails", () => {
   const failedWith = runScript(
-    "Closes #1\n\n## Related\n\n## Next Heading\nsomething",
+    "Closes #1\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\n## Next Heading\nsomething",
   );
   assert.ok(failedWith, "expected a failure");
   assert.match(failedWith, /Related.*empty/);
 });
 
+test("a Summary heading present but empty still fails", () => {
+  const failedWith = runScript(
+    "Closes #1\n\n## Summary\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nn/a",
+  );
+  assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Summary.*empty/);
+});
+
+test("a Fix heading present but empty still fails", () => {
+  const failedWith = runScript(
+    "Closes #1\n\n## Summary\n\ns\n\n## Fix\n\n## Verification\n\nv\n\n## Related\n\nn/a",
+  );
+  assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Fix.*empty/);
+});
+
+test("a Verification heading present but empty still fails", () => {
+  const failedWith = runScript(
+    "Closes #1\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\n## Related\n\nn/a",
+  );
+  assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Verification.*empty/);
+});
+
+test("missing only Summary fails without blaming the other headers", () => {
+  const failedWith = runScript(
+    "Closes #1\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nn/a",
+  );
+  assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Summary/);
+  assert.doesNotMatch(failedWith, /Fix.*empty|Missing a "## Fix"/);
+  assert.doesNotMatch(failedWith, /Verification/);
+  assert.doesNotMatch(failedWith, /Related/);
+  assert.doesNotMatch(failedWith, /closing keyword/);
+});
+
 test("an unedited PR template passes vacuously ONLY if the instructional prose is HTML-commented", () => {
   const templateBody =
-    "<!-- Closes #N or Fixes #N here, and fill in ## Related below. -->\n\n## Related\n\n" +
-    "<!-- list related items -->";
+    "<!-- Closes #N or Fixes #N here, and fill in ## Related below. -->\n\n## Summary\n\n" +
+    "<!-- what -->\n\n## Fix\n\n<!-- how -->\n\n## Verification\n\n<!-- evidence -->\n\n" +
+    "## Related\n\n<!-- list related items -->";
   const failedWith = runScript(templateBody);
   assert.ok(
     failedWith,
@@ -116,7 +194,9 @@ test("an unedited PR template passes vacuously ONLY if the instructional prose i
 });
 
 test("a closing keyword inside an HTML comment does not count (comment-stripping applies before the keyword check too)", () => {
-  const failedWith = runScript("<!-- Closes #1 -->\n\n## Related\n\nn/a");
+  const failedWith = runScript(
+    contractBody({ closing: "<!-- Closes #1 -->", related: "n/a" }),
+  );
   assert.ok(
     failedWith,
     "a commented-out closing keyword must not satisfy the check",
@@ -125,15 +205,19 @@ test("a closing keyword inside an HTML comment does not count (comment-stripping
 });
 
 test("case-insensitive heading and keyword matching", () => {
-  const failedWith = runScript("fixes #1\n\n## related\n\nsomething");
+  const failedWith = runScript(
+    "fixes #1\n\n## summary\n\ns\n\n## fix\n\nf\n\n## verification\n\nv\n\n## related\n\nsomething",
+  );
   assert.equal(failedWith, null);
 });
 
 test("an unterminated HTML comment hides the rest of the body instead of leaking it live", () => {
-  const failedWith = runScript("<!-- Closes #1\n\n## Related\n\nn/a");
+  const failedWith = runScript(
+    "<!-- Closes #1\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nn/a",
+  );
   assert.ok(
     failedWith,
-    "an unclosed comment must not let closing-keyword/Related text leak through as live content",
+    "an unclosed comment must not let closing-keyword/contract-header text leak through as live content",
   );
   assert.match(failedWith, /Related/);
   assert.match(failedWith, /closing keyword/);
@@ -141,28 +225,31 @@ test("an unterminated HTML comment hides the rest of the body instead of leaking
 
 test("a literal HTML-comment opener in inline code does not hide later linkage metadata", () => {
   const failedWith = runScript(
-    "The parser handles an unclosed `<!--` marker.\n\nNo linked issue\n\n## Related\n\n- #123",
+    "The parser handles an unclosed `<!--` marker.\n\n" +
+      contractBody({ closing: "No linked issue", related: "- #123" }),
   );
   assert.equal(failedWith, null);
 });
 
 test("a literal HTML-comment opener in a multiline code span does not hide later linkage metadata", () => {
   const failedWith = runScript(
-    "The parser handles `an unclosed\n<!-- marker` safely.\n\nNo linked issue\n\n## Related\n\n- #123",
+    "The parser handles `an unclosed\n<!-- marker` safely.\n\n" +
+      contractBody({ closing: "No linked issue", related: "- #123" }),
   );
   assert.equal(failedWith, null);
 });
 
 test("HTML-comment syntax in a fenced code block does not hide later linkage metadata", () => {
   const failedWith = runScript(
-    "```md\n<!-- example without a closer\n```\n\nNo linked issue\n\n## Related\n\n- #123",
+    "```md\n<!-- example without a closer\n```\n\n" +
+      contractBody({ closing: "No linked issue", related: "- #123" }),
   );
   assert.equal(failedWith, null);
 });
 
 test("linkage markers inside an inline code span do not satisfy the gate", () => {
   const failedWith = runScript(
-    "Example: `No linked issue`\n\n## Related\n\n- #123",
+    "Example: `No linked issue`\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\n- #123",
   );
   assert.ok(
     failedWith,
@@ -173,7 +260,7 @@ test("linkage markers inside an inline code span do not satisfy the gate", () =>
 
 test("linkage markers inside a fenced code block do not satisfy the gate", () => {
   const failedWith = runScript(
-    "```md\nNo linked issue\n\n## Related\n\n- #123\n```",
+    "```md\nNo linked issue\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\n- #123\n```",
   );
   assert.ok(
     failedWith,
@@ -185,7 +272,7 @@ test("linkage markers inside a fenced code block do not satisfy the gate", () =>
 
 test("linkage markers inside an indented code block do not satisfy the gate", () => {
   const failedWith = runScript(
-    "    No linked issue\n\n    ## Related\n\n    - #123",
+    "    No linked issue\n\n    ## Summary\n\n    s\n\n    ## Fix\n\n    f\n\n    ## Verification\n\n    v\n\n    ## Related\n\n    - #123",
   );
   assert.ok(
     failedWith,
@@ -197,7 +284,7 @@ test("linkage markers inside an indented code block do not satisfy the gate", ()
 
 test("an unmatched backtick does not expose linkage metadata hidden in a later HTML comment", () => {
   const failedWith = runScript(
-    "A stray ` delimiter.\n\n<!-- Closes #1 -->\n\n## Related\n\nn/a",
+    "A stray ` delimiter.\n\n<!-- Closes #1 -->\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nn/a",
   );
   assert.ok(
     failedWith,
@@ -208,7 +295,7 @@ test("an unmatched backtick does not expose linkage metadata hidden in a later H
 
 test("a nested subsection under ## Related counts as content, not a section boundary", () => {
   const failedWith = runScript(
-    "Closes #1\n\n## Related\n\n### Issues\n\n- #123",
+    contractBody({ related: "### Issues\n\n- #123" }),
   );
   assert.equal(
     failedWith,
@@ -217,7 +304,7 @@ test("a nested subsection under ## Related counts as content, not a section boun
   );
 });
 
-test("an exempt author passes with no closing keyword and no Related section", () => {
+test("an exempt author passes with no closing keyword and no contract headers", () => {
   const failedWith = runScript(
     "Bumps a dependency, no linkage markers.",
     "dependabot[bot]",

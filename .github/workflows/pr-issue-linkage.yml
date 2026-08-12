@@ -2,13 +2,14 @@ name: pr-issue-linkage
 
 # Reusable workflow — requires the PR body to carry a native GitHub closing
 # keyword (Closes/Fixes/Resolves #N, or the literal "No linked issue" / "No
-# related issue:" when the PR closes nothing) AND a manual "## Related"
-# section with content. GATING by design: a caller that requires this check
-# blocks the merge until the body is fixed. Generalizes
-# melodic-software/provisioning's pr-body.yml (decisions #58/#59) into a
-# shared reusable workflow, mirroring pr-title.yml's own shape (a
-# repo-specific implementation first, then a shared reusable workflow
-# consumers call).
+# related issue:" when the PR closes nothing) AND the four contract headers
+# with content: "## Summary", "## Fix", "## Verification", and "## Related"
+# (issue #153; consumer template alignment in claude-code-plugins#553).
+# GATING by design: a caller that requires this check blocks the merge until
+# the body is fixed. Generalizes melodic-software/provisioning's pr-body.yml
+# (decisions #58/#59) into a shared reusable workflow, mirroring pr-title.yml's
+# own shape (a repo-specific implementation first, then a shared reusable
+# workflow consumers call).
 #
 # The caller must use `pull_request_target` (not `pull_request`): this runs
 # the workflow definition from the base branch, not the PR head, so a
@@ -45,7 +46,7 @@ on:
           an unknown future bot is not silently skipped. Fail-closed: the default
           empty string exempts no one, preserving current behavior for every
           existing consumer. Opt in per repo by listing the bots whose generated
-          PR bodies cannot carry the closing-keyword + `## Related` markers.
+          PR bodies cannot carry the closing-keyword + contract-header markers.
         type: string
         default: ""
 
@@ -75,7 +76,7 @@ jobs:
           echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
           exit 1
 
-      - name: Validate PR body against the closing-keyword + Related convention
+      - name: Validate PR body against the closing-keyword + contract-header convention
         # Skipped (job still green) on anything but the two PR-body-bearing
         # events -- the body was already validated when the PR was last
         # opened/edited, matching do-not-merge-gate.yml's merge_group guard.
@@ -94,11 +95,11 @@ jobs:
           script: |
             // Exempt-author short-circuit, evaluated before any body parsing: a
             // caller opts specific bot logins out of validation because their
-            // generated PR bodies cannot carry the closing-keyword + `## Related`
-            // markers (dependabot/renovate). Exact-login equality only -- never a
-            // `*[bot]` pattern -- so an unknown future bot is not silently skipped
-            // on this merge gate. An empty list (the default) exempts no one:
-            // fail-closed, identical behavior to before for existing consumers.
+            // generated PR bodies cannot carry the closing-keyword + contract-
+            // header markers (dependabot/renovate). Exact-login equality only --
+            // never a `*[bot]` pattern -- so an unknown future bot is not silently
+            // skipped on this merge gate. An empty list (the default) exempts no
+            // one: fail-closed, identical behavior to before for existing consumers.
             const prAuthor = process.env.PR_AUTHOR || "";
             const exemptAuthors = (process.env.EXEMPT_AUTHORS || "")
               .split(",")
@@ -108,7 +109,7 @@ jobs:
             if (exemptAuthors.includes(prAuthor)) {
               core.info(
                 `PR author "${prAuthor}" matches an exempt-authors entry; ` +
-                  "skipping closing-keyword + Related body validation."
+                  "skipping closing-keyword + contract-header body validation."
               );
             } else {
               // Strip rendered HTML comments before any check: GitHub's own closing-keyword
@@ -244,14 +245,43 @@ jobs:
                 return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
               }
 
-              const related = extractSection(body, /^##\s+related$/i);
-              if (related === null) {
-                errors.push(
-                  'Missing a "## Related" section. List related PRs, ADRs, or decision-log ' +
-                    "entries this PR does not close."
+              // Four contract headers (Summary / Fix / Verification / Related): same
+              // presence + non-empty rule Related already enforced. Heading match is
+              // case-insensitive; content may be nested subsections (see extractSection).
+              const requiredSections = [
+                {
+                  name: "Summary",
+                  guidance:
+                    "Describe what this PR changes and why, in a sentence or two.",
+                },
+                {
+                  name: "Fix",
+                  guidance:
+                    "State the concrete change and how it addresses the problem.",
+                },
+                {
+                  name: "Verification",
+                  guidance:
+                    "Record concrete evidence the change works (commands, gates, output).",
+                },
+                {
+                  name: "Related",
+                  guidance:
+                    "List related PRs, ADRs, or decision-log entries this PR does not close.",
+                },
+              ];
+              for (const section of requiredSections) {
+                const content = extractSection(
+                  body,
+                  new RegExp(`^##\\s+${section.name}$`, "i"),
                 );
-              } else if (related.length === 0) {
-                errors.push('The "## Related" section is empty.');
+                if (content === null) {
+                  errors.push(
+                    `Missing a "## ${section.name}" section. ${section.guidance}`,
+                  );
+                } else if (content.length === 0) {
+                  errors.push(`The "## ${section.name}" section is empty.`);
+                }
               }
 
               const CLOSING_KEYWORD =
