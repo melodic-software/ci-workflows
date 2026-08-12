@@ -683,11 +683,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   concern (its own runner OS + checkout), so a reusable workflow: the caller
   passes a `run` command and owns discovery/reporting/exit; this supplies the
   hosted runner, pinned Pester, and checkout. Inputs are documented inline.
-- `.github/workflows/approval-agent.yml` — **disabled V1 scaffold** for the
-  Approval Agent lane ([ci-workflows#256](https://github.com/melodic-software/ci-workflows/issues/256)).
-  Posts a `COMMENTED` placeholder only (never `APPROVE`). Do not add it to
-  production required checks. Dogfood caller `approval-agent-self.yml` is
-  `workflow_dispatch`-only. ADR + probe: `docs/topics/claude-review-lanes/approval-agent-ADR.md`.
+- `.github/workflows/approval-agent.yml` — Approval Agent lane
+  ([ci-workflows#256](https://github.com/melodic-software/ci-workflows/issues/256)).
+  Guardrails always run (never approve own policy/workflow files; approver ≠
+  author/pusher; refuse on human-risk findings). Live `APPROVE` is **opt-in**
+  via `enable-approve: true` plus App secrets (default remains `COMMENTED`).
+  Do not add it to production required checks until a fleet caller lands.
+  Dogfood caller `approval-agent-self.yml` is `workflow_dispatch`-only.
+  ADR + probe: `docs/topics/claude-review-lanes/approval-agent-ADR.md`.
 - `.github/workflows/claude-assistant.yml` — org `@claude` mention-responder
   ([ci-workflows#255](https://github.com/melodic-software/ci-workflows/issues/255)).
   V1 is **answer / re-review only** (tool-allowlist floor; no Edit/Write, no

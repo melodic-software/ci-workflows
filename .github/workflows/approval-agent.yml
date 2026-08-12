@@ -1,18 +1,18 @@
 name: approval-agent
 
-# Reusable workflow — Approval Agent V1 scaffold (ci-workflows#256).
+# Reusable workflow — Approval Agent live APPROVE path (ci-workflows#256).
 #
-# Posts a COMMENTED placeholder review so wiring is reviewable. Does NOT
-# submit APPROVE. Does NOT create a GitHub App. Do NOT add this check to
-# production required-checks / rulesets yet.
+# Default posture is still safe: enable-approve defaults to false and the job
+# posts a COMMENTED review. Set enable-approve: true plus App secrets to submit
+# a real APPROVE as the App identity after guardrails pass.
 #
-# Guardrails (must hold before any later live APPROVE PR — documented here so
-# callers cannot miss them; enforcement lands in ordered follow-ups):
+# Guardrails (enforced before any APPROVE):
 #   1. NEVER approve PRs that modify this agent's own policy/routing/workflow
 #      files (otherwise the gate is auto-approvable by the thing it gates).
 #   2. Approver App never pushes; approver / author / pusher identities are
 #      strictly distinct (require_last_push_approval compatible).
-#   3. Refuse when findings need human review or exceed a risk threshold.
+#   3. Refuse when findings need human review (refuse-on-human-risk, default
+#      true) or the human-risk-findings input is non-empty.
 #   4. Posture: does not replace full code review.
 #
 # Probe (2026-08-12): custom App APPROVED DOES satisfy native
@@ -20,14 +20,14 @@ name: approval-agent
 # docs/topics/claude-review-lanes/app-approval-count-probe.md (VERDICT=YES).
 # ADR: docs/topics/claude-review-lanes/approval-agent-ADR.md.
 #
-# CONSUMER CONTRACT: caller owns triggers. Canonical early caller is
-# workflow_dispatch-only (approval-agent-self.yml). Do not wire pull_request
-# auto-trigger or required checks while this remains a COMMENTED scaffold.
+# CONSUMER CONTRACT: caller owns triggers. Canonical dogfood caller is
+# workflow_dispatch-only (approval-agent-self.yml). Do not wire this as a
+# production required check until a fleet caller lands.
 on:
   workflow_call:
     inputs:
       pr-number:
-        description: Pull request number to receive the COMMENTED placeholder
+        description: Pull request number to review
         type: string
         required: true
       runner:
@@ -36,18 +36,56 @@ on:
           the public hosted default.
         type: string
         default: ubuntu-24.04
+      enable-approve:
+        description: >-
+          When true, submit APPROVE after guardrails pass (requires App
+          secrets). Default false keeps COMMENTED-only behavior.
+        type: boolean
+        default: false
+      refuse-on-human-risk:
+        description: >-
+          When true (default), refuse APPROVE if human-risk-findings is
+          non-empty (or a non-empty JSON array).
+        type: boolean
+        default: true
+      human-risk-findings:
+        description: >-
+          Opaque findings blob or JSON array from an upstream reviewer. Empty
+          or [] means no human-risk findings.
+        type: string
+        default: ""
+      protected-paths:
+        description: >-
+          Newline- or comma-separated paths that must never be auto-approved
+          when changed. Empty uses the built-in Approval Agent deny-list.
+        type: string
+        default: ""
+      review-body:
+        description: Optional body for the COMMENTED or APPROVE review
+        type: string
+        default: ""
+    secrets:
+      app-id:
+        description: >-
+          GitHub App ID (or Client ID) used to mint the approver installation
+          token via actions/create-github-app-token. Use an existing org App
+          (e.g. melodic-ai); do not register a new App for this workflow.
+        required: false
+      app-private-key:
+        description: GitHub App private key for the approver App
+        required: false
 
 permissions: {}
 
 jobs:
   # Job id forms the check context with the caller's job id
   # (`<caller job id> / approval-agent`). Kept equal to the workflow name so a
-  # future required-check string is obvious — but this scaffold must not be
-  # required yet.
+  # future required-check string is obvious — but do not require this yet.
   approval-agent:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
+      contents: read
       pull-requests: write
     steps:
       - name: Refuse empty or non-numeric PR number
@@ -59,47 +97,173 @@ jobs:
             exit 1
           fi
 
-      - name: Log scaffold guardrails (no-op; live APPROVE disabled)
-        run: |
-          echo "Scaffold only — live APPROVE is disabled in this workflow."
-          echo "Guardrails required before enabling APPROVE:"
-          echo "  - never approve own policy/routing/workflow files"
-          echo "  - approver identity != PR author != last pusher"
-          echo "  - refuse on human-risk findings"
-          echo "  - posture != full code review"
-          echo "Probe YES: App APPROVE satisfies required_approving_review_count."
+      # Trusted reusable-workflow commit (not PR head, not caller tree) so a
+      # malicious PR cannot rewrite guardrails. Changed paths are read via API.
+      - name: Check out Approval Agent guardrails (workflow ref)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: melodic-software/ci-workflows
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: |
+            .github/scripts/approval-agent-guardrails.cjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
-      - name: Post COMMENTED placeholder (never APPROVE)
-        # actions/github-script rather than `gh api`: self-hosted images are
-        # not guaranteed to ship the gh CLI.
+      - name: Mint approver App token when APPROVE is requested
+        id: approver-token
+        if: inputs.enable-approve
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # Prefer client-id when the secret holds an Iv1.* Client ID; app-id
+          # remains valid for numeric App IDs (MELODIC_APP_ID / melodic-ai).
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      - name: Evaluate guardrails and submit review
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ inputs.pr-number }}
+          ENABLE_APPROVE: ${{ inputs.enable-approve }}
+          REFUSE_ON_HUMAN_RISK: ${{ inputs.refuse-on-human-risk }}
+          HUMAN_RISK_FINDINGS: ${{ inputs.human-risk-findings }}
+          PROTECTED_PATHS: ${{ inputs.protected-paths }}
+          REVIEW_BODY: ${{ inputs.review-body }}
+          APP_SLUG: ${{ steps.approver-token.outputs.app-slug }}
         with:
+          # Prefer App token for APPROVE (independent identity). COMMENT-only
+          # falls back to GITHUB_TOKEN when enable-approve is false.
+          github-token: ${{ steps.approver-token.outputs.token || github.token }}
           script: |
+            const path = require("node:path");
+            const {
+              parseProtectedPaths,
+              botLoginFromAppSlug,
+              evaluateApproval,
+              parseBooleanInput,
+            } = require(path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/approval-agent-guardrails.cjs",
+            ));
+
             const raw = process.env.PR_NUMBER;
             const pull_number = Number(raw);
             if (!Number.isInteger(pull_number) || pull_number < 1) {
               core.setFailed(`pr-number must be a positive integer (got: ${raw})`);
               return;
             }
-            // Intentionally COMMENTED — never APPROVE in this scaffold.
-            const body = [
-              "### Approval Agent scaffold (ci-workflows#256)",
-              "",
-              "This is a **COMMENTED** placeholder from the disabled V1 scaffold.",
-              "",
-              "- Live `APPROVE` is not enabled.",
-              "- No new GitHub App was created for this scaffold.",
-              "- Guardrails (never approve own policy files; approver≠author/pusher; refuse on human-risk findings) are documented in `docs/topics/claude-review-lanes/approval-agent-ADR.md`.",
-              "- Sandbox probe: App APPROVE satisfies `required_approving_review_count` (**YES**). See `docs/topics/claude-review-lanes/app-approval-count-probe.md`.",
-              "",
-              "Do not treat this comment as an approval.",
-            ].join("\n");
+
+            const enableApprove = parseBooleanInput(
+              process.env.ENABLE_APPROVE,
+              false,
+            );
+            const refuseOnHumanRisk = parseBooleanInput(
+              process.env.REFUSE_ON_HUMAN_RISK,
+              true,
+            );
+
+            if (enableApprove && !process.env.APP_SLUG) {
+              core.setFailed(
+                "enable-approve requires app-id and app-private-key secrets to mint an App installation token (independent approver identity).",
+              );
+              return;
+            }
+
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number,
+            });
+            const authorLogin = pr.data.user && pr.data.user.login;
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number,
+              per_page: 100,
+            });
+            const lastCommit = commits.length > 0 ? commits[commits.length - 1] : null;
+            const lastPusherLogin =
+              (lastCommit && lastCommit.author && lastCommit.author.login) ||
+              (lastCommit && lastCommit.committer && lastCommit.committer.login) ||
+              "";
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number,
+              per_page: 100,
+            });
+            const changedPaths = files.map((file) => file.filename);
+
+            const approverLogin = enableApprove
+              ? botLoginFromAppSlug(process.env.APP_SLUG)
+              : botLoginFromAppSlug(process.env.APP_SLUG) ||
+                (context.actor || "");
+
+            const result = evaluateApproval({
+              enableApprove,
+              changedPaths,
+              protectedPaths: parseProtectedPaths(process.env.PROTECTED_PATHS),
+              approverLogin,
+              authorLogin,
+              lastPusherLogin,
+              findingsRaw: process.env.HUMAN_RISK_FINDINGS || "",
+              refuseOnHumanRisk,
+            });
+
+            const customBody = (process.env.REVIEW_BODY || "").trim();
+            let reviewEvent = "COMMENT";
+            let body;
+
+            if (result.decision === "refuse") {
+              reviewEvent = "COMMENT";
+              body = [
+                "### Approval Agent — refused",
+                "",
+                "Guardrails blocked approval:",
+                ...result.reasons.map((reason) => `- ${reason}`),
+                "",
+                "Posture: this lane does not replace full code review.",
+                "ADR: `docs/topics/claude-review-lanes/approval-agent-ADR.md`",
+              ].join("\n");
+            } else if (result.decision === "approve") {
+              reviewEvent = "APPROVE";
+              body =
+                customBody ||
+                [
+                  "### Approval Agent — approved",
+                  "",
+                  "Guardrails passed (policy paths clean; approver ≠ author/pusher; no human-risk findings).",
+                  "Posture: this approval does not replace full code review.",
+                ].join("\n");
+            } else {
+              reviewEvent = "COMMENT";
+              body =
+                customBody ||
+                [
+                  "### Approval Agent — comment only",
+                  "",
+                  "Guardrails passed, but `enable-approve` is false (safe default).",
+                  "Set `enable-approve: true` and supply App secrets to submit APPROVE.",
+                  "",
+                  "- Probe: App APPROVE satisfies `required_approving_review_count` (YES).",
+                  "- ADR: `docs/topics/claude-review-lanes/approval-agent-ADR.md`",
+                ].join("\n");
+            }
+
             await github.rest.pulls.createReview({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number,
-              event: "COMMENT",
+              event: reviewEvent,
               body,
             });
+
+            if (result.decision === "refuse" && enableApprove) {
+              core.setFailed(
+                `Approval Agent refused APPROVE: ${result.reasons.join("; ")}`,
+              );
+            }
