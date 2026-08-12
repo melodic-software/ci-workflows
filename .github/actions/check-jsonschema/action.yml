@@ -33,7 +33,7 @@ inputs:
     default: 0.38.0
   python-version:
     description: Exact Python patch version uv provisions for the ephemeral tool environment.
-    default: '3.14.6'
+    default: '3.14.7'
 
 runs:
   using: composite
