@@ -215,6 +215,20 @@ name: claude-security-review
 #     NOT a benign skip here: the action exits non-zero without reviewing, the
 #     job still reads success, and the evidence gate below fails the required
 #     check — so an un-named bot pushing to a branch blocks its own PR.
+#     Naming an app here admits it to a PRIVILEGED run (this lane's OAuth
+#     credential + the inline-comment tool), so each entry needs a trigger
+#     path an arbitrary commenter cannot drive. dependabot[bot]: the org's own
+#     dependabot.yml. cursor[bot]: starting a Cursor cloud agent requires being
+#     "on a paid Cursor plan and have repository permissions"
+#     (https://cursor.com/docs/cloud-agent). Cursor's Bugbot, which by contrast
+#     runs "for all contributors ... regardless of team membership"
+#     (https://cursor.com/docs/bugbot), is DISABLED for this org's account —
+#     re-derive this entry if that changes. Defence in depth for the residual
+#     (Cursor states these as product prerequisites, not as a security
+#     boundary) is tracked separately: gate a bot actor on the PR author's
+#     association. Note the exposure this does NOT create: cursor[bot] already
+#     holds contents:write org-wide, so an actor able to drive it could already
+#     push branches that run every same-repo workflow.
 #   - `display_report` / `show_full_output` stay off (public-repo log-leak risk).
 #
 # KILL-SWITCH SCOPE NOTE: REVIEW.md scopes security findings out of the
