@@ -56,9 +56,13 @@ node .github/scripts/probe-billing-usage.cjs --write-variable
 
 | `billing-minutes-state` / `CI_HOSTED_MINUTES_STATE` | Private-repo route | Reason |
 | --- | --- | --- |
-| `free` | hosted | `hosted-while-free` |
-| `exhausted` | fleet (CI-tier blind-queue) | `hosted-pool-exhausted` |
-| `unknown` / missing / malformed | fleet | `billing-unknown` |
+| Timestamped JSON `{"state":"free","probedAt":"...","month":"YYYY-MM"}` (age ≤ 12h, current month) | hosted | `hosted-while-free` |
+| `exhausted` or JSON with that state | fleet (CI-tier blind-queue) | `hosted-pool-exhausted` |
+| `unknown` / missing / malformed / compact `free` / stale `free` | fleet | `billing-unknown` |
+
+Compact untimestamped `free` is rejected: a stuck probe must not keep routing
+hosted across a broken poll window. Failed probes with `--write-variable`
+overwrite the org vars with `{"state":"unknown",...}`.
 
 Public repos and non-local events still short-circuit to hosted (`hosted-only`)
 before billing state is consulted.
