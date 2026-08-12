@@ -86,6 +86,14 @@ name: claude-review
 #     it is ever enabled, re-derive this entry rather than assuming it holds.
 #     Both apps push to SAME-REPO branches, so neither reaches a fork's
 #     privileged context, which the fork rule above already closes.
+#     Defence in depth (#443): the review job also gates bot actors (any
+#     `github.actor` ending in `[bot]`) on the PR author's association.
+#     `dependabot[bot]` is exempt — its PRs may carry CONTRIBUTOR or NONE.
+#     Any other bot may trigger only when `author_association` is OWNER,
+#     MEMBER, or COLLABORATOR (e.g. `cursor[bot]` pushing to an operator's
+#     branch). Human actors are unchanged; the check is scoped to
+#     `pull_request` like the draft gate because dispatch carries no
+#     author_association in the event payload.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
 #   - The inline-comment tool is now on the hot path (the prompt routes every
 #     line-anchorable finding through it), so untrusted diff content — including
@@ -332,12 +340,19 @@ jobs:
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
+    # Defence-in-depth (#443): bot actors other than dependabot[bot] require
+    # the PR author's association to be OWNER, MEMBER, or COLLABORATOR — see
+    # SECURITY MODEL above. Scoped to pull_request like the draft gate.
     # Draft PRs are not reviewed either (the cadence is open/ready/reopen);
     # the draft test is scoped to pull_request so other events still run.
     if: >-
       ${{ vars.CLAUDE_LANES_DISABLED != 'true'
           && vars.CLAUDE_REVIEW_DISABLED != 'true'
           && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))
+          && (!endsWith(github.actor, '[bot]')
+              || github.actor == 'dependabot[bot]'
+              || (github.event_name != 'pull_request'
+                  || contains(format(',{0},', 'OWNER,MEMBER,COLLABORATOR'), format(',{0},', github.event.pull_request.author_association))))
           && (github.event_name != 'pull_request'
               || github.event.pull_request.draft == false) }}
     permissions:

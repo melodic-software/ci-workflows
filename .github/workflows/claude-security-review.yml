@@ -223,10 +223,15 @@ name: claude-security-review
 #     (https://cursor.com/docs/cloud-agent). Cursor's Bugbot, which by contrast
 #     runs "for all contributors ... regardless of team membership"
 #     (https://cursor.com/docs/bugbot), is DISABLED for this org's account —
-#     re-derive this entry if that changes. Defence in depth for the residual
-#     (Cursor states these as product prerequisites, not as a security
-#     boundary) is tracked separately: gate a bot actor on the PR author's
-#     association. Note the exposure this does NOT create: cursor[bot] already
+#     re-derive this entry if that changes. Defence in depth (#443): the
+#     review job also gates bot actors (any `github.actor` ending in `[bot]`)
+#     on the PR author's association. `dependabot[bot]` is exempt — its PRs
+#     may carry CONTRIBUTOR or NONE. Any other bot may trigger only when
+#     `author_association` is OWNER, MEMBER, or COLLABORATOR (e.g.
+#     `cursor[bot]` pushing to an operator's branch). Human actors are
+#     unchanged; the check is scoped to `pull_request` like the fork gate
+#     because dispatch carries no author_association in the event payload.
+#     Note the exposure this does NOT create: cursor[bot] already
 #     holds contents:write org-wide, so an actor able to drive it could already
 #     push branches that run every same-repo workflow.
 #   - `display_report` / `show_full_output` stay off (public-repo log-leak risk).
@@ -822,6 +827,9 @@ jobs:
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
+    # Defence-in-depth (#443): bot actors other than dependabot[bot] require
+    # the PR author's association to be OWNER, MEMBER, or COLLABORATOR — see
+    # SECURITY MODEL above. Scoped to pull_request like the fork gate.
     #
     # `!cancelled() && needs.changes.outputs.relevant != 'false'` is the
     # always-report gate: relevant=false (no security-sensitive path changed)
@@ -854,6 +862,10 @@ jobs:
           && vars.CLAUDE_SECURITY_REVIEW_DISABLED != 'true'
           && needs.changes.outputs.relevant != 'false'
           && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))
+          && (!endsWith(github.actor, '[bot]')
+              || github.actor == 'dependabot[bot]'
+              || (github.event_name != 'pull_request'
+                  || contains(format(',{0},', 'OWNER,MEMBER,COLLABORATOR'), format(',{0},', github.event.pull_request.author_association))))
           && (github.event_name != 'pull_request'
               || github.event.pull_request.head.repo.full_name == github.repository) }}
     permissions:

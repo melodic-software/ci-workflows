@@ -367,6 +367,21 @@ test("fork, out-of-scope and skip-actor PRs never reach the ruling step", () => 
     /contains\(format\(',\{0\},', inputs\.skip-actors\)/u,
     "the skip-actors exception is operator-ratified (ADR 0002) and must stay job-level",
   );
+  assert.match(
+    jobCondition,
+    /!endsWith\(github\.actor, '\[bot\]'\)/u,
+    "bot actors must be gated on PR author association (#443)",
+  );
+  assert.match(
+    jobCondition,
+    /github\.actor == 'dependabot\[bot\]'/u,
+    "dependabot[bot] must stay exempt from the author-association gate (#443)",
+  );
+  assert.match(
+    jobCondition,
+    /contains\(format\(',\{0\},', 'OWNER,MEMBER,COLLABORATOR'\), format\(',\{0\},', github\.event\.pull_request\.author_association\)\)/u,
+    "non-dependabot bot actors must require OWNER, MEMBER, or COLLABORATOR author_association (#443)",
+  );
 });
 
 test("the kill-switches gate the review job only, never the changes job", () => {
