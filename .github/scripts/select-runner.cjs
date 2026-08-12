@@ -299,7 +299,6 @@ function preflight(input) {
     return { result: hostedResult(hostedRunner, "hosted-only") };
   }
 
-  const selfHostedOnly = input.policy === "self-hosted-only";
   const preferHostedWhileFree = input.policy === "prefer-hosted-while-free";
   const fleetFirst = fleetFirstPolicy(input.policy);
 
