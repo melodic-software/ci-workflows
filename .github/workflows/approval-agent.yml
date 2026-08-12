@@ -64,6 +64,15 @@ on:
         description: Optional body for the COMMENTED or APPROVE review
         type: string
         default: ""
+      reusable-workflow-ref:
+        description: >-
+          Commit SHA of this reusable workflow (the `@sha` used in the
+          caller's `uses:` pin). External callers must pass the same pin so
+          guardrails check out the called workflow tree in
+          melodic-software/ci-workflows. Local path callers (`uses: ./...`)
+          may omit it; `github.sha` is used as fallback.
+        type: string
+        default: ""
     secrets:
       app-id:
         description: >-
@@ -97,14 +106,18 @@ jobs:
             exit 1
           fi
 
-      # Trusted called-workflow commit (github.job_workflow_sha — not caller
-      # github.workflow_sha, not PR head) so a malicious PR cannot rewrite
-      # guardrails. Changed paths are read via API.
+      # Trusted called-workflow commit (not PR head, not caller tree) so a
+      # malicious PR cannot rewrite guardrails. External callers pass
+      # reusable-workflow-ref matching their `uses: ...@sha` pin;
+      # local-path callers fall back to github.sha. Changed paths are read
+      # via API. (Prefer an explicit pin over github.workflow_sha — that
+      # context follows the *caller* workflow when this is invoked
+      # cross-repo.)
       - name: Check out Approval Agent guardrails (workflow ref)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: melodic-software/ci-workflows
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ inputs.reusable-workflow-ref != '' && inputs.reusable-workflow-ref || github.sha }}
           sparse-checkout: |
             .github/scripts/approval-agent-guardrails.cjs
           sparse-checkout-cone-mode: false
