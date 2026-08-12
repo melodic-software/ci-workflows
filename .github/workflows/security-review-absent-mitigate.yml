@@ -1,0 +1,95 @@
+name: security-review-absent-mitigate
+
+# Reusable companion for ci-workflows#227: an intermittent pull_request
+# event-delivery gap can leave the required `security-review / security-review`
+# check ABSENT (not failed) on a PR head, so merge stays BLOCKED while every
+# human-facing surface looks fine. pull_request_target siblings still fire.
+#
+# This workflow does NOT move the security lane onto pull_request_target or
+# workflow_run (that trips claude-security-review.yml's privileged-trigger
+# tripwire). It only runs on schedule / workflow_dispatch / workflow_call,
+# uses check-run-reconcile taxonomy via security-review-absent-mitigate.cjs,
+# and either:
+#   - posts a FAILED check under the missing context (forces visibility), or
+#   - workflow_dispatch-es the consumer's Claude Security Review caller with
+#     pr-number so the real always-report lane attaches a check.
+#
+# Callers that arm `requires-security-review=true` should dogfood this beside
+# their security-review caller (see security-review-absent-mitigate-self.yml).
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller's governed selector.
+        type: string
+        default: ubuntu-24.04
+      mode:
+        description: >-
+          report | post-failure-check | dispatch — see
+          .github/scripts/security-review-absent-mitigate.cjs.
+        type: string
+        default: post-failure-check
+      grace-minutes:
+        description: >-
+          Ignore PRs younger than this many minutes so a healthy pull_request
+          delivery is not raced (observed same-head lag has been seconds to
+          ~20m; the #227 wedge was hours).
+        type: number
+        default: 15
+      workflow-name:
+        description: >-
+          Workflow name or file passed to `gh workflow run` in dispatch mode
+          (must expose workflow_dispatch with a pr-number input).
+        type: string
+        default: Claude Security Review
+      dry-run:
+        description: When true, print planned Checks/Actions writes only.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  mitigate:
+    name: Detect absent required security-review checks
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # post-failure-check creates a commit check-run under the missing
+      # required context name; dispatch only needs actions write via the
+      # workflow scope below.
+      checks: write
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mitigate absent security-review checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          GRACE: ${{ inputs.grace-minutes }}
+          WORKFLOW_NAME: ${{ inputs.workflow-name }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          args=(
+            --repo "${{ github.repository }}"
+            --from-rulesets
+            --mode "$MODE"
+            --grace-minutes "$GRACE"
+            --workflow "$WORKFLOW_NAME"
+          )
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          # Exit 1 means absent checks were found/mitigated — surface as a
+          # failed companion run so the gap is visible in Actions too. Exit 0
+          # is the healthy steady state.
+          node .github/scripts/security-review-absent-mitigate.cjs "${args[@]}"

@@ -11,9 +11,15 @@ name: Claude Security Review
 # `security-review` check Pending on a prose-only PR and wedge a required-check
 # ruleset. Triggering on every PR instead lets the reusable workflow's `changes`
 # job skip `security-review` for a prose PR, yielding a name-stable check.
-# (Like the pr-title dogfood, this caller stays pull_request-only. Do NOT add
-# merge_group even if this repo adopts a merge queue — the pinned action cannot
-# serve that event, so the check would report green without reviewing; see #272.)
+# (Do NOT add merge_group even if this repo adopts a merge queue — the pinned
+# action cannot serve that event, so the check would report green without
+# reviewing; see #272.)
+#
+# workflow_dispatch + pr-number is the #227 mitigation re-entry: when an
+# intermittent pull_request delivery gap leaves the required security-review
+# check ABSENT, security-review-absent-mitigate (or an operator) dispatches
+# this caller so the always-report lane attaches a check — without moving the
+# lane onto privileged pull_request_target / workflow_run (tripwire).
 #
 # The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
 # so this repo receives it; fork PRs still get no token by design and the
@@ -21,15 +27,22 @@ name: Claude Security Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to (re)run security-review for
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-# Cancel a superseded in-flight review when the PR gets a new push; the PR
-# number is always set here (pull_request-only triggers) and, unlike head_ref,
-# is unique per PR even across forks; run_id is a non-grouping fallback.
+# Cancel a superseded in-flight review when the PR gets a new push or a newer
+# dispatch for the same PR; the number is set on pull_request and on
+# workflow_dispatch (via inputs.pr-number). Unlike head_ref, the number is
+# unique per PR even across forks; run_id is a non-grouping fallback.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr-number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -40,6 +53,10 @@ jobs:
       id-token: write
     uses: ./.github/workflows/claude-security-review.yml
     with:
+      # Empty on pull_request (event payload supplies the PR); required on
+      # workflow_dispatch so the reusable can resolve head SHA via API
+      # (ci-workflows#227 / same shape as claude-review #254).
+      pr-number: ${{ inputs.pr-number }}
       # This repo's security-sensitive surfaces (see the reusable workflow's
       # header). A prose-only PR matches none and the review job skips.
       paths: |

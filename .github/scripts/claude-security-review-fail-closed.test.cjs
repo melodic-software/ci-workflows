@@ -182,10 +182,10 @@ test("an in-scope non-run reaches the ruling step on both signals", () => {
   // itself, so nothing was reviewed and a green would certify an execution
   // that never happened). What each shape then CONCLUDES is the two-tier
   // posture, executed below. Both are AND-ed with pull_request presence (only
-  // a pull_request run gates a merge — the action rejects merge_group and,
-  // with track_progress on, every non-PR event, so ruling on those would
-  // wedge a consumer's merge queue on a cause no head change can fix; they
-  // keep the historical pass-through by skipping this step). !cancelled()
+  // a pull_request run gates a merge — workflow_dispatch re-entry for #227
+  // attaches a check by completing the job and keeps the historical
+  // pass-through here; ruling on non-pull_request events would wedge a
+  // consumer's merge queue on a cause no head change can fix). !cancelled()
   // keeps the step reachable after the failed review step while still
   // skipping it on cancellation — a cancelled run is retired by a newer one
   // and must not raise a red of its own.

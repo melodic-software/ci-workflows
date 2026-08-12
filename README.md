@@ -728,6 +728,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
   required (check context `<caller job> / security-review`); the VERDICT stays
   advisory.
 
+  **Absent-check mitigation (ci-workflows#227):** an intermittent `pull_request`
+  event-delivery gap can leave that required context ABSENT (not failed). Do
+  not move the lane onto `pull_request_target` / `workflow_run`. Consumers
+  should expose `workflow_dispatch` + `pr-number` on the caller (dogfood:
+  `claude-security-review-self.yml`) and run the
+  `security-review-absent-mitigate` companion (`schedule` /
+  `workflow_dispatch`) which either posts a FAILED visibility check under the
+  missing context or re-dispatches the caller. Details:
+  `docs/topics/claude-review-lanes/security-review-absent-mitigation.md`.
+
   **Where that pattern list lives** is the caller's choice between two inputs.
   The conventional shape is `paths-file`, pointing at a repo-owned file
   (`.github/claude-security-paths`) so each repo keeps its own
@@ -1074,7 +1084,11 @@ certifies that a security pass ran at the head being merged — a review of an
 earlier head is not that evidence, and it reviews drafts. After a successful
 review it persists that head and, on later pushes, skips with a name-stable
 success when the incremental delta touches no security-relevant paths
-(ci-workflows#259). `claude-e2e-verify`
+(ci-workflows#259). It also accepts `workflow_dispatch` + `pr-number` so an
+absent required check from a `pull_request` delivery gap can be re-attached
+without privileged triggers (ci-workflows#227; see
+`docs/topics/claude-review-lanes/security-review-absent-mitigation.md`).
+`claude-e2e-verify`
 keeps `synchronize` too, and gates on nothing but its kill-switches — no draft
 skip, no `skip-actors` input — so the most expensive lane has the loosest gate.
 Scope it with the caller's own trigger types. Take each lane's canonical caller
