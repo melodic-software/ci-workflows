@@ -75,7 +75,11 @@ name: claude-review
 #   - Fork PRs receive no secrets and a read-only token by design, so they are
 #     simply not reviewed — that is correct, not a gap to "fix".
 #   - The action gates triggering on the actor's write access; bots are blocked
-#     unless named in `allowed-bots`.
+#     unless named in `allowed-bots`. The default names two org-installed apps
+#     — `dependabot[bot]` and `cursor[bot]` — both of which push to SAME-REPO
+#     branches under an operator's direction; neither can reach a fork's
+#     privileged context, which the fork rule above already closes. A bot the
+#     org has not installed cannot become the actor here at all.
 #   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
 #   - The inline-comment tool is now on the hot path (the prompt routes every
 #     line-anchorable finding through it), so untrusted diff content — including
@@ -208,9 +212,12 @@ on:
       allowed-bots:
         description: >-
           Comma-separated bot actors permitted to trigger the review (bots are
-          blocked by default). Never set '*' on a public repo.
+          blocked by default). Never set '*' on a public repo. The action
+          normalizes both sides of the comparison (lowercase, trailing `[bot]`
+          stripped), so one spelling per actor is enough — unlike
+          `exclude-comments-by-actor` below, which needs both.
         type: string
-        default: dependabot[bot]
+        default: dependabot[bot],cursor[bot]
       exclude-comments-by-actor:
         description: >-
           Comma-separated actors whose comments are withheld from Claude's
