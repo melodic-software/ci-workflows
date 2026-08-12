@@ -127,10 +127,90 @@ function hostedResult(hostedRunner, reason) {
   });
 }
 
+function selfHostedResult(runner, reason) {
+  return Object.freeze({
+    runner,
+    route: "self-hosted",
+    reason,
+    onlineRunnerCount: 0,
+  });
+}
+
 function exactNonEmptyString(value) {
   return (
     typeof value === "string" && value.length > 0 && value.trim() === value
   );
+}
+
+// Max age for a cached `free` signal. The poll cadence is 2–6h; anything older
+// is treated as unknown so a stuck `free` write cannot spend paid minutes.
+const BILLING_FREE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+// Cached prefer-hosted-while-free signal from the billing probe/poll
+// (CI_HOSTED_MINUTES_STATE). Duplicated (not imported) because select-runner.cjs
+// is inlined into the workflow bundle — keep case-folding + JSON handling in
+// lockstep with billing-headroom.normalizeRoutingState. Untimestamped or stale
+// `free` fails toward the fleet; exhausted/unknown compact forms remain safe.
+function normalizeBillingMinutesState(value, now = Date.now()) {
+  if (typeof value !== "string") {
+    return "unknown";
+  }
+  const trimmed = value.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const state =
+        typeof parsed?.state === "string"
+          ? parsed.state.trim().toLowerCase()
+          : "";
+      if (state !== "free" && state !== "exhausted" && state !== "unknown") {
+        return "unknown";
+      }
+      if (state !== "free") {
+        return state;
+      }
+      if (typeof parsed.probedAt !== "string" || !parsed.probedAt) {
+        return "unknown";
+      }
+      const probedAtMs = Date.parse(parsed.probedAt);
+      if (
+        !Number.isFinite(probedAtMs) ||
+        now - probedAtMs > BILLING_FREE_MAX_AGE_MS ||
+        probedAtMs > now + 60_000
+      ) {
+        return "unknown";
+      }
+      const expectedMonth = (() => {
+        const date = new Date(now);
+        return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+      })();
+      if (parsed.month != null && String(parsed.month) !== expectedMonth) {
+        return "unknown";
+      }
+      return "free";
+    } catch {
+      return "unknown";
+    }
+  }
+  const compact = trimmed.toLowerCase();
+  // Compact `free` has no probedAt — reject so only timestamped JSON can host.
+  if (compact === "exhausted" || compact === "unknown") {
+    return compact;
+  }
+  return "unknown";
+}
+
+function fleetFirstPolicy(policy) {
+  return policy === "self-hosted-only" || policy === "prefer-hosted-while-free";
+}
+
+function fleetFirstReason(policy, billingMinutesState) {
+  if (policy === "self-hosted-only") {
+    return "self-hosted-only";
+  }
+  return normalizeBillingMinutesState(billingMinutesState) === "exhausted"
+    ? "hosted-pool-exhausted"
+    : "billing-unknown";
 }
 
 function normalizedLabel(value) {
@@ -249,7 +329,8 @@ function preflight(input) {
     return { result: hostedResult(hostedRunner, "hosted-only") };
   }
 
-  const selfHostedOnly = input.policy === "self-hosted-only";
+  const preferHostedWhileFree = input.policy === "prefer-hosted-while-free";
+  const fleetFirst = fleetFirstPolicy(input.policy);
 
   // Public repositories do not save billed minutes. Only explicitly reviewed
   // caller event classes may route locally, and fork code must never receive
@@ -262,25 +343,39 @@ function preflight(input) {
     return { result: hostedResult(hostedRunner, "hosted-only") };
   }
 
+  // prefer-hosted-while-free (ci-workflows#252): private repos consume included
+  // hosted minutes first while the cached billing probe reports free headroom;
+  // otherwise — and on any unreadable/missing billing state — fail toward the
+  // fleet. Phase 0 (2026-08-12) got HTTP 200 on the usage API with classic PAT
+  // admin:org, so this policy path is ON (not behind a default-off kill switch).
+  if (preferHostedWhileFree) {
+    const billingState = normalizeBillingMinutesState(
+      input.billingMinutesState,
+    );
+    if (billingState === "free") {
+      return { result: hostedResult(hostedRunner, "hosted-while-free") };
+    }
+  }
+
   const validScope =
     input.scope === "organization" || input.scope === "repository";
   const validTimeout =
     Number.isFinite(input.apiTimeoutSeconds) &&
     input.apiTimeoutSeconds >= 1 &&
     input.apiTimeoutSeconds <= 60;
-  if (!selfHostedOnly && input.policy !== "prefer-self-hosted") {
+  if (!fleetFirst && input.policy !== "prefer-self-hosted") {
     return { result: hostedResult(hostedRunner, "missing-config") };
   }
 
   if (!exactNonEmptyString(input.hostedRunner)) {
-    if (selfHostedOnly) {
+    if (fleetFirst) {
       throw new StrictRoutingError("missing-config");
     }
     return { result: hostedResult(hostedRunner, "missing-config") };
   }
 
   if (
-    !selfHostedOnly &&
+    !fleetFirst &&
     (!validScope ||
       !exactNonEmptyString(input.managedRunnerPrefix) ||
       !exactNonEmptyString(input.observerClientID) ||
@@ -294,7 +389,7 @@ function preflight(input) {
 
   const candidates = parseCandidateLabels(input);
   if ("error" in candidates) {
-    if (selfHostedOnly) {
+    if (fleetFirst) {
       throw new StrictRoutingError(candidates.error);
     }
     return { result: hostedResult(hostedRunner, candidates.error) };
@@ -305,12 +400,12 @@ function preflight(input) {
       (label) => label.toLowerCase() === input.hostedRunner.toLowerCase(),
     )
   ) {
-    if (selfHostedOnly) {
+    if (fleetFirst) {
       throw new StrictRoutingError("invalid-response");
     }
     return { result: hostedResult(hostedRunner, "invalid-response") };
   }
-  if (selfHostedOnly) {
+  if (fleetFirst) {
     if (
       candidates.labels.length !== 1 ||
       !SELF_HOSTED_ONLY_LABELS.has(normalizedLabel(candidates.labels[0]))
@@ -327,6 +422,8 @@ function preflight(input) {
     // blind-queue: an offline review fleet hangs forever with no signal
     // (ci-workflows#386). Probe inventory when credentials exist; otherwise
     // fail closed rather than emit a label nothing will ever claim.
+    // prefer-hosted-while-free uses the same fleet-first shape when billing
+    // state is exhausted or unknown (fail toward the fleet).
     if (reviewTier) {
       if (!input.hasObserverSecret) {
         throw new StrictRoutingError("missing-secret");
@@ -337,12 +434,10 @@ function preflight(input) {
       return { hostedRunner, labels: candidates.labels };
     }
     return {
-      result: Object.freeze({
-        runner: label,
-        route: "self-hosted",
-        reason: "self-hosted-only",
-        onlineRunnerCount: 0,
-      }),
+      result: selfHostedResult(
+        label,
+        fleetFirstReason(input.policy, input.billingMinutesState),
+      ),
     };
   }
   if (!input.hasObserverSecret) {
@@ -568,7 +663,7 @@ function selectOnlineCandidate(runners, labels, managedRunnerPrefix) {
   };
 }
 
-function errorResult(error, controller, hostedRunner, selfHostedOnly = false) {
+function errorResult(error, controller, hostedRunner, fleetFirst = false) {
   const status = Number(error?.status);
   let reason = "api-error";
   if (error instanceof InvalidResponseError) {
@@ -578,7 +673,7 @@ function errorResult(error, controller, hostedRunner, selfHostedOnly = false) {
   } else if (status === 401 || status === 403) {
     reason = "auth-error";
   }
-  if (selfHostedOnly) {
+  if (fleetFirst) {
     throw new StrictRoutingError(reason);
   }
   return hostedResult(hostedRunner, reason);
@@ -603,6 +698,7 @@ async function selectRunner(input, dependencies = {}) {
     () => controller.abort(),
     input.apiTimeoutSeconds * 1000,
   );
+  const fleetFirst = fleetFirstPolicy(input.policy);
 
   try {
     const runners = await listRunners(
@@ -617,13 +713,13 @@ async function selectRunner(input, dependencies = {}) {
       input.managedRunnerPrefix,
     );
     if (selection.labelNamespaceInvalid) {
-      if (input.policy === "self-hosted-only") {
+      if (fleetFirst) {
         throw new StrictRoutingError("invalid-response");
       }
       return hostedResult(prepared.hostedRunner, "invalid-response");
     }
     if (!selection.selectedLabel) {
-      if (input.policy === "self-hosted-only") {
+      if (fleetFirst) {
         throw new StrictRoutingError(
           "no-online-runner",
           formatNoOnlineRunnerMessage({
@@ -637,20 +733,16 @@ async function selectRunner(input, dependencies = {}) {
     return Object.freeze({
       runner: selection.selectedLabel,
       route: "self-hosted",
-      reason:
-        input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
+      reason: fleetFirst
+        ? fleetFirstReason(input.policy, input.billingMinutesState)
+        : "online",
       onlineRunnerCount: selection.onlineRunnerCount,
     });
   } catch (error) {
     if (error instanceof StrictRoutingError) {
       throw error;
     }
-    return errorResult(
-      error,
-      controller,
-      prepared.hostedRunner,
-      input.policy === "self-hosted-only",
-    );
+    return errorResult(error, controller, prepared.hostedRunner, fleetFirst);
   } finally {
     clearTimer(timeout);
   }
@@ -674,6 +766,7 @@ function inputsFromEnvironment(env) {
     eventName: env.EVENT_NAME,
     isForkPullRequest: env.IS_FORK_PULL_REQUEST === "true",
     admitsAncillaryEvents: env.ADMITS_ANCILLARY_EVENTS === "true",
+    billingMinutesState: env.BILLING_MINUTES_STATE || "",
   };
 }
 
@@ -726,8 +819,11 @@ module.exports = Object.freeze({
   InvalidResponseError,
   StrictRoutingError,
   announceNoOnlineRunner,
+  fleetFirstPolicy,
+  fleetFirstReason,
   formatNoOnlineRunnerMessage,
   inputsFromEnvironment,
+  normalizeBillingMinutesState,
   parseCandidateLabels,
   permitsLocalExecution,
   preflight,

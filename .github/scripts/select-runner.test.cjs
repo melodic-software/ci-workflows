@@ -1292,8 +1292,11 @@ test("token mint is statically guarded before the App action runs", () => {
   );
   // prefer-self-hosted always probes; self-hosted-only must also mint when
   // the capped review tier needs an online-capacity check (ci-workflows#386).
+  // prefer-hosted-while-free mints only when billing state is not free.
   assert.match(tokenStep, /inputs\.policy == 'prefer-self-hosted'/u);
   assert.match(tokenStep, /inputs\.policy == 'self-hosted-only'/u);
+  assert.match(tokenStep, /inputs\.policy == 'prefer-hosted-while-free'/u);
+  assert.match(tokenStep, /inputs\.billing-minutes-state != 'free'/u);
   for (const requiredGuard of [
     "(inputs.scope == 'organization' || inputs.scope == 'repository')",
     "github.event_name == 'push'",
@@ -1364,7 +1367,7 @@ test("strict selector scheduling is local while adaptive policies stay hosted", 
   const workflow = fs.readFileSync(workflowPath, "utf8");
   assert.match(
     workflow,
-    /runs-on: \$\{\{ inputs\.policy == 'self-hosted-only' && 'melodic-ubuntu-24\.04-x64' \|\| 'ubuntu-24\.04' \}\}/u,
+    /runs-on: \$\{\{ \(inputs\.policy == 'self-hosted-only' \|\| inputs\.policy == 'prefer-hosted-while-free'\) && 'melodic-ubuntu-24\.04-x64' \|\| 'ubuntu-24\.04' \}\}/u,
   );
   assert.doesNotMatch(
     workflow,
@@ -1395,7 +1398,7 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   const selectStep = workflow.slice(workflow.indexOf("- name: Select runner"));
   assert.match(
     workflow,
-    /runner: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.runner != '' && steps\.select\.outputs\.runner \|\| inputs\.policy == 'self-hosted-only' && 'ci-runner-selection-failed' \|\| 'ubuntu-24\.04' \}\}/u,
+    /runner: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.runner != '' && steps\.select\.outputs\.runner \|\| \(inputs\.policy == 'self-hosted-only' \|\| inputs\.policy == 'prefer-hosted-while-free'\) && 'ci-runner-selection-failed' \|\| 'ubuntu-24\.04' \}\}/u,
   );
   assert.doesNotMatch(
     workflow,
@@ -1403,11 +1406,11 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   );
   assert.match(
     workflow,
-    /route: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.route \|\| inputs\.policy == 'self-hosted-only' && 'error' \|\| 'hosted' \}\}/u,
+    /route: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.route \|\| \(inputs\.policy == 'self-hosted-only' \|\| inputs\.policy == 'prefer-hosted-while-free'\) && 'error' \|\| 'hosted' \}\}/u,
   );
   assert.match(
     workflow,
-    /reason: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.reason \|\| inputs\.policy == 'self-hosted-only' && 'selector-error' \|\| 'api-error' \}\}/u,
+    /reason: \$\{\{ steps\.select\.outcome == 'success' && steps\.select\.outputs\.reason \|\| \(inputs\.policy == 'self-hosted-only' \|\| inputs\.policy == 'prefer-hosted-while-free'\) && 'selector-error' \|\| 'api-error' \}\}/u,
   );
   assert.match(
     workflow,
@@ -1419,7 +1422,7 @@ test("workflow rejects partial outputs when github-script infrastructure fails",
   );
   assert.match(
     selectStep,
-    /id: select\n\s+continue-on-error: \$\{\{ inputs\.policy != 'self-hosted-only' \}\}\n\s+uses: actions\/github-script@/u,
+    /id: select\n\s+continue-on-error: \$\{\{ inputs\.policy != 'self-hosted-only' && inputs\.policy != 'prefer-hosted-while-free' \}\}\n\s+uses: actions\/github-script@/u,
   );
 });
 

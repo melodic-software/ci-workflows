@@ -358,7 +358,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   on the review tier's small capacity. The
   `prefer-self-hosted` and `hosted-only` selector paths run on the standard
   `ubuntu-24.04` hosted runner (free on public repos, quota-covered on private)
-  so their adaptive and explicit hosted semantics remain available. Every selector
+  so their adaptive and explicit hosted semantics remain available.
+  `prefer-hosted-while-free` (ci-workflows#252) keeps the selector on the fleet
+  while returning hosted for downstream jobs only when the cached billing probe
+  (`billing-minutes-state` / `CI_HOSTED_MINUTES_STATE`) reports `free`; any other
+  or missing state fails toward the fleet. Phase 0 verified the usage API at
+  HTTP 200 — see [prefer-hosted-while-free](docs/topics/prefer-hosted-while-free.md).
+  Every selector
   path has a two-minute timeout and returns one `runs-on` string. A downstream
   job has its own runner and timeout; the selector's platform limit does not
   carry into that job.
@@ -431,7 +437,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   Never use `secrets: inherit`; pass only the observer key. Stable output reasons
-  are `online`, `self-hosted-only`, `hosted-only`, `no-online-runner`,
+  are `online`, `self-hosted-only`, `hosted-only`, `hosted-while-free`,
+  `hosted-pool-exhausted`, `billing-unknown`, `no-online-runner`,
   `missing-config`, `missing-secret`, `auth-error`, `api-timeout`, `api-error`,
   `invalid-response`, and the strict infrastructure sentinel `selector-error`.
   The security eligibility guard also reports

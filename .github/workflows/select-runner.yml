@@ -7,7 +7,10 @@ on:
   workflow_call:
     inputs:
       policy:
-        description: 'Routing policy: self-hosted-only, prefer-self-hosted, or hosted-only.'
+        description: >-
+          Routing policy: self-hosted-only, prefer-self-hosted, hosted-only, or
+          prefer-hosted-while-free (private repos: hosted while CI_HOSTED_MINUTES_STATE
+          is free; fleet otherwise and on any billing-state error).
         type: string
         default: hosted-only
       self-hosted-label:
@@ -38,6 +41,14 @@ on:
         description: Total runner-inventory request budget (1-60 seconds).
         type: number
         default: 10
+      billing-minutes-state:
+        description: >-
+          Cached private-repo hosted-minute headroom from the billing probe
+          (org var CI_HOSTED_MINUTES_STATE): free, exhausted, or unknown.
+          Used only by prefer-hosted-while-free; anything other than free fails
+          toward the fleet. Phase 0 (2026-08-12) verified usage API HTTP 200.
+        type: string
+        default: ''
       admits-ancillary-events:
         description: >-
           Opt the caller's issue_comment, pull_request_review,
@@ -94,6 +105,10 @@ jobs:
     # Adaptive and hosted-only policies run the selector on the standard
     # ubuntu-24.04 hosted runner, which is free on public repos.
     #
+    # prefer-hosted-while-free (ci-workflows#252) keeps the selector itself on
+    # the fleet even when it returns a hosted label for downstream jobs — a
+    # hosted selector would share the hosted cap's failure domain.
+    #
     # CI-tier scale-from-zero (ci-workflows#246): under self-hosted-only the
     # selector stays on melodic-ubuntu-24.04-x64 and blind-queues so a drained
     # scale set can wake. Do not relocate this job to ubuntu-24.04 to invent
@@ -102,7 +117,7 @@ jobs:
     # emits an operator annotation when reason is no-online-runner; callers that
     # need that signal under a drained CI pool should use prefer-self-hosted
     # (Option B) rather than changing this runs-on expression.
-    runs-on: ${{ inputs.policy == 'self-hosted-only' && 'melodic-ubuntu-24.04-x64' || 'ubuntu-24.04' }}
+    runs-on: ${{ (inputs.policy == 'self-hosted-only' || inputs.policy == 'prefer-hosted-while-free') && 'melodic-ubuntu-24.04-x64' || 'ubuntu-24.04' }}
     timeout-minutes: 2
     env:
       HAS_OBSERVER_SECRET: ${{ secrets.observer-private-key != '' }}
@@ -110,16 +125,18 @@ jobs:
       # A failed step can retain outputs written before failure. Trust them only
       # when its outcome is success. Strict-mode failure emits an unroutable
       # sentinel and fails this job; fail-open modes retain the hosted fallback.
-      runner: ${{ steps.select.outcome == 'success' && steps.select.outputs.runner != '' && steps.select.outputs.runner || inputs.policy == 'self-hosted-only' && 'ci-runner-selection-failed' || 'ubuntu-24.04' }}
-      route: ${{ steps.select.outcome == 'success' && steps.select.outputs.route || inputs.policy == 'self-hosted-only' && 'error' || 'hosted' }}
-      reason: ${{ steps.select.outcome == 'success' && steps.select.outputs.reason || inputs.policy == 'self-hosted-only' && 'selector-error' || 'api-error' }}
+      runner: ${{ steps.select.outcome == 'success' && steps.select.outputs.runner != '' && steps.select.outputs.runner || (inputs.policy == 'self-hosted-only' || inputs.policy == 'prefer-hosted-while-free') && 'ci-runner-selection-failed' || 'ubuntu-24.04' }}
+      route: ${{ steps.select.outcome == 'success' && steps.select.outputs.route || (inputs.policy == 'self-hosted-only' || inputs.policy == 'prefer-hosted-while-free') && 'error' || 'hosted' }}
+      reason: ${{ steps.select.outcome == 'success' && steps.select.outputs.reason || (inputs.policy == 'self-hosted-only' || inputs.policy == 'prefer-hosted-while-free') && 'selector-error' || 'api-error' }}
       online-runner-count: ${{ steps.select.outcome == 'success' && steps.select.outputs.online-runner-count || '0' }}
     steps:
       - name: Mint read-only observer token
         id: observer-token
         if: >-
           (inputs.policy == 'prefer-self-hosted' ||
-          inputs.policy == 'self-hosted-only') &&
+          inputs.policy == 'self-hosted-only' ||
+          (inputs.policy == 'prefer-hosted-while-free' &&
+          inputs.billing-minutes-state != 'free')) &&
           (inputs.self-hosted-label != '' || inputs.self-hosted-labels-json != '') &&
           inputs.hosted-runner != '' &&
           (inputs.scope == 'organization' || inputs.scope == 'repository') &&
@@ -155,7 +172,7 @@ jobs:
 
       - name: Select runner
         id: select
-        continue-on-error: ${{ inputs.policy != 'self-hosted-only' }}
+        continue-on-error: ${{ inputs.policy != 'self-hosted-only' && inputs.policy != 'prefer-hosted-while-free' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           POLICY: ${{ inputs.policy }}
@@ -177,6 +194,7 @@ jobs:
             github.event.pull_request.head.repo.full_name != github.repository }}
           API_TIMEOUT_SECONDS: ${{ inputs.api-timeout-seconds }}
           ADMITS_ANCILLARY_EVENTS: ${{ inputs.admits-ancillary-events || inputs.admits-comment-events }}
+          BILLING_MINUTES_STATE: ${{ inputs.billing-minutes-state }}
         with:
           github-token: ${{ steps.observer-token.outputs.token || github.token }}
           script: |
@@ -313,10 +331,90 @@ jobs:
                 });
               }
 
+              function selfHostedResult(runner, reason) {
+                return Object.freeze({
+                  runner,
+                  route: "self-hosted",
+                  reason,
+                  onlineRunnerCount: 0,
+                });
+              }
+
               function exactNonEmptyString(value) {
                 return (
                   typeof value === "string" && value.length > 0 && value.trim() === value
                 );
+              }
+
+              // Max age for a cached `free` signal. The poll cadence is 2–6h; anything older
+              // is treated as unknown so a stuck `free` write cannot spend paid minutes.
+              const BILLING_FREE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+              // Cached prefer-hosted-while-free signal from the billing probe/poll
+              // (CI_HOSTED_MINUTES_STATE). Duplicated (not imported) because select-runner.cjs
+              // is inlined into the workflow bundle — keep case-folding + JSON handling in
+              // lockstep with billing-headroom.normalizeRoutingState. Untimestamped or stale
+              // `free` fails toward the fleet; exhausted/unknown compact forms remain safe.
+              function normalizeBillingMinutesState(value, now = Date.now()) {
+                if (typeof value !== "string") {
+                  return "unknown";
+                }
+                const trimmed = value.trim();
+                if (trimmed.startsWith("{")) {
+                  try {
+                    const parsed = JSON.parse(trimmed);
+                    const state =
+                      typeof parsed?.state === "string"
+                        ? parsed.state.trim().toLowerCase()
+                        : "";
+                    if (state !== "free" && state !== "exhausted" && state !== "unknown") {
+                      return "unknown";
+                    }
+                    if (state !== "free") {
+                      return state;
+                    }
+                    if (typeof parsed.probedAt !== "string" || !parsed.probedAt) {
+                      return "unknown";
+                    }
+                    const probedAtMs = Date.parse(parsed.probedAt);
+                    if (
+                      !Number.isFinite(probedAtMs) ||
+                      now - probedAtMs > BILLING_FREE_MAX_AGE_MS ||
+                      probedAtMs > now + 60_000
+                    ) {
+                      return "unknown";
+                    }
+                    const expectedMonth = (() => {
+                      const date = new Date(now);
+                      return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+                    })();
+                    if (parsed.month != null && String(parsed.month) !== expectedMonth) {
+                      return "unknown";
+                    }
+                    return "free";
+                  } catch {
+                    return "unknown";
+                  }
+                }
+                const compact = trimmed.toLowerCase();
+                // Compact `free` has no probedAt — reject so only timestamped JSON can host.
+                if (compact === "exhausted" || compact === "unknown") {
+                  return compact;
+                }
+                return "unknown";
+              }
+
+              function fleetFirstPolicy(policy) {
+                return policy === "self-hosted-only" || policy === "prefer-hosted-while-free";
+              }
+
+              function fleetFirstReason(policy, billingMinutesState) {
+                if (policy === "self-hosted-only") {
+                  return "self-hosted-only";
+                }
+                return normalizeBillingMinutesState(billingMinutesState) === "exhausted"
+                  ? "hosted-pool-exhausted"
+                  : "billing-unknown";
               }
 
               function normalizedLabel(value) {
@@ -435,7 +533,8 @@ jobs:
                   return { result: hostedResult(hostedRunner, "hosted-only") };
                 }
 
-                const selfHostedOnly = input.policy === "self-hosted-only";
+                const preferHostedWhileFree = input.policy === "prefer-hosted-while-free";
+                const fleetFirst = fleetFirstPolicy(input.policy);
 
                 // Public repositories do not save billed minutes. Only explicitly reviewed
                 // caller event classes may route locally, and fork code must never receive
@@ -448,25 +547,39 @@ jobs:
                   return { result: hostedResult(hostedRunner, "hosted-only") };
                 }
 
+                // prefer-hosted-while-free (ci-workflows#252): private repos consume included
+                // hosted minutes first while the cached billing probe reports free headroom;
+                // otherwise — and on any unreadable/missing billing state — fail toward the
+                // fleet. Phase 0 (2026-08-12) got HTTP 200 on the usage API with classic PAT
+                // admin:org, so this policy path is ON (not behind a default-off kill switch).
+                if (preferHostedWhileFree) {
+                  const billingState = normalizeBillingMinutesState(
+                    input.billingMinutesState,
+                  );
+                  if (billingState === "free") {
+                    return { result: hostedResult(hostedRunner, "hosted-while-free") };
+                  }
+                }
+
                 const validScope =
                   input.scope === "organization" || input.scope === "repository";
                 const validTimeout =
                   Number.isFinite(input.apiTimeoutSeconds) &&
                   input.apiTimeoutSeconds >= 1 &&
                   input.apiTimeoutSeconds <= 60;
-                if (!selfHostedOnly && input.policy !== "prefer-self-hosted") {
+                if (!fleetFirst && input.policy !== "prefer-self-hosted") {
                   return { result: hostedResult(hostedRunner, "missing-config") };
                 }
 
                 if (!exactNonEmptyString(input.hostedRunner)) {
-                  if (selfHostedOnly) {
+                  if (fleetFirst) {
                     throw new StrictRoutingError("missing-config");
                   }
                   return { result: hostedResult(hostedRunner, "missing-config") };
                 }
 
                 if (
-                  !selfHostedOnly &&
+                  !fleetFirst &&
                   (!validScope ||
                     !exactNonEmptyString(input.managedRunnerPrefix) ||
                     !exactNonEmptyString(input.observerClientID) ||
@@ -480,7 +593,7 @@ jobs:
 
                 const candidates = parseCandidateLabels(input);
                 if ("error" in candidates) {
-                  if (selfHostedOnly) {
+                  if (fleetFirst) {
                     throw new StrictRoutingError(candidates.error);
                   }
                   return { result: hostedResult(hostedRunner, candidates.error) };
@@ -491,12 +604,12 @@ jobs:
                     (label) => label.toLowerCase() === input.hostedRunner.toLowerCase(),
                   )
                 ) {
-                  if (selfHostedOnly) {
+                  if (fleetFirst) {
                     throw new StrictRoutingError("invalid-response");
                   }
                   return { result: hostedResult(hostedRunner, "invalid-response") };
                 }
-                if (selfHostedOnly) {
+                if (fleetFirst) {
                   if (
                     candidates.labels.length !== 1 ||
                     !SELF_HOSTED_ONLY_LABELS.has(normalizedLabel(candidates.labels[0]))
@@ -513,6 +626,8 @@ jobs:
                   // blind-queue: an offline review fleet hangs forever with no signal
                   // (ci-workflows#386). Probe inventory when credentials exist; otherwise
                   // fail closed rather than emit a label nothing will ever claim.
+                  // prefer-hosted-while-free uses the same fleet-first shape when billing
+                  // state is exhausted or unknown (fail toward the fleet).
                   if (reviewTier) {
                     if (!input.hasObserverSecret) {
                       throw new StrictRoutingError("missing-secret");
@@ -523,12 +638,10 @@ jobs:
                     return { hostedRunner, labels: candidates.labels };
                   }
                   return {
-                    result: Object.freeze({
-                      runner: label,
-                      route: "self-hosted",
-                      reason: "self-hosted-only",
-                      onlineRunnerCount: 0,
-                    }),
+                    result: selfHostedResult(
+                      label,
+                      fleetFirstReason(input.policy, input.billingMinutesState),
+                    ),
                   };
                 }
                 if (!input.hasObserverSecret) {
@@ -754,7 +867,7 @@ jobs:
                 };
               }
 
-              function errorResult(error, controller, hostedRunner, selfHostedOnly = false) {
+              function errorResult(error, controller, hostedRunner, fleetFirst = false) {
                 const status = Number(error?.status);
                 let reason = "api-error";
                 if (error instanceof InvalidResponseError) {
@@ -764,7 +877,7 @@ jobs:
                 } else if (status === 401 || status === 403) {
                   reason = "auth-error";
                 }
-                if (selfHostedOnly) {
+                if (fleetFirst) {
                   throw new StrictRoutingError(reason);
                 }
                 return hostedResult(hostedRunner, reason);
@@ -789,6 +902,7 @@ jobs:
                   () => controller.abort(),
                   input.apiTimeoutSeconds * 1000,
                 );
+                const fleetFirst = fleetFirstPolicy(input.policy);
 
                 try {
                   const runners = await listRunners(
@@ -803,13 +917,13 @@ jobs:
                     input.managedRunnerPrefix,
                   );
                   if (selection.labelNamespaceInvalid) {
-                    if (input.policy === "self-hosted-only") {
+                    if (fleetFirst) {
                       throw new StrictRoutingError("invalid-response");
                     }
                     return hostedResult(prepared.hostedRunner, "invalid-response");
                   }
                   if (!selection.selectedLabel) {
-                    if (input.policy === "self-hosted-only") {
+                    if (fleetFirst) {
                       throw new StrictRoutingError(
                         "no-online-runner",
                         formatNoOnlineRunnerMessage({
@@ -823,20 +937,16 @@ jobs:
                   return Object.freeze({
                     runner: selection.selectedLabel,
                     route: "self-hosted",
-                    reason:
-                      input.policy === "self-hosted-only" ? "self-hosted-only" : "online",
+                    reason: fleetFirst
+                      ? fleetFirstReason(input.policy, input.billingMinutesState)
+                      : "online",
                     onlineRunnerCount: selection.onlineRunnerCount,
                   });
                 } catch (error) {
                   if (error instanceof StrictRoutingError) {
                     throw error;
                   }
-                  return errorResult(
-                    error,
-                    controller,
-                    prepared.hostedRunner,
-                    input.policy === "self-hosted-only",
-                  );
+                  return errorResult(error, controller, prepared.hostedRunner, fleetFirst);
                 } finally {
                   clearTimer(timeout);
                 }
@@ -860,6 +970,7 @@ jobs:
                   eventName: env.EVENT_NAME,
                   isForkPullRequest: env.IS_FORK_PULL_REQUEST === "true",
                   admitsAncillaryEvents: env.ADMITS_ANCILLARY_EVENTS === "true",
+                  billingMinutesState: env.BILLING_MINUTES_STATE || "",
                 };
               }
 
@@ -912,8 +1023,11 @@ jobs:
                 InvalidResponseError,
                 StrictRoutingError,
                 announceNoOnlineRunner,
+                fleetFirstPolicy,
+                fleetFirstReason,
                 formatNoOnlineRunnerMessage,
                 inputsFromEnvironment,
+                normalizeBillingMinutesState,
                 parseCandidateLabels,
                 permitsLocalExecution,
                 preflight,
