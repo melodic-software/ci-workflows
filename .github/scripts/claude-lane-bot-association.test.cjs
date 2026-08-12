@@ -18,15 +18,16 @@ const AUTHOR_ASSOCIATION =
   /contains\(format\(',\{0\},', 'OWNER,MEMBER,COLLABORATOR'\), format\(',\{0\},', github\.event\.pull_request\.author_association\)\)/u;
 
 function reviewJobCondition(fileName, jobName) {
-  const workflow = fs.readFileSync(
-    path.join(workflowsDir, fileName),
-    "utf8",
-  );
+  const workflow = fs.readFileSync(path.join(workflowsDir, fileName), "utf8");
   const start = workflow.indexOf(`  ${jobName}:`);
   assert.notEqual(start, -1, `${fileName} must declare job ${jobName}`);
   const slice = workflow.slice(start);
   const end = slice.indexOf("      - name: Reject privileged triggers");
-  assert.notEqual(end, -1, `${fileName} ${jobName} job must reach the tripwire step`);
+  assert.notEqual(
+    end,
+    -1,
+    `${fileName} ${jobName} job must reach the tripwire step`,
+  );
   return slice.slice(0, end);
 }
 
