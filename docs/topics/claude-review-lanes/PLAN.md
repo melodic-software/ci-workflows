@@ -2112,6 +2112,14 @@ operator, asking whether the two-tier availability ruling in
 that the required check it manages binds nothing. That question is deliberately
 NOT resolved here, and no workflow was changed.
 
+**CIW#448 OPTION-2 RATIFIED (2026-08-12).** Frontier consensus: keep the
+two-tier availability machinery unchanged (armed-and-waiting); reword the
+unconditional POSTURE / docs lines in `.github/workflows/claude-security-review.yml`
+so they match the existing conditional "may be REQUIRED" framing. No workflow
+behavior, jobs, or tests changed; gate remains `enforcement: disabled` per
+`github-iac` (see the 2026-08-12 amendment above). Docs honesty only — do not
+re-arm the org ruleset from this repo, and do not simplify to single tier.
+
 **Phase 4 acceptance — what gates it, and what stopped gating it
 (2026-07-31).** Acceptance was blocked on the aggregator being unable to WRITE,
 for two reasons at once: repo secret `CLAUDE_LANE_INCIDENT_APP_PRIVATE_KEY`

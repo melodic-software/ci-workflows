@@ -38,15 +38,19 @@ name: claude-security-review
 #     an availability floor the operator can rely on is worth more than a red
 #     nobody can clear.
 #
-#   WHAT THE SECOND TIER COSTS, stated plainly: the required check reports
-#   green with NO execution evidence, so merges can and will land unreviewed
-#   during an outage. The alarm does not disappear — it moves off the check
-#   conclusion onto three surfaces that never depended on it: the outcome
-#   composite's machine-readable `class=<token>` ::error annotation, the
-#   failure marker comment on the PR (class + remediation), and the incident
-#   aggregator, which reads lane annotations REGARDLESS of check-run conclusion
-#   and escalates the auth class to the attended queue. Auditing whether a
-#   given head was actually reviewed means reading those, never the green.
+#   WHAT THE SECOND TIER COSTS, when a consumer's ruleset makes this check
+#   REQUIRED: the check reports green with NO execution evidence, so merges can
+#   and will land unreviewed during an outage. That trade applies only when the
+#   gate is armed — org ruleset `security-review-gate` is `enforcement:
+#   disabled` (ci-workflows#448; melodic-software/github-iac#282), so today
+#   nothing gates on `security-review / security-review`. The alarm does not
+#   disappear when the cost applies — it moves off the check conclusion onto
+#   three surfaces that never depended on it: the outcome composite's
+#   machine-readable `class=<token>` ::error annotation, the failure marker
+#   comment on the PR (class + remediation), and the incident aggregator, which
+#   reads lane annotations REGARDLESS of check-run conclusion and escalates the
+#   auth class to the attended queue. Auditing whether a given head was actually
+#   reviewed means reading those, never the green.
 #
 #   WHERE THE FLOOR ENDS: it covers what the lane can CLASSIFY, which means the
 #   ruling step has to be reached. A run that dies before it still reddens —
@@ -70,16 +74,19 @@ name: claude-security-review
 #   melodic-software/ci-workflows#272, blocked on claude-code-action supporting
 #   `merge_group` (it throws `Unsupported event type` at the pinned SHA), with
 #   the revisit trigger recorded there — any org repo adopting a merge queue on
-#   a branch this check protects. Latent today: no org repo runs one, and the
-#   only consumer requiring this check triggers on `pull_request` only. It
-#   matters when it fires, because a merge queue IS the merge gate.
+#   a branch this check protects. Latent today: no org repo runs one, and no
+#   consumer's ruleset currently requires this check — `claude-code-plugins`,
+#   wired via `requires-security-review == "true"`, is the sole consumer and
+#   triggers on `pull_request` only. It matters when it fires, because a merge
+#   queue IS the merge gate.
 #
 #   NARROWING AMENDMENT (#266, adjudicated; amends the #228 non-goal): infra
 #   pass-through is ratified for ADVISORY lanes — claude-review.yml still passes
 #   through, because a red check there gates nothing and an infra failure is not
 #   a code-quality signal. That rationale reasons from merge-irrelevance and so
-#   does not transfer here, where the check is the sole required security
-#   context. Required execution-evidence contexts fail closed. Measured before
+#   does not transfer here, where a consumer's ruleset MAY make this check the
+#   required security context — when armed, required execution-evidence contexts
+#   fail closed on caller drift. Measured before
 #   the change: 55 of 129 in-scope merges (42.6%) carried a green required check
 #   with no security pass at the merge head. That measurement still stands and
 #   still motivates the caller-drift tier; what the availability amendment
@@ -87,8 +94,9 @@ name: claude-security-review
 #
 #   Availability on the external tier is bought by that loud-open, not by
 #   retrying and no longer by break-glass alone. Break-glass on the consumer's
-#   ruleset remains the override for the caller-drift tier and for any other
-#   red an operator must clear by hand — explicit, logged, attributable. The
+#   ruleset (when the gate is armed) remains the override for the caller-drift
+#   tier and for any other red an operator must clear by hand — explicit,
+#   logged, attributable. The
 #   bounded in-job retry below is a best-effort second chance at the sporadic
 #   class, NOT an availability mechanism, and this line previously
 #   claimed otherwise. It has never been observed to absorb anything: across
@@ -156,8 +164,9 @@ name: claude-security-review
 #     # cancel-in-progress: false is DELIBERATE, not an omission: a cancelled
 #     # run of a REQUIRED check is not a skip and does not read success, so
 #     # cancelling an in-flight review can wedge the merge behind a void check.
-#     # It is the live value on the one consumer whose ruleset requires this
-#     # check (claude-code-plugins). And NO job-level queue group initially: a
+#     # It is the live value on claude-code-plugins — the consumer wired to
+#     # require this check via `requires-security-review` (gate currently
+#     # disabled; ci-workflows#448). And NO job-level queue group initially: a
 #     # queue is added only if overflow smoke-testing proves a cancelled
 #     # overflow arrival cannot wedge the required check (a full queue CANCELS
 #     # new arrivals). These are per-LANE values, deliberately different from
