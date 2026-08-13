@@ -126,6 +126,10 @@ test("documented selector composition preserves the one required check context",
   );
   assert.match(
     readme,
+    /Thin callers that omit `needs` \/ `prerequisite-result` still grant `actions: read`/u,
+  );
+  assert.match(
+    readme,
     /uses the caller's resolved\s+`runner` value unchanged for `success`, `failure`, `cancelled`, `skipped`, and\s+empty prerequisite results/u,
   );
   assert.match(
