@@ -64,11 +64,14 @@ test("Windows Pester remains on its fixed hosted runner", () => {
 test("prerequisite-gated reusables preserve caller routing and fail closed", () => {
   const runnerFor = (_result, selectedRunner = "ubuntu-24.04") =>
     selectedRunner;
-  // `cancelled` joins `success` in NOT being rejected: it is the routine
-  // per-PR concurrency-supersede signal and proceeds to real validation
-  // (#446). Every other non-success value stays fail-closed, because those
-  // mean selector breakage or a miswired caller and must stay loud.
+  // `cancelled` joins `success` in NOT being rejected immediately, but only
+  // proceeds after the Actions Jobs API confirms true cancel — timed_out and
+  // lookup failure fail closed (timed-out vs cancelled discrimination). Every other non-success value stays
+  // fail-closed, because those mean selector breakage or a miswired caller
+  // and must stay loud.
   const mustReject = (result) => result !== "success" && result !== "cancelled";
+  const dispatchCancelled = (resolved) =>
+    resolved === "proceed" ? "validate" : "fail";
 
   for (const contract of prerequisiteGateContracts) {
     const source = fs.readFileSync(
@@ -109,6 +112,14 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
       /if: >-\n\s+inputs\.prerequisite-result != 'success' &&\n\s+inputs\.prerequisite-result != 'cancelled'/u,
     );
     assert.match(
+      requiredJob,
+      /- name: Resolve cancelled prerequisite[\s\S]*?uses: actions\/github-script@[0-9a-f]{40}/u,
+    );
+    assert.match(
+      source,
+      /permissions:\n\s+pull-requests: read\n\s+actions: read/u,
+    );
+    assert.match(
       rejectStep,
       /PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}/u,
     );
@@ -137,6 +148,16 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
       mustReject("cancelled"),
       false,
       `${contract.fileName} still rejects a cancelled prerequisite (#446)`,
+    );
+    assert.equal(
+      dispatchCancelled("proceed"),
+      "validate",
+      `${contract.fileName} should validate after confirmed cancel (#458)`,
+    );
+    assert.equal(
+      dispatchCancelled("fail"),
+      "fail",
+      `${contract.fileName} should fail closed on timed_out cancel (#458)`,
     );
   }
 });

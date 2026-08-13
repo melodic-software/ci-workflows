@@ -36,11 +36,14 @@ on:
           Result of an optional prerequisite job. Callers with `needs` must pass
           its exact result and use `if: always()`. `failure`, `skipped`, and any
           unrecognized value fail this required check before body validation
-          (fail-closed: selector breakage stays loud). `cancelled` instead
-          proceeds to validation — it is the routine per-PR
-          concurrency-supersede signal and this reporter is already running on
-          the caller-resolved runner, so the check reports the real gate answer
-          instead of a synthetic failure (#446).
+          (fail-closed: selector breakage stays loud). `cancelled` proceeds to
+          validation only after the Actions Jobs API confirms the prerequisite
+          truly concluded `cancelled`, not `timed_out` — GitHub collapses
+          timeouts into `needs.*.result == cancelled` (#458). True cancel is
+          the routine per-PR concurrency-supersede signal and this reporter is
+          already running on the caller-resolved runner, so the check reports the
+          real gate answer instead of a synthetic failure (#446). Lookup
+          failure or missing `actions: read` fails closed.
         type: string
         default: success
       exempt-authors:
@@ -57,6 +60,7 @@ on:
 
 permissions:
   pull-requests: read
+  actions: read
 
 jobs:
   # Job id, not the file-level `name:` above, is what forms the check context
@@ -91,6 +95,103 @@ jobs:
           echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
           exit 1
 
+      - name: Resolve cancelled prerequisite
+        # GitHub reports timed-out jobs as `needs.*.result == cancelled`. The
+        # Actions Jobs API exposes the distinct `conclusion: timed_out`, so a
+        # delivered cancellation must be resolved before validation proceeds
+        # (#458). Implemented inline with actions/github-script — a local
+        # `./.github/actions/...` path would resolve against the CALLER's
+        # workspace (empty for reusable workflow_call jobs), not this repo.
+        # Selector-dependent callers must grant `actions: read` on this job;
+        # lookup failure fails closed. Algorithm mirrored by
+        # `.github/scripts/resolve-cancelled-prerequisite.cjs` (unit-tested).
+        if: ${{ inputs.prerequisite-result == 'cancelled' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const SELECTOR_JOB_NAME_PATTERN = /select[\s_-]?runner/i;
+            function isSelectorLikeJobName(name) {
+              return typeof name === "string" && SELECTOR_JOB_NAME_PATTERN.test(name);
+            }
+            function resolveCancelledPrerequisite(jobs) {
+              if (!Array.isArray(jobs)) {
+                return {
+                  outcome: "fail",
+                  reason: "lookup-failed",
+                  detail: "workflow jobs response is not an array",
+                };
+              }
+              const terminalJobs = jobs.filter(
+                (job) =>
+                  job &&
+                  typeof job === "object" &&
+                  (job.status === "completed" || typeof job.conclusion === "string"),
+              );
+              const selectorCandidates = terminalJobs.filter(
+                (job) =>
+                  isSelectorLikeJobName(job.name ?? "") &&
+                  (job.conclusion === "timed_out" || job.conclusion === "cancelled"),
+              );
+              if (selectorCandidates.length > 0) {
+                if (selectorCandidates.some((job) => job.conclusion === "timed_out")) {
+                  return {
+                    outcome: "fail",
+                    reason: "timed_out",
+                    detail: "selector-like prerequisite job concluded timed_out",
+                  };
+                }
+                return {
+                  outcome: "proceed",
+                  reason: "cancelled",
+                  detail: "selector-like prerequisite job concluded cancelled",
+                };
+              }
+              if (terminalJobs.some((job) => job.conclusion === "timed_out")) {
+                return {
+                  outcome: "fail",
+                  reason: "timed_out",
+                  detail:
+                    "no selector-like job matched; run contains a timed_out job (fail-closed heuristic)",
+                };
+              }
+              return {
+                outcome: "proceed",
+                reason: "cancelled-ambiguous",
+                detail:
+                  "no selector-like job matched and no timed_out jobs; treating as true cancel",
+              };
+            }
+
+            let jobs;
+            try {
+              jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+                per_page: 100,
+              });
+            } catch (error) {
+              core.setFailed(
+                "Could not resolve cancelled prerequisite via Actions API " +
+                  `(actions: read required on the gate job): ${error.message}`,
+              );
+              return;
+            }
+
+            const resolution = resolveCancelledPrerequisite(jobs);
+            if (resolution.outcome === "fail") {
+              core.setFailed(
+                "Prerequisite was cancelled in needs context but resolved to " +
+                  `${resolution.reason}: ${resolution.detail}`,
+              );
+              return;
+            }
+
+            core.info(
+              "Cancelled prerequisite resolved to true cancel " +
+                `(${resolution.reason}): ${resolution.detail}`,
+            );
+
       - name: Note cancelled prerequisite
         # A cancelled prerequisite is normal supersede behavior, not a fault:
         # the caller's per-PR `concurrency.cancel-in-progress` cancels the
@@ -117,7 +218,7 @@ jobs:
         # `::error` above, for whoever debugs the next incident.
         if: ${{ inputs.prerequisite-result == 'cancelled' }}
         run: |
-          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede, a manual run cancellation, or the prerequisite job itself being cancelled/timing out (GitHub reports timeouts as cancelled). Proceeding with body validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
+          echo "::notice::Prerequisite was cancelled in needs context and resolved to true cancel via the Actions Jobs API — routine concurrency supersede or a manual run cancellation. A timed-out prerequisite would have failed closed above (#458). Proceeding with body validation on the caller-resolved runner; this check reports the real validation result, not a synthetic prerequisite failure."
 
       - name: Load current PR body
         # Live-refetch matches do-not-merge-gate's label refetch and

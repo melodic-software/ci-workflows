@@ -466,8 +466,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   [recommends `!cancelled()` instead of `always()`][workflow-troubleshooting]
   for jobs that should stop with a cancelled workflow; this contract
   deliberately trades that for guaranteed reporting on every outcome —
-  fail-closed on `failure`/`skipped`, real validation on `cancelled` (see
-  below and #446). The reusable gate uses
+  fail-closed on `failure`/`skipped`, real validation on confirmed `cancelled`
+  (see below, #446, and #458). The reusable gate uses
   its `runner` input for every prerequisite outcome, so the caller also owns the
   recovery route; the cost is bounded to one caller-selected reporter run on
   cancellation. Use the semantic-title gate's fail-closed-on-failure/skipped,
@@ -480,24 +480,38 @@ GitHub continues the normal weekly patching of each hosted image generation.
     if: ${{ always() }}
     permissions:
       pull-requests: read
+      actions: read
     uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
     with:
       runner: ${{ needs.select-runner.outputs.runner || 'ubuntu-24.04' }}
       prerequisite-result: ${{ needs.select-runner.result }}
   ```
 
+  Selector-dependent callers **must** grant `actions: read` on the gate job.
+  Thin callers that omit `needs` / `prerequisite-result` still grant `actions: read` because the reusable's `permissions:` block requests it for the cancelled-prerequisite resolver; GitHub rejects the reusable at startup if the caller grants a stricter set.
+  Reusable workflows can only use permissions the caller grants; when
+  `prerequisite-result` is `cancelled`, the gate lists this run's jobs via the
+  Actions API to distinguish a true cancel (routine concurrency supersede) from
+  a timed-out selector — GitHub collapses job timeouts into
+  `needs.*.result == cancelled`, but the Jobs API exposes distinct
+  `conclusion: timed_out` (#458). Without `actions: read`, or when the lookup
+  fails, the gate fails closed. The heuristic prefers jobs whose name contains
+  `Select runner` / `select-runner`; if none match, any `timed_out` job in the
+  run is treated as fail-closed.
+
   When the caller workflow is active, the reusable uses the caller's resolved
   `runner` value unchanged for `success`, `failure`, `cancelled`, `skipped`, and
   empty prerequisite results. `failure`, `skipped`, and any unrecognized result
   then fail before validation — selector breakage stays loud and is never
-  masked behind a green check. A `cancelled` result instead proceeds to real
-  validation (#446): it is the routine signal that the caller's per-PR
-  `concurrency.cancel-in-progress` superseded the run (or that someone with
-  `actions: write` cancelled it manually), the reporter is by then already
-  running on the caller-resolved runner, and the gates read live state where
-  the mechanism allows (semantic-pr's pinned action re-fetches the PR title;
-  do-not-merge-gate re-fetches current labels; pr-issue-linkage re-fetches the
-  current PR body), so the check reports the real gate answer —
+  masked behind a green check. A `cancelled` result proceeds to real validation
+  only after the Actions Jobs API confirms the prerequisite truly concluded
+  `cancelled`, not `timed_out` (#458); true cancel is the routine signal that
+  the caller's per-PR `concurrency.cancel-in-progress` superseded the run (or
+  that someone with `actions: write` cancelled it manually), the reporter is by
+  then already running on the caller-resolved runner, and the gates read live
+  state where the mechanism allows (semantic-pr's pinned action re-fetches the
+  PR title; do-not-merge-gate re-fetches current labels; pr-issue-linkage
+  re-fetches the current PR body), so the check reports the real gate answer —
   red only when the gate is actually violated. This supersedes the earlier
   fail-closed-on-cancelled contract, which reasoned that a cancelled result
   alone does not prove a successor run will cover the same required check and
@@ -507,8 +521,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   failed operationally on 2026-08-12 (medley#1769, dotfiles#453): routine
   supersedes left required checks RED fleet-wide with nothing wrong, and each
   one needed a manual re-run to clear. A superseded run's job log carries a
-  `::notice` marking the cancelled prerequisite, so a real prerequisite
-  `failure` (hard `::error`, exit 1) stays distinguishable from a supersede.
+  `::notice` marking the cancelled prerequisite after timeout discrimination,
+  so a real prerequisite `failure` (hard `::error`, exit 1) or a timed-out
+  selector (fail-closed after API lookup) stays distinguishable from a supersede.
 
   The public fallback shown above and the reusable's omitted-input default both
   preserve `ubuntu-24.04`. A private self-hosted-only caller cannot reuse the
@@ -853,6 +868,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
+    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -860,6 +876,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pr-title:
       permissions:
         pull-requests: read
+        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
@@ -899,6 +916,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
+    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -906,6 +924,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pr-issue-linkage:
       permissions:
         pull-requests: read
+        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
   ```
 
@@ -938,6 +957,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
+    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -945,6 +965,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     do-not-merge:
       permissions:
         pull-requests: read
+        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
   ```
 
