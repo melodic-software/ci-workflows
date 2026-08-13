@@ -99,10 +99,98 @@ jobs:
         # GitHub reports timed-out jobs as `needs.*.result == cancelled`. The
         # Actions Jobs API exposes the distinct `conclusion: timed_out`, so a
         # delivered cancellation must be resolved before validation proceeds
-        # (#458). Selector-dependent callers must grant `actions: read` on this
-        # job; lookup failure fails closed.
+        # (#458). Implemented inline with actions/github-script — a local
+        # `./.github/actions/...` path would resolve against the CALLER's
+        # workspace (empty for reusable workflow_call jobs), not this repo.
+        # Selector-dependent callers must grant `actions: read` on this job;
+        # lookup failure fails closed. Algorithm mirrored by
+        # `.github/scripts/resolve-cancelled-prerequisite.cjs` (unit-tested).
         if: ${{ inputs.prerequisite-result == 'cancelled' }}
-        uses: ./.github/actions/resolve-cancelled-prerequisite
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const SELECTOR_JOB_NAME_PATTERN = /select[\s_-]?runner|select runner/i;
+            function isSelectorLikeJobName(name) {
+              return typeof name === "string" && SELECTOR_JOB_NAME_PATTERN.test(name);
+            }
+            function resolveCancelledPrerequisite(jobs) {
+              if (!Array.isArray(jobs)) {
+                return {
+                  outcome: "fail",
+                  reason: "lookup-failed",
+                  detail: "workflow jobs response is not an array",
+                };
+              }
+              const terminalJobs = jobs.filter(
+                (job) =>
+                  job &&
+                  typeof job === "object" &&
+                  (job.status === "completed" || typeof job.conclusion === "string"),
+              );
+              const selectorCandidates = terminalJobs.filter(
+                (job) =>
+                  isSelectorLikeJobName(job.name ?? "") &&
+                  (job.conclusion === "timed_out" || job.conclusion === "cancelled"),
+              );
+              if (selectorCandidates.length > 0) {
+                if (selectorCandidates.some((job) => job.conclusion === "timed_out")) {
+                  return {
+                    outcome: "fail",
+                    reason: "timed_out",
+                    detail: "selector-like prerequisite job concluded timed_out",
+                  };
+                }
+                return {
+                  outcome: "proceed",
+                  reason: "cancelled",
+                  detail: "selector-like prerequisite job concluded cancelled",
+                };
+              }
+              if (terminalJobs.some((job) => job.conclusion === "timed_out")) {
+                return {
+                  outcome: "fail",
+                  reason: "timed_out",
+                  detail:
+                    "no selector-like job matched; run contains a timed_out job (fail-closed heuristic)",
+                };
+              }
+              return {
+                outcome: "proceed",
+                reason: "cancelled-ambiguous",
+                detail:
+                  "no selector-like job matched and no timed_out jobs; treating as true cancel",
+              };
+            }
+
+            let jobs;
+            try {
+              jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+                per_page: 100,
+              });
+            } catch (error) {
+              core.setFailed(
+                "Could not resolve cancelled prerequisite via Actions API " +
+                  `(actions: read required on the gate job): ${error.message}`,
+              );
+              return;
+            }
+
+            const resolution = resolveCancelledPrerequisite(jobs);
+            if (resolution.outcome === "fail") {
+              core.setFailed(
+                "Prerequisite was cancelled in needs context but resolved to " +
+                  `${resolution.reason}: ${resolution.detail}`,
+              );
+              return;
+            }
+
+            core.info(
+              "Cancelled prerequisite resolved to true cancel " +
+                `(${resolution.reason}): ${resolution.detail}`,
+            );
 
       - name: Note cancelled prerequisite
         # A cancelled prerequisite is normal supersede behavior, not a fault:

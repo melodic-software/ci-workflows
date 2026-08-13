@@ -113,7 +113,7 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
     );
     assert.match(
       requiredJob,
-      /- name: Resolve cancelled prerequisite[\s\S]*?uses: \.\/\.github\/actions\/resolve-cancelled-prerequisite/u,
+      /- name: Resolve cancelled prerequisite[\s\S]*?uses: actions\/github-script@[0-9a-f]{40}/u,
     );
     assert.match(
       source,

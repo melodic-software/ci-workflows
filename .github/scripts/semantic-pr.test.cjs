@@ -71,7 +71,9 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   );
 
   const rejectIndex = requiredJob.indexOf("- name: Reject failed prerequisite");
-  const resolveIndex = requiredJob.indexOf("- name: Resolve cancelled prerequisite");
+  const resolveIndex = requiredJob.indexOf(
+    "- name: Resolve cancelled prerequisite",
+  );
   const noteIndex = requiredJob.indexOf("- name: Note cancelled prerequisite");
   const validationIndex = requiredJob.indexOf(
     "- name: Validate PR title against Conventional Commits",
