@@ -82,11 +82,11 @@ test("the caller can read the lane's verdict without reading its log", () => {
 
 test("each declared output is wired to the job that computes it", () => {
   const wiring = Object.fromEntries(
-    [...callOutputs.matchAll(/^ {6}([a-z-]+):$[\s\S]*?^ {8}value: (.+)$/gmu)].map(
-      (match) => [match[1], match[2].trim()],
-    ),
+    [
+      ...callOutputs.matchAll(/^ {6}([a-z-]+):$[\s\S]*?^ {8}value: (.+)$/gmu),
+    ].map((match) => [match[1], match[2].trim()]),
   );
-  assert.equal(wiring.relevant, "${{ jobs.changes.outputs.relevant }}");
+  assert.equal(wiring.relevant, `\${{ jobs.changes.outputs.relevant }}`);
   for (const name of ["review-ran", "review-failed", "failure-class"]) {
     assert.equal(
       wiring[name],
@@ -118,7 +118,10 @@ test("the security-review job forwards the composite's verdict verbatim", () => 
 });
 
 test("the forwarded names are the composite's own, so a rename cannot silently empty them", () => {
-  const compositeOutputs = declaredKeys(blockBody(`\n${composite}`, 0, "outputs"), 2);
+  const compositeOutputs = declaredKeys(
+    blockBody(`\n${composite}`, 0, "outputs"),
+    2,
+  );
   for (const name of ["review-ran", "review-failed", "failure-class"]) {
     assert.ok(
       compositeOutputs.includes(name),
