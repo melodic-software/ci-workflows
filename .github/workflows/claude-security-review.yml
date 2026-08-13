@@ -445,6 +445,51 @@ on:
           and review steps run. Prefer this over privileged triggers.
         type: string
         default: ""
+    # DECLARED EVIDENCE SURFACE. A consumer that must decide whether a review
+    # actually happened reads these; it must not scrape this lane's job log.
+    # Log text is not a contract — the `Report review outcome` step is an
+    # inline github-script whose SOURCE is echoed into the same log, so a
+    # consumer grepping for a phrase matches the source that mentions it and
+    # reddens exactly the pull requests it exists to approve
+    # (claude-code-plugins#2517). These outputs come from the composite that
+    # owns the classification, so they say what happened rather than what the
+    # log happened to print.
+    #
+    # EVERY OUTPUT IS EMPTY WHEN `security-review` DOES NOT RUN, and a
+    # consumer must treat empty as "no verdict", never as a pass. The job is
+    # skipped on the four legitimate no-verdict paths — out of scope
+    # (`relevant` is 'false'), a fork PR, a skip-listed actor, and either
+    # kill-switch — and its steps are skipped on a superseded head. `relevant`
+    # discriminates the first of those; the rest are the consumer's own
+    # preconditions, which it already knows without asking this lane.
+    outputs:
+      relevant:
+        description: >-
+          'true' when this PR touches a security-sensitive surface per the
+          `paths` / `paths-file` inputs, so `security-review` was expected to
+          run; 'false' when it matched none and the job skipped by design. Set
+          on every non-cancelled run, including ones where `security-review`
+          itself never ran.
+        value: ${{ jobs.changes.outputs.relevant }}
+      review-ran:
+        description: >-
+          'true' only when the action succeeded WITH execution evidence — the
+          one shape in which a review actually happened. 'false' covers both a
+          genuine failure and a workflow-validation skip; use `review-failed`
+          to tell those apart. Empty when the job did not run (see above).
+        value: ${{ jobs.security-review.outputs.review-ran }}
+      review-failed:
+        description: >-
+          'true' on a genuine infrastructure failure, else 'false'. A
+          validation skip is NOT a failure and reports 'false' here with
+          'false' on `review-ran`. Empty when the job did not run.
+        value: ${{ jobs.security-review.outputs.review-failed }}
+      failure-class:
+        description: >-
+          auth | rate-limit | overloaded | other on a genuine failure;
+          skipped-validation when the action skipped itself; empty on a
+          genuine success and when the job did not run.
+        value: ${{ jobs.security-review.outputs.failure-class }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
@@ -884,6 +929,17 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    # Lifted straight from the composite that owns the classification, and
+    # forwarded to the caller by the `workflow_call.outputs` block above — see
+    # DECLARED EVIDENCE SURFACE there for what each value means and for why
+    # every one of them is empty when this job does not run. `review-detail`
+    # is deliberately NOT surfaced: it is a free-text projection of the SDK
+    # result shaped for a human reading a marker comment, and a consumer that
+    # branched on it would be back to parsing prose.
+    outputs:
+      review-ran: ${{ steps.review-outcome.outputs.review-ran }}
+      review-failed: ${{ steps.review-outcome.outputs.review-failed }}
+      failure-class: ${{ steps.review-outcome.outputs.failure-class }}
     concurrency:
       # Job-level (not workflow-level): a workflow-level group would cancel
       # before the `if` above evaluates, so a skipped actor could cancel an
