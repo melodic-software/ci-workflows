@@ -19,7 +19,7 @@ test("semantic PR documents the validator-required fail-closed caller shape", ()
   assert.ok(prerequisiteInput, "prerequisite-result input is missing");
   assert.match(
     prerequisiteInput[1],
-    /Callers with `needs` must pass\s+its exact result and use `if: always\(\)`\. `failure`, `skipped`, and any\s+unrecognized value fail this required check before title validation\s+\(fail-closed: selector breakage stays loud\)\. `cancelled` instead\s+proceeds to validation/u,
+    /Callers with `needs` must pass\s+its exact result and use `if: always\(\)`\. `failure`, `skipped`, and any\s+unrecognized value fail this required check before title validation\s+\(fail-closed: selector breakage stays loud\)\. `cancelled` proceeds to\s+validation only after the Actions Jobs API confirms the prerequisite\s+truly concluded `cancelled`, not `timed_out`/u,
   );
   // The caller contract is still `always()`, never `!cancelled()`: the required
   // context must MATERIALIZE on every outcome, because a skipped required job
@@ -56,6 +56,11 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   // the reject step, so the note step MUST be present — the inverse of the
   // assertion this replaced.
   assert.match(requiredJob, /- name: Note cancelled prerequisite/u);
+  assert.match(requiredJob, /- name: Resolve cancelled prerequisite/u);
+  assert.match(
+    workflow,
+    /permissions:\n\s+pull-requests: read\n\s+actions: read/u,
+  );
   assert.match(
     requiredJob,
     /- name: Reject failed prerequisite\n[\s\S]*?if: >-\n\s+inputs\.prerequisite-result != 'success' &&\n\s+inputs\.prerequisite-result != 'cancelled'[\s\S]*?PREREQUISITE_RESULT: \$\{\{ inputs\.prerequisite-result \}\}[\s\S]*?exit 1/u,
@@ -66,12 +71,16 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   );
 
   const rejectIndex = requiredJob.indexOf("- name: Reject failed prerequisite");
+  const resolveIndex = requiredJob.indexOf("- name: Resolve cancelled prerequisite");
+  const noteIndex = requiredJob.indexOf("- name: Note cancelled prerequisite");
   const validationIndex = requiredJob.indexOf(
     "- name: Validate PR title against Conventional Commits",
   );
   assert.ok(
-    rejectIndex < validationIndex,
-    "prerequisite rejection must precede title validation",
+    rejectIndex < resolveIndex &&
+      resolveIndex < noteIndex &&
+      noteIndex < validationIndex,
+    "prerequisite resolution must precede note and title validation",
   );
 
   const runnerFor = (_result, selectedRunner = "ubuntu-24.04") =>
@@ -84,20 +93,17 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   }
   assert.equal(runnerFor("failure"), "ubuntu-24.04");
 
-  // A delivered cancellation is still not proof of a successor run — which is
-  // exactly why it must not pass VACUOUSLY. It is dispatched to real
-  // validation instead: strictly stronger than the fail-closed answer it
-  // replaces, because the check still cannot go green without the title
-  // actually satisfying the contract, and strictly better than a synthetic
-  // failure on what is routine per-PR concurrency supersede. Everything else
-  // non-success stays fail-closed: those mean selector breakage or a
-  // miswired caller, which must stay loud.
-  const dispatch = (result) => {
-    if (result === "success" || result === "cancelled") return "validate";
+  // A delivered cancellation proceeds to validation only after the Actions Jobs
+  // API confirms true cancel; timed_out and lookup failure fail closed (#458).
+  const dispatch = (result, resolved = "proceed") => {
+    if (result === "success") return "validate";
+    if (result === "cancelled" && resolved === "proceed") return "validate";
+    if (result === "cancelled" && resolved === "fail") return "fail";
     return "fail";
   };
   assert.equal(dispatch("success"), "validate");
-  assert.equal(dispatch("cancelled"), "validate");
+  assert.equal(dispatch("cancelled", "proceed"), "validate");
+  assert.equal(dispatch("cancelled", "fail"), "fail");
   assert.equal(dispatch("failure"), "fail");
   assert.equal(dispatch("skipped"), "fail");
   assert.equal(dispatch(""), "fail");
@@ -106,7 +112,15 @@ test("semantic PR preserves caller routing and fails closed after every delivere
 test("documented selector composition preserves the one required check context", () => {
   assert.match(
     readme,
-    /pr-title:\n\s+needs: select-runner\n\s+if: \$\{\{ always\(\) \}\}[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/semantic-pr\.yml@<sha>[\s\S]*?runner: \$\{\{ needs\.select-runner\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}\n\s+prerequisite-result: \$\{\{ needs\.select-runner\.result \}\}/u,
+    /pr-title:\n\s+needs: select-runner\n\s+if: \$\{\{ always\(\) \}\}[\s\S]*?permissions:\n\s+pull-requests: read\n\s+actions: read[\s\S]*?uses: melodic-software\/ci-workflows\/\.github\/workflows\/semantic-pr\.yml@<sha>[\s\S]*?runner: \$\{\{ needs\.select-runner\.outputs\.runner \|\| 'ubuntu-24\.04' \}\}\n\s+prerequisite-result: \$\{\{ needs\.select-runner\.result \}\}/u,
+  );
+  assert.match(
+    readme,
+    /fail-closed on `failure`\/`skipped`, real validation on confirmed `cancelled`/u,
+  );
+  assert.match(
+    readme,
+    /Selector-dependent callers \*\*must\*\* grant `actions: read`/u,
   );
   assert.match(
     readme,
@@ -118,6 +132,6 @@ test("documented selector composition preserves the one required check context",
   );
   assert.match(
     readme,
-    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?deliberately trades that for guaranteed reporting on every outcome —\s+fail-closed on `failure`\/`skipped`, real validation on `cancelled`/u,
+    /recommends `!cancelled\(\)` instead of `always\(\)`[\s\S]*?deliberately trades that for guaranteed reporting on every outcome —\s+fail-closed on `failure`\/`skipped`, real validation on confirmed `cancelled`/u,
   );
 });

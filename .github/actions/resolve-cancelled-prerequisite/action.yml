@@ -1,0 +1,52 @@
+name: resolve-cancelled-prerequisite
+description: >-
+  When a prerequisite gate receives `prerequisite-result: cancelled`, look up
+  the prerequisite job's true conclusion from this workflow run's Actions Jobs
+  API. `timed_out` fails closed; true `cancelled` proceeds. Lookup failure or
+  missing `actions: read` fails closed (#458). actions/github-script rather
+  than a `gh api` run step: the calling reusable runs on whatever runner its
+  caller selected, and a self-hosted image is not guaranteed to ship the gh CLI.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve cancelled prerequisite via Actions API
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          const { resolveCancelledPrerequisite } = require(
+            path.join(process.env.ACTION_PATH, "../../scripts/resolve-cancelled-prerequisite.cjs"),
+          );
+
+          let jobs;
+          try {
+            jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              per_page: 100,
+            });
+          } catch (error) {
+            core.setFailed(
+              "Could not resolve cancelled prerequisite via Actions API " +
+                `(actions: read required on the gate job): ${error.message}`,
+            );
+            return;
+          }
+
+          const resolution = resolveCancelledPrerequisite(jobs);
+          if (resolution.outcome === "fail") {
+            core.setFailed(
+              "Prerequisite was cancelled in needs context but resolved to " +
+                `${resolution.reason}: ${resolution.detail}`,
+            );
+            return;
+          }
+
+          core.info(
+            "Cancelled prerequisite resolved to true cancel " +
+              `(${resolution.reason}): ${resolution.detail}`,
+          );

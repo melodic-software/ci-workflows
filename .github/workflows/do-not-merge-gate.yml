@@ -27,11 +27,14 @@ on:
           its exact result and use `if: always()`. `failure`, `skipped`, and any
           unrecognized value fail this required check before the label is
           evaluated (fail-closed: selector breakage stays loud). `cancelled`
-          instead proceeds to evaluation — it is the routine per-PR
-          concurrency-supersede signal, this reporter is already running on the
-          caller-resolved runner, and the label check re-fetches CURRENT label
-          state, so the check reports the real gate answer instead of a
-          synthetic failure (#446).
+          proceeds to evaluation only after the Actions Jobs API confirms the
+          prerequisite truly concluded `cancelled`, not `timed_out` — GitHub
+          collapses timeouts into `needs.*.result == cancelled` (#458). True
+          cancel is the routine per-PR concurrency-supersede signal, this
+          reporter is already running on the caller-resolved runner, and the
+          label check re-fetches CURRENT label state, so the check reports the
+          real gate answer instead of a synthetic failure (#446). Lookup
+          failure or missing `actions: read` fails closed.
         type: string
         default: success
       label:
@@ -41,6 +44,7 @@ on:
 
 permissions:
   pull-requests: read
+  actions: read
 
 jobs:
   do-not-merge:
@@ -69,6 +73,15 @@ jobs:
           echo "::error::Required prerequisite did not succeed (result: ${PREREQUISITE_RESULT})."
           exit 1
 
+      - name: Resolve cancelled prerequisite
+        # GitHub reports timed-out jobs as `needs.*.result == cancelled`. The
+        # Actions Jobs API exposes the distinct `conclusion: timed_out`, so a
+        # delivered cancellation must be resolved before evaluation proceeds
+        # (#458). Selector-dependent callers must grant `actions: read` on this
+        # job; lookup failure fails closed.
+        if: ${{ inputs.prerequisite-result == 'cancelled' }}
+        uses: ./.github/actions/resolve-cancelled-prerequisite
+
       - name: Note cancelled prerequisite
         # A cancelled prerequisite is normal supersede behavior, not a fault:
         # the caller's per-PR `concurrency.cancel-in-progress` cancels the
@@ -95,7 +108,7 @@ jobs:
         # `::error` above, for whoever debugs the next incident.
         if: ${{ inputs.prerequisite-result == 'cancelled' }}
         run: |
-          echo "::notice::Prerequisite was cancelled (result: cancelled) — routine concurrency supersede, a manual run cancellation, or the prerequisite job itself being cancelled/timing out (GitHub reports timeouts as cancelled). Proceeding with live label evaluation on the caller-resolved runner; this check reports the real gate result, not a synthetic prerequisite failure."
+          echo "::notice::Prerequisite was cancelled in needs context and resolved to true cancel via the Actions Jobs API — routine concurrency supersede or a manual run cancellation. A timed-out prerequisite would have failed closed above (#458). Proceeding with live label evaluation on the caller-resolved runner; this check reports the real gate result, not a synthetic prerequisite failure."
 
       - name: Reject a blocking label
         # Runs on the two PR-context events, `pull_request` AND
