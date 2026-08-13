@@ -875,7 +875,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pr-title:
       permissions:
         pull-requests: read
-        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 

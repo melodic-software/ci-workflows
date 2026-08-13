@@ -5,7 +5,7 @@
 // `needs.<job_id>.result == cancelled`, but the Actions Jobs REST API exposes
 // distinct `conclusion: timed_out` (see cancelled-prerequisite discrimination).
 
-const SELECTOR_JOB_NAME_PATTERN = /select[\s_-]?runner|select runner/i;
+const SELECTOR_JOB_NAME_PATTERN = /select[\s_-]?runner/i;
 
 /**
  * Whether a workflow job name looks like the select-runner prerequisite job.
