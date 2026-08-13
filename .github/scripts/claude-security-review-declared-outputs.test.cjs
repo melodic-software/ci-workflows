@@ -130,6 +130,16 @@ test("the forwarded names are the composite's own, so a rename cannot silently e
   }
 });
 
+test("the relevant output documents its third state", () => {
+  // The relevance step hard-errors on a rejected `!` / `?` / `+` pattern and
+  // the lane fails OPEN, so `relevant` can be empty on a run that reviewed. A
+  // consumer that read empty as 'false' would wave an in-scope, reviewed run
+  // through as out of scope, which is the failure this description prevents.
+  const relevant = blockBody(`\n${callOutputs}`, 6, "relevant");
+  assert.match(relevant, /EMPTY is a THIRD state/u);
+  assert.match(relevant, /fails OPEN/u);
+});
+
 test("review-detail stays unsurfaced", () => {
   // Free-text prose shaped for a human reading a marker comment. Surfacing it
   // invites a consumer to branch on it, which is the log-grepping this whole

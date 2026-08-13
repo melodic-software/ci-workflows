@@ -455,21 +455,30 @@ on:
     # owns the classification, so they say what happened rather than what the
     # log happened to print.
     #
-    # EVERY OUTPUT IS EMPTY WHEN `security-review` DOES NOT RUN, and a
-    # consumer must treat empty as "no verdict", never as a pass. The job is
-    # skipped on the four legitimate no-verdict paths — out of scope
-    # (`relevant` is 'false'), a fork PR, a skip-listed actor, and either
-    # kill-switch — and its steps are skipped on a superseded head. `relevant`
-    # discriminates the first of those; the rest are the consumer's own
-    # preconditions, which it already knows without asking this lane.
+    # THE THREE VERDICT OUTPUTS ARE EMPTY WHEN `security-review` DOES NOT RUN,
+    # and a consumer must treat empty as "no verdict", never as a pass. The
+    # job's `if:` carries five independent skip clauses — out of scope
+    # (`relevant` is 'false'), either kill-switch, a `skip-actors` match, a
+    # non-dependabot bot actor whose PR author is not OWNER/MEMBER/COLLABORATOR
+    # (a built-in exclusion, distinct from the caller-supplied `skip-actors`
+    # list), and a fork PR — and its steps skip on a superseded head besides.
+    # Treat that as the shape rather than the tally: `relevant` discriminates
+    # the first clause, and the rest are the consumer's own preconditions,
+    # which it already knows without asking this lane.
     outputs:
       relevant:
         description: >-
           'true' when this PR touches a security-sensitive surface per the
           `paths` / `paths-file` inputs, so `security-review` was expected to
-          run; 'false' when it matched none and the job skipped by design. Set
-          on every non-cancelled run, including ones where `security-review`
-          itself never ran.
+          run; 'false' when it matched none and the job skipped by design.
+
+          EMPTY is a THIRD state, not a fourth spelling of 'false': the
+          relevance step hard-errors on a `!`, `?`, or `+` pattern (a
+          configuration error the `paths` input documents), which leaves this
+          output unset — and the lane fails OPEN there, so `security-review`
+          still runs and the three verdict outputs below still carry its
+          result. A consumer must read empty here as "scope unknown" and go on
+          to read the verdict, never as "no review".
         value: ${{ jobs.changes.outputs.relevant }}
       review-ran:
         description: >-
