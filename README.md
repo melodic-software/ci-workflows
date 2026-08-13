@@ -867,7 +867,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
-    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -914,7 +913,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
-    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -922,7 +920,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pr-issue-linkage:
       permissions:
         pull-requests: read
-        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
   ```
 
@@ -955,7 +952,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
-    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -963,7 +959,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
     do-not-merge:
       permissions:
         pull-requests: read
-        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
   ```
 
