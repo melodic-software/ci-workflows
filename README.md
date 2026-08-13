@@ -488,6 +488,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   Selector-dependent callers **must** grant `actions: read` on the gate job.
+  Thin callers that omit `needs` / `prerequisite-result` still grant `actions: read` because the reusable's `permissions:` block requests it for the cancelled-prerequisite resolver; GitHub rejects the reusable at startup if the caller grants a stricter set.
   Reusable workflows can only use permissions the caller grants; when
   `prerequisite-result` is `cancelled`, the gate lists this run's jobs via the
   Actions API to distinguish a true cancel (routine concurrency supersede) from
@@ -867,6 +868,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
+    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -874,6 +876,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pr-title:
       permissions:
         pull-requests: read
+        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
   ```
 
@@ -913,6 +916,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
+    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -920,6 +924,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pr-issue-linkage:
       permissions:
         pull-requests: read
+        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
   ```
 
@@ -952,6 +957,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     merge_group:
   permissions:
     pull-requests: read
+    actions: read
   concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
@@ -959,6 +965,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     do-not-merge:
       permissions:
         pull-requests: read
+        actions: read
       uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
   ```
 
