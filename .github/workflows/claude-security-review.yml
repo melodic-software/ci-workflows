@@ -93,10 +93,13 @@ name: claude-security-review
 #   above narrows is which non-runs it applies to.
 #
 #   Availability on the external tier is bought by that loud-open, not by
-#   retrying and no longer by break-glass alone. Break-glass on the consumer's
-#   ruleset (when the gate is armed) remains the override for the caller-drift
-#   tier and for any other red an operator must clear by hand — explicit,
-#   logged, attributable. The
+#   retrying and no longer by break-glass alone. Break-glass on a consumer's
+#   ruleset remains the override for the caller-drift tier and for any other
+#   red an operator must clear by hand — but only when the gate is armed AND
+#   a bypass actor is configured. Neither holds today: `security-review-gate`
+#   is `enforcement: disabled`, and github-iac PR #282 left `bypass_actors`
+#   empty (the 2026-08-10 armed window also had an empty bypass list; see
+#   PLAN.md). Explicit, logged, attributable when present. The
 #   bounded in-job retry below is a best-effort second chance at the sporadic
 #   class, NOT an availability mechanism, and this line previously
 #   claimed otherwise. It has never been observed to absorb anything: across
