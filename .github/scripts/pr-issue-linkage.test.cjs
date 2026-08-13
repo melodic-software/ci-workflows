@@ -49,7 +49,7 @@ function contractBody({
 // directly rather than only checked for structural presence in the YAML text.
 function runScript(body, prAuthor = "", exemptAuthors = "") {
   // Prefer the Validate step's github-script body. The cancelled-prerequisite
-  // resolver (issue 458) also embeds a `script: |` block earlier in the workflow.
+  // cancelled-prerequisite resolver also embeds a `script: |` block earlier in the workflow.
   const validateMarker = "- name: Validate PR body against the closing-keyword";
   const validateStart = workflow.indexOf(validateMarker);
   assert.notEqual(validateStart, -1, "validate step marker missing");

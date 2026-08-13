@@ -96,7 +96,7 @@ test("semantic PR preserves caller routing and fails closed after every delivere
   assert.equal(runnerFor("failure"), "ubuntu-24.04");
 
   // A delivered cancellation proceeds to validation only after the Actions Jobs
-  // API confirms true cancel; timed_out and lookup failure fail closed (issue 458).
+  // API confirms true cancel; timed_out and lookup failure fail closed (timed-out vs cancelled discrimination).
   const dispatch = (result, resolved = "proceed") => {
     if (result === "success") return "validate";
     if (result === "cancelled" && resolved === "proceed") return "validate";
