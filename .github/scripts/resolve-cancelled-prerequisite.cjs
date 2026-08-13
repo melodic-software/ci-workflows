@@ -3,7 +3,7 @@
 // Discriminate a timed-out select-runner prerequisite from a routine
 // concurrency supersede. GitHub collapses job timeouts into
 // `needs.<job_id>.result == cancelled`, but the Actions Jobs REST API exposes
-// distinct `conclusion: timed_out` (#458).
+// distinct `conclusion: timed_out` (see cancelled-prerequisite discrimination).
 
 const SELECTOR_JOB_NAME_PATTERN = /select[\s_-]?runner|select runner/i;
 
@@ -20,7 +20,7 @@ function isSelectorLikeJobName(name) {
  * Resolve whether a delivered `needs.*.result == cancelled` prerequisite
  * should proceed to validation or fail closed.
  *
- * Heuristic (issue #458):
+ * Heuristic (timed-out vs cancelled discrimination):
  * 1. Prefer selector-like jobs (name contains "Select runner" / select-runner)
  *    whose conclusion is `timed_out` or `cancelled`.
  * 2. `timed_out` on a matched selector → fail closed.

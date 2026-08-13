@@ -66,7 +66,7 @@ test("prerequisite-gated reusables preserve caller routing and fail closed", () 
     selectedRunner;
   // `cancelled` joins `success` in NOT being rejected immediately, but only
   // proceeds after the Actions Jobs API confirms true cancel — timed_out and
-  // lookup failure fail closed (#458). Every other non-success value stays
+  // lookup failure fail closed (issue 458). Every other non-success value stays
   // fail-closed, because those mean selector breakage or a miswired caller
   // and must stay loud.
   const mustReject = (result) => result !== "success" && result !== "cancelled";

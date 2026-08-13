@@ -48,7 +48,14 @@ function contractBody({
 // so the actual closing-keyword/contract-header parsing logic is exercised
 // directly rather than only checked for structural presence in the YAML text.
 function runScript(body, prAuthor = "", exemptAuthors = "") {
-  const scriptStart = workflow.indexOf("script: |") + "script: |".length;
+  // Prefer the Validate step's github-script body. The cancelled-prerequisite
+  // resolver (issue 458) also embeds a `script: |` block earlier in the workflow.
+  const validateMarker = "- name: Validate PR body against the closing-keyword";
+  const validateStart = workflow.indexOf(validateMarker);
+  assert.notEqual(validateStart, -1, "validate step marker missing");
+  const scriptToken = "script: |";
+  const scriptStart =
+    workflow.indexOf(scriptToken, validateStart) + scriptToken.length;
   const lines = workflow.slice(scriptStart).split("\n").slice(1);
   const scriptLines = [];
   for (const line of lines) {
