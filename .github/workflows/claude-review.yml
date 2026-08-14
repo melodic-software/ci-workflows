@@ -302,6 +302,60 @@ on:
           guard and review steps run.
         type: string
         default: ""
+    # DECLARED EVIDENCE SURFACE (ci-workflows#464, mirroring #460 on the
+    # security lane). A consumer that must decide whether a review actually
+    # happened reads these; it must not scrape this lane's job log. Log text
+    # is not a contract — the `Report review outcome` step is an inline
+    # github-script whose SOURCE is echoed into the same log, so a consumer
+    # grepping for a phrase matches the source that mentions it
+    # (claude-code-plugins#2517). These outputs come from the composite that
+    # owns the classification, so they say what happened rather than what the
+    # log happened to print.
+    #
+    # ALL THREE OUTPUTS ARE EMPTY WHEN NO VERDICT WAS COMPUTED, and a consumer
+    # must treat empty as "no verdict", never as a pass. Empty covers two
+    # shapes on this lane, not one:
+    #
+    #   - the `review` job never ran — either kill-switch, a `skip-actors`
+    #     match, a non-dependabot bot actor whose PR author is not
+    #     OWNER/MEMBER/COLLABORATOR, or a draft PR;
+    #   - the job RAN and deliberately attempted no review — the freshness
+    #     guard retired a superseded head, or `max-reviews-per-pr` capped the
+    #     run. The outcome step is gated on both, so a retired or capped run
+    #     reports nothing rather than a stale or unearned verdict.
+    #
+    # The advisory contract is unchanged: the check still concludes green on
+    # an infrastructure failure and the marker comment remains the PR-visible
+    # signal. This surface exists so a MACHINE consumer (a caller job, merge
+    # tooling) can tell "reviewed" from "rate-limited into silence" — on
+    # 2026-08-13 every execution attempt across two consumer repositories
+    # 429'd for ~3 hours while every run concluded success, and nothing
+    # machine-readable said so at the caller seam.
+    outputs:
+      review-ran:
+        description: >-
+          'true' only when the action succeeded WITH execution evidence — the
+          one shape in which a review actually happened. 'false' covers both a
+          genuine failure and a workflow-validation skip; use `review-failed`
+          to tell those apart. EMPTY means no verdict was computed, and it has
+          two shapes on this lane, not one: the job never ran (kill-switch,
+          skip-actors, bot-association, draft), or the job ran and attempted
+          no review — the freshness guard retired a superseded head, or
+          max-reviews-per-pr capped the run. Treat empty as "no verdict",
+          never as a pass.
+        value: ${{ jobs.review.outputs.review-ran }}
+      review-failed:
+        description: >-
+          'true' on a genuine infrastructure failure, else 'false'. A
+          validation skip is NOT a failure and reports 'false' here with
+          'false' on `review-ran`. Empty when no verdict was computed.
+        value: ${{ jobs.review.outputs.review-failed }}
+      failure-class:
+        description: >-
+          auth | rate-limit | overloaded | other on a genuine failure;
+          skipped-validation when the action skipped itself; empty on a
+          genuine success and when no verdict was computed.
+        value: ${{ jobs.review.outputs.failure-class }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
@@ -359,6 +413,18 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    # Lifted straight from the composite that owns the classification, and
+    # forwarded to the caller by the `workflow_call.outputs` block above — see
+    # DECLARED EVIDENCE SURFACE there for what each value means and for why
+    # every one of them is empty when no verdict was computed (job skipped,
+    # superseded head, or a capped run). `review-detail` is deliberately NOT
+    # surfaced: it is a free-text projection of the SDK result shaped for a
+    # human reading a marker comment, and a consumer that branched on it would
+    # be back to parsing prose.
+    outputs:
+      review-ran: ${{ steps.review-outcome.outputs.review-ran }}
+      review-failed: ${{ steps.review-outcome.outputs.review-failed }}
+      failure-class: ${{ steps.review-outcome.outputs.failure-class }}
     concurrency:
       # Job-level (not workflow-level): a workflow-level group would cancel
       # before the `if` above evaluates, so a skipped actor could cancel an
