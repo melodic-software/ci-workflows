@@ -574,9 +574,9 @@ test("the write job authors with the ambient token and loads no repository code"
 
 test("the incident issue wears the human-gated role label, re-asserted on every write", () => {
   // The lane-routing half of #238's Contract, filed as #364: an incident only
-  // ever opens on an escalating class, and every escalating class needs a
-  // human at the provider or fleet layer, so the incident must wear the role
-  // label that routes it to one. create-issue-from-file runs addLabels on the
+  // ever opens on an escalating failure (an escalating class, or a rate-limit
+  // storm), and each needs a human at the provider or fleet layer, so the
+  // incident must wear the role label that routes it to one. create-issue-from-file runs addLabels on the
   // update path as well as the create path, so the label is re-asserted
   // fail-closed for as long as the incident stays open.
   const upsert = writeJob.steps.find(
@@ -888,6 +888,48 @@ test("a transient class is counted but does not open an incident", async () => {
   });
   assert.equal(outputs.cycle, "clean");
   assert.deepEqual(tally.classCounts, { "rate-limit": 1 });
+});
+
+test("a fleet-wide rate-limit storm produces an incident cycle through the shipped poll", async () => {
+  // The 2026-08-13 shape end to end (ci-workflows#466): an exhausted shared
+  // seat 429s every lane execution, so distinct pull requests across two
+  // repositories all annotate `class=rate-limit` inside one polling window.
+  // Presence of the class is weather (the test above); density is an outage.
+  const { outputs, tally } = await runPoll({
+    repositoriesOverride:
+      "melodic-software/dotfiles,melodic-software/claude-code-plugins",
+    pullsByRepo: {
+      "melodic-software/dotfiles": [
+        [
+          recentPull(472, "sha-a", "melodic-software/dotfiles"),
+          recentPull(475, "sha-b", "melodic-software/dotfiles"),
+        ],
+      ],
+      "melodic-software/claude-code-plugins": [
+        [recentPull(2570, "sha-c", "melodic-software/claude-code-plugins")],
+      ],
+    },
+    checkRunsByPull: {
+      "sha-a": [
+        checkRun({ id: 90, annotationsCount: 1, conclusion: "success" }),
+      ],
+      "sha-b": [
+        checkRun({ id: 91, annotationsCount: 1, conclusion: "success" }),
+      ],
+      "sha-c": [
+        checkRun({ id: 92, annotationsCount: 1, conclusion: "success" }),
+      ],
+    },
+    annotationsByCheckRun: {
+      90: [{ message: laneAnnotation("rate-limit", 429) }],
+      91: [{ message: laneAnnotation("rate-limit", 429) }],
+      92: [{ message: laneAnnotation("rate-limit", 429) }],
+    },
+  });
+  assert.equal(outputs.cycle, "incident");
+  assert.deepEqual(tally.classCounts, { "rate-limit": 3 });
+  assert.deepEqual(tally.statusCounts, { 429: 3 });
+  assert.equal(tally.escalating, true);
 });
 
 test("an unreadable repository is counted as a read error and never reported as clean", async () => {

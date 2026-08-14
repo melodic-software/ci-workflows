@@ -200,6 +200,198 @@ test("a tally separates escalating classes from reported-only ones", () => {
   }
 });
 
+// The 2026-08-13 outage, in fixture form (ci-workflows#466): an exhausted
+// shared seat 429'd every lane execution across the fleet for ~3 hours —
+// distinct pull requests in more than one repository, all `rate-limit`, all
+// inside one polling cycle — and no incident opened, because escalation was
+// membership-only. Density is the signal that separates that storm from
+// weather, so it must escalate.
+const rateLimitStormObservations = [
+  {
+    repository: "melodic-software/dotfiles",
+    pullNumber: 472,
+    classes: ["rate-limit"],
+    unrecognized: 0,
+    apiErrorStatus: 429,
+  },
+  {
+    repository: "melodic-software/dotfiles",
+    pullNumber: 475,
+    classes: ["rate-limit"],
+    unrecognized: 0,
+    apiErrorStatus: 429,
+  },
+  {
+    repository: "melodic-software/claude-code-plugins",
+    pullNumber: 2570,
+    classes: ["rate-limit"],
+    unrecognized: 0,
+    apiErrorStatus: 429,
+  },
+  {
+    repository: "melodic-software/claude-code-plugins",
+    pullNumber: 2571,
+    classes: ["rate-limit"],
+    unrecognized: 0,
+    apiErrorStatus: 429,
+  },
+];
+
+test("a rate-limit storm across three or more distinct pull requests escalates", () => {
+  const storm = tallyObservations(rateLimitStormObservations);
+  assert.equal(storm.escalating, true);
+  assert.deepEqual(storm.classCounts, { "rate-limit": 4 });
+
+  // And the cycle it produces is an incident, exactly as auth or runner would.
+  assert.equal(
+    classifyCycle({
+      laneRunsObserved: 4,
+      escalating: storm.escalating,
+      readErrors: 0,
+    }),
+    "incident",
+  );
+
+  // The threshold itself: three distinct pulls is the floor, even in a single
+  // repository — three PRs in one repo losing their reviews to 429s inside one
+  // window is the same exhausted-seat shape, just observed before the storm
+  // reached a second repository.
+  const threeSameRepo = tallyObservations(
+    [472, 475, 476].map((pullNumber) => ({
+      repository: "melodic-software/dotfiles",
+      pullNumber,
+      classes: ["rate-limit"],
+      apiErrorStatus: 429,
+    })),
+  );
+  assert.equal(threeSameRepo.escalating, true);
+});
+
+test("isolated rate-limit throttles below the storm threshold never escalate", () => {
+  // One throttled PR is weather (it already survived the lane's gated in-run
+  // retry before it could be annotated), and so are two: the refined rule
+  // must preserve the reason rate-limit was excluded from membership
+  // escalation, not reverse it.
+  for (const width of [1, 2]) {
+    const tally = tallyObservations(rateLimitStormObservations.slice(0, width));
+    assert.equal(tally.escalating, false, `${width} distinct pulls`);
+    assert.equal(
+      classifyCycle({
+        laneRunsObserved: 4,
+        escalating: tally.escalating,
+        readErrors: 0,
+      }),
+      "clean",
+      `${width} distinct pulls`,
+    );
+  }
+});
+
+test("one throttled pull request re-observed many times is not a storm", () => {
+  // Density is DISTINCT pulls, not annotations: a stuck PR is re-observed
+  // every cycle for as long as it stays in the lookback window, and a lane
+  // can annotate one head repeatedly. Counting those would page on exactly
+  // the singleton the weather rationale protects.
+  const tally = tallyObservations([
+    {
+      repository: "melodic-software/dotfiles",
+      pullNumber: 475,
+      classes: ["rate-limit"],
+      apiErrorStatus: 429,
+    },
+    {
+      repository: "melodic-software/dotfiles",
+      pullNumber: 475,
+      classes: ["rate-limit"],
+      apiErrorStatus: 429,
+    },
+    {
+      repository: "melodic-software/dotfiles",
+      pullNumber: 475,
+      classes: ["rate-limit"],
+      apiErrorStatus: 429,
+    },
+    {
+      repository: "melodic-software/dotfiles",
+      pullNumber: 476,
+      classes: ["rate-limit"],
+      apiErrorStatus: 429,
+    },
+  ]);
+  assert.equal(tally.escalating, false);
+  assert.deepEqual(tally.classCounts, { "rate-limit": 2 });
+});
+
+test("a storm-opened incident opens, renders the storm, and closes on recovery", () => {
+  const { state, action } = nextState({
+    previous: null,
+    tally: tallyObservations(rateLimitStormObservations),
+    cycle: "incident",
+    now: "2026-08-13T15:17:00Z",
+    issueOpen: false,
+  });
+  assert.equal(action, "open");
+
+  const body = renderIssueBody(state);
+  // The per-class "Escalating" column derives from what actually escalated,
+  // not from membership alone: a storm-opened incident saying `rate-limit |
+  // 4 | no` would tell the operator nothing escalated while the incident it
+  // opened sits above that very line.
+  assert.match(
+    body,
+    /\| `rate-limit` \| 4 \| storm \(>=3 PRs in one cycle\) \|/u,
+  );
+  // And the remediation names the storm posture.
+  assert.match(body, /storm density/u);
+
+  // The existing close path handles the window lifting: three covered clean
+  // cycles, no new machinery.
+  let recovered = parseStateBlock(renderIssueBody(state));
+  const actions = [];
+  for (let cycle = 0; cycle < CLEAN_CYCLES_TO_CLOSE; cycle += 1) {
+    const result = nextState({
+      previous: recovered,
+      tally: tallyObservations([]),
+      cycle: "clean",
+      now: `2026-08-13T2${cycle}:17:00Z`,
+      issueOpen: true,
+      polledRepositories: [
+        "melodic-software/dotfiles",
+        "melodic-software/claude-code-plugins",
+      ],
+    });
+    actions.push(result.action);
+    recovered = result.state;
+  }
+  assert.deepEqual(actions, ["update", "update", "close"]);
+});
+
+test("a below-threshold rate-limit rider on an auth incident still renders as non-escalating", () => {
+  const { state } = nextState({
+    previous: null,
+    tally: tallyObservations([
+      {
+        repository: "melodic-software/medley",
+        pullNumber: 7,
+        classes: ["auth"],
+        apiErrorStatus: 402,
+      },
+      {
+        repository: "melodic-software/medley",
+        pullNumber: 8,
+        classes: ["rate-limit"],
+        apiErrorStatus: 429,
+      },
+    ]),
+    cycle: "incident",
+    now: "2026-08-13T15:17:00Z",
+    issueOpen: false,
+  });
+  const body = renderIssueBody(state);
+  assert.match(body, /\| `auth` \| 1 \| yes \|/u);
+  assert.match(body, /\| `rate-limit` \| 1 \| no \|/u);
+});
+
 test("a cycle is clean only on positive evidence that a lane ran", () => {
   assert.equal(
     classifyCycle({ laneRunsObserved: 0, escalating: true }),
@@ -929,12 +1121,12 @@ const COUNTING_RULE =
   "incident TRACKS, and the tracked index accounts for every repository the " +
   "incident has SEEN.";
 
-// Step 4's first sentence. Returns null rather than an empty string, so copy that
+// Step 5's first sentence. Returns null rather than an empty string, so copy that
 // moves it fails an assertion instead of quietly emptying the scope and passing —
 // and because the caller compares for equality, an extraction that runs long or
 // stops short fails too, rather than silently checking the wrong span.
 function countingRuleOf(flattened) {
-  const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
+  const stepFive = flattened.match(/\b5\. (.*?) 6\. Re-run/u);
   // A period ends the sentence only when a non-lowercase character follows, which
   // keeps the ordinary dotted abbreviation (`i.e. every …`) inside the span while
   // still letting a sentence that opens on a backticked identifier, idiomatic in
@@ -942,7 +1134,7 @@ function countingRuleOf(flattened) {
   // abbreviation followed by a capital does truncate. What makes that safe is the
   // caller's equality check, which fails on a truncated span exactly as it fails
   // on a reworded one — the terminator only decides how legible the failure is.
-  const sentence = stepFour?.[1].match(/^.*?\.(?=\s+[^a-z]|\s*$)/u);
+  const sentence = stepFive?.[1].match(/^.*?\.(?=\s+[^a-z]|\s*$)/u);
   return sentence ? sentence[0] : null;
 }
 
@@ -986,7 +1178,7 @@ test("the coverage copy names the tracked index, never the rendered table", () =
   // that order, and states NOTHING ELSE — so a clarification appended to it,
   // which is how correct copy acquires a contradiction, fails here.
   assert.equal(countingRuleOf(flattened), COUNTING_RULE);
-  // The other two standing causes of a permanent hold, which step 4 attributed
+  // The other two standing causes of a permanent hold, which step 5 attributed
   // to a gone repository alone.
   assert.match(flattened, /an incident wider than the tracked index/u);
   assert.match(
@@ -1009,13 +1201,13 @@ test("the counting-rule pin bounds exactly that sentence", () => {
   const flattened = renderIssueBody(state).replace(/\s+/gu, " ");
   assert.equal(countingRuleOf(flattened), COUNTING_RULE);
 
-  // Step 4 continues past the pin, and what follows names the rendered table in
+  // Step 5 continues past the pin, and what follows names the rendered table in
   // order to disclaim it. That prose is deliberately NOT pinned — freezing it
   // would be freezing wording that carries no gate condition.
-  const stepFour = flattened.match(/\b4\. (.*?) 5\. Re-run/u);
-  assert.notEqual(stepFour, null);
-  assert.ok(stepFour[1].length > COUNTING_RULE.length);
-  assert.match(stepFour[1], /not the table above/u);
+  const stepFive = flattened.match(/\b5\. (.*?) 6\. Re-run/u);
+  assert.notEqual(stepFive, null);
+  assert.ok(stepFive[1].length > COUNTING_RULE.length);
+  assert.match(stepFive[1], /not the table above/u);
 
   // Each of these is how the counting rule could acquire a contradiction while
   // every other assertion in this file stays green: the canonical clause survives
@@ -1044,7 +1236,7 @@ test("the counting-rule pin bounds exactly that sentence", () => {
   assert.match(abbreviatedRule, /i\.e\. every row above\.$/u);
 
   // And a renumbered step is a loud null, never a silently empty scope.
-  assert.equal(countingRuleOf(flattened.replace(" 4. ", " 9. ")), null);
+  assert.equal(countingRuleOf(flattened.replace(" 5. ", " 9. ")), null);
 });
 
 test("the body stays inside GitHub's limit at the longest repository name that can exist", () => {
