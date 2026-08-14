@@ -719,7 +719,7 @@ jobs:
         # retry below.
         continue-on-error: true
         timeout-minutes: 11
-        uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126 # v1.0.191
+        uses: anthropics/claude-code-action@e63208cb983318a44e3f945e959ef894b707dcfa # v1.0.192
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # track_progress is pull_request-only upstream; forcing it on
@@ -959,7 +959,7 @@ jobs:
         # budget.
         continue-on-error: true
         timeout-minutes: 11
-        uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126 # v1.0.191
+        uses: anthropics/claude-code-action@e63208cb983318a44e3f945e959ef894b707dcfa # v1.0.192
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # track_progress is pull_request-only upstream; forcing it on
