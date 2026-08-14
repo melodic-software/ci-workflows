@@ -50,10 +50,10 @@ const RECOGNIZED_CLASSES = Object.freeze(
 // Classes that by themselves open (or hold open) the incident. Both are dead
 // until a human acts: `auth` is a credential that cannot be used until it is
 // rotated, re-entitled, or re-permissioned, and `runner` is a fleet
-// misconfiguration no retry resolves. `rate-limit`, `overloaded`, and `other`
-// are transient or benign — they self-heal, so escalating them would page a
-// human for weather. They are still counted and rendered whenever an incident
-// is open, which is what makes a storm visible in context.
+// misconfiguration no retry resolves. `overloaded` and `other` are transient
+// or benign — they self-heal, so escalating them would page a human for
+// weather. They are still counted and rendered whenever an incident is open,
+// which is what makes a storm visible in context.
 // `skipped-validation` is deliberately non-escalating: it fires legitimately
 // on exactly the PRs that edit the caller workflow (including the PR that
 // first adds it — upstream's own skip message calls that normal) and
@@ -63,6 +63,22 @@ const RECOGNIZED_CLASSES = Object.freeze(
 // of invisible; the synthetic canary deferred in ci-workflows#228 remains the
 // mechanism that would prove a review actually happened.
 const ESCALATING_CLASSES = Object.freeze(new Set(["auth", "runner"]));
+
+// `rate-limit` escalates on DENSITY, not membership. One throttled run is
+// weather: it already survived the lane's own gated in-run retry minutes
+// later before it could be annotated at all, and it self-heals on the next
+// push or re-run, so presence alone must never page. But the same class
+// observed on this many DISTINCT pull requests inside one polling cycle is a
+// different event: the shared org seat's usage window is exhausted, every
+// lane execution dies instantly, and every PR merging until the window lifts
+// — which can be hours — goes unreviewed behind a green check. That is
+// operationally `auth` for the duration, and it is exactly the storm the
+// 2026-08-13 outage produced (ci-workflows#466: ~3 hours of fleet-wide 429s
+// across 7 PRs in 2 repositories, densest cycle 4-5 distinct pulls, zero
+// incident opened). The comparison is intra-cycle only — `tallyObservations`
+// counts distinct pulls per cycle before any cross-cycle merge — so no new
+// state channel exists and the state-block machinery is untouched.
+const RATE_LIMIT_STORM_THRESHOLD = 3;
 
 // Gate 1 for the class token: a bounded lowercase-and-hyphen run, anchored on
 // word boundaries so it matches the emitter's bare `class=<token>` term.
@@ -245,9 +261,13 @@ function tallyObservations(observations) {
     statusCounts: sizes(statusPulls),
     repositories,
     unrecognized: unrecognizedPulls.size,
-    escalating: Object.keys(classPulls).some((token) =>
-      ESCALATING_CLASSES.has(token),
-    ),
+    // Membership escalates for `auth` and `runner`; `rate-limit` escalates
+    // only at storm density — distinct pulls within THIS cycle, so the
+    // deduplication above (one stuck PR annotated and re-observed many times
+    // counts once) is what keeps a singleton throttle from ever paging.
+    escalating:
+      Object.keys(classPulls).some((token) => ESCALATING_CLASSES.has(token)) ||
+      (classPulls["rate-limit"]?.size ?? 0) >= RATE_LIMIT_STORM_THRESHOLD,
   };
 }
 
@@ -629,12 +649,27 @@ function sanitizeCounts(counts, keyIsValid) {
 }
 
 function renderIssueBody(state) {
+  // The "Escalating" column reports what actually escalates, not bare set
+  // membership: `auth` and `runner` escalate on presence, and `rate-limit`
+  // escalates only at storm density. The count here is the peak of per-cycle
+  // distinct pulls (mergeCounts takes the max, never the sum), so comparing it
+  // against the threshold answers "did any single cycle reach storm density"
+  // — a storm-opened incident renders `storm (>=3)` rather than the "no" that
+  // membership alone would claim, and a singleton throttle riding along an
+  // `auth` incident still renders "no".
+  const escalationLabel = (token, count) => {
+    if (ESCALATING_CLASSES.has(token)) return "yes";
+    if (token === "rate-limit" && count >= RATE_LIMIT_STORM_THRESHOLD) {
+      return `storm (>=${RATE_LIMIT_STORM_THRESHOLD} PRs in one cycle)`;
+    }
+    return "no";
+  };
   const classLines = Object.entries(state.classCounts)
     .filter(([token]) => RECOGNIZED_CLASSES.has(token))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(
       ([token, count]) =>
-        `| \`${token}\` | ${count} | ${ESCALATING_CLASSES.has(token) ? "yes" : "no"} |`,
+        `| \`${token}\` | ${count} | ${escalationLabel(token, count)} |`,
     );
 
   const statusEntries = Object.entries(state.statusCounts).sort(
@@ -683,7 +718,7 @@ function renderIssueBody(state) {
     "",
     `- First seen: ${state.firstSeen ?? "unknown"}`,
     `- Last seen: ${state.lastSeen ?? "unknown"}`,
-    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE}; only cycles whose coverage of this incident is complete count — see step 4)`,
+    `- Consecutive clean cycles: ${state.cleanCycles} of ${CLEAN_CYCLES_TO_CLOSE} (auto-closes at ${CLEAN_CYCLES_TO_CLOSE}; only cycles whose coverage of this incident is complete count — see step 5)`,
     `- Observed \`api_error_status\`: ${statusLine}`,
     `- Repositories affected: ${Math.max(state.repositoriesSeen ?? 0, repositoryNames.length)}`,
     `- Unrecognized \`class=\` tokens seen: ${state.unrecognized ?? 0}${
@@ -716,11 +751,17 @@ function renderIssueBody(state) {
     "   Claude Console; `403` fix key permissions and workspace access.",
     "2. `runner` — the lane could not resolve a runner; check the governed",
     "   runner fleet and the caller's selector inputs.",
-    "3. Confirm the lanes are ENABLED before waiting for this to close. A",
+    `3. \`rate-limit\` at storm density (>=${RATE_LIMIT_STORM_THRESHOLD} distinct PRs in one polling`,
+    "   window) — the shared org seat's usage window is exhausted, and every",
+    "   PR merging until it lifts goes unreviewed. Check the seat's usage and",
+    "   quota in the Claude Console; re-review the PRs that merged during the",
+    "   window. A singleton `429` never opens this issue — it is listed above",
+    "   only as context when an incident is already open.",
+    "4. Confirm the lanes are ENABLED before waiting for this to close. A",
     "   kill-switched lane still publishes a name-stable skipped check, and a",
     "   skip is not evidence the lanes ran — so while `CLAUDE_LANES_DISABLED`",
     "   (or a per-lane switch) is set, this issue can never auto-close.",
-    "4. A clean cycle counts only when its coverage of this incident is",
+    "5. A clean cycle counts only when its coverage of this incident is",
     "   complete: the tracked index still names repositories, it polled every",
     "   repository the incident TRACKS, and the tracked index accounts for",
     "   every repository the incident has SEEN. That index is the durable",
@@ -741,7 +782,7 @@ function renderIssueBody(state) {
     "   index this watchdog can no longer read — hand-edited, or written by an",
     "   older schema, which a version bump does to every open incident at",
     "   once — names nothing a cycle could cover.",
-    "5. Re-run the affected lane jobs once the cause is fixed, then let this",
+    "6. Re-run the affected lane jobs once the cause is fixed, then let this",
     `   watchdog observe ${CLEAN_CYCLES_TO_CLOSE} consecutive covered clean cycles; it closes itself.`,
     "",
     "---",
@@ -808,6 +849,7 @@ module.exports = Object.freeze({
   CLEAN_CYCLES_TO_CLOSE,
   ESCALATING_CLASSES,
   LANE_CHECK_RUN_JOB_IDS,
+  RATE_LIMIT_STORM_THRESHOLD,
   RECOGNIZED_CLASSES,
   SELECTOR_MARKER,
   STATE_SCHEMA_VERSION,

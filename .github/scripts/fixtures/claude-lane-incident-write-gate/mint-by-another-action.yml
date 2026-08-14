@@ -90,8 +90,9 @@ jobs:
   # path — the action runs addLabels after either branch — so every write to an
   # open incident re-asserts both labels. For `needs-human`, the org's
   # human-gated role label (ci-workflows#364), that re-assertion is deliberate
-  # and fail-closed: an incident only ever opens on an escalating class, every
-  # escalating class needs a human at the provider or fleet layer, so an open
+  # and fail-closed: an incident only ever opens on an escalating failure (a
+  # class, or a rate-limit storm), each of which needs a human at the provider
+  # or fleet layer, so an open
   # incident not wearing the label is routing drift rather than a decision to
   # respect; the re-assertion stops the moment the incident closes.
   # `claude-lane-incident` is declared in github-iac (`GovernedRepositories.cs`,
@@ -185,13 +186,14 @@ jobs:
                 "",
                 "**Routed to the attended queue: this incident needs a human.**",
                 "",
-                "An incident opens only on an escalating failure class, and every",
-                "escalating class is dead until a human acts — `auth`: rotate,",
-                "re-entitle, or re-permission the org credential; `runner`: repair",
-                "the governed runner fleet. No autonomous session can do either,",
-                "so this issue carries the human-gated role label plus this",
-                "marker, which together surface it as `[escalated]` in the",
-                "attended queue.",
+                "An incident opens only on an escalating failure, and recovery",
+                "needs a human — `auth`: rotate, re-entitle, or re-permission",
+                "the org credential; `runner`: repair the governed runner fleet;",
+                "`rate-limit` at storm density: restore the shared seat's usage",
+                "headroom and re-review what merged unreviewed. No autonomous",
+                "session can do any of those, so this issue carries the",
+                "human-gated role label plus this marker, which together",
+                "surface it as `[escalated]` in the attended queue.",
                 "",
                 "*Posted automatically by `.github/workflows/claude-lane-incident-aggregator.yml`.*",
               ].join("\n"),
@@ -225,7 +227,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
-              body: "The Claude lanes have reported three consecutive clean cycles with no escalating failure class; closing this rolling incident.",
+              body: "The Claude lanes have reported three consecutive clean cycles with no escalating failure; closing this rolling incident.",
             });
             await github.rest.issues.update({
               owner: context.repo.owner,

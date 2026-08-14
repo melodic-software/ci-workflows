@@ -890,6 +890,48 @@ test("a transient class is counted but does not open an incident", async () => {
   assert.deepEqual(tally.classCounts, { "rate-limit": 1 });
 });
 
+test("a fleet-wide rate-limit storm produces an incident cycle through the shipped poll", async () => {
+  // The 2026-08-13 shape end to end (ci-workflows#466): an exhausted shared
+  // seat 429s every lane execution, so distinct pull requests across two
+  // repositories all annotate `class=rate-limit` inside one polling window.
+  // Presence of the class is weather (the test above); density is an outage.
+  const { outputs, tally } = await runPoll({
+    repositoriesOverride:
+      "melodic-software/dotfiles,melodic-software/claude-code-plugins",
+    pullsByRepo: {
+      "melodic-software/dotfiles": [
+        [
+          recentPull(472, "sha-a", "melodic-software/dotfiles"),
+          recentPull(475, "sha-b", "melodic-software/dotfiles"),
+        ],
+      ],
+      "melodic-software/claude-code-plugins": [
+        [recentPull(2570, "sha-c", "melodic-software/claude-code-plugins")],
+      ],
+    },
+    checkRunsByPull: {
+      "sha-a": [
+        checkRun({ id: 90, annotationsCount: 1, conclusion: "success" }),
+      ],
+      "sha-b": [
+        checkRun({ id: 91, annotationsCount: 1, conclusion: "success" }),
+      ],
+      "sha-c": [
+        checkRun({ id: 92, annotationsCount: 1, conclusion: "success" }),
+      ],
+    },
+    annotationsByCheckRun: {
+      90: [{ message: laneAnnotation("rate-limit", 429) }],
+      91: [{ message: laneAnnotation("rate-limit", 429) }],
+      92: [{ message: laneAnnotation("rate-limit", 429) }],
+    },
+  });
+  assert.equal(outputs.cycle, "incident");
+  assert.deepEqual(tally.classCounts, { "rate-limit": 3 });
+  assert.deepEqual(tally.statusCounts, { 429: 3 });
+  assert.equal(tally.escalating, true);
+});
+
 test("an unreadable repository is counted as a read error and never reported as clean", async () => {
   const { outputs, warnings } = await runPoll({
     repositoriesOverride: "melodic-software/medley,melodic-software/dotfiles",

@@ -148,7 +148,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
-              body: "The Claude lanes have reported three consecutive clean cycles with no escalating failure class; closing this rolling incident.",
+              body: "The Claude lanes have reported three consecutive clean cycles with no escalating failure; closing this rolling incident.",
             });
             await github.rest.issues.update({
               owner: context.repo.owner,

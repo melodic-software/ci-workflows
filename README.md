@@ -1110,8 +1110,9 @@ merges land unreviewed behind a green required check. The alarm moves off the
 conclusion onto three surfaces that never depended on it — the outcome
 composite's machine-readable `class=<token>` annotation, the failure marker
 comment on the PR, and the incident aggregator, which reads lane annotations
-regardless of check-run conclusion and escalates the auth class to the attended
-queue. Availability on that tier is bought by the loud-open itself, helped by
+regardless of check-run conclusion and escalates the auth and runner classes —
+and a rate-limit storm across several distinct PRs in one polling cycle, the
+shape of an exhausted shared seat — to the attended queue. Availability on that tier is bought by the loud-open itself, helped by
 the bounded retry below; break-glass on the consumer's ruleset remains the
 override for caller drift and for any other red an operator must clear by hand.
 
