@@ -574,9 +574,9 @@ test("the write job authors with the ambient token and loads no repository code"
 
 test("the incident issue wears the human-gated role label, re-asserted on every write", () => {
   // The lane-routing half of #238's Contract, filed as #364: an incident only
-  // ever opens on an escalating class, and every escalating class needs a
-  // human at the provider or fleet layer, so the incident must wear the role
-  // label that routes it to one. create-issue-from-file runs addLabels on the
+  // ever opens on an escalating failure (an escalating class, or a rate-limit
+  // storm), and each needs a human at the provider or fleet layer, so the
+  // incident must wear the role label that routes it to one. create-issue-from-file runs addLabels on the
   // update path as well as the create path, so the label is re-asserted
   // fail-closed for as long as the incident stays open.
   const upsert = writeJob.steps.find(

@@ -354,7 +354,8 @@ function mergeRepositories(previous, addition) {
  * Classify one polling cycle.
  *
  * `clean` requires positive evidence — at least one lane check run observed,
- * no escalating class, AND a poll that read everything it meant to read.
+ * no escalating failure (an escalating class, or a rate-limit storm), AND a
+ * poll that read everything it meant to read.
  * Absence of failure is not health: the lanes conclude green on an
  * infrastructure failure by design, and a window with no lane runs at all (a
  * quiet night, or every lane wedged before it could report) proves nothing.
@@ -365,7 +366,7 @@ function mergeRepositories(previous, addition) {
  * counting that silence as health is how a live incident gets auto-closed
  * three cycles later. Any read error therefore caps the cycle at
  * `indeterminate`, which neither advances the clean-cycle counter nor resets
- * it. An escalating class still wins outright: a failure that WAS observed is
+ * it. An escalating failure still wins outright: one that WAS observed is
  * real regardless of what else the poll missed.
  */
 function classifyCycle({ laneRunsObserved, escalating, readErrors }) {
@@ -485,7 +486,7 @@ function describeCoverageGap(gap) {
  * workflow should perform.
  *
  * `action` is one of:
- *   - `open`   — no incident issue is open and an escalating class was seen.
+ *   - `open`   — no incident issue is open and an escalating failure was seen.
  *   - `update` — an incident issue is open and its body must change.
  *   - `close`  — the third consecutive clean cycle; close with a recovery note.
  *   - `none`   — nothing changed; write nothing. Transition-edge writes only,
