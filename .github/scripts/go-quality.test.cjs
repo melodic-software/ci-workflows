@@ -128,10 +128,10 @@ test("this exact workflow head is behaviorally dogfooded on native Windows", () 
 
 test("govulncheck is authenticated, bounded, structured, and separate", () => {
   assert.match(workflow, /^ {2}govulncheck:/mu);
-  assert.match(workflow, /GOVULNCHECK_VERSION: 1\.6\.0/u);
+  assert.match(workflow, /GOVULNCHECK_VERSION: 1\.7\.0/u);
   assert.match(
     workflow,
-    /GOVULNCHECK_MODULE_SUM: h1:FeMO9Rm\/HwyduOztbvKcOw\+zvDEPr4I4aQNSfevFcKY=/u,
+    /GOVULNCHECK_MODULE_SUM: h1:4MQBuhmXbz2uepNJrf3v\+aaZLGDqw1JluwYboegA1qg=/u,
   );
   assert.match(workflow, /GOPROXY: https:\/\/proxy\.golang\.org/u);
   assert.match(workflow, /GOSUMDB: sum\.golang\.org/u);
