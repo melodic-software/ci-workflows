@@ -11,8 +11,19 @@ cd -- "$repo_root"
 command -v claude >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
+# The marketplace name is the join key: it is the suffix of every enabledPlugins
+# entry this hook installs. Its source is read from the same declaration the
+# settings file already carries, so repointing the marketplace there propagates
+# here rather than leaving this script on a stale repo.
 marketplace="melodic-software"
-source_repo="melodic-software/claude-code-plugins"
+# `|| true` keeps set -e from turning an unreadable settings file into a failed
+# session start: the assignment inherits the substitution's exit status.
+source_repo=$(
+  jq -r --arg n "$marketplace" \
+    '.extraKnownMarketplaces[$n].source.repo // empty' \
+    .claude/settings.json 2>/dev/null || true
+)
+source_repo="${source_repo:-melodic-software/claude-code-plugins}"
 
 if ! claude plugin marketplace list --json 2>/dev/null |
   jq -e --arg n "$marketplace" 'any(.[]; .name == $n)' >/dev/null; then
@@ -22,16 +33,28 @@ if ! claude plugin marketplace list --json 2>/dev/null |
   }
 fi
 
-mapfile -t wanted < <(
+# Read loops rather than mapfile: mapfile is bash 4.0+, and the bash that runs
+# this hook on a stock macOS is 3.2, where set -e would abort here before a
+# single plugin was installed.
+wanted=()
+while IFS= read -r id; do
+  [[ -n "$id" ]] || continue
+  wanted+=("$id")
+done < <(
   jq -r --arg n "$marketplace" \
     '.enabledPlugins // {} | to_entries[]
      | select(.value == true and (.key | endswith("@" + $n))) | .key' \
     .claude/settings.json 2>/dev/null
 )
-mapfile -t have < <(claude plugin list --json 2>/dev/null | jq -r '.[].id' 2>/dev/null)
+
+have=()
+while IFS= read -r id; do
+  [[ -n "$id" ]] || continue
+  have+=("$id")
+done < <(claude plugin list --json 2>/dev/null | jq -r '.[].id' 2>/dev/null)
 
 installed=0
-for id in "${wanted[@]}"; do
+for id in "${wanted[@]-}"; do
   [[ -n "$id" ]] || continue
   if [[ " ${have[*]-} " == *" $id "* ]]; then continue; fi
   if claude plugin install "$id" --scope user -y >/dev/null 2>&1; then
