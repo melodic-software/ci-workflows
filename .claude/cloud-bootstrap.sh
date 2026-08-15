@@ -18,6 +18,63 @@ set -euo pipefail
 repo_root="${CLAUDE_PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd -- "$repo_root"
 
+# --- Repo toolchain ---------------------------------------------------------
+# Ahead of the plugin-CLI guards below on purpose: those `command -v` checks
+# exit 0 when `claude` or `jq` is missing, and the toolchain must not be
+# collateral damage of an unrelated CLI being absent. The cloud VM is a fresh
+# Ubuntu image with no .NET at all, so a session here cannot build or analyze
+# the .NET surface these actions target — the failure a live cloud
+# verification run confirmed across the fleet.
+#
+# The subshell sets its own errexit posture and ends in an explicit `exit 0`
+# rather than being wrapped in `|| true`: this file runs under `set -e`, and
+# wrapping would put every call inside it in an `||` context.
+(
+  set +e
+
+  toolchain_warn() { printf 'cloud-bootstrap: %s\n' "$*" >&2; }
+
+  # env_line <export-line> — append to the session env file once. Dedup-guarded
+  # because SessionStart fires again on resume.
+  env_line() {
+    [[ -n "${CLAUDE_ENV_FILE:-}" ]] || return 0
+    grep -qxF "$1" "$CLAUDE_ENV_FILE" 2>/dev/null || printf '%s\n' "$1" >>"$CLAUDE_ENV_FILE"
+  }
+
+  # .NET SDK exactly as global.json pins, repo-local.
+  if [[ -f global.json ]] && command -v jq >/dev/null 2>&1; then
+    sdk="$(jq -r '.sdk.version // empty' global.json 2>/dev/null)"
+    if [[ -n "$sdk" ]]; then
+      # -F: the version is a literal, and its dots are not regex wildcards.
+      if [[ ! -x .dotnet/dotnet ]] || ! .dotnet/dotnet --list-sdks 2>/dev/null | grep -qF "$sdk "; then
+        installer=/tmp/dotnet-install.sh
+        # The cloud egress proxy can return an error body with HTTP 200 from
+        # dot.net, which `curl -f` cannot catch (-f only trips on >= 400), so a
+        # real installer's shebang is checked before it is executed.
+        # --proto/--proto-redir pin the redirect chain (dot.net -> aka.ms ->
+        # builds.dotnet.microsoft.com) to HTTPS end to end.
+        if curl -fsSL --proto '=https' --proto-redir '=https' \
+          --retry 2 --retry-delay 3 https://dot.net/v1/dotnet-install.sh -o "$installer" 2>/dev/null &&
+          [[ -s "$installer" ]] &&
+          head -c 2 "$installer" 2>/dev/null | grep -q '^#!' &&
+          bash "$installer" --version "$sdk" --install-dir .dotnet >/dev/null 2>&1; then
+          :
+        else
+          toolchain_warn "dotnet $sdk install failed — check the environment's network allowlist (dot.net, aka.ms, builds.dotnet.microsoft.com, download.visualstudio.microsoft.com)"
+        fi
+        rm -f "$installer"
+      fi
+      if [[ -x .dotnet/dotnet ]]; then
+        env_line "export DOTNET_ROOT=\"$PWD/.dotnet\""
+        # shellcheck disable=SC2016
+        env_line "export PATH=\"$PWD/.dotnet:\$PATH\""
+      fi
+    fi
+  fi
+
+  exit 0
+)
+
 command -v claude >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 

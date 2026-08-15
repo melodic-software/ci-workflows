@@ -21,3 +21,7 @@ node_modules/
 # .NET — build output from the dotnet fixtures
 bin/
 obj/
+
+# Repo-local .NET SDK installed by the cloud bootstrap on a fresh VM — a
+# multi-hundred-MB tool tree, not repository content.
+.dotnet/
