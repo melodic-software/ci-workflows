@@ -79,6 +79,12 @@ async function runScan({
   mergeStateFailures = {},
   probeOverrides = {},
   workspace,
+  // Test-mode wiring: undefined leaves the env var UNSET (the state every
+  // pre-existing case runs in, and the off-on-undefined contract); a string
+  // sets it verbatim, mirroring the workflow's `${{ inputs.test-mode }}`.
+  testMode,
+  testSyntheticCandidates,
+  markerEnv = MARKER,
 } = {}) {
   const keys = [
     "BOT_LOGIN",
@@ -88,12 +94,20 @@ async function runScan({
     "GITHUB_WORKSPACE",
     "GRAPHQL_RETRY_ATTEMPTS",
     "GRAPHQL_RETRY_BASE_MS",
+    "TEST_MODE",
+    "TEST_SYNTHETIC_CANDIDATES",
+    "ALERT_MARKER",
   ];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
   const effectiveWorkspace =
     workspace ?? fs.mkdtempSync(path.join(os.tmpdir(), "stuck-alert-"));
+  // TEST_MODE / TEST_SYNTHETIC_CANDIDATES must stay genuinely ABSENT unless a
+  // case opts in — Object.assign would coerce an undefined value to the string
+  // "undefined", which is not the same contract.
+  delete process.env.TEST_MODE;
+  delete process.env.TEST_SYNTHETIC_CANDIDATES;
   Object.assign(process.env, {
     BOT_LOGIN: "melodic-standards-sync",
     REPO_NAMES: repoNames.join(","),
@@ -104,7 +118,12 @@ async function runScan({
     GRAPHQL_RETRY_ATTEMPTS: String(retryAttempts),
     // Zero backoff so the retry-path tests never actually sleep.
     GRAPHQL_RETRY_BASE_MS: "0",
+    ALERT_MARKER: markerEnv,
   });
+  if (testMode !== undefined) process.env.TEST_MODE = testMode;
+  if (testSyntheticCandidates !== undefined) {
+    process.env.TEST_SYNTHETIC_CANDIDATES = testSyntheticCandidates;
+  }
   // Every node the mock knows for a repo, flattened across pages; the phase-2
   // per-PR probe looks its mergeStateStatus up here by number.
   const allNodesFor = (repo) =>
@@ -250,10 +269,18 @@ async function runScan({
       "core",
       "require",
       "process",
+      "context",
       scanScript,
     );
+    // Only the test-mode branch reads `context` (for the run URL in synthetic
+    // rows); production-path cases never touch it.
+    const context = {
+      serverUrl: "https://github.com",
+      repo: { owner: "melodic-software", repo: "standards" },
+      runId: 12345,
+    };
     try {
-      await execute(github, core, require, process);
+      await execute(github, core, require, process, context);
     } catch (error) {
       // Captured, not rethrown, so a persistent-failure test can assert both
       // that the run threw and that stuck-count was never set (no false clear).
@@ -752,7 +779,7 @@ function issue({
   login = "github-actions[bot]",
   type = "Bot",
   body = "",
-  title = "[Alert] standards-sync stuck auto-merge PR(s)",
+  title = "[Alert] standards-sync auto-merge PR(s) needing attention",
   pull_request = null,
 } = {}) {
   return { number, user: { login, type }, body, title, pull_request };
@@ -760,7 +787,7 @@ function issue({
 
 const MARKER =
   "<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->";
-const ISSUE_TITLE = "[Alert] standards-sync stuck auto-merge PR(s)";
+const ISSUE_TITLE = "[Alert] standards-sync auto-merge PR(s) needing attention";
 
 // The caller repository and the tracking-issue repository are deliberately
 // different fixtures everywhere below: the defect these steps were changed for
@@ -1323,4 +1350,173 @@ test("the all-clear path requires both categories empty", async () => {
   assert.equal(outputs["stuck-count"], "0");
   assert.equal(outputs["unarmed-count"], "0");
   assert.equal(report, null);
+});
+
+// --- Test mode (synthetic candidates; proof path for the issue lifecycle) ---
+
+const TEST_MARKER =
+  "<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:test -->";
+
+test("test-mode with two synthetic candidates fabricates both rows and never probes a live target", async () => {
+  const { graphqlCalls, outputs, report } = await runScan({
+    testMode: "true",
+    testSyntheticCandidates: "2",
+    markerEnv: TEST_MARKER,
+    // A real node the scan would have reported, proving the live path was
+    // genuinely skipped rather than coincidentally empty.
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({ enabledAt: HOURS_AGO(9), mergeStateStatus: "BLOCKED" }),
+      ],
+    },
+  });
+  assert.equal(graphqlCalls.length, 0);
+  assert.equal(outputs["stuck-count"], "1");
+  assert.equal(outputs["unarmed-count"], "1");
+  assert.ok(report.startsWith(TEST_MARKER));
+  assert.match(report, /SYNTHETIC-test-candidate/u);
+  assert.match(report, /actions\/runs\/12345/u);
+});
+
+test("test-mode with one synthetic candidate fabricates only the armed-stuck row", async () => {
+  const { graphqlCalls, outputs, report } = await runScan({
+    testMode: "true",
+    testSyntheticCandidates: "1",
+    markerEnv: TEST_MARKER,
+  });
+  assert.equal(graphqlCalls.length, 0);
+  assert.equal(outputs["stuck-count"], "1");
+  assert.equal(outputs["unarmed-count"], "0");
+  assert.match(report, /stuck auto-merge pull request/u);
+  assert.doesNotMatch(report, /never armed/u);
+});
+
+test("test-mode with zero synthetic candidates takes the all-clear path that closes the issue", async () => {
+  const { graphqlCalls, outputs, report, infos } = await runScan({
+    testMode: "true",
+    testSyntheticCandidates: "0",
+    markerEnv: TEST_MARKER,
+  });
+  assert.equal(graphqlCalls.length, 0);
+  assert.equal(outputs["stuck-count"], "0");
+  assert.equal(outputs["unarmed-count"], "0");
+  assert.equal(report, null);
+  assert.ok(infos.some((line) => /No stuck armed/u.test(line)));
+});
+
+test("test-mode rejects a candidate count outside the legal set instead of taking the all-clear path", async () => {
+  for (const bad of ["", "3", "-1", "two", "1.5"]) {
+    const { failedWith, outputs, report } = await runScan({
+      testMode: "true",
+      testSyntheticCandidates: bad,
+      markerEnv: TEST_MARKER,
+    });
+    assert.match(
+      failedWith ?? "",
+      /must be '0', '1', or '2'/u,
+      `count '${bad}' must fail validation`,
+    );
+    assert.equal(outputs["stuck-count"], undefined);
+    assert.equal(report, null);
+  }
+});
+
+test("an invalid candidate count outside test mode is ignored (production path unaffected)", async () => {
+  const { failedWith, outputs } = await runScan({
+    testSyntheticCandidates: "garbage",
+    nodesByRepo: { dotfiles: [] },
+  });
+  assert.equal(failedWith, null);
+  assert.equal(outputs["stuck-count"], "0");
+});
+
+test("test-mode is off when TEST_MODE is the string 'false'", async () => {
+  const { graphqlCalls, outputs } = await runScan({
+    testMode: "false",
+    testSyntheticCandidates: "2",
+    nodesByRepo: { dotfiles: [] },
+  });
+  assert.ok(graphqlCalls.length > 0);
+  assert.equal(outputs["stuck-count"], "0");
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+test("test-mode is off when TEST_MODE is absent, even with a candidate count set", async () => {
+  const { graphqlCalls, outputs } = await runScan({
+    testSyntheticCandidates: "2",
+    nodesByRepo: { dotfiles: [] },
+  });
+  assert.ok(graphqlCalls.length > 0);
+  assert.equal(outputs["stuck-count"], "0");
+  assert.equal(outputs["unarmed-count"], "0");
+});
+
+// --- Marker/title single-source pins (YAML text, not extracted scripts) ---
+// The script harness cannot see YAML `env:`/`with:` expressions, so these pin
+// the raw workflow text: exactly one definition of each marker/title literal
+// (the workflow-level ALERT_* env), with every consumer reading the env.
+
+test("production and test markers are each defined exactly once, in the ALERT_MARKER expression", () => {
+  const prod = workflow.match(
+    /<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->/gu,
+  );
+  const testM = workflow.match(
+    /<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:test -->/gu,
+  );
+  assert.equal(prod?.length, 1);
+  assert.equal(testM?.length, 1);
+  const alertMarkerLine = workflow
+    .split(/\r?\n/u)
+    .find((line) => line.startsWith("  ALERT_MARKER:"));
+  assert.ok(alertMarkerLine.includes("v1:test"));
+  assert.ok(alertMarkerLine.includes("v1:active"));
+  assert.ok(alertMarkerLine.includes("inputs.test-mode"));
+});
+
+test("production and test titles are each defined exactly once, in the ALERT_ISSUE_TITLE expression", () => {
+  const prod = workflow.match(
+    /\[Alert\] standards-sync auto-merge PR\(s\) needing attention/gu,
+  );
+  const testT = workflow.match(
+    /\[Test\] standards-sync auto-merge PR\(s\) needing attention/gu,
+  );
+  assert.equal(prod?.length, 1);
+  assert.equal(testT?.length, 1);
+  const titleLine = workflow
+    .split(/\r?\n/u)
+    .find((line) => line.startsWith("  ALERT_ISSUE_TITLE:"));
+  assert.ok(titleLine.includes("[Test]"));
+  assert.ok(titleLine.includes("[Alert]"));
+  assert.ok(titleLine.includes("inputs.test-mode"));
+});
+
+test("all marker/title consumers read the ALERT_* env, never a local literal", () => {
+  assert.equal(
+    workflow.match(/MARKER: \$\{\{ env\.ALERT_MARKER \}\}/gu)?.length,
+    2,
+    "lookup and close each map MARKER from ALERT_MARKER",
+  );
+  assert.equal(
+    workflow.match(/ISSUE_TITLE: \$\{\{ env\.ALERT_ISSUE_TITLE \}\}/gu)?.length,
+    1,
+    "lookup maps ISSUE_TITLE from ALERT_ISSUE_TITLE",
+  );
+  assert.equal(
+    workflow.match(/title: \$\{\{ env\.ALERT_ISSUE_TITLE \}\}/gu)?.length,
+    1,
+    "the create step's title reads ALERT_ISSUE_TITLE",
+  );
+  assert.match(scanScript, /const marker = process\.env\.ALERT_MARKER;/u);
+});
+
+test("test-synthetic-candidates is a string input so '0' survives the caller's empty-string fallback", () => {
+  const lines = workflow.split(/\r?\n/u);
+  const inputIndex = lines.findIndex((line) =>
+    line.includes("test-synthetic-candidates:"),
+  );
+  assert.notEqual(inputIndex, -1);
+  const typeLine = lines
+    .slice(inputIndex, inputIndex + 12)
+    .find((line) => /^\s+type:/u.test(line));
+  assert.match(typeLine, /type: string/u);
 });

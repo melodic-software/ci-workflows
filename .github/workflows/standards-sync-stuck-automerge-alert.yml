@@ -77,6 +77,25 @@ on:
         description: Minimum hours before an armed-but-BLOCKED or never-armed PR is reported.
         type: number
         default: 4
+      test-mode:
+        description: >-
+          When true, skip live target scanning and fabricate synthetic
+          candidates instead, filing under a test-only marker and title so the
+          production rolling issue is never touched or adopted. Proves the
+          tracking-issue create/update/close/fail paths without a real stuck
+          PR.
+        type: boolean
+        default: false
+      test-synthetic-candidates:
+        description: >-
+          Synthetic candidate count when test-mode is true, as a string ('0',
+          '1', or '2') — 2 fabricates one armed-stuck and one never-armed row,
+          1 the armed-stuck row only, 0 the all-clear that closes the test
+          issue. A string deliberately: workflow_dispatch inputs arrive as
+          strings, and '0' must survive the caller's empty-string fallback (a
+          numeric falsy would be swallowed). Ignored when test-mode is false.
+        type: string
+        default: '1'
     secrets:
       app-client-id:
         description: GitHub App client ID for cross-repository pull-request reads.
@@ -112,6 +131,13 @@ env:
   # users/melodic-standards-sync%5Bbot%5D` returns login
   # "melodic-standards-sync[bot]", type "Bot".
   ISSUE_AUTHOR_LOGIN: melodic-standards-sync[bot]
+  # Marker and title diverge under test-mode so a dispatched proof run files a
+  # separate rolling issue the production lookup never adopts — the identity
+  # filter alone cannot distinguish them, because the same App authors both.
+  # Every marker/title consumer below reads these two values; no step carries
+  # its own literal.
+  ALERT_MARKER: ${{ inputs.test-mode && '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:test -->' || '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->' }}
+  ALERT_ISSUE_TITLE: ${{ inputs.test-mode && '[Test] standards-sync auto-merge PR(s) needing attention' || '[Alert] standards-sync auto-merge PR(s) needing attention' }}
 
 jobs:
   detect-stuck-armed-prs:
@@ -188,9 +214,9 @@ jobs:
           repo_names="$(jq -r '[.include[].repo_name] | join(",")' <<<"$matrix")"
           echo "repo-names=${repo_names}" >> "$GITHUB_OUTPUT"
           # Only targets the manifest expects to be armed can be reported
-          # unarmed. `automerge: false` is a deliberate opt-out (the Phase 3d
-          # rollout window sets it fleet-wide), so scanning it would turn the
-          # intended state into an alert on every target at once.
+          # unarmed. `automerge: false` is a deliberate per-target opt-out
+          # (rollout windows set it while a target is staged), so scanning an
+          # opted-out target would turn the intended state into an alert.
           automerge_names="$(jq -r '[.include[] | select(.automerge) | .repo_name] | join(",")' <<<"$matrix")"
           echo "automerge-repo-names=${automerge_names}" >> "$GITHUB_OUTPUT"
 
@@ -213,6 +239,8 @@ jobs:
           THRESHOLD_HOURS: ${{ inputs.threshold-hours }}
           GRAPHQL_RETRY_ATTEMPTS: '4'
           GRAPHQL_RETRY_BASE_MS: '1000'
+          TEST_MODE: ${{ inputs.test-mode }}
+          TEST_SYNTHETIC_CANDIDATES: ${{ inputs.test-synthetic-candidates }}
         with:
           github-token: ${{ steps.token.outputs.token }}
           script: |
@@ -225,6 +253,24 @@ jobs:
             );
             const retryAttempts = Number(process.env.GRAPHQL_RETRY_ATTEMPTS ?? 4);
             const retryBaseMs = Number(process.env.GRAPHQL_RETRY_BASE_MS ?? 1000);
+
+            // Test mode fabricates candidates instead of probing live targets;
+            // everything downstream — report file, outputs, issue write, the
+            // deliberate failure — runs unchanged, and that equivalence is what
+            // a dispatched proof run demonstrates. Off unless TEST_MODE is the
+            // literal string 'true': undefined in the contract tests' replayed
+            // environments and 'false' on production runs.
+            const testMode = process.env.TEST_MODE === 'true';
+            // Validated against the exact legal set: Number() would map an
+            // empty, negative, or garbled count to 0/NaN, silently taking the
+            // all-clear path — a typo'd create/update proof would then CLOSE
+            // the test issue while appearing to succeed.
+            const rawSyntheticCandidates = process.env.TEST_SYNTHETIC_CANDIDATES ?? '1';
+            if (testMode && !['0', '1', '2'].includes(rawSyntheticCandidates)) {
+              core.setFailed(`test-synthetic-candidates must be '0', '1', or '2'; got '${rawSyntheticCandidates}'.`);
+              return;
+            }
+            const testSyntheticCandidates = Number(rawSyntheticCandidates);
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -356,7 +402,11 @@ jobs:
 
             const stuck = [];
             const unarmed = [];
-            for (const repo of repoNames) {
+            // Test mode empties the scan list rather than branching around the
+            // loop, so the loop body needs no reindent and the real-scan code
+            // path is byte-identical either way.
+            const scanRepoNames = testMode ? [] : repoNames;
+            for (const repo of scanRepoNames) {
               const candidates = [];
               const unarmedCandidates = [];
               let after = null;
@@ -419,6 +469,18 @@ jobs:
               }
             }
 
+            if (testMode) {
+              // SYNTHETIC rows: the fake "PR" links point at this very run, so
+              // the filed table is self-documenting and dangles no dead link.
+              const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+              if (testSyntheticCandidates >= 1) {
+                stuck.push({ repo: 'SYNTHETIC-test-candidate', number: 0, url: runUrl, armedHoursAgo: 99 });
+              }
+              if (testSyntheticCandidates >= 2) {
+                unarmed.push({ repo: 'SYNTHETIC-test-candidate', number: 0, url: runUrl, openHoursAgo: 99 });
+              }
+            }
+
             core.setOutput('stuck-count', String(stuck.length));
             core.setOutput('unarmed-count', String(unarmed.length));
             if (stuck.length === 0 && unarmed.length === 0) {
@@ -426,7 +488,7 @@ jobs:
               return;
             }
 
-            const marker = '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->';
+            const marker = process.env.ALERT_MARKER;
             const body = [marker, ''];
 
             if (stuck.length > 0) {
@@ -529,8 +591,8 @@ jobs:
         if: steps.scan.outputs.stuck-count != '0' || steps.scan.outputs.unarmed-count != '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
-          ISSUE_TITLE: '[Alert] standards-sync auto-merge PR(s) needing attention'
+          MARKER: ${{ env.ALERT_MARKER }}
+          ISSUE_TITLE: ${{ env.ALERT_ISSUE_TITLE }}
           # Read through env, never interpolated into the script text: an
           # input reaching a `script:` body as `${{ }}` is template injection
           # by construction, however trusted the value looks.
@@ -591,7 +653,7 @@ jobs:
           # Defaults to ${{ github.repository }} — the caller — so naming it is
           # what keeps this write on the same repository the token is scoped to.
           repository: ${{ github.repository_owner }}/${{ inputs.tracking-issue-repository }}
-          title: '[Alert] standards-sync auto-merge PR(s) needing attention'
+          title: ${{ env.ALERT_ISSUE_TITLE }}
           issue-number: ${{ steps.tracking.outputs.issue-number }}
           content-filepath: ${{ github.workspace }}/.stuck-automerge-report.md
 
@@ -601,7 +663,7 @@ jobs:
         if: steps.scan.outputs.stuck-count == '0' && steps.scan.outputs.unarmed-count == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          MARKER: '<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->'
+          MARKER: ${{ env.ALERT_MARKER }}
           TRACKING_ISSUE_REPOSITORY: ${{ inputs.tracking-issue-repository }}
         with:
           github-token: ${{ steps.issue-token.outputs.token }}
