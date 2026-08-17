@@ -384,6 +384,13 @@ callers pass `skip-actors` including `melodic-standards-sync[bot]`
 resolves as "not exercised"; the new REVIEW.md's first real exercise
 arrives with ordinary PR traffic.
 
+**Phase 1 evidence — historical note (2026-08-17):** the `grep -ci public
+distribution/REVIEW-CREDENTIAL.md` == 27 figure above described the file as
+it stood at Phase 1 time. standards#407 (standards-sync audit, Phase 0.1)
+later compressed that file (274 → 217 lines; the `[!CAUTION]` block
+byte-preserved), so the recorded count is verified-at-the-time evidence,
+not a live invariant — do not re-run it as a check.
+
 ### Phase 2: ci-workflows change set [DONE]
 
 After Phases 0 + 1 (2b additionally gated on the five sync PRs). Delivery:

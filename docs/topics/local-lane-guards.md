@@ -3,7 +3,7 @@
 **Owner:** [`melodic-software/standards`](https://github.com/melodic-software/standards)
 component [`components/local-lane-guards/`](https://github.com/melodic-software/standards/tree/main/components/local-lane-guards)
 (ADR:
-[`0003-local-lane-guards-via-standards-component.md`](https://github.com/melodic-software/standards/blob/main/docs/adr/0003-local-lane-guards-via-standards-component.md)).
+[`0004-local-lane-guards-via-standards-component.md`](https://github.com/melodic-software/standards/blob/main/docs/adr/0004-local-lane-guards-via-standards-component.md)).
 
 **Decision (ci-workflows#190):** local invocation of `comment-hygiene`,
 `exec-bit`, `machine-specific-paths`, and `reference-integrity` reuses the
