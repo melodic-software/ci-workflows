@@ -119,6 +119,7 @@ jobs:
               .github/**
             selector-contract:
               .github/**
+              .node-version
             pester:
               .github/**
               fixtures/pester/**

@@ -3,6 +3,7 @@ name: selector-conformance
 on:
   pull_request:
     paths:
+      - .node-version
       - .github/workflows/link-check.yml
       - .github/workflows/queue-monitor-liveness.yml
       - .github/workflows/select-runner.yml
@@ -33,6 +34,7 @@ on:
   push:
     branches: [main]
     paths:
+      - .node-version
       - .github/workflows/link-check.yml
       - .github/workflows/queue-monitor-liveness.yml
       - .github/workflows/select-runner.yml
