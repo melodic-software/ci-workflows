@@ -21,6 +21,7 @@ on:
       - '.github/workflows/osv-scanner.yml'
       - '.github/workflows/zizmor.yml'
       - '.github/workflows/claude-e2e-verify.yml'
+      - '.node-version'
       - 'global.json'
       - '.github/osv-scanner-pin.json'
       - '.github/actions/actionlint/action.yml'
@@ -229,6 +230,14 @@ jobs:
               exit 1
             fi
           done
+          # The synced .node-version (standards node-runtime component) is the
+          # fleet pin; the composite defaults must track it so a canonical bump
+          # that syncs down cannot silently diverge from the action inputs.
+          node_file_pin="$(tr -d '[:space:]' <.node-version)"
+          if [[ "$node_file_pin" != "$node_current" ]]; then
+            echo "::error::.node-version pins ${node_file_pin} but the composite node-version defaults pin ${node_current} — bump the composites to match the synced fleet pin"
+            exit 1
+          fi
           for file in .github/actions/pyright/action.yml .github/actions/check-jsonschema/action.yml; do
             sibling="$(yq '.inputs."python-version".default' "$file")"
             if [[ "$sibling" != "$python_current" ]]; then
