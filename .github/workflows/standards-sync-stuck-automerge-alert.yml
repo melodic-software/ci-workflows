@@ -261,7 +261,16 @@ jobs:
             // literal string 'true': undefined in the contract tests' replayed
             // environments and 'false' on production runs.
             const testMode = process.env.TEST_MODE === 'true';
-            const testSyntheticCandidates = Number(process.env.TEST_SYNTHETIC_CANDIDATES ?? '1');
+            // Validated against the exact legal set: Number() would map an
+            // empty, negative, or garbled count to 0/NaN, silently taking the
+            // all-clear path — a typo'd create/update proof would then CLOSE
+            // the test issue while appearing to succeed.
+            const rawSyntheticCandidates = process.env.TEST_SYNTHETIC_CANDIDATES ?? '1';
+            if (testMode && !['0', '1', '2'].includes(rawSyntheticCandidates)) {
+              core.setFailed(`test-synthetic-candidates must be '0', '1', or '2'; got '${rawSyntheticCandidates}'.`);
+              return;
+            }
+            const testSyntheticCandidates = Number(rawSyntheticCandidates);
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -1404,6 +1404,32 @@ test("test-mode with zero synthetic candidates takes the all-clear path that clo
   assert.ok(infos.some((line) => /No stuck armed/u.test(line)));
 });
 
+test("test-mode rejects a candidate count outside the legal set instead of taking the all-clear path", async () => {
+  for (const bad of ["", "3", "-1", "two", "1.5"]) {
+    const { failedWith, outputs, report } = await runScan({
+      testMode: "true",
+      testSyntheticCandidates: bad,
+      markerEnv: TEST_MARKER,
+    });
+    assert.match(
+      failedWith ?? "",
+      /must be '0', '1', or '2'/u,
+      `count '${bad}' must fail validation`,
+    );
+    assert.equal(outputs["stuck-count"], undefined);
+    assert.equal(report, null);
+  }
+});
+
+test("an invalid candidate count outside test mode is ignored (production path unaffected)", async () => {
+  const { failedWith, outputs } = await runScan({
+    testSyntheticCandidates: "garbage",
+    nodesByRepo: { dotfiles: [] },
+  });
+  assert.equal(failedWith, null);
+  assert.equal(outputs["stuck-count"], "0");
+});
+
 test("test-mode is off when TEST_MODE is the string 'false'", async () => {
   const { graphqlCalls, outputs } = await runScan({
     testMode: "false",
@@ -1471,8 +1497,7 @@ test("all marker/title consumers read the ALERT_* env, never a local literal", (
     "lookup and close each map MARKER from ALERT_MARKER",
   );
   assert.equal(
-    workflow.match(/ISSUE_TITLE: \$\{\{ env\.ALERT_ISSUE_TITLE \}\}/gu)
-      ?.length,
+    workflow.match(/ISSUE_TITLE: \$\{\{ env\.ALERT_ISSUE_TITLE \}\}/gu)?.length,
     1,
     "lookup maps ISSUE_TITLE from ALERT_ISSUE_TITLE",
   );
