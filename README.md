@@ -353,7 +353,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   caller need not be — and for `melodic-software/standards`, the sync source,
   is not — a repository that installation covers. The run fails when it finds
   any — both states are actionable conditions, not flaky ones, so this is
-  intentionally not advisory.
+  intentionally not advisory. A `test-mode` input (with a string
+  `test-synthetic-candidates` count) skips live scanning and fabricates
+  synthetic candidates under a test-only marker and title, so a dispatched
+  caller can prove the tracking-issue create/update/close/fail lifecycle
+  end-to-end without a real stuck PR and without touching the production
+  rolling issue.
 - `.github/workflows/select-runner.yml` — the single organization-approved
   hosted/self-hosted selector. With `self-hosted-only`, the selector itself
   queues on the always-on default `melodic-ubuntu-24.04-x64` route so it never
