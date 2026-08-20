@@ -520,8 +520,10 @@ jobs:
       - name: Guard managed files
         uses: ./.github/actions/managed-files-guard
         with:
-          # standards#354 (dest-paths) on main.
-          standards-ref: 3288035feb70d7985e1337c2e39421ae3c8b9655
+          # standards main post engine-Node-port retirement (standards Phase
+          # 6.4): the guard's engine path now runs the Node engine through the
+          # wrapper, exercising the gated dependency install added alongside.
+          standards-ref: c4d865bb123f476cf1cb36d8f8a1ffb588204f00
 
   shellcheck:
     needs: changes

@@ -42,10 +42,6 @@ on:
 permissions:
   contents: read
 
-env:
-  YQ_VERSION: v4.53.3
-  YQ_LINUX_AMD64_SHA256: fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
-
 # One fixed PR branch is updated per target. Queue invocations so two source
 # revisions cannot race while refreshing those branches.
 concurrency:
@@ -103,35 +99,6 @@ jobs:
             --omit=dev --ignore-scripts --no-audit --no-fund \
             --fetch-retries=8 --fetch-retry-mintimeout=1000 \
             --fetch-retry-maxtimeout=60000
-
-      - &install-yq
-        # Pinned + checksum-verified, not the runner-preinstalled exception
-        # tool-version-drift-check.yml and composite-run-shellcheck.sh take
-        # (ratified, melodic-software/ci-workflows#265): this workflow's yq
-        # reads drive what gets pushed as a PR to OTHER repositories, so an
-        # unpinned, runner-image-drifted yq could corrupt a synced file
-        # everywhere this workflow is called, not just misreport locally.
-        name: Install checksum-verified yq
-        run: |
-          set -euo pipefail
-          install_dir="${RUNNER_TEMP}/standards-sync-bin"
-          install -d "$install_dir"
-          # Nine attempts under curl's exponential backoff (~4-5 minutes,
-          # capped by --retry-max-time) instead of a burst that ends within
-          # seconds, and --retry-all-errors so a mid-body connection death
-          # (curl exit 56) retries like an HTTP 5xx does — the two failure
-          # classes of the 2026-08-12 release-asset outage (#444), which
-          # took down this sync cascade with every other lane. The pinned
-          # SHA-256 below stays the integrity gate.
-          curl --fail --location --proto '=https' --silent --show-error \
-            --connect-timeout 10 --max-time 120 \
-            --retry 8 --retry-all-errors --retry-max-time 300 \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
-            --output "$install_dir/yq"
-          printf '%s  %s\n' "$YQ_LINUX_AMD64_SHA256" "$install_dir/yq" \
-            | sha256sum --check --strict -
-          chmod 0755 "$install_dir/yq"
-          echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Resolve standards commit
         id: resolve
@@ -476,8 +443,6 @@ jobs:
             --omit=dev --ignore-scripts --no-audit --no-fund \
             --fetch-retries=8 --fetch-retry-mintimeout=1000 \
             --fetch-retry-maxtimeout=60000
-
-      - *install-yq
 
       - name: Check out target
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
