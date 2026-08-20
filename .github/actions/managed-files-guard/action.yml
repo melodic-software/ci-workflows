@@ -52,6 +52,29 @@ runs:
         path: .managed-files-guard-standards
         persist-credentials: false
 
+    # Node-engine prep, gated mechanically on the engine flavor the pinned
+    # standards ref carries: a checkout with sync-manifest.mjs needs the
+    # engine's locked dependencies before dest-paths can run post-cutover.
+    # Uses the runner-preinstalled node/npm — the same runner-image posture
+    # this action already takes for yq (recorded in the standards
+    # distribution THREAT-MODEL), acceptable for this advisory-first PR
+    # check; the sync reusables pin their own Node.
+    - name: Install engine dependencies
+      if: steps.skip.outputs.skip != 'true'
+      shell: bash
+      env:
+        STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+      run: |
+        set -euo pipefail
+        if [[ -f "$STANDARDS_ROOT/distribution/sync-manifest.mjs" ]]; then
+          npm ci --prefix "$STANDARDS_ROOT/distribution" \
+            --omit=dev --ignore-scripts --no-audit --no-fund \
+            --fetch-retries=8 --fetch-retry-mintimeout=1000 \
+            --fetch-retry-maxtimeout=60000
+        else
+          echo "Pinned standards ref predates the Node engine — no dependencies to install."
+        fi
+
     - name: Reject hand-edits of managed files
       if: steps.skip.outputs.skip != 'true'
       shell: bash
