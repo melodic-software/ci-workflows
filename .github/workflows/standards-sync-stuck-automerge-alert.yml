@@ -108,8 +108,6 @@ permissions:
   contents: read
 
 env:
-  YQ_VERSION: v4.53.3
-  YQ_LINUX_AMD64_SHA256: fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
   # The one App identity standards-sync.yml opens sync PRs as. GraphQL's
   # `author.login` omits the REST-only `[bot]` suffix; `__typename` is the
   # authoritative bot-vs-human discriminator, so both are checked together.
@@ -204,36 +202,6 @@ jobs:
             --omit=dev --ignore-scripts --no-audit --no-fund \
             --fetch-retries=8 --fetch-retry-mintimeout=1000 \
             --fetch-retry-maxtimeout=60000
-
-      - name: Install checksum-verified yq
-        # Mirrors standards-sync.yml's install rather than independently
-        # taking the runner-preinstalled exception this workflow's own,
-        # advisory-only blast radius might otherwise justify (ratified,
-        # melodic-software/ci-workflows#265): this workflow is the watchdog
-        # half of standards-sync.yml's arm-then-verify contract, reads the
-        # same manifest, and is meant to stay toolchain-identical to it
-        # rather than drift to a second, independently-reasoned yq.
-        run: |
-          set -euo pipefail
-          install_dir="${RUNNER_TEMP}/standards-sync-alert-bin"
-          install -d "$install_dir"
-          # Nine attempts under curl's exponential backoff (~4-5 minutes,
-          # capped by --retry-max-time) instead of a burst that ends within
-          # seconds, and --retry-all-errors so a mid-body connection death
-          # (curl exit 56) retries like an HTTP 5xx does — the two failure
-          # classes of the 2026-08-12 release-asset outage (#444). Kept
-          # flag-for-flag identical to standards-sync.yml's install per the
-          # toolchain-identical contract above. The pinned SHA-256 below
-          # stays the integrity gate.
-          curl --fail --location --proto '=https' --silent --show-error \
-            --connect-timeout 10 --max-time 120 \
-            --retry 8 --retry-all-errors --retry-max-time 300 \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
-            --output "$install_dir/yq"
-          printf '%s  %s\n' "$YQ_LINUX_AMD64_SHA256" "$install_dir/yq" \
-            | sha256sum --check --strict -
-          chmod 0755 "$install_dir/yq"
-          echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Read target repositories from the manifest
         id: targets
