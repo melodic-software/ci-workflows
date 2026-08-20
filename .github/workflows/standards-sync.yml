@@ -72,15 +72,31 @@ jobs:
 
       # Node-engine prep (standards Phase 6 cutover): behavior-inert while the
       # Bash engine is live, load-bearing the moment sync-manifest.sh becomes
-      # the exec wrapper. --ignore-scripts is a standing control — no npm
-      # lifecycle script may ever execute inside this workflow — and the npm
-      # fetch retries mirror the yq install's outage hardening below (#444):
-      # the registry is now an availability dependency of every run.
+      # the exec wrapper. Gated on the checked-out ref actually carrying the
+      # Node engine, same as managed-files-guard: standards-ref accepts any
+      # ref, and a pre-port pin must keep running the Bash engine instead of
+      # failing on missing prep inputs. --ignore-scripts is a standing
+      # control — no npm lifecycle script may ever execute inside this
+      # workflow — and the npm fetch retries mirror the yq install's outage
+      # hardening below (#444): the registry is now an availability
+      # dependency of every run at a post-port pin.
+      - name: Detect the engine flavor
+        id: engine
+        run: |
+          set -euo pipefail
+          if [[ -f distribution/sync-manifest.mjs ]]; then
+            echo "node=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "node=false" >> "$GITHUB_OUTPUT"
+            echo "Pinned standards ref predates the Node engine — skipping Node prep."
+          fi
       - name: Set up Node
+        if: steps.engine.outputs.node == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
       - name: Install engine dependencies
+        if: steps.engine.outputs.node == 'true'
         run: |
           set -euo pipefail
           npm ci --prefix distribution \
@@ -432,15 +448,28 @@ jobs:
           path: .standards-src
           persist-credentials: false
 
-      # Node-engine prep — same rationale and flags as the plan job's step;
-      # this job's standards checkout lives under .standards-src. The install
-      # runs AFTER the App-token mint, so --ignore-scripts is the control that
-      # keeps dependency lifecycle scripts out of the credentialed job.
+      # Node-engine prep — same rationale, gating, and flags as the plan
+      # job's steps; this job's standards checkout lives under .standards-src.
+      # The install runs AFTER the App-token mint, so --ignore-scripts is the
+      # control that keeps dependency lifecycle scripts out of the
+      # credentialed job.
+      - name: Detect the engine flavor
+        id: engine
+        run: |
+          set -euo pipefail
+          if [[ -f .standards-src/distribution/sync-manifest.mjs ]]; then
+            echo "node=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "node=false" >> "$GITHUB_OUTPUT"
+            echo "Pinned standards ref predates the Node engine — skipping Node prep."
+          fi
       - name: Set up Node
+        if: steps.engine.outputs.node == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .standards-src/.node-version
       - name: Install engine dependencies
+        if: steps.engine.outputs.node == 'true'
         run: |
           set -euo pipefail
           npm ci --prefix .standards-src/distribution \
