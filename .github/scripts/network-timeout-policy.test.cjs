@@ -25,14 +25,15 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   // exponential backoff rather than bound it.
   for (const [name, content, expected] of [
     ["zizmor", read(".github/workflows/zizmor.yml"), 1],
-    // The yq install step is defined once (as a YAML anchor) and reused via
-    // an alias in the sync job, so the literal curl budget text appears once
-    // even though both jobs run it.
-    ["standards sync", read(".github/workflows/standards-sync.yml"), 1],
+    // The standards-sync reusables download no release asset since the
+    // engine's Node cutover retired their yq installs (standards Phase 6.4);
+    // their npm installs carry the equivalent fetch-retry budget, asserted
+    // separately below.
+    ["standards sync", read(".github/workflows/standards-sync.yml"), 0],
     [
       "stuck-automerge alert",
       read(".github/workflows/standards-sync-stuck-automerge-alert.yml"),
-      1,
+      0,
     ],
     // Linux (bash) and Windows (pwsh) golangci-lint installs carry the same
     // budget, hence two occurrences.
@@ -53,6 +54,32 @@ test("immutable release assets have a bounded exponential retry budget", () => {
       name,
     );
     assert.doesNotMatch(content, /--retry-delay/u, name);
+  }
+
+  // The standards-sync path's remaining network dependency is npm: every
+  // engine-dependency install carries the equivalent bounded retry budget
+  // (mirroring the retired yq step's outage rationale).
+  for (const [name, content, expected] of [
+    ["standards sync npm", read(".github/workflows/standards-sync.yml"), 2],
+    [
+      "stuck-automerge alert npm",
+      read(".github/workflows/standards-sync-stuck-automerge-alert.yml"),
+      1,
+    ],
+    [
+      "managed-files-guard npm",
+      read(".github/actions/managed-files-guard/action.yml"),
+      1,
+    ],
+  ]) {
+    assert.equal(
+      occurrences(
+        content,
+        /--fetch-retries=8 --fetch-retry-mintimeout=1000/gu,
+      ),
+      expected,
+      name,
+    );
   }
 });
 
