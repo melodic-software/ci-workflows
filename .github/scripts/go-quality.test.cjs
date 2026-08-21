@@ -67,14 +67,14 @@ test("native Linux and Windows analyzer lanes use immutable verified binaries", 
     1,
     "all actions/setup-go pins must share the same SHA",
   );
-  assert.match(workflow, /GOLANGCI_LINT_VERSION: 2\.12\.2/u);
+  assert.match(workflow, /GOLANGCI_LINT_VERSION: 2\.13\.1/u);
   assert.match(
     workflow,
-    /GOLANGCI_LINT_SHA256: 8df580d2670fed8fa984aac0507099af8df275e665215f5c7a2ae3943893a553/u,
+    /GOLANGCI_LINT_SHA256: b17bfbc9d4aaa48be7f4f1ce3240bc3d8200c870c072bacf15c26219e2cfb9cc/u,
   );
   assert.match(
     workflow,
-    /GOLANGCI_LINT_SHA256: bd42e3ebc8cb4ececb86941983baaf1dc221bbb04d838e94ce63b49cc91e02bb/u,
+    /GOLANGCI_LINT_SHA256: cc119bdd57d2b35ce36fbc174b54949e1a1e45f2cadaf64372cc799cabaf88a9/u,
   );
   assert.match(workflow, /golangci-lint-\$\{version\}-linux-amd64\.tar\.gz/u);
   assert.match(workflow, /golangci-lint-\$version-windows-amd64\.zip/u);
