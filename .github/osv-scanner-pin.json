@@ -1,20 +1,20 @@
 {
   "schemaVersion": 2,
   "component": "google/osv-scanner",
-  "version": "2.5.0",
-  "sourceRevision": "a258868211a57052da6bd323f758b8388dee02bb",
+  "version": "2.5.1",
+  "sourceRevision": "c84fa4568f2526d0333e9a914ea8a0a5f74ad68b",
   "sourceUrl": "https://github.com/google/osv-scanner",
-  "releaseUrl": "https://github.com/google/osv-scanner/releases/tag/v2.5.0",
+  "releaseUrl": "https://github.com/google/osv-scanner/releases/tag/v2.5.1",
   "binary": {
     "asset": "osv-scanner_linux_amd64",
     "platform": "linux/amd64",
-    "sha256": "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c"
+    "sha256": "f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be"
   },
   "provenance": {
     "asset": "multiple.intoto.jsonl",
-    "sha256": "b3b5f52fc7033cbe6e171ab269a975e0fec9af791b4ea738710665534427ebef",
+    "sha256": "664273601759eb6540f35bfdbfa6ff083026c09e2e9bb7ad3cded795967dd462",
     "sourceUri": "github.com/google/osv-scanner",
-    "sourceTag": "v2.5.0"
+    "sourceTag": "v2.5.1"
   },
   "verifier": {
     "repository": "slsa-framework/slsa-verifier",

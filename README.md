@@ -679,13 +679,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `security-events: write` only applies when the caller already granted it.
   Inputs are documented inline.
 - `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
-  Google's official native OSV-Scanner v2.5.0 Linux X64 binary. The exact binary,
+  Google's official native OSV-Scanner v2.5.1 Linux X64 binary. The exact binary,
   its provenance, and the SLSA verifier are checksum-pinned; the verifier then
   attests the expected Google source repository and exact release tag before the
   scanner runs. One native SARIF scan emits escaped GitHub annotations without
   retaining or uploading an artifact. **Advisory for findings** (`fail-on-vuln`
   off by default); supply-chain, scanner, and invalid-result errors always fail
-  closed. V2.5.0 scans
+  closed. V2.5.1 scans
   supported manifests and lockfiles; .NET `.csproj`/`PackageReference` and
   Central Package Management are enabled by default. A committed
   `packages.lock.json` remains the reproducibility contract enforced by
@@ -694,7 +694,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   declares the repo genuinely dependency-less via `allow-no-lockfiles: true`.
   The caller must pass its approved selector output through `runner`; the native
   lane needs no Docker socket or privileged worker. Inputs are documented inline.
-  See the [official v2.5.0 release][osv-release-v2-5].
+  See the [official v2.5.1 release][osv-release-v2-5].
 
   “Enabled by default” is not treated as proof that every MSBuild layout is
   covered. Each consumer's verification run must show nonzero package discovery
@@ -1288,7 +1288,7 @@ mirrors of the standards catalog.
 [job-runs-on]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
 [osv-installation]: https://google.github.io/osv-scanner/installation/
-[osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.0
+[osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
 [pulumi-oidc]: https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/
 [pulumi-stack-export]: https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/

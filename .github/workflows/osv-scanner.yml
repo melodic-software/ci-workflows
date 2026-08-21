@@ -39,10 +39,10 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     env:
-      OSV_VERSION: 2.5.0
+      OSV_VERSION: 2.5.1
       OSV_ASSET: osv-scanner_linux_amd64
-      OSV_SHA256: edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c
-      OSV_PROVENANCE_SHA256: b3b5f52fc7033cbe6e171ab269a975e0fec9af791b4ea738710665534427ebef
+      OSV_SHA256: f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be
+      OSV_PROVENANCE_SHA256: 664273601759eb6540f35bfdbfa6ff083026c09e2e9bb7ad3cded795967dd462
       SLSA_VERIFIER_VERSION: 2.7.1
       SLSA_VERIFIER_SHA256: 946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339
     steps:
