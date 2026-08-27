@@ -26,6 +26,6 @@ jobs:
     permissions:
       pull-requests: read
       actions: read
-    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@01c3295629ab9dea9a602ddb9e2217c83f014a10 # v0.15.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@d26c750691b5498fab529d115b63f84aa7aecebe # v0.17.0
     with:
       exempt-authors: 'dependabot[bot]'
