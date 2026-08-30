@@ -148,24 +148,21 @@ check 'the report always carries the tracking marker' 0 'v0.1.0' 'v0.1.0' \
 
 # A usage error must be distinguishable from "no drift" AND from "drift", or a
 # broken invocation in the workflow would read as a clean run forever.
-rc=0
-bash "$script" >/dev/null 2>&1 || rc=$?
-[[ "$rc" -eq 2 ]] || {
-  echo "FAIL: no arguments should exit 2, got ${rc}" >&2
-  failed=1
+# check_usage <name> [argument ...]
+check_usage() {
+  local name="$1"
+  shift
+  local rc=0
+  bash "$script" "$@" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 2 ]]; then
+    echo "FAIL: ${name} should exit 2, got ${rc}" >&2
+    failed=1
+  fi
 }
-rc=0
-bash "$script" "$scratch/tags" >/dev/null 2>&1 || rc=$?
-[[ "$rc" -eq 2 ]] || {
-  echo "FAIL: one argument should exit 2, got ${rc}" >&2
-  failed=1
-}
-rc=0
-bash "$script" "$scratch/nonexistent" "$scratch/releases" >/dev/null 2>&1 || rc=$?
-[[ "$rc" -eq 2 ]] || {
-  echo "FAIL: an unreadable file should exit 2, got ${rc}" >&2
-  failed=1
-}
+
+check_usage 'no arguments'
+check_usage 'one argument' "$scratch/tags"
+check_usage 'an unreadable file' "$scratch/nonexistent" "$scratch/releases"
 echo 'ok: usage errors exit 2, never 0 or 1'
 
 [[ "$failed" -eq 0 ]] || exit 1

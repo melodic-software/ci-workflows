@@ -341,7 +341,7 @@ test("an armed PR that is CLEAN (not BLOCKED) is not reported", async () => {
 });
 
 test("an armed, BLOCKED PR younger than the threshold is not reported", async () => {
-  const recentlyArmed = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
+  const recentlyArmed = HOURS_AGO(1);
   const { outputs } = await runScan({
     thresholdHours: 4,
     nodesByRepo: {
@@ -354,7 +354,7 @@ test("an armed, BLOCKED PR younger than the threshold is not reported", async ()
 });
 
 test("an armed, BLOCKED PR past the threshold is reported with a marker and a recovery section", async () => {
-  const staleArmed = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(); // 5h ago
+  const staleArmed = HOURS_AGO(5);
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -378,7 +378,7 @@ test("an armed, BLOCKED PR past the threshold is reported with a marker and a re
 });
 
 test("a bot-shaped author with an unrelated login is ignored (exact-login match, not a [bot]-suffix pattern)", async () => {
-  const staleArmed = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(5);
   const { outputs } = await runScan({
     nodesByRepo: {
       dotfiles: [
@@ -394,7 +394,7 @@ test("a bot-shaped author with an unrelated login is ignored (exact-login match,
 });
 
 test("a human author impersonating the bot's login string is ignored (__typename must also be Bot)", async () => {
-  const staleArmed = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(5);
   const { outputs } = await runScan({
     nodesByRepo: {
       dotfiles: [
@@ -449,7 +449,7 @@ test("the tracking-issue lookup and close steps run on github-script, not the gh
 });
 
 test("multiple stuck PRs across repos are all reported", async () => {
-  const staleArmed = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(10);
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles", "medley"],
     nodesByRepo: {
@@ -475,7 +475,7 @@ test("multiple stuck PRs across repos are all reported", async () => {
 });
 
 test("a stuck PR sorted onto a later GraphQL page is still found (manual cursor pagination)", async () => {
-  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(6);
   const { graphqlCalls, outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -539,7 +539,7 @@ test("a repository stuck on an unterminated page sequence fails closed via MAX_P
 });
 
 test("the page query never selects mergeStateStatus; a dedicated per-PR query fetches it", async () => {
-  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(6);
   const { graphqlCalls } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -565,8 +565,8 @@ test("the page query never selects mergeStateStatus; a dedicated per-PR query fe
 });
 
 test("only armed, past-threshold bot PRs are probed for merge state — no bulk fan-out across the page", async () => {
-  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
-  const recentlyArmed = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(6);
+  const recentlyArmed = HOURS_AGO(1);
   const { graphqlCalls, outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -611,7 +611,7 @@ test("only armed, past-threshold bot PRs are probed for merge state — no bulk 
 });
 
 test("a transient server error on a page fetch is retried, then the page is processed", async () => {
-  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(6);
   const { graphqlCalls, outputs } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -639,7 +639,7 @@ test("a transient server error on a page fetch is retried, then the page is proc
 });
 
 test("a transient server error on the per-PR merge-state probe is retried, and the PR is still reported", async () => {
-  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(6);
   const { graphqlCalls, outputs, report, threw } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -667,7 +667,7 @@ test("a transient server error on the per-PR merge-state probe is retried, and t
 });
 
 test("a persistent server error on the merge-state probe fails the run loudly and never reports a false all-clear", async () => {
-  const staleArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const staleArmed = HOURS_AGO(6);
   const { threw, outputs } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -693,7 +693,7 @@ test("a persistent server error on the merge-state probe fails the run loudly an
 });
 
 test("a candidate disarmed between the page fetch and the probe is not reported (armed state re-validated against fresh probe data)", async () => {
-  const pageArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const pageArmed = HOURS_AGO(6);
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -713,8 +713,8 @@ test("a candidate disarmed between the page fetch and the probe is not reported 
 });
 
 test("the reported armed duration is computed from the probe-fresh enabledAt, not the stale page value", async () => {
-  const pageArmed = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
-  const freshArmed = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const pageArmed = HOURS_AGO(20);
+  const freshArmed = HOURS_AGO(6);
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -735,8 +735,8 @@ test("the reported armed duration is computed from the probe-fresh enabledAt, no
 });
 
 test("a candidate re-armed under the threshold between page and probe is not reported (threshold re-checked against fresh enabledAt)", async () => {
-  const pageArmed = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
-  const freshArmed = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+  const pageArmed = HOURS_AGO(20);
+  const freshArmed = HOURS_AGO(1);
   const { outputs, report } = await runScan({
     repoNames: ["dotfiles"],
     thresholdHours: 4,
@@ -774,20 +774,20 @@ function extractStepScript(stepName) {
   return body.join("\n");
 }
 
+const MARKER =
+  "<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->";
+const ISSUE_TITLE = "[Alert] standards-sync auto-merge PR(s) needing attention";
+
 function issue({
   number,
   login = "github-actions[bot]",
   type = "Bot",
   body = "",
-  title = "[Alert] standards-sync auto-merge PR(s) needing attention",
+  title = ISSUE_TITLE,
   pull_request = null,
 } = {}) {
   return { number, user: { login, type }, body, title, pull_request };
 }
-
-const MARKER =
-  "<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->";
-const ISSUE_TITLE = "[Alert] standards-sync auto-merge PR(s) needing attention";
 
 // The caller repository and the tracking-issue repository are deliberately
 // different fixtures everywhere below: the defect these steps were changed for

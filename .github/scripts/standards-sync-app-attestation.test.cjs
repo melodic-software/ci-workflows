@@ -38,12 +38,15 @@ function extractAttestationScript() {
 
 const attestationScript = extractAttestationScript();
 
+// Every fixture entry the App is expected to report: owned by the expected
+// owner, so a page built from these is the "matches expectations" baseline a
+// case then perturbs. A deliberately foreign entry is written out inline.
+function repositoryEntry(fullName, id) {
+  return { id, full_name: fullName, owner: { login: "melodic-software" } };
+}
+
 function repository(name, id) {
-  return {
-    id,
-    full_name: `melodic-software/${name}`,
-    owner: { login: "melodic-software" },
-  };
+  return repositoryEntry(`melodic-software/${name}`, id);
 }
 
 function expectedRepositories(count = 2) {
@@ -54,11 +57,7 @@ function expectedRepositories(count = 2) {
 }
 
 function repositoriesFrom(names) {
-  return names.map((fullName, index) => ({
-    id: index + 1,
-    full_name: fullName,
-    owner: { login: "melodic-software" },
-  }));
+  return names.map((fullName, index) => repositoryEntry(fullName, index + 1));
 }
 
 async function runAttestation({
@@ -246,13 +245,7 @@ test("attests JWT metadata and one exact repository page", async () => {
 test("paginates a full exact repository set", async () => {
   const expected = expectedRepositories(101);
   const firstPage = repositoriesFrom(expected.slice(0, 100));
-  const secondPage = [
-    {
-      id: 101,
-      full_name: expected[100],
-      owner: { login: "melodic-software" },
-    },
-  ];
+  const secondPage = [repositoryEntry(expected[100], 101)];
   const result = await runAttestation({
     expected,
     pages: [
@@ -442,21 +435,10 @@ test("fails closed on duplicate entries across pages", async () => {
 });
 
 for (const [name, duplicate] of [
-  [
-    "repository ID",
-    {
-      id: 1,
-      full_name: "melodic-software/repository-101",
-      owner: { login: "melodic-software" },
-    },
-  ],
+  ["repository ID", repositoryEntry("melodic-software/repository-101", 1)],
   [
     "repository full name",
-    {
-      id: 101,
-      full_name: "melodic-software/repository-1",
-      owner: { login: "melodic-software" },
-    },
+    repositoryEntry("melodic-software/repository-1", 101),
   ],
 ]) {
   test(`fails closed on a duplicate ${name}`, async () => {
@@ -485,13 +467,7 @@ test("fails closed when total_count changes", async () => {
         { total_count: 101, repositories: firstPage },
         {
           total_count: 102,
-          repositories: [
-            {
-              id: 101,
-              full_name: expected[100],
-              owner: { login: "melodic-software" },
-            },
-          ],
+          repositories: [repositoryEntry(expected[100], 101)],
         },
       ],
     }),
