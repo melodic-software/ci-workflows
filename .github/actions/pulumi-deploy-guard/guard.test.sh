@@ -175,7 +175,12 @@ jq_edit "$policy" '.policies += [.policies[0]]'
 expect_failure 'extra personal-token allow policy fails closed'
 
 reset_valid_fixtures
-jq_edit "$state" '.deployment.resources += [{urn:$urn}]' --arg urn "$urn_one"
+# Called directly rather than through jq_edit: this is the one filter carrying a
+# jq variable ($urn), and ShellCheck only recognises those as jq syntax when the
+# filter is a direct argument to jq. Routed through a shell function it reports
+# SC2016 instead, so inlining keeps the check meaningful rather than suppressed.
+jq --arg urn "$urn_one" '.deployment.resources += [{urn:$urn}]' "$state" >"$state.tmp"
+mv -- "$state.tmp" "$state"
 expect_failure 'duplicate operational URN in state fails closed'
 grep -F 'appears more than once' "$stderr" >/dev/null
 
