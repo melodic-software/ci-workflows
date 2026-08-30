@@ -50,11 +50,10 @@ test("lane discovery finds the outcome composite's consumers", () => {
   );
 });
 
+// Reads through `workflowsDir`, the same directory discovery scanned, so a
+// lane can never be discovered in one place and read from another.
 const laneSource = (lane) =>
-  fs.readFileSync(
-    path.join(repositoryRoot, ".github", "workflows", lane),
-    "utf8",
-  );
+  fs.readFileSync(path.join(workflowsDir, lane), "utf8");
 
 function stepSource(workflow, stepName) {
   const start = workflow.indexOf(`      - name: ${stepName}\n`);
