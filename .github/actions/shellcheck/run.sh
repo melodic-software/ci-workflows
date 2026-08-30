@@ -77,7 +77,7 @@ filter_files() {
   local -a kept=()
   local -n candidates="$array_name"
 
-  for file in ${candidates[@]+"${candidates[@]}"}; do
+  for file in "${candidates[@]}"; do
     # Sparse checkouts can leave tracked, skip-worktree entries absent on disk.
     [[ -f "$file" ]] || continue
     for substring in $exclude; do
@@ -85,7 +85,7 @@ filter_files() {
     done
     kept+=("$file")
   done
-  candidates=(${kept[@]+"${kept[@]}"})
+  candidates=("${kept[@]}")
 }
 
 filter_files normal_files
@@ -96,16 +96,16 @@ filter_files extra_files
 # exception intended only for extensionless extras. Also deduplicate repeated
 # or overlapping extra pathspecs.
 declare -A normal_seen=() extra_seen=()
-for file in ${normal_files[@]+"${normal_files[@]}"}; do
+for file in "${normal_files[@]}"; do
   normal_seen["$file"]=1
 done
 deduplicated_extra_files=()
-for file in ${extra_files[@]+"${extra_files[@]}"}; do
+for file in "${extra_files[@]}"; do
   [[ -n "${normal_seen[$file]+present}" || -n "${extra_seen[$file]+present}" ]] && continue
   extra_seen["$file"]=1
   deduplicated_extra_files+=("$file")
 done
-extra_files=(${deduplicated_extra_files[@]+"${deduplicated_extra_files[@]}"})
+extra_files=("${deduplicated_extra_files[@]}")
 
 if [[ ${#normal_files[@]} -eq 0 && ${#extra_files[@]} -eq 0 ]]; then
   echo 'No shell scripts to check.'

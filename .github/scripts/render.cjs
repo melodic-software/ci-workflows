@@ -220,9 +220,7 @@ function cli(id, argv = process.argv) {
 }
 
 function parseArgs(argv) {
-  const positional = argv
-    .slice(2)
-    .filter((arg) => arg !== "--check" && !arg.startsWith("-"));
+  const positional = argv.slice(2).filter((arg) => !arg.startsWith("-"));
   return { targetId: positional[0] ?? null };
 }
 
