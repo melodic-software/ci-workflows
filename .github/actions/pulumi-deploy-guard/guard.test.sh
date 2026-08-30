@@ -64,6 +64,16 @@ JSON
   : >"$stderr"
 }
 
+# jq_edit <fixture> <filter> [jq-option ...] — rewrite a fixture in place. Kept
+# as write-then-move rather than an in-place edit so a jq failure leaves the
+# valid fixture intact instead of truncating it into a second, unintended case.
+jq_edit() {
+  local file="$1" filter="$2"
+  shift 2
+  jq "$@" "$filter" "$file" >"$file.tmp"
+  mv -- "$file.tmp" "$file"
+}
+
 run_guard() {
   ACTION_PATH="${TEST_ACTION_PATH:-$action_path}" \
     GITHUB_OUTPUT="$output" \
@@ -116,8 +126,7 @@ printf 'PASS: empty array performs policy-only validation with deterministic emp
 
 reset_valid_fixtures
 requested_urns='[]'
-jq '.policies[0].rules.workflow = "github-iac-production-deploy-v2"' "$policy" >"$policy.tmp"
-mv "$policy.tmp" "$policy"
+jq_edit "$policy" '.policies[0].rules.workflow = "github-iac-production-deploy-v2"'
 expect_failure 'policy-only mode still requires the exact OIDC policy'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
@@ -152,31 +161,31 @@ grep -Fx 'missing-count=2' "$output" >/dev/null
 printf 'PASS: first apply safely reports every operational resource absent\n'
 
 reset_valid_fixtures
-jq '.policies[0].rules.sub += "*"' "$policy" >"$policy.tmp"
-mv "$policy.tmp" "$policy"
+jq_edit "$policy" '.policies[0].rules.sub += "*"'
 expect_failure 'Pulumi pattern metacharacter policy fails closed'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
 reset_valid_fixtures
-jq '.policies[0].rules.workflow = "github-iac-production-deploy-v2"' "$policy" >"$policy.tmp"
-mv "$policy.tmp" "$policy"
+jq_edit "$policy" '.policies[0].rules.workflow = "github-iac-production-deploy-v2"'
 expect_failure 'near-match workflow claim fails closed'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
 reset_valid_fixtures
-jq '.policies += [.policies[0]]' "$policy" >"$policy.tmp"
-mv "$policy.tmp" "$policy"
+jq_edit "$policy" '.policies += [.policies[0]]'
 expect_failure 'extra personal-token allow policy fails closed'
 
 reset_valid_fixtures
+# Called directly rather than through jq_edit: this is the one filter carrying a
+# jq variable ($urn), and ShellCheck only recognises those as jq syntax when the
+# filter is a direct argument to jq. Routed through a shell function it reports
+# SC2016 instead, so inlining keeps the check meaningful rather than suppressed.
 jq --arg urn "$urn_one" '.deployment.resources += [{urn:$urn}]' "$state" >"$state.tmp"
-mv "$state.tmp" "$state"
+mv -- "$state.tmp" "$state"
 expect_failure 'duplicate operational URN in state fails closed'
 grep -F 'appears more than once' "$stderr" >/dev/null
 
 reset_valid_fixtures
-jq '.oidcIssuers += [.oidcIssuers[0]]' "$issuers" >"$issuers.tmp"
-mv "$issuers.tmp" "$issuers"
+jq_edit "$issuers" '.oidcIssuers += [.oidcIssuers[0]]'
 expect_failure 'duplicate matching GitHub issuer fails closed'
 
 reset_valid_fixtures

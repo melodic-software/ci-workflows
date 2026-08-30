@@ -180,10 +180,10 @@ foreach ($bad in @((Join-Path $PWD $badFixture), '../action.yml', '-action.yml')
     $outside = Invoke-Check -Argument @($bad)
     Assert-Condition -Condition ($outside.ExitCode -ne 0) `
         -Message "A path that is not repo-relative was unexpectedly accepted: $bad" `
-        -Context $custom.Output
+        -Context $outside.Output
     Assert-Condition -Condition ($outside.Output.Contains('must be a repo-relative path')) `
         -Message "The non-repo-relative path was not reported: $bad" `
-        -Context $custom.Output
+        -Context $outside.Output
 }
 
 # Coverage floor. The check announces every file discovery reaches, so every

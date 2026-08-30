@@ -10,7 +10,7 @@ description: >-
   open — `!= 'true'` step gates treat a missing output as fresh, and only a
   response shaped like a commit SHA may retire the run (a degenerate success
   such as a literal `null` must not) — so an API anomaly degrades to
-  reviewing a possibly-stale head, never to silence. actions/  github-script
+  reviewing a possibly-stale head, never to silence. actions/github-script
   rather than a `gh api` run step: the calling reusable runs on whatever
   runner its caller selected, and a self-hosted image is not guaranteed to
   ship the gh CLI (same pattern as do-not-merge-gate.yml).

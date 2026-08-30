@@ -236,7 +236,10 @@ if [[ "$(uname -s)" == Linux* || "$(uname -s)" == MINGW* ]]; then
         format=json
         report="$temporary_directory/report-link/result.json"
         ;;
-      *) return 2 ;;
+      *)
+        echo "unknown symlink contract: $contract" >&2
+        exit 1
+        ;;
       esac
       if CAPTURED_ARGS="$temporary_directory/args" CONFIG="$config" FAKE_MODE=clean GITHUB_WORKSPACE="$temporary_directory" PATH="$temporary_directory/bin:$PATH" PATH_TO_SCAN="$scan" SCAN_MODE=dir REPORT_FORMAT="$format" REPORT_PATH="$report" REDACT=true bash "$action_dir/scan.sh" >/dev/null 2>&1; then
         echo "$contract symlink unexpectedly passed" >&2

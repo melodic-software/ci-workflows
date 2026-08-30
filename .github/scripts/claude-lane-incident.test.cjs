@@ -168,6 +168,32 @@ test("an invalid repository name never reaches the affected-repository index", (
   assert.equal(tally.classCounts.auth, 2);
 });
 
+test("unattributable observations count separately, even when they are the same object", () => {
+  // Regression: the fallback dedup key was `unattributed:${observations
+  // .indexOf(observation)}`, and indexOf returns the FIRST index of a value.
+  // Two entries carrying the same object reference therefore produced the same
+  // key and collapsed into one, under-reporting blast radius in the rendered
+  // incident body. Keying on the true index from .entries() keeps them
+  // distinct. A shared reference is the reproducing shape because indexOf
+  // compares by identity: two structurally identical but distinct objects
+  // already got distinct indices and never triggered the bug.
+  const shared = Object.freeze({
+    repository: null,
+    pullNumber: null,
+    classes: ["auth"],
+    unrecognized: 1,
+    apiErrorStatus: 401,
+  });
+  const tally = tallyObservations([shared, shared]);
+
+  assert.equal(tally.classCounts.auth, 2);
+  assert.equal(tally.statusCounts[401], 2);
+  assert.equal(tally.unrecognized, 2);
+  // Neither one is attributable, so the repository index stays empty rather
+  // than inventing a provenance for them.
+  assert.deepEqual(Object.keys(tally.repositories), []);
+});
+
 test("a tally separates escalating classes from reported-only ones", () => {
   const transient = tallyObservations([
     {

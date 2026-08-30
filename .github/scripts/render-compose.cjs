@@ -20,10 +20,6 @@ function normalizeNewlines(text) {
   return String(text).replaceAll("\r\n", "\n");
 }
 
-function readNormalized(filePath) {
-  return normalizeNewlines(fs.readFileSync(filePath, "utf8"));
-}
-
 function indentLines(lines, indentation) {
   return lines.map((line) =>
     line.length === 0 ? "" : `${indentation}${line}`,
@@ -142,7 +138,6 @@ function runRenderPass({ check, files }) {
 
 module.exports = Object.freeze({
   normalizeNewlines,
-  readNormalized,
   indentLines,
   findExactlyOneOrderedBlock,
   replaceGeneratedBlock,

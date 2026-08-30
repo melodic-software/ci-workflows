@@ -33,6 +33,16 @@ const FAILING_CHECK_CONCLUSIONS = new Set([
   "cancelled",
   "timed_out",
 ]);
+// Verdicts that make merge-readiness untrustworthy. Kept module-level (not
+// exported: the export list is the public contract) so the reconcile filter
+// does not re-allocate the set on every call.
+const PROBLEM_VERDICTS = new Set([
+  "divergence",
+  "missing",
+  "mismatch",
+  "pending",
+  "failed",
+]);
 
 class UsageError extends Error {
   constructor(message) {
@@ -75,11 +85,7 @@ function pickLatestByName(
       latest.set(name, { item, rank: nextRank });
     }
   }
-  const out = new Map();
-  for (const [name, entry] of latest) {
-    out.set(name, entry.item);
-  }
-  return out;
+  return new Map(latest.entries().map(([name, entry]) => [name, entry.item]));
 }
 
 /**
@@ -116,7 +122,7 @@ function matchRefPattern(pattern, fullRef, defaultBranch) {
       }
     } else if (ch === "?") {
       regexSource += "[^/]";
-    } else if ("\\^$.|()+[{}".includes(ch) || ch === "]" || ch === "/") {
+    } else if ("\\^$.|()+[]{}/".includes(ch)) {
       regexSource += `\\${ch}`;
     } else {
       regexSource += ch;
@@ -275,9 +281,6 @@ function pickLatestCheckRun(checkRuns, context, integrationId) {
       }
     }
     candidates.push(run);
-  }
-  if (candidates.length === 0) {
-    return null;
   }
   return pickLatestByName(candidates).get(context) ?? null;
 }
@@ -445,11 +448,7 @@ function reconcileRequiredChecks({
     );
   });
 
-  const problems = results.filter((row) =>
-    ["divergence", "missing", "mismatch", "pending", "failed"].includes(
-      row.verdict,
-    ),
-  );
+  const problems = results.filter((row) => PROBLEM_VERDICTS.has(row.verdict));
   const divergences = results.filter((row) => row.verdict === "divergence");
 
   return {

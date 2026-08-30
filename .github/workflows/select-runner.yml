@@ -285,12 +285,8 @@ jobs:
                 const labelList = Array.isArray(labels)
                   ? labels.filter((label) => exactNonEmptyString(label))
                   : [];
-                let labelPart = "";
-                if (labelList.length === 1) {
-                  labelPart = ` for \`${labelList[0]}\``;
-                } else if (labelList.length > 1) {
-                  labelPart = ` for \`${labelList.join("`, `")}\``;
-                }
+                const labelPart =
+                  labelList.length > 0 ? ` for \`${labelList.join("`, `")}\`` : "";
                 const disposition = failingClosed
                   ? "Failing closed so the check names local capacity instead of hanging or falling through."
                   : "Falling back to the configured hosted runner; downstream work is not on the drained self-hosted pool.";

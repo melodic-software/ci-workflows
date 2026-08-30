@@ -38,12 +38,15 @@ function extractAttestationScript() {
 
 const attestationScript = extractAttestationScript();
 
+// Every fixture entry the App is expected to report: owned by the expected
+// owner, so a page built from these is the "matches expectations" baseline a
+// case then perturbs. A deliberately foreign entry is written out inline.
+function repositoryEntry(fullName, id) {
+  return { id, full_name: fullName, owner: { login: "melodic-software" } };
+}
+
 function repository(name, id) {
-  return {
-    id,
-    full_name: `melodic-software/${name}`,
-    owner: { login: "melodic-software" },
-  };
+  return repositoryEntry(`melodic-software/${name}`, id);
 }
 
 function expectedRepositories(count = 2) {
@@ -54,11 +57,15 @@ function expectedRepositories(count = 2) {
 }
 
 function repositoriesFrom(names) {
-  return names.map((fullName, index) => ({
-    id: index + 1,
-    full_name: fullName,
-    owner: { login: "melodic-software" },
-  }));
+  return names.map((fullName, index) => repositoryEntry(fullName, index + 1));
+}
+
+// The starting point every multi-page case shares: the full expected set, plus
+// its first 100 entries as `firstPage` — 100 is the per_page the inventory asks
+// for, so a set larger than that is what forces a second request.
+function expectedAcrossPages(count) {
+  const expected = expectedRepositories(count);
+  return { expected, firstPage: repositoriesFrom(expected.slice(0, 100)) };
 }
 
 async function runAttestation({
@@ -244,15 +251,8 @@ test("attests JWT metadata and one exact repository page", async () => {
 });
 
 test("paginates a full exact repository set", async () => {
-  const expected = expectedRepositories(101);
-  const firstPage = repositoriesFrom(expected.slice(0, 100));
-  const secondPage = [
-    {
-      id: 101,
-      full_name: expected[100],
-      owner: { login: "melodic-software" },
-    },
-  ];
+  const { expected, firstPage } = expectedAcrossPages(101);
+  const secondPage = [repositoryEntry(expected[100], 101)];
   const result = await runAttestation({
     expected,
     pages: [
@@ -427,8 +427,7 @@ for (const [name, options, pattern] of [
 }
 
 test("fails closed on duplicate entries across pages", async () => {
-  const expected = expectedRepositories(101);
-  const firstPage = repositoriesFrom(expected.slice(0, 100));
+  const { expected, firstPage } = expectedAcrossPages(101);
   await assert.rejects(
     runAttestation({
       expected,
@@ -442,26 +441,14 @@ test("fails closed on duplicate entries across pages", async () => {
 });
 
 for (const [name, duplicate] of [
-  [
-    "repository ID",
-    {
-      id: 1,
-      full_name: "melodic-software/repository-101",
-      owner: { login: "melodic-software" },
-    },
-  ],
+  ["repository ID", repositoryEntry("melodic-software/repository-101", 1)],
   [
     "repository full name",
-    {
-      id: 101,
-      full_name: "melodic-software/repository-1",
-      owner: { login: "melodic-software" },
-    },
+    repositoryEntry("melodic-software/repository-1", 101),
   ],
 ]) {
   test(`fails closed on a duplicate ${name}`, async () => {
-    const expected = expectedRepositories(101);
-    const firstPage = repositoriesFrom(expected.slice(0, 100));
+    const { expected, firstPage } = expectedAcrossPages(101);
     await assert.rejects(
       runAttestation({
         expected,
@@ -476,8 +463,7 @@ for (const [name, duplicate] of [
 }
 
 test("fails closed when total_count changes", async () => {
-  const expected = expectedRepositories(101);
-  const firstPage = repositoriesFrom(expected.slice(0, 100));
+  const { expected, firstPage } = expectedAcrossPages(101);
   await assert.rejects(
     runAttestation({
       expected,
@@ -485,13 +471,7 @@ test("fails closed when total_count changes", async () => {
         { total_count: 101, repositories: firstPage },
         {
           total_count: 102,
-          repositories: [
-            {
-              id: 101,
-              full_name: expected[100],
-              owner: { login: "melodic-software" },
-            },
-          ],
+          repositories: [repositoryEntry(expected[100], 101)],
         },
       ],
     }),

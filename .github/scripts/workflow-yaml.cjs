@@ -140,8 +140,7 @@ function splitFlowEntries(body, lineNumber) {
   if (depth !== 0) {
     throw new WorkflowYamlError("unbalanced flow collection", lineNumber);
   }
-  const tail = body.slice(start);
-  if (tail.trim() !== "" || entries.length > 0) entries.push(tail);
+  entries.push(body.slice(start));
   return entries.filter((entry) => entry.trim() !== "");
 }
 

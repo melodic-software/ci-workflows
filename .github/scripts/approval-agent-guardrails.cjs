@@ -23,27 +23,13 @@ const DEFAULT_PROTECTED_PATHS = Object.freeze([
  * @returns {string[]}
  */
 function parseProtectedPaths(raw) {
-  const extras = [];
-  if (raw != null) {
-    const trimmed = String(raw).trim();
-    if (trimmed !== "") {
-      for (const part of trimmed.split(/[\n,]/u)) {
-        const path = part.trim();
-        if (path !== "") {
-          extras.push(path);
-        }
-      }
-    }
-  }
-  const seen = new Set(DEFAULT_PROTECTED_PATHS);
-  const merged = [...DEFAULT_PROTECTED_PATHS];
-  for (const path of extras) {
-    if (!seen.has(path)) {
-      seen.add(path);
-      merged.push(path);
-    }
-  }
-  return merged;
+  const extras = String(raw ?? "")
+    .split(/[\n,]/u)
+    .map((part) => part.trim())
+    .filter((path) => path !== "");
+  // Set iteration is insertion-ordered, so the defaults keep their positions at
+  // the head and a caller path that repeats one of them is dropped, not moved.
+  return [...new Set([...DEFAULT_PROTECTED_PATHS, ...extras])];
 }
 
 /**

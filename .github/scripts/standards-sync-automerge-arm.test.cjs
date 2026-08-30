@@ -13,23 +13,23 @@ const workflowPath = path.join(
   "standards-sync.yml",
 );
 const workflow = fs.readFileSync(workflowPath, "utf8");
+const workflowLines = workflow.split(/\r?\n/u);
+const armingStepIndex = workflowLines.findIndex((line) =>
+  line.includes("- name: Arm auto-merge on the sync PR"),
+);
 
 // Same inline-script extraction technique standards-sync-app-attestation.test.cjs
 // uses: pull the actions/github-script body out of the YAML by name and run it
 // directly, so the arming logic (not just its structural presence) is exercised.
 function extractArmingScript() {
-  const lines = workflow.split(/\r?\n/u);
-  const stepIndex = lines.findIndex((line) =>
-    line.includes("- name: Arm auto-merge on the sync PR"),
-  );
-  assert.notEqual(stepIndex, -1, "arming step must exist");
-  const scriptIndex = lines.findIndex(
-    (line, index) => index > stepIndex && /^ {10}script: \|$/u.test(line),
+  assert.notEqual(armingStepIndex, -1, "arming step must exist");
+  const scriptIndex = workflowLines.findIndex(
+    (line, index) => index > armingStepIndex && /^ {10}script: \|$/u.test(line),
   );
   assert.notEqual(scriptIndex, -1, "arming script block must exist");
   const body = [];
-  for (let index = scriptIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index];
+  for (let index = scriptIndex + 1; index < workflowLines.length; index += 1) {
+    const line = workflowLines[index];
     if (line.length > 0 && !line.startsWith("            ")) break;
     body.push(line.startsWith("            ") ? line.slice(12) : "");
   }
@@ -39,12 +39,7 @@ function extractArmingScript() {
 const armingScript = extractArmingScript();
 
 test("the arming step runs for any existing sync PR, gated on matrix.automerge", () => {
-  const stepIndex = workflow
-    .split(/\r?\n/u)
-    .findIndex((line) =>
-      line.includes("- name: Arm auto-merge on the sync PR"),
-    );
-  const ifLine = workflow.split(/\r?\n/u)[stepIndex + 1];
+  const ifLine = workflowLines[armingStepIndex + 1];
   // Keyed on the PR existing, NOT on `pull-request-operation == 'created'`: a
   // PR opened while the target was opted out must still be armed once the
   // opt-out lifts, and every later sync reports `updated` or `none`.
@@ -54,14 +49,8 @@ test("the arming step runs for any existing sync PR, gated on matrix.automerge",
 });
 
 test("the arming step uses the target-scoped App token, not the caller's default token", () => {
-  const stepIndex = workflow
-    .split(/\r?\n/u)
-    .findIndex((line) =>
-      line.includes("- name: Arm auto-merge on the sync PR"),
-    );
-  const block = workflow
-    .split(/\r?\n/u)
-    .slice(stepIndex, stepIndex + 10)
+  const block = workflowLines
+    .slice(armingStepIndex, armingStepIndex + 10)
     .join("\n");
   assert.match(
     block,
@@ -96,6 +85,14 @@ test("the arming history covers every merge method's enabled event", () => {
     );
   }
 });
+
+// The mutation is the arming action itself, so "was the mutation attempted"
+// is the assertion every left-alone / never-re-armed case is making.
+function mutationCalls(graphqlCalls) {
+  return graphqlCalls.filter((call) =>
+    /enablePullRequestAutoMerge/u.test(call.query),
+  );
+}
 
 async function runArming({
   owner = "melodic-software",
@@ -191,12 +188,7 @@ test("a PR that is currently armed is left alone", async () => {
   const { graphqlCalls, infos, warnings } = await runArming({
     pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
   });
-  assert.equal(
-    graphqlCalls.filter((call) =>
-      /enablePullRequestAutoMerge/u.test(call.query),
-    ).length,
-    0,
-  );
+  assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(warnings.length, 0);
   assert.ok(infos.some((message) => message.includes("already armed")));
 });
@@ -208,12 +200,7 @@ test("a PR that was armed and then disarmed is never re-armed", async () => {
   const { graphqlCalls, warnings } = await runArming({
     pullRequest: { wasEverArmed: true },
   });
-  assert.equal(
-    graphqlCalls.filter((call) =>
-      /enablePullRequestAutoMerge/u.test(call.query),
-    ).length,
-    0,
-  );
+  assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(warnings.length, 0);
 });
 
@@ -221,12 +208,7 @@ test("an unreadable pull request warns and does not attempt the mutation", async
   const { graphqlCalls, warnings } = await runArming({
     missingPullRequest: true,
   });
-  assert.equal(
-    graphqlCalls.filter((call) =>
-      /enablePullRequestAutoMerge/u.test(call.query),
-    ).length,
-    0,
-  );
+  assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /Could not read/u);
 });

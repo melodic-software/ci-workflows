@@ -193,20 +193,24 @@ jobs:
 
           annotate_findings() {
             local file line message normalized_file uri_safe uri_base64 message_safe message_base64
-            escape_property() {
-              local v="$1"
-              v=${v//'%'/'%25'}
-              v=${v//$'\r'/'%0D'}
-              v=${v//$'\n'/'%0A'}
-              v=${v//':'/'%3A'}
-              v=${v//','/'%2C'}
-              printf '%s' "$v"
-            }
             escape_data() {
               local v="$1"
               v=${v//'%'/'%25'}
               v=${v//$'\r'/'%0D'}
               v=${v//$'\n'/'%0A'}
+              printf '%s' "$v"
+            }
+            # A workflow-command PROPERTY value escapes everything a DATA value does and
+            # two delimiters besides, so it is exactly `escape_data` plus those two. The
+            # order matters and is preserved: `%` is encoded first, so the `%` each later
+            # substitution introduces is left alone. `escape_data` emits no newline and
+            # can produce none (both CR and LF are already encoded), so the command
+            # substitution has nothing to strip.
+            escape_property() {
+              local v
+              v="$(escape_data "$1")"
+              v=${v//':'/'%3A'}
+              v=${v//','/'%2C'}
               printf '%s' "$v"
             }
             decode_base64_field() {

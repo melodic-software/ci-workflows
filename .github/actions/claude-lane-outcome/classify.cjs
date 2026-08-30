@@ -97,7 +97,7 @@ function classifyExecutionFile(executionFilePath) {
   let last;
   try {
     const parsed = JSON.parse(fs.readFileSync(executionFilePath, "utf8"));
-    last = Array.isArray(parsed) ? parsed[parsed.length - 1] : undefined;
+    last = Array.isArray(parsed) ? parsed.at(-1) : undefined;
   } catch {
     last = undefined;
   }
