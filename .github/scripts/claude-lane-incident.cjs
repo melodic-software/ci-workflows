@@ -690,8 +690,8 @@ function renderIssueBody(state) {
   );
   const renderRepositoryLine = (name) => {
     const entry = state.repositories[name];
-    const pulls = [...entry.pulls]
-      .sort((a, b) => a - b)
+    const pulls = entry.pulls
+      .toSorted((a, b) => a - b)
       .slice(0, MAX_RENDERED_PULLS_PER_REPOSITORY)
       .map((pull) => `[#${pull}](https://github.com/${name}/pull/${pull})`);
     // Counted against everything the incident ever touched in this repository,
@@ -702,7 +702,7 @@ function renderIssueBody(state) {
       (entry.pullsSeen ?? entry.pulls.length) - pulls.length,
     );
     const overflow = hidden > 0 ? ` (+${hidden} more)` : "";
-    const classes = [...entry.classes].sort().map((token) => `\`${token}\``);
+    const classes = entry.classes.toSorted().map((token) => `\`${token}\``);
     return `| \`${name}\` | ${classes.join(", ")} | ${pulls.join(", ")}${overflow} |`;
   };
 

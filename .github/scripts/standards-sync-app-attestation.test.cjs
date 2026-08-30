@@ -60,6 +60,14 @@ function repositoriesFrom(names) {
   return names.map((fullName, index) => repositoryEntry(fullName, index + 1));
 }
 
+// The starting point every multi-page case shares: the full expected set, plus
+// its first 100 entries as `firstPage` — 100 is the per_page the inventory asks
+// for, so a set larger than that is what forces a second request.
+function expectedAcrossPages(count) {
+  const expected = expectedRepositories(count);
+  return { expected, firstPage: repositoriesFrom(expected.slice(0, 100)) };
+}
+
 async function runAttestation({
   expected = expectedRepositories(),
   env = {},
@@ -243,8 +251,7 @@ test("attests JWT metadata and one exact repository page", async () => {
 });
 
 test("paginates a full exact repository set", async () => {
-  const expected = expectedRepositories(101);
-  const firstPage = repositoriesFrom(expected.slice(0, 100));
+  const { expected, firstPage } = expectedAcrossPages(101);
   const secondPage = [repositoryEntry(expected[100], 101)];
   const result = await runAttestation({
     expected,
@@ -420,8 +427,7 @@ for (const [name, options, pattern] of [
 }
 
 test("fails closed on duplicate entries across pages", async () => {
-  const expected = expectedRepositories(101);
-  const firstPage = repositoriesFrom(expected.slice(0, 100));
+  const { expected, firstPage } = expectedAcrossPages(101);
   await assert.rejects(
     runAttestation({
       expected,
@@ -442,8 +448,7 @@ for (const [name, duplicate] of [
   ],
 ]) {
   test(`fails closed on a duplicate ${name}`, async () => {
-    const expected = expectedRepositories(101);
-    const firstPage = repositoriesFrom(expected.slice(0, 100));
+    const { expected, firstPage } = expectedAcrossPages(101);
     await assert.rejects(
       runAttestation({
         expected,
@@ -458,8 +463,7 @@ for (const [name, duplicate] of [
 }
 
 test("fails closed when total_count changes", async () => {
-  const expected = expectedRepositories(101);
-  const firstPage = repositoriesFrom(expected.slice(0, 100));
+  const { expected, firstPage } = expectedAcrossPages(101);
   await assert.rejects(
     runAttestation({
       expected,

@@ -96,9 +96,7 @@ test("OSV result handling is generated from the tested fail-closed guard", () =>
   );
   assert.match(
     workflow,
-    /exit and result mismatch/u.test(workflow)
-      ? /exit and result mismatch/u
-      : /disagrees with SARIF finding count/u,
+    /exit \$SCAN_EXIT disagrees with SARIF finding count/u,
   );
   assert.doesNotMatch(workflow, /retention-days|Upload SARIF artifact/u);
 });

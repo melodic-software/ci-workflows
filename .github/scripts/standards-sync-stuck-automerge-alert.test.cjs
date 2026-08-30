@@ -19,18 +19,16 @@ const workflow = fs.readFileSync(workflowPath, "utf8");
 // Same inline-script extraction technique standards-sync-app-attestation.test.cjs
 // and standards-sync-automerge-arm.test.cjs use: pull the actions/github-script
 // body out of the YAML by name and run it directly.
-function extractScanScript() {
+function extractStepScript(stepName) {
   const lines = workflow.split(/\r?\n/u);
   const stepIndex = lines.findIndex((line) =>
-    line.includes(
-      "- name: Scan targets for stuck or never-armed pull requests",
-    ),
+    line.includes(`- name: ${stepName}`),
   );
-  assert.notEqual(stepIndex, -1, "scan step must exist");
+  assert.notEqual(stepIndex, -1, `step '${stepName}' must exist`);
   const scriptIndex = lines.findIndex(
     (line, index) => index > stepIndex && /^ {10}script: \|$/u.test(line),
   );
-  assert.notEqual(scriptIndex, -1, "scan script block must exist");
+  assert.notEqual(scriptIndex, -1, `'${stepName}' script block must exist`);
   const body = [];
   for (let index = scriptIndex + 1; index < lines.length; index += 1) {
     const line = lines[index];
@@ -40,7 +38,9 @@ function extractScanScript() {
   return body.join("\n");
 }
 
-const scanScript = extractScanScript();
+const scanScript = extractStepScript(
+  "Scan targets for stuck or never-armed pull requests",
+);
 
 const HOURS_AGO = (hours) =>
   new Date(Date.now() - hours * 3_600_000).toISOString();
@@ -754,25 +754,6 @@ test("a candidate re-armed under the threshold between page and probe is not rep
   assert.equal(outputs["stuck-count"], "0");
   assert.equal(report, null);
 });
-
-function extractStepScript(stepName) {
-  const lines = workflow.split(/\r?\n/u);
-  const stepIndex = lines.findIndex((line) =>
-    line.includes(`- name: ${stepName}`),
-  );
-  assert.notEqual(stepIndex, -1, `step '${stepName}' must exist`);
-  const scriptIndex = lines.findIndex(
-    (line, index) => index > stepIndex && /^ {10}script: \|$/u.test(line),
-  );
-  assert.notEqual(scriptIndex, -1, `'${stepName}' script block must exist`);
-  const body = [];
-  for (let index = scriptIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.length > 0 && !line.startsWith("            ")) break;
-    body.push(line.startsWith("            ") ? line.slice(12) : "");
-  }
-  return body.join("\n");
-}
 
 const MARKER =
   "<!-- ci-workflows:standards-sync-stuck-automerge-alert:v1:active -->";

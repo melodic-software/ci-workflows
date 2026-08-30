@@ -79,6 +79,18 @@ function ghApi(path, { method = "GET", body } = {}) {
     encoding: "utf8",
     input: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  // spawnSync reports ENOENT / timeout / signal / maxBuffer through `error`
+  // with `status` left null, which the exit-code branch below would render as
+  // the causeless "failed (exit null)". Both branches throw — this one only
+  // names why. Never let the `status !== 0` test go: it is what makes a
+  // missing `gh` binary fail closed.
+  if (result.error) {
+    const error = new Error(
+      `gh api ${method} ${path} failed to spawn: ${result.error.message}`,
+    );
+    error.status = result.status;
+    throw error;
+  }
   if (result.status !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
     const error = new Error(
@@ -192,19 +204,26 @@ Required App permission (when probing with an installation token):
     error: null,
   };
 
+  // Both failure exits (usage probe not ok, headroom evaluation threw) record
+  // the same unknown-state payload in both variables. `report.error` is read
+  // when this runs, so each caller sets it first.
+  const writeUnknownVariables = () => {
+    const unknownPayload = JSON.stringify({
+      state: "unknown",
+      org: options.org,
+      month: report.month,
+      probedAt: report.probedAt,
+      error: report.error,
+    });
+    upsertOrgVariable(options.org, STATE_VARIABLE, unknownPayload);
+    upsertOrgVariable(options.org, PROBE_VARIABLE, unknownPayload);
+    report.wroteVariables = [STATE_VARIABLE, PROBE_VARIABLE];
+  };
+
   if (!usageProbe.ok) {
     report.error = `usage endpoint returned HTTP ${usageProbe.status}`;
     if (options.writeVariable) {
-      const unknownPayload = JSON.stringify({
-        state: "unknown",
-        org: options.org,
-        month: report.month,
-        probedAt: report.probedAt,
-        error: report.error,
-      });
-      upsertOrgVariable(options.org, STATE_VARIABLE, unknownPayload);
-      upsertOrgVariable(options.org, PROBE_VARIABLE, unknownPayload);
-      report.wroteVariables = [STATE_VARIABLE, PROBE_VARIABLE];
+      writeUnknownVariables();
     }
     if (options.json) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -262,16 +281,7 @@ Required App permission (when probing with an installation token):
     report.error = error instanceof Error ? error.message : String(error);
     report.state = "unknown";
     if (options.writeVariable) {
-      const unknownPayload = JSON.stringify({
-        state: "unknown",
-        org: options.org,
-        month: report.month,
-        probedAt: report.probedAt,
-        error: report.error,
-      });
-      upsertOrgVariable(options.org, STATE_VARIABLE, unknownPayload);
-      upsertOrgVariable(options.org, PROBE_VARIABLE, unknownPayload);
-      report.wroteVariables = [STATE_VARIABLE, PROBE_VARIABLE];
+      writeUnknownVariables();
     }
     process.stderr.write(`Phase 0 probe ERROR: ${report.error}\n`);
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

@@ -247,23 +247,23 @@ for file in "${files[@]}"; do
     relative="$file.step-$index.$dialect"
     destination="$workdir/$relative"
     mkdir -p -- "$(dirname -- "$destination")"
+    # `shell_options` is the options GitHub itself runs the step's shell with,
+    # prepended as actionlint does. It occupies line 1, so ShellCheck's reported
+    # line N is line N-1 of the `run:` body. The dialect decides that line and
+    # which per-dialect batch the extracted script joins, so both follow from
+    # one branch rather than two that could drift apart.
+    if [[ "$dialect" == bash ]]; then
+      shell_options='set -eo pipefail'
+      bash_scripts+=("$relative")
+    else
+      shell_options='set -e'
+      sh_scripts+=("$relative")
+    fi
     {
-      # The options GitHub itself runs the step's shell with, prepended as
-      # actionlint does. It occupies line 1, so ShellCheck's reported line N is
-      # line N-1 of the `run:` body.
-      if [[ "$dialect" == bash ]]; then
-        echo 'set -eo pipefail'
-      else
-        echo 'set -e'
-      fi
+      echo "$shell_options"
       yq -r ".runs.steps[$index].run" "$file" | sanitize_expressions
     } >"$destination"
     produced=$((produced + 1))
-    if [[ "$dialect" == bash ]]; then
-      bash_scripts+=("$relative")
-    else
-      sh_scripts+=("$relative")
-    fi
     printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$dialect"
   done < <(yq -r \
     '.runs.steps | to_entries[] | select(.value | has("run")) | (.key | tostring) + "\t" + (.value.shell // "")' \

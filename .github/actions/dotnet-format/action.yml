@@ -58,6 +58,7 @@ runs:
       # omits the argument entirely rather than risking word-splitting a path
       # that contains a space.
       run: |
+        set -euo pipefail
         args=()
         if [[ -n "${PROJECT// }" ]]; then args+=("$PROJECT"); fi
         dotnet format whitespace "${args[@]}" --verify-no-changes
@@ -75,6 +76,7 @@ runs:
       # value omits the argument entirely rather than risking word-splitting a
       # path that contains a space.
       run: |
+        set -euo pipefail
         args=()
         if [[ -n "${PROJECT// }" ]]; then args+=("$PROJECT"); fi
         dotnet format style "${args[@]}" --diagnostics IDE0055 --verify-no-changes

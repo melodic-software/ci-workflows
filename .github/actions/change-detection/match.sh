@@ -109,11 +109,10 @@ emit_results() {
 }
 
 emit_all_relevant() {
-  values=()
-  local name
-  for name in "${names[@]}"; do
-    values+=("true")
-  done
+  # One "true" per group, index-aligned with `names` the way `emit_results`
+  # reads the two arrays. The `*` pattern matches each whole name, so every
+  # element is rewritten to the constant.
+  values=("${names[@]/*/true}")
   emit_results
 }
 
