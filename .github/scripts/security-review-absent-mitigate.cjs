@@ -766,19 +766,15 @@ function main(argv = process.argv.slice(2)) {
       pulls = listOpenPulls(repo).map(normalizePull);
     }
 
-    if (options.fromRulesets || requiredContexts.length === 0) {
-      if (!defaultBranch) {
-        defaultBranch = resolveDefaultBranch(repo);
-      }
-      // Extract once without targetRef, then re-filter per PR base below when
-      // needed. Most org rulesets use ~DEFAULT_BRANCH / ~ALL; per-PR base is
-      // applied inside the loop when targetRef was not forced on the CLI.
+    // Extract once without targetRef, then re-filter per PR base below when
+    // needed. Most org rulesets use ~DEFAULT_BRANCH / ~ALL; per-PR base is
+    // applied inside the loop when targetRef was not forced on the CLI.
+    const needsRulesets = options.fromRulesets || requiredContexts.length === 0;
+    if (needsRulesets && !defaultBranch) {
+      defaultBranch = resolveDefaultBranch(repo);
     }
 
-    const rulesets =
-      options.fromRulesets || requiredContexts.length === 0
-        ? collectRulesetDetails(repo)
-        : null;
+    const rulesets = needsRulesets ? collectRulesetDetails(repo) : null;
 
     for (const pull of pulls) {
       let contextsForPull = requiredContexts;
