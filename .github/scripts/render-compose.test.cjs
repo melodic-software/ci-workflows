@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -101,7 +102,7 @@ test("renderWorkflow names failures after the workflow file", () => {
 
 test("writeOrCheck reports drift under --check without writing", () => {
   const filePath = path.join(
-    require("node:os").tmpdir(),
+    os.tmpdir(),
     `render-compose-scratch-${process.pid}.txt`,
   );
   fs.writeFileSync(filePath, "current\n", "utf8");
@@ -132,7 +133,7 @@ test("writeOrCheck reports drift under --check without writing", () => {
 
 test("writeOrCheck writes expected content when check is false", () => {
   const filePath = path.join(
-    require("node:os").tmpdir(),
+    os.tmpdir(),
     `render-compose-write-${process.pid}.txt`,
   );
   fs.writeFileSync(filePath, "stale\n", "utf8");

@@ -236,6 +236,31 @@ function recordingCore() {
   };
 }
 
+// The full env the workflow's github-script step hands the adapter. Every key
+// is present on purpose: the adapter reads the environment as a complete
+// contract, so a missing key is a different scenario, not a shorter fixture.
+function scriptEnv(overrides = {}) {
+  return {
+    POLICY: "prefer-self-hosted",
+    SELF_HOSTED_LABEL: "melodic-ubuntu-24.04-x64",
+    SELF_HOSTED_LABELS_JSON: "",
+    HOSTED_RUNNER: "ubuntu-24.04",
+    RUNNER_SCOPE: "organization",
+    MANAGED_RUNNER_PREFIX: "ci-runner-melo-",
+    OBSERVER_CLIENT_ID: "Iv23observer",
+    HAS_OBSERVER_SECRET: "true",
+    TOKEN_OUTCOME: "success",
+    REPOSITORY_OWNER: "melodic-software",
+    REPOSITORY_NAME: "medley",
+    API_TIMEOUT_SECONDS: "10",
+    REPOSITORY_PRIVATE: "true",
+    EVENT_NAME: "push",
+    IS_FORK_PULL_REQUEST: "false",
+    ADMITS_ANCILLARY_EVENTS: "false",
+    ...overrides,
+  };
+}
+
 test("prefer-self-hosted no-online-runner announces capacity offline on the job", async () => {
   const { core, outputs, warnings, errors, summaryChunks } = recordingCore();
   const result = await runGitHubScript({
@@ -243,24 +268,7 @@ test("prefer-self-hosted no-online-runner announces capacity offline on the job"
       request: async () => response([runner({ status: "offline" })]),
     },
     core,
-    env: {
-      POLICY: "prefer-self-hosted",
-      SELF_HOSTED_LABEL: "melodic-ubuntu-24.04-x64",
-      SELF_HOSTED_LABELS_JSON: "",
-      HOSTED_RUNNER: "ubuntu-24.04",
-      RUNNER_SCOPE: "organization",
-      MANAGED_RUNNER_PREFIX: "ci-runner-melo-",
-      OBSERVER_CLIENT_ID: "Iv23observer",
-      HAS_OBSERVER_SECRET: "true",
-      TOKEN_OUTCOME: "success",
-      REPOSITORY_OWNER: "melodic-software",
-      REPOSITORY_NAME: "medley",
-      API_TIMEOUT_SECONDS: "10",
-      REPOSITORY_PRIVATE: "true",
-      EVENT_NAME: "push",
-      IS_FORK_PULL_REQUEST: "false",
-      ADMITS_ANCILLARY_EVENTS: "false",
-    },
+    env: scriptEnv(),
   });
   assert.equal(result.reason, "no-online-runner");
   assert.equal(outputs.reason, "no-online-runner");
@@ -286,24 +294,10 @@ test("self-hosted-only review-tier offline announces then fails closed", async (
           ]),
       },
       core,
-      env: {
+      env: scriptEnv({
         POLICY: "self-hosted-only",
         SELF_HOSTED_LABEL: "melodic-review-ubuntu-24.04-x64",
-        SELF_HOSTED_LABELS_JSON: "",
-        HOSTED_RUNNER: "ubuntu-24.04",
-        RUNNER_SCOPE: "organization",
-        MANAGED_RUNNER_PREFIX: "ci-runner-melo-",
-        OBSERVER_CLIENT_ID: "Iv23observer",
-        HAS_OBSERVER_SECRET: "true",
-        TOKEN_OUTCOME: "success",
-        REPOSITORY_OWNER: "melodic-software",
-        REPOSITORY_NAME: "medley",
-        API_TIMEOUT_SECONDS: "10",
-        REPOSITORY_PRIVATE: "true",
-        EVENT_NAME: "push",
-        IS_FORK_PULL_REQUEST: "false",
-        ADMITS_ANCILLARY_EVENTS: "false",
-      },
+      }),
     }),
     (error) =>
       error.name === "StrictRoutingError" &&
