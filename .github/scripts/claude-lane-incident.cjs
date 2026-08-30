@@ -214,7 +214,7 @@ function tallyObservations(observations) {
   const repositories = {};
   const unrecognizedPulls = new Set();
 
-  for (const observation of observations ?? []) {
+  for (const [index, observation] of (observations ?? []).entries()) {
     const repository = isValidRepository(observation?.repository)
       ? observation.repository
       : null;
@@ -225,7 +225,7 @@ function tallyObservations(observations) {
     const pullKey =
       repository && pullNumber !== null
         ? `${repository}#${pullNumber}`
-        : `unattributed:${observations.indexOf(observation)}`;
+        : `unattributed:${index}`;
 
     if ((toPositiveInteger(observation?.unrecognized) ?? 0) > 0) {
       unrecognizedPulls.add(pullKey);

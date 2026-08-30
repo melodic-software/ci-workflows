@@ -35,9 +35,30 @@ done
 # Prefer triple-dot against the merge base so rename/copy detection matches PR
 # changed-file semantics. Fall back to HEAD_REF alone when BASE_REF is empty.
 if [[ -n "$BASE_REF" && "$BASE_REF" != "$HEAD_REF" ]]; then
-  mapfile -t changed < <(git diff --name-only --diff-filter=ACMRTUXB "$BASE_REF...$HEAD_REF")
+  diff_range="$BASE_REF...$HEAD_REF"
 else
-  mapfile -t changed < <(git diff --name-only --diff-filter=ACMRTUXB "$HEAD_REF")
+  diff_range="$HEAD_REF"
+fi
+
+# Capture through a command substitution, not `mapfile < <(git …)`: process
+# substitution is not reaped, so mapfile reports success even when git failed.
+# An unfetched or bogus ref would then yield an empty change list and this
+# guard would announce "no hand-edits" and exit 0 — passing precisely when it
+# could not see the diff. Same `if ! var="$(…)"` shape the dest-paths call
+# above uses, for the same reason.
+if ! changed_paths="$(
+  git diff --name-only --diff-filter=ACMRTUXB "$diff_range"
+)"; then
+  echo "::error::failed to diff $diff_range — cannot verify managed-file edits"
+  exit 1
+fi
+
+# `mapfile <<<""` yields one empty element, so an empty diff must short-circuit
+# rather than produce a phantom path.
+if [[ -z "$changed_paths" ]]; then
+  changed=()
+else
+  mapfile -t changed <<<"$changed_paths"
 fi
 
 hits=()

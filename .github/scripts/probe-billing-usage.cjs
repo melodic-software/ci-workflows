@@ -280,11 +280,18 @@ Required App permission (when probing with an installation token):
 }
 
 if (require.main === module) {
+  // Set exitCode rather than calling process.exit(): this script's entire
+  // output is a JSON report written to stdout, and process.exit() abandons
+  // pending writes. Piped stdout is asynchronous, so a report larger than the
+  // pipe buffer is truncated mid-write — measured here at 128 KiB of a 400 KB
+  // report. Assigning exitCode lets the process drain and exit naturally.
   main().then(
-    (code) => process.exit(code),
+    (code) => {
+      process.exitCode = code;
+    },
     (error) => {
       process.stderr.write(`${error.stack || error}\n`);
-      process.exit(1);
+      process.exitCode = 1;
     },
   );
 }

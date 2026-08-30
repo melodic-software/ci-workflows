@@ -26,7 +26,12 @@ runs:
         # add path cannot self-heal a blob committed before its eol rule
         # existed, or one staged via a bypassed hook — that lives in the index
         # until renormalized. https://git-scm.com/docs/git-add (--renormalize)
-        read -ra paths <<<"${PATHS:-.}"
+        # `-d ''` reads the whole value, newlines included; a bare `read -ra`
+        # stops at the first newline, so a multi-line pathspec would silently
+        # renormalize only its first line — fewer files checked than asked for.
+        # Matches the actionlint/biome/editorconfig actions. `read -d ''`
+        # returns non-zero at EOF, which is the expected terminating case here.
+        read -r -d '' -a paths <<<"${PATHS:-.}" || true
         git add --renormalize -- "${paths[@]}"
         if git diff --cached --quiet; then
           echo "Index EOL clean — no stale blobs."
