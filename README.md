@@ -896,9 +896,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   documented block rather than copying the dogfood file.
 - `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
   a native closing keyword (`Closes`/`Fixes`/`Resolves #N`, including
-  `owner/repo#N`, or the literal `No linked issue` when the PR closes nothing)
-  and non-empty `## Summary`, `## Fix`, `## Verification`, and `## Related`
-  sections (the four contract headers). **Gating**: a non-conforming body fails
+  `owner/repo#N`, or the literal `No linked issue` or `No related issue:`
+  when the PR closes nothing) and non-empty `## Summary`, `## Fix`,
+  `## Verification`, and `## Related` sections (the four contract headers).
+  **Gating**: a non-conforming body fails
   the job. HTML comments are stripped before either check, so an unedited PR
   template (whose instructional prose lives in comments) fails rather than
   passing vacuously. Generalizes
