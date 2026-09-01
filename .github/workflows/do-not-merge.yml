@@ -24,4 +24,4 @@ jobs:
     permissions:
       pull-requests: read
       actions: read
-    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@87f19d4d9be2f4f9af72b4e4fce536bb38057281 # 8853021 2026-07-16
+    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@3b2f4eab5b4bb58a150e400613350ede37742ee8 # 8853021 2026-07-16
