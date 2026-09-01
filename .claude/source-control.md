@@ -25,5 +25,6 @@ c3-autonomous
 ## pr_body_required_sections
 
 - Summary
-- Test plan
+- Fix
+- Verification
 - Related
