@@ -1,0 +1,4 @@
+{
+  "name": "ci-workflows",
+  "install": "bash .cursor/install.sh"
+}
