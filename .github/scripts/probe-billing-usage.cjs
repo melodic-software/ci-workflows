@@ -126,10 +126,20 @@ function ghApiWithStatus(path) {
   return { status, body, ok: result.status === 0 && status === 200 };
 }
 
+// Fail closed (ci-workflows#519 D1): `ghApi` returns the parsed body, or null
+// when `gh` exits 0 with empty stdout. Only an explicit boolean `private` may
+// name a visibility; null, a non-object, or a body without that field is
+// "unknown", which billing-headroom counts against the pool. The old
+// `data?.private ? "private" : "public"` turned every such body into
+// "public" and silently dropped those minutes.
 async function resolveVisibility(owner, repo) {
   try {
     const data = ghApi(`/repos/${owner}/${repo}`);
-    return data?.private ? "private" : "public";
+    return data && typeof data.private === "boolean"
+      ? data.private
+        ? "private"
+        : "public"
+      : "unknown";
   } catch {
     return "unknown";
   }
@@ -311,4 +321,5 @@ module.exports = Object.freeze({
   PROBE_VARIABLE,
   main,
   parseArgs,
+  resolveVisibility,
 });

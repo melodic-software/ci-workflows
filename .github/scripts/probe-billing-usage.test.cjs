@@ -9,6 +9,7 @@ const test = require("node:test");
 
 const scriptPath = path.join(__dirname, "probe-billing-usage.cjs");
 const source = fs.readFileSync(scriptPath, "utf8");
+const { resolveVisibility } = require("./probe-billing-usage.cjs");
 
 // Builds a directory holding a stub `gh`, prepended to PATH so the probe's
 // spawnSync("gh", …) resolves to it. The real binary is never available in
@@ -21,11 +22,60 @@ function stubGhDirectory(body) {
   return directory;
 }
 
-function runProbe(stubDirectory) {
-  return spawnSync(process.execPath, [scriptPath, "--org", "testorg"], {
-    encoding: "utf8",
-    env: { ...process.env, PATH: `${stubDirectory}:${process.env.PATH}` },
-  });
+function runProbe(stubDirectory, extraArgs = []) {
+  return spawnSync(
+    process.execPath,
+    [scriptPath, "--org", "testorg", ...extraArgs],
+    {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${stubDirectory}:${process.env.PATH}` },
+    },
+  );
+}
+
+// Runs `fn` with a stub `gh` first on PATH for in-process spawnSync calls.
+async function withStubGh(body, fn) {
+  const directory = stubGhDirectory(body);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${directory}:${previousPath}`;
+  try {
+    return await fn();
+  } finally {
+    process.env.PATH = previousPath;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+// A stub `gh` that answers the usage endpoint with `usageItems` (via the
+// header-emitting `gh api -i` form the probe uses), the repo endpoint with
+// `repoBody`, and every other call with an empty 200.
+function stubGhForProbe({ usageItems, repoBody }) {
+  const usage = JSON.stringify({ usageItems });
+  return stubGhDirectory(
+    `case "$*" in
+  *"/repos/"*) printf '%s' '${repoBody}' ;;
+  *"/settings/billing/usage?"*) printf 'HTTP/2.0 200 OK\\n\\n%s' '${usage}' ;;
+  *) printf 'HTTP/2.0 200 OK\\n\\n{}' ;;
+esac
+exit 0`,
+  );
+}
+
+function usageItem(overrides = {}) {
+  return {
+    date: "2026-08-01T00:00:00Z",
+    product: "actions",
+    sku: "Actions Linux",
+    quantity: 2600,
+    unitType: "Minutes",
+    pricePerUnit: 0.006,
+    grossAmount: 15.6,
+    discountAmount: 15.6,
+    netAmount: 0,
+    organizationName: "testorg",
+    repositoryName: "private-repo",
+    ...overrides,
+  };
 }
 
 // Regression guard. The entry point used `main().then((code) =>
@@ -107,6 +157,101 @@ test("the probe emits a complete JSON report when every endpoint fails", () => {
       "summary",
       "usage",
     ]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+// ci-workflows#519 D1. `ghApi` returns the parsed body, or null when `gh`
+// exits 0 with empty stdout. Only an explicit boolean `private` may name a
+// visibility; the old `data?.private ? "private" : "public"` turned null and
+// `private`-less bodies into "public", which billing-headroom then excluded
+// from the pool — the fail-open direction.
+const VISIBILITY_TABLE = [
+  { name: "private:true", stdout: '{"private":true}', expected: "private" },
+  { name: "private:false", stdout: '{"private":false}', expected: "public" },
+  { name: "empty body", stdout: "", expected: "unknown" },
+  { name: "empty object", stdout: "{}", expected: "unknown" },
+  { name: "JSON null", stdout: "null", expected: "unknown" },
+  { name: "string private", stdout: '{"private":"true"}', expected: "unknown" },
+  { name: "numeric private", stdout: '{"private":1}', expected: "unknown" },
+  { name: "array body", stdout: "[]", expected: "unknown" },
+  { name: "scalar body", stdout: "true", expected: "unknown" },
+];
+
+for (const row of VISIBILITY_TABLE) {
+  test(`resolveVisibility: ${row.name} → ${row.expected}`, async () => {
+    await withStubGh(`printf '%s' '${row.stdout}'\nexit 0`, async () => {
+      assert.equal(await resolveVisibility("testorg", "repo"), row.expected);
+    });
+  });
+}
+
+test("resolveVisibility: non-zero gh exit → unknown", async () => {
+  await withStubGh("echo 'gh: Not Found (HTTP 404)' >&2\nexit 1", async () => {
+    assert.equal(await resolveVisibility("testorg", "repo"), "unknown");
+  });
+});
+
+test("resolveVisibility: unparseable body → unknown", async () => {
+  await withStubGh("printf 'not json'\nexit 0", async () => {
+    assert.equal(await resolveVisibility("testorg", "repo"), "unknown");
+  });
+});
+
+// End-to-end regression for D1: a repo lookup that returns an empty 200 must
+// leave those minutes counted. 2 600 / 3 000 is over the 85 % threshold, so
+// the honest answer is `exhausted`; the fail-open path read them as public
+// and reported `free`.
+test("the probe reports exhausted, not free, when repo visibility is unresolvable", () => {
+  const directory = stubGhForProbe({
+    usageItems: [usageItem()],
+    repoBody: "",
+  });
+  try {
+    const result = runProbe(directory, ["--json"]);
+    const report = JSON.parse(result.stdout);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(report.endpoints.usage.status, 200);
+    assert.equal(report.state, "exhausted");
+    assert.equal(report.headroom.privateMinutes, 2600);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the probe reports free when the repo is confirmed public", () => {
+  const directory = stubGhForProbe({
+    usageItems: [usageItem()],
+    repoBody: '{"private":false}',
+  });
+  try {
+    const result = runProbe(directory, ["--json"]);
+    const report = JSON.parse(result.stdout);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(report.state, "free");
+    assert.equal(report.headroom.privateMinutes, 0);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+// End-to-end regression for D2: an Actions minute SKU the math does not know
+// must surface as `unknown` with exit 1, never as `free`.
+test("the probe reports unknown when the usage report carries an unrecognized SKU", () => {
+  const directory = stubGhForProbe({
+    usageItems: [
+      usageItem({ quantity: 1 }),
+      usageItem({ sku: "Actions Quantum 2-qubit", quantity: 1 }),
+    ],
+    repoBody: '{"private":true}',
+  });
+  try {
+    const result = runProbe(directory, ["--json"]);
+    const report = JSON.parse(result.stdout);
+    assert.equal(result.status, 1);
+    assert.equal(report.state, "unknown");
+    assert.match(report.error, /unrecognized Actions minute SKU/u);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
