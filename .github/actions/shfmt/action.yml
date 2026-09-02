@@ -19,12 +19,12 @@ inputs:
     default: ''
   version:
     description: Exact shfmt version to install.
-    default: 3.13.1
+    default: 3.14.0
   sha256:
     description: >-
       SHA-256 of the linux_amd64 release binary for `version`. Change together
       with `version`.
-    default: fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+    default: fe42021c7272ef2d67ea36cbc3031683c625d0badec733ef3a57b567246a0b66
 
 runs:
   using: composite
