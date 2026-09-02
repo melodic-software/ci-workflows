@@ -895,10 +895,32 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the flip. The self-flip is therefore deferred; consumers should follow this
   documented block rather than copying the dogfood file.
 - `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
-  a native closing keyword (`Closes`/`Fixes`/`Resolves #N`, including
-  `owner/repo#N`, or the literal `No linked issue` or `No related issue:`
-  when the PR closes nothing) and non-empty `## Summary`, `## Fix`,
-  `## Verification`, and `## Related` sections (the four contract headers).
+  one of the three accepted linkage markers and non-empty `## Summary`,
+  `## Fix`, `## Verification`, and `## Related` sections (the four contract
+  headers). The accepted markers are:
+  - a native closing keyword — `Closes`/`Fixes`/`Resolves #N`, including
+    `owner/repo#N`, for an issue this PR should auto-close on merge;
+  - a non-closing reference — `Refs: #N` or `Relates to: #N` (also
+    `owner/repo#N`), for an issue this PR references but must **not** close.
+    The colon is required, the marker must be alone on its own rendered line
+    (at most three leading spaces, no trailing prose), and matching is
+    case-insensitive;
+  - the literal `No linked issue` or `No related issue:`, for a PR that
+    relates to no issue at all.
+
+  A closing keyword that the surrounding prose negates (`does not close #N`,
+  `won't fix #N`, `deliberately resolves #N`) **fails** the gate rather than
+  satisfying it, and no other marker excuses it — GitHub's own linkage parser
+  is negation-blind, so the disclaimer still registers a live closing
+  reference and still auto-closes the issue on merge (#521). The gate reads
+  the words the parser ignores: up to five word tokens before the keyword on
+  the same rendered line, cut at the nearest `.`/`!`/`?`/`;`/`,`. Correlative
+  `not only … but` is not treated as negation (`This not only documents but
+  fixes #N` still satisfies the gate). A comma-separated note such as `No
+  known issues, closes #N` is a new clause, not a disclaimer. The failure
+  quotes the trigger word. Remove a real disclaimer and use `Refs: #N`
+  instead.
+
   **Gating**: a non-conforming body fails
   the job. HTML comments are stripped before either check, so an unedited PR
   template (whose instructional prose lives in comments) fails rather than

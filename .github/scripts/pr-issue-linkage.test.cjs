@@ -42,6 +42,13 @@ function contractBody({
   ].join("\n");
 }
 
+// GitHub's parser treats closer+#N as a live closing reference even when the
+// surrounding words negate it. Fixtures that need those phrases join the tokens
+// at runtime so this file itself does not contain a live closer+#N.
+function joinWords(parts) {
+  return parts.join(" ");
+}
+
 // Extracts the inline actions/github-script body (the same technique used to
 // validate the equivalent block ported into melodic-software/medley's
 // issue-labeling.yml) and runs it in a sandbox with a stub `core`/`process`,
@@ -132,6 +139,240 @@ test('"No related issue:" (claude-code-plugins pull-request skill convention) al
     }),
   );
   assert.equal(failedWith, null);
+});
+
+test('"Refs: #N" satisfies linkage without arming GitHub\'s closing parser', () => {
+  const failedWith = runScript(
+    contractBody({ closing: "Refs: #42", related: "n/a" }),
+  );
+  assert.equal(failedWith, null);
+});
+
+test('"Relates to: owner/repo#N" is an equally valid non-closing marker', () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: "Relates to: owner/repo#42",
+      related: "n/a",
+    }),
+  );
+  assert.equal(failedWith, null);
+});
+
+test("the non-closing marker is case-insensitive and tolerates up to three leading spaces", () => {
+  for (const marker of [
+    "refs: #42",
+    "REFS: #42",
+    "   Relates To: #42",
+    "Refs:#42",
+  ]) {
+    const failedWith = runScript(
+      contractBody({ closing: marker, related: "n/a" }),
+    );
+    assert.equal(
+      failedWith,
+      null,
+      `expected "${marker}" to satisfy the linkage requirement`,
+    );
+  }
+});
+
+test("a non-closing marker with trailing prose on the same line does not satisfy linkage", () => {
+  const failedWith = runScript(
+    contractBody({ closing: "Refs: #42 extra prose", related: "n/a" }),
+  );
+  assert.ok(
+    failedWith,
+    "only a bare marker line may satisfy the gate -- prose around it is not the marker form",
+  );
+  assert.match(failedWith, /closing keyword/);
+});
+
+test("a non-closing marker without its colon does not satisfy linkage", () => {
+  const failedWith = runScript(
+    contractBody({ closing: "Refs #42", related: "n/a" }),
+  );
+  assert.ok(failedWith, "the colon is required by the marker form");
+  assert.match(failedWith, /closing keyword/);
+});
+
+test("a negated closing keyword fails the gate even with every contract header present", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: joinWords(["This", "PR", "does", "not", "close", "#42."]),
+      related: "n/a",
+    }),
+  );
+  assert.ok(
+    failedWith,
+    "GitHub auto-closes the issue on merge regardless of the disclaimer, so the gate must fail",
+  );
+  assert.match(failedWith, /Negated closing reference/);
+  assert.match(failedWith, /trigger "not"/);
+  assert.match(failedWith, /Refs: #N/);
+});
+
+test('a negated closing keyword still fails when "No linked issue" is also present', () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: `No linked issue. ${joinWords(["This", "PR", "does", "not", "close", "#42."])}`,
+      related: "n/a",
+    }),
+  );
+  assert.ok(
+    failedWith,
+    "the opt-out marker does not disarm the closing reference GitHub will act on",
+  );
+  assert.match(failedWith, /Negated closing reference/);
+});
+
+test("a negated closing keyword still fails when a valid non-closing marker is also present", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: "Refs: #42",
+      related: joinWords(["This", "PR", "does", "not", "close", "#42."]),
+    }),
+  );
+  assert.ok(
+    failedWith,
+    "a correct marker elsewhere does not excuse a live closing reference",
+  );
+  assert.match(failedWith, /Negated closing reference/);
+});
+
+test("every negation form in the window is recognized", () => {
+  for (const phrase of [
+    ["This", "does", "not", "close", "#42."],
+    ["This", "will", "not", "close", "#42."],
+    ["We", "do", "not", "close", "#42."],
+    ["It", "never", "closes", "#42."],
+    ["It", "doesn't", "close", "#42."],
+    ["It", "won't", "close", "#42."],
+    ["It", "didn't", "close", "#42."],
+    ["It", "deliberately", "closes", "#42."],
+    ["It", "intentionally", "closes", "#42."],
+    ["There", "is", "no", "scenario", "where", "this", "closes", "#42."],
+    ["Shipped", "without", "closes", "#42."],
+  ].map(joinWords)) {
+    const failedWith = runScript(
+      contractBody({ closing: phrase, related: "n/a" }),
+    );
+    assert.ok(failedWith, `expected "${phrase}" to be read as negated`);
+    assert.match(failedWith, /Negated closing reference/);
+  }
+});
+
+test("negation is scoped to the same line and cut at a sentence break", () => {
+  for (const phrase of [
+    `Nothing here is optional. ${joinWords(["Closes", "#42"])}`,
+    `This PR does not touch the selector.\n${joinWords(["Closes", "#42"])}`,
+    `No known issues, ${joinWords(["closes", "#90."])}`,
+  ]) {
+    const failedWith = runScript(
+      contractBody({ closing: phrase, related: "n/a" }),
+    );
+    assert.equal(
+      failedWith,
+      null,
+      `expected "${phrase}" to remain an ordinary closing reference`,
+    );
+  }
+});
+
+test("correlative not-only-but is not treated as a negated closer", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: joinWords([
+        "This",
+        "not",
+        "only",
+        "documents",
+        "but",
+        "fixes",
+        "#42",
+      ]),
+      related: "n/a",
+    }),
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "not only … but fixes #N is an affirmative closer, not a disclaimer",
+  );
+});
+
+test("negation looks back at most five words", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: joinWords([
+        "This",
+        "PR",
+        "does",
+        "not",
+        "change",
+        "any",
+        "of",
+        "the",
+        "exported",
+        "helper",
+        "names,",
+        "closes",
+        "#42",
+      ]),
+      related: "n/a",
+    }),
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "a negation six or more words back belongs to a different clause",
+  );
+});
+
+test("a negated closing keyword is not itself accepted as the required linkage", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: joinWords(["This", "PR", "does", "not", "close", "#42."]),
+      related: "n/a",
+    }),
+  );
+  assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Negated closing reference/);
+  assert.match(failedWith, /closing keyword/);
+});
+
+test("a non-negated closing keyword on a line that also carries a negated one still fails", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: `${joinWords(["Closes", "#41"])} but ${joinWords(["does", "not", "close", "#42."])}`,
+      related: "n/a",
+    }),
+  );
+  assert.ok(failedWith, "expected a failure");
+  assert.match(failedWith, /Negated closing reference/);
+  assert.doesNotMatch(failedWith, /Missing a native closing keyword/);
+});
+
+test("a negated closing keyword inside a code span is not live and does not fail the gate", () => {
+  const failedWith = runScript(
+    `Never write \`${joinWords(["does", "not", "close", "#42"])}\` in a body.\n\n` +
+      contractBody({ closing: "Refs: #42", related: "n/a" }),
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "code-span text is not rendered linkage, so GitHub will not act on it either",
+  );
+});
+
+test("a non-closing marker inside a code span does not satisfy the gate", () => {
+  const failedWith = runScript(
+    "Example: `Refs: #42`\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\n- #123",
+  );
+  assert.ok(
+    failedWith,
+    "inline-code marker text must not count as rendered metadata",
+  );
+  assert.match(failedWith, /closing keyword/);
 });
 
 test("missing closing keyword and all contract headers fails with each message", () => {

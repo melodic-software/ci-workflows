@@ -1,10 +1,14 @@
 name: pr-issue-linkage
 
 # Reusable workflow — requires the PR body to carry a native GitHub closing
-# keyword (Closes/Fixes/Resolves #N, or the literal "No linked issue" / "No
-# related issue:" when the PR closes nothing) AND the four contract headers
-# with content: "## Summary", "## Fix", "## Verification", and "## Related"
+# keyword (Closes/Fixes/Resolves #N), a non-closing "Refs: #N" / "Relates to:
+# #N" marker, or the literal "No linked issue" / "No related issue:" when the
+# PR relates to no issue at all, AND the four contract headers with content:
+# "## Summary", "## Fix", "## Verification", and "## Related"
 # (issue #153; consumer template alignment in claude-code-plugins#553).
+# A closing keyword whose preceding words negate it ("does not close #N")
+# fails the gate outright, because GitHub's own parser is negation-blind and
+# auto-closes the issue on merge regardless of the disclaimer (issue #521).
 # GATING by design: a caller that requires this check blocks the merge until
 # the body is fixed. Generalizes melodic-software/provisioning's pr-body.yml
 # (decisions #58/#59) into a shared reusable workflow, mirroring pr-title.yml's
@@ -458,17 +462,115 @@ jobs:
                 }
               }
 
+              // Matches the same shape GitHub's own linkage parser accepts: one of the nine
+              // closing keywords, an optional colon, and a `#N` or `owner/repo#N` tail.
+              // Global so every occurrence on a line can be classified, not just the first.
               const CLOSING_KEYWORD =
-                /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#\d+\b/i;
+                /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#\d+\b/gi;
+              // First-class non-closing linkage: "this PR references issue N and deliberately
+              // does not close it". Before #521 the only passing escape was the no-issue
+              // opt-out, which is a lie when the PR plainly does relate to an issue, and the
+              // honest prose alternative armed GitHub's parser. The shape is deliberately
+              // strict -- colon required, at most three leading spaces (four opens an indented
+              // code block), one marker per rendered line, no trailing prose -- so ordinary
+              // sentences that happen to contain "refs" cannot satisfy a merge gate.
+              const NON_CLOSING_MARKER =
+                /^ {0,3}(?:refs|relates[ \t]+to):[ \t]*(?:[\w.-]+\/[\w.-]+)?#\d+[ \t]*$/i;
               // Accepts both phrasings: provisioning/pr-body.yml's original "No linked issue"
               // and claude-code-plugins/source-control:pull-request's independently-evolved
               // "No related issue:" opt-out marker (reference/create.md). Widened, not narrowed,
               // so this reusable workflow works as a caller for either repo's existing convention.
               const NO_ISSUE_MARKER = /\bno (?:linked|related) issue\b/i;
-              if (!CLOSING_KEYWORD.test(body) && !NO_ISSUE_MARKER.test(body)) {
+
+              // GitHub's parser reads the keyword and nothing around it, so a negated
+              // closer still registers a live closing reference and still auto-closes
+              // the issue on merge (observed on melodic-software/dotfiles#583). The gate
+              // reads the words the parser ignores: at most five tokens immediately
+              // before the keyword on the same rendered line, cut at the nearest
+              // sentence or comma so an unrelated earlier clause cannot negate it.
+              const NEGATION_WINDOW_WORDS = 5;
+              const NEGATION_WORDS = new Set([
+                "not",
+                "never",
+                "no",
+                "without",
+                "deliberately",
+                "intentionally",
+              ]);
+
+              function findNegationTrigger(line, keywordIndex) {
+                const preceding = line.slice(0, keywordIndex);
+                const sentenceBreak = Math.max(
+                  preceding.lastIndexOf("."),
+                  preceding.lastIndexOf("!"),
+                  preceding.lastIndexOf("?"),
+                  preceding.lastIndexOf(";"),
+                  preceding.lastIndexOf(","),
+                );
+                const words =
+                  preceding.slice(sentenceBreak + 1).match(/[A-Za-z][A-Za-z'\u2019]*/g) || [];
+                const window = words.slice(-NEGATION_WINDOW_WORDS);
+                for (let index = 0; index < window.length; index += 1) {
+                  const word = window[index];
+                  const lower = word.toLowerCase();
+                  // Correlative "not only … but" is affirmative ("not only
+                  // documents but fixes #N"), not a disclaimer. "not" still
+                  // counts when the next token is anything else.
+                  if (lower === "not" && window[index + 1]?.toLowerCase() === "only") {
+                    continue;
+                  }
+                  if (NEGATION_WORDS.has(lower) || /n['\u2019]t$/i.test(word)) {
+                    return word;
+                  }
+                }
+                return null;
+              }
+
+              let hasClosingKeyword = false;
+              let hasNonClosingMarker = false;
+              const negatedClosingReferences = [];
+              for (const line of body.split(/\r?\n/)) {
+                if (NON_CLOSING_MARKER.test(line)) hasNonClosingMarker = true;
+                CLOSING_KEYWORD.lastIndex = 0;
+                let match;
+                while ((match = CLOSING_KEYWORD.exec(line)) !== null) {
+                  const trigger = findNegationTrigger(line, match.index);
+                  if (trigger) {
+                    negatedClosingReferences.push({ text: match[0], trigger });
+                  } else {
+                    hasClosingKeyword = true;
+                  }
+                }
+              }
+
+              // Fail-closed, never warn-only, and never excused by a valid marker elsewhere
+              // in the body: the disclaimer does not stop the merge from closing the issue,
+              // so the phrase itself has to go before this PR can merge.
+              if (negatedClosingReferences.length > 0) {
+                const quoted = [
+                  ...new Map(
+                    negatedClosingReferences.map((reference) => [reference.text, reference]),
+                  ).values(),
+                ]
+                  .map((reference) => `"${reference.text}" (trigger "${reference.trigger}")`)
+                  .join(", ");
+                errors.push(
+                  `Negated closing reference (${quoted}). GitHub's linkage parser ignores the ` +
+                    "surrounding words, so this still registers a closing reference and still " +
+                    "auto-closes the issue when this PR merges. Remove the closing keyword and " +
+                    'use "Refs: #N" (or "Relates to: #N") on its own line instead.'
+                );
+              }
+
+              // A negated closing reference deliberately does not count here either: the only
+              // ways to satisfy linkage are a real closing keyword, an explicit non-closing
+              // marker, or the no-issue opt-out.
+              if (!hasClosingKeyword && !hasNonClosingMarker && !NO_ISSUE_MARKER.test(body)) {
                 errors.push(
                   "Missing a native closing keyword (Closes/Fixes/Resolves #N). If this PR " +
-                    'closes no GitHub issue, state "No linked issue" (or "No related issue:") in the body instead.'
+                    'references an issue it must not close, put "Refs: #N" (or "Relates to: #N") ' +
+                    'on its own line. If it relates to no GitHub issue at all, state ' +
+                    '"No linked issue" (or "No related issue:") in the body instead.'
                 );
               }
 
