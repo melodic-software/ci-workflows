@@ -40,9 +40,17 @@ if [[ -f .node-version ]]; then
   if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
     log "nvm not found at $NVM_DIR; installing nvm"
     mkdir -p "$NVM_DIR"
-    # Pinned nvm installer (v0.40.3), fetched over an https-only redirect chain.
+    # nvm v0.40.3, pinned to the commit the annotated tag currently resolves to
+    # (977563e…) rather than the mutable tag name. Download, checksum, then run —
+    # same shape as the .NET installer below.
+    nvm_installer="$(mktemp)"
     curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 3 \
-      https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | PROFILE=/dev/null bash
+      https://raw.githubusercontent.com/nvm-sh/nvm/977563e97ddc66facf3a8e31c6cff01d236f09bd/install.sh \
+      -o "$nvm_installer" # v0.40.3
+    echo "2d8359a64a3cb07c02389ad88ceecd43f2fa469c06104f92f98df5b6f315275f  $nvm_installer" |
+      sha256sum -c --strict -
+    PROFILE=/dev/null bash "$nvm_installer"
+    rm -f "$nvm_installer"
   fi
 
   set +u # nvm.sh reads intentionally-unset variables under `set -u`
@@ -68,8 +76,16 @@ if [[ -f .node-version ]]; then
 fi
 
 # --- .NET SDK, from global.json --------------------------------------------
-if [[ -f global.json ]] && command -v jq >/dev/null 2>&1; then
-  sdk="$(jq -r '.sdk.version // empty' global.json)"
+if [[ -f global.json ]]; then
+  sdk=""
+  if command -v node >/dev/null 2>&1; then
+    sdk="$(node -p "require('./global.json').sdk.version" 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    sdk="$(jq -r '.sdk.version // empty' global.json)"
+  else
+    log "neither node nor jq is available; cannot read global.json"
+    exit 1
+  fi
   dotnet_root="$HOME/.dotnet"
   if [[ -n "$sdk" ]]; then
     if [[ -x "$dotnet_root/dotnet" ]] && "$dotnet_root/dotnet" --list-sdks 2>/dev/null | grep -qF "$sdk "; then
@@ -95,6 +111,8 @@ if [[ -f global.json ]] && command -v jq >/dev/null 2>&1; then
       env_line "export DOTNET_NOLOGO=1"
       log "active dotnet: $("$dotnet_root/dotnet" --version)"
     fi
+  else
+    log "global.json has no sdk.version; skipping .NET SDK install"
   fi
 fi
 
