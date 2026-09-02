@@ -143,10 +143,6 @@ function classifyActionsSku(sku) {
   return Object.freeze({ kind: SKU_KINDS.UNRECOGNIZED });
 }
 
-function isStandardHostedSku(item) {
-  return classifyActionsSku(item?.sku).kind === SKU_KINDS.STANDARD;
-}
-
 function hasRequiredFields(item) {
   const quantity = Number(item?.quantity);
   return (
@@ -325,6 +321,5 @@ module.exports = Object.freeze({
   evaluateBillingHeadroom,
   headroomToCachePayload,
   isActionsMinuteItem,
-  isStandardHostedSku,
   normalizeRoutingState,
 });

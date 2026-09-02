@@ -367,7 +367,11 @@ test("headroom: #519 live shape stays exhausted when a macOS row is present", as
       usageItem({ repositoryName: "dotfiles", quantity: 814 }),
       usageItem({ repositoryName: "github-iac", quantity: 426 }),
       usageItem({ repositoryName: "claude-code-proxy", quantity: 21 }),
-      usageItem({ repositoryName: "medley", quantity: 34, sku: "Actions Windows" }),
+      usageItem({
+        repositoryName: "medley",
+        quantity: 34,
+        sku: "Actions Windows",
+      }),
       usageItem({
         repositoryName: "medley",
         quantity: 20,
