@@ -276,6 +276,28 @@ test("negation is scoped to the same line and cut at a sentence break", () => {
   }
 });
 
+test("correlative not-only-but is not treated as a negated closer", () => {
+  const failedWith = runScript(
+    contractBody({
+      closing: joinWords([
+        "This",
+        "not",
+        "only",
+        "documents",
+        "but",
+        "fixes",
+        "#42",
+      ]),
+      related: "n/a",
+    }),
+  );
+  assert.equal(
+    failedWith,
+    null,
+    "not only … but fixes #N is an affirmative closer, not a disclaimer",
+  );
+});
+
 test("negation looks back at most five words", () => {
   const failedWith = runScript(
     contractBody({

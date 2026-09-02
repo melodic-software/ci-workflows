@@ -508,13 +508,17 @@ jobs:
                 );
                 const words =
                   preceding.slice(sentenceBreak + 1).match(/[A-Za-z][A-Za-z'\u2019]*/g) || [];
-                return words
-                  .slice(-NEGATION_WINDOW_WORDS)
-                  .some(
-                    (word) =>
-                      NEGATION_WORDS.has(word.toLowerCase()) ||
-                      /n['\u2019]t$/i.test(word),
-                  );
+                const window = words.slice(-NEGATION_WINDOW_WORDS);
+                return window.some((word, index) => {
+                  const lower = word.toLowerCase();
+                  // Correlative "not only … but" is affirmative ("not only
+                  // documents but fixes #N"), not a disclaimer. "not" still
+                  // counts when the next token is anything else.
+                  if (lower === "not" && window[index + 1]?.toLowerCase() === "only") {
+                    return false;
+                  }
+                  return NEGATION_WORDS.has(lower) || /n['\u2019]t$/i.test(word);
+                });
               }
 
               let hasClosingKeyword = false;
