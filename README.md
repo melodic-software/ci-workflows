@@ -914,10 +914,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   is negation-blind, so the disclaimer still registers a live closing
   reference and still auto-closes the issue on merge (#521). The gate reads
   the words the parser ignores: up to five word tokens before the keyword on
-  the same rendered line, cut at the nearest `.`/`!`/`?`/`;`. Correlative
+  the same rendered line, cut at the nearest `.`/`!`/`?`/`;`/`,`. Correlative
   `not only … but` is not treated as negation (`This not only documents but
-  fixes #N` still satisfies the gate). Remove a real disclaimer and use
-  `Refs: #N` instead.
+  fixes #N` still satisfies the gate). A comma-separated note such as `No
+  known issues, closes #N` is a new clause, not a disclaimer. The failure
+  quotes the trigger word. Remove a real disclaimer and use `Refs: #N`
+  instead.
 
   **Gating**: a non-conforming body fails
   the job. HTML comments are stripped before either check, so an unedited PR

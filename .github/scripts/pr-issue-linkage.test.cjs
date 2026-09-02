@@ -207,6 +207,7 @@ test("a negated closing keyword fails the gate even with every contract header p
     "GitHub auto-closes the issue on merge regardless of the disclaimer, so the gate must fail",
   );
   assert.match(failedWith, /Negated closing reference/);
+  assert.match(failedWith, /trigger "not"/);
   assert.match(failedWith, /Refs: #N/);
 });
 
@@ -250,7 +251,7 @@ test("every negation form in the window is recognized", () => {
     ["It", "deliberately", "closes", "#42."],
     ["It", "intentionally", "closes", "#42."],
     ["There", "is", "no", "scenario", "where", "this", "closes", "#42."],
-    ["Merged", "without", "closing", "anything,", "resolves", "#42"],
+    ["Shipped", "without", "closes", "#42."],
   ].map(joinWords)) {
     const failedWith = runScript(
       contractBody({ closing: phrase, related: "n/a" }),
@@ -264,6 +265,7 @@ test("negation is scoped to the same line and cut at a sentence break", () => {
   for (const phrase of [
     `Nothing here is optional. ${joinWords(["Closes", "#42"])}`,
     `This PR does not touch the selector.\n${joinWords(["Closes", "#42"])}`,
+    `No known issues, ${joinWords(["closes", "#90."])}`,
   ]) {
     const failedWith = runScript(
       contractBody({ closing: phrase, related: "n/a" }),

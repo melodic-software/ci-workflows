@@ -487,7 +487,7 @@ jobs:
               // the issue on merge (observed on melodic-software/dotfiles#583). The gate
               // reads the words the parser ignores: at most five tokens immediately
               // before the keyword on the same rendered line, cut at the nearest
-              // sentence break so an unrelated earlier clause cannot negate it.
+              // sentence or comma so an unrelated earlier clause cannot negate it.
               const NEGATION_WINDOW_WORDS = 5;
               const NEGATION_WORDS = new Set([
                 "not",
@@ -498,27 +498,32 @@ jobs:
                 "intentionally",
               ]);
 
-              function isNegatedClosingReference(line, keywordIndex) {
+              function findNegationTrigger(line, keywordIndex) {
                 const preceding = line.slice(0, keywordIndex);
                 const sentenceBreak = Math.max(
                   preceding.lastIndexOf("."),
                   preceding.lastIndexOf("!"),
                   preceding.lastIndexOf("?"),
                   preceding.lastIndexOf(";"),
+                  preceding.lastIndexOf(","),
                 );
                 const words =
                   preceding.slice(sentenceBreak + 1).match(/[A-Za-z][A-Za-z'\u2019]*/g) || [];
                 const window = words.slice(-NEGATION_WINDOW_WORDS);
-                return window.some((word, index) => {
+                for (let index = 0; index < window.length; index += 1) {
+                  const word = window[index];
                   const lower = word.toLowerCase();
                   // Correlative "not only … but" is affirmative ("not only
                   // documents but fixes #N"), not a disclaimer. "not" still
                   // counts when the next token is anything else.
                   if (lower === "not" && window[index + 1]?.toLowerCase() === "only") {
-                    return false;
+                    continue;
                   }
-                  return NEGATION_WORDS.has(lower) || /n['\u2019]t$/i.test(word);
-                });
+                  if (NEGATION_WORDS.has(lower) || /n['\u2019]t$/i.test(word)) {
+                    return word;
+                  }
+                }
+                return null;
               }
 
               let hasClosingKeyword = false;
@@ -529,8 +534,9 @@ jobs:
                 CLOSING_KEYWORD.lastIndex = 0;
                 let match;
                 while ((match = CLOSING_KEYWORD.exec(line)) !== null) {
-                  if (isNegatedClosingReference(line, match.index)) {
-                    negatedClosingReferences.push(match[0]);
+                  const trigger = findNegationTrigger(line, match.index);
+                  if (trigger) {
+                    negatedClosingReferences.push({ text: match[0], trigger });
                   } else {
                     hasClosingKeyword = true;
                   }
@@ -541,8 +547,12 @@ jobs:
               // in the body: the disclaimer does not stop the merge from closing the issue,
               // so the phrase itself has to go before this PR can merge.
               if (negatedClosingReferences.length > 0) {
-                const quoted = [...new Set(negatedClosingReferences)]
-                  .map((reference) => `"${reference}"`)
+                const quoted = [
+                  ...new Map(
+                    negatedClosingReferences.map((reference) => [reference.text, reference]),
+                  ).values(),
+                ]
+                  .map((reference) => `"${reference.text}" (trigger "${reference.trigger}")`)
                   .join(", ");
                 errors.push(
                   `Negated closing reference (${quoted}). GitHub's linkage parser ignores the ` +
