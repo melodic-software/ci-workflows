@@ -12,12 +12,12 @@ inputs:
     description: >-
       Exact Lefthook version to install. Keep this aligned with the version
       used by the standards-managed consumer toolchain.
-    default: 2.1.10
+    default: 2.1.12
   sha256:
     description: >-
       SHA-256 of the Linux_x86_64 release binary for `version`. Change
       together with `version`.
-    default: f1de34ea0572363a525a2000d40f5a646733893ad28c924b34ac98304518073f
+    default: 22ff1ad48d1a0f4dca8d6b7e920056c6a9015f9204e5b693858ed9c2db759a16
 
 runs:
   using: composite
