@@ -6,6 +6,8 @@ const test = require("node:test");
 const {
   DEFAULT_FREE_THRESHOLD_RATIO,
   DEFAULT_INCLUDED_MINUTES,
+  STANDARD_HOSTED_SKU_MULTIPLIERS,
+  classifyActionsSku,
   evaluateBillingHeadroom,
   normalizeRoutingState,
 } = require("./billing-headroom.cjs");
@@ -148,7 +150,7 @@ test("headroom: unknown visibility is counted (fail loud toward fleet)", async (
   assert.equal(headroom.privateMinutes, 2900);
 });
 
-test("headroom: non-minute and non-standard SKUs are ignored", async () => {
+test("headroom: non-minute rows and non-Actions products are ignored", async () => {
   const headroom = await evaluateBillingHeadroom({
     usageItems: [
       usageItem({
@@ -157,7 +159,9 @@ test("headroom: non-minute and non-standard SKUs are ignored", async () => {
         quantity: 999,
       }),
       usageItem({
-        sku: "Actions macOS",
+        product: "codespaces",
+        sku: "Codespaces Linux 2-core",
+        unitType: "Minutes",
         quantity: 999,
       }),
       usageItem({ quantity: 10 }),
@@ -176,6 +180,215 @@ test("headroom: malformed standard hosted minute rows fail closed", async () => 
     }),
     /missing required fields/u,
   );
+});
+
+// ci-workflows#519 D2/D3: pool multipliers. The old allowlist made macOS rows
+// invisible: 300 private macOS minutes drain the whole 3 000 pool while
+// privateMinutes read 0 → false `free`.
+test("headroom: macOS SKU row draws the pool at 10x (D2 regression)", async () => {
+  const headroom = await evaluateBillingHeadroom({
+    usageItems: [usageItem({ sku: "Actions macOS 3-core", quantity: 300 })],
+    resolveVisibility: alwaysPrivate,
+    includedMinutes: 3000,
+  });
+  assert.equal(headroom.privateMinutes, 3000);
+  assert.equal(headroom.consumptionRatio, 1);
+  assert.equal(headroom.state, "exhausted");
+});
+
+test("headroom: multipliers apply per SKU (Linux 1, Slim 1, Windows 2, macOS 10)", async () => {
+  const headroom = await evaluateBillingHeadroom({
+    usageItems: [
+      usageItem({ sku: "Actions Linux", quantity: 100 }),
+      usageItem({ sku: "Actions Linux Slim", quantity: 100 }),
+      usageItem({ sku: "Actions Windows", quantity: 100 }),
+      usageItem({ sku: "Actions macOS", quantity: 10 }),
+    ],
+    resolveVisibility: alwaysPrivate,
+    includedMinutes: 3000,
+  });
+  // 100 + 100 + 200 + 100
+  assert.equal(headroom.privateMinutes, 500);
+  assert.equal(headroom.state, "free");
+});
+
+test("headroom: Linux Slim is never credited below 1x", async () => {
+  const headroom = await evaluateBillingHeadroom({
+    usageItems: [usageItem({ sku: "Actions Linux Slim", quantity: 2600 })],
+    resolveVisibility: alwaysPrivate,
+    includedMinutes: 3000,
+  });
+  assert.equal(headroom.privateMinutes, 2600);
+  assert.equal(headroom.state, "exhausted");
+});
+
+test("headroom: snake_case billing SKU ids resolve to the same multipliers", () => {
+  assert.deepEqual(classifyActionsSku("actions_linux"), {
+    kind: "standard",
+    multiplier: 1,
+  });
+  assert.deepEqual(classifyActionsSku("actions_linux_slim"), {
+    kind: "standard",
+    multiplier: 1,
+  });
+  assert.deepEqual(classifyActionsSku("actions_linux_arm"), {
+    kind: "standard",
+    multiplier: 1,
+  });
+  assert.deepEqual(classifyActionsSku("actions_windows"), {
+    kind: "standard",
+    multiplier: 2,
+  });
+  assert.deepEqual(classifyActionsSku("actions_macos"), {
+    kind: "standard",
+    multiplier: 10,
+  });
+  assert.deepEqual(classifyActionsSku("  Actions  macOS 3-core "), {
+    kind: "standard",
+    multiplier: 10,
+  });
+  assert.deepEqual(classifyActionsSku("linux_4_core"), { kind: "larger" });
+  assert.deepEqual(classifyActionsSku("actions_macos_l"), { kind: "larger" });
+  assert.deepEqual(classifyActionsSku("Actions Linux 4-core"), {
+    kind: "larger",
+  });
+  assert.deepEqual(classifyActionsSku("Actions Quantum"), {
+    kind: "unrecognized",
+  });
+  assert.deepEqual(classifyActionsSku(""), { kind: "unrecognized" });
+  assert.deepEqual(classifyActionsSku(undefined), { kind: "unrecognized" });
+});
+
+test("headroom: every standard multiplier is at least the documented legacy floor", () => {
+  for (const [sku, multiplier] of Object.entries(
+    STANDARD_HOSTED_SKU_MULTIPLIERS,
+  )) {
+    const floor = sku.includes("macos") ? 10 : sku.includes("windows") ? 2 : 1;
+    assert.ok(
+      multiplier >= floor,
+      `${sku} multiplier ${multiplier} is below its floor ${floor}`,
+    );
+  }
+});
+
+test("headroom: an unrecognized Actions minute SKU fails closed (never free)", async () => {
+  await assert.rejects(
+    evaluateBillingHeadroom({
+      usageItems: [
+        usageItem({ quantity: 10 }),
+        usageItem({ sku: "Actions Quantum 2-qubit", quantity: 1 }),
+      ],
+      resolveVisibility: alwaysPrivate,
+    }),
+    /unrecognized Actions minute SKU "Actions Quantum 2-qubit"/u,
+  );
+  // Visibility does not rescue it: an unrecognized SKU is refused before the
+  // repo is looked up, so even an all-public report cannot claim free.
+  await assert.rejects(
+    evaluateBillingHeadroom({
+      usageItems: [usageItem({ sku: "Actions Quantum 2-qubit", quantity: 1 })],
+      resolveVisibility: () => "public",
+    }),
+    /unrecognized Actions minute SKU/u,
+  );
+  // An Actions minute row with no sku at all is unrecognized, not malformed.
+  await assert.rejects(
+    evaluateBillingHeadroom({
+      usageItems: [usageItem({ sku: "", quantity: 1 })],
+      resolveVisibility: alwaysPrivate,
+    }),
+    /unrecognized Actions minute SKU ""/u,
+  );
+});
+
+test("headroom: larger-runner SKU on a private or unknown repo fails closed", async () => {
+  await assert.rejects(
+    evaluateBillingHeadroom({
+      usageItems: [usageItem({ sku: "linux_4_core", quantity: 1 })],
+      resolveVisibility: alwaysPrivate,
+    }),
+    /larger-runner Actions SKU "linux_4_core" on private repo melodic-software\/medley is paid-only/u,
+  );
+  await assert.rejects(
+    evaluateBillingHeadroom({
+      usageItems: [usageItem({ sku: "macos_l", quantity: 1 })],
+      resolveVisibility: () => "unknown",
+    }),
+    /larger-runner Actions SKU "macos_l" on unknown repo/u,
+  );
+});
+
+test("headroom: larger-runner SKU on a public repo does not touch the pool", async () => {
+  const headroom = await evaluateBillingHeadroom({
+    usageItems: [
+      usageItem({
+        repositoryName: "ci-runner",
+        sku: "linux_4_core",
+        quantity: 5000,
+      }),
+      usageItem({ repositoryName: "medley", quantity: 10 }),
+    ],
+    resolveVisibility: visibilityMap({
+      "melodic-software/ci-runner": "public",
+      "melodic-software/medley": "private",
+    }),
+  });
+  assert.equal(headroom.privateMinutes, 10);
+  assert.equal(headroom.state, "free");
+});
+
+// ci-workflows#519 D1: the probe's resolveVisibility used to turn an empty or
+// `private`-less body into "public". The headroom math must count whatever it
+// hands back as "unknown", so a missing answer can never subtract minutes.
+test("headroom: a visibility that is neither private nor public is counted", async () => {
+  for (const visibility of ["unknown", undefined, null, "", "PUBLIC", 42]) {
+    const headroom = await evaluateBillingHeadroom({
+      usageItems: [usageItem({ quantity: 2600 })],
+      resolveVisibility: () => visibility,
+    });
+    assert.equal(
+      headroom.privateMinutes,
+      2600,
+      `visibility ${String(visibility)} must be counted`,
+    );
+    assert.equal(headroom.state, "exhausted");
+  }
+});
+
+// The live scenario from #519: 3 913 raw private Linux minutes plus a macOS
+// row. Dropping any single repo (here via a "public" misclassification of
+// provisioning) used to flip exhausted → free; with the macOS row counted at
+// 10x the pool is over threshold regardless.
+test("headroom: #519 live shape stays exhausted when a macOS row is present", async () => {
+  const headroom = await evaluateBillingHeadroom({
+    usageItems: [
+      usageItem({ repositoryName: "provisioning", quantity: 1469 }),
+      usageItem({ repositoryName: "medley", quantity: 1183 }),
+      usageItem({ repositoryName: "dotfiles", quantity: 814 }),
+      usageItem({ repositoryName: "github-iac", quantity: 426 }),
+      usageItem({ repositoryName: "claude-code-proxy", quantity: 21 }),
+      usageItem({
+        repositoryName: "medley",
+        quantity: 34,
+        sku: "Actions Windows",
+      }),
+      usageItem({
+        repositoryName: "medley",
+        quantity: 20,
+        sku: "Actions macOS 3-core",
+      }),
+    ],
+    resolveVisibility: visibilityMap({
+      "melodic-software/provisioning": "public",
+      "melodic-software/medley": "private",
+      "melodic-software/dotfiles": "private",
+      "melodic-software/github-iac": "private",
+      "melodic-software/claude-code-proxy": "private",
+    }),
+  });
+  // 1183 + 814 + 426 + 21 + 34*2 + 20*10 = 2712 ≥ 2550
+  assert.equal(headroom.privateMinutes, 2712);
+  assert.equal(headroom.state, "exhausted");
 });
 
 function selectorInput(overrides = {}) {
