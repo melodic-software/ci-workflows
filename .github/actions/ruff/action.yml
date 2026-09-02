@@ -24,7 +24,7 @@ inputs:
     # of 0.16.0, which changed the DEFAULT rule set — findings that differ in
     # both directions. Callers pass an explicit `config`, so a default-set change
     # cannot reach them; the parity that matters here is version, not rules.
-    default: 0.16.3
+    default: 0.16.5
   python-version:
     description: Exact Python patch version uv provisions for the ephemeral tool environment.
     default: '3.14.7'
