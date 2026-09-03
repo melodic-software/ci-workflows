@@ -12,8 +12,11 @@ severity="${SEVERITY:-}"
 # process over a large tree is a serial wall: 747 files took 254 s on a hosted
 # runner. Batches of 40 files across 4 processes measured 2.85x faster on that
 # tree (github-iac docs/topics/ci-perf/research/PROFILE-ccp-scripts.md, 3b);
-# 4 matches the hosted runner's vCPU count. Both knobs are read from the
-# environment only so the self-test can pin them; the action exposes neither.
+# 4 matches the hosted runner's vCPU count. action.yml sets both names on the
+# step with these same values, so a caller's inherited environment can never
+# change the fan-out or abort the action with a malformed value; the reads
+# below exist for the self-test, which runs this script directly. The action
+# exposes neither as an input.
 batch_size="${SHELLCHECK_BATCH_SIZE:-40}"
 jobs="${SHELLCHECK_JOBS:-4}"
 

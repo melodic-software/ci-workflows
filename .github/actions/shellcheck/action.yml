@@ -81,4 +81,15 @@ runs:
         RCFILE: ${{ inputs.rcfile }}
         EXCLUDE: ${{ inputs.exclude }}
         SEVERITY: ${{ inputs.severity }}
+        # The fan-out shape is PINNED here, not left to the environment. A
+        # composite action inherits the caller's workflow-, job- and step-level
+        # env, so without these two lines an unrelated `SHELLCHECK_JOBS` in a
+        # consumer's workflow would silently change how this action lints, and
+        # a typo like `auto` or `0` would abort it. Step-level env wins over
+        # everything inherited, so setting them here makes the action's
+        # behaviour a property of the action. run.sh reads the same names with
+        # these values as its defaults; that path exists for its self-test,
+        # which invokes the script directly rather than through this file.
+        SHELLCHECK_BATCH_SIZE: '40'
+        SHELLCHECK_JOBS: '4'
       run: bash "$GITHUB_ACTION_PATH/run.sh"

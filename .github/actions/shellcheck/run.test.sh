@@ -206,6 +206,29 @@ run_action 2 SHELLCHECK_JOBS=0
 grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: a non-positive fan-out knob fails closed before ShellCheck\n'
 
+# A hostile or mistyped ambient value is rejected the same way a numeric-but-
+# invalid one is: no lane starts, and the message names both knobs. `auto` is
+# the realistic shape (a caller copying a --jobs idiom from another tool), and
+# a non-numeric string would otherwise reach the arithmetic in the batching
+# loop rather than being refused up front.
+for hostile in auto -1 '4 4' ' ' 04x 1e3; do
+  run_action 2 SHELLCHECK_JOBS="$hostile"
+  [[ ! -e "$captures/1.args" ]]
+  grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
+  run_action 2 SHELLCHECK_BATCH_SIZE="$hostile"
+  [[ ! -e "$captures/1.args" ]]
+  grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
+done
+printf 'PASS: a hostile ambient fan-out value fails closed on either knob\n'
+
+# An EMPTY value is the one ambient spelling that is not hostile: `${VAR:-40}`
+# treats empty as unset, which is what a caller writing `SHELLCHECK_JOBS: ''`
+# in a workflow means. It takes the default and lints rather than aborting, so
+# an empty inherited value cannot turn into a red lane.
+run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_BATCH_SIZE=''
+grep -F 'in batches of 40 across 4 process(es)' <<<"$ACTION_OUTPUT" >/dev/null
+printf 'PASS: an empty ambient fan-out value reads as unset and takes the default\n'
+
 # A batch size of 1 makes the batch count observable: two standard files are two
 # invocations, and the extra lane still runs after the whole standard lane.
 run_action 0 SHELLCHECK_BATCH_SIZE=1 SHELLCHECK_JOBS=2 EXTRA_GLOBS=dot_bashrc
@@ -273,3 +296,14 @@ grep -F "EXTRA_GLOBS: \${{ inputs.extra-globs }}" "$action_directory/action.yml"
 grep -F "EXTRA_EXCLUDE_CODES: \${{ inputs.extra-exclude-codes }}" "$action_directory/action.yml" >/dev/null
 grep -F "run: bash \"\$GITHUB_ACTION_PATH/run.sh\"" "$action_directory/action.yml" >/dev/null
 printf 'PASS: action metadata forwards the new inputs to the tested runner\n'
+
+# The fan-out shape must be a property of the action, not of whatever the
+# caller happens to have in scope. A composite action inherits the caller's
+# env, so both knobs are set on the step itself, where step-level env wins.
+# Without these two lines an unrelated SHELLCHECK_JOBS in a consumer workflow
+# would change how this action lints, and a value the loop above proves fatal
+# would abort it. The literals are asserted, not merely their presence: a
+# placeholder pointing back at an input would reopen the same hole.
+grep -F "SHELLCHECK_BATCH_SIZE: '40'" "$action_directory/action.yml" >/dev/null
+grep -F "SHELLCHECK_JOBS: '4'" "$action_directory/action.yml" >/dev/null
+printf 'PASS: action metadata pins the fan-out knobs against the caller environment\n'
