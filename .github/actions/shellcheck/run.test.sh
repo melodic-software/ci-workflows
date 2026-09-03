@@ -13,11 +13,29 @@ mkdir -p -- "$repository/empty" "$repository/nested" "$repository/raw" "$fake_bi
 cat >"$fake_bin/shellcheck" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+# Batches run concurrently under the fan-out, so the invocation counter is
+# taken under a mkdir lock (atomic on every filesystem the runners use).
+until mkdir "$CAPTURE_DIR/.lock" 2>/dev/null; do sleep 0.01; done
 count=0
 [[ ! -f "$CAPTURE_DIR/count" ]] || read -r count <"$CAPTURE_DIR/count"
 count=$((count + 1))
 printf '%s\n' "$count" >"$CAPTURE_DIR/count"
+rmdir "$CAPTURE_DIR/.lock"
 printf '%s\0' "$@" >"$CAPTURE_DIR/$count.args"
+printf 'fake shellcheck invocation %s\n' "$count"
+# FAKE_STATUS applies to every invocation. With FAKE_STATUS_MATCH set to
+# `substring=code[,substring=code...]`, an invocation exits with the code of
+# the first pair whose substring appears in its arguments and 0 otherwise, so
+# one fan-out run can give different batches different results.
+if [[ -n "${FAKE_STATUS_MATCH:-}" ]]; then
+  IFS=',' read -r -a pairs <<<"$FAKE_STATUS_MATCH"
+  for pair in "${pairs[@]}"; do
+    for arg in "$@"; do
+      [[ "$arg" == *"${pair%%=*}"* ]] && exit "${pair#*=}"
+    done
+  done
+  exit 0
+fi
 exit "${FAKE_STATUS:-0}"
 FAKE
 chmod +x "$fake_bin/shellcheck"
@@ -53,10 +71,13 @@ run_action() {
       EXTRA_EXCLUDE_CODES='' \
       EXTRA_GLOBS='' \
       FAKE_STATUS=0 \
+      FAKE_STATUS_MATCH='' \
       PATH="$fake_bin:$PATH" \
       PATHS='' \
       RCFILE=.shellcheckrc \
       SEVERITY='' \
+      SHELLCHECK_BATCH_SIZE=40 \
+      SHELLCHECK_JOBS=4 \
       "$@" \
       bash "$action_directory/run.sh" 2>&1
   )"
@@ -178,7 +199,111 @@ run_action 1 EXTRA_GLOBS=dot_bashrc FAKE_STATUS=1
 [[ -e "$captures/1.args" && -e "$captures/2.args" ]]
 printf 'PASS: ShellCheck findings propagate after both lanes run\n'
 
+# --- fan-out ------------------------------------------------------------------
+
+run_action 2 SHELLCHECK_JOBS=0
+[[ ! -e "$captures/1.args" ]]
+grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
+printf 'PASS: a non-positive fan-out knob fails closed before ShellCheck\n'
+
+# A hostile or mistyped ambient value is rejected the same way a numeric-but-
+# invalid one is: no lane starts, and the message names both knobs. `auto` is
+# the realistic shape (a caller copying a --jobs idiom from another tool), and
+# a non-numeric string would otherwise reach the arithmetic in the batching
+# loop rather than being refused up front.
+for hostile in auto -1 '4 4' ' ' 04x 1e3; do
+  run_action 2 SHELLCHECK_JOBS="$hostile"
+  [[ ! -e "$captures/1.args" ]]
+  grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
+  run_action 2 SHELLCHECK_BATCH_SIZE="$hostile"
+  [[ ! -e "$captures/1.args" ]]
+  grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
+done
+printf 'PASS: a hostile ambient fan-out value fails closed on either knob\n'
+
+# An EMPTY value is the one ambient spelling that is not hostile: `${VAR:-40}`
+# treats empty as unset, which is what a caller writing `SHELLCHECK_JOBS: ''`
+# in a workflow means. It takes the default and lints rather than aborting, so
+# an empty inherited value cannot turn into a red lane.
+run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_BATCH_SIZE=''
+grep -F 'in batches of 40 across 4 process(es)' <<<"$ACTION_OUTPUT" >/dev/null
+printf 'PASS: an empty ambient fan-out value reads as unset and takes the default\n'
+
+# A batch size of 1 makes the batch count observable: two standard files are two
+# invocations, and the extra lane still runs after the whole standard lane.
+run_action 0 SHELLCHECK_BATCH_SIZE=1 SHELLCHECK_JOBS=2 EXTRA_GLOBS=dot_bashrc
+[[ -e "$captures/3.args" && ! -e "$captures/4.args" ]]
+batch_files=()
+for invocation in 1 2; do
+  load_args "$invocation"
+  assert_contains "single-file batch $invocation keeps the rcfile" --rcfile=.shellcheckrc "${captured_args[@]}"
+  for arg in "${captured_args[@]}"; do
+    [[ "$arg" == --* ]] || batch_files+=("$arg")
+  done
+done
+[[ ${#batch_files[@]} -eq 2 ]]
+assert_contains 'single-file batches cover script.sh' script.sh "${batch_files[@]}"
+assert_contains 'single-file batches cover nested/tool.bash' nested/tool.bash "${batch_files[@]}"
+load_args 3
+assert_contains 'extra lane starts only after the standard batches finish' dot_bashrc "${captured_args[@]}"
+
+# 85 more tracked scripts make 87 standard files: three batches at the default
+# size of 40, run four at a time, then the extra lane as a fourth invocation.
+mkdir -p -- "$repository/fanout"
+for i in $(seq -w 1 85); do
+  printf '#!/usr/bin/env bash\ntrue\n' >"$repository/fanout/f$i.sh"
+done
+git -C "$repository" -c core.autocrlf=false add fanout
+run_action 0 EXTRA_GLOBS=dot_bashrc
+[[ -e "$captures/4.args" && ! -e "$captures/5.args" ]]
+grep -F 'in batches of 40 across 4 process(es)' <<<"$ACTION_OUTPUT" >/dev/null
+all_files=()
+for invocation in 1 2 3; do
+  load_args "$invocation"
+  assert_contains "batch $invocation carries the rcfile" --rcfile=.shellcheckrc "${captured_args[@]}"
+  for arg in "${captured_args[@]}"; do
+    [[ "$arg" == --* ]] || all_files+=("$arg")
+  done
+done
+assert_contains 'fan-out covers the first new file' fanout/f01.sh "${all_files[@]}"
+assert_contains 'fan-out covers the last new file' fanout/f85.sh "${all_files[@]}"
+assert_contains 'fan-out keeps the pre-existing scripts' script.sh "${all_files[@]}"
+if [[ ${#all_files[@]} -ne 87 || "$(printf '%s\n' "${all_files[@]}" | sort -u | wc -l | tr -d ' ')" -ne 87 ]]; then
+  printf 'FAIL: expected 87 distinct files across the batches, got %s\n' "${#all_files[@]}" >&2
+  exit 1
+fi
+printf 'PASS: batches partition the file list without duplication\n'
+load_args 4
+assert_contains 'extra lane runs after the fanned-out standard lane' dot_bashrc "${captured_args[@]}"
+# Batch outputs are replayed in batch order once every batch has finished, so
+# the three invocation lines appear in the log in one block rather than
+# interleaved with each other.
+if [[ "$(grep -c '^fake shellcheck invocation' <<<"$ACTION_OUTPUT")" -ne 4 ]]; then
+  printf 'FAIL: expected every batch output to be replayed once\n%s\n' "$ACTION_OUTPUT" >&2
+  exit 1
+fi
+printf 'PASS: every batch output is replayed exactly once\n'
+
+# The exit status is the maximum over the batches: a processing error (2) in
+# one batch outranks findings (1) in another and a clean third batch, and
+# findings alone still fail the action when every other batch is clean.
+run_action 2 FAKE_STATUS_MATCH='fanout/f50.sh=2,fanout/f01.sh=1'
+printf 'PASS: the most severe batch status is the action status\n'
+run_action 1 FAKE_STATUS_MATCH='fanout/f50.sh=1'
+printf 'PASS: findings in one batch fail the action when the other batches are clean\n'
+
 grep -F "EXTRA_GLOBS: \${{ inputs.extra-globs }}" "$action_directory/action.yml" >/dev/null
 grep -F "EXTRA_EXCLUDE_CODES: \${{ inputs.extra-exclude-codes }}" "$action_directory/action.yml" >/dev/null
 grep -F "run: bash \"\$GITHUB_ACTION_PATH/run.sh\"" "$action_directory/action.yml" >/dev/null
 printf 'PASS: action metadata forwards the new inputs to the tested runner\n'
+
+# The fan-out shape must be a property of the action, not of whatever the
+# caller happens to have in scope. A composite action inherits the caller's
+# env, so both knobs are set on the step itself, where step-level env wins.
+# Without these two lines an unrelated SHELLCHECK_JOBS in a consumer workflow
+# would change how this action lints, and a value the loop above proves fatal
+# would abort it. The literals are asserted, not merely their presence: a
+# placeholder pointing back at an input would reopen the same hole.
+grep -F "SHELLCHECK_BATCH_SIZE: '40'" "$action_directory/action.yml" >/dev/null
+grep -F "SHELLCHECK_JOBS: '4'" "$action_directory/action.yml" >/dev/null
+printf 'PASS: action metadata pins the fan-out knobs against the caller environment\n'

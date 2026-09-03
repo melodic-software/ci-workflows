@@ -8,9 +8,24 @@ extra_exclude_codes="${EXTRA_EXCLUDE_CODES:-}"
 rcfile="${RCFILE:-.shellcheckrc}"
 exclude="${EXCLUDE:-}"
 severity="${SEVERITY:-}"
+# Fan-out shape. ShellCheck has no file-level parallelism of its own, so one
+# process over a large tree is a serial wall: 747 files took 254 s on a hosted
+# runner. Batches of 40 files across 4 processes measured 2.85x faster on that
+# tree (github-iac docs/topics/ci-perf/research/PROFILE-ccp-scripts.md, 3b);
+# 4 matches the hosted runner's vCPU count. action.yml sets both names on the
+# step with these same values, so a caller's inherited environment can never
+# change the fan-out or abort the action with a malformed value; the reads
+# below exist for the self-test, which runs this script directly. The action
+# exposes neither as an input.
+batch_size="${SHELLCHECK_BATCH_SIZE:-40}"
+jobs="${SHELLCHECK_JOBS:-4}"
 
 if [[ ! -f "$rcfile" ]]; then
   echo "::error::shellcheck: rcfile not found: $rcfile"
+  exit 2
+fi
+if [[ ! "$batch_size" =~ ^[1-9][0-9]*$ || ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::shellcheck: SHELLCHECK_BATCH_SIZE and SHELLCHECK_JOBS must be positive integers (got '$batch_size' and '$jobs')."
   exit 2
 fi
 
@@ -118,11 +133,73 @@ if [[ -n "${severity//[[:space:]]/}" ]]; then
   args+=(--severity="$severity")
 fi
 
+# run_shellcheck <shellcheck-args...> -- <files...>
+#
+# Splits the file list into numbered batches of $batch_size and runs
+# `shellcheck <args> <batch>` over them with $jobs processes at a time. Each
+# batch writes its own output and exit status to files; once every batch has
+# finished the outputs are replayed in batch order, so findings from concurrent
+# batches never interleave line by line and the log reads the same as one
+# serial process would have written it. The exit status is the MAXIMUM over
+# the batches: ShellCheck reserves 1 for a completed scan with findings and 2-4
+# for processing or invocation errors, so a later clean batch must never mask
+# an earlier operational failure, and xargs's own 123/124/125 summary codes
+# (which collapse exactly those distinctions) are deliberately not used. A
+# batch that leaves no status file (killed, or the shell itself failed) counts
+# as 2 rather than as clean.
+run_shellcheck() {
+  local -a sc_args=()
+  while (($# > 0)); do
+    if [[ "$1" == -- ]]; then
+      shift
+      break
+    fi
+    sc_args+=("$1")
+    shift
+  done
+  local capture batch=0 index=0 count=$# status=0 list log rc
+  capture="$(mktemp -d)"
+  while ((index < count)); do
+    printf '%s\0' "${@:index+1:batch_size}" >"$capture/$(printf '%06d' "$batch").files"
+    index=$((index + batch_size))
+    batch=$((batch + 1))
+  done
+  # Each xargs invocation appends ONE batch-list path after the fixed linter
+  # arguments, so inside the worker it is the last positional. The worker body
+  # is a single-quoted script on purpose: its expansions belong to the worker
+  # shell, not to this one.
+  # shellcheck disable=SC2016
+  printf '%s\0' "$capture"/*.files | xargs -0 -n 1 -P "$jobs" bash -c '
+    list="${!#}"
+    set -- "${@:1:$#-1}"
+    mapfile -d "" -t batch <"$list"
+    shellcheck "$@" "${batch[@]}" >"${list%.files}.log" 2>&1
+    echo "$?" >"${list%.files}.rc"
+  ' _ "${sc_args[@]}"
+  for list in "$capture"/*.files; do
+    log="${list%.files}.log"
+    [[ ! -f "$log" ]] || cat -- "$log"
+    if [[ -f "${list%.files}.rc" ]]; then
+      rc="$(<"${list%.files}.rc")"
+    else
+      echo "::error::shellcheck: batch ${list##*/} finished without reporting a status."
+      rc=2
+    fi
+    ((rc <= status)) || status=$rc
+  done
+  rm -rf -- "$capture"
+  return "$status"
+}
+
 status=0
 if [[ ${#normal_files[@]} -gt 0 ]]; then
-  printf 'Checking %d standard shell file(s):\n' "${#normal_files[@]}"
+  printf 'Checking %d standard shell file(s) in batches of %d across %d process(es):\n' \
+    "${#normal_files[@]}" "$batch_size" "$jobs"
   printf '  %s\n' "${normal_files[@]}"
-  shellcheck "${args[@]}" "${normal_files[@]}" || status=$?
+  # The function records every batch status itself and never relies on errexit,
+  # so capturing its return here is the intended path, not a suppressed exit.
+  # shellcheck disable=SC2310
+  run_shellcheck "${args[@]}" -- "${normal_files[@]}" || status=$?
 fi
 
 if [[ ${#extra_files[@]} -gt 0 ]]; then
@@ -133,7 +210,9 @@ if [[ ${#extra_files[@]} -gt 0 ]]; then
     extra_args+=(--exclude="$extra_exclude_codes")
   fi
   extra_status=0
-  shellcheck "${extra_args[@]}" "${extra_files[@]}" || extra_status=$?
+  # Same intended capture as the standard lane above.
+  # shellcheck disable=SC2310
+  run_shellcheck "${extra_args[@]}" -- "${extra_files[@]}" || extra_status=$?
   # ShellCheck reserves 1 for completed scans with findings and 2-4 for
   # processing/invocation errors. Keep the more severe result if the two lanes
   # differ instead of masking an operational failure behind a finding code.
