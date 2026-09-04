@@ -170,6 +170,21 @@ jobs:
       results: ${{ steps.detect.outputs.results }}
       outcome: ${{ steps.outcome.outputs.outcome }}
     steps:
+      # An enabled toggle whose required configuration is missing must go RED,
+      # not quiet. Without this the `check-jsonschema` step's own files guard
+      # would skip on a misspelled or forgotten `check-jsonschema-files`, the
+      # join would report success, and a schema gate the caller believes is on
+      # would be silently off. It is `continue-on-error` like the composites so
+      # the join owns the verdict and names it alongside them.
+      - name: Check the input combination
+        id: configuration
+        if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files == '' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo '::error::check-jsonschema is enabled but check-jsonschema-files is empty; set it, or set check-jsonschema: false.'
+          exit 1
+
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -275,6 +290,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         env:
+          CONFIGURATION: ${{ steps.configuration.outcome }}
           TYPOS: ${{ steps.typos.outcome }}
           GITLEAKS: ${{ steps.gitleaks.outcome }}
           EDITORCONFIG: ${{ steps.editorconfig.outcome }}
@@ -304,6 +320,7 @@ jobs:
               echo "$name: $result"
             fi
           }
+          report configuration "$CONFIGURATION"
           report typos "$TYPOS"
           report gitleaks "$GITLEAKS"
           report editorconfig "$EDITORCONFIG"

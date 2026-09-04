@@ -312,7 +312,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   turn composites off; all default `true` except `check-jsonschema`, whose
   `files` input is required and has no universal default (pass
   `check-jsonschema-files` and `check-jsonschema-builtin-schema`; one call
-  carries one schema family). `machine-specific-paths-exclude` and
+  carries one schema family). Enabling it with no `check-jsonschema-files`
+  **fails the job** rather than skipping the validation: a gate that disappears
+  on a typo is the failure mode this lane exists to prevent.
+  `machine-specific-paths-exclude` and
   `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans.
   Every other composite input keeps its composite-side default. **Skipping is
   by filter group name**: a composite step is skipped when the caller declares

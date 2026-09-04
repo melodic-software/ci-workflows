@@ -26,14 +26,17 @@ const steps = workflow.jobs.checks.steps;
 const joinStep = steps.find((step) => step?.id === "outcome");
 assert.ok(joinStep !== undefined, "checks.yml has no `outcome` join step");
 
-const composites = steps.filter(
+// Every step the join owns: the composites, plus the input-combination guard
+// that must go red rather than let an enabled toggle skip silently.
+const joined = steps.filter(
   (step) => String(step?.["continue-on-error"] ?? "") === "true",
 );
+const composites = joined.filter((step) => step.uses !== undefined);
 
-// Every composite step's outcome reaches the join under the env name the join
-// reads, and the join reports it under the composite's own (kebab-case) name.
+// Every joined step's outcome reaches the join under the env name the join
+// reads, and the join reports it under that step's own (kebab-case) name.
 const environment = Object.fromEntries(
-  composites.map((step) => [
+  joined.map((step) => [
     step.id.toUpperCase(),
     `\${{ steps.${step.id}.outcome }}`,
   ]),
@@ -68,11 +71,12 @@ function runJoin(outcomes) {
 }
 
 test("the join reads every continue-on-error step", () => {
-  assert.ok(
-    composites.length >= 12,
+  assert.equal(
+    composites.length,
+    12,
     `expected the twelve hygiene composites, found ${composites.length}`,
   );
-  for (const step of composites) {
+  for (const step of joined) {
     const name = step.id.replaceAll("_", "-");
     assert.equal(
       joinStep.env[step.id.toUpperCase()],
@@ -84,6 +88,9 @@ test("the join reads every continue-on-error step", () => {
       new RegExp(`^ *report ${name} "\\$${step.id.toUpperCase()}"$`, "mu"),
       `step ${step.id} is never reported by the join`,
     );
+  }
+  for (const step of composites) {
+    const name = step.id.replaceAll("_", "-");
     assert.match(
       String(step.uses ?? ""),
       new RegExp(
@@ -146,6 +153,22 @@ test("two failures name the first in declaration order and count the rest", () =
     result.stdout,
     /^::error::lychee-offline failed \(outcome=failure\)\.$/mu,
   );
+});
+
+test("an enabled toggle with no configuration fails, it does not skip quietly", () => {
+  // The guard step fires only when `check-jsonschema` is enabled with empty
+  // `check-jsonschema-files`; the join is what turns it into the job's verdict,
+  // so a silently skipped schema gate cannot report success.
+  const guard = steps.find((step) => step?.id === "configuration");
+  assert.ok(guard !== undefined, "checks.yml has no input-combination guard");
+  assert.equal(
+    guard.if,
+    `\${{ inputs.check-jsonschema && inputs.check-jsonschema-files == '' }}`,
+  );
+  const result = runJoin({ CONFIGURATION: "failure" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.output, /^outcome=failure$/mu);
+  assert.match(result.stdout, /^::error::checks failed: configuration\.$/mu);
 });
 
 test("a composite that never ran is reported, not treated as a failure", () => {
