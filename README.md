@@ -175,7 +175,36 @@ consumer to audit it.
   that should have run did not, such as a runner selector falling back. An
   unrecognised policy value fails rather than defaulting. Empty input fails
   closed. GitHub offers no "all other jobs" selector, so the `needs` list and the
-  matching results string stay caller-owned.
+  matching results string stay caller-owned. `results` carries results, not lane
+  names, so the recorded status description names the failing lane by its
+  position in that list.
+
+  It also carries the verdict forward across contract-only pull-request events.
+  In full mode (the `event-action` input is not in `carry-forward-actions`,
+  default `edited,labeled,unlabeled`) it aggregates as above and then records the
+  verdict as a commit status on `sha` under `status-context` (default
+  `ci-lanes`). In carry-forward mode it skips aggregation — the lanes are
+  `skipped` by construction — and passes only when the combined status for that
+  context on that SHA is `success`. **The status write is load-bearing, not
+  best-effort**: a write still refused after three retries fails the run naming
+  the missing permission, because the carry-forward branch reads nothing else and
+  a silently missing status turns every later contract-only run red with no way
+  to tell a refused write from a failing lane. **The calling job therefore needs
+  `statuses: write`** (plus `pull-requests: write` when it also runs
+  `pr-contract`). A commit status, not the `ci-status` check-run list, is the
+  carried signal on purpose: a check run cannot say which event produced it, so a
+  chain of contract-only runs could otherwise self-certify.
+- `.github/actions/pr-contract` — the whole pull-request contract in one step:
+  Conventional Commits title and the `do-not-merge` label gate the step, and
+  issue linkage is advisory by default (a warning plus one upserted marker
+  comment plus a label, exit code unchanged; `linkage-mode: enforce` makes it
+  gate). Semantics are ported from the `semantic-pr`, `do-not-merge-gate` and
+  `pr-issue-linkage` reusables, which stay in place until their callers are
+  retired. The pull request is read from the API rather than the event payload,
+  so `edited` and `labeled` runs see current state. Needs `pull-requests: write`
+  for the comment and label; every write is best-effort and degrades to a
+  `::notice::` on a read-only token. See
+  [its README](.github/actions/pr-contract/README.md) for the consumer wiring.
 - `.github/actions/change-detection` — decides which CI lanes a pull request's
   changed files make relevant, so a caller can skip lanes at JOB level and
   stop paying for runs a change cannot affect. Checkout-free: the PR file

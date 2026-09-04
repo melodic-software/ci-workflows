@@ -1,0 +1,85 @@
+name: pr-contract
+description: >-
+  One step carrying the whole pull-request contract: Conventional Commits title,
+  do-not-merge label, and issue linkage. The title and label checks gate; the
+  linkage check is advisory by default (a marker comment plus a label) so a body
+  edit never re-runs the file-lint lanes.
+
+inputs:
+  token:
+    description: >-
+      Token used for every API read and write. Needs `pull-requests: write` on
+      the calling job for the advisory comment and label; with a read-only token
+      the writes degrade to `::notice::` and the exit code is unchanged.
+    default: ${{ github.token }}
+  repository:
+    description: Target repository identity OWNER/REPO (defaults to this repo).
+    default: ${{ github.repository }}
+  pr-number:
+    description: >-
+      Pull request number. Empty (a push, schedule, or workflow_dispatch run)
+      makes the step a no-op that reports every output as `skipped` — this is a
+      pull-request gate, and a push run must not fail on it.
+    default: ${{ github.event.pull_request.number }}
+  types:
+    description: >-
+      Comma-separated allowed Conventional Commits types. The default is the
+      twelve types melodic-software/standards
+      `components/pr-convention-policy/policy.json` declares: the eleven spec
+      defaults plus `security`.
+    default: build,chore,ci,docs,feat,fix,perf,refactor,revert,security,style,test
+  require-scope:
+    description: Require a scope to always be present in the title (`true`/`false`).
+    default: 'false'
+  do-not-merge-label:
+    description: Label whose presence blocks the merge.
+    default: do-not-merge
+  exempt-authors:
+    description: >-
+      Comma-separated exact PR-author logins that skip the issue-linkage check
+      (e.g. `dependabot[bot]`). Matched by exact equality against the PR author
+      login — never a `*[bot]` pattern, so an unknown future bot is not silently
+      skipped. Fail-closed: the default empty string exempts no one.
+    default: ''
+  linkage-label:
+    description: >-
+      Label added while the body fails the issue-linkage contract and removed
+      once it passes.
+    default: needs-issue-linkage
+  linkage-mode:
+    description: >-
+      `advisory` (default) warns, upserts one marker comment, adds the label, and
+      exits 0. `enforce` fails the step instead, so a repository can opt back in
+      to a hard gate without a composite change.
+    default: advisory
+
+outputs:
+  title:
+    description: '`pass`, `fail`, or `skipped` (no pull request in this event).'
+    value: ${{ steps.contract.outputs.title }}
+  do-not-merge:
+    description: '`pass`, `fail`, or `skipped` (no pull request in this event).'
+    value: ${{ steps.contract.outputs.do-not-merge }}
+  linkage:
+    description: >-
+      `pass`, `fail`, `exempt` (an exempt author), or `skipped` (no pull request
+      in this event).
+    value: ${{ steps.contract.outputs.linkage }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the pull-request contract
+      id: contract
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        TYPES: ${{ inputs.types }}
+        REQUIRE_SCOPE: ${{ inputs.require-scope }}
+        DO_NOT_MERGE_LABEL: ${{ inputs.do-not-merge-label }}
+        EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
+        LINKAGE_LABEL: ${{ inputs.linkage-label }}
+        LINKAGE_MODE: ${{ inputs.linkage-mode }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

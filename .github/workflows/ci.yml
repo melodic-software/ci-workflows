@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited`, `labeled` and `unlabeled` are contract-only events: the pr-title
+    # / do-not-merge / issue-linkage answers can change without a new commit, so
+    # the required check has to re-evaluate. Every lane job is gated off on
+    # those three actions and ci-status carries the previous lanes verdict
+    # forward from the recorded `ci-lanes` commit status instead.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -14,9 +20,17 @@ permissions:
 # superseded *pending* runs while the in-progress run finishes (main-push burst
 # collapse; #122). Keying PRs on the number (not head_ref) keeps fork PRs that
 # share a branch name from cancelling each other's required runs.
+#
+# A contract-only event (edited/labeled/unlabeled) never cancels: it must queue
+# behind an in-flight full run so the `ci-lanes` status it reads is already
+# written. GitHub keeps one running and one pending run per group and the newest
+# pending wins, so the carry-forward always executes after the full run it
+# depends on. The `github.event_name == 'pull_request'` guard stays: on a push
+# `github.event.action` is empty and `!contains(...)` alone would be true,
+# re-arming the main-push burst collapse #122 disarmed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
 
 # Dogfood: this repo is the first consumer of its own composite actions. Each
 # lane checks out this repo and runs a lane action against either a root-native
@@ -40,6 +54,7 @@ concurrency:
 # ungated — see its job comment.
 jobs:
   changes:
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -145,7 +160,7 @@ jobs:
 
   markdown:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['markdown'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['markdown'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -158,7 +173,7 @@ jobs:
 
   powershell:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['powershell'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['powershell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -178,6 +193,7 @@ jobs:
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
 
   links:
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -190,7 +206,7 @@ jobs:
 
   reference-integrity:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -207,7 +223,7 @@ jobs:
 
   ruff:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -223,7 +239,7 @@ jobs:
 
   pyright:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -238,7 +254,7 @@ jobs:
 
   biome:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -256,7 +272,7 @@ jobs:
 
   tsc:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -273,7 +289,7 @@ jobs:
 
   dotnet-build:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -290,7 +306,7 @@ jobs:
 
   dotnet-format:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -304,6 +320,7 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   typos:
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -315,6 +332,7 @@ jobs:
         uses: ./.github/actions/typos
 
   gitleaks:
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -327,7 +345,7 @@ jobs:
 
   actionlint:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -368,7 +386,7 @@ jobs:
 
   lefthook-validate:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['lefthook-validate'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['lefthook-validate'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -385,7 +403,7 @@ jobs:
 
   jsonschema:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['jsonschema'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['jsonschema'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -410,6 +428,7 @@ jobs:
           files: .github/actions/*/action.yml
 
   action-metadata-filename:
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -426,6 +445,7 @@ jobs:
   # / toolchain dogfood jobs stay separate so composite contracts keep a
   # dedicated failure surface.
   hygiene:
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     runs-on: ubuntu-24.04
     # Sequential steps replace five formerly-parallel 15m jobs; 20m keeps
     # margin as the cheapest scans grow with the tree.
@@ -508,7 +528,7 @@ jobs:
   # ci-status yet — promote after a clean soak. Exempts standards-sync labelled /
   # melodic-standards-sync[bot] PRs.
   managed-files-guard:
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -527,7 +547,7 @@ jobs:
 
   shellcheck:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -542,7 +562,7 @@ jobs:
 
   shfmt:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -556,11 +576,11 @@ jobs:
         # generated security boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection
+          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status
 
   selector-contract:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['selector-contract'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['selector-contract'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -591,6 +611,10 @@ jobs:
         run: bash .github/scripts/release-tag-drift.test.sh
       - name: Test Gitleaks scan policy guard
         run: bash .github/actions/gitleaks/scan.test.sh
+      - name: Test the pull-request contract runner
+        run: bash .github/actions/pr-contract/run.test.sh
+      - name: Test the ci-status aggregation and carry-forward runner
+        run: bash .github/actions/ci-status/run.test.sh
       - name: Test Pulumi deployment guard
         run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
       - name: Test govulncheck SARIF classification
@@ -598,7 +622,7 @@ jobs:
 
   zizmor:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
       # Reusable zizmor.yml always declares security-events: write (expressions
@@ -618,6 +642,11 @@ jobs:
     # format OSV supports, and a filter enumerating that set would drift as
     # upstream adds formats — an unlisted new lockfile type would then skip
     # the scan that covers it. Running always is the conservative posture.
+    #
+    # The contract-only gate is the one exception: on `edited`, `labeled` and
+    # `unlabeled` no file changed, so there is nothing new to scan and the
+    # carry-forward branch of ci-status supplies the verdict.
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
     permissions:
       contents: read
     uses: ./.github/workflows/osv-scanner.yml
@@ -633,7 +662,7 @@ jobs:
 
   pester:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['pester'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['pester'] != 'false' }}
     permissions:
       contents: read
     # Dogfood the reusable Pester workflow on a minimal fixture suite — proves
@@ -645,7 +674,7 @@ jobs:
 
   go-quality-dogfood:
     needs: changes
-    if: ${{ !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
+    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
     permissions:
       contents: read
     # A local reusable-workflow reference executes the workflow from this exact
@@ -666,12 +695,25 @@ jobs:
     needs: [changes, markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # pr-contract upserts the advisory linkage comment and moves the linkage
+      # label; ci-status records the `ci-lanes` commit status the carry-forward
+      # branch reads back on the next contract-only event.
+      pull-requests: write
+      statuses: write
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check the pull-request contract
+        uses: ./.github/actions/pr-contract
       - name: Aggregate lane results
+        # `!cancelled()` so a failing pr-contract step does not skip the
+        # aggregation: the job still fails on the contract step's exit code, and
+        # the `ci-lanes` status is on the SHA for the next contract-only run.
+        if: ${{ !cancelled() }}
         uses: ./.github/actions/ci-status
         with:
           results: ${{ needs.changes.result }} ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

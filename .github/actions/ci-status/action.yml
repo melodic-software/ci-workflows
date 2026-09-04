@@ -1,14 +1,18 @@
 name: ci-status
 description: >-
   Aggregate lane results into one pass/fail gate. Fails naming the first result
-  that does not pass; whether `skipped` passes is the caller's policy.
+  that does not pass; whether `skipped` passes is the caller's policy. Records
+  the verdict as a commit status so a contract-only pull-request event
+  (`edited`, `labeled`, `unlabeled`) can carry it forward without re-running the
+  lanes.
 
 inputs:
   results:
     description: >-
       Whitespace-separated job results, one per aggregated lane — the caller
       builds this from `needs.<lane>.result`. Empty fails: a gate with nothing
-      to aggregate is a miswired `needs` list, not a pass.
+      to aggregate is a miswired `needs` list, not a pass. Ignored in
+      carry-forward mode, where every lane is `skipped` by construction.
     required: true
   treat-skipped-as:
     description: >-
@@ -17,6 +21,39 @@ inputs:
       — for example a runner selector that fell back and left downstream lanes
       skipped, which must go red rather than green.
     default: pass
+  event-action:
+    description: >-
+      The triggering event's action. When it appears in `carry-forward-actions`
+      the lanes are known to have been gated off, so aggregation is skipped and
+      the recorded commit status decides instead. Empty (a push run) always
+      aggregates.
+    default: ${{ github.event.action }}
+  carry-forward-actions:
+    description: >-
+      Comma-separated `pull_request` actions that carry the previous verdict
+      forward rather than aggregating. Must match the actions the caller gates
+      its lane jobs on.
+    default: edited,labeled,unlabeled
+  status-context:
+    description: >-
+      Commit-status context this action writes in full mode and reads in
+      carry-forward mode. Distinct from the `ci-status` check-run name on
+      purpose: a check run cannot say which event produced it, so only a status
+      only full runs write can stop a chain of contract-only runs from
+      self-certifying.
+    default: ci-lanes
+  token:
+    description: >-
+      Token used to write and read the commit status. The calling job needs
+      `statuses: write`; the status write is load-bearing and a run whose write
+      is refused fails.
+    default: ${{ github.token }}
+  repository:
+    description: Target repository identity OWNER/REPO (defaults to this repo).
+    default: ${{ github.repository }}
+  sha:
+    description: Commit SHA the status is written to and read from.
+    default: ${{ github.event.pull_request.head.sha || github.sha }}
 
 runs:
   using: composite
@@ -26,38 +63,10 @@ runs:
       env:
         RESULTS: ${{ inputs.results }}
         TREAT_SKIPPED_AS: ${{ inputs.treat-skipped-as }}
-      run: |
-        set -euo pipefail
-        # Reject an unrecognised policy rather than silently defaulting: a typo
-        # such as `Fail` would otherwise resolve to the laxer branch and quietly
-        # weaken the gate it was written to tighten.
-        case "$TREAT_SKIPPED_AS" in
-          pass|fail) ;;
-          *) echo "::error::treat-skipped-as must be 'pass' or 'fail', got: ${TREAT_SKIPPED_AS}"; exit 1 ;;
-        esac
-        # Unquoted expansion word-splits on all of IFS (space, tab, newline), so
-        # a YAML block scalar spanning lines is parsed in full. `read` would stop
-        # at the first newline and silently skip every later lane.
-        # shellcheck disable=SC2206
-        results=($RESULTS)
-        # Checked after splitting: whitespace-only input yields no elements, and
-        # an empty loop would otherwise report success with nothing aggregated.
-        if [[ ${#results[@]} -eq 0 ]]; then
-          echo '::error::results is required.'; exit 1
-        fi
-        for r in "${results[@]}"; do
-          case "$r" in
-            success) ;;
-            skipped)
-              if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
-                echo "A lane did not pass (result: $r)."; exit 1
-              fi
-              ;;
-            *) echo "A lane did not pass (result: $r)."; exit 1 ;;
-          esac
-        done
-        if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
-          echo "All lanes passed."
-        else
-          echo "All lanes passed or were skipped."
-        fi
+        EVENT_ACTION: ${{ inputs.event-action }}
+        CARRY_FORWARD_ACTIONS: ${{ inputs.carry-forward-actions }}
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+        GH_TOKEN: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        SHA: ${{ inputs.sha }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
