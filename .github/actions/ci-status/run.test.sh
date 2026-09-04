@@ -65,6 +65,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Fixture keys ignore the query string, so `?per_page=100` does not need a
+# fixture of its own.
+path="${path%%\?*}"
 key="${method}_${path//\//_}"
 if [[ -n "$input" && -f "$input" ]]; then
   cp -- "$input" "$GH_CALLS/${key}.input.json"
@@ -96,10 +99,13 @@ echo '{}'
 SHIM
 chmod +x "$shim_directory/gh"
 
-# run_case <expected-status> <results> <treat-skipped-as> <contract-only> [same-repo]
+# run_case <expected-status> <results> <treat-skipped-as> <contract-only> [same-repo] [NAME=VALUE ...]
+# Trailing NAME=VALUE pairs are appended to the `env` invocation, so they
+# override the defaults set below (later assignments win).
 run_case() {
   local expected_status="$1" results="$2" treat_skipped_as="$3" contract_only="$4"
   local same_repo="${5-true}"
+  shift $(($# > 5 ? 5 : $#))
   local actual_status
   : >"$gh_log"
   rm -rf -- "$calls"
@@ -121,6 +127,7 @@ run_case() {
     STATUS_RETRY_BASE_DELAY=0 \
     GITHUB_SERVER_URL=https://github.com \
     GITHUB_RUN_ID=4242 \
+    "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
   set -e
@@ -184,9 +191,20 @@ expect_status_payload() {
   fi
 }
 
-combined_status() {
-  # combined_status <json>
-  printf '%s' "$1" >"$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_status.json"
+# status_list <json-array>
+# The LIST endpoint, newest entry first, as GitHub returns it.
+status_list() {
+  printf '%s' "$1" >"$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.json"
+}
+
+bot_status() {
+  # bot_status <state>
+  printf '{"context":"ci-lanes","state":"%s","creator":{"login":"github-actions[bot]","type":"Bot"}}' "$1"
+}
+
+user_status() {
+  # user_status <state>
+  printf '{"context":"ci-lanes","state":"%s","creator":{"login":"a-collaborator","type":"User"}}' "$1"
 }
 
 # --- full mode -------------------------------------------------------------
@@ -298,9 +316,9 @@ expect_no_gh_call 'statuses/'
 # lanes did not run; branching on contract-only FIRST honours it instead of
 # aggregating over results that are all `skipped`.
 echo 'case: contract-only true with same-repo false is still carry-forward'
-combined_status '{"state":"success","statuses":[{"context":"ci-lanes","state":"success"}]}'
+status_list "[$(bot_status success)]"
 run_case 0 'skipped skipped' fail true false
-expect_log "Carried forward: ci-lanes is success on ${sha}."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_gh_call 'statuses/'
 
 # --- carry-forward mode ----------------------------------------------------
@@ -308,46 +326,111 @@ expect_no_gh_call 'statuses/'
 # Without the carry-forward branch, `skipped skipped` under treat-skipped-as
 # fail would go red.
 echo 'case: carry-forward passes on a recorded ci-lanes success without aggregating'
-combined_status '{"state":"success","statuses":[{"context":"ci-lanes","state":"success"}]}'
+status_list "[$(bot_status success)]"
 run_case 0 'skipped skipped' fail true
-expect_log "Carried forward: ci-lanes is success on ${sha}."
-expect_no_gh_call "statuses/${sha}"
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_gh_call "commits/${sha}/statuses?per_page=100"
+expect_no_gh_call "POST repos/${repository}/statuses/${sha}"
 expect_no_log 'All lanes passed'
 
 # Without reading the per-context state, any 200 response would pass.
 echo 'case: carry-forward fails on a recorded ci-lanes failure'
-combined_status '{"state":"failure","statuses":[{"context":"ci-lanes","state":"failure"}]}'
+status_list "[$(bot_status failure)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the explicit `== success` test, a pending status would ride through.
 echo 'case: carry-forward fails on a pending ci-lanes status'
-combined_status '{"state":"pending","statuses":[{"context":"ci-lanes","state":"pending"}]}'
+status_list "[$(bot_status pending)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the context filter, another context's success would satisfy the gate.
 echo 'case: carry-forward fails when no entry carries the ci-lanes context'
-combined_status '{"state":"success","statuses":[{"context":"other-lane","state":"success"}]}'
+status_list '[{"context":"other-lane","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the context filter, the FIRST entry (a failure under another context)
 # would decide.
 echo 'case: carry-forward selects the ci-lanes entry regardless of its position'
-combined_status '{"state":"failure","statuses":[{"context":"other-lane","state":"failure"},{"context":"ci-lanes","state":"success"}]}'
+status_list "[{\"context\":\"other-lane\",\"state\":\"failure\",\"creator\":{\"login\":\"github-actions[bot]\",\"type\":\"Bot\"}},$(bot_status success)]"
 run_case 0 'skipped skipped' pass true
-expect_log "Carried forward: ci-lanes is success on ${sha}."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
 
 # Without the API-failure branch a 404 would be read as an empty state and the
 # error message would be the same, but the run must still fail rather than
 # aborting under errexit inside the command substitution.
-echo 'case: carry-forward fails closed when the combined status cannot be read'
-rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_status.json"
-printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_status.err"
+echo 'case: carry-forward fails closed when the status list cannot be read'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.json"
+printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.err"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
-rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_status.err"
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.err"
+
+# --- carry-forward: forged statuses ----------------------------------------
+#
+# Any collaborator with write can POST a commit status. Without the creator
+# filter, one forged `ci-lanes=success` plus a label flip turns the sole
+# required check green over failing lanes.
+
+# Without the creator filter the newest entry is the user's success and passes.
+echo 'case: a forged success by a user account does not satisfy the carry-forward'
+status_list "[$(user_status success),$(bot_status failure)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# Without newest-first selection an older user failure would shadow the bot's
+# real success.
+echo 'case: a bot success newer than a user failure passes'
+status_list "[$(bot_status success),$(user_status failure)]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without first-match-wins a later bot failure would be ignored in favour of the
+# earlier success — a re-run that went red could then be carried forward green.
+echo 'case: a bot failure newer than a bot success fails'
+status_list "[$(bot_status failure),$(bot_status success)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# Without the empty-list guard an absent status would read as an empty state.
+echo 'case: an empty status list fails the carry-forward'
+status_list '[]'
+run_case 1 'skipped skipped' pass true
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# Without the creator filter, a context that ONLY a user ever wrote satisfies
+# the gate — the plant-then-label attack in its simplest form.
+echo 'case: the ci-lanes context present only from a user account fails'
+status_list "[$(user_status success)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# Without the Bot type check, an account merely NAMED like the bot passes.
+echo 'case: a user account impersonating the bot login fails'
+status_list '[{"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"User"}}]'
+run_case 1 'skipped skipped' pass true
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# --- input validation ------------------------------------------------------
+#
+# Every one of these values is interpolated into a `gh api` path.
+
+echo 'case: a malformed repository is rejected before any API call'
+run_case 1 'success' pass false true REPOSITORY='melodic-software/ci-workflows/../other'
+expect_log '::error::repository must be OWNER/REPO'
+expect_no_gh_call 'gh api'
+
+echo 'case: a malformed sha is rejected before any API call'
+run_case 1 'success' pass false true SHA='HEAD'
+expect_log '::error::sha must be a full 40-character lowercase commit SHA'
+expect_no_gh_call 'gh api'
+
+echo 'case: a status-context carrying a path separator is rejected'
+run_case 1 'success' pass false true STATUS_CONTEXT='ci-lanes/../../x'
+expect_log "::error::status-context must be free of '/', '?', '#' and whitespace"
+expect_no_gh_call 'gh api'
 
 # --- metadata contract -----------------------------------------------------
 

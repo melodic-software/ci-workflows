@@ -69,6 +69,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Fixture keys ignore the query string, so a paginated read does not need a
+# fixture of its own.
+path="${path%%\?*}"
 key="${method}_${path//\//_}"
 if [[ -n "$input" && -f "$input" ]]; then
   cp -- "$input" "$GH_CALLS/${key}.input.json"
@@ -119,6 +122,16 @@ set_pull() {
 
 set_comments() {
   printf '%s' "$1" >"$fixtures/GET_${comments_key}.json"
+}
+
+bot_comment() {
+  # bot_comment <id> <body>
+  printf '{"id":%s,"user":{"type":"Bot"},"body":"%s"}' "$1" "$2"
+}
+
+user_comment() {
+  # user_comment <id> <body>
+  printf '{"id":%s,"user":{"type":"User"},"body":"%s"}' "$1" "$2"
 }
 
 # run_case <expected-status> [NAME=VALUE ...]
@@ -487,7 +500,7 @@ expect_log '::warning::pr-contract: Missing a native closing keyword'
 
 # Without the marker lookup a second run posts a second comment.
 echo 'case: a second advisory failure edits the existing marker comment'
-set_comments '[{"id":1001,"body":"<!-- pr-contract:linkage -->\nstale text"}]'
+set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale text')]"
 set_pull 'feat: add pr-contract' 'nothing here' someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
@@ -512,7 +525,7 @@ rm -f -- "$fixtures/POST_${labels_key}.err"
 
 # Without the pass branch the label stays on a body that now conforms.
 echo 'case: a linkage pass removes the label and rewrites the marker comment'
-set_comments '[{"id":1001,"body":"<!-- pr-contract:linkage -->\nstale failure text"}]'
+set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale failure text')]"
 set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-issue-linkage'
 run_case 0
 expect_output 'linkage=pass'
@@ -552,6 +565,63 @@ run_case 1
 expect_log "::error::pr-contract: could not read repos/${repository}/pulls/${pr_number} (HTTP 404)"
 rm -f -- "$fixtures/${pull_key}.err"
 mv -- "$fixtures/${pull_key}.json.bak" "$fixtures/${pull_key}.json"
+
+# --- comment-upsert capture ------------------------------------------------
+
+# Without the `.user.type == "Bot"` filter the gate edits a stranger's planted
+# comment instead of posting its own, and its guidance is never shown.
+echo 'case: a planted marker comment from a user account does not capture the upsert'
+set_comments "[$(user_comment 900 '<!-- pr-contract:linkage -->\nplanted by a stranger')]"
+set_pull 'feat: add pr-contract' 'nothing here' someone ''
+run_case 0
+expect_gh_call "POST repos/${repository}/issues/${pr_number}/comments"
+expect_no_gh_call 'PATCH repos/'
+
+# Without newest-first selection an older bot comment would be edited and the
+# newest one left carrying stale text.
+echo 'case: the newest bot marker comment is the one edited'
+set_comments "[$(bot_comment 900 '<!-- pr-contract:linkage -->\nold'),$(user_comment 950 '<!-- pr-contract:linkage -->\nplanted'),$(bot_comment 1200 '<!-- pr-contract:linkage -->\nnewer')]"
+set_pull 'feat: add pr-contract' 'nothing here' someone ''
+run_case 0
+expect_gh_call "PATCH repos/${repository}/issues/comments/1200"
+
+# --- annotation escaping ---------------------------------------------------
+
+# Without escaping, a title carrying a newline closes the annotation and the
+# rest of the title is interpreted as a second workflow command.
+echo 'case: an attacker-controlled title is escaped inside the annotation'
+set_comments '[]'
+set_pull 'wip: 100% broken'$'\n''::set-output name=x::y' "$conforming_body" someone ''
+run_case 1
+expect_output 'title=fail'
+# Asserted as two independent facts: a CRLF title escapes to `%0D%0A`, so
+# pinning the pair would make this case platform-dependent.
+expect_log '100%25 broken'
+expect_log '%0A::set-output'
+
+# --- input validation ------------------------------------------------------
+#
+# Every one of these values is interpolated into a `gh api` path.
+
+echo 'case: a malformed repository is rejected before any API call'
+run_case 1 REPOSITORY='melodic-software/ci-workflows/../other'
+expect_log '::error::pr-contract: repository must be OWNER/REPO'
+expect_no_gh_call 'gh api'
+
+echo 'case: a non-numeric pr-number is rejected before any API call'
+run_case 1 PR_NUMBER='7/../8'
+expect_log '::error::pr-contract: pr-number must be a positive integer'
+expect_no_gh_call 'gh api'
+
+echo 'case: a do-not-merge-label carrying a path separator is rejected'
+run_case 1 DO_NOT_MERGE_LABEL='../../x'
+expect_log "::error::pr-contract: do-not-merge-label must be free of '/', '?', '#' and whitespace"
+expect_no_gh_call 'gh api'
+
+echo 'case: a linkage-label carrying whitespace is rejected'
+run_case 1 'LINKAGE_LABEL=needs issue linkage'
+expect_log "::error::pr-contract: linkage-label must be free of '/', '?', '#' and whitespace"
+expect_no_gh_call 'gh api'
 
 # --- metadata contract -----------------------------------------------------
 

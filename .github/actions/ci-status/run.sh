@@ -32,6 +32,10 @@ SHA="${SHA:-}"
 # Retries are 1s, 2s, 4s in CI; the harness sets 0 so a nine-second sleep does
 # not ride on every refused-write case.
 STATUS_RETRY_BASE_DELAY="${STATUS_RETRY_BASE_DELAY:-1}"
+# The login a `GITHUB_TOKEN`-authored commit status carries. Overridable only so
+# the harness can exercise the check; a caller minting statuses with a GitHub
+# App token would need its own value and takes on proving that identity itself.
+STATUS_CREATOR="${STATUS_CREATOR:-github-actions[bot]}"
 
 # Reject an unrecognised policy rather than silently defaulting: a typo such as
 # `Fail` would otherwise resolve to the laxer branch and quietly weaken the gate
@@ -94,6 +98,22 @@ if ! same_repo="$(read_boolean same-repo "$SAME_REPO" true)"; then
   exit 1
 fi
 
+# Every value below is interpolated into a `gh api` path. Validate before the
+# first call rather than trusting the caller's expression: a `repository` or
+# `sha` carrying `../` or a query separator would address a different resource
+# than the one named.
+require_pattern() {
+  local name="$1" value="$2" pattern="$3" shape="$4"
+  if [[ ! "$value" =~ $pattern ]]; then
+    echo "::error::${name} must be ${shape}, got: ${value}"
+    exit 1
+  fi
+}
+
+require_pattern repository "$REPOSITORY" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'OWNER/REPO'
+require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commit SHA'
+require_pattern status-context "$STATUS_CONTEXT" '^[^/?#[:space:]]+$' "free of '/', '?', '#' and whitespace"
+
 # ---------------------------------------------------------------------------
 # Carry-forward mode. Branched on first, before `same-repo`: the caller's
 # predicate makes `contract-only` false for every fork event, so the
@@ -103,20 +123,27 @@ fi
 # results that are all `skipped`.
 # ---------------------------------------------------------------------------
 if [[ "$contract_only" == true ]]; then
-  : "${REPOSITORY:?REPOSITORY is required in carry-forward mode}"
-  : "${SHA:?SHA is required in carry-forward mode}"
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
+  # The LIST endpoint, not the combined one: `commits/<sha>/status` collapses to
+  # one entry per context and exposes no author, so any collaborator with write
+  # could POST a forged `ci-lanes=success` and then flip a label to turn the
+  # sole required check green over failing lanes. The list carries `.creator`,
+  # newest first, so the gate can insist the newest entry for this context was
+  # written by the Actions bot and ignore anything a human pushed.
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/commits/${SHA}/status"; then
+  if ! gh_api GET "repos/${REPOSITORY}/commits/${SHA}/statuses?per_page=100" --paginate; then
     cat "$gh_stderr" >&2
     echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow"
     exit 1
   fi
-  state="$(jq -r --arg context "$STATUS_CONTEXT" \
-    '[ (.statuses // [])[] | select(.context == $context) ] | (.[0].state // "")' \
+  # First match wins because the list is newest-first: a later bot failure on
+  # the same SHA overrides an earlier bot success, and a later forged success by
+  # a user account is skipped rather than shadowing the bot's real verdict.
+  state="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
+    '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (.[0].state // "")' \
     <"$gh_stdout")"
   if [[ "$state" == success ]]; then
-    echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA}."
+    echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
     exit 0
   fi
   echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow"
@@ -188,9 +215,6 @@ if [[ "$same_repo" != true ]]; then
   fi
   exit 0
 fi
-
-: "${REPOSITORY:?REPOSITORY is required to record the ${STATUS_CONTEXT} status}"
-: "${SHA:?SHA is required to record the ${STATUS_CONTEXT} status}"
 
 target_url="${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-0}"
 jq -n \

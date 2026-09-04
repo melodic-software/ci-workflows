@@ -60,6 +60,17 @@ reporting rather than breaking the gate.
 - The advisory comment carries the HTML marker `<!-- pr-contract:linkage -->`.
   The step edits that comment rather than posting a second one, and on a linkage
   pass it rewrites the comment to say the body conforms rather than deleting it.
+  Only a **bot-authored** comment carrying the marker is a candidate, and the
+  newest one wins: on a public repository anyone can comment, so a stranger who
+  planted the marker would otherwise capture the upsert and the gate's guidance
+  would never appear.
+- Attacker-controlled text (the title, body-derived quotes, the author login) is
+  escaped to GitHub's workflow-command rules (`%` → `%25`, CR → `%0D`, LF →
+  `%0A`) before it appears in an annotation, so a title carrying a newline cannot
+  close the annotation and inject a second workflow command.
+- `repository`, `pr-number` and both label inputs are validated against strict
+  patterns before the first `gh api` call, and the label is percent-encoded in
+  the label-removal path.
 - The issue-linkage analyzer masks rendered HTML comments, fenced and indented
   code blocks, and inline code spans before matching, so a PR template's
   commented-out `Closes #N` example cannot satisfy the gate.

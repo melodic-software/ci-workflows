@@ -188,7 +188,15 @@ consumer to audit it.
   combined status for that context on that SHA is `success`. Both inputs default
   to the expressions the caller's lane gates use, so a caller passes neither;
   `contract-only` must stay identical to the caller's job gate or the two
-  disagree about whether the lanes ran. **The status write is load-bearing, not
+  disagree about whether the lanes ran — a drifted copy would gate the lanes off
+  while the composite aggregates their all-`skipped` results into a `success`
+  for a run in which nothing executed, so `ci-fanout-consolidation.test.cjs`
+  compares the two texts and fails on any difference. The carried verdict is
+  read from the per-context status LIST, not the combined endpoint, and only an
+  entry written by `github-actions[bot]` counts: any collaborator with write can
+  `POST` a commit status, and the combined endpoint exposes no author, so a
+  forged `ci-lanes=success` plus a label flip would otherwise turn the sole
+  required check green over failing lanes. **The status write is load-bearing, not
   best-effort**: a write still refused after three retries fails the run naming
   the missing permission, because the carry-forward branch reads nothing else and
   a silently missing status turns every later contract-only run red with no way

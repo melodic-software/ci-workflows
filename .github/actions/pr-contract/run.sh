@@ -34,6 +34,44 @@ emit_output() {
   fi
 }
 
+# Every annotation below quotes attacker-controlled text: the PR title, the PR
+# body, the author login. GitHub's documented escaping for workflow-command data
+# is `%` -> `%25`, CR -> `%0D`, LF -> `%0A`; without it a title carrying a
+# newline can close the annotation and inject a second workflow command.
+# `%` first, or the escapes introduced by the others get double-escaped.
+escape_annotation() {
+  local text="$1"
+  text="${text//'%'/%25}"
+  text="${text//$'\r'/%0D}"
+  text="${text//$'\n'/%0A}"
+  printf '%s' "$text"
+}
+
+# Every value below is interpolated into a `gh api` path. Validate before the
+# first call rather than trusting the caller's expression.
+require_pattern() {
+  local name="$1" value="$2" pattern="$3" shape="$4"
+  if [[ ! "$value" =~ $pattern ]]; then
+    echo "::error::pr-contract: ${name} must be ${shape}, got: $(escape_annotation "$value")"
+    exit 1
+  fi
+}
+
+# Percent-encode everything outside the unreserved set, so a label reaches the
+# DELETE path as one segment. The validation above already rejects `/`, `?`,
+# `#` and whitespace; this covers the rest without relying on that.
+# shellcheck disable=SC2329 # invoked from remove_linkage_label, itself reached through best_effort.
+url_encode() {
+  local text="$1" index character
+  for ((index = 0; index < ${#text}; index++)); do
+    character="${text:index:1}"
+    case "$character" in
+    [A-Za-z0-9.~_-]) printf '%s' "$character" ;;
+    *) printf '%%%02X' "'$character" ;;
+    esac
+  done
+}
+
 case "$LINKAGE_MODE" in
 advisory | enforce) ;;
 *)
@@ -59,6 +97,11 @@ if [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   emit_output linkage skipped
   exit 0
 fi
+
+require_pattern repository "$REPOSITORY" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'OWNER/REPO'
+require_pattern pr-number "$PR_NUMBER" '^[0-9]+$' 'a positive integer'
+require_pattern do-not-merge-label "$DO_NOT_MERGE_LABEL" '^[^/?#[:space:]]+$' "free of '/', '?', '#' and whitespace"
+require_pattern linkage-label "$LINKAGE_LABEL" '^[^/?#[:space:]]+$' "free of '/', '?', '#' and whitespace"
 
 # gh_api <method> <path> [extra args...]
 # Captures stdout and stderr; sets GH_HTTP_STATUS from gh's "(HTTP nnn)" tail
@@ -137,7 +180,7 @@ fi
 title_result=pass
 if [[ ! "$pr_title" =~ $title_regex ]]; then
   title_result=fail
-  echo "::error::pr-contract: the PR title does not follow Conventional Commits: \"${pr_title}\". Expected \"<type>: <subject>\" with a non-empty subject; allowed types: ${types_human}. ${scope_hint} A breaking change marks the type with \"!\"."
+  echo "::error::pr-contract: the PR title does not follow Conventional Commits: \"$(escape_annotation "$pr_title")\". Expected \"<type>: <subject>\" with a non-empty subject; allowed types: ${types_human}. ${scope_hint} A breaking change marks the type with \"!\"."
 fi
 
 # ---------------------------------------------------------------------------
@@ -434,7 +477,7 @@ fi
 
 if [[ "$is_exempt_author" == true ]]; then
   linkage_result=exempt
-  echo "::notice::pr-contract: PR author \"${pr_author}\" matches an exempt-authors entry; skipping the issue-linkage check."
+  echo "::notice::pr-contract: PR author \"$(escape_annotation "$pr_author")\" matches an exempt-authors entry; skipping the issue-linkage check."
 else
   analysis="$scratch/analysis.txt"
   analyze_body <"$scratch/body.txt" >"$analysis"
@@ -483,8 +526,11 @@ find_marker_comment() {
   if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate; then
     return 1
   fi
+  # Bot-authored only, newest first. On a public repository anyone can comment,
+  # so a stranger who plants the marker would otherwise capture the upsert and
+  # the gate would edit their comment instead of posting its own.
   jq -r --arg marker "$LINKAGE_MARKER" \
-    '[ .[] | select((.body // "") | contains($marker)) ] | (.[0].id // empty)' \
+    '[ .[] | select((.user.type // "") == "Bot" and ((.body // "") | contains($marker))) ] | (max_by(.id).id // empty)' \
     <"$gh_stdout"
 }
 
@@ -511,15 +557,18 @@ add_linkage_label() {
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.
 remove_linkage_label() {
-  gh_api DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/${LINKAGE_LABEL}"
+  # Percent-encoded so the label stays one path segment.
+  gh_api DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/$(url_encode "$LINKAGE_LABEL")"
 }
 
 if [[ "$linkage_result" == fail ]]; then
   for message in "${linkage_errors[@]}"; do
     if [[ "$LINKAGE_MODE" == enforce ]]; then
-      echo "::error::pr-contract: ${message}"
+      # The linkage messages quote body text (a negated closing reference and
+      # its trigger word), so they are escaped like the title.
+      echo "::error::pr-contract: $(escape_annotation "$message")"
     else
-      echo "::warning::pr-contract: ${message}"
+      echo "::warning::pr-contract: $(escape_annotation "$message")"
     fi
   done
 
