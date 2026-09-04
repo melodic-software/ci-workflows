@@ -241,7 +241,7 @@ jobs:
         # @claude (or re-dispatch) rather than relying on an automatic retry.
         continue-on-error: true
         timeout-minutes: 12
-        uses: anthropics/claude-code-action@8251c103ac8c1d761882c86aba1412c7f583c844 # v1.0.213
+        uses: anthropics/claude-code-action@ef8bb1e43bf303cff727a1dd0b8837029fe982a2 # v1.0.215
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Empty prompt on mention events → tag mode uses the @claude comment.
