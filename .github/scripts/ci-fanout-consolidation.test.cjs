@@ -202,7 +202,10 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
   // now lives in the `checks` reusable every consumer adopts (ci-perf Phase
   // 6a), so this repository dogfoods the same contract it publishes.
   assert.match(ciWorkflow, /^ {2}checks:$/mu);
-  assert.match(ciWorkflow, /^ {4}uses: \.\/\.github\/workflows\/checks\.yml$/mu);
+  assert.match(
+    ciWorkflow,
+    /^ {4}uses: \.\/\.github\/workflows\/checks\.yml$/mu,
+  );
 
   // change-detection reads the PR file listing, and a called workflow cannot
   // elevate: without the caller's own grant the job fails at startup.
@@ -244,7 +247,10 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
     "markdown",
     "links",
   ]) {
-    assert.doesNotMatch(ciWorkflow, new RegExp(`needs\\.${lane}\\.result`, "u"));
+    assert.doesNotMatch(
+      ciWorkflow,
+      new RegExp(`needs\\.${lane}\\.result`, "u"),
+    );
   }
 
   // The comment-hygiene prefilter superset test is the scan's load-bearing

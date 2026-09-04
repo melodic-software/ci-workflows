@@ -20,12 +20,7 @@ const { test } = require("node:test");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
-const workflowPath = path.join(
-  __dirname,
-  "..",
-  "workflows",
-  "checks.yml",
-);
+const workflowPath = path.join(__dirname, "..", "workflows", "checks.yml");
 const workflow = parseWorkflow(fs.readFileSync(workflowPath, "utf8"));
 const steps = workflow.jobs.checks.steps;
 const joinStep = steps.find((step) => step?.id === "outcome");
@@ -130,7 +125,10 @@ test("one failure fails the job and names the composite", () => {
   // The verdict is written BEFORE the exit, so a caller reading the output on
   // the failure path sees `failure` rather than nothing.
   assert.match(result.output, /^outcome=failure$/mu);
-  assert.match(result.stdout, /^::error::markdown failed \(outcome=failure\)\.$/mu);
+  assert.match(
+    result.stdout,
+    /^::error::markdown failed \(outcome=failure\)\.$/mu,
+  );
   assert.match(result.stdout, /^::error::checks failed: markdown\.$/mu);
 });
 
