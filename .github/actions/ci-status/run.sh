@@ -2,24 +2,30 @@
 # Aggregate lane results into the single required gate check, and carry that
 # verdict forward to contract-only pull-request events.
 #
-# Full mode (the event action is NOT in `carry-forward-actions`): aggregate
-# `results` exactly as before, then record the verdict as a commit status on the
-# head SHA under `status-context`. That status is the only signal a
-# contract-only run can trust, because a check run cannot say which event
-# produced it — a chain of contract-only runs could otherwise self-certify.
+# Full mode (`contract-only` false): aggregate `results` exactly as before, then
+# record the verdict as a commit status on the head SHA under `status-context`.
+# That status is the only signal a contract-only run can trust, because a check
+# run cannot say which event produced it — a chain of contract-only runs could
+# otherwise self-certify.
 #
-# Carry-forward mode (the event action IS in the list): the lanes were gated off
-# by construction, so aggregation is skipped and the combined commit status for
+# Carry-forward mode (`contract-only` true): the lanes were gated off by
+# construction, so aggregation is skipped and the combined commit status for
 # `status-context` on the same SHA decides. The combined-status endpoint returns
 # the latest state per context, so a later full-run failure on the same SHA
 # overrides an earlier success.
+#
+# `same-repo` false is a fork pull request. Its token is read-only on
+# `pull_request` whatever `permissions:` requests, so it cannot record lane
+# state; it aggregates, reports the lanes verdict, and writes nothing. The
+# caller's contract-only predicate is false for a fork on every event, so a fork
+# always runs the full workflow and never needs a carried verdict.
 set -euo pipefail
 
 : "${TREAT_SKIPPED_AS:?TREAT_SKIPPED_AS is required}"
 
 RESULTS="${RESULTS:-}"
-EVENT_ACTION="${EVENT_ACTION:-}"
-CARRY_FORWARD_ACTIONS="${CARRY_FORWARD_ACTIONS:-edited,labeled,unlabeled}"
+CONTRACT_ONLY="${CONTRACT_ONLY:-}"
+SAME_REPO="${SAME_REPO:-}"
 STATUS_CONTEXT="${STATUS_CONTEXT:-ci-lanes}"
 REPOSITORY="${REPOSITORY:-}"
 SHA="${SHA:-}"
@@ -61,30 +67,45 @@ gh_api() {
   return "$status"
 }
 
-is_carry_forward_action() {
-  local candidate
-  [[ -n "$EVENT_ACTION" ]] || return 1
-  while IFS= read -r candidate; do
-    candidate="${candidate#"${candidate%%[![:space:]]*}"}"
-    candidate="${candidate%"${candidate##*[![:space:]]}"}"
-    [[ -n "$candidate" ]] || continue
-    if [[ "$candidate" == "$EVENT_ACTION" ]]; then
-      return 0
-    fi
-    # `printf '%s\n'` (not '%s'): without the trailing newline `read` drops the
-    # last list entry, which silently un-enrols `unlabeled` from carry-forward.
-  done < <(printf '%s\n' "$CARRY_FORWARD_ACTIONS" | tr ',' '\n')
-  return 1
+# A GitHub expression renders as the literal `true`/`false`. Empty means the
+# caller left the input unset, which takes the safer reading of each flag:
+# aggregate rather than carry forward, and record rather than silently skip.
+# Anything else is a miswired caller and fails rather than resolving to a
+# branch it did not ask for.
+read_boolean() {
+  local name="$1" value="$2" fallback="$3"
+  case "$value" in
+  true) echo true ;;
+  false) echo false ;;
+  '') echo "$fallback" ;;
+  *)
+    echo "::error::${name} must be 'true' or 'false', got: ${value}" >&2
+    return 1
+    ;;
+  esac
 }
 
+# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
+if ! contract_only="$(read_boolean contract-only "$CONTRACT_ONLY" false)"; then
+  exit 1
+fi
+# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
+if ! same_repo="$(read_boolean same-repo "$SAME_REPO" true)"; then
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
-# Carry-forward mode.
+# Carry-forward mode. Branched on first, before `same-repo`: the caller's
+# predicate makes `contract-only` false for every fork event, so the
+# true/false combination is unreachable from the defaults — but a caller that
+# overrides `contract-only` owns the claim that the lanes did not run, and the
+# runner honours it rather than second-guessing it into an aggregation over
+# results that are all `skipped`.
 # ---------------------------------------------------------------------------
-# shellcheck disable=SC2310 # a pure predicate over the input list; it runs no fallible command.
-if is_carry_forward_action; then
+if [[ "$contract_only" == true ]]; then
   : "${REPOSITORY:?REPOSITORY is required in carry-forward mode}"
   : "${SHA:?SHA is required in carry-forward mode}"
-  echo "Contract-only event '${EVENT_ACTION}': reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
+  echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/commits/${SHA}/status"; then
     cat "$gh_stderr" >&2
@@ -151,11 +172,23 @@ if [[ "$lanes_state" == success ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Record the verdict as a commit status. Load-bearing, not best-effort: the
-# carry-forward branch reads nothing else, so a silently missing status turns
-# every later contract-only run red with no way to tell a refused write from a
-# genuinely failing lane.
+# Record the verdict as a commit status. Load-bearing on a same-repository run,
+# not best-effort: the carry-forward branch reads nothing else, so a silently
+# missing status turns every later contract-only run red with no way to tell a
+# refused write from a genuinely failing lane.
+#
+# A fork pull request is the one exception: its token cannot write a status at
+# all, and nothing will ever read one for it, so the run reports the lanes
+# verdict and stops.
 # ---------------------------------------------------------------------------
+if [[ "$same_repo" != true ]]; then
+  echo "::notice::fork pull request: lane state is not recorded; every event runs the full workflow"
+  if [[ "$lanes_state" == failure ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+
 : "${REPOSITORY:?REPOSITORY is required to record the ${STATUS_CONTEXT} status}"
 : "${SHA:?SHA is required to record the ${STATUS_CONTEXT} status}"
 

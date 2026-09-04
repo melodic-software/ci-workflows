@@ -94,8 +94,28 @@ Both steps go in the `ci-status` job, in this order:
 ```
 
 The caller's workflow must add `edited`, `labeled` and `unlabeled` to
-`on.pull_request.types` and gate every other job off those actions. This
-repository's own `.github/workflows/ci.yml` is the reference wiring.
+`on.pull_request.types` and gate every other job with `if: ${{ !(<predicate>) }}`
+where `<predicate>` is, verbatim:
+
+```text
+github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))
+```
+
+The same negated predicate goes in `cancel-in-progress`, ANDed with any existing
+condition there. Two exclusions in it are load-bearing: an `edited` event
+carrying `changes.base` changed the base branch, so the merge commit the lanes
+test changed with it and the run must be full; and a fork pull request is never
+contract-only, because its token cannot record the lane state a later
+carry-forward would read.
+
+`ci-status` reads the same predicate through its own `contract-only` input,
+whose default is that expression, so the caller passes nothing. A caller that
+overrides `contract-only` owns the claim that the lanes did not run: the runner
+branches on it before it looks at `same-repo`, so `contract-only: true` with
+`same-repo: false` is treated as a carry-forward even though the shipped
+defaults never produce that combination.
+
+This repository's own `.github/workflows/ci.yml` is the reference wiring.
 
 ## Tests
 

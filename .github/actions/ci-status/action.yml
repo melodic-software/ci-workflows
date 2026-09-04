@@ -11,8 +11,8 @@ inputs:
     description: >-
       Whitespace-separated job results, one per aggregated lane — the caller
       builds this from `needs.<lane>.result`. Empty fails: a gate with nothing
-      to aggregate is a miswired `needs` list, not a pass. Ignored in
-      carry-forward mode, where every lane is `skipped` by construction.
+      to aggregate is a miswired `needs` list, not a pass. Ignored when
+      `contract-only` is true, where every lane is `skipped` by construction.
     required: true
   treat-skipped-as:
     description: >-
@@ -21,19 +21,27 @@ inputs:
       — for example a runner selector that fell back and left downstream lanes
       skipped, which must go red rather than green.
     default: pass
-  event-action:
+  contract-only:
     description: >-
-      The triggering event's action. When it appears in `carry-forward-actions`
-      the lanes are known to have been gated off, so aggregation is skipped and
-      the recorded commit status decides instead. Empty (a push run) always
-      aggregates.
-    default: ${{ github.event.action }}
-  carry-forward-actions:
+      `true` when this run's lanes were gated off because only the pull-request
+      contract could have changed, so aggregation is skipped and the recorded
+      commit status decides instead. The default is the contract-only predicate
+      itself, so a caller passes nothing; it must stay identical to the
+      expression the caller's lane jobs are gated on, or the two disagree about
+      whether the lanes ran.
+    default: >-
+      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+      (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
+      (github.event.action == 'edited' && !github.event.changes.base)) }}
+  same-repo:
     description: >-
-      Comma-separated `pull_request` actions that carry the previous verdict
-      forward rather than aggregating. Must match the actions the caller gates
-      its lane jobs on.
-    default: edited,labeled,unlabeled
+      `false` for a fork pull request, whose token is read-only on
+      `pull_request` whatever `permissions:` requests. A fork run aggregates and
+      reports the lanes verdict but records no commit status, because it cannot;
+      it therefore runs the full workflow on every event, as before.
+    default: >-
+      ${{ !github.event.pull_request ||
+      github.event.pull_request.head.repo.full_name == github.repository }}
   status-context:
     description: >-
       Commit-status context this action writes in full mode and reads in
@@ -45,8 +53,8 @@ inputs:
   token:
     description: >-
       Token used to write and read the commit status. The calling job needs
-      `statuses: write`; the status write is load-bearing and a run whose write
-      is refused fails.
+      `statuses: write`; on a same-repository run the status write is
+      load-bearing and a run whose write is refused fails.
     default: ${{ github.token }}
   repository:
     description: Target repository identity OWNER/REPO (defaults to this repo).
@@ -63,8 +71,8 @@ runs:
       env:
         RESULTS: ${{ inputs.results }}
         TREAT_SKIPPED_AS: ${{ inputs.treat-skipped-as }}
-        EVENT_ACTION: ${{ inputs.event-action }}
-        CARRY_FORWARD_ACTIONS: ${{ inputs.carry-forward-actions }}
+        CONTRACT_ONLY: ${{ inputs.contract-only }}
+        SAME_REPO: ${{ inputs.same-repo }}
         STATUS_CONTEXT: ${{ inputs.status-context }}
         GH_TOKEN: ${{ inputs.token }}
         REPOSITORY: ${{ inputs.repository }}

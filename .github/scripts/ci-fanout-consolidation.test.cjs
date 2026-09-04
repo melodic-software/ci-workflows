@@ -30,19 +30,52 @@ const ciWorkflow = fs.readFileSync(ciWorkflowPath, "utf8");
 const selectorConformance = fs.readFileSync(selectorConformancePath, "utf8");
 const adr = fs.readFileSync(adrPath, "utf8");
 
-// The contract-only pull_request actions: a title, body or label change can
-// flip a required-check answer without a new commit, so ci.yml re-runs on them
-// with every lane gated off and ci-status carrying the recorded lanes verdict
-// forward (Phase 3.1 of the ci-perf program).
-const CONTRACT_ONLY_GATE =
-  '!contains(fromJSON(\'["edited","labeled","unlabeled"]\'), github.event.action)';
+// The contract-only predicate, repeated verbatim in `cancel-in-progress` and in
+// every job's `if:`. True only for a SAME-REPOSITORY pull request on a label
+// flip, or on an `edited` event that did not change the base branch — a base
+// change moves the merge commit the lanes test, and a fork cannot record lane
+// state, so both run the full workflow (Phase 3.1 of the ci-perf program).
+const CONTRACT_ONLY_PREDICATE =
+  "github.event.pull_request.head.repo.full_name == github.repository && " +
+  '(contains(fromJSON(\'["labeled","unlabeled"]\'), github.event.action) || ' +
+  "(github.event.action == 'edited' && !github.event.changes.base))";
+const CONTRACT_ONLY_GATE = `!(${CONTRACT_ONLY_PREDICATE})`;
 
 test("ci.yml uses main-push burst collapse concurrency (#122)", () => {
+  // The `github.event_name == 'pull_request'` guard is ANDed with, not replaced
+  // by, the negated predicate: on a push there is no `github.event.pull_request`
+  // so the predicate is false and `!(predicate)` alone would be true, re-arming
+  // the burst collapse #122 disarmed.
   assert.match(
     ciWorkflow,
-    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && !contains\(fromJSON\('\["edited","labeled","unlabeled"\]'\), github\.event\.action\) \}\}$/mu,
+    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && (?<gate>.+) \}\}$/mu,
   );
+  const cancelGate =
+    /^ {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && (?<gate>.+) \}\}$/mu.exec(
+      ciWorkflow,
+    )?.groups?.gate;
+  assert.equal(cancelGate, CONTRACT_ONLY_GATE);
   assert.doesNotMatch(ciWorkflow, /pull_request\.number \|\| github\.run_id/u);
+});
+
+test("the contract-only predicate excludes forks and base changes", () => {
+  // Both exclusions are load-bearing and both are easy to drop by accident, so
+  // pin each clause rather than only the assembled string.
+  assert.ok(
+    CONTRACT_ONLY_PREDICATE.startsWith(
+      "github.event.pull_request.head.repo.full_name == github.repository &&",
+    ),
+  );
+  assert.ok(
+    CONTRACT_ONLY_PREDICATE.includes(
+      "github.event.action == 'edited' && !github.event.changes.base",
+    ),
+  );
+  // `edited` is never contract-only on its own — only when the base is unchanged.
+  assert.doesNotMatch(
+    ciWorkflow,
+    /contains\(fromJSON\('\["edited","labeled","unlabeled"\]'\)/u,
+  );
 });
 
 test("ci.yml re-runs on the contract-only pull_request actions", () => {
@@ -72,7 +105,7 @@ test("every job except ci-status carries the contract-only gate", () => {
   // The gate must never reach ci-status itself: that job IS the carry-forward.
   const ciStatusBlock = jobBlocks.find((block) => /^ci-status:$/mu.test(block));
   assert.ok(ciStatusBlock !== undefined);
-  assert.doesNotMatch(ciStatusBlock, /if: \$\{\{ !contains\(fromJSON/u);
+  assert.ok(!ciStatusBlock.includes(CONTRACT_ONLY_GATE));
 });
 
 test("the ci-status job runs pr-contract before the aggregation", () => {

@@ -4,11 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
-    # `edited`, `labeled` and `unlabeled` are contract-only events: the pr-title
-    # / do-not-merge / issue-linkage answers can change without a new commit, so
-    # the required check has to re-evaluate. Every lane job is gated off on
-    # those three actions and ci-status carries the previous lanes verdict
-    # forward from the recorded `ci-lanes` commit status instead.
+    # `edited`, `labeled` and `unlabeled` can change the pr-title /
+    # do-not-merge / issue-linkage answers without a new commit, so the required
+    # check has to re-evaluate. Whether such an event is CONTRACT-ONLY (lanes
+    # gated off, ci-status carrying the recorded `ci-lanes` verdict forward) is
+    # decided by one predicate, repeated verbatim in `cancel-in-progress` and in
+    # every job's `if:`:
+    #
+    #   github.event.pull_request.head.repo.full_name == github.repository &&
+    #   (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
+    #    (github.event.action == 'edited' && !github.event.changes.base))
+    #
+    # An `edited` event carrying `changes.base` is a BASE-BRANCH change: the
+    # merge commit the lanes test changes with it, so that runs in full. A fork
+    # pull request is never contract-only — its token is read-only on
+    # `pull_request` whatever `permissions:` requests, so it cannot record lane
+    # state — and runs the full workflow on every event exactly as before.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
@@ -21,16 +32,17 @@ permissions:
 # collapse; #122). Keying PRs on the number (not head_ref) keeps fork PRs that
 # share a branch name from cancelling each other's required runs.
 #
-# A contract-only event (edited/labeled/unlabeled) never cancels: it must queue
-# behind an in-flight full run so the `ci-lanes` status it reads is already
-# written. GitHub keeps one running and one pending run per group and the newest
-# pending wins, so the carry-forward always executes after the full run it
-# depends on. The `github.event_name == 'pull_request'` guard stays: on a push
-# `github.event.action` is empty and `!contains(...)` alone would be true,
-# re-arming the main-push burst collapse #122 disarmed.
+# A contract-only event never cancels: it must queue behind an in-flight full
+# run so the `ci-lanes` status it reads is already written. GitHub keeps one
+# running and one pending run per group and the newest pending wins, so the
+# carry-forward always executes after the full run it depends on. The
+# `github.event_name == 'pull_request'` guard stays and is ANDed with the
+# negated predicate: on a push there is no `github.event.pull_request`, so the
+# predicate is false and `!(predicate)` alone would be true, re-arming the
+# main-push burst collapse #122 disarmed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
 
 # Dogfood: this repo is the first consumer of its own composite actions. Each
 # lane checks out this repo and runs a lane action against either a root-native
@@ -54,7 +66,7 @@ concurrency:
 # ungated — see its job comment.
 jobs:
   changes:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -160,7 +172,7 @@ jobs:
 
   markdown:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['markdown'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['markdown'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -173,7 +185,7 @@ jobs:
 
   powershell:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['powershell'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['powershell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -193,7 +205,7 @@ jobs:
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
 
   links:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -206,7 +218,7 @@ jobs:
 
   reference-integrity:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -223,7 +235,7 @@ jobs:
 
   ruff:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -239,7 +251,7 @@ jobs:
 
   pyright:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -254,7 +266,7 @@ jobs:
 
   biome:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -272,7 +284,7 @@ jobs:
 
   tsc:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -289,7 +301,7 @@ jobs:
 
   dotnet-build:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -306,7 +318,7 @@ jobs:
 
   dotnet-format:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -320,7 +332,7 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   typos:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -332,7 +344,7 @@ jobs:
         uses: ./.github/actions/typos
 
   gitleaks:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -345,7 +357,7 @@ jobs:
 
   actionlint:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -386,7 +398,7 @@ jobs:
 
   lefthook-validate:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['lefthook-validate'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['lefthook-validate'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -403,7 +415,7 @@ jobs:
 
   jsonschema:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['jsonschema'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['jsonschema'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -428,7 +440,7 @@ jobs:
           files: .github/actions/*/action.yml
 
   action-metadata-filename:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -445,7 +457,7 @@ jobs:
   # / toolchain dogfood jobs stay separate so composite contracts keep a
   # dedicated failure surface.
   hygiene:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     # Sequential steps replace five formerly-parallel 15m jobs; 20m keeps
     # margin as the cheapest scans grow with the tree.
@@ -528,7 +540,7 @@ jobs:
   # ci-status yet — promote after a clean soak. Exempts standards-sync labelled /
   # melodic-standards-sync[bot] PRs.
   managed-files-guard:
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && github.event_name == 'pull_request' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -547,7 +559,7 @@ jobs:
 
   shellcheck:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -562,7 +574,7 @@ jobs:
 
   shfmt:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -580,7 +592,7 @@ jobs:
 
   selector-contract:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['selector-contract'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['selector-contract'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -622,7 +634,7 @@ jobs:
 
   zizmor:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
       # Reusable zizmor.yml always declares security-events: write (expressions
@@ -646,7 +658,7 @@ jobs:
     # The contract-only gate is the one exception: on `edited`, `labeled` and
     # `unlabeled` no file changed, so there is nothing new to scan and the
     # carry-forward branch of ci-status supplies the verdict.
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
     uses: ./.github/workflows/osv-scanner.yml
@@ -662,7 +674,7 @@ jobs:
 
   pester:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['pester'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['pester'] != 'false' }}
     permissions:
       contents: read
     # Dogfood the reusable Pester workflow on a minimal fixture suite — proves
@@ -674,7 +686,7 @@ jobs:
 
   go-quality-dogfood:
     needs: changes
-    if: ${{ !contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
     permissions:
       contents: read
     # A local reusable-workflow reference executes the workflow from this exact
