@@ -57,12 +57,19 @@ concurrency:
 # Each gate reads `!= 'false'`, never `== 'true'`: with `!cancelled()` a
 # failed or unset detection output runs the lane rather than skipping it, and
 # `changes` itself is aggregated by `ci-status` so a broken detection goes
-# red instead of riding fail-open to silent green forever. Content-agnostic
-# cheapest hygiene checks (editorconfig, exec-bit, machine-specific-paths,
-# eol-renormalize, comment-hygiene) share one `hygiene` lane with
-# continue-on-error + final outcome aggregation. Other unconditional dogfood
-# lanes (typos, gitleaks, links, action-metadata-filename) stay separate so
-# each composite keeps a dedicated failure surface. osv-scanner is also
+# red instead of riding fail-open to silent green forever.
+#
+# The content-agnostic hygiene composites (typos, gitleaks, editorconfig,
+# markdown, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene,
+# lychee-offline, and one check-jsonschema family) run inside the `checks`
+# reusable, which is the consolidation lane every consumer adopts — dogfooding
+# it here is the only way its contract is exercised before they do. It runs its
+# own change-detection pass for the composites it owns; `changes` stays for the
+# language and toolchain lanes this repo fans out and Phase 6b converges.
+# `actionlint` and `shellcheck` stay separate jobs with their toggles off: each
+# carries extra dogfood steps that need the composite's pinned binary on PATH,
+# which no `uses:` in a shared reusable can hand back. `action-metadata-filename`
+# stays separate for its dedicated failure surface, and osv-scanner is also
 # ungated — see its job comment.
 jobs:
   changes:
@@ -88,10 +95,6 @@ jobs:
           # scoped lane; language groups also glob their file types repo-wide,
           # not just the fixture trees the lanes currently point at.
           filters: |
-            markdown:
-              .github/**
-              **/*.md
-              **/.markdownlint*
             powershell:
               .github/**
               fixtures/composite-action/**
@@ -170,18 +173,46 @@ jobs:
               fixtures/composite-action/**
               **/action.yml
 
-  markdown:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['markdown'] != 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Lint markdown
-        uses: ./.github/actions/markdown
+  # The consolidation lane (ci-perf Phase 6a). A local reusable-workflow
+  # reference executes checks.yml from this exact commit, so the dogfood proves
+  # the contract a consumer pins by tag. It runs its own change-detection pass
+  # over the groups its composites are gated on; the groups this repo's other
+  # lanes read stay in `changes`.
+  checks:
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    permissions:
+      contents: read
+      # change-detection lists the pull request's files. A called workflow
+      # cannot elevate, so the grant has to be here as well as in checks.yml.
+      pull-requests: read
+    uses: ./.github/workflows/checks.yml
+    with:
+      # This public repository's hosted lane is free; private consumers pass
+      # their hardcoded fleet label instead.
+      runner: ubuntu-24.04
+      # actionlint and shellcheck keep their own jobs here: both carry extra
+      # dogfood steps that run against the pinned binary the composite installs.
+      actionlint: false
+      shellcheck: false
+      # One schema family per call. The remaining two (workflow and action
+      # metadata) stay in the `jsonschema` job.
+      check-jsonschema: true
+      check-jsonschema-files: .github/dependabot.yml
+      check-jsonschema-builtin-schema: vendor.dependabot
+      # The bundled pattern script and marker policy contain the literal regex
+      # bodies and marker tokens, so each scan skips its own action's source to
+      # avoid self-matching.
+      machine-specific-paths-exclude: ':(exclude).github/actions/machine-specific-paths/**'
+      comment-hygiene-exclude: ':(exclude).github/actions/comment-hygiene/**'
+      # Only the composites this repo gates on file class get a group; the rest
+      # are ungated here exactly as their separate jobs were.
+      filters: |
+        markdown:
+          .github/**
+          **/*.md
+          **/.markdownlint*
+        check-jsonschema:
+          .github/**
 
   powershell:
     needs: changes
@@ -203,18 +234,6 @@ jobs:
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.ps1
       - name: Prove a broken composite pwsh block fails
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
-
-  links:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check links and anchors (offline)
-        uses: ./.github/actions/lychee-offline
 
   reference-integrity:
     needs: changes
@@ -331,30 +350,6 @@ jobs:
         with:
           project: fixtures/dotnet/good/good.csproj
 
-  typos:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Spell-check
-        uses: ./.github/actions/typos
-
-  gitleaks:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Scan for secrets
-        uses: ./.github/actions/gitleaks
-
   actionlint:
     needs: changes
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
@@ -423,11 +418,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate dependabot.yml
-        uses: ./.github/actions/check-jsonschema
-        with:
-          builtin-schema: vendor.dependabot
-          files: .github/dependabot.yml
+      # dependabot.yml is validated by the `checks` lane instead: one
+      # check-jsonschema call carries one schema family, and that is the family
+      # a consumer of the reusable is most likely to want.
       - name: Validate workflows
         uses: ./.github/actions/check-jsonschema
         with:
@@ -450,91 +443,6 @@ jobs:
           persist-credentials: false
       - name: Reject action.yaml metadata (action.yml is enforced exclusively)
         uses: ./.github/actions/action-metadata-filename
-
-  # Cheapest unconditional hygiene composites share one worker (#122). Each
-  # check step is continue-on-error with an id; the final aggregation fails on
-  # any steps.<id>.outcome == 'failure' (run-everything-fail-at-end). Language
-  # / toolchain dogfood jobs stay separate so composite contracts keep a
-  # dedicated failure surface.
-  hygiene:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
-    # Sequential steps replace five formerly-parallel 15m jobs; 20m keeps
-    # margin as the cheapest scans grow with the tree.
-    timeout-minutes: 20
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check editorconfig conformance
-        id: editorconfig
-        continue-on-error: true
-        uses: ./.github/actions/editorconfig
-      - name: Verify shebang files are executable
-        id: exec_bit
-        continue-on-error: true
-        uses: ./.github/actions/exec-bit
-      - name: Check for machine-specific paths
-        id: machine_specific_paths
-        continue-on-error: true
-        # The bundled pattern script contains the literal regex bodies, so skip
-        # the action's own dir to avoid self-matching.
-        uses: ./.github/actions/machine-specific-paths
-        with:
-          exclude: ':(exclude).github/actions/machine-specific-paths/**'
-      - name: Check index-level EOL drift
-        id: eol_renormalize
-        continue-on-error: true
-        uses: ./.github/actions/eol-renormalize
-      - name: Verify prefilter is a superset of the policy library
-        id: comment_hygiene_superset
-        continue-on-error: true
-        # Self-enforces the scan's load-bearing invariant: the coarse git-grep
-        # prefilter must admit every line the bundled default policy flags, or
-        # the gate fails open.
-        shell: bash
-        run: bash .github/actions/comment-hygiene/superset-test.sh
-      - name: Scan comment hygiene
-        id: comment_hygiene
-        continue-on-error: true
-        # The bundled scan and policy reference the literal marker tokens in
-        # their own comments, so skip the action's source to avoid self-matching.
-        uses: ./.github/actions/comment-hygiene
-        with:
-          exclude: ':(exclude).github/actions/comment-hygiene/**'
-      - name: Aggregate hygiene checks
-        if: always()
-        shell: bash
-        env:
-          EDITORCONFIG: ${{ steps.editorconfig.outcome }}
-          EXEC_BIT: ${{ steps.exec_bit.outcome }}
-          MACHINE_SPECIFIC_PATHS: ${{ steps.machine_specific_paths.outcome }}
-          EOL_RENORMALIZE: ${{ steps.eol_renormalize.outcome }}
-          COMMENT_HYGIENE_SUPERSET: ${{ steps.comment_hygiene_superset.outcome }}
-          COMMENT_HYGIENE: ${{ steps.comment_hygiene.outcome }}
-        run: |
-          set -euo pipefail
-          failed=0
-          report() {
-            local name="$1"
-            local outcome="$2"
-            if [[ "$outcome" == failure ]]; then
-              echo "::error::$name failed (outcome=$outcome)."
-              failed=1
-            else
-              echo "$name: $outcome"
-            fi
-          }
-          report editorconfig "$EDITORCONFIG"
-          report exec-bit "$EXEC_BIT"
-          report machine-specific-paths "$MACHINE_SPECIFIC_PATHS"
-          report eol-renormalize "$EOL_RENORMALIZE"
-          report comment-hygiene-superset "$COMMENT_HYGIENE_SUPERSET"
-          report comment-hygiene "$COMMENT_HYGIENE"
-          if [[ "$failed" -ne 0 ]]; then
-            exit 1
-          fi
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
   # ci-status yet — promote after a clean soak. Exempts standards-sync labelled /
@@ -623,6 +531,12 @@ jobs:
         run: bash .github/scripts/release-tag-drift.test.sh
       - name: Test Gitleaks scan policy guard
         run: bash .github/actions/gitleaks/scan.test.sh
+      - name: Verify the comment-hygiene prefilter is a superset of the policy library
+        # Self-enforces the scan's load-bearing invariant: the coarse git-grep
+        # prefilter must admit every line the bundled default policy flags, or
+        # the gate fails open. It lives here now that the scan itself runs
+        # inside the `checks` reusable, which cannot run a repo-local script.
+        run: bash .github/actions/comment-hygiene/superset-test.sh
       - name: Test the pull-request contract runner
         run: bash .github/actions/pr-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
@@ -704,7 +618,7 @@ jobs:
     # `changes` is aggregated alongside the lanes it gates: a failed detection
     # job fails ci-status even though every gated lane fails open and runs, so
     # a broken filter config cannot ride the fallback to green indefinitely.
-    needs: [changes, markdown, powershell, links, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, typos, gitleaks, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, hygiene, pester, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [changes, checks, powershell, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -728,4 +642,4 @@ jobs:
         if: ${{ !cancelled() }}
         uses: ./.github/actions/ci-status
         with:
-          results: ${{ needs.changes.result }} ${{ needs.markdown.result }} ${{ needs.powershell.result }} ${{ needs.links.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.typos.result }} ${{ needs.gitleaks.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.hygiene.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

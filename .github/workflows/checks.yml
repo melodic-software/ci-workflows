@@ -1,0 +1,330 @@
+name: checks
+
+# One job, one runner, every content-agnostic hygiene composite as a step —
+# the consolidation lane the ci-perf program's Phase 6a specifies. It replaces
+# the fan-out of one job (and one runner spin-up) per tool: a caller runs
+# `change-detection` once here, then each composite behind its own toggle, and a
+# single outcome step decides the job.
+#
+# Composites are the unit of reuse. This workflow never calls a per-tool
+# reusable workflow: a called workflow is another job with another spin-up,
+# which is the cost this lane exists to remove.
+#
+# `zizmor` is deliberately absent — it has no composite, only the reusable
+# `.github/workflows/zizmor.yml`, which needs `security-events: write` and an
+# optional SARIF upload. Callers that want it keep a separate job.
+#
+# Composites are referenced by FULL PATH at a pinned SHA, never
+# `./.github/actions/...`: inside a CALLED workflow a relative action path
+# resolves against the CALLER's checkout, so a relative reference would fail in
+# every consumer (actions/runner#1348). The pins therefore lag one release
+# behind the workflow that carries them; Dependabot's `github-actions` group
+# bumps them like any other `uses:`.
+#
+# Skipping: every composite step is gated twice — by its boolean toggle, and by
+# the `change-detection` filter group NAMED AFTER that toggle. A group the
+# caller did not declare is not `'false'`, so an undeclared composite runs on
+# every event. Fail-open is the composite's own documented contract: a lane
+# wasted on an out-of-scope pull request beats a silently skipped check.
+#
+# Failure: every composite runs under `continue-on-error: true`, so one failing
+# tool does not hide the rest (run-everything-fail-at-end). The `outcome` step
+# joins them, names the first failure, and fails the job.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: >-
+          Runner label for the job. Required with no default: a hosted default
+          would silently bill a private caller's pool, which is exactly the
+          placement accident this consolidation exists to end.
+        type: string
+        required: true
+      filters:
+        description: >-
+          Newline-separated `change-detection` filter groups (see that action
+          for the grammar). A group whose name matches a composite toggle
+          (`markdown`, `shellcheck`, ...) gates that composite's step; a group
+          the caller does not declare leaves its composite ungated. Declare the
+          groups the caller's own lanes need too — `results` is published
+          verbatim as an output, so one detection pass serves both.
+        type: string
+        required: true
+      timeout-minutes:
+        description: >-
+          Job budget. The default matches the per-tool reusables (zizmor,
+          osv-scanner, semantic-pr, do-not-merge-gate); raise it for a caller
+          whose tree makes the sequential scans slower than the fan-out was.
+        type: number
+        default: 15
+      typos:
+        description: Run the `typos` spell-check composite.
+        type: boolean
+        default: true
+      gitleaks:
+        description: Run the `gitleaks` secret-scan composite.
+        type: boolean
+        default: true
+      editorconfig:
+        description: Run the `editorconfig` conformance composite.
+        type: boolean
+        default: true
+      markdown:
+        description: Run the `markdown` (markdownlint-cli2) composite.
+        type: boolean
+        default: true
+      shellcheck:
+        description: Run the `shellcheck` composite.
+        type: boolean
+        default: true
+      actionlint:
+        description: Run the `actionlint` composite.
+        type: boolean
+        default: true
+      exec-bit:
+        description: Run the `exec-bit` (shebang files are executable) composite.
+        type: boolean
+        default: true
+      machine-specific-paths:
+        description: Run the `machine-specific-paths` composite.
+        type: boolean
+        default: true
+      eol-renormalize:
+        description: Run the `eol-renormalize` (index-level EOL drift) composite.
+        type: boolean
+        default: true
+      comment-hygiene:
+        description: Run the `comment-hygiene` marker scan composite.
+        type: boolean
+        default: true
+      lychee-offline:
+        description: Run the `lychee-offline` link and anchor composite.
+        type: boolean
+        default: true
+      check-jsonschema:
+        description: >-
+          Run the `check-jsonschema` composite. OFF by default, unlike every
+          other toggle: its `files` input is required and has no universal
+          default, and one call validates one schema family. A caller that
+          validates several (dependabot.yml, workflow metadata, action
+          metadata) passes the most valuable one here and keeps its own job for
+          the rest.
+        type: boolean
+        default: false
+      check-jsonschema-files:
+        description: >-
+          Files or globs for `check-jsonschema`. Required when
+          `check-jsonschema` is true; the step is skipped when it is empty.
+        type: string
+        default: ''
+      check-jsonschema-builtin-schema:
+        description: >-
+          Builtin schema name for `check-jsonschema`, for example
+          `vendor.dependabot`.
+        type: string
+        default: ''
+      machine-specific-paths-exclude:
+        description: >-
+          Git pathspec exclusion for `machine-specific-paths`. A repository
+          whose own sources carry the literal patterns (this one does) must
+          exclude them or the scan self-matches.
+        type: string
+        default: ''
+      comment-hygiene-exclude:
+        description: >-
+          Git pathspec exclusion for `comment-hygiene`, for the same
+          self-matching reason.
+        type: string
+        default: ''
+    outputs:
+      results:
+        description: >-
+          The `change-detection` JSON, verbatim: a map from filter-group name
+          to the string "true" or "false". Gate a downstream lane with
+          `fromJSON(needs.<job>.outputs.results || '{}')['<group>'] != 'false'`
+          — never `== 'true'`. The fail-open form matters twice over here,
+          because a reusable workflow publishes no outputs when its job fails.
+        value: ${{ jobs.checks.outputs.results }}
+      outcome:
+        description: >-
+          `success` when no enabled composite failed, `failure` otherwise. It
+          mirrors the job's own result and is published for callers that want
+          the verdict as a value; `needs.<job>.result` stays authoritative,
+          since a failed reusable-workflow job publishes no outputs at all.
+        value: ${{ jobs.checks.outputs.outcome }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      # change-detection reads the pull request's file listing from the API.
+      # A called workflow cannot elevate permissions, so the CALLER's job block
+      # must grant both of these too.
+      pull-requests: read
+    outputs:
+      results: ${{ steps.detect.outputs.results }}
+      outcome: ${{ steps.outcome.outputs.outcome }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect relevant lanes
+        id: detect
+        uses: melodic-software/ci-workflows/.github/actions/change-detection@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        with:
+          filters: ${{ inputs.filters }}
+
+      - name: Spell-check
+        id: typos
+        if: ${{ inputs.typos && fromJSON(steps.detect.outputs.results || '{}')['typos'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/typos@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Scan for secrets
+        id: gitleaks
+        if: ${{ inputs.gitleaks && fromJSON(steps.detect.outputs.results || '{}')['gitleaks'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Check editorconfig conformance
+        id: editorconfig
+        if: ${{ inputs.editorconfig && fromJSON(steps.detect.outputs.results || '{}')['editorconfig'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Lint markdown
+        id: markdown
+        if: ${{ inputs.markdown && fromJSON(steps.detect.outputs.results || '{}')['markdown'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/markdown@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Lint shell scripts
+        id: shellcheck
+        if: ${{ inputs.shellcheck && fromJSON(steps.detect.outputs.results || '{}')['shellcheck'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Lint workflows
+        id: actionlint
+        if: ${{ inputs.actionlint && fromJSON(steps.detect.outputs.results || '{}')['actionlint'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Verify shebang files are executable
+        id: exec_bit
+        if: ${{ inputs.exec-bit && fromJSON(steps.detect.outputs.results || '{}')['exec-bit'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/exec-bit@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Check for machine-specific paths
+        id: machine_specific_paths
+        if: ${{ inputs.machine-specific-paths && fromJSON(steps.detect.outputs.results || '{}')['machine-specific-paths'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        with:
+          exclude: ${{ inputs.machine-specific-paths-exclude }}
+
+      - name: Check index-level EOL drift
+        id: eol_renormalize
+        if: ${{ inputs.eol-renormalize && fromJSON(steps.detect.outputs.results || '{}')['eol-renormalize'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Scan comment hygiene
+        id: comment_hygiene
+        if: ${{ inputs.comment-hygiene && fromJSON(steps.detect.outputs.results || '{}')['comment-hygiene'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        with:
+          exclude: ${{ inputs.comment-hygiene-exclude }}
+
+      - name: Check links and anchors (offline)
+        id: lychee_offline
+        if: ${{ inputs.lychee-offline && fromJSON(steps.detect.outputs.results || '{}')['lychee-offline'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+
+      - name: Validate against JSON Schema
+        id: check_jsonschema
+        # `check-jsonschema-files` is checked here, not only documented: the
+        # composite's `files` input is required, so an enabled toggle with no
+        # files would fail the job on a configuration mistake rather than on a
+        # finding.
+        if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files != '' && fromJSON(steps.detect.outputs.results || '{}')['check-jsonschema'] != 'false' }}
+        continue-on-error: true
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        with:
+          files: ${{ inputs.check-jsonschema-files }}
+          builtin-schema: ${{ inputs.check-jsonschema-builtin-schema }}
+
+      # The join. `!cancelled()` rather than `always()`: a cancelled run has no
+      # verdict to report, but a failed composite must still be named. The
+      # `outcome` output is written BEFORE the exit so a caller reading it gets
+      # the verdict on the failure path too (when GitHub propagates outputs from
+      # a failed reusable-workflow job at all — `needs.<job>.result` is the
+      # reliable signal).
+      - name: Join composite outcomes
+        id: outcome
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          TYPOS: ${{ steps.typos.outcome }}
+          GITLEAKS: ${{ steps.gitleaks.outcome }}
+          EDITORCONFIG: ${{ steps.editorconfig.outcome }}
+          MARKDOWN: ${{ steps.markdown.outcome }}
+          SHELLCHECK: ${{ steps.shellcheck.outcome }}
+          ACTIONLINT: ${{ steps.actionlint.outcome }}
+          EXEC_BIT: ${{ steps.exec_bit.outcome }}
+          MACHINE_SPECIFIC_PATHS: ${{ steps.machine_specific_paths.outcome }}
+          EOL_RENORMALIZE: ${{ steps.eol_renormalize.outcome }}
+          COMMENT_HYGIENE: ${{ steps.comment_hygiene.outcome }}
+          LYCHEE_OFFLINE: ${{ steps.lychee_offline.outcome }}
+          CHECK_JSONSCHEMA: ${{ steps.check_jsonschema.outcome }}
+        run: |
+          set -euo pipefail
+          first=''
+          failures=0
+          report() {
+            local name="$1"
+            local result="${2:-not-run}"
+            if [[ "$result" == failure ]]; then
+              failures=$((failures + 1))
+              if [[ -z "$first" ]]; then
+                first="$name"
+              fi
+              echo "::error::$name failed (outcome=$result)."
+            else
+              echo "$name: $result"
+            fi
+          }
+          report typos "$TYPOS"
+          report gitleaks "$GITLEAKS"
+          report editorconfig "$EDITORCONFIG"
+          report markdown "$MARKDOWN"
+          report shellcheck "$SHELLCHECK"
+          report actionlint "$ACTIONLINT"
+          report exec-bit "$EXEC_BIT"
+          report machine-specific-paths "$MACHINE_SPECIFIC_PATHS"
+          report eol-renormalize "$EOL_RENORMALIZE"
+          report comment-hygiene "$COMMENT_HYGIENE"
+          report lychee-offline "$LYCHEE_OFFLINE"
+          report check-jsonschema "$CHECK_JSONSCHEMA"
+          if [[ "$failures" -eq 0 ]]; then
+            echo "outcome=success" >>"$GITHUB_OUTPUT"
+            echo "checks passed."
+            exit 0
+          fi
+          echo "outcome=failure" >>"$GITHUB_OUTPUT"
+          if [[ "$failures" -gt 1 ]]; then
+            echo "::error::checks failed: $first (and $((failures - 1)) more)."
+          else
+            echo "::error::checks failed: $first."
+          fi
+          exit 1
