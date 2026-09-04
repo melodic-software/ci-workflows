@@ -410,7 +410,8 @@ set_pull 'feat: add pr-contract' '```'$'\nCloses #12\n''```'$'\n\n## Summary\n\n
 run_case 0
 expect_output 'linkage=fail'
 
-# Without inline-code masking a `Closes #12` code span satisfies the gate.
+# Without inline-code masking a code span holding a closing reference satisfies
+# the gate.
 echo 'case: a closing keyword only inside an inline code span does not satisfy linkage'
 # shellcheck disable=SC2016 # the backticks are the Markdown code span under test.
 set_pull 'feat: add pr-contract' 'Write `Closes #12` in the body.'$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''

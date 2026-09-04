@@ -31,11 +31,11 @@ STATUS_RETRY_BASE_DELAY="${STATUS_RETRY_BASE_DELAY:-1}"
 # `Fail` would otherwise resolve to the laxer branch and quietly weaken the gate
 # it was written to tighten.
 case "$TREAT_SKIPPED_AS" in
-  pass | fail) ;;
-  *)
-    echo "::error::treat-skipped-as must be 'pass' or 'fail', got: ${TREAT_SKIPPED_AS}"
-    exit 1
-    ;;
+pass | fail) ;;
+*)
+  echo "::error::treat-skipped-as must be 'pass' or 'fail', got: ${TREAT_SKIPPED_AS}"
+  exit 1
+  ;;
 esac
 
 scratch="$(mktemp -d)"
@@ -123,13 +123,13 @@ lane_number=0
 for r in "${results[@]}"; do
   lane_number=$((lane_number + 1))
   case "$r" in
-    success) ;;
-    skipped)
-      if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
-        lanes_state=failure
-      fi
-      ;;
-    *) lanes_state=failure ;;
+  success) ;;
+  skipped)
+    if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
+      lanes_state=failure
+    fi
+    ;;
+  *) lanes_state=failure ;;
   esac
   if [[ "$lanes_state" == failure ]]; then
     echo "A lane did not pass (result: $r)."

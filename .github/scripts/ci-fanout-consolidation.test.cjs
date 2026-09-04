@@ -30,12 +30,66 @@ const ciWorkflow = fs.readFileSync(ciWorkflowPath, "utf8");
 const selectorConformance = fs.readFileSync(selectorConformancePath, "utf8");
 const adr = fs.readFileSync(adrPath, "utf8");
 
+// The contract-only pull_request actions: a title, body or label change can
+// flip a required-check answer without a new commit, so ci.yml re-runs on them
+// with every lane gated off and ci-status carrying the recorded lanes verdict
+// forward (Phase 3.1 of the ci-perf program).
+const CONTRACT_ONLY_GATE =
+  "!contains(fromJSON('[\"edited\",\"labeled\",\"unlabeled\"]'), github.event.action)";
+
 test("ci.yml uses main-push burst collapse concurrency (#122)", () => {
   assert.match(
     ciWorkflow,
-    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/mu,
+    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && !contains\(fromJSON\('\["edited","labeled","unlabeled"\]'\), github\.event\.action\) \}\}$/mu,
   );
   assert.doesNotMatch(ciWorkflow, /pull_request\.number \|\| github\.run_id/u);
+});
+
+test("ci.yml re-runs on the contract-only pull_request actions", () => {
+  assert.match(
+    ciWorkflow,
+    /^ {4}types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]$/mu,
+  );
+});
+
+test("every job except ci-status carries the contract-only gate", () => {
+  // Job keys are the two-space-indented mapping keys under `jobs:`; the `if:`
+  // that follows a job key before the next one is that job's condition.
+  const jobsSection = ciWorkflow.slice(ciWorkflow.search(/^jobs:$/mu));
+  const jobBlocks = jobsSection.split(/^ {2}(?=[a-z0-9-]+:$)/mu).slice(1);
+  const ungated = [];
+  for (const block of jobBlocks) {
+    const name = /^([a-z0-9-]+):$/mu.exec(block)?.[1];
+    if (name === undefined || name === "ci-status") {
+      continue;
+    }
+    const condition = /^ {4}if: (.*)$/mu.exec(block)?.[1] ?? "";
+    if (!condition.includes(CONTRACT_ONLY_GATE)) {
+      ungated.push(name);
+    }
+  }
+  assert.deepEqual(ungated, []);
+  // The gate must never reach ci-status itself: that job IS the carry-forward.
+  const ciStatusBlock = jobBlocks.find((block) =>
+    /^ci-status:$/mu.test(block),
+  );
+  assert.ok(ciStatusBlock !== undefined);
+  assert.doesNotMatch(ciStatusBlock, /if: \$\{\{ !contains\(fromJSON/u);
+});
+
+test("the ci-status job runs pr-contract before the aggregation", () => {
+  const ciStatusJob = ciWorkflow.slice(ciWorkflow.search(/^ {2}ci-status:$/mu));
+  assert.match(ciStatusJob, /^ {6}statuses: write$/mu);
+  assert.match(ciStatusJob, /^ {6}pull-requests: write$/mu);
+  const contractStep = ciStatusJob.indexOf("./.github/actions/pr-contract");
+  const aggregateStep = ciStatusJob.indexOf("./.github/actions/ci-status");
+  assert.ok(contractStep !== -1 && aggregateStep !== -1);
+  assert.ok(contractStep < aggregateStep);
+  // `!cancelled()` so a failing contract step does not skip the status write.
+  assert.match(
+    ciStatusJob.slice(contractStep),
+    /^ {8}if: \$\{\{ !cancelled\(\) \}\}$/mu,
+  );
 });
 
 test("selector-conformance.yml matches the same concurrency pattern", () => {

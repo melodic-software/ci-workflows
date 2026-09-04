@@ -35,19 +35,19 @@ emit_output() {
 }
 
 case "$LINKAGE_MODE" in
-  advisory | enforce) ;;
-  *)
-    echo "::error::pr-contract: linkage-mode must be 'advisory' or 'enforce', got: ${LINKAGE_MODE}"
-    exit 1
-    ;;
+advisory | enforce) ;;
+*)
+  echo "::error::pr-contract: linkage-mode must be 'advisory' or 'enforce', got: ${LINKAGE_MODE}"
+  exit 1
+  ;;
 esac
 
 case "$REQUIRE_SCOPE" in
-  true | false) ;;
-  *)
-    echo "::error::pr-contract: require-scope must be 'true' or 'false', got: ${REQUIRE_SCOPE}"
-    exit 1
-    ;;
+true | false) ;;
+*)
+  echo "::error::pr-contract: require-scope must be 'true' or 'false', got: ${REQUIRE_SCOPE}"
+  exit 1
+  ;;
 esac
 
 # Step 0 — no pull request in this event. The composite is a pull-request gate;
@@ -404,11 +404,11 @@ END {
 
 section_guidance() {
   case "$1" in
-    Summary) echo 'Describe what this PR changes and why, in a sentence or two.' ;;
-    Fix) echo 'State the concrete change and how it addresses the problem.' ;;
-    Verification) echo 'Record concrete evidence the change works (commands, gates, output).' ;;
-    Related) echo 'List related PRs, ADRs, or decision-log entries this PR does not close.' ;;
-    *) echo 'Fill this section in.' ;;
+  Summary) echo 'Describe what this PR changes and why, in a sentence or two.' ;;
+  Fix) echo 'State the concrete change and how it addresses the problem.' ;;
+  Verification) echo 'Record concrete evidence the change works (commands, gates, output).' ;;
+  Related) echo 'List related PRs, ADRs, or decision-log entries this PR does not close.' ;;
+  *) echo 'Fill this section in.' ;;
   esac
 }
 
@@ -441,13 +441,13 @@ else
 
   while IFS=$'\t' read -r kind name _rest; do
     case "$kind" in
-      section-missing)
-        linkage_errors+=("Missing a \"## ${name}\" section. $(section_guidance "$name")")
-        ;;
-      section-empty)
-        linkage_errors+=("The \"## ${name}\" section is empty.")
-        ;;
-      *) ;;
+    section-missing)
+      linkage_errors+=("Missing a \"## ${name}\" section. $(section_guidance "$name")")
+      ;;
+    section-empty)
+      linkage_errors+=("The \"## ${name}\" section is empty.")
+      ;;
+    *) ;;
     esac
   done <"$analysis"
 
