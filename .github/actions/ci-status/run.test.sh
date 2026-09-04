@@ -175,6 +175,17 @@ expect_no_gh_call() {
   fi
 }
 
+# The shim logs `$*`, which never contains the literal `gh api` — it starts at
+# `api -X GET …` — so asserting on that string could never fire. Assert the log
+# is empty instead.
+expect_no_gh_calls_at_all() {
+  if [[ -s "$gh_log" ]]; then
+    echo 'FAIL: expected NO gh calls at all, got:'
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
 expect_status_payload() {
   local expected="$1"
   local payload="$calls/POST_repos_melodic-software_ci-workflows_statuses_${sha}.input.json"
@@ -197,14 +208,14 @@ status_list() {
   printf '%s' "$1" >"$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.json"
 }
 
+# bot_status / user_status <id> <state>
+# The id is what `max_by(.id)` orders on; a higher id is a newer status.
 bot_status() {
-  # bot_status <state>
-  printf '{"context":"ci-lanes","state":"%s","creator":{"login":"github-actions[bot]","type":"Bot"}}' "$1"
+  printf '{"id":%s,"context":"ci-lanes","state":"%s","creator":{"login":"github-actions[bot]","type":"Bot"}}' "$1" "$2"
 }
 
 user_status() {
-  # user_status <state>
-  printf '{"context":"ci-lanes","state":"%s","creator":{"login":"a-collaborator","type":"User"}}' "$1"
+  printf '{"id":%s,"context":"ci-lanes","state":"%s","creator":{"login":"a-collaborator","type":"User"}}' "$1" "$2"
 }
 
 # --- full mode -------------------------------------------------------------
@@ -316,7 +327,7 @@ expect_no_gh_call 'statuses/'
 # lanes did not run; branching on contract-only FIRST honours it instead of
 # aggregating over results that are all `skipped`.
 echo 'case: contract-only true with same-repo false is still carry-forward'
-status_list "[$(bot_status success)]"
+status_list "[$(bot_status 100 success)]"
 run_case 0 'skipped skipped' fail true false
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_gh_call 'statuses/'
@@ -326,7 +337,7 @@ expect_no_gh_call 'statuses/'
 # Without the carry-forward branch, `skipped skipped` under treat-skipped-as
 # fail would go red.
 echo 'case: carry-forward passes on a recorded ci-lanes success without aggregating'
-status_list "[$(bot_status success)]"
+status_list "[$(bot_status 100 success)]"
 run_case 0 'skipped skipped' fail true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_gh_call "commits/${sha}/statuses?per_page=100"
@@ -335,13 +346,13 @@ expect_no_log 'All lanes passed'
 
 # Without reading the per-context state, any 200 response would pass.
 echo 'case: carry-forward fails on a recorded ci-lanes failure'
-status_list "[$(bot_status failure)]"
+status_list "[$(bot_status 100 failure)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the explicit `== success` test, a pending status would ride through.
 echo 'case: carry-forward fails on a pending ci-lanes status'
-status_list "[$(bot_status pending)]"
+status_list "[$(bot_status 100 pending)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
@@ -354,7 +365,7 @@ expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full wo
 # Without the context filter, the FIRST entry (a failure under another context)
 # would decide.
 echo 'case: carry-forward selects the ci-lanes entry regardless of its position'
-status_list "[{\"context\":\"other-lane\",\"state\":\"failure\",\"creator\":{\"login\":\"github-actions[bot]\",\"type\":\"Bot\"}},$(bot_status success)]"
+status_list "[{\"context\":\"other-lane\",\"state\":\"failure\",\"creator\":{\"login\":\"github-actions[bot]\",\"type\":\"Bot\"}},$(bot_status 100 success)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
@@ -376,21 +387,21 @@ rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statu
 
 # Without the creator filter the newest entry is the user's success and passes.
 echo 'case: a forged success by a user account does not satisfy the carry-forward'
-status_list "[$(user_status success),$(bot_status failure)]"
+status_list "[$(user_status 200 success),$(bot_status 100 failure)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without newest-first selection an older user failure would shadow the bot's
 # real success.
 echo 'case: a bot success newer than a user failure passes'
-status_list "[$(bot_status success),$(user_status failure)]"
+status_list "[$(bot_status 200 success),$(user_status 300 failure)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
 # Without first-match-wins a later bot failure would be ignored in favour of the
 # earlier success — a re-run that went red could then be carried forward green.
 echo 'case: a bot failure newer than a bot success fails'
-status_list "[$(bot_status failure),$(bot_status success)]"
+status_list "[$(bot_status 200 failure),$(bot_status 100 success)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
@@ -403,7 +414,7 @@ expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full wo
 # Without the creator filter, a context that ONLY a user ever wrote satisfies
 # the gate — the plant-then-label attack in its simplest form.
 echo 'case: the ci-lanes context present only from a user account fails'
-status_list "[$(user_status success)]"
+status_list "[$(user_status 100 success)]"
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
@@ -413,6 +424,19 @@ status_list '[{"context":"ci-lanes","state":"success","creator":{"login":"github
 run_case 1 'skipped skipped' pass true
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
+# Without `max_by(.id)` the selection depends on the array order the API
+# happens to return; an oldest-first list would then hand back the stale
+# success and carry a superseded verdict forward.
+echo 'case: an oldest-first status list still selects the newest bot entry'
+status_list '[{"id":10,"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}},{"id":20,"context":"ci-lanes","state":"failure","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
+run_case 1 'skipped skipped' pass true
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+echo 'case: an oldest-first status list still carries a newer bot success forward'
+status_list '[{"id":10,"context":"ci-lanes","state":"failure","creator":{"login":"github-actions[bot]","type":"Bot"}},{"id":20,"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
 # --- input validation ------------------------------------------------------
 #
 # Every one of these values is interpolated into a `gh api` path.
@@ -420,17 +444,19 @@ expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full wo
 echo 'case: a malformed repository is rejected before any API call'
 run_case 1 'success' pass false true REPOSITORY='melodic-software/ci-workflows/../other'
 expect_log '::error::repository must be OWNER/REPO'
-expect_no_gh_call 'gh api'
+expect_no_gh_calls_at_all
 
 echo 'case: a malformed sha is rejected before any API call'
 run_case 1 'success' pass false true SHA='HEAD'
 expect_log '::error::sha must be a full 40-character lowercase commit SHA'
-expect_no_gh_call 'gh api'
+expect_no_gh_calls_at_all
 
-echo 'case: a status-context carrying a path separator is rejected'
-run_case 1 'success' pass false true STATUS_CONTEXT='ci-lanes/../../x'
-expect_log "::error::status-context must be free of '/', '?', '#' and whitespace"
-expect_no_gh_call 'gh api'
+# `status-context` is deliberately NOT validated: a context carrying a space is
+# legal and never reaches a path. Without that decision this run goes red.
+echo 'case: a status-context carrying a space is accepted and used verbatim'
+run_case 0 'success success' pass false true STATUS_CONTEXT='CI Lanes'
+expect_log 'Recorded CI Lanes=success'
+expect_status_payload '"context": "CI Lanes"'
 
 # --- metadata contract -----------------------------------------------------
 

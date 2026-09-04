@@ -98,21 +98,33 @@ if ! same_repo="$(read_boolean same-repo "$SAME_REPO" true)"; then
   exit 1
 fi
 
-# Every value below is interpolated into a `gh api` path. Validate before the
-# first call rather than trusting the caller's expression: a `repository` or
-# `sha` carrying `../` or a query separator would address a different resource
-# than the one named.
+# GitHub's documented escaping for workflow-command data, so a value echoed back
+# in an annotation cannot close it and inject a second command. `%` first, or the
+# escapes introduced by the others get double-escaped.
+escape_annotation() {
+  local text="$1"
+  text="${text//'%'/%25}"
+  text="${text//$'\r'/%0D}"
+  text="${text//$'\n'/%0A}"
+  printf '%s' "$text"
+}
+
+# The two values interpolated into a `gh api` path. Validate before the first
+# call rather than trusting the caller's expression: a `repository` or `sha`
+# carrying `../` or a query separator would address a different resource than
+# the one named. `status-context` is deliberately NOT validated — a context like
+# `CI Lanes` is legal, and it only ever travels through `jq --arg` into a
+# comparison or a JSON body, never into a path.
 require_pattern() {
   local name="$1" value="$2" pattern="$3" shape="$4"
   if [[ ! "$value" =~ $pattern ]]; then
-    echo "::error::${name} must be ${shape}, got: ${value}"
+    echo "::error::${name} must be ${shape}, got: $(escape_annotation "$value")"
     exit 1
   fi
 }
 
 require_pattern repository "$REPOSITORY" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'OWNER/REPO'
 require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commit SHA'
-require_pattern status-context "$STATUS_CONTEXT" '^[^/?#[:space:]]+$' "free of '/', '?', '#' and whitespace"
 
 # ---------------------------------------------------------------------------
 # Carry-forward mode. Branched on first, before `same-repo`: the caller's
@@ -136,11 +148,13 @@ if [[ "$contract_only" == true ]]; then
     echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow"
     exit 1
   fi
-  # First match wins because the list is newest-first: a later bot failure on
-  # the same SHA overrides an earlier bot success, and a later forged success by
-  # a user account is skipped rather than shadowing the bot's real verdict.
+  # Highest id wins, not first element: status ids are monotonic, so `max_by`
+  # states the intent directly instead of depending on the documented
+  # newest-first ordering. A later bot failure on the same SHA therefore
+  # overrides an earlier bot success, and a later forged success by a user
+  # account is skipped rather than shadowing the bot's real verdict.
   state="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
-    '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (.[0].state // "")' \
+    '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id).state // "")' \
     <"$gh_stdout")"
   if [[ "$state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."

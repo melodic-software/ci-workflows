@@ -208,6 +208,17 @@ expect_no_gh_call() {
   fi
 }
 
+# The shim logs `$*`, which never contains the literal `gh api` — it starts at
+# `api -X GET …` — so asserting on that string could never fire. Assert the log
+# is empty instead.
+expect_no_gh_calls_at_all() {
+  if [[ -s "$gh_log" ]]; then
+    echo 'FAIL: expected NO gh calls at all, got:'
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
 expect_comment_body() {
   local key="$1" expected="$2"
   local payload="$calls/${key}.input.json"
@@ -238,7 +249,7 @@ expect_log '::notice::pr-contract: no pull request in this event; nothing to che
 expect_output 'title=skipped'
 expect_output 'do-not-merge=skipped'
 expect_output 'linkage=skipped'
-expect_no_gh_call 'gh api'
+expect_no_gh_calls_at_all
 
 # --- title check -----------------------------------------------------------
 
@@ -281,6 +292,13 @@ run_case 0
 expect_output 'title=pass'
 
 # Without the optional scope group a scoped title fails.
+# Without `: +` in the regex this goes red, and a title the semantic-pr gate
+# accepts today would start failing.
+echo 'case: more than one space after the colon is accepted'
+set_pull 'feat:  two spaces' "$conforming_body" someone ''
+run_case 0
+expect_output 'title=pass'
+
 echo 'case: a scope is optional when require-scope is false'
 set_pull 'feat(actions): add pr-contract' "$conforming_body" someone ''
 run_case 0
@@ -606,22 +624,40 @@ expect_log '%0A::set-output'
 echo 'case: a malformed repository is rejected before any API call'
 run_case 1 REPOSITORY='melodic-software/ci-workflows/../other'
 expect_log '::error::pr-contract: repository must be OWNER/REPO'
-expect_no_gh_call 'gh api'
+expect_no_gh_calls_at_all
 
 echo 'case: a non-numeric pr-number is rejected before any API call'
 run_case 1 PR_NUMBER='7/../8'
 expect_log '::error::pr-contract: pr-number must be a positive integer'
-expect_no_gh_call 'gh api'
+expect_no_gh_calls_at_all
 
-echo 'case: a do-not-merge-label carrying a path separator is rejected'
-run_case 1 DO_NOT_MERGE_LABEL='../../x'
-expect_log "::error::pr-contract: do-not-merge-label must be free of '/', '?', '#' and whitespace"
-expect_no_gh_call 'gh api'
+# --- labels are not validated ----------------------------------------------
+#
+# GitHub labels may legally contain spaces and colons. Neither label reaches an
+# API path unencoded, so rejecting those characters would break real consumers
+# for no gain.
 
-echo 'case: a linkage-label carrying whitespace is rejected'
-run_case 1 'LINKAGE_LABEL=needs issue linkage'
-expect_log "::error::pr-contract: linkage-label must be free of '/', '?', '#' and whitespace"
-expect_no_gh_call 'gh api'
+# Without dropping the label validation this run is rejected outright.
+echo 'case: a blocking label containing spaces is accepted and matched exactly'
+set_comments '[]'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'do not merge'
+run_case 1 'DO_NOT_MERGE_LABEL=do not merge'
+expect_output 'do-not-merge=fail'
+expect_log "::error::pr-contract: this PR carries the 'do not merge' label; remove it to merge."
+
+echo 'case: a similar label containing spaces does not block'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'do not merge yet'
+run_case 0 'DO_NOT_MERGE_LABEL=do not merge'
+expect_output 'do-not-merge=pass'
+
+# Without `@uri` the encoder emitted code points, so a non-ASCII label reached
+# the DELETE path mis-encoded and the label was never removed.
+echo 'case: a non-ASCII linkage label is percent-encoded as UTF-8 in the DELETE path'
+set_comments '[]'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-issue-linkage-é'
+run_case 0 'LINKAGE_LABEL=needs-issue-linkage-é'
+expect_output 'linkage=pass'
+expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issue-linkage-%C3%A9"
 
 # --- metadata contract -----------------------------------------------------
 

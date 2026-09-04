@@ -49,6 +49,11 @@ Every write is best-effort: a refused or missing write prints a `::notice::` and
 leaves the exit code alone, so a read-only token degrades the composite to
 reporting rather than breaking the gate.
 
+**`token` must be `GITHUB_TOKEN` or a GitHub App token.** The advisory comment is
+upserted by finding a previous comment whose author is a `Bot`; a classic
+personal access token comments as a `User`, so the upsert would never find its
+own comment and would post a new one on every failing run.
+
 ## Behaviour worth knowing
 
 - The pull request is read once from `repos/<owner>/<repo>/pulls/<number>`, not

@@ -57,19 +57,14 @@ require_pattern() {
   fi
 }
 
-# Percent-encode everything outside the unreserved set, so a label reaches the
-# DELETE path as one segment. The validation above already rejects `/`, `?`,
-# `#` and whitespace; this covers the rest without relying on that.
+# Percent-encode a label so it reaches the DELETE path as one segment. `@uri`
+# rather than a bash character loop: `printf '%%%02X' "'$c"` emits the code
+# point, so a label carrying an emoji or any non-ASCII character would be
+# mis-encoded. `@uri` percent-encodes the UTF-8 bytes, which is what the API
+# expects.
 # shellcheck disable=SC2329 # invoked from remove_linkage_label, itself reached through best_effort.
 url_encode() {
-  local text="$1" index character
-  for ((index = 0; index < ${#text}; index++)); do
-    character="${text:index:1}"
-    case "$character" in
-    [A-Za-z0-9.~_-]) printf '%s' "$character" ;;
-    *) printf '%%%02X' "'$character" ;;
-    esac
-  done
+  jq -rn --arg text "$1" '$text|@uri'
 }
 
 case "$LINKAGE_MODE" in
@@ -98,10 +93,14 @@ if [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   exit 0
 fi
 
+# Only the two values that reach an API path unencoded. The labels are
+# deliberately NOT validated: GitHub labels may legally contain spaces and
+# colons (`do not merge`, `status: blocked`), and neither one is ever
+# interpolated raw — the blocking label is compared with `grep -qxF`, the
+# linkage label travels in a JSON body built by `jq --arg`, and the only path
+# it reaches is percent-encoded below.
 require_pattern repository "$REPOSITORY" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'OWNER/REPO'
 require_pattern pr-number "$PR_NUMBER" '^[0-9]+$' 'a positive integer'
-require_pattern do-not-merge-label "$DO_NOT_MERGE_LABEL" '^[^/?#[:space:]]+$' "free of '/', '?', '#' and whitespace"
-require_pattern linkage-label "$LINKAGE_LABEL" '^[^/?#[:space:]]+$' "free of '/', '?', '#' and whitespace"
 
 # gh_api <method> <path> [extra args...]
 # Captures stdout and stderr; sets GH_HTTP_STATUS from gh's "(HTTP nnn)" tail
@@ -168,12 +167,15 @@ fi
 types_alternation="$(printf '%s' "$types_list" | paste -sd '|' -)"
 types_human="${types_alternation//|/, }"
 
+# `: +`, not `: `: the conventional-commits parser behind semantic-pr.yml
+# tolerates more than one space after the colon, so requiring exactly one would
+# fail titles that pass the gate this composite replaces.
 # shellcheck disable=SC2016 # the backticks are Markdown code spans in a message, not command substitution.
 if [[ "$REQUIRE_SCOPE" == true ]]; then
-  title_regex="^(${types_alternation})\([^)]+\)!?: [^[:space:]]"
+  title_regex="^(${types_alternation})\([^)]+\)!?: +[^[:space:]]"
   scope_hint='a scope is REQUIRED, e.g. `feat(api): add the widget endpoint`'
 else
-  title_regex="^(${types_alternation})(\([^)]+\))?!?: [^[:space:]]"
+  title_regex="^(${types_alternation})(\([^)]+\))?!?: +[^[:space:]]"
   scope_hint='an optional scope may follow the type, e.g. `feat(api): add the widget endpoint`'
 fi
 

@@ -10,7 +10,10 @@ inputs:
     description: >-
       Token used for every API read and write. Needs `pull-requests: write` on
       the calling job for the advisory comment and label; with a read-only token
-      the writes degrade to `::notice::` and the exit code is unchanged.
+      the writes degrade to `::notice::` and the exit code is unchanged. Must be
+      `GITHUB_TOKEN` or a GitHub App token: the advisory comment is upserted by
+      finding a previous comment whose author is a `Bot`, so a classic PAT posts
+      a new comment on every failing run instead of editing its own.
     default: ${{ github.token }}
   repository:
     description: Target repository identity OWNER/REPO (defaults to this repo).
