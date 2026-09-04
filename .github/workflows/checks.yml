@@ -114,7 +114,9 @@ on:
       check-jsonschema-files:
         description: >-
           Files or globs for `check-jsonschema`. Required when
-          `check-jsonschema` is true; the step is skipped when it is empty.
+          `check-jsonschema` is true: enabling the toggle and leaving this empty
+          FAILS the job rather than skipping the validation, so a schema gate
+          cannot disappear on a typo.
         type: string
         default: ''
       check-jsonschema-builtin-schema:
@@ -268,10 +270,10 @@ jobs:
 
       - name: Validate against JSON Schema
         id: check_jsonschema
-        # `check-jsonschema-files` is checked here, not only documented: the
-        # composite's `files` input is required, so an enabled toggle with no
-        # files would fail the job on a configuration mistake rather than on a
-        # finding.
+        # The empty-files term keeps this step from failing on a configuration
+        # mistake rather than on a finding. It is not how that mistake is
+        # caught: the `configuration` guard at the top of the job fails the
+        # whole run for it, so the skip here is never silent.
         if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files != '' && fromJSON(steps.detect.outputs.results || '{}')['check-jsonschema'] != 'false' }}
         continue-on-error: true
         uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
