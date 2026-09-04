@@ -175,7 +175,52 @@ consumer to audit it.
   that should have run did not, such as a runner selector falling back. An
   unrecognised policy value fails rather than defaulting. Empty input fails
   closed. GitHub offers no "all other jobs" selector, so the `needs` list and the
-  matching results string stay caller-owned.
+  matching results string stay caller-owned. `results` carries results, not lane
+  names, so the recorded status description names the failing lane by its
+  position in that list.
+
+  It also carries the verdict forward across contract-only pull-request events.
+  With `contract-only` false (the default expression's value on any event that is
+  not a same-repository label flip or a base-preserving `edited`) it aggregates as
+  above and then records the verdict as a commit status on `sha` under
+  `status-context` (default `ci-lanes`). With `contract-only` true it skips
+  aggregation — the lanes are `skipped` by construction — and passes only when the
+  combined status for that context on that SHA is `success`. Both inputs default
+  to the expressions the caller's lane gates use, so a caller passes neither;
+  `contract-only` must stay identical to the caller's job gate or the two
+  disagree about whether the lanes ran — a drifted copy would gate the lanes off
+  while the composite aggregates their all-`skipped` results into a `success`
+  for a run in which nothing executed, so `ci-fanout-consolidation.test.cjs`
+  compares the two texts and fails on any difference. The carried verdict is
+  read from the per-context status LIST, not the combined endpoint, and only an
+  entry written by `github-actions[bot]` counts: any collaborator with write can
+  `POST` a commit status, and the combined endpoint exposes no author, so a
+  forged `ci-lanes=success` plus a label flip would otherwise turn the sole
+  required check green over failing lanes. **The status write is load-bearing, not
+  best-effort**: a write still refused after three retries fails the run naming
+  the missing permission, because the carry-forward branch reads nothing else and
+  a silently missing status turns every later contract-only run red with no way
+  to tell a refused write from a failing lane. **The calling job therefore needs
+  `statuses: write`** (plus `pull-requests: write` when it also runs
+  `pr-contract`). The exception is `same-repo` false, a fork pull request: its
+  token is read-only on `pull_request` whatever `permissions:` requests, so the
+  run reports the lanes verdict, prints a `::notice::`, and records nothing —
+  and, because the contract-only predicate is false for every fork event, a fork
+  runs the full workflow each time and never needs a carried verdict. A commit
+  status, not the `ci-status` check-run list, is the carried signal on purpose: a
+  check run cannot say which event produced it, so a chain of contract-only runs
+  could otherwise self-certify.
+- `.github/actions/pr-contract` — the whole pull-request contract in one step:
+  Conventional Commits title and the `do-not-merge` label gate the step, and
+  issue linkage is advisory by default (a warning plus one upserted marker
+  comment plus a label, exit code unchanged; `linkage-mode: enforce` makes it
+  gate). Semantics are ported from the `semantic-pr`, `do-not-merge-gate` and
+  `pr-issue-linkage` reusables, which stay in place until their callers are
+  retired. The pull request is read from the API rather than the event payload,
+  so `edited` and `labeled` runs see current state. Needs `pull-requests: write`
+  for the comment and label; every write is best-effort and degrades to a
+  `::notice::` on a read-only token. See
+  [its README](.github/actions/pr-contract/README.md) for the consumer wiring.
 - `.github/actions/change-detection` — decides which CI lanes a pull request's
   changed files make relevant, so a caller can skip lanes at JOB level and
   stop paying for runs a change cannot affect. Checkout-free: the PR file
