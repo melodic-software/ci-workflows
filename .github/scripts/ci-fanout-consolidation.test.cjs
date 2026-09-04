@@ -35,7 +35,7 @@ const adr = fs.readFileSync(adrPath, "utf8");
 // with every lane gated off and ci-status carrying the recorded lanes verdict
 // forward (Phase 3.1 of the ci-perf program).
 const CONTRACT_ONLY_GATE =
-  "!contains(fromJSON('[\"edited\",\"labeled\",\"unlabeled\"]'), github.event.action)";
+  '!contains(fromJSON(\'["edited","labeled","unlabeled"]\'), github.event.action)';
 
 test("ci.yml uses main-push burst collapse concurrency (#122)", () => {
   assert.match(
@@ -70,9 +70,7 @@ test("every job except ci-status carries the contract-only gate", () => {
   }
   assert.deepEqual(ungated, []);
   // The gate must never reach ci-status itself: that job IS the carry-forward.
-  const ciStatusBlock = jobBlocks.find((block) =>
-    /^ci-status:$/mu.test(block),
-  );
+  const ciStatusBlock = jobBlocks.find((block) => /^ci-status:$/mu.test(block));
   assert.ok(ciStatusBlock !== undefined);
   assert.doesNotMatch(ciStatusBlock, /if: \$\{\{ !contains\(fromJSON/u);
 });
