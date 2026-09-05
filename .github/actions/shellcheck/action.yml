@@ -2,6 +2,21 @@ name: shellcheck
 description: Lint shell scripts with ShellCheck against a caller-supplied rcfile.
 
 inputs:
+  files:
+    description: >-
+      An explicit list of files to check, one per line or space-separated,
+      each relative to the workspace. Set and non-blank, this WINS over
+      `paths`: no discovery runs and ShellCheck sees exactly the listed files
+      that still exist on disk and end in .sh or .bash. A listed path that was
+      deleted, or that is not a shell script by that rule, is skipped rather
+      than failing the action, so a caller can hand over a raw diff. A
+      non-blank list that keeps nothing after filtering prints a notice and
+      exits 0. Blank (the default) reads as unset and changes nothing. Because
+      the list is whitespace-separated, a path containing a space cannot be
+      expressed here; use `paths` or `extra-globs` for those. This exists so a
+      caller can diff-scope the scan on pull requests; see the README for the
+      caller pattern and its fail-closed caveat.
+    default: ''
   paths:
     description: >-
       Roots to search for shell scripts (*.sh, *.bash), space-separated.
@@ -10,7 +25,8 @@ inputs:
       post-build tree are never gated (mirrors the editorconfig action's
       git-aware default). Pass explicit roots to opt into a raw filesystem walk
       that does NOT consult .gitignore — checking exactly what is found under
-      those roots, including untracked files.
+      those roots, including untracked files. Ignored entirely when `files` is
+      set and non-blank.
     default: ''
   extra-globs:
     description: >-
@@ -19,6 +35,9 @@ inputs:
       see (for example, `dot_bash*`). Blank by default. Matches are always read
       from Git's index, even when `paths` opts the primary discovery into a raw
       filesystem walk, so ignored or generated files are not pulled in silently.
+      When `files` is set, matches are additionally narrowed to paths that
+      appear in that list, so "exactly the listed files" holds for this lane
+      too rather than the extra lane quietly staying repository-wide.
     default: ''
   extra-exclude-codes:
     description: >-
@@ -75,6 +94,7 @@ runs:
     - name: Run ShellCheck
       shell: bash
       env:
+        FILES: ${{ inputs.files }}
         PATHS: ${{ inputs.paths }}
         EXTRA_GLOBS: ${{ inputs.extra-globs }}
         EXTRA_EXCLUDE_CODES: ${{ inputs.extra-exclude-codes }}

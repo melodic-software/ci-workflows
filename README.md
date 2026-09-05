@@ -120,6 +120,15 @@ consumer to audit it.
   tracked `*.sh`/`*.bash`; `extra-globs` adds tracked extensionless inputs as
   newline-delimited Git pathspecs, with optional `extra-exclude-codes` scoped
   only to that extra lane so ordinary scripts keep the stricter result.
+  `files` takes an explicit list instead, one path per line or space-separated,
+  and **wins over `paths`**: no discovery runs, and ShellCheck sees exactly the
+  listed paths that still exist and end in `.sh` or `.bash`. A deleted or
+  non-shell path in the list is skipped rather than failing the action, so a
+  raw diff can be handed over unfiltered; a non-blank list that keeps nothing
+  prints a notice and exits 0; a blank list (the default) leaves behaviour
+  exactly as it was. `exclude` still applies, and `extra-globs` matches are
+  narrowed to the same list. See [Diff-scoping the ShellCheck
+  lane](#diff-scoping-the-shellcheck-lane).
 - `.github/actions/shfmt` — shfmt formatting check over the repo's shell
   scripts, driven by the caller's `.editorconfig` (installs a pinned,
   checksum-verified binary).
@@ -291,6 +300,84 @@ consumer to audit it.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
+
+### Diff-scoping the ShellCheck lane
+
+ShellCheck over a whole repository is a fixed cost that grows with the corpus
+and not with the change: on a 766-file tree it measured 111 s per pull request
+even after the batched fan-out. The `files` input exists so a caller can pay
+that cost only for the files a pull request actually touched. It takes a list,
+not search roots, and it wins over `paths`.
+
+The caller computes the list. This repository's `change-detection` action
+publishes only its `results` object, a per-filter-group `"true"`/`"false"` map,
+so there is no changed-file output to feed in; the list comes from git:
+
+```yaml
+- name: List the shell scripts to check
+  id: changed_shell
+  env:
+    BASE_REF: ${{ github.base_ref }}
+  run: |
+    changed="$(git diff --name-only --diff-filter=d "origin/$BASE_REF...HEAD")"
+    # An .shellcheckrc edit changes what every file is judged against, so it
+    # widens the list back to the whole tracked corpus rather than scoping.
+    if grep -qxF '.shellcheckrc' <<<"$changed"; then
+      list="$(git ls-files -- '*.sh' '*.bash')"
+    else
+      list="$(grep -E '\.(sh|bash)$' <<<"$changed" || true)"
+    fi
+    {
+      echo 'files<<CHANGED_SHELL'
+      echo "$list"
+      echo CHANGED_SHELL
+    } >>"$GITHUB_OUTPUT"
+
+- name: Lint shell scripts
+  if: steps.changed_shell.outputs.files != ''
+  uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha> # <tag>
+  with:
+    files: ${{ steps.changed_shell.outputs.files }}
+```
+
+That step needs the base commit present, so it belongs after a checkout deep
+enough to resolve `origin/$BASE_REF` (a `fetch-depth: 0` checkout, or the
+caller's own base-fetch step).
+
+The widening branch is not decoration. Once the step is gated on a non-empty
+list, an empty list means "skip", so a pull request that edits only
+`.shellcheckrc` would otherwise skip ShellCheck altogether: it changes no file
+ending in `.sh` or `.bash` while changing what every such file is judged
+against. Widening it back to the whole tracked corpus inside the same step
+keeps the gate and the fallback compatible. The equivalent widening for a
+sourced library is the caller's to name, because the composite cannot see which
+scripts source what; a repository whose libraries carry no `.sh` extension
+should add them to the same condition.
+
+**The `if:` is load-bearing, and the reason is worth stating.** An empty list
+and an unset input are the same empty string once YAML has rendered them, so
+they are not distinguishable inside the action: a diff that touched no shell
+script produces an empty output, `files` arrives blank, and the action falls
+back to `paths` and scans the whole repository. That fallback is the safe
+direction rather than the useless one, because a caller whose list computation
+breaks or silently returns nothing gets a full scan rather than a green no-op,
+but on the ordinary "this pull request changed no shell scripts" path it throws
+away the whole saving. Gating the step on a non-empty list is what turns that
+case into a skip. The notice-and-exit-0 path is therefore not this one: it is
+reached when the list is non-blank and every entry in it is deleted or is not a
+shell script, which is what a caller that hands over a raw unfiltered diff
+produces.
+
+**The fail-closed caveat is the caller's to answer, not this action's.** A
+diff-scoped run only checks the files in the list, and some changes invalidate
+findings in files that are not in it: an edit to `.shellcheckrc` changes what
+every file is judged against, and an edit to a sourced library changes what its
+sourcing scripts resolve. The action cannot see that, because all it receives
+is the list. A caller that diff-scopes therefore has to widen back to the
+whole repository when the diff touches those inputs, and it has to keep a
+whole-repository run somewhere else, on `push` to the default branch or on a
+schedule, so a gap is caught within a day rather than at the next unrelated
+change.
 
 ## Reusable workflows
 

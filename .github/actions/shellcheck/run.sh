@@ -2,6 +2,7 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+files="${FILES:-}"
 paths="${PATHS:-}"
 extra_globs="${EXTRA_GLOBS:-}"
 extra_exclude_codes="${EXTRA_EXCLUDE_CODES:-}"
@@ -32,6 +33,22 @@ fi
 # Parse one pathspec per line instead of word-splitting. Git pathspecs can
 # contain spaces, and keeping each caller-supplied line as one argv entry also
 # prevents shell metacharacters from being evaluated by this action.
+# An explicit file list. Newline- and space-separated both work, because a
+# caller assembling one from `git diff --name-only` gets newlines while a
+# caller writing a literal `files: a.sh b.sh` gets spaces, and both spellings
+# have to mean the same thing. `read -r -a` word-splits without globbing, so a
+# metacharacter in a caller-supplied path is never evaluated. The cost of
+# accepting both is that a path containing a space cannot be expressed; the
+# input description says so, and `paths`/`extra-globs` remain available for it.
+explicit_files=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line="${line%$'\r'}"
+  if [[ -n "${line//[[:space:]]/}" ]]; then
+    read -r -a line_words <<<"$line"
+    explicit_files+=("${line_words[@]}")
+  fi
+done <<<"$files"
+
 extra_pathspecs=()
 while IFS= read -r pathspec || [[ -n "$pathspec" ]]; do
   pathspec="${pathspec%$'\r'}"
@@ -62,7 +79,22 @@ discover_tracked_files() {
 }
 
 normal_files=()
-if [[ -z "${paths//[[:space:]]/}" ]]; then
+if [[ ${#explicit_files[@]} -gt 0 ]]; then
+  # An explicit list wins over `paths`: no discovery of any kind runs, and the
+  # only reduction applied is the action's own detection rule. A path that is
+  # not a shell script by that rule is dropped here and one that no longer
+  # exists is dropped by filter_files below, so a caller can hand over a raw
+  # `git diff --name-only` without pre-filtering for deletions or file types.
+  # Sorted and deduplicated so a repeated path is checked once and the log
+  # reads in the same order discovery would have produced.
+  mapfile -d '' -t normal_files < <(
+    for file in "${explicit_files[@]}"; do
+      if [[ "$file" == *.sh || "$file" == *.bash ]]; then
+        printf '%s\0' "$file"
+      fi
+    done | sort -zu
+  )
+elif [[ -z "${paths//[[:space:]]/}" ]]; then
   # Git-tracked discovery (default): tracked *.sh/*.bash only, so ignored or
   # generated scripts in a dirty tree are never gated. NUL-delimited so any
   # path is safe; ls-files output is already sorted.
@@ -85,6 +117,21 @@ if [[ ${#extra_pathspecs[@]} -gt 0 ]]; then
   # option; the quoted array prevents shell expansion or code execution.
   discover_tracked_files extra "${extra_pathspecs[@]}"
   extra_files=("${git_files[@]}")
+  if [[ ${#explicit_files[@]} -gt 0 ]]; then
+    # `files` promises exactly the listed files. Without this the extra lane
+    # would still resolve its pathspecs against the whole index, so a
+    # diff-scoped caller that also passes `extra-globs` would keep paying for a
+    # repository-wide scan of the extensionless lane.
+    declare -A listed_paths=()
+    for file in "${explicit_files[@]}"; do
+      listed_paths["$file"]=1
+    done
+    listed_extra_files=()
+    for file in "${extra_files[@]}"; do
+      [[ -z "${listed_paths[$file]+present}" ]] || listed_extra_files+=("$file")
+    done
+    extra_files=("${listed_extra_files[@]}")
+  fi
 fi
 
 filter_files() {
@@ -123,7 +170,19 @@ done
 extra_files=("${deduplicated_extra_files[@]}")
 
 if [[ ${#normal_files[@]} -eq 0 && ${#extra_files[@]} -eq 0 ]]; then
-  echo 'No shell scripts to check.'
+  # A caller-supplied list that keeps nothing is the ordinary case for a
+  # diff-scoped run whose diff touched no shell script, so it exits 0 like any
+  # other empty selection. It gets its own notice rather than the discovery
+  # message because the two are diagnosed differently: an empty discovery means
+  # the repository has no scripts, an empty list means the caller's filter
+  # produced nothing, and a caller reading the log has to be able to tell which
+  # it is looking at.
+  if [[ ${#explicit_files[@]} -gt 0 ]]; then
+    printf '::notice::shellcheck: files listed %d path(s); none of them is an existing shell script. Nothing to check.\n' \
+      "${#explicit_files[@]}"
+  else
+    echo 'No shell scripts to check.'
+  fi
   exit 0
 fi
 
