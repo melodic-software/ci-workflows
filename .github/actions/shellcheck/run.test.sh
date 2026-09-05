@@ -72,6 +72,7 @@ run_action() {
       EXTRA_GLOBS='' \
       FAKE_STATUS=0 \
       FAKE_STATUS_MATCH='' \
+      FILES='' \
       PATH="$fake_bin:$PATH" \
       PATHS='' \
       RCFILE=.shellcheckrc \
@@ -199,6 +200,91 @@ run_action 1 EXTRA_GLOBS=dot_bashrc FAKE_STATUS=1
 [[ -e "$captures/1.args" && -e "$captures/2.args" ]]
 printf 'PASS: ShellCheck findings propagate after both lanes run\n'
 
+# --- explicit file list -------------------------------------------------------
+
+# A caller assembling the list from `git diff --name-only` gets newlines; a
+# caller writing it inline gets spaces. Both spellings select the same set.
+for spelling in $'script.sh\nnested/tool.bash' 'script.sh nested/tool.bash'; do
+  run_action 0 FILES="$spelling"
+  load_args 1
+  [[ ! -e "$captures/2.args" ]]
+  assert_contains 'explicit list checks the listed .sh' script.sh "${captured_args[@]}"
+  assert_contains 'explicit list checks the listed .bash' nested/tool.bash "${captured_args[@]}"
+  assert_contains 'explicit list keeps the rcfile' --rcfile=.shellcheckrc "${captured_args[@]}"
+done
+printf 'PASS: newline- and space-separated lists select the same files\n'
+
+# A raw diff carries deletions and non-shell paths. Both are skipped rather
+# than failing the action, so the caller does not have to pre-filter for them.
+run_action 0 FILES=$'script.sh\nmissing/gone.sh\n.shellcheckrc\nnested/tool.bash'
+load_args 1
+[[ ! -e "$captures/2.args" ]]
+assert_contains 'mixed list keeps the files that exist' script.sh "${captured_args[@]}"
+assert_contains 'mixed list keeps the second existing file' nested/tool.bash "${captured_args[@]}"
+assert_not_contains 'mixed list skips a deleted path' missing/gone.sh "${captured_args[@]}"
+assert_not_contains 'mixed list skips a non-shell path' .shellcheckrc "${captured_args[@]}"
+
+# Empty after filtering is the ordinary diff-scoped case where the diff touched
+# no shell script. It exits 0 with its own notice, distinct from the discovery
+# message, so a reader can tell a caller-filtered empty set from an empty repo.
+run_action 0 FILES=$'docs/README.md\nmissing/gone.sh'
+[[ ! -e "$captures/1.args" ]]
+grep -F '::notice::shellcheck: files listed 2 path(s); none of them is an existing shell script.' \
+  <<<"$ACTION_OUTPUT" >/dev/null
+printf 'PASS: a list that keeps nothing prints a notice and exits 0\n'
+
+# Precedence, asserted in both directions from one pair of runs: with a list,
+# `paths` is not consulted at all; with the list blank, `paths` behaves exactly
+# as it does today.
+run_action 0 FILES=script.sh PATHS=raw
+load_args 1
+assert_contains 'files wins over paths' script.sh "${captured_args[@]}"
+assert_not_contains 'files suppresses the paths walk' raw/untracked.sh "${captured_args[@]}"
+run_action 0 FILES='' PATHS=raw
+load_args 1
+assert_contains 'a blank list falls back to the paths roots' raw/untracked.sh "${captured_args[@]}"
+assert_not_contains 'the paths walk is unchanged by the new input' script.sh "${captured_args[@]}"
+
+# The list is not filtered through Git: it is exactly what the caller named,
+# so an untracked path in it is checked the way an explicit root's walk would.
+run_action 0 FILES=raw/untracked.sh
+load_args 1
+assert_contains 'an explicit list checks an untracked file' raw/untracked.sh "${captured_args[@]}"
+
+# `exclude` is a property of the action, not of the discovery mode, so it still
+# applies to a caller-supplied list.
+run_action 0 EXCLUDE=nested FILES=$'script.sh\nnested/tool.bash'
+load_args 1
+assert_contains 'path exclusion retains the other listed file' script.sh "${captured_args[@]}"
+assert_not_contains 'path exclusion applies to an explicit list' nested/tool.bash "${captured_args[@]}"
+
+# A repeated path is checked once.
+run_action 0 SHELLCHECK_BATCH_SIZE=1 FILES=$'script.sh\nscript.sh script.sh'
+load_args 1
+[[ ! -e "$captures/2.args" ]]
+listed_files=()
+for arg in "${captured_args[@]}"; do
+  [[ "$arg" == --* ]] || listed_files+=("$arg")
+done
+if [[ ${#listed_files[@]} -ne 1 ]]; then
+  printf 'FAIL: expected one deduplicated file, got %s\n' "${#listed_files[@]}" >&2
+  exit 1
+fi
+printf 'PASS: a repeated path in the list is checked once\n'
+
+# "Exactly the listed files" has to hold for the extra lane too, or a
+# diff-scoped caller that also passes extra-globs keeps paying for a
+# repository-wide scan of the extensionless lane.
+run_action 0 FILES=$'script.sh\ndot_bashrc' EXTRA_GLOBS=$'dot_bash*\ndot bash*'
+load_args 2
+[[ ! -e "$captures/3.args" ]]
+assert_contains 'the extra lane keeps a listed extensionless file' dot_bashrc "${captured_args[@]}"
+assert_not_contains 'the extra lane drops an unlisted match' 'dot bash profile' "${captured_args[@]}"
+run_action 0 FILES=script.sh EXTRA_GLOBS=$'dot_bash*\ndot bash*'
+load_args 1
+[[ ! -e "$captures/2.args" ]]
+assert_contains 'the standard lane still runs when the extra lane is empty' script.sh "${captured_args[@]}"
+
 # --- fan-out ------------------------------------------------------------------
 
 run_action 2 SHELLCHECK_JOBS=0
@@ -292,6 +378,7 @@ printf 'PASS: the most severe batch status is the action status\n'
 run_action 1 FAKE_STATUS_MATCH='fanout/f50.sh=1'
 printf 'PASS: findings in one batch fail the action when the other batches are clean\n'
 
+grep -F "FILES: \${{ inputs.files }}" "$action_directory/action.yml" >/dev/null
 grep -F "EXTRA_GLOBS: \${{ inputs.extra-globs }}" "$action_directory/action.yml" >/dev/null
 grep -F "EXTRA_EXCLUDE_CODES: \${{ inputs.extra-exclude-codes }}" "$action_directory/action.yml" >/dev/null
 grep -F "run: bash \"\$GITHUB_ACTION_PATH/run.sh\"" "$action_directory/action.yml" >/dev/null
