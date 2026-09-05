@@ -209,7 +209,7 @@ jobs:
 
       - name: Detect relevant lanes
         id: detect
-        uses: melodic-software/ci-workflows/.github/actions/change-detection@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/change-detection@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
         with:
           filters: ${{ inputs.filters }}
 
@@ -217,49 +217,49 @@ jobs:
         id: typos
         if: ${{ inputs.typos && fromJSON(steps.detect.outputs.results || '{}')['typos'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/typos@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/typos@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Scan for secrets
         id: gitleaks
         if: ${{ inputs.gitleaks && fromJSON(steps.detect.outputs.results || '{}')['gitleaks'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Check editorconfig conformance
         id: editorconfig
         if: ${{ inputs.editorconfig && fromJSON(steps.detect.outputs.results || '{}')['editorconfig'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Lint markdown
         id: markdown
         if: ${{ inputs.markdown && fromJSON(steps.detect.outputs.results || '{}')['markdown'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/markdown@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/markdown@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Lint shell scripts
         id: shellcheck
         if: ${{ inputs.shellcheck && fromJSON(steps.detect.outputs.results || '{}')['shellcheck'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Lint workflows
         id: actionlint
         if: ${{ inputs.actionlint && fromJSON(steps.detect.outputs.results || '{}')['actionlint'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Verify shebang files are executable
         id: exec_bit
         if: ${{ inputs.exec-bit && fromJSON(steps.detect.outputs.results || '{}')['exec-bit'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/exec-bit@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/exec-bit@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Check for machine-specific paths
         id: machine_specific_paths
         if: ${{ inputs.machine-specific-paths && fromJSON(steps.detect.outputs.results || '{}')['machine-specific-paths'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
         with:
           exclude: ${{ inputs.machine-specific-paths-exclude }}
 
@@ -267,13 +267,13 @@ jobs:
         id: eol_renormalize
         if: ${{ inputs.eol-renormalize && fromJSON(steps.detect.outputs.results || '{}')['eol-renormalize'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Scan comment hygiene
         id: comment_hygiene
         if: ${{ inputs.comment-hygiene && fromJSON(steps.detect.outputs.results || '{}')['comment-hygiene'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
         with:
           exclude: ${{ inputs.comment-hygiene-exclude }}
 
@@ -281,7 +281,7 @@ jobs:
         id: lychee_offline
         if: ${{ inputs.lychee-offline && fromJSON(steps.detect.outputs.results || '{}')['lychee-offline'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Validate against JSON Schema
         id: check_jsonschema
@@ -291,7 +291,7 @@ jobs:
         # whole run for it, so the skip here is never silent.
         if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files != '' && fromJSON(steps.detect.outputs.results || '{}')['check-jsonschema'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@449157aaa8e30f7b1457305d8048ebe6168e174a # v0.20.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
         with:
           files: ${{ inputs.check-jsonschema-files }}
           builtin-schema: ${{ inputs.check-jsonschema-builtin-schema }}
