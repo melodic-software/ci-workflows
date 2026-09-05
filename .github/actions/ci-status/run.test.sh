@@ -549,6 +549,21 @@ expect_no_log 'Waiting '
 expect_no_log 'on earlier run(s)'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
+# Without the re-read on an empty wait set, an earlier run that wrote its status
+# and reached `completed` between the first status read and the runs query is
+# dropped from the wait set, and the run reports "no successful ci-lanes status"
+# over a verdict that exists.
+echo 'case: an earlier run that finishes inside the API-call window is re-read, not lost'
+clear_status_fixtures
+clear_run_fixtures
+status_list_on_call 1 '[]'
+status_list_on_call 2 "[$(bot_status 100 success)]"
+current_run
+workflow_runs '[]'
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log 'Waiting '
+
 # Without the "absent status only" condition the wait sits on a verdict already
 # reached, burning the ceiling before reporting a failure it already knew about.
 echo 'case: a recorded ci-lanes failure short-circuits without waiting'

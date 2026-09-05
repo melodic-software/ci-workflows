@@ -246,6 +246,15 @@ wait_for_earlier_runs() {
       '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.created_at // "") < $created) | select((.id | tostring) != $self) | .id ] | join(" ")' \
       <"$gh_stdout")"
     if [[ -z "$ids" ]]; then
+      # An earlier run can write its status and reach `completed` between the
+      # status read that sent us here and this query, which drops it from the
+      # wait set. Breaking straight out would then report "no successful status"
+      # over a verdict that exists. One more read closes that window; on the
+      # common no-earlier-run path it costs a single GET.
+      # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
+      if ! read_carried_state; then
+        cat "$gh_stderr" >&2
+      fi
       break
     fi
     all_ids="${all_ids}${all_ids:+ }${ids}"
@@ -273,7 +282,7 @@ wait_for_earlier_runs() {
     fi
   done
   if [[ "$carry_forward_waited" -gt 0 ]]; then
-    carry_forward_wait_note=" (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s on earlier run(s): $(printf '%s' "$all_ids" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//'))"
+    carry_forward_wait_note=" (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s on earlier run(s): $(printf '%s' "$all_ids" | tr ' ' '\n' | sort -un | tr '\n' ' ' | sed 's/ *$//'))"
   fi
 }
 
