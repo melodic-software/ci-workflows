@@ -50,6 +50,22 @@ inputs:
       only full runs write can stop a chain of contract-only runs from
       self-certifying.
     default: ci-lanes
+  carry-forward-wait-seconds:
+    description: >-
+      Ceiling, in seconds, on the carry-forward wait. When carry-forward mode
+      finds NO `status-context` status on the SHA, this action waits for runs of
+      this same workflow on this same head SHA that are still incomplete and
+      were created strictly EARLIER than this one, re-reading the status list
+      every 15 seconds until one appears or this ceiling is reached. Reaching
+      the ceiling fails the run; the wait never turns a verdict green, and a
+      recorded `failure` short-circuits without waiting at all. Only earlier
+      runs are waited on, so two contract-only runs can never wait on each
+      other. `0` disables the wait and restores the fail-immediately behaviour.
+      The calling job needs `actions: read` — under an explicit `permissions:`
+      block the default is none, and a 403 warns and then fails, never passes.
+      Set this at least 60 seconds below the calling job's `timeout-minutes`, or
+      the job timeout preempts the fail-closed error.
+    default: '240'
   token:
     description: >-
       Token used to write and read the commit status. The calling job needs
@@ -74,6 +90,7 @@ runs:
         CONTRACT_ONLY: ${{ inputs.contract-only }}
         SAME_REPO: ${{ inputs.same-repo }}
         STATUS_CONTEXT: ${{ inputs.status-context }}
+        CARRY_FORWARD_WAIT_SECONDS: ${{ inputs.carry-forward-wait-seconds }}
         GH_TOKEN: ${{ inputs.token }}
         REPOSITORY: ${{ inputs.repository }}
         SHA: ${{ inputs.sha }}

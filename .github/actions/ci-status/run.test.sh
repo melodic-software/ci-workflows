@@ -22,10 +22,21 @@ mkdir -p "$fixtures" "$calls" "$shim_directory"
 sha=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 repository=melodic-software/ci-workflows
 
+# A no-op `sleep` first on PATH. The carry-forward wait accounts for elapsed
+# time arithmetically against its own 15-second interval, so shimming the sleep
+# keeps the ceiling arithmetic real while the suite runs instantly — and, unlike
+# a test-only poll-interval knob, it adds nothing to the shipped runner.
+cat >"$shim_directory/sleep" <<'SLEEP_SHIM'
+#!/usr/bin/env bash
+exit 0
+SLEEP_SHIM
+chmod +x "$shim_directory/sleep"
+
 # A `gh` shim first on PATH: it serves fixture JSON keyed by method plus API
 # path, records every call so the harness can assert on writes that did and did
-# not happen, and can fail a keyed call a fixed number of times before
-# succeeding (the retry case).
+# not happen, can fail a keyed call a fixed number of times before succeeding
+# (the retry case), and can serve a DIFFERENT body on the Nth call to the same
+# key (`<key>.<n>.json`), which is how a status appearing mid-wait is fixtured.
 cat >"$shim_directory/gh" <<'SHIM'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -75,6 +86,13 @@ elif [[ "$input" == "-" ]]; then
   cat >"$GH_CALLS/${key}.input.json"
 fi
 
+count_file="$GH_CALLS/${key}.count"
+call_number=1
+if [[ -f "$count_file" ]]; then
+  call_number="$(($(cat "$count_file") + 1))"
+fi
+printf '%s\n' "$call_number" >"$count_file"
+
 fail_times="$GH_FIXTURES/${key}.fail-times"
 if [[ -f "$fail_times" ]]; then
   remaining="$(cat "$fail_times")"
@@ -88,6 +106,11 @@ fi
 if [[ -f "$GH_FIXTURES/${key}.err" ]]; then
   cat "$GH_FIXTURES/${key}.err" >&2
   exit 1
+fi
+
+if [[ -f "$GH_FIXTURES/${key}.${call_number}.json" ]]; then
+  cat "$GH_FIXTURES/${key}.${call_number}.json"
+  exit 0
 fi
 
 if [[ -f "$GH_FIXTURES/${key}.json" ]]; then
@@ -122,6 +145,7 @@ run_case() {
     CONTRACT_ONLY="$contract_only" \
     SAME_REPO="$same_repo" \
     STATUS_CONTEXT=ci-lanes \
+    CARRY_FORWARD_WAIT_SECONDS=0 \
     REPOSITORY="$repository" \
     SHA="$sha" \
     STATUS_RETRY_BASE_DELAY=0 \
@@ -217,6 +241,46 @@ bot_status() {
 user_status() {
   printf '{"id":%s,"context":"ci-lanes","state":"%s","creator":{"login":"a-collaborator","type":"User"}}' "$1" "$2"
 }
+
+# --- carry-forward wait fixtures -------------------------------------------
+
+statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
+current_run_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242'
+workflow_runs_key='GET_repos_melodic-software_ci-workflows_actions_workflows_777_runs'
+# The run under test: workflow 777, created at 12:00:30Z. Every "earlier" run
+# below is created before that instant and every "newer" one after it.
+current_run_created_at='2026-09-05T12:00:30Z'
+
+# status_list_on_call <n> <json-array>
+# The status list served on the Nth read, so a status can appear mid-wait.
+status_list_on_call() {
+  printf '%s' "$2" >"$fixtures/${statuses_key}.${1}.json"
+}
+
+clear_status_fixtures() {
+  rm -f -- "$fixtures/${statuses_key}".*.json "$fixtures/${statuses_key}.json"
+}
+
+clear_run_fixtures() {
+  rm -f -- "$fixtures/${current_run_key}".* "$fixtures/${workflow_runs_key}".*
+}
+
+current_run() {
+  printf '{"id":4242,"workflow_id":777,"created_at":"%s"}' "$current_run_created_at" \
+    >"$fixtures/${current_run_key}.json"
+}
+
+# workflow_runs <json-array-of-run-objects>
+workflow_runs() {
+  printf '{"workflow_runs":%s}' "$1" >"$fixtures/${workflow_runs_key}.json"
+}
+
+# run_entry <id> <status> <created_at>
+run_entry() {
+  printf '{"id":%s,"status":"%s","created_at":"%s"}' "$1" "$2" "$3"
+}
+
+earlier_full_run="$(run_entry 4000 in_progress 2026-09-05T12:00:00Z)"
 
 # --- full mode -------------------------------------------------------------
 
@@ -437,6 +501,127 @@ status_list '[{"id":10,"context":"ci-lanes","state":"failure","creator":{"login"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
+# --- carry-forward: the bounded wait ---------------------------------------
+#
+# The branched concurrency group (ci-perf Phase 6b) stops a contract-only run
+# queueing behind the full run whose `ci-lanes` status it reads, so the two race.
+# Every case here sets the ceiling explicitly; the harness default is 0, which
+# keeps every case above on the pre-6b fail-immediately path.
+
+# Without the wait this run reads an empty status list once and goes red.
+echo 'case: the wait engages for an earlier full run and carries forward a status that appears mid-wait'
+clear_status_fixtures
+clear_run_fixtures
+status_list_on_call 1 '[]'
+status_list_on_call 2 "[$(bot_status 100 success)]"
+current_run
+workflow_runs "[${earlier_full_run}]"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for earlier run(s) 4000 on ${sha} to record ci-lanes (waited 0s of 60s)."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_gh_call 'actions/runs/4242'
+expect_gh_call 'actions/workflows/777/runs'
+
+# Without the ceiling the loop never ends; without "never pass on timeout" it
+# would exit 0 on a status that never arrived.
+echo 'case: the wait exits 1 at the ceiling naming how long it waited and on which runs'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+current_run
+workflow_runs "[${earlier_full_run}]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with earlier run(s) 4000'
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on earlier run(s): 4000)"
+
+# Without the `created_at` ordering term this run waits on itself forever, and
+# two contract-only runs wait on each other; without the status filter it waits
+# on a run that already finished.
+echo 'case: the wait ignores this run, newer runs, and completed runs'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+current_run
+workflow_runs "[$(run_entry 4242 in_progress "$current_run_created_at"),$(run_entry 5000 queued 2026-09-05T12:01:00Z),$(run_entry 3000 completed 2026-09-05T11:59:00Z)]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_gh_call 'actions/workflows/777/runs'
+expect_no_log 'Waiting '
+expect_no_log 'on earlier run(s)'
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# Without the "absent status only" condition the wait sits on a verdict already
+# reached, burning the ceiling before reporting a failure it already knew about.
+echo 'case: a recorded ci-lanes failure short-circuits without waiting'
+clear_status_fixtures
+clear_run_fixtures
+status_list "[$(bot_status 100 failure)]"
+current_run
+workflow_runs "[${earlier_full_run}]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=240
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_no_gh_call 'actions/'
+
+# Without the 403 branch the missing scope reads as "no earlier run", which is
+# the same outcome but unattributable; the run must still fail, never pass.
+echo 'case: a 403 on the workflow-runs endpoint warns naming actions: read and still fails'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+current_run
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${workflow_runs_key}.err"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::warning::repos/${repository}/actions/workflows/777/runs returned HTTP 403; the ci-status job needs 'actions: read'"
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_no_log 'Waiting '
+
+echo 'case: a 403 on the current-run fetch warns and never reaches the workflow-runs endpoint'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${current_run_key}.err"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::warning::repos/${repository}/actions/runs/4242 returned HTTP 403; the ci-status job needs 'actions: read'"
+expect_no_gh_call 'actions/workflows/'
+
+# Without the `> 0` guard, a consumer that disabled the wait still pays two
+# Actions API calls and still needs the `actions: read` scope.
+echo 'case: carry-forward-wait-seconds 0 disables the wait and makes no Actions API call'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+current_run
+workflow_runs "[${earlier_full_run}]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=0
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_no_gh_call 'actions/'
+
+# Without the runner-side default, an action.yml regression that stopped passing
+# the input would silently disable the wait rather than fall back to 240.
+echo 'case: an empty carry-forward-wait-seconds falls back to the 240-second default'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+current_run
+workflow_runs "[${earlier_full_run}]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=
+expect_log '::warning::reached the 240s carry-forward-wait-seconds ceiling with earlier run(s) 4000'
+expect_log 'waited 240s of 240s on earlier run(s): 4000'
+
+# Without the validation a negative value makes the ceiling unreachable and the
+# wait unbounded; a non-numeric one makes the arithmetic an error mid-wait.
+echo 'case: a negative carry-forward-wait-seconds is rejected before any API call'
+clear_run_fixtures
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=-5
+expect_log '::error::carry-forward-wait-seconds must be a non-negative integer number of seconds, got: -5'
+expect_no_gh_calls_at_all
+
+echo 'case: a non-numeric carry-forward-wait-seconds is rejected before any API call'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=soon
+expect_log '::error::carry-forward-wait-seconds must be a non-negative integer number of seconds, got: soon'
+expect_no_gh_calls_at_all
+
+clear_status_fixtures
+
 # --- input validation ------------------------------------------------------
 #
 # Every one of these values is interpolated into a `gh api` path.
@@ -462,18 +647,27 @@ expect_status_payload '"context": "CI Lanes"'
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
   fi
 done
+
+# The published default is the contract consumers inherit when they pass
+# nothing, and the design fixes it at 240 seconds (below cursor-plugins'
+# five-minute ci-status job budget). A drift here is invisible to every case
+# above, which sets the value explicitly.
+if ! grep -qF "    default: '240'" "$action_metadata"; then
+  echo "FAIL: action.yml does not default carry-forward-wait-seconds to 240"
+  failures=$((failures + 1))
+fi
 
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
