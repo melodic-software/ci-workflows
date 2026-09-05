@@ -1107,7 +1107,7 @@ jobs:
         if: >-
           !cancelled() && steps.freshness.outputs.superseded != 'true' &&
           steps.review-count.outputs.capped != 'true'
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@a570a4214d6d2aeb4591eb8fee82c1d8ea143a2e # 7415d4e 2026-08-08
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@a570a4214d6d2aeb4591eb8fee82c1d8ea143a2e # a570a42 2026-09-01
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
