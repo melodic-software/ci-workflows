@@ -35,7 +35,7 @@ permissions:
 # ("any existing pending job or workflow in the same concurrency group will be
 # canceled") and is NOT governed by `cancel-in-progress`, so the old shared
 # group let one contract-only event evict another and leave a check suite on the
-# current head with no `ci-status` check run at all — a required check that
+# current head with no `ci-status` check run at all, a required check that
 # stops reporting until someone re-runs that specific run (dotfiles#647, 2h14m
 # silent). Uniqueness costs a burst of one-job runs when labels flip repeatedly,
 # seconds each, writing nothing.
@@ -53,7 +53,7 @@ permissions:
 # The cost of the branch: a contract-only run no longer queues behind the full
 # run whose `ci-lanes` status it carries forward, so the two race. The
 # `ci-status` composite closes that with a bounded wait on EARLIER incomplete
-# runs on the same head SHA — see `carry-forward-wait-seconds` on the job below.
+# runs on the same head SHA; see `carry-forward-wait-seconds` on the job below.
 #
 # One hazard the branch does not remove, because no concurrency setting both
 # removes it and keeps supersession: the full branch is keyed on the pull

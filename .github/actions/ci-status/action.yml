@@ -64,7 +64,7 @@ inputs:
       each other. Reaching the ceiling with an earlier run still incomplete
       fails the run without reading the unsettled status; there is no
       pass-on-timeout path. `0` disables the wait and goes straight to the
-      status read. The calling job needs `actions: read` — under an explicit
+      status read. The calling job needs `actions: read`: under an explicit
       `permissions:` block the default is none, and a 403 warns naming the scope
       and degrades to the status read alone. Set this at least 60 seconds below
       the calling job's `timeout-minutes`, or the job timeout preempts the

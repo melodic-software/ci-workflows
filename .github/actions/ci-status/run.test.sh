@@ -24,8 +24,8 @@ repository=melodic-software/ci-workflows
 
 # A no-op `sleep` first on PATH. The carry-forward wait accounts for elapsed
 # time arithmetically against its own 15-second interval, so shimming the sleep
-# keeps the ceiling arithmetic real while the suite runs instantly — and, unlike
-# a test-only poll-interval knob, it adds nothing to the shipped runner.
+# keeps the ceiling arithmetic real while the suite runs instantly. Unlike a
+# test-only poll-interval knob, it adds nothing to the shipped runner.
 cat >"$shim_directory/sleep" <<'SLEEP_SHIM'
 #!/usr/bin/env bash
 exit 0
@@ -550,7 +550,7 @@ expect_gh_call_before 'actions/workflows/777/runs' "commits/${sha}/statuses"
 
 # Without the ceiling the loop never ends; without "never pass on timeout" this
 # case exits 0 on the green status sitting on the SHA while an earlier run is
-# still in flight — the exact bypass the ordering exists to prevent.
+# still in flight, which is the exact bypass the ordering exists to prevent.
 echo 'case: the wait exits 1 at the ceiling without reading the unsettled status'
 clear_status_fixtures
 clear_run_fixtures
@@ -607,8 +607,8 @@ expect_no_log 'on earlier run(s)'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the 403 branch the missing scope reads as "no earlier run", which is
-# the same outcome but unattributable. The run degrades to the pre-6b contract —
-# read the recorded status and decide — and must not pass on an absent one.
+# the same outcome but unattributable. The run degrades to the pre-6b contract,
+# reading the recorded status and deciding, and must not pass on an absent one.
 echo 'case: a 403 on the workflow-runs endpoint warns naming actions: read and still fails'
 clear_status_fixtures
 clear_run_fixtures

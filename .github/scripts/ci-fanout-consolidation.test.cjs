@@ -69,7 +69,7 @@ test("ci.yml branches the concurrency group on the contract-only predicate", () 
   // ci-perf Phase 6b. Eviction of a PENDING run is unconditional in GitHub's
   // queueing and is not governed by `cancel-in-progress`, so a shared group let
   // one contract-only event evict another and leave the current head with a
-  // check suite carrying no `ci-status` check run at all — a required check that
+  // check suite carrying no `ci-status` check run at all, a required check that
   // silently stops reporting (dotfiles#647). The contract-only branch therefore
   // carries `github.run_id` and is unique per run.
   const groupBlock =
