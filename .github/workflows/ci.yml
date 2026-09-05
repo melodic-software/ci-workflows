@@ -65,7 +65,10 @@ concurrency:
 # reusable, which is the consolidation lane every consumer adopts — dogfooding
 # it here is the only way its contract is exercised before they do. It runs its
 # own change-detection pass for the composites it owns; `changes` stays for the
-# language and toolchain lanes this repo fans out and Phase 6b converges.
+# language and toolchain lanes this repo fans out and Phase 6b converges. The
+# `composites-head` job runs those same composite bodies from this commit,
+# because the reusable can only reach them at a pinned SHA and would otherwise
+# let a broken body pass its own repository's CI.
 # `actionlint` and `shellcheck` stay separate jobs with their toggles off: each
 # carries extra dogfood steps that need the composite's pinned binary on PATH,
 # which no `uses:` in a shared reusable can hand back. `action-metadata-filename`
@@ -213,6 +216,54 @@ jobs:
           **/.markdownlint*
         check-jsonschema:
           .github/**
+
+  # The pin-lag counterweight to `checks`. Inside a CALLED workflow a relative
+  # action path resolves against the CALLER's checkout, so checks.yml references
+  # its composites by full path at a pinned SHA and therefore runs the bodies of
+  # the release it was pinned at, not the bodies in this commit. Without this
+  # job a pull request that breaks one of those composite bodies would go green
+  # here while the dogfood ran the old body. These nine run from this commit, so
+  # their behavior is covered at HEAD as it was before the consolidation.
+  # `actionlint`, `shellcheck` and `check-jsonschema` are deliberately absent:
+  # each already runs at HEAD in its own job. Gated on the `actionlint` group,
+  # which is the narrowest `changes` group naming composite actions; every group
+  # in that job includes `.github/**`, so any composite edit selects this lane.
+  composites-head:
+    name: Composites at HEAD
+    needs: changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Spell-check
+        uses: ./.github/actions/typos
+      - name: Scan for secrets
+        uses: ./.github/actions/gitleaks
+      - name: Check editorconfig conformance
+        uses: ./.github/actions/editorconfig
+      - name: Lint markdown
+        uses: ./.github/actions/markdown
+      - name: Verify shebang files are executable
+        uses: ./.github/actions/exec-bit
+      - name: Check for machine-specific paths
+        # Same exclusions the `checks` caller passes: the bundled pattern script
+        # and marker policy carry the literal bodies, so each scan skips its own
+        # action's source to avoid self-matching.
+        uses: ./.github/actions/machine-specific-paths
+        with:
+          exclude: ':(exclude).github/actions/machine-specific-paths/**'
+      - name: Check index-level EOL drift
+        uses: ./.github/actions/eol-renormalize
+      - name: Scan comment hygiene
+        uses: ./.github/actions/comment-hygiene
+        with:
+          exclude: ':(exclude).github/actions/comment-hygiene/**'
+      - name: Check links and anchors (offline)
+        uses: ./.github/actions/lychee-offline
 
   powershell:
     needs: changes
@@ -618,7 +669,7 @@ jobs:
     # `changes` is aggregated alongside the lanes it gates: a failed detection
     # job fails ci-status even though every gated lane fails open and runs, so
     # a broken filter config cannot ride the fallback to green indefinitely.
-    needs: [changes, checks, powershell, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, pester, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, pester, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -642,4 +693,4 @@ jobs:
         if: ${{ !cancelled() }}
         uses: ./.github/actions/ci-status
         with:
-          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

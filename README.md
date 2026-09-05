@@ -333,6 +333,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `zizmor` is not among the toggles: it has no composite, only the reusable
   below, so callers that want it keep a separate job.
 
+  The composites run by full path at a pinned SHA, because a relative action
+  path inside a called workflow resolves against the caller's checkout. A
+  tagged release therefore runs the composite bodies its pins name, one tag
+  behind after a bump, and Dependabot's `github-actions` group moves those pins
+  like any other reference. That pin lag is why this repository keeps a
+  `composites-head` job in its own `ci.yml`: it runs the same composites
+  through `./.github/actions/<x>` so a pull request that changes a composite
+  body is still exercised at HEAD instead of passing against the pinned copy.
+  Phase 6b retires that job when GitHub's `$/` self-repository syntax becomes
+  usable, which needs three things: actionlint shipping the `$/` support of
+  rhysd/actionlint#732 in a version this repository pins, actions/runner#4669
+  merging, and one measured cross-repository `$/` run.
+
   ```yaml
   jobs:
     checks:

@@ -211,7 +211,7 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
   // elevate: without the caller's own grant the job fails at startup.
   const checksJob = ciWorkflow.slice(
     ciWorkflow.search(/^ {2}checks:$/mu),
-    ciWorkflow.search(/^ {2}powershell:$/mu),
+    ciWorkflow.search(/^ {2}composites-head:$/mu),
   );
   assert.match(checksJob, /^ {6}contents: read$/mu);
   assert.match(checksJob, /^ {6}pull-requests: read$/mu);
@@ -259,6 +259,54 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
   assert.match(
     ciWorkflow,
     /^ {8}run: bash \.github\/actions\/comment-hygiene\/superset-test\.sh$/mu,
+  );
+});
+
+test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
+  // checks.yml can only reach its composites at a pinned SHA (a relative path
+  // inside a called workflow resolves against the caller's checkout), so the
+  // reusable runs the bodies of the release it was pinned at. This job runs the
+  // same bodies from the commit under test; without it a pull request that
+  // breaks one of them passes this repository's own CI.
+  const start = ciWorkflow.search(/^ {2}composites-head:$/mu);
+  assert.notEqual(start, -1, "ci.yml has no composites-head job");
+  const composites = ciWorkflow.slice(
+    start,
+    ciWorkflow.search(/^ {2}powershell:$/mu),
+  );
+  assert.match(composites, /^ {4}name: Composites at HEAD$/mu);
+  assert.match(composites, /^ {4}needs: changes$/mu);
+
+  // Every composite the reusable moved off HEAD, and only those: actionlint,
+  // shellcheck and check-jsonschema already run at HEAD in their own jobs.
+  for (const composite of [
+    "typos",
+    "gitleaks",
+    "editorconfig",
+    "markdown",
+    "exec-bit",
+    "machine-specific-paths",
+    "eol-renormalize",
+    "comment-hygiene",
+    "lychee-offline",
+  ]) {
+    assert.match(
+      composites,
+      new RegExp(`^ {8}uses: \\./\\.github/actions/${composite}$`, "mu"),
+      `composites-head does not run ${composite} at HEAD`,
+    );
+  }
+  // A pinned reference here would reintroduce the lag the job exists to close.
+  assert.doesNotMatch(composites, /uses: melodic-software\/ci-workflows\//u);
+
+  // The lane is only real if the required check aggregates it.
+  assert.match(
+    ciWorkflow,
+    /^ {4}needs: \[[^\n]*\bcomposites-head\b[^\n]*\]$/mu,
+  );
+  assert.match(
+    ciWorkflow,
+    /^ {10}results: [^\n]*\$\{\{ needs\.composites-head\.result \}\}[^\n]*$/mu,
   );
 });
 

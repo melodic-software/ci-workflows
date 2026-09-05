@@ -21,6 +21,21 @@ name: checks
 # behind the workflow that carries them; Dependabot's `github-actions` group
 # bumps them like any other `uses:`.
 #
+# That pin lag is why ci.yml carries a `composites-head` job alongside its
+# dogfood call of this workflow. A pull request against this repository that
+# breaks one of the composite bodies would otherwise run the OLD body here and
+# pass, so the job runs the same composites through `./.github/actions/<x>` at
+# the commit under test and restores behavioral coverage at HEAD.
+#
+# The promotion path is Phase 6b. GitHub's `$/<action>` self-repository syntax
+# resolves against the workflow's own repository, which would remove the pin lag
+# and the extra job together, but actionlint 1.7.12 (the version this
+# repository's own actionlint composite pins) rejects it as an invalid format
+# with a missing ref. Three conditions promote it: actionlint ships the `$/`
+# support of rhysd/actionlint#732 in a version this repository pins,
+# actions/runner#4669 (composite manifests) merges, and one cross-repository
+# `$/` run is measured. Until then `composites-head` stays.
+#
 # Skipping: every composite step is gated twice — by its boolean toggle, and by
 # the `change-detection` filter group NAMED AFTER that toggle. A group the
 # caller did not declare is not `'false'`, so an undeclared composite runs on
