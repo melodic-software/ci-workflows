@@ -197,36 +197,117 @@ test("selector-conformance.yml matches the same concurrency pattern", () => {
   );
 });
 
-test("ci.yml consolidates cheapest hygiene checks into one lane", () => {
-  assert.match(ciWorkflow, /^ {2}hygiene:$/mu);
-  assert.match(ciWorkflow, /^ {8}id: editorconfig$/mu);
-  assert.match(ciWorkflow, /^ {8}id: exec_bit$/mu);
-  assert.match(ciWorkflow, /^ {8}id: machine_specific_paths$/mu);
-  assert.match(ciWorkflow, /^ {8}id: eol_renormalize$/mu);
-  assert.match(ciWorkflow, /^ {8}id: comment_hygiene_superset$/mu);
-  assert.match(ciWorkflow, /^ {8}id: comment_hygiene$/mu);
-  assert.match(ciWorkflow, /^ {8}continue-on-error: true$/mu);
-  assert.match(ciWorkflow, /^ {6}- name: Aggregate hygiene checks$/mu);
-  assert.match(ciWorkflow, /\[\[ "\$outcome" == failure \]\]/u);
+test("ci.yml consolidates the hygiene composites into the checks reusable", () => {
+  // The hygiene fan-out first collapsed into a local `hygiene` job (#122); it
+  // now lives in the `checks` reusable every consumer adopts (ci-perf Phase
+  // 6a), so this repository dogfoods the same contract it publishes.
+  assert.match(ciWorkflow, /^ {2}checks:$/mu);
+  assert.match(
+    ciWorkflow,
+    /^ {4}uses: \.\/\.github\/workflows\/checks\.yml$/mu,
+  );
+
+  // change-detection reads the PR file listing, and a called workflow cannot
+  // elevate: without the caller's own grant the job fails at startup.
+  const checksJob = ciWorkflow.slice(
+    ciWorkflow.search(/^ {2}checks:$/mu),
+    ciWorkflow.search(/^ {2}composites-head:$/mu),
+  );
+  assert.match(checksJob, /^ {6}contents: read$/mu);
+  assert.match(checksJob, /^ {6}pull-requests: read$/mu);
+  assert.match(checksJob, /^ {6}runner: ubuntu-24\.04$/mu);
 
   for (const job of [
+    "hygiene",
     "editorconfig",
     "exec-bit",
     "machine-specific-paths",
     "eol-renormalize",
     "comment-hygiene",
+    "typos",
+    "gitleaks",
+    "markdown",
+    "links",
   ]) {
     assert.doesNotMatch(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
   }
 
-  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bhygiene\b[^\n]*\]$/mu);
+  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bchecks\b[^\n]*\]$/mu);
   assert.match(
     ciWorkflow,
-    /^ {10}results: [^\n]*\$\{\{ needs\.hygiene\.result \}\}[^\n]*$/mu,
+    /^ {10}results: [^\n]*\$\{\{ needs\.checks\.result \}\}[^\n]*$/mu,
   );
-  assert.doesNotMatch(ciWorkflow, /needs\.editorconfig\.result/u);
-  assert.doesNotMatch(ciWorkflow, /needs\.exec-bit\.result/u);
-  assert.doesNotMatch(ciWorkflow, /needs\.comment-hygiene\.result/u);
+  for (const lane of [
+    "hygiene",
+    "editorconfig",
+    "exec-bit",
+    "comment-hygiene",
+    "typos",
+    "gitleaks",
+    "markdown",
+    "links",
+  ]) {
+    assert.doesNotMatch(
+      ciWorkflow,
+      new RegExp(`needs\\.${lane}\\.result`, "u"),
+    );
+  }
+
+  // The comment-hygiene prefilter superset test is the scan's load-bearing
+  // invariant and cannot ride inside the reusable (a shared reusable cannot run
+  // a repo-local script), so it must still run somewhere in this workflow.
+  assert.match(
+    ciWorkflow,
+    /^ {8}run: bash \.github\/actions\/comment-hygiene\/superset-test\.sh$/mu,
+  );
+});
+
+test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
+  // checks.yml can only reach its composites at a pinned SHA (a relative path
+  // inside a called workflow resolves against the caller's checkout), so the
+  // reusable runs the bodies of the release it was pinned at. This job runs the
+  // same bodies from the commit under test; without it a pull request that
+  // breaks one of them passes this repository's own CI.
+  const start = ciWorkflow.search(/^ {2}composites-head:$/mu);
+  assert.notEqual(start, -1, "ci.yml has no composites-head job");
+  const composites = ciWorkflow.slice(
+    start,
+    ciWorkflow.search(/^ {2}powershell:$/mu),
+  );
+  assert.match(composites, /^ {4}name: Composites at HEAD$/mu);
+  assert.match(composites, /^ {4}needs: changes$/mu);
+
+  // Every composite the reusable moved off HEAD, and only those: actionlint,
+  // shellcheck and check-jsonschema already run at HEAD in their own jobs.
+  for (const composite of [
+    "typos",
+    "gitleaks",
+    "editorconfig",
+    "markdown",
+    "exec-bit",
+    "machine-specific-paths",
+    "eol-renormalize",
+    "comment-hygiene",
+    "lychee-offline",
+  ]) {
+    assert.match(
+      composites,
+      new RegExp(`^ {8}uses: \\./\\.github/actions/${composite}$`, "mu"),
+      `composites-head does not run ${composite} at HEAD`,
+    );
+  }
+  // A pinned reference here would reintroduce the lag the job exists to close.
+  assert.doesNotMatch(composites, /uses: melodic-software\/ci-workflows\//u);
+
+  // The lane is only real if the required check aggregates it.
+  assert.match(
+    ciWorkflow,
+    /^ {4}needs: \[[^\n]*\bcomposites-head\b[^\n]*\]$/mu,
+  );
+  assert.match(
+    ciWorkflow,
+    /^ {10}results: [^\n]*\$\{\{ needs\.composites-head\.result \}\}[^\n]*$/mu,
+  );
 });
 
 test("ADR records #122 COMPLETED with Shape A done", () => {

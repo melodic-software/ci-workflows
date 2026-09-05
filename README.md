@@ -299,6 +299,68 @@ Hosted workflow defaults use explicit GA operating-system generations
 keeps hosted/self-hosted parity reviews tied to a declared image contract while
 GitHub continues the normal weekly patching of each hosted image generation.
 
+- `.github/workflows/checks.yml` — the consolidated hygiene lane: **one job, one
+  runner spin-up**, `change-detection` once, then every content-agnostic
+  composite as a step. It replaces a fan-out of one job per tool, which is the
+  cost it exists to remove, and it never calls a per-tool reusable workflow —
+  composites are the unit of reuse. Required inputs: `runner` (no default; a
+  hosted default would silently bill a private caller's pool) and `filters`
+  (`change-detection` filter groups). `timeout-minutes` defaults to `15`.
+  Twelve boolean toggles — `typos`, `gitleaks`, `editorconfig`, `markdown`,
+  `shellcheck`, `actionlint`, `exec-bit`, `machine-specific-paths`,
+  `eol-renormalize`, `comment-hygiene`, `lychee-offline`, `check-jsonschema` —
+  turn composites off; all default `true` except `check-jsonschema`, whose
+  `files` input is required and has no universal default (pass
+  `check-jsonschema-files` and `check-jsonschema-builtin-schema`; one call
+  carries one schema family). Enabling it with no `check-jsonschema-files`
+  **fails the job** rather than skipping the validation: a gate that disappears
+  on a typo is the failure mode this lane exists to prevent.
+  `machine-specific-paths-exclude` and
+  `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans.
+  Every other composite input keeps its composite-side default. **Skipping is
+  by filter group name**: a composite step is skipped when the caller declares
+  a group named exactly after its toggle and that group evaluated `false`; an
+  undeclared group leaves the composite ungated, because fail-open is the
+  detection contract. Outputs: `results` (the detection JSON, verbatim) and
+  `outcome` (`success` or `failure`). Every composite runs under
+  `continue-on-error: true` and one join step names the first failure and fails
+  the job, so one failing tool never hides the rest. Gate downstream lanes with
+  `fromJSON(needs.checks.outputs.results || '{}')['<group>'] != 'false'`: a
+  reusable workflow publishes no outputs when its job fails, so
+  `needs.checks.result` stays the authoritative verdict. The caller's job block
+  must grant `contents: read` and `pull-requests: read` — a called workflow
+  cannot elevate, and the detection pass reads the pull request's file listing.
+  `zizmor` is not among the toggles: it has no composite, only the reusable
+  below, so callers that want it keep a separate job.
+
+  The composites run by full path at a pinned SHA, because a relative action
+  path inside a called workflow resolves against the caller's checkout. A
+  tagged release therefore runs the composite bodies its pins name, one tag
+  behind after a bump, and Dependabot's `github-actions` group moves those pins
+  like any other reference. That pin lag is why this repository keeps a
+  `composites-head` job in its own `ci.yml`: it runs the same composites
+  through `./.github/actions/<x>` so a pull request that changes a composite
+  body is still exercised at HEAD instead of passing against the pinned copy.
+  Phase 6b retires that job when GitHub's `$/` self-repository syntax becomes
+  usable, which needs three things: actionlint shipping the `$/` support of
+  rhysd/actionlint#732 in a version this repository pins, actions/runner#4669
+  merging, and one measured cross-repository `$/` run.
+
+  ```yaml
+  jobs:
+    checks:
+      permissions:
+        contents: read
+        pull-requests: read
+      uses: melodic-software/ci-workflows/.github/workflows/checks.yml@<sha>
+      with:
+        runner: ubuntu-24.04
+        filters: |
+          markdown:
+            .github/**
+            **/*.md
+  ```
+
 - `.github/workflows/pulumi-version-drift-check.yml` — reusable-only maintenance
   job for GitHub IaC callers. It accepts only a hosted default-branch push,
   schedule, or manual dispatch, compares the exact `.pulumi.version` pin with
