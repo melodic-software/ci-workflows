@@ -326,6 +326,7 @@ so there is no changed-file output to feed in; the list comes from git:
     } >>"$GITHUB_OUTPUT"
 
 - name: Lint shell scripts
+  if: steps.changed_shell.outputs.files != ''
   uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha> # <tag>
   with:
     files: ${{ steps.changed_shell.outputs.files }}
@@ -334,6 +335,20 @@ so there is no changed-file output to feed in; the list comes from git:
 That step needs the base commit present, so it belongs after a checkout deep
 enough to resolve `origin/$BASE_REF` (a `fetch-depth: 0` checkout, or the
 caller's own base-fetch step).
+
+**The `if:` is load-bearing, and the reason is worth stating.** An empty list
+and an unset input are the same empty string once YAML has rendered them, so
+they are not distinguishable inside the action: a diff that touched no shell
+script produces an empty output, `files` arrives blank, and the action falls
+back to `paths` and scans the whole repository. That fallback is the safe
+direction rather than the useless one, because a caller whose list computation
+breaks or silently returns nothing gets a full scan rather than a green no-op,
+but on the ordinary "this pull request changed no shell scripts" path it throws
+away the whole saving. Gating the step on a non-empty list is what turns that
+case into a skip. The notice-and-exit-0 path is therefore not this one: it is
+reached when the list is non-blank and every entry in it is deleted or is not a
+shell script, which is what a caller that hands over a raw unfiltered diff
+produces.
 
 **The fail-closed caveat is the caller's to answer, not this action's.** A
 diff-scoped run only checks the files in the list, and some changes invalidate
@@ -344,11 +359,7 @@ is the list. A caller that diff-scopes therefore has to widen back to the
 whole repository when the diff touches those inputs, and it has to keep a
 whole-repository run somewhere else, on `push` to the default branch or on a
 schedule, so a gap is caught within a day rather than at the next unrelated
-change. Note also that an empty list is not the same as a blank one: a blank
-`files` falls back to `paths` and scans everything, so a caller whose list
-computation silently returns nothing on a whole-repository change gets the full
-scan rather than a green no-op, but a caller that computes a genuinely empty
-list and passes it gets the notice and exit 0.
+change.
 
 ## Reusable workflows
 
