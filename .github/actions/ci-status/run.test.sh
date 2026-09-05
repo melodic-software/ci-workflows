@@ -199,6 +199,20 @@ expect_no_gh_call() {
   fi
 }
 
+# expect_gh_call_before <earlier-substring> <later-substring>
+# The gh log is append-ordered, so line numbers are call order. This is what
+# proves the wait runs BEFORE the status read rather than after it.
+expect_gh_call_before() {
+  local first="$1" second="$2" first_line second_line
+  first_line="$(grep -nF -- "$first" "$gh_log" | head -n1 | cut -d: -f1)"
+  second_line="$(grep -nF -- "$second" "$gh_log" | head -n1 | cut -d: -f1)"
+  if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
+    echo "FAIL: expected a gh call matching '$first' before one matching '$second', got:"
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
 # The shim logs `$*`, which never contains the literal `gh api` — it starts at
 # `api -X GET …` — so asserting on that string could never fire. Assert the log
 # is empty instead.
@@ -263,6 +277,7 @@ clear_status_fixtures() {
 
 clear_run_fixtures() {
   rm -f -- "$fixtures/${current_run_key}".* "$fixtures/${workflow_runs_key}".*
+  rm -f -- "$fixtures/${current_run_key}.json" "$fixtures/${workflow_runs_key}.json"
 }
 
 current_run() {
@@ -273,6 +288,12 @@ current_run() {
 # workflow_runs <json-array-of-run-objects>
 workflow_runs() {
   printf '{"workflow_runs":%s}' "$1" >"$fixtures/${workflow_runs_key}.json"
+}
+
+# workflow_runs_on_call <n> <json-array-of-run-objects>
+# The run list served on the Nth poll, so an earlier run can finish mid-wait.
+workflow_runs_on_call() {
+  printf '{"workflow_runs":%s}' "$2" >"$fixtures/${workflow_runs_key}.${1}.json"
 }
 
 # run_entry <id> <status> <created_at>
@@ -508,31 +529,67 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 # Every case here sets the ceiling explicitly; the harness default is 0, which
 # keeps every case above on the pre-6b fail-immediately path.
 
-# Without the wait this run reads an empty status list once and goes red.
-echo 'case: the wait engages for an earlier full run and carries forward a status that appears mid-wait'
+# Without the wait this run reads the status list while the earlier run is still
+# in flight, and on an absent status goes red.
+echo 'case: the wait holds until the earlier full run finishes, then reads the status'
 clear_status_fixtures
 clear_run_fixtures
-status_list_on_call 1 '[]'
-status_list_on_call 2 "[$(bot_status 100 success)]"
+status_list "[$(bot_status 100 success)]"
 current_run
-workflow_runs "[${earlier_full_run}]"
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs_on_call 2 '[]'
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for earlier run(s) 4000 on ${sha} to record ci-lanes (waited 0s of 60s)."
+expect_log "Waiting 15s for earlier run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "Earlier run(s) on ${sha} finished after 15s; reading the ci-lanes status."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_gh_call 'actions/runs/4242'
-expect_gh_call 'actions/workflows/777/runs'
+# The load-bearing ordering: without wait-before-read, a SHA already carrying an
+# older green status lets a contract-only run bypass the full run in flight that
+# is about to overwrite it.
+expect_gh_call_before 'actions/workflows/777/runs' "commits/${sha}/statuses"
 
-# Without the ceiling the loop never ends; without "never pass on timeout" it
-# would exit 0 on a status that never arrived.
-echo 'case: the wait exits 1 at the ceiling naming how long it waited and on which runs'
+# Without the ceiling the loop never ends; without "never pass on timeout" this
+# case exits 0 on the green status sitting on the SHA while an earlier run is
+# still in flight — the exact bypass the ordering exists to prevent.
+echo 'case: the wait exits 1 at the ceiling without reading the unsettled status'
 clear_status_fixtures
 clear_run_fixtures
-status_list '[]'
+status_list "[$(bot_status 100 success)]"
 current_run
 workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
 expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with earlier run(s) 4000'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on earlier run(s): 4000)"
+expect_no_gh_call "commits/${sha}/statuses"
+
+# The single status read happens AFTER the wait, so what decides the gate is the
+# verdict the earlier run left behind, not whatever was on the SHA when this run
+# started. Serving a failure on that one read proves the decision comes from the
+# post-wait state.
+echo 'case: the status read after the wait takes the fresh verdict, not the pre-wait one'
+clear_status_fixtures
+clear_run_fixtures
+status_list_on_call 1 "[$(bot_status 200 failure)]"
+current_run
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs_on_call 2 '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log 'Waiting 15s for earlier run(s) 4000'
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on earlier run(s): 4000)"
+
+# Same correction from the other side: a recorded FAILURE no longer
+# short-circuits while an earlier run is incomplete, because that run may be the
+# re-run about to replace it.
+echo 'case: an existing failure status still waits while an earlier run is incomplete'
+clear_status_fixtures
+clear_run_fixtures
+status_list "[$(bot_status 100 failure)]"
+current_run
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs_on_call 2 '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log 'Waiting 15s for earlier run(s) 4000'
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the `created_at` ordering term this run waits on itself forever, and
 # two contract-only runs wait on each other; without the status filter it waits
@@ -549,35 +606,9 @@ expect_no_log 'Waiting '
 expect_no_log 'on earlier run(s)'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
-# Without the re-read on an empty wait set, an earlier run that wrote its status
-# and reached `completed` between the first status read and the runs query is
-# dropped from the wait set, and the run reports "no successful ci-lanes status"
-# over a verdict that exists.
-echo 'case: an earlier run that finishes inside the API-call window is re-read, not lost'
-clear_status_fixtures
-clear_run_fixtures
-status_list_on_call 1 '[]'
-status_list_on_call 2 "[$(bot_status 100 success)]"
-current_run
-workflow_runs '[]'
-run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_no_log 'Waiting '
-
-# Without the "absent status only" condition the wait sits on a verdict already
-# reached, burning the ceiling before reporting a failure it already knew about.
-echo 'case: a recorded ci-lanes failure short-circuits without waiting'
-clear_status_fixtures
-clear_run_fixtures
-status_list "[$(bot_status 100 failure)]"
-current_run
-workflow_runs "[${earlier_full_run}]"
-run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=240
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
-expect_no_gh_call 'actions/'
-
 # Without the 403 branch the missing scope reads as "no earlier run", which is
-# the same outcome but unattributable; the run must still fail, never pass.
+# the same outcome but unattributable. The run degrades to the pre-6b contract —
+# read the recorded status and decide — and must not pass on an absent one.
 echo 'case: a 403 on the workflow-runs endpoint warns naming actions: read and still fails'
 clear_status_fixtures
 clear_run_fixtures

@@ -52,19 +52,23 @@ inputs:
     default: ci-lanes
   carry-forward-wait-seconds:
     description: >-
-      Ceiling, in seconds, on the carry-forward wait. When carry-forward mode
-      finds NO `status-context` status on the SHA, this action waits for runs of
-      this same workflow on this same head SHA that are still incomplete and
-      were created strictly EARLIER than this one, re-reading the status list
-      every 15 seconds until one appears or this ceiling is reached. Reaching
-      the ceiling fails the run; the wait never turns a verdict green, and a
-      recorded `failure` short-circuits without waiting at all. Only earlier
-      runs are waited on, so two contract-only runs can never wait on each
-      other. `0` disables the wait and restores the fail-immediately behaviour.
-      The calling job needs `actions: read` — under an explicit `permissions:`
-      block the default is none, and a 403 warns and then fails, never passes.
-      Set this at least 60 seconds below the calling job's `timeout-minutes`, or
-      the job timeout preempts the fail-closed error.
+      Ceiling, in seconds, on the carry-forward wait. In carry-forward mode this
+      action FIRST waits, polling every 15 seconds, while any run of this same
+      workflow on this same head SHA is still incomplete and was created
+      strictly EARLIER than this one; only then does it read the
+      `status-context` status list and apply its usual logic. Wait before read,
+      not read then maybe wait: a SHA that already carries an older green status
+      can have a second full run in flight, and reading first would carry that
+      older success forward and bypass the run about to overwrite it. Only
+      earlier runs are waited on, so two contract-only runs can never wait on
+      each other. Reaching the ceiling with an earlier run still incomplete
+      fails the run without reading the unsettled status; there is no
+      pass-on-timeout path. `0` disables the wait and goes straight to the
+      status read. The calling job needs `actions: read` — under an explicit
+      `permissions:` block the default is none, and a 403 warns naming the scope
+      and degrades to the status read alone. Set this at least 60 seconds below
+      the calling job's `timeout-minutes`, or the job timeout preempts the
+      fail-closed error.
     default: '240'
   token:
     description: >-

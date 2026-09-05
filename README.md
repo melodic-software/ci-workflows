@@ -225,31 +225,42 @@ consumer to audit it.
   opens. Before ci-perf Phase 6b a contract-only run shared one concurrency group
   with the full run it reads and queued behind it, so the `ci-lanes` status was
   always already written; the branched group removes that queueing, so the two
-  now race. When carry-forward mode finds NO status for `status-context` on the
-  SHA, this action reads the current run (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`)
-  for its workflow and its `created_at`, then polls
+  now race. Carry-forward mode therefore does two things in a fixed order.
+
+  First it waits. It reads the current run
+  (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`) for its workflow and its
+  `created_at`, then polls
   `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs?head_sha={sha}`
   every 15 seconds for runs of the same workflow on the same head SHA that are
   `queued`, `in_progress`, `waiting`, `pending` or `requested` **and were created
-  strictly earlier than this run**. While at least one exists it sleeps and
-  re-reads the status list, stopping as soon as a status appears (the run then
-  proceeds exactly as it would have) or at the ceiling. Three properties are
-  load-bearing:
+  strictly earlier than this run**. It sleeps while at least one exists, and
+  stops when none remain or at the ceiling.
+
+  Only then does it read the `status-context` list and apply the logic above:
+  newest entry by `github-actions[bot]`, `success` carries forward, anything else
+  and anything absent fails.
+
+  **Wait before read, not read then maybe wait.** The cheaper order is wrong: a
+  SHA that already carries an older green status can have a second full run in
+  flight, and a contract-only run that read the status first would carry that
+  older success forward and bypass the run about to overwrite it. Waiting first
+  means the one status read is the freshest verdict the run can see. Three more
+  properties are load-bearing:
 
   - **Only earlier runs, so there is no mutual wait.** The ordering term excludes
     this run from its own wait set, and between two contract-only runs the older
     of the pair waits on nothing, fails fast, and the newer waits only until the
     older finishes. Two runs created in the same second wait on neither.
-  - **The wait never turns a verdict green.** A recorded `failure`, `error` or
-    `pending` short-circuits red without waiting at all, and reaching the ceiling
-    prints `::error::no successful <context> status on <sha>; re-run the full
-    workflow`, extended with how long it waited and on which run ids, and exits
-    1. There is no pass-on-timeout path.
+  - **The wait never turns a verdict green.** It decides nothing itself, and
+    reaching the ceiling with an earlier run still incomplete prints
+    `::error::no successful <context> status on <sha>; re-run the full workflow`,
+    extended with how long it waited and on which run ids, and exits 1 without
+    reading the unsettled status. There is no pass-on-timeout path.
   - **The calling job needs `actions: read`.** Under an explicit `permissions:`
     block the default for every scope is none, so both Actions calls 403 without
-    it. A 403 prints a `::warning::` naming the missing scope and then falls
-    through to the immediate failure the run would have taken without the wait —
-    loud and red, never a silent pass. Any other read failure warns the same way.
+    it. A 403 prints a `::warning::` naming the missing scope and then degrades
+    to the status read alone, which is the pre-6b contract: loud, and never a
+    pass on an absent status. Any other read failure warns the same way.
 
   The 15-second poll interval is deliberately not a caller input: the only knob a
   consumer should have to reason about is the ceiling.
