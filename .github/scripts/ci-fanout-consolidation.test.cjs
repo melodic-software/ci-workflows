@@ -54,7 +54,7 @@ function normalizeExpression(text) {
   return expression.replace(/\s+/gu, " ");
 }
 
-// The contract-only predicate, repeated verbatim in `cancel-in-progress` and in
+// The contract-only predicate, repeated verbatim in `concurrency.group` and in
 // every job's `if:`. True only for a SAME-REPOSITORY pull request on a label
 // flip, or on an `edited` event that did not change the base branch — a base
 // change moves the merge commit the lanes test, and a fork cannot record lane
@@ -65,21 +65,43 @@ const CONTRACT_ONLY_PREDICATE =
   "(github.event.action == 'edited' && !github.event.changes.base))";
 const CONTRACT_ONLY_GATE = `!(${CONTRACT_ONLY_PREDICATE})`;
 
-test("ci.yml uses main-push burst collapse concurrency (#122)", () => {
-  // The `github.event_name == 'pull_request'` guard is ANDed with, not replaced
-  // by, the negated predicate: on a push there is no `github.event.pull_request`
-  // so the predicate is false and `!(predicate)` alone would be true, re-arming
-  // the burst collapse #122 disarmed.
-  assert.match(
-    ciWorkflow,
-    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && (?<gate>.+) \}\}$/mu,
-  );
-  const cancelGate =
-    /^ {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && (?<gate>.+) \}\}$/mu.exec(
+test("ci.yml branches the concurrency group on the contract-only predicate", () => {
+  // ci-perf Phase 6b. Eviction of a PENDING run is unconditional in GitHub's
+  // queueing and is not governed by `cancel-in-progress`, so a shared group let
+  // one contract-only event evict another and leave the current head with a
+  // check suite carrying no `ci-status` check run at all — a required check that
+  // silently stops reporting (dotfiles#647). The contract-only branch therefore
+  // carries `github.run_id` and is unique per run.
+  const groupBlock =
+    /^concurrency:\n {2}group: >-\n(?<value>(?: {4}.*\n)+) {2}cancel-in-progress: true\n/mu.exec(
       ciWorkflow,
-    )?.groups?.gate;
-  assert.equal(cancelGate, CONTRACT_ONLY_GATE);
-  assert.doesNotMatch(ciWorkflow, /pull_request\.number \|\| github\.run_id/u);
+    );
+  assert.ok(
+    groupBlock !== null,
+    "ci.yml has no branched concurrency group with a literal cancel-in-progress: true",
+  );
+  const group = normalizeExpression(groupBlock.groups.value);
+  const branched =
+    /^\((?<predicate>.+)\) && format\('ci-contract-\{0\}-\{1\}', github\.event\.pull_request\.number, github\.run_id\) \|\| format\('\{0\}-\{1\}', github\.workflow, github\.event\.pull_request\.number \|\| github\.run_id\)$/u.exec(
+      group,
+    );
+  assert.ok(
+    branched !== null,
+    `concurrency group is not the branched shape: ${group}`,
+  );
+  // The same drift hazard as the job gates: a group keyed on a predicate the
+  // lanes do not gate on would put a full run in the contract-only branch's
+  // unique group and stop supersession, or a contract-only run in the shared
+  // group and re-open the eviction.
+  assert.equal(
+    normalizeExpression(branched.groups.predicate),
+    normalizeExpression(CONTRACT_ONLY_PREDICATE),
+  );
+  // This repository's fallback term is `github.run_id`: no push-side burst
+  // collapse, so the `github.event_name == 'pull_request'` guard that existed
+  // only to protect it is gone.
+  assert.doesNotMatch(groupBlock[0], /github\.event_name/u);
+  assert.doesNotMatch(groupBlock[0], /github\.ref/u);
 });
 
 test("the contract-only predicate excludes forks and base changes", () => {
@@ -179,6 +201,9 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   const ciStatusJob = ciWorkflow.slice(ciWorkflow.search(/^ {2}ci-status:$/mu));
   assert.match(ciStatusJob, /^ {6}statuses: write$/mu);
   assert.match(ciStatusJob, /^ {6}pull-requests: write$/mu);
+  // The carry-forward wait enumerates this workflow's runs on the head SHA.
+  // Without the scope both Actions reads 403 and the wait never engages.
+  assert.match(ciStatusJob, /^ {6}actions: read$/mu);
   const contractStep = ciStatusJob.indexOf("./.github/actions/pr-contract");
   const aggregateStep = ciStatusJob.indexOf("./.github/actions/ci-status");
   assert.ok(contractStep !== -1 && aggregateStep !== -1);
@@ -187,6 +212,30 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   assert.match(
     ciStatusJob.slice(contractStep),
     /^ {8}if: \$\{\{ !cancelled\(\) \}\}$/mu,
+  );
+
+  // The wait ceiling must sit at least 60 seconds below the job budget, or a
+  // job timeout preempts the fail-closed error and the run reports as cancelled
+  // rather than telling the reader to re-run the full workflow.
+  const timeoutMinutes = Number(
+    /^ {4}timeout-minutes: (?<minutes>\d+)$/mu.exec(ciStatusJob)?.groups
+      ?.minutes,
+  );
+  const waitSeconds = Number(
+    /^ {10}carry-forward-wait-seconds: '(?<seconds>\d+)'$/mu.exec(ciStatusJob)
+      ?.groups?.seconds,
+  );
+  assert.ok(
+    Number.isInteger(timeoutMinutes),
+    "ci-status has no timeout-minutes",
+  );
+  assert.ok(
+    Number.isInteger(waitSeconds),
+    "ci-status passes no explicit carry-forward-wait-seconds",
+  );
+  assert.ok(
+    waitSeconds <= timeoutMinutes * 60 - 60,
+    `carry-forward-wait-seconds ${waitSeconds} is not at least 60s below timeout-minutes ${timeoutMinutes}`,
   );
 });
 
