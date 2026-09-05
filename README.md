@@ -314,14 +314,22 @@ publishes only its `results` object, a per-filter-group `"true"`/`"false"` map,
 so there is no changed-file output to feed in; the list comes from git:
 
 ```yaml
-- name: List the changed shell scripts
+- name: List the shell scripts to check
   id: changed_shell
   env:
     BASE_REF: ${{ github.base_ref }}
   run: |
+    changed="$(git diff --name-only --diff-filter=d "origin/$BASE_REF...HEAD")"
+    # An .shellcheckrc edit changes what every file is judged against, so it
+    # widens the list back to the whole tracked corpus rather than scoping.
+    if grep -qxF '.shellcheckrc' <<<"$changed"; then
+      list="$(git ls-files -- '*.sh' '*.bash')"
+    else
+      list="$(grep -E '\.(sh|bash)$' <<<"$changed" || true)"
+    fi
     {
       echo 'files<<CHANGED_SHELL'
-      git diff --name-only --diff-filter=d "origin/$BASE_REF...HEAD" -- '*.sh' '*.bash'
+      echo "$list"
       echo CHANGED_SHELL
     } >>"$GITHUB_OUTPUT"
 
@@ -335,6 +343,16 @@ so there is no changed-file output to feed in; the list comes from git:
 That step needs the base commit present, so it belongs after a checkout deep
 enough to resolve `origin/$BASE_REF` (a `fetch-depth: 0` checkout, or the
 caller's own base-fetch step).
+
+The widening branch is not decoration. Once the step is gated on a non-empty
+list, an empty list means "skip", so a pull request that edits only
+`.shellcheckrc` would otherwise skip ShellCheck altogether: it changes no file
+ending in `.sh` or `.bash` while changing what every such file is judged
+against. Widening it back to the whole tracked corpus inside the same step
+keeps the gate and the fallback compatible. The equivalent widening for a
+sourced library is the caller's to name, because the composite cannot see which
+scripts source what; a repository whose libraries carry no `.sh` extension
+should add them to the same condition.
 
 **The `if:` is load-bearing, and the reason is worth stating.** An empty list
 and an unset input are the same empty string once YAML has rendered them, so
