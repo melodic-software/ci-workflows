@@ -251,6 +251,9 @@ consumer to audit it.
     through to the immediate failure the run would have taken without the wait —
     loud and red, never a silent pass. Any other read failure warns the same way.
 
+  The 15-second poll interval is deliberately not a caller input: the only knob a
+  consumer should have to reason about is the ceiling.
+
   **Set `carry-forward-wait-seconds` at least 60 seconds below the calling job's
   `timeout-minutes`.** A ceiling at or above the job budget lets the job timeout
   preempt the fail-closed error, which reports as a cancelled job rather than the
