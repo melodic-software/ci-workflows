@@ -969,9 +969,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   prerequisite contract above. `edited` is required so re-titling
   re-validates; the gate passes on `merge_group` since the title was validated
   at PR time.
-  **Adopt the canonical block below** (not the in-repo `.github/workflows/pr-title.yml`,
-  which intentionally still triggers on `pull_request` — see the note after the
-  block):
+  **Adopt the canonical block below**:
 
   ```yaml
   on:
@@ -994,13 +992,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   This check reads PR title metadata only — it checks out and runs no head code.
 
-  This block is the canonical pattern to copy. The in-repo
-  `.github/workflows/pr-title.yml` dogfood caller deliberately stays on
-  `pull_request` for now: this repo is already gated on its own `pr-title / pr-title`
-  check, so a PR that flips that caller to `pull_request_target` would have the
-  required check run the base-branch (still-`pull_request`) definition and block
-  the flip. The self-flip is therefore deferred; consumers should follow this
-  documented block rather than copying the dogfood file.
+  This block is the canonical pattern to copy. This repository no longer carries
+  a `pr-title` caller of its own: its `ci.yml` `ci-status` job runs the
+  `pr-contract` composite, which checks the title in the same step as the
+  do-not-merge label and the issue linkage.
 - `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
   one of the three accepted linkage markers and non-empty `## Summary`,
   `## Fix`, `## Verification`, and `## Related` sections (the four contract

@@ -686,6 +686,11 @@ jobs:
           persist-credentials: false
       - name: Check the pull-request contract
         uses: ./.github/actions/pr-contract
+        with:
+          # Carried over from the retired pr-issue-linkage-self.yml caller, which
+          # passed the same list: Dependabot pull requests link no issue and the
+          # advisory comment plus label on every one of them is noise.
+          exempt-authors: 'dependabot[bot]'
       - name: Aggregate lane results
         # `!cancelled()` so a failing pr-contract step does not skip the
         # aggregation: the job still fails on the contract step's exit code, and
