@@ -54,6 +54,13 @@ permissions:
 # run whose `ci-lanes` status it carries forward, so the two race. The
 # `ci-status` composite closes that with a bounded wait on EARLIER incomplete
 # runs on the same head SHA — see `carry-forward-wait-seconds` on the job below.
+#
+# One hazard the branch does not remove, because no concurrency setting both
+# removes it and keeps supersession: the full branch is keyed on the pull
+# request number, which does not vary with the head SHA, so re-running a STALE
+# run on a superseded head SHA lands in the CURRENT head's group and cancels the
+# run that is actually reporting. Re-run the run on the current head instead.
+# Contract-only runs are immune, being unique per `github.run_id`.
 concurrency:
   group: >-
     ${{ (github.event.pull_request.head.repo.full_name == github.repository &&
