@@ -53,24 +53,34 @@ inputs:
   carry-forward-wait-seconds:
     description: >-
       Ceiling, in seconds, on the carry-forward wait. In carry-forward mode this
-      action FIRST waits, polling every 15 seconds, while any run of this same
-      workflow on this same head SHA is still incomplete and STARTED BEFORE this
-      one, BY RUN ID; only then does it read the
-      `status-context` status list and apply its usual logic. Wait before read,
-      not read then maybe wait: a SHA that already carries an older green status
-      can have a second full run in flight, and reading first would carry that
-      older success forward and bypass the run about to overwrite it. Ordering
-      by run id, which GitHub allocates monotonically, and not by `created_at`,
-      whose one-second resolution hides a same-second sibling. Only earlier runs
-      are waited on, so two contract-only runs can never wait on
-      each other. Reaching the ceiling with an earlier run still incomplete
-      fails the run without reading the unsettled status; there is no
-      pass-on-timeout path. `0` disables the wait and goes straight to the
-      status read. The calling job needs `actions: read`: under an explicit
-      `permissions:` block the default is none, and a 403 warns naming the scope
-      and degrades to the status read alone. Set this at least 60 seconds below
-      the calling job's `timeout-minutes`, or the job timeout preempts the
-      fail-closed error.
+      action polls every 15 seconds. Each poll lists the runs of this same
+      workflow on this same head SHA that are still incomplete, excluding this
+      run, and then reads the `status-context` status list. A `success` or
+      `failure` is a settled verdict and ends the poll; otherwise the run stops
+      when nothing is in flight, which is the immediate fail on an absent status
+      that this action has always had when no full run is coming, and sleeps
+      when something is.
+      ANY in-flight sibling is waited on, at any run id. Waiting only on lower
+      run ids, as v0.22.1 did, assumed a full run always outranks the
+      contract-only run beside it; a pull request opened with labels already
+      applied creates the two together and either may draw the lower id, so the
+      contract-only run that drew it read a status not yet written and failed
+      instantly. Reading the settled status each poll is what now stops two
+      contract-only runs waiting on each other: the full run's verdict releases
+      both.
+      Listing before reading WITHIN a poll is load-bearing. A sibling writes the
+      status and flips to `completed` moments later, and the other order lets
+      that completion land between the two calls and report both no status and
+      nothing in flight.
+      Reaching the ceiling fails the run; there is no pass-on-timeout path. The
+      one case that runs to the ceiling is two or more contract-only runs on a
+      SHA with no full run in flight to write a verdict for them, and it fails
+      closed. `0` disables the wait and goes straight to a single status read.
+      The calling job needs `actions: read`: under an explicit `permissions:`
+      block the default is none, and a 403 warns naming the scope and degrades
+      to the status read alone. Set this at least 60 seconds below the calling
+      job's `timeout-minutes`, or the job timeout preempts the fail-closed
+      error.
     default: '240'
   token:
     description: >-

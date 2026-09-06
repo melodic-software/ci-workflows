@@ -16,26 +16,49 @@
 #
 # The branched concurrency group (ci-perf Phase 6b) stops a contract-only run
 # queueing behind the full run whose status it reads, so the two now race.
-# `carry-forward-wait-seconds` bounds a wait that runs BEFORE the status read,
-# on EARLIER incomplete runs of this same workflow on this same head SHA.
+# `carry-forward-wait-seconds` bounds a poll loop that closes that race. Each
+# poll does three things, in this order:
 #
-# Wait first, then read. The other order looks cheaper and is wrong: a SHA that
-# already carries an older green status can have a second full run in flight, and
-# a contract-only run that read the status first would carry that older success
-# forward and bypass the run about to overwrite it. Reading only once nothing
-# earlier is still in flight makes the read the freshest verdict this run can
-# see.
+#   1. List the runs of this same workflow on this same head SHA that are still
+#      incomplete, excluding this run. Any run id; see below.
+#   2. Read the newest `github-actions[bot]` status for `status-context`. A
+#      `success` or `failure` is a settled verdict, so stop polling and apply
+#      it under the usual rules.
+#   3. Otherwise, if step 1 found nothing in flight, stop: no run that could
+#      still write a verdict exists, and an absent status fails the run as it
+#      always has. If something IS in flight, sleep and poll again.
 #
-# Only EARLIER runs, ordered BY RUN ID. That excludes this run from its own wait
-# set and makes mutual waiting between two contract-only runs impossible, because
-# the lower-id run of the pair waits on nothing. Run ids are allocated
-# monotonically per repository; `created_at` is not usable for the ordering,
-# because GitHub records it to one-second resolution and a same-second burst
-# (a force-push and a body edit in the same second) would make the sibling full
-# run invisible, which is the race this wait exists to close. The wait never
-# turns a verdict green: it decides nothing itself, and reaching the ceiling with
-# an earlier run still in flight exits 1 rather than reading a status that is not
-# yet settled.
+# ANY in-flight sibling, not only one with a lower run id. v0.22.1 waited only
+# on lower ids, reasoning that ordering the pair makes a mutual wait impossible.
+# The ordering is real; the premise that a full run always holds the lower id is
+# not. A pull request opened with labels already applied creates the `opened`
+# full run and the `labeled` contract-only run together, and nothing decides
+# which of the two draws the lower id. When the contract-only run drew it, its
+# wait set was empty, it read a status its sibling had not written yet, and it
+# failed instantly. Widening the set to every in-flight sibling fixes that and
+# gives up the ordering, so step 2 is what now breaks a mutual wait: once the
+# full run writes its verdict, both contract-only runs read it and stop.
+#
+# Step 1 before step 2 WITHIN a poll. A sibling writes the status and flips to
+# `completed` a moment later. Listing after reading would let that completion
+# land in the gap between the two calls and report both "no status" and "nothing
+# in flight", failing a SHA that does carry a verdict. Listing first closes the
+# gap, because a status written before the listing is still read after it.
+#
+# The loop never turns a verdict green. Reaching the ceiling exits 1 rather than
+# passing on an unsettled status; there is no pass-on-timeout path. The one case
+# that runs to the ceiling is two or more contract-only runs on a SHA with no
+# full run in flight to write a verdict for them: they wait on each other and
+# then both fail closed.
+#
+# Reading a settled status before the wait set empties is a deliberate trade. It
+# is what releases the mutual wait above, and it gives up the guard v0.22.1 had
+# against carrying an older `success` forward while a re-run of the same SHA is
+# in flight to overwrite it. That guard bound only when a full run had already
+# written a verdict for this exact SHA and another full run was in flight on it
+# again, and it cost a false red on every same-second sibling. The defences
+# against a forged status (context, creator login, Bot type, newest id) are
+# untouched.
 #
 # `same-repo` false is a fork pull request. Its token is read-only on
 # `pull_request` whatever `permissions:` requests, so it cannot record lane
@@ -177,8 +200,13 @@ require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]
 # echoing it so the caller can distinguish "read failed" from "read empty"
 # through the return status.
 carried_state=""
+# Whether `carried_state` holds a completed read. The poll loop reads the status
+# itself, so the caller below must not read a second time and overwrite what the
+# loop decided on.
+carried_state_read=false
 read_carried_state() {
   carried_state=""
+  carried_state_read=false
   # The LIST endpoint, not the combined one: `commits/<sha>/status` collapses to
   # one entry per context and exposes no author, so any collaborator with write
   # could POST a forged `ci-lanes=success` and then flip a label to turn the
@@ -197,6 +225,7 @@ read_carried_state() {
   carried_state="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
     '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id).state // "")' \
     <"$gh_stdout")"
+  carried_state_read=true
 }
 
 # Both Actions reads need `actions: read`, which an explicit `permissions:` block
@@ -206,15 +235,15 @@ read_carried_state() {
 warn_actions_read_failed() {
   local endpoint="$1"
   if [[ "$GH_HTTP_STATUS" == 403 ]]; then
-    echo "::warning::${endpoint} returned HTTP 403; the ci-status job needs 'actions: read' to wait for an earlier full run. Reading the recorded status without waiting."
+    echo "::warning::${endpoint} returned HTTP 403; the ci-status job needs 'actions: read' to wait for a sibling run. Reading the recorded status without waiting."
   else
     echo "::warning::could not read ${endpoint} (HTTP ${GH_HTTP_STATUS:-unknown}); reading the recorded status without waiting."
   fi
   cat "$gh_stderr" >&2
 }
 
-# Seconds actually slept, and the earlier run ids waited on, for the ceiling
-# message. Set by wait_for_earlier_runs.
+# Seconds actually slept, and the sibling run ids waited on, for the ceiling
+# message. Set by wait_for_sibling_runs.
 carry_forward_waited=0
 carry_forward_wait_note=""
 
@@ -222,17 +251,20 @@ carry_forward_wait_note=""
 # re-collected on every poll and a reader expects them in run order.
 set_wait_note() {
   if [[ "$carry_forward_waited" -gt 0 ]]; then
-    carry_forward_wait_note=" (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s on earlier run(s): $(printf '%s' "$1" | tr ' ' '\n' | sort -un | tr '\n' ' ' | sed 's/ *$//'))"
+    carry_forward_wait_note=" (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s on in-flight run(s): $(printf '%s' "$1" | tr ' ' '\n' | sort -un | tr '\n' ' ' | sed 's/ *$//'))"
   fi
 }
 
-# Wait until no run of this workflow on this head SHA is both still incomplete
-# AND carries a lower run id than this one. Returns 1 only when the ceiling is
-# reached with such a run still incomplete, which the caller turns into the
-# fail-closed error. Every other outcome returns 0 and lets the caller read the
-# status list: an emptied wait set, and every read failure, which degrades to
-# the pre-6b behaviour after a warning.
-wait_for_earlier_runs() {
+# Poll until this SHA's verdict settles, nothing that could still write one is
+# in flight, or the ceiling is reached. See the header for the ordering and for
+# why the wait set is every sibling rather than the lower-id ones.
+#
+# Returns 1 at the ceiling and 2 when the status read fails, both of which the
+# caller turns into the fail-closed error. Every other outcome returns 0. On a
+# 0 the caller applies `carried_state` when `carried_state_read` is true, and
+# otherwise reads the status itself: that is the degraded path an Actions read
+# failure takes, and it is the pre-6b behaviour.
+wait_for_sibling_runs() {
   local run_id="${GITHUB_RUN_ID:-}" workflow_id ids all_ids="" sleep_for remaining
   if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
     echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from its own wait set. Reading the recorded status without waiting."
@@ -260,26 +292,44 @@ wait_for_earlier_runs() {
       warn_actions_read_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs"
       break
     fi
-    # "Earlier" is a lower run id, not an earlier `created_at`. GitHub allocates
-    # run ids monotonically, while `created_at` has one-second resolution, so
-    # two runs of one burst routinely share a timestamp and a `created_at`
-    # comparison drops the sibling from the wait set entirely. Strict `<`
-    # excludes this run from its own wait set without a second test. `// $self`
-    # covers a run object with no `id`: in jq `null < number` is true, so the
-    # default keeps a malformed entry out rather than waiting on it forever.
+    # Every incomplete sibling, at any run id, minus this run. `!=` rather than
+    # `<`: neither run of an `opened`/`labeled` pair is reliably the lower id,
+    # so an ordering term drops the sibling this wait exists to see. `// $self`
+    # covers a run object with no `id`, keeping a malformed entry out rather
+    # than waiting on it forever. Sorted so the ids read in run order and the
+    # log line is stable from one poll to the next.
     ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$run_id" \
-      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) < $self) | .id ] | join(" ")' \
+      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
       <"$gh_stdout")"
-    if [[ -z "$ids" ]]; then
+    # The status read comes AFTER the listing above, never before it: a sibling
+    # writes the status and flips to `completed` moments later, and the other
+    # order lets that completion land between the two calls.
+    # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
+    if ! read_carried_state; then
+      set_wait_note "$all_ids"
+      return 2
+    fi
+    # A settled verdict ends the wait whatever is still in flight. This is what
+    # releases two contract-only runs that would otherwise wait on each other.
+    if [[ "$carried_state" == success || "$carried_state" == failure ]]; then
       if [[ "$carry_forward_waited" -gt 0 ]]; then
-        echo "Earlier run(s) on ${SHA} finished after ${carry_forward_waited}s; reading the ${STATUS_CONTEXT} status."
+        echo "The ${STATUS_CONTEXT} status on ${SHA} settled after ${carry_forward_waited}s."
+      fi
+      break
+    fi
+    if [[ -z "$ids" ]]; then
+      # Nothing that could still write a verdict is in flight, so waiting longer
+      # cannot change the answer. The caller fails on the unsettled state, which
+      # is the fast fail this action has always had when no full run is coming.
+      if [[ "$carry_forward_waited" -gt 0 ]]; then
+        echo "No run on ${SHA} is still in flight after ${carry_forward_waited}s; using the ${STATUS_CONTEXT} status."
       fi
       break
     fi
     all_ids="${all_ids}${all_ids:+ }${ids}"
     remaining=$((CARRY_FORWARD_WAIT_SECONDS - carry_forward_waited))
     if [[ "$remaining" -le 0 ]]; then
-      echo "::warning::reached the ${CARRY_FORWARD_WAIT_SECONDS}s carry-forward-wait-seconds ceiling with earlier run(s) ${ids} still incomplete on ${SHA}."
+      echo "::warning::reached the ${CARRY_FORWARD_WAIT_SECONDS}s carry-forward-wait-seconds ceiling with in-flight run(s) ${ids} still incomplete on ${SHA}."
       set_wait_note "$all_ids"
       return 1
     fi
@@ -287,7 +337,7 @@ wait_for_earlier_runs() {
     if [[ "$sleep_for" -gt "$remaining" ]]; then
       sleep_for="$remaining"
     fi
-    echo "Waiting ${sleep_for}s for earlier run(s) ${ids} on ${SHA} to finish (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s)."
+    echo "Waiting ${sleep_for}s for in-flight run(s) ${ids} on ${SHA} to finish (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s)."
     sleep "$sleep_for"
     carry_forward_waited=$((carry_forward_waited + sleep_for))
   done
@@ -296,27 +346,32 @@ wait_for_earlier_runs() {
 
 if [[ "$contract_only" == true ]]; then
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
-  # The wait comes FIRST, before the status is read, and it does not care whether
-  # a status is already there. A second full run in progress on a SHA that
-  # already carries an older green status is exactly the case a
-  # read-then-maybe-wait order gets wrong: the contract-only run would carry the
-  # older success forward and bypass the run that is about to overwrite it.
-  # Reading only once nothing earlier is still in flight means the status read is
-  # the freshest verdict this run can see.
+  # The poll loop reads the status itself, once per poll and after listing the
+  # in-flight siblings. It stops on a settled verdict, on an empty wait set, or
+  # at the ceiling.
   if [[ "$CARRY_FORWARD_WAIT_SECONDS" -gt 0 ]]; then
-    # shellcheck disable=SC2310 # wait_for_earlier_runs reports the ceiling through its status; the caller exits on it.
-    if ! wait_for_earlier_runs; then
-      # Never pass on timeout: an earlier run is still in flight, so whatever
-      # status is on the SHA right now is not this SHA's settled verdict.
+    carry_forward_wait_status=0
+    # shellcheck disable=SC2310 # wait_for_sibling_runs reports the ceiling and a failed read through its status; the caller exits on both.
+    wait_for_sibling_runs || carry_forward_wait_status=$?
+    if [[ "$carry_forward_wait_status" -ne 0 ]]; then
+      # Never pass on timeout: a run that could still write this SHA's verdict
+      # is in flight, so whatever is on the SHA right now is not settled.
+      if [[ "$carry_forward_wait_status" -eq 2 ]]; then
+        cat "$gh_stderr" >&2
+      fi
       echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
       exit 1
     fi
   fi
-  # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
-  if ! read_carried_state; then
-    cat "$gh_stderr" >&2
-    echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
-    exit 1
+  # Only when the loop did not read it: an Actions read failure degrades to the
+  # pre-6b path, where this is the single status read.
+  if [[ "$carried_state_read" != true ]]; then
+    # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
+    if ! read_carried_state; then
+      cat "$gh_stderr" >&2
+      echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
+      exit 1
+    fi
   fi
   if [[ "$carried_state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
