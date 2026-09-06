@@ -225,49 +225,58 @@ consumer to audit it.
   opens. Before ci-perf Phase 6b a contract-only run shared one concurrency group
   with the full run it reads and queued behind it, so the `ci-lanes` status was
   always already written; the branched group removes that queueing, so the two
-  now race. Carry-forward mode therefore does two things in a fixed order.
+  now race. Carry-forward mode therefore polls.
 
-  First it waits. It reads the current run
+  It reads the current run
   (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`) for its workflow, then
-  polls
+  every 15 seconds does two calls in a fixed order. First
   `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs?head_sha={sha}`
-  every 15 seconds for runs of this workflow on the same commit that started
-  before this one, by run id, and that are `queued`, `in_progress`, `waiting`,
-  `pending` or `requested`. It sleeps while at least one exists, and stops when
-  none remain or at the ceiling.
+  for the runs of this workflow on the same commit that are `queued`,
+  `in_progress`, `waiting`, `pending` or `requested`, excluding this run. Then
+  the `status-context` list, read as above: newest entry by
+  `github-actions[bot]`.
 
-  Only then does it read the `status-context` list and apply the logic above:
-  newest entry by `github-actions[bot]`, `success` carries forward, anything else
-  and anything absent fails.
+  A `success` or `failure` on that read is a settled verdict, so the poll stops
+  and the verdict applies. Otherwise, if the first call found nothing in flight
+  the poll stops too, because nothing that could still write a verdict exists
+  and an absent status fails as it always has. If something is in flight, it
+  sleeps and polls again. Four properties are load-bearing:
 
-  **Wait before read, not read then maybe wait.** The cheaper order is wrong: a
-  SHA that already carries an older green status can have a second full run in
-  flight, and a contract-only run that read the status first would carry that
-  older success forward and bypass the run about to overwrite it. Waiting first
-  means the one status read is the freshest verdict the run can see. Four more
-  properties are load-bearing:
-
-  - **Only earlier runs, so there is no mutual wait.** The ordering term excludes
-    this run from its own wait set, and between two contract-only runs the
-    lower-id one waits on nothing, fails fast, and the higher-id one waits only
-    until it finishes.
-  - **Earlier means a lower run id, not an earlier `created_at`.** GitHub
-    allocates run ids monotonically, while `created_at` has one-second
-    resolution. A burst that creates two runs in the same second is ordinary
-    (an app that force-pushes and edits the pull-request body in one second
-    produces exactly that), and a `created_at` comparison would drop the sibling
-    full run from the wait set, so the contract-only run would fail immediately
-    instead of waiting for it.
-  - **The wait never turns a verdict green.** It decides nothing itself, and
-    reaching the ceiling with an earlier run still incomplete prints
+  - **Any in-flight sibling is waited on, at any run id.** Waiting only on lower
+    run ids, as v0.22.1 did, assumed a full run always outranks the
+    contract-only run beside it. A pull request opened with labels already
+    applied (Dependabot, an app that labels on open) creates the `opened` full
+    run and the `labeled` contract-only run together, and nothing decides which
+    draws the lower id. The contract-only run that drew it had an empty wait
+    set, read a status its sibling had not written yet, and failed instantly.
+  - **Reading the settled status each poll is what prevents a mutual wait.**
+    Widening the wait set gave up the ordering that used to guarantee one run of
+    a pair waits on nothing. Two contract-only runs on one SHA now wait on each
+    other until the full run writes its verdict, which releases both. With no
+    full run in flight to write one, they run to the ceiling and both fail
+    closed. That is the only case that waits to the ceiling in normal operation.
+  - **Listing before reading, within a poll.** A sibling writes the status and
+    flips to `completed` moments later. Reading first would let that completion
+    land between the two calls and report both no status and nothing in flight,
+    failing a SHA that does carry a verdict.
+  - **The wait never turns a verdict green.** Reaching the ceiling prints
     `::error::no successful <context> status on <sha>; re-run the full workflow`,
-    extended with how long it waited and on which run ids, and exits 1 without
-    reading the unsettled status. There is no pass-on-timeout path.
-  - **The calling job needs `actions: read`.** Under an explicit `permissions:`
-    block the default for every scope is none, so both Actions calls 403 without
-    it. A 403 prints a `::warning::` naming the missing scope and then degrades
-    to the status read alone, which is the pre-6b contract: loud, and never a
-    pass on an absent status. Any other read failure warns the same way.
+    extended with how long it waited and on which run ids, and exits 1. There is
+    no pass-on-timeout path.
+
+  **The calling job needs `actions: read`.** Under an explicit `permissions:`
+  block the default for every scope is none, so both Actions calls 403 without
+  it. A 403 prints a `::warning::` naming the missing scope and then degrades to
+  a single status read, which is the pre-6b contract: loud, and never a pass on
+  an absent status. Any other read failure warns the same way.
+
+  **The trade this makes.** Ending the wait on a settled status is what releases
+  the mutual wait, and it gives up v0.22.1's guard against carrying an older
+  `success` forward while a re-run of the same SHA is in flight to overwrite it.
+  That guard bound only when a full run had already written a verdict for this
+  exact SHA and another full run was in flight on it again, and it cost a false
+  red on every same-second sibling. The defences against a forged status
+  (context, creator login, `Bot` type, newest id) are untouched.
 
   The 15-second poll interval is deliberately not a caller input: the only knob a
   consumer should have to reason about is the ceiling.
