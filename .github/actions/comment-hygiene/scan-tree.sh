@@ -5,6 +5,11 @@
 # authoritatively validates each hit. This two-pass shape keeps the scan fast on
 # large trees — looping the library over every file would be O(files × lines).
 #
+# The per-hit validator runs in-process: calling `chp::scan_text` via command
+# substitution (`scan_out="$(chp::scan_text …)"`) forks a subshell on every
+# git-grep hit. Hits are collected through a nameref array instead
+# (`chp_violation_sink`) so the hot loop does not pay that forks-in-loop cost.
+#
 # Emits "path:lineno:kind:detail" per violation.
 # Exit: 0 = clean, 1 = violations, 2 = environment error.
 set -euo pipefail
@@ -16,6 +21,20 @@ if [[ ! -f "$PATTERNS_FILE" ]]; then
 fi
 # shellcheck source=/dev/null
 source "$PATTERNS_FILE"
+
+# Redefine the recorder after sourcing so a replacement PATTERNS_FILE whose
+# chp::_record_violation still only prints to stdout cannot leak un-rewritten
+# lines (or drop hits) when we skip `$(chp::scan_text …)`. Command substitution
+# of a bash function forks a subshell per git-grep hit; this nameref collector
+# keeps the forks-in-loop cost off the hot path. The bundled library implements
+# the same sink; this override is the scan-tree contract either way.
+chp::_record_violation() {
+  local rec
+  printf -v rec '%s:%s:%s' "$1" "$2" "$3"
+  local -n _chp_sink="$chp_violation_sink"
+  _chp_sink+=("$rec")
+  violations=$((violations + 1))
+}
 
 read -ra scan_globs <<<"${EXTENSIONS:-}"
 read -ra excludes <<<"${EXCLUDE:-}"
@@ -53,20 +72,28 @@ while IFS= read -r match; do
   lineno="${rest%%:*}"
   content="${rest#*:}"
 
+  # In-process collection: do not wrap chp::scan_text in `$(…)` — command
+  # substitution of a bash function forks a subshell per git-grep hit
+  # (forks-in-loop). A nameref sink lets _record_violation append here.
+  # The function's non-zero return is the "has findings" signal, not a
+  # suppressed crash, so capturing it here is the intended path.
+  # shellcheck disable=SC2310
   scan_rc=0
-  scan_out="$(chp::scan_text "$content")" || scan_rc=$?
+  chp_violation_sink=__chp_scan_hits
+  __chp_scan_hits=()
+  chp::scan_text "$content" || scan_rc=$?
   if [[ "$scan_rc" -eq 0 ]]; then
     continue
   fi
 
-  while IFS= read -r detail_line; do
+  for detail_line in "${__chp_scan_hits[@]}"; do
     [[ -z "$detail_line" ]] && continue
     # The library prefixes its own (single-line) lineno; replace it with the
     # real git-grep file line number.
     detail="${detail_line#*:}"
     printf '%s:%s:%s\n' "$file" "$lineno" "$detail"
     violations=$((violations + 1))
-  done <<<"$scan_out"
+  done
 done <"$matches"
 
 if [[ "$violations" -eq 0 ]]; then
