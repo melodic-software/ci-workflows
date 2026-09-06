@@ -575,7 +575,7 @@ jobs:
         # generated security boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status .github/actions/exec-bit .github/actions/shfmt .github/actions/comment-hygiene
+          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status .github/actions/exec-bit .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 

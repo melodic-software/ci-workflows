@@ -26,8 +26,10 @@ source "$PATTERNS_FILE"
 # chp::_record_violation still only prints to stdout cannot leak un-rewritten
 # lines (or drop hits) when we skip `$(chp::scan_text …)`. Command substitution
 # of a bash function forks a subshell per git-grep hit; this nameref collector
-# keeps the forks-in-loop cost off the hot path. The bundled library implements
-# the same sink; this override is the scan-tree contract either way.
+# keeps the forks-in-loop cost off the hot path. The override is the scan-tree
+# contract either way — the bundled library is a managed payload and is not
+# edited here.
+# shellcheck disable=SC2329 # invoked from chp::scan_text, which this file sources.
 chp::_record_violation() {
   local rec
   printf -v rec '%s:%s:%s' "$1" "$2" "$3"

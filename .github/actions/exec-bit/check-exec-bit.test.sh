@@ -80,7 +80,14 @@ expect_contains 'exact error annotation' '::error file=tool.sh::tool.sh has a sh
 # 100644 file with #! only on a later line (markdown fence) is not byte 0.
 docs="$temporary_directory/docs"
 init_repo "$docs"
-printf '# Title\n\n```bash\n#!/usr/bin/env bash\necho hi\n```\n' >"$docs/readme.md"
+cat >"$docs/readme.md" <<'MARKDOWN'
+# Title
+
+```bash
+#!/usr/bin/env bash
+echo hi
+```
+MARKDOWN
 commit_all "$docs"
 run_case 'later-line #! in 100644 markdown is clean' 0 "$docs"
 expect_contains 'docs with a fenced shebang pass' 'All shebang files are mode 100755 in the index.'
@@ -123,7 +130,13 @@ init_repo "$mixed"
 printf '#!/usr/bin/env bash\necho good\n' >"$mixed/good.sh"
 chmod +x "$mixed/good.sh"
 printf '#!/usr/bin/env bash\necho bad\n' >"$mixed/bad.sh"
-printf '# not a script\n\n```\n#!/usr/bin/env bash\n```\n' >"$mixed/notes.md"
+cat >"$mixed/notes.md" <<'MARKDOWN'
+# not a script
+
+```
+#!/usr/bin/env bash
+```
+MARKDOWN
 commit_all "$mixed"
 run_case 'mixed tree fails only the 100644 shebang' 1 "$mixed"
 expect_contains 'mixed reports bad.sh' '::error file=bad.sh::bad.sh has a shebang but git index mode is 100644'
