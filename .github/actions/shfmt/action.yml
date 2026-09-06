@@ -55,50 +55,16 @@ runs:
       env:
         PATHS: ${{ inputs.paths }}
         EXCLUDE: ${{ inputs.exclude }}
-      run: |
-        set -euo pipefail
-        if [[ -z "${PATHS// }" ]]; then
-          # Git-tracked discovery (default): tracked *.sh/*.bash only, so ignored
-          # or generated scripts in a dirty tree are never gated. NUL-delimited so
-          # any path is safe; ls-files output is already sorted.
-          mapfile -d '' -t files < <(git ls-files -z -- '*.sh' '*.bash')
-        else
-          # Explicit roots opt into a raw filesystem walk that does not consult
-          # .gitignore. Split into an array so each root reaches find as its own
-          # path operand: an unquoted $PATHS would let bash pathname-expand a
-          # root first, and find treats a stray operand as a -exec-capable
-          # expression rather than a mere argument. -d '' takes the whole value
-          # (a newline is an IFS separator too, so a caller-authored multi-line
-          # input still splits correctly); read hits EOF without finding that
-          # delimiter, hence the `|| true`.
-          path_roots=()
-          read -r -d '' -a path_roots <<<"$PATHS" || true
-          mapfile -t files < <(find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
-        fi
-        # Keep only on-disk files: a sparse checkout leaves tracked-but-absent
-        # (skip-worktree) entries that shfmt cannot open.
-        present=()
-        for f in ${files[@]+"${files[@]}"}; do [[ -f "$f" ]] && present+=("$f"); done
-        files=(${present[@]+"${present[@]}"})
-        # Drop excluded substrings (space-separated, fixed-string match). The
-        # outer guard plus the per-iteration break keep an emptied list from
-        # feeding printf a lone newline, which grep -vF would pass back as a
-        # spurious empty-string element (length 1, not 0).
-        if [[ ${#files[@]} -gt 0 ]]; then
-          for sub in $EXCLUDE; do
-            mapfile -t files < <(printf '%s\n' "${files[@]}" | grep -vF -- "$sub" || true)
-            [[ ${#files[@]} -eq 0 ]] && break
-          done
-        fi
-        if [[ ${#files[@]} -eq 0 ]]; then
-          echo 'No shell scripts to check.'
-          exit 0
-        fi
-        printf 'Checking %d file(s):\n' "${#files[@]}"
-        printf '  %s\n' "${files[@]}"
-        # No formatting flags: shfmt reads each file's .editorconfig for indent
-        # width, switch-case indent, and binary-next-line. Passing any -i/-ci/-bn
-        # would make shfmt IGNORE .editorconfig entirely, so formatting policy
-        # stays externalized in the caller's .editorconfig. -d prints a unified
-        # diff and exits non-zero when a file is not already formatted.
-        shfmt -d "${files[@]}"
+        # The fan-out shape is PINNED here, not left to the environment. A
+        # composite action inherits the caller's workflow-, job- and step-level
+        # env, so without these two lines an unrelated `SHFMT_JOBS` in a
+        # consumer's workflow would silently change how this action formats,
+        # and a typo like `auto` or `0` would abort it. Step-level env wins
+        # over everything inherited, so setting them here makes the action's
+        # behaviour a property of the action. run.sh reads the same names
+        # with these values as its defaults; that path exists for its
+        # self-test, which invokes the script directly rather than through
+        # this file.
+        SHFMT_BATCH_SIZE: '40'
+        SHFMT_JOBS: '4'
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
