@@ -9,10 +9,12 @@
 # otherwise self-certify.
 #
 # Carry-forward mode (`contract-only` true): the lanes were gated off by
-# construction, so aggregation is skipped and the combined commit status for
-# `status-context` on the same SHA decides. The combined-status endpoint returns
-# the latest state per context, so a later full-run failure on the same SHA
-# overrides an earlier success.
+# construction, so aggregation is skipped and the recorded commit status for
+# `status-context` on the same SHA decides. It is read from the status LIST
+# endpoint, which carries `.creator`, and the newest entry by id from
+# `github-actions[bot]` wins, so a later full-run failure on the same SHA
+# overrides an earlier success. The combined-status endpoint would be shorter
+# but exposes no author; see `read_carried_state` for why that matters.
 #
 # The branched concurrency group (ci-perf Phase 6b) stops a contract-only run
 # queueing behind the full run whose status it reads, so the two now race.
@@ -313,12 +315,18 @@ wait_for_sibling_runs() {
     # order lets that completion land between the two calls.
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! read_carried_state; then
-      set_wait_note "$all_ids"
+      # This poll's ids are appended below, after the settled and empty-set
+      # exits, so pass them explicitly: a sibling first seen on the poll whose
+      # read failed would otherwise be missing from the note that names what
+      # this run waited on.
+      set_wait_note "${all_ids}${all_ids:+ }${ids}"
       return 2
     fi
     # A settled verdict ends the wait whatever is still in flight. This is what
     # releases two contract-only runs that would otherwise wait on each other.
-    if [[ "$carried_state" == success || "$carried_state" == failure ]]; then
+    # `error` is settled alongside `failure`: both are terminal states the API
+    # accepts, and neither passes below, so waiting on one only delays a red.
+    if [[ "$carried_state" == success || "$carried_state" == failure || "$carried_state" == error ]]; then
       if [[ "$carry_forward_waited" -gt 0 ]]; then
         echo "The ${STATUS_CONTEXT} status on ${SHA} settled after ${carry_forward_waited}s."
       fi

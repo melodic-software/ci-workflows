@@ -52,7 +52,7 @@ permissions:
 #
 # The cost of the branch: a contract-only run no longer queues behind the full
 # run whose `ci-lanes` status it carries forward, so the two race. The
-# `ci-status` composite closes that with a bounded wait on EARLIER incomplete
+# `ci-status` composite closes that with a bounded wait on in-flight sibling
 # runs on the same head SHA; see `carry-forward-wait-seconds` on the job below.
 #
 # One hazard the branch does not remove, because no concurrency setting both

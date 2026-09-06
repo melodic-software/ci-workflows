@@ -210,7 +210,8 @@ expect_no_gh_call() {
 
 # expect_gh_call_before <earlier-substring> <later-substring>
 # The gh log is append-ordered, so line numbers are call order. This is what
-# proves the wait runs BEFORE the status read rather than after it.
+# proves each poll LISTS the in-flight runs before it READS the status, the
+# order that stops a sibling's flip to `completed` landing between the two.
 expect_gh_call_before() {
   local first="$1" second="$2" first_line second_line
   first_line="$(grep -nF -- "$first" "$gh_log" | head -n1 | cut -d: -f1)"
@@ -271,10 +272,11 @@ statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
 current_run_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242'
 workflow_runs_key='GET_repos_melodic-software_ci-workflows_actions_workflows_777_runs'
 # The run under test: workflow 777, run id 4242, created at 12:00:30Z. The wait
-# orders by run id, so every "earlier" run below carries an id below 4242 and
-# every "newer" one an id above it. The `created_at` values are kept because the
-# real API returns them, and the same-second case below relies on the runner
-# ignoring them.
+# no longer orders the runs it sees: every incomplete sibling counts whatever
+# its id, and only 4242 itself is excluded. Ids below and above 4242 appear
+# below to pin that, and the `created_at` values are kept both because the real
+# API returns them and because the same-second cases prove the runner ignores
+# them.
 current_run_created_at='2026-09-05T12:00:30Z'
 
 # status_list_on_call <n> <json-array>
@@ -771,6 +773,79 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
 expect_log "Waiting 15s for in-flight run(s) 4100 4300 on ${sha} to finish (waited 0s of 30s)."
 expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with in-flight run(s) 4100 4300'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on in-flight run(s): 4100 4300)"
+
+# Without `error` in the settled set this waits the full 60s on a verdict that
+# can never change, then fails anyway. `error` is a terminal commit-status state
+# like `failure`, and neither passes below, so waiting on one only delays a red.
+echo 'case: an error status is settled and fails at once rather than waiting to the ceiling'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[$(bot_status 100 error)]"
+workflow_runs "[${earlier_full_run}]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_no_log 'Waiting '
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# The documented trade, pinned deliberately from the passing side. A recorded
+# success ends the wait even with a sibling in flight, so a re-run of this SHA
+# that is about to overwrite it does not hold the run. Without that the loop
+# waits, and two contract-only runs on an already-green SHA would wait on each
+# other to the ceiling and both go red.
+echo 'case: a settled success ends the wait even with a sibling in flight'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_no_log 'Waiting '
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the fail-closed return on a failed status read, the loop would fall
+# through to the caller's own read and decide on whatever that returned. The
+# stderr passes through so the cause is visible, not just the verdict.
+echo 'case: a status read failure inside the wait fails closed and surfaces the cause'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+workflow_runs "[${earlier_full_run}]"
+printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${statuses_key}.err"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log 'gh: Not Found (HTTP 404)'
+rm -f -- "$fixtures/${statuses_key}.err"
+
+# The wait note names what this run waited on, so a sibling first seen on the
+# poll whose read failed has to be in it. Without appending this poll's ids
+# before the fail-closed return, 4700 is missing from the message and the note
+# understates the wait.
+echo 'case: a status read failing on a later poll names every sibling in the wait note'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list '[]'
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs_on_call 2 "[${earlier_full_run},$(run_entry 4700 in_progress "$current_run_created_at")]"
+printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000 4700)"
+rm -f -- "$fixtures/${statuses_key}.fail-on-call"
+
+# A sibling can finish without ever recording a verdict: cancelled, or failed
+# before the ci-status job ran. The wait set empties, nothing more can write,
+# and the run fails on the absent status rather than sleeping to the ceiling.
+echo 'case: a sibling that finishes without writing a status fails on the emptied wait set'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list '[]'
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs_on_call 2 '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "No run on ${sha} is still in flight after 15s; using the ci-lanes status."
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
 
 clear_status_fixtures
 
