@@ -556,6 +556,8 @@ jobs:
         uses: ./.github/actions/shellcheck
       - name: Test ShellCheck discovery and scoped exclusions
         run: bash .github/actions/shellcheck/run.test.sh
+      - name: Test exec-bit shebang mode scan
+        run: bash .github/actions/exec-bit/check-exec-bit.test.sh
 
   shfmt:
     needs: changes
@@ -573,7 +575,9 @@ jobs:
         # generated security boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status
+          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status .github/actions/exec-bit .github/actions/shfmt .github/actions/comment-hygiene
+      - name: Test shfmt discovery and fan-out
+        run: bash .github/actions/shfmt/run.test.sh
 
   selector-contract:
     needs: changes
