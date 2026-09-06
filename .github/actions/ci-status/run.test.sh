@@ -103,6 +103,15 @@ if [[ -f "$fail_times" ]]; then
   fi
 fi
 
+# Fail one specific call to a key while every other call to it succeeds, which
+# `.fail-times` (always the FIRST n) cannot express. A read that fails part way
+# through the poll loop is a different path from one that fails on entry.
+fail_on_call="$GH_FIXTURES/${key}.fail-on-call"
+if [[ -f "$fail_on_call" && "$call_number" == "$(cat "$fail_on_call")" ]]; then
+  echo "gh: Internal Server Error (HTTP 500)" >&2
+  exit 1
+fi
+
 if [[ -f "$GH_FIXTURES/${key}.err" ]]; then
   cat "$GH_FIXTURES/${key}.err" >&2
   exit 1
@@ -625,6 +634,24 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "::warning::repos/${repository}/actions/workflows/777/runs returned HTTP 403; the ci-status job needs 'actions: read'"
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 expect_no_log 'Waiting '
+
+# Without discarding the earlier poll's read, a listing that fails PART WAY
+# through the wait decides on the state read before the sleep rather than the
+# fresh one its own warning promises. Here the sibling records success during
+# that sleep, so the stale read would fail a SHA that is green.
+echo 'case: a listing failure mid-wait re-reads the status rather than using the pre-sleep one'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list_on_call 1 '[]'
+status_list_on_call 2 "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+printf '%s\n' 2 >"$fixtures/${workflow_runs_key}.fail-on-call"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log '::warning::could not read'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures/${workflow_runs_key}.fail-on-call"
 
 echo 'case: a 403 on the current-run fetch warns and never reaches the workflow-runs endpoint'
 clear_status_fixtures

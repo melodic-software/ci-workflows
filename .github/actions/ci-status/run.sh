@@ -290,6 +290,13 @@ wait_for_sibling_runs() {
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
       warn_actions_read_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs"
+      # Discard any earlier poll's read so the caller takes the single fresh
+      # read the warning above promises. Without this, a listing that fails on
+      # the second or later poll would decide on the state read before the
+      # sleep, which is exactly the stale verdict the degraded path exists to
+      # avoid. A 403 fires on the first poll, before any read; this covers a
+      # transient failure mid-wait.
+      carried_state_read=false
       break
     fi
     # Every incomplete sibling, at any run id, minus this run. `!=` rather than
