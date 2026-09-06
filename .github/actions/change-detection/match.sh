@@ -139,10 +139,17 @@ fi
 
 matcher="$scratch/matcher"
 git init -q "$matcher"
-ignore="$matcher/.gitignore"
+: >"$matcher/.gitignore"
 values=()
+# Per-group check-ignore is a process-per-group fork. Groups are independent
+# (each has its own pattern set), so they can run concurrently against one
+# scratch repo via core.excludesFile — check-ignore is read-only. Results are
+# collected and then folded in `names` order so emit_results and the warnings
+# stay in the same sequence as the serial loop. An empty pattern file is the
+# vacuous-filter fail-OPEN (no usable patterns); check-ignore exit 0 = at
+# least one match, 1 = none, >1 = fatal (also fail OPEN, never "no match").
 for index in "${!names[@]}"; do
-  name="${names[$index]}"
+  ignore="$scratch/ignore-$index"
   : >"$ignore"
   while IFS= read -r pattern; do
     case "$pattern" in
@@ -150,26 +157,45 @@ for index in "${!names[@]}"; do
     *) printf '/%s\n' "$pattern" >>"$ignore" ;;
     esac
   done <"${group_files[$index]}"
-
-  # Every line was blank or a comment, so the group is effectively empty —
-  # fail OPEN rather than skip its lane on a vacuous filter.
+done
+for index in "${!names[@]}"; do
+  ignore="$scratch/ignore-$index"
   if [[ ! -s "$ignore" ]]; then
+    printf 'empty\n' >"$scratch/rc-$index"
+    continue
+  fi
+  (
+    matches="$(git -C "$matcher" -c core.excludesFile="$ignore" check-ignore --stdin --no-index <"$files_list_path")" && rc=0 || rc=$?
+    # Completion marker is the rc file: write matches first so a kill between
+    # the two writes cannot leave rc=0 (had matches) with an absent matches
+    # file, which the parent would read as "no match" and skip the lane.
+    printf '%s' "$matches" >"$scratch/matches-$index"
+    printf '%s\n' "$rc" >"$scratch/rc-$index"
+  ) &
+done
+wait
+for index in "${!names[@]}"; do
+  name="${names[$index]}"
+  # A worker that was killed, or never wrote a status, is an operational
+  # fault: fail OPEN the same way check-ignore exit >1 does, never as "no
+  # match", so a parallel-scheduler glitch cannot silently skip a lane.
+  if [[ ! -f "$scratch/rc-$index" ]]; then
+    echo "::warning::check-ignore produced no status for group '${name}'; treating it as relevant."
+    values+=("true")
+    continue
+  fi
+  rc="$(<"$scratch/rc-$index")"
+  if [[ "$rc" == empty ]]; then
     echo "::warning::Filter group '${name}' has no usable patterns; treating it as relevant."
     values+=("true")
     continue
   fi
-
-  # check-ignore prints matching paths; exit 0 = at least one match, 1 =
-  # none, >1 = fatal. A fatal error fails OPEN, never reads as "no match",
-  # so a matcher fault cannot silently skip a lane.
-  matches="$(git -C "$matcher" check-ignore --stdin --no-index <"$files_list_path")" && rc=0 || rc=$?
   if [[ "$rc" -gt 1 ]]; then
     echo "::warning::check-ignore failed for group '${name}' (rc=${rc}); treating it as relevant."
     values+=("true")
     continue
   fi
-
-  if [[ -n "$matches" ]]; then
+  if [[ -s "$scratch/matches-$index" ]]; then
     values+=("true")
   else
     values+=("false")
