@@ -26,11 +26,16 @@
 # earlier is still in flight makes the read the freshest verdict this run can
 # see.
 #
-# Only EARLIER runs. That excludes this run from its own wait set and makes
-# mutual waiting between two contract-only runs impossible, because the older of
-# the pair waits on nothing. The wait never turns a verdict green: it decides
-# nothing itself, and reaching the ceiling with an earlier run still in flight
-# exits 1 rather than reading a status that is not yet settled.
+# Only EARLIER runs, ordered BY RUN ID. That excludes this run from its own wait
+# set and makes mutual waiting between two contract-only runs impossible, because
+# the lower-id run of the pair waits on nothing. Run ids are allocated
+# monotonically per repository; `created_at` is not usable for the ordering,
+# because GitHub records it to one-second resolution and a same-second burst
+# (a force-push and a body edit in the same second) would make the sibling full
+# run invisible, which is the race this wait exists to close. The wait never
+# turns a verdict green: it decides nothing itself, and reaching the ceiling with
+# an earlier run still in flight exits 1 rather than reading a status that is not
+# yet settled.
 #
 # `same-repo` false is a fork pull request. Its token is read-only on
 # `pull_request` whatever `permissions:` requests, so it cannot record lane
@@ -222,29 +227,28 @@ set_wait_note() {
 }
 
 # Wait until no run of this workflow on this head SHA is both still incomplete
-# AND created strictly before this one. Returns 1 only when the ceiling is
+# AND carries a lower run id than this one. Returns 1 only when the ceiling is
 # reached with such a run still incomplete, which the caller turns into the
 # fail-closed error. Every other outcome returns 0 and lets the caller read the
 # status list: an emptied wait set, and every read failure, which degrades to
 # the pre-6b behaviour after a warning.
 wait_for_earlier_runs() {
-  local run_id="${GITHUB_RUN_ID:-}" workflow_id created_at ids all_ids="" sleep_for remaining
+  local run_id="${GITHUB_RUN_ID:-}" workflow_id ids all_ids="" sleep_for remaining
   if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
     echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from its own wait set. Reading the recorded status without waiting."
     return 0
   fi
-  # One fetch of the current run gives both the workflow to enumerate and the
-  # `created_at` the ordering term compares against. Reading them from the run
-  # itself, not from the event payload, keeps the two consistent.
+  # One fetch of the current run gives the workflow to enumerate. The ordering
+  # term needs nothing from it: `GITHUB_RUN_ID` is this run's own id, which is
+  # what the wait set is compared against.
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
     warn_actions_read_failed "repos/${REPOSITORY}/actions/runs/${run_id}"
     return 0
   fi
   workflow_id="$(jq -r '.workflow_id // ""' <"$gh_stdout")"
-  created_at="$(jq -r '.created_at // ""' <"$gh_stdout")"
-  if [[ ! "$workflow_id" =~ ^[0-9]+$ || -z "$created_at" ]]; then
-    echo "::warning::run ${run_id} reported no workflow_id or created_at; reading the recorded status without waiting."
+  if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
+    echo "::warning::run ${run_id} reported no workflow_id; reading the recorded status without waiting."
     return 0
   fi
   while :; do
@@ -256,12 +260,15 @@ wait_for_earlier_runs() {
       warn_actions_read_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs"
       break
     fi
-    # `created_at` is an ISO-8601 UTC timestamp of fixed width, so a string
-    # comparison is a chronological one. The id test is belt and braces: this
-    # run cannot be strictly earlier than itself, but a same-second sibling
-    # would be excluded by the timestamp alone and this makes the intent plain.
-    ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg created "$created_at" --arg self "$run_id" \
-      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.created_at // "") < $created) | select((.id | tostring) != $self) | .id ] | join(" ")' \
+    # "Earlier" is a lower run id, not an earlier `created_at`. GitHub allocates
+    # run ids monotonically, while `created_at` has one-second resolution, so
+    # two runs of one burst routinely share a timestamp and a `created_at`
+    # comparison drops the sibling from the wait set entirely. Strict `<`
+    # excludes this run from its own wait set without a second test. `// $self`
+    # covers a run object with no `id`: in jq `null < number` is true, so the
+    # default keeps a malformed entry out rather than waiting on it forever.
+    ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$run_id" \
+      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) < $self) | .id ] | join(" ")' \
       <"$gh_stdout")"
     if [[ -z "$ids" ]]; then
       if [[ "$carry_forward_waited" -gt 0 ]]; then
