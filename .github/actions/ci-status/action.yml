@@ -54,13 +54,15 @@ inputs:
     description: >-
       Ceiling, in seconds, on the carry-forward wait. In carry-forward mode this
       action FIRST waits, polling every 15 seconds, while any run of this same
-      workflow on this same head SHA is still incomplete and was created
-      strictly EARLIER than this one; only then does it read the
+      workflow on this same head SHA is still incomplete and STARTED BEFORE this
+      one, BY RUN ID; only then does it read the
       `status-context` status list and apply its usual logic. Wait before read,
       not read then maybe wait: a SHA that already carries an older green status
       can have a second full run in flight, and reading first would carry that
-      older success forward and bypass the run about to overwrite it. Only
-      earlier runs are waited on, so two contract-only runs can never wait on
+      older success forward and bypass the run about to overwrite it. Ordering
+      by run id, which GitHub allocates monotonically, and not by `created_at`,
+      whose one-second resolution hides a same-second sibling. Only earlier runs
+      are waited on, so two contract-only runs can never wait on
       each other. Reaching the ceiling with an earlier run still incomplete
       fails the run without reading the unsettled status; there is no
       pass-on-timeout path. `0` disables the wait and goes straight to the

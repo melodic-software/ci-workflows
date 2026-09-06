@@ -228,13 +228,13 @@ consumer to audit it.
   now race. Carry-forward mode therefore does two things in a fixed order.
 
   First it waits. It reads the current run
-  (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`) for its workflow and its
-  `created_at`, then polls
+  (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`) for its workflow, then
+  polls
   `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs?head_sha={sha}`
-  every 15 seconds for runs of the same workflow on the same head SHA that are
-  `queued`, `in_progress`, `waiting`, `pending` or `requested` **and were created
-  strictly earlier than this run**. It sleeps while at least one exists, and
-  stops when none remain or at the ceiling.
+  every 15 seconds for runs of this workflow on the same commit that started
+  before this one, by run id, and that are `queued`, `in_progress`, `waiting`,
+  `pending` or `requested`. It sleeps while at least one exists, and stops when
+  none remain or at the ceiling.
 
   Only then does it read the `status-context` list and apply the logic above:
   newest entry by `github-actions[bot]`, `success` carries forward, anything else
@@ -244,13 +244,20 @@ consumer to audit it.
   SHA that already carries an older green status can have a second full run in
   flight, and a contract-only run that read the status first would carry that
   older success forward and bypass the run about to overwrite it. Waiting first
-  means the one status read is the freshest verdict the run can see. Three more
+  means the one status read is the freshest verdict the run can see. Four more
   properties are load-bearing:
 
   - **Only earlier runs, so there is no mutual wait.** The ordering term excludes
-    this run from its own wait set, and between two contract-only runs the older
-    of the pair waits on nothing, fails fast, and the newer waits only until the
-    older finishes. Two runs created in the same second wait on neither.
+    this run from its own wait set, and between two contract-only runs the
+    lower-id one waits on nothing, fails fast, and the higher-id one waits only
+    until it finishes.
+  - **Earlier means a lower run id, not an earlier `created_at`.** GitHub
+    allocates run ids monotonically, while `created_at` has one-second
+    resolution. A burst that creates two runs in the same second is ordinary
+    (an app that force-pushes and edits the pull-request body in one second
+    produces exactly that), and a `created_at` comparison would drop the sibling
+    full run from the wait set, so the contract-only run would fail immediately
+    instead of waiting for it.
   - **The wait never turns a verdict green.** It decides nothing itself, and
     reaching the ceiling with an earlier run still incomplete prints
     `::error::no successful <context> status on <sha>; re-run the full workflow`,

@@ -261,8 +261,11 @@ user_status() {
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
 current_run_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242'
 workflow_runs_key='GET_repos_melodic-software_ci-workflows_actions_workflows_777_runs'
-# The run under test: workflow 777, created at 12:00:30Z. Every "earlier" run
-# below is created before that instant and every "newer" one after it.
+# The run under test: workflow 777, run id 4242, created at 12:00:30Z. The wait
+# orders by run id, so every "earlier" run below carries an id below 4242 and
+# every "newer" one an id above it. The `created_at` values are kept because the
+# real API returns them, and the same-second case below relies on the runner
+# ignoring them.
 current_run_created_at='2026-09-05T12:00:30Z'
 
 # status_list_on_call <n> <json-array>
@@ -591,9 +594,9 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log 'Waiting 15s for earlier run(s) 4000'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
-# Without the `created_at` ordering term this run waits on itself forever, and
-# two contract-only runs wait on each other; without the status filter it waits
-# on a run that already finished.
+# Without the run-id ordering term this run waits on itself forever, and two
+# contract-only runs wait on each other; without the status filter it waits on a
+# run that already finished.
 echo 'case: the wait ignores this run, newer runs, and completed runs'
 clear_status_fixtures
 clear_run_fixtures
@@ -605,6 +608,25 @@ expect_gh_call 'actions/workflows/777/runs'
 expect_no_log 'Waiting '
 expect_no_log 'on earlier run(s)'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# The defect this ordering replaced. GitHub records `created_at` to one-second
+# resolution, so a burst (an app that force-pushes and edits the pull-request
+# body in the same second) puts the sibling full run and this contract-only run
+# on the same timestamp. Under a `created_at` comparison neither entry below is
+# strictly earlier, the wait set comes back empty, and this run fails
+# immediately on the absent status instead of waiting. Ordering by run id keeps
+# 4100 in the wait set and 4300 out of it.
+echo 'case: a same-created_at sibling with a lower run id is waited on, a higher one is not'
+clear_status_fixtures
+clear_run_fixtures
+status_list '[]'
+current_run
+workflow_runs_on_call 1 "[$(run_entry 4100 in_progress "$current_run_created_at"),$(run_entry 4300 queued "$current_run_created_at")]"
+workflow_runs_on_call 2 '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for earlier run(s) 4100 on ${sha} to finish (waited 0s of 60s)."
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on earlier run(s): 4100)"
+expect_no_log '4300'
 
 # Without the 403 branch the missing scope reads as "no earlier run", which is
 # the same outcome but unattributable. The run degrades to the pre-6b contract,
