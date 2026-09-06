@@ -224,9 +224,15 @@ read_carried_state() {
   # newest-first ordering. A later bot failure on the same SHA therefore
   # overrides an earlier bot success, and a later forged success by a user
   # account is skipped rather than shadowing the bot's real verdict.
+  # `|| return 1` rather than a bare assignment: an assignment from a command
+  # substitution carries the substitution's status, and every caller invokes
+  # this function under `if !`, which suppresses errexit inside it. Without the
+  # explicit check a malformed or truncated body would make jq exit 5, the
+  # status would be discarded, and the function would report a completed read of
+  # an empty state. A body this function cannot parse is a failed read.
   carried_state="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
     '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id).state // "")' \
-    <"$gh_stdout")"
+    <"$gh_stdout")" || return 1
   carried_state_read=true
 }
 
@@ -261,11 +267,14 @@ set_wait_note() {
 # in flight, or the ceiling is reached. See the header for the ordering and for
 # why the wait set is every sibling rather than the lower-id ones.
 #
-# Returns 1 at the ceiling and 2 when the status read fails, both of which the
-# caller turns into the fail-closed error. Every other outcome returns 0. On a
-# 0 the caller applies `carried_state` when `carried_state_read` is true, and
-# otherwise reads the status itself: that is the degraded path an Actions read
-# failure takes, and it is the pre-6b behaviour.
+# Returns 1 at the ceiling, which the caller turns into the fail-closed error.
+# Every other outcome returns 0. On a 0 the caller applies `carried_state` when
+# `carried_state_read` is true, and otherwise reads the status itself: that is
+# the degraded path, taken when an Actions read fails and when a status read
+# fails part way through the loop, and it is the pre-6b behaviour. A failed read
+# never leaves `carried_state_read` true, so the degraded path is a fresh read
+# that fails closed on its own failure; there is no outcome that passes without
+# one completed read.
 wait_for_sibling_runs() {
   local run_id="${GITHUB_RUN_ID:-}" workflow_id ids all_ids="" sleep_for remaining
   if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
@@ -315,12 +324,22 @@ wait_for_sibling_runs() {
     # order lets that completion land between the two calls.
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! read_carried_state; then
-      # This poll's ids are appended below, after the settled and empty-set
-      # exits, so pass them explicitly: a sibling first seen on the poll whose
-      # read failed would otherwise be missing from the note that names what
-      # this run waited on.
-      set_wait_note "${all_ids}${all_ids:+ }${ids}"
-      return 2
+      # The same degraded path the listing failure above takes, for the same
+      # reason. This endpoint is now read once per poll, up to sixteen times
+      # under the 240s ceiling, so failing the run on the first transient 5xx
+      # would let one bad read of sixteen turn the sole required check red. Break
+      # instead, and let the caller take its single fresh re-read, which fails
+      # closed when it fails too. Still no pass without a completed read.
+      #
+      # This poll's ids are appended here rather than below, because the append
+      # below runs only after the settled and empty-set exits: a sibling first
+      # seen on the poll whose read failed would otherwise be missing from the
+      # note that names what this run waited on.
+      all_ids="${all_ids}${all_ids:+ }${ids}"
+      carried_state_read=false
+      echo "::warning::could not read repos/${REPOSITORY}/commits/${SHA}/statuses (HTTP ${GH_HTTP_STATUS:-unknown}); taking one fresh read of the recorded status."
+      cat "$gh_stderr" >&2
+      break
     fi
     # A settled verdict ends the wait whatever is still in flight. This is what
     # releases two contract-only runs that would otherwise wait on each other.
@@ -362,24 +381,22 @@ wait_for_sibling_runs() {
 if [[ "$contract_only" == true ]]; then
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
   # The poll loop reads the status itself, once per poll and after listing the
-  # in-flight siblings. It stops on a settled verdict, on an empty wait set, or
-  # at the ceiling.
+  # in-flight siblings. It stops on a settled verdict, on an empty wait set, on
+  # a read it could not complete, or at the ceiling.
   if [[ "$CARRY_FORWARD_WAIT_SECONDS" -gt 0 ]]; then
     carry_forward_wait_status=0
-    # shellcheck disable=SC2310 # wait_for_sibling_runs reports the ceiling and a failed read through its status; the caller exits on both.
+    # shellcheck disable=SC2310 # wait_for_sibling_runs reports the ceiling through its status; the caller exits on it.
     wait_for_sibling_runs || carry_forward_wait_status=$?
     if [[ "$carry_forward_wait_status" -ne 0 ]]; then
       # Never pass on timeout: a run that could still write this SHA's verdict
       # is in flight, so whatever is on the SHA right now is not settled.
-      if [[ "$carry_forward_wait_status" -eq 2 ]]; then
-        cat "$gh_stderr" >&2
-      fi
       echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
       exit 1
     fi
   fi
-  # Only when the loop did not read it: an Actions read failure degrades to the
-  # pre-6b path, where this is the single status read.
+  # Only when the loop did not read it. Both a failed Actions read and a status
+  # read that failed part way through the loop degrade to the pre-6b path, where
+  # this is the single status read, and a second failure here fails the run.
   if [[ "$carried_state_read" != true ]]; then
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! read_carried_state; then

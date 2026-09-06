@@ -802,8 +802,10 @@ run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
-# Without the fail-closed return on a failed status read, the loop would fall
-# through to the caller's own read and decide on whatever that returned. The
+# A status read that fails inside the wait takes one fresh re-read, and here
+# every read fails, so the re-read fails too and the run goes red. Without
+# discarding the failed read the caller would skip its re-read and decide on an
+# unread state; without the fail-closed re-read this would pass on one. The
 # stderr passes through so the cause is visible, not just the verdict.
 echo 'case: a status read failure inside the wait fails closed and surfaces the cause'
 clear_status_fixtures
@@ -812,14 +814,34 @@ current_run
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${statuses_key}.err"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses (HTTP 404)"
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 expect_log 'gh: Not Found (HTTP 404)'
 rm -f -- "$fixtures/${statuses_key}.err"
 
+# One transient 5xx on any one poll must not fail the sole required check: the
+# loop reads this endpoint on every poll, up to sixteen times under the shipped
+# ceiling. Without the retry through the degraded path the run goes red here
+# even though the sibling recorded success and the very next read sees it.
+echo 'case: a status read failing on one poll re-reads and carries the fresh success forward'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list_on_call 1 '[]'
+status_list_on_call 3 "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures/${statuses_key}.fail-on-call"
+
 # The wait note names what this run waited on, so a sibling first seen on the
 # poll whose read failed has to be in it. Without appending this poll's ids
-# before the fail-closed return, 4700 is missing from the message and the note
-# understates the wait.
+# before the break, 4700 is missing from the message and the note understates
+# the wait. The re-read here succeeds and returns an empty list, so the run
+# still fails on the absent status.
 echo 'case: a status read failing on a later poll names every sibling in the wait note'
 clear_status_fixtures
 clear_run_fixtures
@@ -846,6 +868,23 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "No run on ${sha} is still in flight after 15s; using the ci-lanes status."
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
+
+# A truncated body is what a cut-off response looks like: valid JSON up to the
+# point the connection dropped. `status_list` writes its argument verbatim, so
+# the missing `]` below is deliberate. jq exits 5 on it. Without checking that
+# status the read reports a completed read of an empty state, the run exits 1
+# for the wrong reason, and neither the warning nor the fresh re-read below
+# happens. The warning is the assertion that separates the two.
+echo 'case: a malformed statuses body fails the read rather than reading as an empty state'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[$(bot_status 100 success)"
+workflow_runs '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_no_log 'Waiting '
 
 clear_status_fixtures
 
