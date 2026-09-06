@@ -871,9 +871,9 @@ expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full wo
 
 # A truncated body is what a cut-off response looks like: valid JSON up to the
 # point the connection dropped. `status_list` writes its argument verbatim, so
-# the missing `]` below is deliberate. jq exits 5 on it. Without checking that
-# status the read reports a completed read of an empty state, the run exits 1
-# for the wrong reason, and neither the warning nor the fresh re-read below
+# the missing `]` below is deliberate. jq exits nonzero on it. Without checking
+# that status the read reports a completed read of an empty state, the run exits
+# 1 for the wrong reason, and neither the warning nor the fresh re-read below
 # happens. The warning is the assertion that separates the two.
 echo 'case: a malformed statuses body fails the read rather than reading as an empty state'
 clear_status_fixtures

@@ -227,9 +227,9 @@ read_carried_state() {
   # `|| return 1` rather than a bare assignment: an assignment from a command
   # substitution carries the substitution's status, and every caller invokes
   # this function under `if !`, which suppresses errexit inside it. Without the
-  # explicit check a malformed or truncated body would make jq exit 5, the
-  # status would be discarded, and the function would report a completed read of
-  # an empty state. A body this function cannot parse is a failed read.
+  # explicit check a malformed or truncated body would make jq exit nonzero,
+  # that status would be discarded, and the function would report a completed
+  # read of an empty state. A body this function cannot parse is a failed read.
   carried_state="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
     '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id).state // "")' \
     <"$gh_stdout")" || return 1
