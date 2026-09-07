@@ -185,89 +185,105 @@ for file in "${files[@]}"; do
   # `uses:` is legitimate and emits no step line of its own.
   printf 'visit %s\n' "$file"
 
-  using="$(yq -r '.runs.using // ""' "$file")"
+  # One yq process per file. The previous loop forked yq once for `.runs.using`,
+  # once for the independent expected-count selector, once for the step listing,
+  # and once more per `run:` body. Those queries stay independent expressions
+  # inside this single invocation — the false-green guard still compares two
+  # selectors that can disagree — and each run body is base64 so a newline in
+  # the block cannot split a STEP record. `@base64` / `-r` work on both
+  # mikefarah yq (ubuntu-24.04) and kislyuk yq.
+  dump="$(yq -r '
+    "USING " + (.runs.using // ""),
+    "EXPECTED " + ((.runs.steps // []) | [.[] | select(has("run")) | select((.shell // "") | test("^([^ ]*/)?(bash|sh)( |$)"))] | length | tostring),
+    ((.runs.steps // []) | to_entries[] | select(.value | has("run")) | "STEP " + (.key | tostring) + " " + ((.value.shell // "") | @base64) + " " + ((.value.run // "") | @base64))
+  ' "$file")"
+  using=""
+  expected=""
+  produced=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "$using" && "$line" == 'USING '* ]]; then
+      using="${line#USING }"
+      if [[ "$using" != composite ]]; then
+        printf 'skip %s: runs.using is %s, not composite\n' "$file" "${using:-<unset>}"
+        break
+      fi
+      continue
+    fi
+    case "$line" in
+    'EXPECTED '*)
+      expected="${line#EXPECTED }"
+      ;;
+    'STEP '*)
+      rest="${line#STEP }"
+      index="${rest%% *}"
+      rest="${rest#* }"
+      shell_b64="${rest%% *}"
+      run_b64="${rest#* }"
+      if [[ ! "$index" =~ ^[0-9]+$ ]]; then
+        # `.key` is a sequence index only while `runs.steps` is a sequence. A
+        # mapping makes it an arbitrary author-supplied string, and this runs
+        # against pull-request content, so reject the shape at the boundary
+        # rather than writing it into a path: $index reaches the destination
+        # below.
+        echo "::error file=$file::composite-run-shellcheck: runs.steps is not a sequence (key '$index')."
+        exit 1
+      fi
+      shell="$(printf '%s' "$shell_b64" | base64 -d)"
+      # DELIBERATELY exceeds actionlint's own dialect resolution
+      # (rule_shellcheck.go), which matches only a bare name or its literal
+      # leading word in GitHub's custom-shell form (`command [...options] {0}`).
+      # This resolves by the leading command's BASENAME instead, so a
+      # path-qualified custom shell (`shell: /usr/bin/bash --noprofile {0}`,
+      # which GitHub documents and runs as bash) is classified too, rather than
+      # silently skipped as it is upstream — narrower coverage would leave a
+      # block GitHub runs with bash/sh unchecked while the job stayed green, the
+      # coverage hole this check exists to close. Only the case sees the raw
+      # scalar; everything downstream uses the resolved dialect, so no option
+      # text reaches a filename. Parameter expansion (not `basename`) to avoid a
+      # subprocess per step.
+      if [[ -z "$shell" ]]; then
+        echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
+        exit 1
+      fi
+      leading="${shell%% *}"
+      leading="${leading##*/}"
+      case "$leading" in
+      bash) dialect='bash' ;;
+      sh) dialect='sh' ;;
+      *)
+        printf 'skip %s runs.steps[%s]: shell is %s, not bash/sh\n' "$file" "$index" "$shell"
+        continue
+        ;;
+      esac
+      relative="$file.step-$index.$dialect"
+      destination="$workdir/$relative"
+      mkdir -p -- "$(dirname -- "$destination")"
+      # `shell_options` is the options GitHub itself runs the step's shell with,
+      # prepended as actionlint does. It occupies line 1, so ShellCheck's reported
+      # line N is line N-1 of the `run:` body. The dialect decides that line and
+      # which per-dialect batch the extracted script joins, so both follow from
+      # one branch rather than two that could drift apart.
+      if [[ "$dialect" == bash ]]; then
+        shell_options='set -eo pipefail'
+        bash_scripts+=("$relative")
+      else
+        shell_options='set -e'
+        sh_scripts+=("$relative")
+      fi
+      {
+        echo "$shell_options"
+        printf '%s' "$run_b64" | base64 -d | sanitize_expressions
+      } >"$destination"
+      produced=$((produced + 1))
+      printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$dialect"
+      ;;
+    *) ;;
+    esac
+  done <<<"$dump"
+
   if [[ "$using" != composite ]]; then
-    printf 'skip %s: runs.using is %s, not composite\n' "$file" "${using:-<unset>}"
     continue
   fi
-
-  # Counted with an expression independent of the extraction query below, so a
-  # selector that silently matches nothing is caught rather than passing as a
-  # zero-block success — the false green this check exists to prevent. The
-  # regex resolves the same basename the case below does — an optional
-  # slash-terminated path prefix, then a bare "bash"/"sh" followed by a space
-  # or end-of-string — so the two selectors must stay in lockstep; letting
-  # them drift would make this guard fire on every path-qualified shell
-  # instead of only on a genuine selector regression.
-  expected="$(yq -r \
-    '[.runs.steps[] | select(has("run")) | select((.shell // "") | test("^([^ ]*/)?(bash|sh)( |$)"))] | length' \
-    "$file")"
-  produced=0
-
-  while IFS=$'\t' read -r index shell; do
-    [[ -n "$index" ]] || continue
-
-    # `.key` is a sequence index only while `runs.steps` is a sequence. A
-    # mapping makes it an arbitrary author-supplied string, and this runs
-    # against pull-request content, so reject the shape at the boundary rather
-    # than escaping it at each use: $index reaches both the write path below
-    # and an interpolated yq expression.
-    if [[ ! "$index" =~ ^[0-9]+$ ]]; then
-      echo "::error file=$file::composite-run-shellcheck: runs.steps is not a sequence (key '$index')."
-      exit 1
-    fi
-
-    # DELIBERATELY exceeds actionlint's own dialect resolution
-    # (rule_shellcheck.go), which matches only a bare name or its literal
-    # leading word in GitHub's custom-shell form (`command [...options] {0}`).
-    # This resolves by the leading command's BASENAME instead, so a
-    # path-qualified custom shell (`shell: /usr/bin/bash --noprofile {0}`,
-    # which GitHub documents and runs as bash) is classified too, rather than
-    # silently skipped as it is upstream — narrower coverage would leave a
-    # block GitHub runs with bash/sh unchecked while the job stayed green, the
-    # coverage hole this check exists to close. Only the case sees the raw
-    # scalar; everything downstream uses the resolved dialect, so no option
-    # text reaches a filename. Parameter expansion (not `basename`) to avoid a
-    # subprocess per step.
-    if [[ -z "$shell" ]]; then
-      echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
-      exit 1
-    fi
-    leading="${shell%% *}"
-    leading="${leading##*/}"
-    case "$leading" in
-    bash) dialect='bash' ;;
-    sh) dialect='sh' ;;
-    *)
-      printf 'skip %s runs.steps[%s]: shell is %s, not bash/sh\n' "$file" "$index" "$shell"
-      continue
-      ;;
-    esac
-
-    relative="$file.step-$index.$dialect"
-    destination="$workdir/$relative"
-    mkdir -p -- "$(dirname -- "$destination")"
-    # `shell_options` is the options GitHub itself runs the step's shell with,
-    # prepended as actionlint does. It occupies line 1, so ShellCheck's reported
-    # line N is line N-1 of the `run:` body. The dialect decides that line and
-    # which per-dialect batch the extracted script joins, so both follow from
-    # one branch rather than two that could drift apart.
-    if [[ "$dialect" == bash ]]; then
-      shell_options='set -eo pipefail'
-      bash_scripts+=("$relative")
-    else
-      shell_options='set -e'
-      sh_scripts+=("$relative")
-    fi
-    {
-      echo "$shell_options"
-      yq -r ".runs.steps[$index].run" "$file" | sanitize_expressions
-    } >"$destination"
-    produced=$((produced + 1))
-    printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$dialect"
-  done < <(yq -r \
-    '.runs.steps | to_entries[] | select(.value | has("run")) | (.key | tostring) + "\t" + (.value.shell // "")' \
-    "$file")
 
   if [[ "$produced" -ne "$expected" ]]; then
     echo "::error file=$file::composite-run-shellcheck: extracted $produced of $expected bash/sh run: block(s)."
@@ -296,12 +312,67 @@ shellcheck_args=(--norc -x "--exclude=$excluded_codes")
 printf 'Checking %d embedded run: block(s); reported line N is line N-1 of the run: body.\n' "$total"
 status=0
 cd -- "$workdir"
+
+# Fan-out ShapeCheck over extracted scripts the same way shellcheck/run.sh does:
+# ShellCheck itself is serial per process, so one invocation over dozens of
+# extracted blocks is a serial wall. Batches replay in order so the log matches
+# a single process; the exit status is the maximum over batches.
+run_embedded_shellcheck() {
+  local -a sc_args=()
+  while (($# > 0)); do
+    if [[ "$1" == -- ]]; then
+      shift
+      break
+    fi
+    sc_args+=("$1")
+    shift
+  done
+  local capture batch=0 index=0 count=$# st=0 list log rc
+  local jobs=4 batch_size
+  if ((count <= 1 || jobs <= 1)); then
+    shellcheck "${sc_args[@]}" "$@" || st=$?
+    return "$st"
+  fi
+  batch_size=$(((count + jobs - 1) / jobs))
+  capture="$(mktemp -d)"
+  while ((index < count)); do
+    printf '%s\0' "${@:index+1:batch_size}" >"$capture/$(printf '%06d' "$batch").files"
+    index=$((index + batch_size))
+    batch=$((batch + 1))
+  done
+  # shellcheck disable=SC2016
+  printf '%s\0' "$capture"/*.files | xargs -0 -n 1 -P "$jobs" bash -c '
+    list="${!#}"
+    set -- "${@:1:$#-1}"
+    mapfile -d "" -t batch <"$list"
+    shellcheck "$@" "${batch[@]}" >"${list%.files}.log" 2>&1
+    echo "$?" >"${list%.files}.rc"
+  ' _ "${sc_args[@]}"
+  for list in "$capture"/*.files; do
+    log="${list%.files}.log"
+    [[ ! -f "$log" ]] || cat -- "$log"
+    if [[ -f "${list%.files}.rc" ]]; then
+      rc="$(<"${list%.files}.rc")"
+    else
+      rc=2
+    fi
+    ((rc <= st)) || st=$rc
+  done
+  rm -rf -- "$capture"
+  return "$st"
+}
+
 if [[ ${#bash_scripts[@]} -gt 0 ]]; then
-  shellcheck "${shellcheck_args[@]}" --shell=bash "${bash_scripts[@]}" || status=$?
+  # The function records every batch status itself and never relies on errexit,
+  # so capturing its return here is the intended path, not a suppressed exit.
+  # shellcheck disable=SC2310
+  run_embedded_shellcheck "${shellcheck_args[@]}" --shell=bash -- "${bash_scripts[@]}" || status=$?
 fi
 if [[ ${#sh_scripts[@]} -gt 0 ]]; then
   sh_status=0
-  shellcheck "${shellcheck_args[@]}" --shell=sh "${sh_scripts[@]}" || sh_status=$?
+  # Same intended capture as the bash lane above.
+  # shellcheck disable=SC2310
+  run_embedded_shellcheck "${shellcheck_args[@]}" --shell=sh -- "${sh_scripts[@]}" || sh_status=$?
   # ShellCheck reserves 1 for a completed scan with findings and 2-4 for
   # processing errors; keep the more severe result rather than masking an
   # operational failure behind a finding code.
