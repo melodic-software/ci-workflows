@@ -59,29 +59,6 @@ function prepareFindTrackingLines(source) {
   return body;
 }
 
-function bundleSelectRunner(source) {
-  const indentation = "            ";
-  const sourceLines = shellLines(source);
-  if (sourceLines[0] === '"use strict";') {
-    sourceLines.shift();
-  }
-  return indentLines(
-    [
-      "// BEGIN GENERATED SELECTOR - DO NOT EDIT",
-      "// Source: .github/scripts/select-runner.cjs",
-      "const selectorModule = (() => {",
-      '  "use strict";',
-      "  const module = {exports: {}};",
-      ...sourceLines.map((line) => (line === "" ? "" : `  ${line}`)),
-      "  return module.exports;",
-      "})();",
-      "await selectorModule.runGitHubScript({github, core, env: process.env});",
-      "// END GENERATED SELECTOR",
-    ],
-    indentation,
-  ).join("\n");
-}
-
 /**
  * @typedef {object} RenderTarget
  * @property {string} id
@@ -117,7 +94,6 @@ const TARGETS = Object.freeze({
     // and was ported to actions/github-script instead of embedding this
     // gh/jq-driven source. Only fixed-hosted-runner consumers stay here.
     workflows: Object.freeze([
-      "queue-monitor-liveness.yml",
       "release-gap-check.yml",
       "release-tag-drift-check.yml",
       "tool-version-drift-check.yml",
@@ -134,16 +110,6 @@ const TARGETS = Object.freeze({
     }),
     driftMessage: (workflowName) =>
       `${workflowName} is out of sync; run node .github/scripts/render-find-tracking-issue.cjs\n`,
-  }),
-  "select-runner-workflow": Object.freeze({
-    id: "select-runner-workflow",
-    source: "select-runner.cjs",
-    workflows: Object.freeze(["select-runner.yml"]),
-    beginMarker: "            // BEGIN GENERATED SELECTOR - DO NOT EDIT",
-    endMarker: "            // END GENERATED SELECTOR",
-    bundle: bundleSelectRunner,
-    driftMessage: () =>
-      "select-runner.yml is out of sync; run node .github/scripts/render-select-runner-workflow.cjs\n",
   }),
 });
 

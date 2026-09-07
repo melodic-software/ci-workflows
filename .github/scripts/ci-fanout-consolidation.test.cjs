@@ -12,12 +12,6 @@ const ciWorkflowPath = path.join(
   "workflows",
   "ci.yml",
 );
-const selectorConformancePath = path.join(
-  repositoryRoot,
-  ".github",
-  "workflows",
-  "selector-conformance.yml",
-);
 const adrPath = path.join(
   repositoryRoot,
   "docs",
@@ -35,7 +29,6 @@ const ciStatusActionPath = path.join(
 );
 
 const ciWorkflow = fs.readFileSync(ciWorkflowPath, "utf8");
-const selectorConformance = fs.readFileSync(selectorConformancePath, "utf8");
 const adr = fs.readFileSync(adrPath, "utf8");
 const ciStatusAction = fs.readFileSync(ciStatusActionPath, "utf8");
 
@@ -236,13 +229,6 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   assert.ok(
     waitSeconds <= timeoutMinutes * 60 - 60,
     `carry-forward-wait-seconds ${waitSeconds} is not at least 60s below timeout-minutes ${timeoutMinutes}`,
-  );
-});
-
-test("selector-conformance.yml matches the same concurrency pattern", () => {
-  assert.match(
-    selectorConformance,
-    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/mu,
   );
 });
 

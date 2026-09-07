@@ -29,8 +29,8 @@
 // evidence — the shape of claude-code-action skipping itself (workflow
 // validation), a silent no-review this aggregator is otherwise blind to by
 // construction (ci-workflows#363). This set mirrors what those two emitters
-// can produce. `runner` is the caller-side selector-failure token the review
-// lanes will emit once the select-runner surfacing lands; it is listed ahead
+// can produce. `runner` is the caller-side runner-failure token the review
+// lanes will emit once that surfacing lands; it is listed ahead
 // of its emitter so the aggregator recognises it the moment it appears rather
 // than counting it as unrecognised. PLAN.md's early sketch also names a
 // `concurrency` token; no emitter produces one, so it is deliberately absent —

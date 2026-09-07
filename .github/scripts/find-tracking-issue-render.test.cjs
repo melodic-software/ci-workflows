@@ -11,7 +11,6 @@ const repositoryRoot = path.join(__dirname, "..", "..");
 // actions/github-script, so it is no longer a consumer of this generated
 // bash block; the rest still run on a fixed hosted runner and keep it.
 const consumers = [
-  "queue-monitor-liveness.yml",
   "release-gap-check.yml",
   "release-tag-drift-check.yml",
   "tool-version-drift-check.yml",
