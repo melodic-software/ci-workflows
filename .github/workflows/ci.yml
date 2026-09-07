@@ -618,6 +618,8 @@ jobs:
         # the gate fails open. It lives here now that the scan itself runs
         # inside the `checks` reusable, which cannot run a repo-local script.
         run: bash .github/actions/comment-hygiene/superset-test.sh
+      - name: Test comment-hygiene scan-tree collection contracts
+        run: bash .github/actions/comment-hygiene/scan-tree.test.sh
       - name: Test the pull-request contract runner
         run: bash .github/actions/pr-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
