@@ -68,7 +68,7 @@ on:
       timeout-minutes:
         description: >-
           Job budget. The default matches the per-tool reusables (zizmor,
-          osv-scanner, semantic-pr, do-not-merge-gate); raise it for a caller
+          osv-scanner, do-not-merge-gate); raise it for a caller
           whose tree makes the sequential scans slower than the fan-out was.
         type: number
         default: 15

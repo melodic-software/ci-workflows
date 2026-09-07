@@ -78,9 +78,18 @@ inputs:
       closed. `0` disables the wait and goes straight to a single status read.
       The calling job needs `actions: read`: under an explicit `permissions:`
       block the default is none, and a 403 warns naming the scope and degrades
-      to the status read alone. Set this at least 60 seconds below the calling
-      job's `timeout-minutes`, or the job timeout preempts the fail-closed
-      error.
+      to the status read alone.
+      SIZE THIS FROM THE REPOSITORY'S OWN MEASURED FULL RUN, not from the
+      calling job's budget. The ceiling must cover the queue wait plus the p95
+      wall of the full `ci` run; set the calling job's `timeout-minutes` to at
+      least that figure plus two minutes, then set this input to
+      `timeout-minutes * 60 - 60`. Staying 60 seconds below `timeout-minutes`
+      is a constraint on the result, not the sizing rule: it keeps the job
+      timeout from preempting the fail-closed error, but a ceiling derived from
+      an underived budget cannot outlast the run it waits for. The `240`
+      default suits only a repository whose full run finishes in well under two
+      minutes; see the composite's README section for the measured per-
+      repository values in use.
     default: '240'
   token:
     description: >-

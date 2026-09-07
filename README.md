@@ -281,18 +281,58 @@ consumer to audit it.
   The 15-second poll interval is deliberately not a caller input: the only knob a
   consumer should have to reason about is the ceiling.
 
-  **Set `carry-forward-wait-seconds` at least 60 seconds below the calling job's
-  `timeout-minutes`.** A ceiling at or above the job budget lets the job timeout
-  preempt the fail-closed error, which reports as a cancelled job rather than the
-  actionable "re-run the full workflow" message. A waiting run also holds a fleet
-  runner slot, or bills a hosted minute per minute, for as long as it waits.
+  **Size the ceiling from the repository's own measured full run, then derive
+  `timeout-minutes` from it.** `carry-forward-wait-seconds` must cover the wall
+  time the contract-only run may have to wait out: the queue wait plus the p95
+  wall of the full `ci` run on this repository. Set `timeout-minutes` to at
+  least that figure plus two minutes, then set `carry-forward-wait-seconds` to
+  `timeout-minutes * 60 - 60`.
+
+  The derivation runs in that direction and not the other. The earlier guidance
+  read "at least 60 seconds below `timeout-minutes`" as the whole rule, which
+  sizes the wait from a budget nobody derived; a ceiling sized 60 seconds under
+  a pure aggregator's default budget cannot outlast the run it is waiting for.
+  Measured on claude-code-plugins#3777: a body edit one minute into a 4 to 5
+  minute full run waited 210 seconds of a 240-second ceiling (run 33993232104)
+  and 225 seconds on run 33993700139, so that repository moved from 5 and 240 to
+  10 and 540. dotfiles derived 35 and 2040 the same way, from a `checks` wall
+  p95 of 158 s plus a serial `test` wall p95 of 1,088 s plus three queue waits
+  at its measured queue p50 of 165 s, which is 29.0 minutes.
+
+  The 60-second margin survives as a **constraint, not a sizing rule**: a
+  ceiling at or above the job budget lets the job timeout preempt the
+  fail-closed error, which reports as a cancelled job rather than the
+  actionable "re-run the full workflow" message.
+
+  The `240` default therefore suits only a repository whose full run finishes in
+  well under two minutes. The values in use across the fleet today:
+
+  | repository | `timeout-minutes` | `carry-forward-wait-seconds` |
+  | --- | --- | --- |
+  | dotfiles | 35 | 2040 |
+  | github-iac | 31 | 1800 |
+  | provisioning | 36 | 2100 |
+  | claude-code-proxy | 30 | 1740 |
+  | claude-code-plugins | 10 | 540 |
+  | ci-workflows | 15 | 840 |
+
+  This repository's own row is derived the same way: over the last 84
+  successful `ci` runs the wall p95 is 124 s, and 80 of those 84 queued for 0 s
+  on hosted runners with a worst non-outlier queue of 331 s, so the floor is
+  about 7.6 minutes and the existing `timeout-minutes: 15` clears it with room.
+
+  A waiting run holds a fleet runner slot, or bills a hosted minute per minute,
+  for as long as it waits, so the ceiling is a real cost and not a free margin.
+  It is a ceiling, not a delay: the poll ends the moment a verdict settles or
+  nothing is left in flight.
 - `.github/actions/pr-contract` — the whole pull-request contract in one step:
   Conventional Commits title and the `do-not-merge` label gate the step, and
   issue linkage is advisory by default (a warning plus one upserted marker
   comment plus a label, exit code unchanged; `linkage-mode: enforce` makes it
   gate). Semantics are ported from the `semantic-pr`, `do-not-merge-gate` and
-  `pr-issue-linkage` reusables, which stay in place until their callers are
-  retired. The pull request is read from the API rather than the event payload,
+  `pr-issue-linkage` reusables. `semantic-pr.yml` is retired (ci-perf Phase
+  6b-ii); `do-not-merge-gate.yml` and `pr-issue-linkage.yml` stay in place until
+  their callers are retired. The pull request is read from the API rather than the event payload,
   so `edited` and `labeled` runs see current state. Needs `pull-requests: write`
   for the comment and label; every write is best-effort and degrades to a
   `::notice::` on a read-only token. See
@@ -736,18 +776,18 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (see below, #446, and #458). The reusable gate uses
   its `runner` input for every prerequisite outcome, so the caller also owns the
   recovery route; the cost is bounded to one caller-selected reporter run on
-  cancellation. Use the semantic-title gate's fail-closed-on-failure/skipped,
+  cancellation. Use the do-not-merge gate's fail-closed-on-failure/skipped,
   real-validate-on-cancelled prerequisite contract
   (this public-repository example intentionally falls back to hosted Ubuntu):
 
   ```yaml
-  pr-title:
+  do-not-merge:
     needs: select-runner
     if: ${{ always() }}
     permissions:
       pull-requests: read
       actions: read
-    uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
+    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
     with:
       runner: ${{ needs.select-runner.outputs.runner || 'ubuntu-24.04' }}
       prerequisite-result: ${{ needs.select-runner.result }}
@@ -775,9 +815,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the caller's per-PR `concurrency.cancel-in-progress` superseded the run (or
   that someone with `actions: write` cancelled it manually), the reporter is by
   then already running on the caller-resolved runner, and the gates read live
-  state where the mechanism allows (semantic-pr's pinned action re-fetches the
-  PR title; do-not-merge-gate re-fetches current labels; pr-issue-linkage
-  re-fetches the current PR body), so the check reports the real gate answer —
+  state where the mechanism allows (do-not-merge-gate re-fetches current labels;
+  pr-issue-linkage re-fetches the current PR body), so the check reports the real gate answer —
   red only when the gate is actually violated. This supersedes the earlier
   fail-closed-on-cancelled contract, which reasoned that a cancelled result
   alone does not prove a successor run will cover the same required check and
@@ -806,7 +845,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   The fallback label must itself be routable when selection fails; otherwise the
   required reporter job never starts and the non-success result cannot fail
   closed. Both success and reporting paths remain the existing single
-  `pr-title / pr-title` job on the resolved runner; there is no routine
+  `do-not-merge / do-not-merge` job on the resolved runner; there is no routine
   aggregator or extra hosted job. GitHub documents that
   [`runs-on` accepts an input-backed runner value][job-runs-on].
 
@@ -978,7 +1017,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   and tag verification, and a verification run in a consuming repository. See
   the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
-  optional inputs on `semantic-pr` and native `zizmor` preserve compatibility.
+  optional inputs on native `zizmor` preserve compatibility.
 - `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
   `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
   and pushes the result back to the PR branch, covering the lock-file updates
@@ -987,11 +1026,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pull_request` job granting `contents: write`. Inputs, the optional
   `PUSH_TOKEN` Dependabot secret, and the default-token no-retrigger caveat are
   documented inline.
-- `.github/workflows/pester.yml` — runs a Pester suite on the fixed
-  GitHub-hosted Windows 2025 runner with a pinned Pester install. A whole-job
-  concern (its own runner OS + checkout), so a reusable workflow: the caller
-  passes a `run` command and owns discovery/reporting/exit; this supplies the
-  hosted runner, pinned Pester, and checkout. Inputs are documented inline.
 - `.github/workflows/approval-agent.yml` — Approval Agent lane
   ([ci-workflows#256](https://github.com/melodic-software/ci-workflows/issues/256)).
   Guardrails always run (never approve own policy/workflow files; approver ≠
@@ -1103,53 +1137,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Promotion: flip to a selector-coupled required gate when the lane's findings
   prove precision over a sustained window — an earned promotion, mirroring the
   review lane's discipline.
-- `.github/workflows/semantic-pr.yml` — validates the PR **title** against the
-  Conventional Commits spec (wraps the SHA-pinned
-  `amannn/action-semantic-pull-request`). **Gating**: a non-conforming title
-  fails the job. Because governed repos squash-merge with the squash title set to
-  `PR_TITLE`, the PR title becomes the default-branch subject line, so this is the
-  single lever that yields a Conventional-Commits history (no commit-msg hook
-  needed). It is a **standalone required check named `pr-title`**, not a
-  `ci-status` lane — title edits must not re-run the file-lint lanes; with the
-  caller below the check a ruleset must require is **`pr-title / pr-title`**
-  per the [shared adoption
-  contract](#standalone-gate-checks--shared-adoption-contract). Inputs
-  (`runner`, `prerequisite-result`, `types`, `scopes`, `require-scope`,
-  `subject-pattern`, `subject-pattern-error`, `validate-single-commit`,
-  `ignore-labels`) have spec-aligned defaults documented inline. Consume it from
-  a thin caller that triggers on title-relevant events. `prerequisite-result`
-  defaults to `success` for direct callers; selector-dependent required callers
-  must use the fail-closed-on-failure/skipped, real-validate-on-cancelled
-  prerequisite contract above. `edited` is required so re-titling
-  re-validates; the gate passes on `merge_group` since the title was validated
-  at PR time.
-  **Adopt the canonical block below**:
-
-  ```yaml
-  on:
-    pull_request_target:
-      types: [opened, edited, reopened, synchronize]
-    merge_group:
-  permissions:
-    pull-requests: read
-    actions: read
-  concurrency:
-    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-    cancel-in-progress: true
-  jobs:
-    pr-title:
-      permissions:
-        pull-requests: read
-        actions: read
-      uses: melodic-software/ci-workflows/.github/workflows/semantic-pr.yml@<sha>
-  ```
-
-  This check reads PR title metadata only — it checks out and runs no head code.
-
-  This block is the canonical pattern to copy. This repository no longer carries
-  a `pr-title` caller of its own: its `ci.yml` `ci-status` job runs the
-  `pr-contract` composite, which checks the title in the same step as the
-  do-not-merge label and the issue linkage.
 - `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
   one of the three accepted linkage markers and non-empty `## Summary`,
   `## Fix`, `## Verification`, and `## Related` sections (the four contract
@@ -1230,7 +1217,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `do-not-merge`**, not a `ci-status` lane; with the caller below the check a
   ruleset must require is **`do-not-merge / do-not-merge`** per the [shared
   adoption contract](#standalone-gate-checks--shared-adoption-contract). Inputs
-  (`runner`, `prerequisite-result`, `label`) mirror `semantic-pr`'s
+  (`runner`, `prerequisite-result`, `label`) mirror `pr-issue-linkage`'s
   fail-closed-on-failure/skipped, real-validate-on-cancelled prerequisite
   contract. **Adopt the canonical block below:**
 
@@ -1264,7 +1251,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Unlike the other two gates, this one re-evaluates the label on
   `merge_group` itself (looking up the PR named in the merge group's temporary
   ref and re-checking its current labels via the API): a label — unlike
-  `semantic-pr`'s title or `pr-issue-linkage`'s body — can be added after the
+  `pr-issue-linkage`'s body — can be added after the
   PR's own `pull_request_target` run last passed, e.g. while the PR already
   sits in the queue, so trusting that earlier result would let a labeled PR
   merge through.
@@ -1498,17 +1485,17 @@ every target — never edit the materialized caller in the target repo.
 
 ## Standalone gate checks — shared adoption contract
 
-`semantic-pr.yml`, `pr-issue-linkage.yml`, and `do-not-merge-gate.yml` are
+`pr-issue-linkage.yml` and `do-not-merge-gate.yml` are
 standalone required checks rather than `ci-status` lanes, and share one
 adoption shape. The emitted check context is `<caller job> / <reusable job>`,
-so a ruleset must require the doubled name (`pr-title / pr-title`, not bare
-`pr-title`) — and only **after** the caller is merged and emitting the check,
+so a ruleset must require the doubled name (`do-not-merge / do-not-merge`, not
+bare `do-not-merge`) — and only **after** the caller is merged and emitting the check,
 or open PRs block on a check that never runs. Rulesets are governed via
 `github-iac`.
 
 Each canonical caller triggers on `pull_request_target`, which runs the
 base-branch definition — a head-branch edit to the caller cannot bypass the
-gate. That is safe for all three because each reads PR metadata only and checks
+gate. That is safe for both because each reads PR metadata only and checks
 out no head code; the per-workflow entry above names which metadata. Under
 `pull_request_target` `github.ref` is the base branch, so the concurrency group
 keys on `github.event.pull_request.number` (falling back to `github.ref` for
