@@ -36,7 +36,8 @@ runs:
           skip=true
         fi
         case "$PR_ACTOR" in
-          melodic-standards-sync[bot]|melodic-standards-sync) skip=true ;;
+          'melodic-standards-sync[bot]'|melodic-standards-sync) skip=true ;;
+          'dependabot[bot]'|dependabot) skip=true ;;
         esac
         echo "skip=$skip" >>"$GITHUB_OUTPUT"
         if [[ "$skip" == true ]]; then
