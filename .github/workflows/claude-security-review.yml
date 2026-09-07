@@ -146,9 +146,10 @@ name: claude-security-review
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
 #       # workflow_dispatch re-entry for ci-workflows#227: when an intermittent
-#       # pull_request delivery gap leaves the required check ABSENT, a
-#       # schedule/dispatch companion (security-review-absent-mitigate) or an
-#       # operator re-runs this caller with pr-number. Do NOT replace
+#       # pull_request delivery gap leaves the required check ABSENT, an
+#       # operator re-runs this caller with pr-number. (The scheduled
+#       # security-review-absent-mitigate companion that automated this is
+#       # retired, ci-perf Phase 7.) Do NOT replace
 #       # pull_request with pull_request_target / workflow_run — those trip the
 #       # privileged-trigger tripwire below.
 #       workflow_dispatch:

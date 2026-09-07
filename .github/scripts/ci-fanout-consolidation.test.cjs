@@ -345,6 +345,37 @@ test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
   );
 });
 
+// Re-homed from the retired hosted-runner-pins.test.cjs (ci-perf Phase 7).
+// The file went with the selector, but this assertion was never about the
+// selector: it is the repository-wide guard that no workflow or composite
+// pins a moving hosted image label.
+function yamlFilesUnder(directory) {
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        return yamlFilesUnder(entryPath);
+      }
+      return /\.ya?ml$/u.test(entry.name) ? [entryPath] : [];
+    })
+    .sort();
+}
+
+test("hosted workflow contracts use explicit GA operating-system labels", () => {
+  const githubRoot = path.join(repositoryRoot, ".github");
+  const movingLabels = /\b(?:ubuntu|windows)-latest\b/u;
+  const files = yamlFilesUnder(githubRoot);
+  assert.ok(files.length > 0, "the .github tree must not be empty");
+  for (const file of files) {
+    assert.doesNotMatch(
+      fs.readFileSync(file, "utf8"),
+      movingLabels,
+      `${path.relative(githubRoot, file)} uses a moving hosted image label`,
+    );
+  }
+});
+
 test("ADR records #122 COMPLETED with Shape A done", () => {
   assert.match(adr, /Status: \*\*COMPLETED\*\*/u);
   assert.match(
