@@ -281,11 +281,44 @@ consumer to audit it.
   The 15-second poll interval is deliberately not a caller input: the only knob a
   consumer should have to reason about is the ceiling.
 
-  **Set `carry-forward-wait-seconds` at least 60 seconds below the calling job's
-  `timeout-minutes`.** A ceiling at or above the job budget lets the job timeout
-  preempt the fail-closed error, which reports as a cancelled job rather than the
-  actionable "re-run the full workflow" message. A waiting run also holds a fleet
-  runner slot, or bills a hosted minute per minute, for as long as it waits.
+  **Size the ceiling from the repository's own measured full run, then derive
+  `timeout-minutes` from it.** `carry-forward-wait-seconds` must cover the wall
+  time the contract-only run may have to wait out: the queue wait plus the p95
+  wall of the full `ci` run on this repository. Set `timeout-minutes` to at
+  least that figure plus two minutes, then set `carry-forward-wait-seconds` to
+  `timeout-minutes * 60 - 60`.
+
+  The derivation runs in that direction and not the other. The earlier guidance
+  read "at least 60 seconds below `timeout-minutes`" as the whole rule, which
+  sizes the wait from a budget nobody derived; a ceiling sized 60 seconds under
+  a pure aggregator's default budget cannot outlast the run it is waiting for.
+  Measured on claude-code-plugins#3777: a body edit one minute into a 4 to 5
+  minute full run waited 210 seconds of a 240-second ceiling (run 33993232104)
+  and 225 seconds on run 33993700139, so that repository moved from 5 and 240 to
+  10 and 540. dotfiles derived 35 and 2040 the same way, from a `checks` wall
+  p95 of 158 s plus a serial `test` wall p95 of 1,088 s plus three queue waits
+  at its measured queue p50 of 165 s, which is 29.0 minutes.
+
+  The 60-second margin survives as a **constraint, not a sizing rule**: a
+  ceiling at or above the job budget lets the job timeout preempt the
+  fail-closed error, which reports as a cancelled job rather than the
+  actionable "re-run the full workflow" message.
+
+  The `240` default therefore suits only a repository whose full run finishes in
+  well under two minutes. The values in use across the fleet today:
+
+  | repository | `timeout-minutes` | `carry-forward-wait-seconds` |
+  | --- | --- | --- |
+  | dotfiles | 35 | 2040 |
+  | github-iac | 31 | 1800 |
+  | provisioning | 36 | 2100 |
+  | claude-code-proxy | 30 | 1740 |
+  | claude-code-plugins | 10 | 540 |
+
+  A waiting run holds a fleet runner slot, or bills a hosted minute per minute,
+  for as long as it waits, so the ceiling is a real cost and not a free margin.
+  It is a ceiling, not a delay: the poll ends the moment a verdict settles or
+  nothing is left in flight.
 - `.github/actions/pr-contract` — the whole pull-request contract in one step:
   Conventional Commits title and the `do-not-merge` label gate the step, and
   issue linkage is advisory by default (a warning plus one upserted marker
