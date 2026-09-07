@@ -17,11 +17,9 @@ name: Claude Security Review
 #
 # workflow_dispatch + pr-number is the #227 mitigation re-entry: when an
 # intermittent pull_request delivery gap leaves the required security-review
-# check ABSENT, an operator dispatches this caller so the always-report lane
-# attaches a check — without moving the lane onto privileged
-# pull_request_target / workflow_run (tripwire). The scheduled
-# security-review-absent-mitigate companion that automated this is retired
-# (ci-perf Phase 7).
+# check ABSENT, security-review-absent-mitigate (or an operator) dispatches
+# this caller so the always-report lane attaches a check — without moving the
+# lane onto privileged pull_request_target / workflow_run (tripwire).
 #
 # The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
 # so this repo receives it; fork PRs still get no token by design and the
