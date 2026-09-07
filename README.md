@@ -330,9 +330,9 @@ consumer to audit it.
   issue linkage is advisory by default (a warning plus one upserted marker
   comment plus a label, exit code unchanged; `linkage-mode: enforce` makes it
   gate). Semantics are ported from the `semantic-pr`, `do-not-merge-gate` and
-  `pr-issue-linkage` reusables. `semantic-pr.yml` is retired (ci-perf Phase
-  6b-ii); `do-not-merge-gate.yml` and `pr-issue-linkage.yml` stay in place until
-  their callers are retired. The pull request is read from the API rather than the event payload,
+  `pr-issue-linkage` reusables, all three of which are now retired
+  (`semantic-pr.yml` by ci-perf Phase 6b-ii, the other two by Phase 7), so this
+  composite is the only implementation. The pull request is read from the API rather than the event payload,
   so `edited` and `labeled` runs see current state. Needs `pull-requests: write`
   for the comment and label; every write is best-effort and degrades to a
   `::notice::` on a read-only token. See
@@ -646,7 +646,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   an armed PR reporting a non-BLOCKED unmergeable state such as `DIRTY`.
   Consumed via `uses:` at job level from a *scheduled* caller. The tracking
   issue (a marker-deduped rolling report, the same mechanism `link-check.yml`
-  and `queue-monitor-liveness.yml` use) is authored by the App, not by the
+  and `release-gap-check.yml` use) is authored by the App, not by the
   caller's ambient token, so the caller grants no `issues:` scope and instead
   names the destination through the required `tracking-issue-repository`
   input: a bare repository name under the caller's own owner that the App is
@@ -660,286 +660,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   caller can prove the tracking-issue create/update/close/fail lifecycle
   end-to-end without a real stuck PR and without touching the production
   rolling issue.
-- `.github/workflows/select-runner.yml` — the single organization-approved
-  hosted/self-hosted selector. With `self-hosted-only`, the selector itself
-  queues on the always-on default `melodic-ubuntu-24.04-x64` route so it never
-  spends hosted minutes before returning the caller's admitted managed label —
-  the default tier or the capped review tier — and never runs its own selection
-  on the review tier's small capacity. The
-  `prefer-self-hosted` and `hosted-only` selector paths run on the standard
-  `ubuntu-24.04` hosted runner (free on public repos, quota-covered on private)
-  so their adaptive and explicit hosted semantics remain available.
-  `prefer-hosted-while-free` (ci-workflows#252) keeps the selector on the fleet
-  while returning hosted for downstream jobs only when the cached billing probe
-  (`billing-minutes-state` / `CI_HOSTED_MINUTES_STATE`) reports `free`; any other
-  or missing state fails toward the fleet. Phase 0 verified the usage API at
-  HTTP 200 — see [prefer-hosted-while-free](docs/topics/prefer-hosted-while-free.md).
-  Every selector
-  path has a two-minute timeout and returns one `runs-on` string. A downstream
-  job has its own runner and timeout; the selector's platform limit does not
-  carry into that job.
-  `prefer-self-hosted` is deliberately fail-open to the configured hosted
-  runner. It uses a read-only observer GitHub App and chooses local when a
-  governed scale-set route has a managed-prefix runner that is online and not
-  explicitly reported as non-ephemeral, regardless of busy state: liveness, not
-  idleness. GitHub natively [queues a job until a matching runner is
-  available][runner-routing], failing it only after 24 hours queued, so a busy
-  fleet absorbs bursts without spending hosted minutes; only a fully offline
-  fleet falls back to the hosted route. When that fallback fires
-  (`reason: no-online-runner`), the selector also writes a check annotation and
-  job summary that name **local/self-hosted capacity offline** and point at
-  `ci-runner host status` — GitHub sometimes surfaces a drained self-hosted
-  queue as a billing failure, which is a false lead (ci-workflows#246).
-  Re-running failed jobs reuses the
-  prior attempt's successful selector output; re-running all jobs makes a
-  fresh liveness decision. Neither forces the hosted route.
-  `self-hosted-only` returns the configured exact managed label for the
-  always-on CI tier without inventoring that tier, so a trusted private
-  workload can blind-queue and wake a scale set (scale-from-zero). Moving the
-  selector itself onto hosted minutes to fail closed on a drained CI pool is
-  deliberately not done here — callers that need an offline-capacity annotation
-  for CI-tier work should use `prefer-self-hosted` instead. The capped review
-  tier is different: under `self-hosted-only` it probes inventory and fails
-  closed with `no-online-runner` (and the same operator-facing capacity text)
-  when nothing is ONLINE, rather than hanging forever (ci-workflows#386). The
-  queue-only label must be one of the centrally allowlisted routes — the default
-  `melodic-ubuntu-24.04-x64` tier or the capped `melodic-review-ubuntu-24.04-x64`
-  review tier; adding another route requires a reviewed
-  immutable selector revision. Invalid queue-only configuration and selector
-  infrastructure faults fail the selector job instead of falling back to paid
-  hosted execution. Public
-  repositories and fork pull requests — on `pull_request` and
-  `pull_request_target` alike — route hosted before the observer-token
-  action can execute, following GitHub's
-  [self-hosted runner security guidance][runner-security]. Same-repository
-  `pull_request_target` and `merge_group` runs are reviewed local event
-  classes: `pull_request_target` executes only the trusted base-branch
-  definition, and a merge group can be enqueued only by a write-access user
-  after required checks pass, so metadata-only gates on those events reach
-  governed capacity. Same-repository
-  Dependabot runs route like any push: their lane code executes in ephemeral
-  one-job workers, and the selector sources the observer key from the
-  [Dependabot secrets store][dependabot-secrets] on Dependabot events, so the
-  org mirrors `CI_RUNNER_OBSERVER_PRIVATE_KEY` there. Call it exactly once per
-  workflow and feed the single output to every lane's `runs-on`; per-lane
-  selector fan-out only multiplies identical preflight jobs:
-
-  ```yaml
-  jobs:
-    select-runner:
-      uses: melodic-software/ci-workflows/.github/workflows/select-runner.yml@<sha>
-      with:
-        policy: ${{ vars.CI_RUNNER_POLICY }}
-        self-hosted-label: ${{ vars.CI_SELF_HOSTED_LABEL }}
-        self-hosted-labels-json: ${{ vars.CI_SELF_HOSTED_LABELS_JSON }}
-        hosted-runner: ${{ vars.CI_HOSTED_RUNNER }}
-        scope: ${{ vars.CI_RUNNER_SCOPE }}
-        managed-runner-prefix: ${{ vars.CI_MANAGED_RUNNER_PREFIX }}
-        observer-client-id: ${{ vars.CI_RUNNER_OBSERVER_CLIENT_ID }}
-      secrets:
-        observer-private-key: ${{ secrets.CI_RUNNER_OBSERVER_PRIVATE_KEY }}
-
-    test:
-      needs: select-runner
-      runs-on: ${{ needs.select-runner.outputs.runner }}
-      steps:
-        - run: ./test.sh
-  ```
-
-  Never use `secrets: inherit`; pass only the observer key. Stable output reasons
-  are `online`, `self-hosted-only`, `hosted-only`, `hosted-while-free`,
-  `hosted-pool-exhausted`, `billing-unknown`, `no-online-runner`,
-  `missing-config`, `missing-secret`, `auth-error`, `api-timeout`, `api-error`,
-  `invalid-response`, and the strict infrastructure sentinel `selector-error`.
-  The security eligibility guard also reports
-  `hosted-only`. `selector-conformance.yml` runs the deterministic selector test
-  suite and proves the public, hosted-only, and queue-only contracts
-  without accessing local capacity. The tested CommonJS source is generated
-  into the workflow, so the reusable-workflow SHA pins the implementation
-  without a second checkout/ref. This matters because actions inside a called
-  workflow otherwise run in the
-  [caller's repository context][reusable-workflow-context]. A conformance check
-  fails if the executable copy drifts.
-
-  A required reusable gate that declares `needs: select-runner` must execute
-  after selector failures and skips. GitHub otherwise
-  [skips the dependent job][job-dependencies] after a prerequisite failure, and
-  a [skipped required job reports success][job-conditions]. It must also report
-  on every outcome: the standards runner-policy validator requires
-  selector-result reporters to declare exactly `if: ${{ always() }}` so every
-  prerequisite outcome — including cancellation — still materializes the
-  required check. GitHub generally
-  [recommends `!cancelled()` instead of `always()`][workflow-troubleshooting]
-  for jobs that should stop with a cancelled workflow; this contract
-  deliberately trades that for guaranteed reporting on every outcome —
-  fail-closed on `failure`/`skipped`, real validation on confirmed `cancelled`
-  (see below, #446, and #458). The reusable gate uses
-  its `runner` input for every prerequisite outcome, so the caller also owns the
-  recovery route; the cost is bounded to one caller-selected reporter run on
-  cancellation. Use the do-not-merge gate's fail-closed-on-failure/skipped,
-  real-validate-on-cancelled prerequisite contract
-  (this public-repository example intentionally falls back to hosted Ubuntu):
-
-  ```yaml
-  do-not-merge:
-    needs: select-runner
-    if: ${{ always() }}
-    permissions:
-      pull-requests: read
-      actions: read
-    uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
-    with:
-      runner: ${{ needs.select-runner.outputs.runner || 'ubuntu-24.04' }}
-      prerequisite-result: ${{ needs.select-runner.result }}
-  ```
-
-  Selector-dependent callers **must** grant `actions: read` on the gate job.
-  Thin callers that omit `needs` / `prerequisite-result` still grant `actions: read` because the reusable's `permissions:` block requests it for the cancelled-prerequisite resolver; GitHub rejects the reusable at startup if the caller grants a stricter set.
-  Reusable workflows can only use permissions the caller grants; when
-  `prerequisite-result` is `cancelled`, the gate lists this run's jobs via the
-  Actions API to distinguish a true cancel (routine concurrency supersede) from
-  a timed-out selector — GitHub collapses job timeouts into
-  `needs.*.result == cancelled`, but the Jobs API exposes distinct
-  `conclusion: timed_out` (#458). Without `actions: read`, or when the lookup
-  fails, the gate fails closed. The heuristic prefers jobs whose name contains
-  `Select runner` / `select-runner`; if none match, any `timed_out` job in the
-  run is treated as fail-closed.
-
-  When the caller workflow is active, the reusable uses the caller's resolved
-  `runner` value unchanged for `success`, `failure`, `cancelled`, `skipped`, and
-  empty prerequisite results. `failure`, `skipped`, and any unrecognized result
-  then fail before validation — selector breakage stays loud and is never
-  masked behind a green check. A `cancelled` result proceeds to real validation
-  only after the Actions Jobs API confirms the prerequisite truly concluded
-  `cancelled`, not `timed_out` (#458); true cancel is the routine signal that
-  the caller's per-PR `concurrency.cancel-in-progress` superseded the run (or
-  that someone with `actions: write` cancelled it manually), the reporter is by
-  then already running on the caller-resolved runner, and the gates read live
-  state where the mechanism allows (do-not-merge-gate re-fetches current labels;
-  pr-issue-linkage re-fetches the current PR body), so the check reports the real gate answer —
-  red only when the gate is actually violated. This supersedes the earlier
-  fail-closed-on-cancelled contract, which reasoned that a cancelled result
-  alone does not prove a successor run will cover the same required check and
-  that "a stale failure left by a superseded run clears on re-run". The
-  no-proven-successor concern is still honored — the gate never passes
-  vacuously on `cancelled`; it validates — but the clears-on-re-run assumption
-  failed operationally on 2026-08-12 (medley#1769, dotfiles#453): routine
-  supersedes left required checks RED fleet-wide with nothing wrong, and each
-  one needed a manual re-run to clear. A superseded run's job log carries a
-  `::notice` marking the cancelled prerequisite after timeout discrimination,
-  so a real prerequisite `failure` (hard `::error`, exit 1) or a timed-out
-  selector (fail-closed after API lookup) stays distinguishable from a supersede.
-
-  The public fallback shown above and the reusable's omitted-input default both
-  preserve `ubuntu-24.04`. A private self-hosted-only caller cannot reuse the
-  public `outputs.runner || 'label'` form: on a strict-selector failure
-  `select-runner` publishes the non-empty unroutable sentinel
-  `ci-runner-selection-failed`, which a `||` fallback passes straight through
-  instead of replacing. Gate the fallback on the selector result so the sentinel
-  is ignored:
-
-  ```yaml
-      runner: ${{ needs.select-runner.result == 'success' && needs.select-runner.outputs.runner || 'melodic-ubuntu-24.04-x64' }}
-  ```
-
-  The fallback label must itself be routable when selection fails; otherwise the
-  required reporter job never starts and the non-success result cannot fail
-  closed. Both success and reporting paths remain the existing single
-  `do-not-merge / do-not-merge` job on the resolved runner; there is no routine
-  aggregator or extra hosted job. GitHub documents that
-  [`runs-on` accepts an input-backed runner value][job-runs-on].
-
-  `self-hosted-labels-json` is an optional ordered JSON array of exact labels.
-  When present it overrides `self-hosted-label`; malformed, empty, or duplicate
-  candidate lists route hosted with `invalid-response`. Candidate priority is
-  the array order, independent of runner API order. `self-hosted-only` requires
-  exactly one centrally allowlisted candidate. Because GitHub documents
-  [runner labels as case-insensitive][runner-labels], candidate and inventory
-  labels are compared through case-normalized keys, case-only duplicates are
-  rejected, and the selector returns the configured spelling. V1's governed
-  labels and name prefixes are conservative ASCII literals provisioned by IaC;
-  this contract does not claim generic Unicode case-fold or collation safety.
-  GitHub's
-  [generic default self-hosted labels][default-runner-labels] (`self-hosted`, OS,
-  and architecture labels), as well as a candidate equal to the hosted fallback,
-  are rejected because returning either as `runs-on` could escape the managed
-  fleet. Organization
-  routing normally leaves it unset and uses one shared exact label. The personal
-  phase provisions it as operational data so the documented live-proof fallback
-  can switch from one shared label to two host-specific exact labels without a
-  workflow or selector code change.
-
-  GitHub's official [runner-scale-set contract][runner-scale-sets] routes jobs
-  by scale-set name. Its `2026-03-10` [OpenAPI runner schema][runner-openapi]
-  requires `id`, `name`, `os`, `status`, `busy`, and a `labels` array, but
-  declares `ephemeral` optional. Live scale-set inventory can represent a JIT
-  runner with an empty label array and omit `ephemeral`. When exactly one route
-  is configured, the selector can unambiguously attribute such an empty-label
-  runner inside the governed name prefix to that sole scale-set route. With an
-  ordered multi-route list, an empty-label runner cannot be attributed safely
-  and is ineligible; a candidate must be observed explicitly instead. A present
-  non-boolean `ephemeral` value invalidates the complete inventory, and explicit
-  `false` excludes and contaminates the inferred single-route namespace.
-
-  When `ephemeral` is omitted, local selection relies on the governed trust
-  assumption that the configured runner-name prefix and scale-set route are
-  reserved for the `ci-runner` controller's one-job JIT workers. The REST
-  response does not attest that ownership or lifecycle. The selector rejects
-  visible namespace conflicts, but credentials and configuration must prevent
-  another runner from satisfying the same prefix-and-route contract. Online
-  state is still required in the returned inventory observation.
-
-  V1 compute is Linux x64, but GitHub's official
-  [JIT-configuration response][runner-jit-config] reports `os: unknown`, as can
-  live JIT inventory. The selector therefore accepts case-insensitive `linux`
-  or `unknown` only. `unknown` is not an OS attestation; it is accepted solely
-  under the same governed prefix-and-route/JIT trust assumption. Any explicit
-  bearer of a candidate route reporting another OS contaminates that route.
-  Selected jobs separately assert the official [runner context][runner-context]
-  values `runner.os == Linux` and `runner.arch == X64` before substantive work.
-
-  Because downstream `runs-on` contains only the returned route, namespace
-  integrity is checked across every explicit case-insensitive bearer returned
-  by the paginated inventory—not only the online runner observed by the selector.
-  A route is contaminated when an explicit bearer is outside the managed name
-  prefix, reports `ephemeral: false`, or reports an OS outside the V1
-  Linux/JIT-unknown contract; that route is never returned. For one configured
-  route, an empty-label managed runner is its unambiguous inferred bearer. For
-  multiple configured routes, a conforming empty-label managed runner is
-  ineligible because it cannot be attributed, while a nonconforming one
-  contaminates every candidate because its hidden route could be any of them.
-  An explicitly distinct clean lower-priority route remains eligible. Online
-  counts include only eligible runners on clean routes. If every configured
-  route is contaminated, selection fails hosted with `invalid-response`;
-  omitted-field runners carrying unrelated explicit labels do not poison the
-  managed namespace.
-
-  Organization inventory is organization-wide. Selection therefore relies on
-  IaC giving every same-label runner group identical selected-repository access
-  for the migrated workflows. The selector cannot attest runner-group access
-  parity: `runner_group_id` is optional in the inventory schema, and an
-  observation without it does not prove which caller repositories can route to
-  that runner.
-
-  `CI_HOSTED_RUNNER` is operational configuration, but GitHub's runner-inventory
-  API cannot prove that an arbitrary label belongs to hosted infrastructure. The
-  selector therefore allowlists only the reviewed V1 value `ubuntu-24.04` and
-  canonicalizes every missing, malformed, unapproved, generic self-hosted, or
-  configured local-candidate value back to it. Introducing another hosted label
-  requires an explicit governance and conformance review.
-
-  Inventory is an observation, not a reservation or snapshot. Pagination can
-  race with registration and status changes between requests; stable
-  `total_count` and unique runner IDs are fail-closed consistency checks, not
-  snapshot isolation. Several simultaneous selectors can observe the same
-  online runner and select local; GitHub queues that burst until capacity
-  appears. Only when no matching runner is online do later
-  selectors route hosted with `no-online-runner`. Validation, authentication,
-  API, timeout, malformed-response, and github-script failures produce hosted
-  outputs. A failure of the selector job or hosted runner before outputs exist
-  cannot be converted by workflow expressions; dependent jobs remain blocked
-  and must be rerun. This boundary is intentionally not described as atomic
-  fallback.
 - `.github/workflows/link-check.yml` — online external-link checker, consumed
   via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
   It is **advisory**: external link health is flaky, so it runs `fail: false` and
@@ -970,8 +690,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   runs from a fresh runner-temporary directory with a per-job cache and
   without Docker, a job/service container, or an installer-time privilege
   escalation.
-  `runner` defaults to `ubuntu-24.04` and can consume the
-  approved selector output for eligible private, non-fork calls. Callers may
+  `runner` defaults to `ubuntu-24.04` and can consume the caller's governed
+  managed runner label for eligible private, non-fork calls. Callers may
   opt into `upload-sarif: true` for durable code-scanning alerts
   (visibility-only — does not replace `fail-on-severity` gating). That opt-in
   requires the calling job to grant `security-events: write`; reusable
@@ -992,7 +712,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `dotnet-build`'s locked-mode restore, but is no longer the only .NET coverage
   path. An empty scan warns (advisory) or fails (blocking) unless the caller
   declares the repo genuinely dependency-less via `allow-no-lockfiles: true`.
-  The caller must pass its approved selector output through `runner`; the native
+  The caller must pass its governed managed runner label through `runner`; the native
   lane needs no Docker socket or privileged worker. Inputs are documented inline.
   See the [official v2.5.1 release][osv-release-v2-5].
 
@@ -1078,11 +798,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   event-delivery gap can leave that required context ABSENT (not failed). Do
   not move the lane onto `pull_request_target` / `workflow_run`. Consumers
   should expose `workflow_dispatch` + `pr-number` on the caller (dogfood:
-  `claude-security-review-self.yml`) and run the
-  `security-review-absent-mitigate` companion (`schedule` /
-  `workflow_dispatch`) which either posts a FAILED visibility check under the
-  missing context or re-dispatches the caller. Details:
-  `docs/topics/claude-review-lanes/security-review-absent-mitigation.md`.
+  `claude-security-review-self.yml`) so a missing context can be re-attached by
+  dispatching the caller. The scheduled `security-review-absent-mitigate`
+  companion that automated this is retired (ci-perf Phase 7); the historical
+  design is `docs/topics/claude-review-lanes/security-review-absent-mitigation.md`.
 
   **Where that pattern list lives** is the caller's choice between two inputs.
   The conventional shape is `paths-file`, pointing at a repo-owned file
@@ -1137,174 +856,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Promotion: flip to a selector-coupled required gate when the lane's findings
   prove precision over a sustained window — an earned promotion, mirroring the
   review lane's discipline.
-- `.github/workflows/pr-issue-linkage.yml` — validates the PR **body** carries
-  one of the three accepted linkage markers and non-empty `## Summary`,
-  `## Fix`, `## Verification`, and `## Related` sections (the four contract
-  headers). The accepted markers are:
-  - a native closing keyword — `Closes`/`Fixes`/`Resolves #N`, including
-    `owner/repo#N`, for an issue this PR should auto-close on merge;
-  - a non-closing reference — `Refs: #N` or `Relates to: #N` (also
-    `owner/repo#N`), for an issue this PR references but must **not** close.
-    The colon is required, the marker must be alone on its own rendered line
-    (at most three leading spaces, no trailing prose), and matching is
-    case-insensitive;
-  - the literal `No linked issue` or `No related issue:`, for a PR that
-    relates to no issue at all.
-
-  A closing keyword that the surrounding prose negates (`does not close #N`,
-  `won't fix #N`, `deliberately resolves #N`) **fails** the gate rather than
-  satisfying it, and no other marker excuses it — GitHub's own linkage parser
-  is negation-blind, so the disclaimer still registers a live closing
-  reference and still auto-closes the issue on merge (#521). The gate reads
-  the words the parser ignores: up to five word tokens before the keyword on
-  the same rendered line, cut at the nearest `.`/`!`/`?`/`;`/`,`. Correlative
-  `not only … but` is not treated as negation (`This not only documents but
-  fixes #N` still satisfies the gate). A comma-separated note such as `No
-  known issues, closes #N` is a new clause, not a disclaimer. The failure
-  quotes the trigger word. Remove a real disclaimer and use `Refs: #N`
-  instead.
-
-  **Gating**: a non-conforming body fails
-  the job. HTML comments are stripped before either check, so an unedited PR
-  template (whose instructional prose lives in comments) fails rather than
-  passing vacuously. Generalizes
-  [`melodic-software/provisioning`'s `pr-body.yml`](https://github.com/melodic-software/provisioning/blob/main/.github/workflows/pr-body.yml)
-  into a shared reusable workflow — provisioning's own caller predates this
-  workflow and is not required to switch. It is a **standalone required check
-  named `pr-issue-linkage`**, not a `ci-status` lane — body edits must not
-  re-run the file-lint lanes; with the caller below the check a ruleset must
-  require is **`pr-issue-linkage / pr-issue-linkage`** per the [shared adoption
-  contract](#standalone-gate-checks--shared-adoption-contract). Inputs
-  (`runner`, `prerequisite-result`) match `do-not-merge-gate.yml`'s shape.
-  `edited` is required so a body edit re-validates; the gate passes on
-  `merge_group` since the body was validated at PR time. Consume it from a thin
-  caller that triggers on body-relevant events:
-
-  ```yaml
-  on:
-    pull_request_target:
-      types: [opened, edited, reopened, synchronize]
-    merge_group:
-  permissions:
-    pull-requests: read
-    actions: read
-  concurrency:
-    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-    cancel-in-progress: true
-  jobs:
-    pr-issue-linkage:
-      permissions:
-        pull-requests: read
-        actions: read
-      uses: melodic-software/ci-workflows/.github/workflows/pr-issue-linkage.yml@<sha>
-  ```
-
-  This check reads PR body metadata only — it checks out and runs no head code.
-
-  Optional input `exempt-authors` (comma-separated exact PR-author logins,
-  default empty) skips body validation for the listed authors — matched by
-  exact equality against `github.event.pull_request.user.login`, never a
-  `*[bot]` pattern, so no unknown future bot is silently skipped on the gate.
-  It is **fail-closed**: the empty default exempts no one, so bumping the
-  pinned SHA changes nothing until a caller opts in. Use it for bots whose
-  generated PR bodies cannot carry the closing-keyword + contract-header
-  markers (dependabot/renovate); the caller passes
-  `exempt-authors: 'dependabot[bot]'` alongside the `uses:` line.
-- `.github/workflows/do-not-merge-gate.yml` — fails the job while the calling PR
-  carries a configured label (default `do-not-merge`). **Gating**: the label's
-  presence fails the job; a caller that requires this check blocks the merge
-  until the label is removed. It is a **standalone required check named
-  `do-not-merge`**, not a `ci-status` lane; with the caller below the check a
-  ruleset must require is **`do-not-merge / do-not-merge`** per the [shared
-  adoption contract](#standalone-gate-checks--shared-adoption-contract). Inputs
-  (`runner`, `prerequisite-result`, `label`) mirror `pr-issue-linkage`'s
-  fail-closed-on-failure/skipped, real-validate-on-cancelled prerequisite
-  contract. **Adopt the canonical block below:**
-
-  ```yaml
-  on:
-    pull_request_target:
-      types: [opened, reopened, synchronize, labeled, unlabeled]
-    merge_group:
-  permissions:
-    pull-requests: read
-    actions: read
-  concurrency:
-    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-    cancel-in-progress: true
-  jobs:
-    do-not-merge:
-      permissions:
-        pull-requests: read
-        actions: read
-      uses: melodic-software/ci-workflows/.github/workflows/do-not-merge-gate.yml@<sha>
-  ```
-
-  This check reads PR label metadata only — it checks out and runs no head
-  code. `labeled`/`unlabeled` are required — without them, adding the label
-  after the check already passed would not re-trigger it, and the merge would
-  never actually be blocked. Even with them present, a same-repo automation
-  that labels using the default `GITHUB_TOKEN` still does not re-trigger this
-  gate — see the "Known limitation — GITHUB_TOKEN-authored label changes" note
-  below. `opened`/`reopened`/`synchronize` cover the check reporting on every
-  other PR lifecycle event a ruleset's required-status-check needs to see.
-  Unlike the other two gates, this one re-evaluates the label on
-  `merge_group` itself (looking up the PR named in the merge group's temporary
-  ref and re-checking its current labels via the API): a label — unlike
-  `pr-issue-linkage`'s body — can be added after the
-  PR's own `pull_request_target` run last passed, e.g. while the PR already
-  sits in the queue, so trusting that earlier result would let a labeled PR
-  merge through.
-
-  **Known limitation — GITHUB_TOKEN-authored label changes.** The
-  `labeled`/`unlabeled` triggers above only re-evaluate the gate when GitHub
-  actually starts a new workflow run for that event. GitHub does not start a
-  run at all for `labeled`/`unlabeled` events produced by the default
-  `GITHUB_TOKEN` — that is a platform-level recursive-run guard
-  ([triggering-a-workflow-from-a-workflow]), not a gap in the trigger list
-  above. So if a same-repo automation job (e.g. a labeling policy workflow)
-  applies this gate's blocking label using the default `GITHUB_TOKEN`
-  **after** the check already reported success on the PR's HEAD SHA, no run —
-  live-refetch or otherwise — is ever triggered, and the earlier green
-  check-run stays on that SHA until a genuinely new qualifying event occurs
-  (e.g. `synchronize` from a subsequent push, or a non-default-token
-  `labeled`/`unlabeled` event). No trigger-list change can close this; the
-  gap is that GitHub never starts a run.
-
-  **Adoption requirement — label-setting automation must not use the default
-  `GITHUB_TOKEN`.** Any same-repo workflow that applies or removes this
-  gate's blocking label must authenticate with a GitHub App installation
-  token or a personal access token instead of `${{ secrets.GITHUB_TOKEN }}` /
-  `${{ github.token }}`. Only a label change authored by a non-default token
-  creates the `labeled`/`unlabeled` run that re-evaluates this gate; a
-  default-token label change leaves an already-green check silently
-  unenforced. Verify this for every same-repo labeling automation before
-  requiring `do-not-merge / do-not-merge` on that repo.
-
-  **Known gap with batched merge queues:** GitHub's merge queue batches
-  multiple PRs into one merge group by default (max group size 5), and the
-  batch's temporary ref/SHA is named for only the *last* PR in the batch (a
-  `[#1, #2]` batch runs as `pr-2`). The reusable workflow's `merge_group`
-  handling re-checks only that named PR's labels, so a PR that isn't last in
-  its batch is not individually re-evaluated at merge-queue time. Closing this
-  fully needs either a validated way to enumerate every PR in a batch from a
-  `merge_group` run (no such API is documented; unverified), or setting merge
-  queue **maximum group size to 1** in the repo's ruleset (`github-iac`) so
-  every merge group is single-PR. Until one of those lands, treat `merge_group`
-  label coverage as best-effort, not exhaustive, on repos that allow batching.
-
-  **Adoption precondition — single-PR merge groups.** This workflow does not
-  itself detect or assert the queue's batch size; that only exists as the gap
-  above. Coverage on `merge_group` runs is exhaustive **only** when a merge
-  group contains exactly one PR. Before requiring `do-not-merge / do-not-merge`
-  on a repo with a merge queue, confirm the queue actually produces single-PR
-  groups — today that means the ruleset's merge-queue **maximum group size is
-  1**; a repo that instead relies on batch enumeration must first have that
-  enumeration implemented and validated here, which does not exist yet. Making
-  the check required on a queued repo without satisfying this precondition
-  does not fail loudly: it keeps reporting green while under-enforcing on
-  non-tip batch members. Re-verify this precondition whenever the repo's
-  merge-queue configuration changes.
 
 ## Claude lanes — shared consumption contract
 
@@ -1483,35 +1034,12 @@ it current through the ordinary sync PR. Where a repo's caller is
 sync-managed, change it at the component source and let the sync carry it to
 every target — never edit the materialized caller in the target repo.
 
-## Standalone gate checks — shared adoption contract
-
-`pr-issue-linkage.yml` and `do-not-merge-gate.yml` are
-standalone required checks rather than `ci-status` lanes, and share one
-adoption shape. The emitted check context is `<caller job> / <reusable job>`,
-so a ruleset must require the doubled name (`do-not-merge / do-not-merge`, not
-bare `do-not-merge`) — and only **after** the caller is merged and emitting the check,
-or open PRs block on a check that never runs. Rulesets are governed via
-`github-iac`.
-
-Each canonical caller triggers on `pull_request_target`, which runs the
-base-branch definition — a head-branch edit to the caller cannot bypass the
-gate. That is safe for both because each reads PR metadata only and checks
-out no head code; the per-workflow entry above names which metadata. Under
-`pull_request_target` `github.ref` is the base branch, so the concurrency group
-keys on `github.event.pull_request.number` (falling back to `github.ref` for
-`merge_group`) — a `github.ref` key would collapse all PRs into one group and
-let one PR's run cancel another's required check.
-
-`merge_group` is required on any repo with a merge queue: the queue gates on
-the check, and without the trigger that required check never reports and the
-queue deadlocks. It is inert where no queue exists.
-
 ## Triage: fleet-wide single-workflow failure spikes
 
 Before attributing a sudden, fleet-wide spike of failures in one reusable
 workflow to infrastructure flake, check that reusable's commit history and its
-job's runner routing (`runs-on:`, and whether it traces through
-`select-runner.yml`) first. A recent change that shells out to a CLI (`gh`,
+job's runner routing (`runs-on:`, and which managed label the caller passes)
+first. A recent change that shells out to a CLI (`gh`,
 `jq`, …) combined with a routing change that moved callers onto a runner image
 without that CLI produces exactly this signature: many unrelated repos failing
 the same check at once, often with a low-level exit code rather than an
@@ -1544,14 +1072,9 @@ for repositories with a genuinely different policy. The small configs under
 `fixtures/` exist only to exercise action and CI-check contracts; they are not
 mirrors of the standards catalog.
 
-[dependabot-secrets]: https://docs.github.com/en/code-security/dependabot/troubleshooting-dependabot/troubleshooting-dependabot-on-github-actions#restrictions-when-dependabot-triggers-events
-[default-runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow#using-default-labels-to-route-jobs
 [lefthook-config]: https://lefthook.dev/usage/envs/LEFTHOOK_CONFIG/
 [lefthook-extends]: https://lefthook.dev/configuration/extends/
 [lefthook-validate]: https://lefthook.dev/usage/commands/validate/
-[job-conditions]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
-[job-dependencies]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs#defining-prerequisite-jobs
-[job-runs-on]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1
@@ -1561,15 +1084,5 @@ mirrors of the standards catalog.
 [releasing-actions]: https://docs.github.com/en/actions/creating-actions/releasing-and-maintaining-actions
 [reuse-workflows]: https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
 [reusing-workflow-configurations]: https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
-[runner-routing]: https://docs.github.com/en/actions/reference/runners/self-hosted-runners#routing-precedence-for-self-hosted-runners
-[runner-security]: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners
-[runner-labels]: https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels
-[runner-jit-config]: https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#create-configuration-for-a-just-in-time-runner-for-an-organization
-[runner-openapi]: https://github.com/github/rest-api-description/blob/3b43edf675308c515b5e92a3eb89db17f6e6d806/descriptions-next/api.github.com/api.github.com.2026-03-10.yaml
-[runner-scale-sets]: https://docs.github.com/en/actions/concepts/runners/runner-scale-sets
-[runner-context]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
-[reusable-workflow-context]: https://docs.github.com/en/actions/concepts/workflows-and-actions/reusing-workflow-configurations#reusable-workflows
 [semver]: https://semver.org/
-[triggering-a-workflow-from-a-workflow]: https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
-[workflow-troubleshooting]: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#canceling-workflows
 [zizmor-release-v1-29-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.29.0
