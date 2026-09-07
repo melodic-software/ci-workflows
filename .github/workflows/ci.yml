@@ -179,9 +179,6 @@ jobs:
             selector-contract:
               .github/**
               .node-version
-            pester:
-              .github/**
-              fixtures/pester/**
             go:
               .github/**
               fixtures/go/**
@@ -669,18 +666,6 @@ jobs:
       # manifest.
       allow-no-lockfiles: true
 
-  pester:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['pester'] != 'false' }}
-    permissions:
-      contents: read
-    # Dogfood the reusable Pester workflow on a minimal fixture suite — proves
-    # the runner + pinned-Pester wiring (Windows by default). Blocking: a failing
-    # assertion fails the lane.
-    uses: ./.github/workflows/pester.yml
-    with:
-      run: Invoke-Pester -Path fixtures/pester -CI
-
   go-quality-dogfood:
     needs: changes
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
@@ -701,7 +686,7 @@ jobs:
     # `changes` is aggregated alongside the lanes it gates: a failed detection
     # job fails ci-status even though every gated lane fails open and runs, so
     # a broken filter config cannot ride the fallback to green indefinitely.
-    needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, pester, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -739,4 +724,4 @@ jobs:
           # the fail-closed error is what a contract-only run reports at the
           # ceiling rather than a job timeout preempting it.
           carry-forward-wait-seconds: '600'
-          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.pester.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

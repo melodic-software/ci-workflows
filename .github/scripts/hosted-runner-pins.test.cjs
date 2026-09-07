@@ -9,11 +9,6 @@ const githubRoot = path.join(__dirname, "..");
 const workflowsRoot = path.join(githubRoot, "workflows");
 const prerequisiteGateContracts = [
   {
-    fileName: "semantic-pr.yml",
-    jobId: "pr-title",
-    validationStep: "Validate PR title against Conventional Commits",
-  },
-  {
     fileName: "do-not-merge-gate.yml",
     jobId: "do-not-merge",
     validationStep: "Reject a blocking label",
@@ -49,16 +44,6 @@ test("hosted workflow contracts use explicit GA operating-system labels", () => 
       `${path.relative(githubRoot, file)} uses a moving hosted image label`,
     );
   }
-});
-
-test("Windows Pester remains on its fixed hosted runner", () => {
-  const source = fs.readFileSync(
-    path.join(workflowsRoot, "pester.yml"),
-    "utf8",
-  );
-  assert.match(source, /^ {4}runs-on: windows-2025$/mu);
-  assert.doesNotMatch(source, /\brunner-os\b/u);
-  assert.doesNotMatch(source, /runs-on: \$\{\{/u);
 });
 
 test("prerequisite-gated reusables preserve caller routing and fail closed", () => {
