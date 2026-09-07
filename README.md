@@ -314,6 +314,12 @@ consumer to audit it.
   | provisioning | 36 | 2100 |
   | claude-code-proxy | 30 | 1740 |
   | claude-code-plugins | 10 | 540 |
+  | ci-workflows | 15 | 840 |
+
+  This repository's own row is derived the same way: over the last 84
+  successful `ci` runs the wall p95 is 124 s, and 80 of those 84 queued for 0 s
+  on hosted runners with a worst non-outlier queue of 331 s, so the floor is
+  about 7.6 minutes and the existing `timeout-minutes: 15` clears it with room.
 
   A waiting run holds a fleet runner slot, or bills a hosted minute per minute,
   for as long as it waits, so the ceiling is a real cost and not a free margin.

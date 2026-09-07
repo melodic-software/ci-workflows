@@ -720,8 +720,17 @@ jobs:
         if: ${{ !cancelled() }}
         uses: ./.github/actions/ci-status
         with:
-          # At least 60 seconds below this job's `timeout-minutes: 15` (900s), so
-          # the fail-closed error is what a contract-only run reports at the
-          # ceiling rather than a job timeout preempting it.
-          carry-forward-wait-seconds: '600'
+          # Derived from this repository's own measured full run, per the rule
+          # in README.md, rather than from the job budget: the ceiling must
+          # cover the queue wait plus the p95 wall of the full `ci` run. Over
+          # the last 84 successful runs the wall p95 is 124 s and 80 of the 84
+          # queued for 0 s on hosted runners, with a worst non-outlier queue of
+          # 331 s, so the floor is about 7.6 minutes. `timeout-minutes: 15`
+          # clears that floor with room, and the ceiling is then
+          # `timeout-minutes * 60 - 60`. The 60-second margin is the constraint
+          # that keeps the fail-closed error, not a job timeout preempting it,
+          # as what a contract-only run reports at the ceiling. A higher
+          # ceiling costs nothing in the normal case: the poll ends as soon as
+          # a verdict settles or nothing is left in flight.
+          carry-forward-wait-seconds: '840'
           results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
