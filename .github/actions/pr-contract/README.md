@@ -11,7 +11,8 @@ one required status check (`ci-status`) instead of four.
 
 The three checks come from the `semantic-pr`, `do-not-merge-gate` and
 `pr-issue-linkage` reusable workflows; the semantics are ported, not redesigned.
-Those reusables stay in place until the callers are retired.
+All three reusables are now retired (`semantic-pr.yml` by ci-perf Phase 6b-ii,
+the other two by Phase 7), so this composite is the only implementation.
 
 ## Why one step
 
