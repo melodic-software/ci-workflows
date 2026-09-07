@@ -26,10 +26,6 @@ const driftWorkflow = fs.readFileSync(
   ),
   "utf8",
 );
-const selectorWorkflow = fs.readFileSync(
-  path.join(repositoryRoot, ".github", "workflows", "selector-conformance.yml"),
-  "utf8",
-);
 
 test("OSV pin is a complete native release and provenance contract", () => {
   assert.equal(pin.schemaVersion, 2);
@@ -117,13 +113,6 @@ test("digest helper changes trigger every directly dependent workflow", () => {
     "osv-release-digest.sh",
     "osv-release-digest.test.sh",
   ]) {
-    const selectorPath = `- .github/scripts/${script}`;
-    assert.equal(
-      selectorWorkflow.split(selectorPath).length - 1,
-      2,
-      `${script} must trigger selector conformance on pull requests and pushes`,
-    );
-
     const driftPath = `- '.github/scripts/${script}'`;
     assert.equal(
       driftWorkflow.split(driftPath).length - 1,

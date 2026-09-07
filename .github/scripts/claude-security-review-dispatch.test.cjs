@@ -32,24 +32,6 @@ const reusableSource = fs.readFileSync(
   ),
   "utf8",
 );
-const mitigateSelfSource = fs.readFileSync(
-  path.join(
-    repositoryRoot,
-    ".github",
-    "workflows",
-    "security-review-absent-mitigate-self.yml",
-  ),
-  "utf8",
-);
-const mitigateReusableSource = fs.readFileSync(
-  path.join(
-    repositoryRoot,
-    ".github",
-    "workflows",
-    "security-review-absent-mitigate.yml",
-  ),
-  "utf8",
-);
 
 function stepSource(workflow, stepName) {
   const start = workflow.indexOf(`      - name: ${stepName}\n`);
@@ -143,22 +125,6 @@ test("security privileged-trigger tripwire still rejects pull_request_target and
     /if:.*workflow_dispatch/u,
     "workflow_dispatch must remain allowed (mitigation re-entry)",
   );
-});
-
-test("absent-mitigate companion is schedule/dispatch only and never privileged", () => {
-  const self = parseWorkflow(mitigateSelfSource);
-  assert.ok(self.on.schedule, "schedule trigger required");
-  assert.ok(self.on.workflow_dispatch, "workflow_dispatch trigger required");
-  assert.equal(self.on.pull_request, undefined);
-  assert.equal(self.on.pull_request_target, undefined);
-  assert.equal(self.on.workflow_run, undefined);
-  const reusable = parseWorkflow(mitigateReusableSource);
-  assert.ok(reusable.on.workflow_call);
-  assert.equal(reusable.on.pull_request_target, undefined);
-  assert.equal(reusable.on.workflow_run, undefined);
-  assert.match(mitigateSelfSource, /ci-workflows#227/u);
-  assert.match(mitigateReusableSource, /security-review-absent-mitigate\.cjs/u);
-  assert.match(mitigateReusableSource, /checks: write/u);
 });
 
 test("security marker comments receive pull-number and advertise dispatch", () => {

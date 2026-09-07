@@ -45,9 +45,10 @@ to ~3.4s and narrowed the durable case once capacity supply is fixed
    share `<workflow>-${{ github.ref }}` with cancel-in-progress false so the
    documented `queue: single` default cancels only superseded *pending* runs
    while the in-progress run finishes. Applied to `.github/workflows/ci.yml`
-   and `.github/workflows/selector-conformance.yml`. Push/schedule/dispatch
-   workflows that already keyed on `github.ref`
-   (`tool-version-drift-check.yml`, `queue-monitor-liveness.yml`) set
+   and, until ci-perf Phase 7 retired it,
+   `.github/workflows/selector-conformance.yml`. Push/schedule/dispatch
+   workflows that already keyed on `github.ref` (`tool-version-drift-check.yml`,
+   and the since-retired `queue-monitor-liveness.yml`) set
    `cancel-in-progress: false` for the same burst semantics.
 5. **Hygiene lane consolidation (compatible cheapest set).**
    Full mega-lane collapse of every dogfood micro-job would hide per-composite

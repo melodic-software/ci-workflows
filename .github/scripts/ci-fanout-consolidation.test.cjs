@@ -12,12 +12,6 @@ const ciWorkflowPath = path.join(
   "workflows",
   "ci.yml",
 );
-const selectorConformancePath = path.join(
-  repositoryRoot,
-  ".github",
-  "workflows",
-  "selector-conformance.yml",
-);
 const adrPath = path.join(
   repositoryRoot,
   "docs",
@@ -35,7 +29,6 @@ const ciStatusActionPath = path.join(
 );
 
 const ciWorkflow = fs.readFileSync(ciWorkflowPath, "utf8");
-const selectorConformance = fs.readFileSync(selectorConformancePath, "utf8");
 const adr = fs.readFileSync(adrPath, "utf8");
 const ciStatusAction = fs.readFileSync(ciStatusActionPath, "utf8");
 
@@ -239,13 +232,6 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   );
 });
 
-test("selector-conformance.yml matches the same concurrency pattern", () => {
-  assert.match(
-    selectorConformance,
-    /^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/mu,
-  );
-});
-
 test("ci.yml consolidates the hygiene composites into the checks reusable", () => {
   // The hygiene fan-out first collapsed into a local `hygiene` job (#122); it
   // now lives in the `checks` reusable every consumer adopts (ci-perf Phase
@@ -357,6 +343,81 @@ test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
     ciWorkflow,
     /^ {10}results: [^\n]*\$\{\{ needs\.composites-head\.result \}\}[^\n]*$/mu,
   );
+});
+
+// Re-homed from the retired hosted-runner-pins.test.cjs and
+// select-runner.test.cjs (ci-perf Phase 7). Those files went with the
+// selector, but the three assertions below were never about the selector:
+// they are repository-wide guards on moving image labels, secret
+// inheritance, and the lane that executes this repository's own test suite.
+function yamlFilesUnder(directory) {
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        return yamlFilesUnder(entryPath);
+      }
+      return /\.ya?ml$/u.test(entry.name) ? [entryPath] : [];
+    })
+    .sort();
+}
+
+test("hosted workflow contracts use explicit GA operating-system labels", () => {
+  const githubRoot = path.join(repositoryRoot, ".github");
+  const movingLabels = /\b(?:ubuntu|windows)-latest\b/u;
+  const files = yamlFilesUnder(githubRoot);
+  assert.ok(files.length > 0, "the .github tree must not be empty");
+  for (const file of files) {
+    assert.doesNotMatch(
+      fs.readFileSync(file, "utf8"),
+      movingLabels,
+      `${path.relative(githubRoot, file)} uses a moving hosted image label`,
+    );
+  }
+});
+
+test("reusable workflows never recommend broad secret inheritance", () => {
+  const workflowsRoot = path.join(repositoryRoot, ".github", "workflows");
+  const files = yamlFilesUnder(workflowsRoot);
+  assert.ok(files.length > 0, "the workflows directory must not be empty");
+  for (const file of files) {
+    assert.doesNotMatch(
+      fs.readFileSync(file, "utf8"),
+      /\bsecrets:\s*inherit\b/u,
+      `${path.relative(workflowsRoot, file)} recommends broad secret inheritance`,
+    );
+  }
+});
+
+test("root CI runs this repository's own test suite in a gating lane", () => {
+  // The lane is still called `selector-contract` although the selector is
+  // retired. Renaming it would change a check context and every reference for
+  // no behaviour gain, so ci-perf Phase 7 declines that churn the same way it
+  // declines renaming the standards `privileged-hosted-only` rule id.
+  //
+  // Newline-anchored at the job-level two-space indent: the change-detection
+  // filter config declares a deeper-indented group with the same name, which a
+  // bare substring search would match first.
+  const laneStart = ciWorkflow.indexOf("\n  selector-contract:");
+  const laneEnd = ciWorkflow.indexOf("\n  zizmor:");
+  assert.ok(
+    laneStart !== -1 && laneEnd > laneStart,
+    "ci.yml must declare the test-execution lane before the zizmor lane",
+  );
+  const lane = ciWorkflow.slice(laneStart, laneEnd);
+  assert.match(lane, /node --test \.github\/scripts\/\*\.test\.cjs/u);
+  assert.match(lane, /bash \.github\/scripts\/osv-scan-guard\.test\.sh/u);
+  // The required check must aggregate the lane, or a red suite reports green.
+  assert.match(ciWorkflow, /needs: \[[^\]]*selector-contract[^\]]*\]/u);
+  // And a script-only change must actually start it.
+  assert.match(
+    ciWorkflow,
+    /^ {12}selector-contract:\n {14}\.github\/\*\*$/mu,
+    "the lane's path filter must admit a .github/scripts change",
+  );
+  // shfmt covers the same tree, so a shell source there cannot skip formatting.
+  assert.match(ciWorkflow, /paths: fixtures\/shell\/good \.github\/scripts/u);
 });
 
 test("ADR records #122 COMPLETED with Shape A done", () => {

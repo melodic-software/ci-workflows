@@ -287,7 +287,7 @@ test("documentation removes only the retired zizmor Docker exception", () => {
   );
   assert.match(zizmorSection, /verifies its committed SHA-256/u);
   assert.match(zizmorSection, /without Docker/u);
-  assert.match(zizmorSection, /approved selector output/u);
+  assert.match(zizmorSection, /governed\s+managed runner label/u);
   assert.match(zizmorSection, /upload-sarif: true/u);
   assert.match(zizmorSection, /security-events: write/u);
   assert.doesNotMatch(zizmorSection, /deferred opt-in/u);

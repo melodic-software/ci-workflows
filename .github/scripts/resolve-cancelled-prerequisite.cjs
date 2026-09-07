@@ -1,32 +1,22 @@
 "use strict";
 
-// Discriminate a timed-out select-runner prerequisite from a routine
-// concurrency supersede. GitHub collapses job timeouts into
+// Discriminate a timed-out prerequisite job from a routine concurrency
+// supersede. GitHub collapses job timeouts into
 // `needs.<job_id>.result == cancelled`, but the Actions Jobs REST API exposes
 // distinct `conclusion: timed_out` (see cancelled-prerequisite discrimination).
-
-const SELECTOR_JOB_NAME_PATTERN = /select[\s_-]?runner/i;
-
-/**
- * Whether a workflow job name looks like the select-runner prerequisite job.
- * @param {string} name
- * @returns {boolean}
- */
-function isSelectorLikeJobName(name) {
-  return typeof name === "string" && SELECTOR_JOB_NAME_PATTERN.test(name);
-}
 
 /**
  * Resolve whether a delivered `needs.*.result == cancelled` prerequisite
  * should proceed to validation or fail closed.
  *
  * Heuristic (timed-out vs cancelled discrimination):
- * 1. Prefer selector-like jobs (name contains "Select runner" / select-runner)
- *    whose conclusion is `timed_out` or `cancelled`.
- * 2. `timed_out` on a matched selector → fail closed.
- * 3. `cancelled` on matched selector(s) with no `timed_out` → proceed.
- * 4. If no selector match (ambiguous): any `timed_out` job in the run → fail closed.
- * 5. Ambiguous with no `timed_out` → proceed (true cancel / supersede).
+ * 1. Any `timed_out` job in the run means a prerequisite hit its own ceiling
+ *    rather than being superseded, so fail closed.
+ * 2. Otherwise proceed (true cancel / supersede).
+ *
+ * Until ci-perf Phase 7 the run's routing prefix job was matched by name and
+ * preferred over an unrelated `timed_out` job. That prefix job no longer
+ * exists in any consumer, so the fail-closed rule applies to the whole run.
  *
  * Callers must pass the complete job list from
  * `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`. A non-array input
@@ -51,46 +41,21 @@ function resolveCancelledPrerequisite(jobs) {
       (job.status === "completed" || typeof job.conclusion === "string"),
   );
 
-  const selectorCandidates = terminalJobs.filter(
-    (job) =>
-      isSelectorLikeJobName(job.name ?? "") &&
-      (job.conclusion === "timed_out" || job.conclusion === "cancelled"),
-  );
-
-  if (selectorCandidates.length > 0) {
-    if (selectorCandidates.some((job) => job.conclusion === "timed_out")) {
-      return {
-        outcome: "fail",
-        reason: "timed_out",
-        detail: "selector-like prerequisite job concluded timed_out",
-      };
-    }
-    return {
-      outcome: "proceed",
-      reason: "cancelled",
-      detail: "selector-like prerequisite job concluded cancelled",
-    };
-  }
-
   if (terminalJobs.some((job) => job.conclusion === "timed_out")) {
     return {
       outcome: "fail",
       reason: "timed_out",
-      detail:
-        "no selector-like job matched; run contains a timed_out job (fail-closed heuristic)",
+      detail: "run contains a timed_out job (fail-closed heuristic)",
     };
   }
 
   return {
     outcome: "proceed",
-    reason: "cancelled-ambiguous",
-    detail:
-      "no selector-like job matched and no timed_out jobs; treating as true cancel",
+    reason: "cancelled",
+    detail: "no timed_out job in the run; treating as true cancel",
   };
 }
 
 module.exports = {
-  SELECTOR_JOB_NAME_PATTERN,
-  isSelectorLikeJobName,
   resolveCancelledPrerequisite,
 };

@@ -1,5 +1,13 @@
 # Absent required security-review check (#227)
 
+> **Historical.** The scheduled companion this document designs
+> (`security-review-absent-mitigate.yml`, `security-review-absent-mitigate-self.yml`
+> and `security-review-absent-mitigate.cjs`) was retired by ci-perf Phase 7. The
+> problem below is still real and the `workflow_dispatch` plus `pr-number`
+> re-entry on the caller still exists; only the automation that used it on a
+> schedule is gone. Read this as the record of a retired design, not as current
+> operating guidance.
+
 ## Problem
 
 On repos that arm org ruleset required context `security-review / security-review`

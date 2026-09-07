@@ -38,12 +38,10 @@ test("manifest covers every render-*.cjs thin wrapper still shipped", () => {
   assert.deepEqual(wrappers, [
     "render-find-tracking-issue.cjs",
     "render-osv-scan-guard.cjs",
-    "render-select-runner-workflow.cjs",
   ]);
   assert.deepEqual(Object.keys(TARGETS).sort(), [
     "find-tracking-issue",
     "osv-scan-guard",
-    "select-runner-workflow",
   ]);
 });
 
@@ -179,7 +177,6 @@ test("each thin wrapper --check stays green (no generated-output change)", () =>
   for (const wrapper of [
     "render-osv-scan-guard.cjs",
     "render-find-tracking-issue.cjs",
-    "render-select-runner-workflow.cjs",
   ]) {
     const result = spawnSync(
       process.execPath,
