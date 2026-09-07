@@ -161,6 +161,29 @@ echo 'case: an indented header-shaped line is a configuration error'
 run_case 1 pull_request false "$files_markdown" $'markdown:\n  docs:\n  **/*.md'
 expect_log 'group headers must be unindented'
 
+echo 'case: more groups than the xargs -P cap still match independently'
+many_groups=$'g0:
+  **/*.md
+g1:
+  **/*.ps1
+g2:
+  **/*.cs
+g3:
+  **/*.ts
+g4:
+  **/*.py
+g5:
+  **/*.go
+g6:
+  **/*.rb
+g7:
+  **/*.rs
+'
+files_many="$temporary_directory/files-many.txt"
+printf '%s\n' 'docs/a.md' 'lib/a.cs' 'pkg/a.py' 'cmd/a.go' 'app/a.rs' >"$files_many"
+run_case 0 pull_request false "$files_many" "$many_groups"
+expect_results '{"g0":"true","g1":"false","g2":"true","g3":"false","g4":"true","g5":"true","g6":"false","g7":"true"}'
+
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
   exit 1

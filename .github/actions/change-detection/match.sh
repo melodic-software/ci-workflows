@@ -158,22 +158,39 @@ for index in "${!names[@]}"; do
     esac
   done <"${group_files[$index]}"
 done
+# Cap at 4, matching the hosted runner's vCPU count and the ShellCheck /
+# shfmt fan-outs in this same change. Unbounded `& … wait` oversubscribes
+# a filters.yml that grows past a handful of groups; xargs -P reaps.
+jobs=4
+worker_indices=()
 for index in "${!names[@]}"; do
   ignore="$scratch/ignore-$index"
   if [[ ! -s "$ignore" ]]; then
     printf 'empty\n' >"$scratch/rc-$index"
     continue
   fi
-  (
-    matches="$(git -C "$matcher" -c core.excludesFile="$ignore" check-ignore --stdin --no-index <"$files_list_path")" && rc=0 || rc=$?
-    # Completion marker is the rc file: write matches first so a kill between
-    # the two writes cannot leave rc=0 (had matches) with an absent matches
-    # file, which the parent would read as "no match" and skip the lane.
-    printf '%s' "$matches" >"$scratch/matches-$index"
-    printf '%s\n' "$rc" >"$scratch/rc-$index"
-  ) &
+  worker_indices+=("$index")
 done
-wait
+if ((${#worker_indices[@]} > 0)); then
+  # Each xargs invocation appends ONE group index after `_`. The worker
+  # body is a single-quoted script on purpose: its expansions belong to
+  # the worker shell. Completion marker is the rc file: write matches
+  # first so a kill between the two writes cannot leave rc=0 (had
+  # matches) with an absent matches file, which the parent would read as
+  # "no match" and skip the lane.
+  # shellcheck disable=SC2016
+  printf '%s\0' "${worker_indices[@]}" | xargs -0 -n 1 -P "$jobs" -r env \
+    MATCHER="$matcher" \
+    SCRATCH="$scratch" \
+    FILES_LIST="$files_list_path" \
+    bash -c '
+      index="$1"
+      ignore="$SCRATCH/ignore-$index"
+      matches="$(git -C "$MATCHER" -c core.excludesFile="$ignore" check-ignore --stdin --no-index <"$FILES_LIST")" && rc=0 || rc=$?
+      printf %s "$matches" >"$SCRATCH/matches-$index"
+      printf %s\\n "$rc" >"$SCRATCH/rc-$index"
+    ' _
+fi
 for index in "${!names[@]}"; do
   name="${names[$index]}"
   # A worker that was killed, or never wrote a status, is an operational
