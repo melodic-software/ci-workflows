@@ -1530,6 +1530,9 @@ REVIEW.md's "Always check" criterion for the standing rule this established.
 
 ## Policy ownership and action inputs
 
+Scratch probe line for the ci-perf stale re-run proof. This pull request is
+closed without merging.
+
 Reusable rulesets are authored in
 [`melodic-software/standards`](https://github.com/melodic-software/standards).
 Consumers receive them through a tool-native package/reference or as managed
