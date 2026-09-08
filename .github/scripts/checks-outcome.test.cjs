@@ -110,6 +110,30 @@ test("the join reads every continue-on-error step", () => {
   );
 });
 
+test("every downloading composite carries the step timeout", () => {
+  // A composite that downloads something — a `setup-*` action, or a pinned
+  // release tarball behind `actions/cache` — bounds ONE stalled download on its
+  // step, so a degraded network path cannot consume the caller's whole job
+  // budget and end the run `cancelled`, a verdict the join never reaches. These
+  // four are shell-only: they download nothing, so they carry no budget. A new
+  // download-heavy composite added without the key fails here rather than at
+  // the next stall.
+  const shellOnly = new Set([
+    "exec_bit",
+    "machine_specific_paths",
+    "eol_renormalize",
+    "comment_hygiene",
+  ]);
+  for (const step of composites) {
+    if (shellOnly.has(step.id)) continue;
+    assert.equal(
+      step["timeout-minutes"],
+      8,
+      `step ${step.id} downloads but has no timeout-minutes: 8`,
+    );
+  }
+});
+
 test("every composite green passes and records outcome=success", () => {
   const result = runJoin({});
   assert.equal(result.status, 0, result.stdout);

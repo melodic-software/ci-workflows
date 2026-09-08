@@ -45,6 +45,16 @@ name: checks
 # Failure: every composite runs under `continue-on-error: true`, so one failing
 # tool does not hide the rest (run-everything-fail-at-end). The `outcome` step
 # joins them, names the first failure, and fails the job.
+#
+# Stalls: every composite that downloads something — a `setup-*` action, or a
+# pinned release tarball behind `actions/cache` — carries `timeout-minutes: 8`
+# on its STEP. On a degraded network path one download otherwise consumes the
+# whole job budget and the run ends `cancelled`, a verdict the join never
+# reaches and an aggregate cannot read. The runner marks a timed-out step
+# `failure`, not `cancelled`, so `continue-on-error` holds and the join names
+# the stalled tool. The key belongs here and not inside the composite:
+# composite `runs.steps[*]` accept no `timeout-minutes`. It bounds ONE stalled
+# step; a host whose whole network path collapses still exhausts the job.
 on:
   workflow_call:
     inputs:
@@ -217,36 +227,42 @@ jobs:
         id: typos
         if: ${{ inputs.typos && fromJSON(steps.detect.outputs.results || '{}')['typos'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/typos@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Scan for secrets
         id: gitleaks
         if: ${{ inputs.gitleaks && fromJSON(steps.detect.outputs.results || '{}')['gitleaks'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/gitleaks@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Check editorconfig conformance
         id: editorconfig
         if: ${{ inputs.editorconfig && fromJSON(steps.detect.outputs.results || '{}')['editorconfig'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/editorconfig@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Lint markdown
         id: markdown
         if: ${{ inputs.markdown && fromJSON(steps.detect.outputs.results || '{}')['markdown'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/markdown@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Lint shell scripts
         id: shellcheck
         if: ${{ inputs.shellcheck && fromJSON(steps.detect.outputs.results || '{}')['shellcheck'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/shellcheck@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Lint workflows
         id: actionlint
         if: ${{ inputs.actionlint && fromJSON(steps.detect.outputs.results || '{}')['actionlint'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/actionlint@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Verify shebang files are executable
@@ -281,6 +297,7 @@ jobs:
         id: lychee_offline
         if: ${{ inputs.lychee-offline && fromJSON(steps.detect.outputs.results || '{}')['lychee-offline'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/lychee-offline@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
 
       - name: Validate against JSON Schema
@@ -291,6 +308,7 @@ jobs:
         # whole run for it, so the skip here is never silent.
         if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files != '' && fromJSON(steps.detect.outputs.results || '{}')['check-jsonschema'] != 'false' }}
         continue-on-error: true
+        timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
         with:
           files: ${{ inputs.check-jsonschema-files }}
