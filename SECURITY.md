@@ -14,16 +14,20 @@ business days.
 ## Supported versions
 
 Repo publishes composite actions and reusable workflows, consumed by
-reference. No released version stream: security fixes land on `main`,
-consumers pick up via advancing pinned commit SHA (Dependabot
-auto-opens bump PRs).
+reference. No released version stream: security fixes land on `main` and
+reach a consumer only when that consumer repins by reviewed pull request
+in its own repository. Nothing advances a pin automatically; the
+scheduled `release-gap-check` workflow files an advisory issue when
+`main` runs ahead of the newest published Release. Watch this
+repository's Releases so a security fix is not missed.
 
 ## How to consume securely
 
 - **Pin by full commit SHA**, never branch or tag — full-length SHA
   only immutable reference, kept SHA-pinned consumers immune to
-  tag-rewrite supply-chain attacks. Keep the `github-actions` Dependabot
-  ecosystem enabled so pins stay current.
+  tag-rewrite supply-chain attacks. Keep this repository out of
+  Dependabot's `github-actions` updates (an `ignore` entry) and move the
+  pin by reviewed pull request.
 - **Set least-privilege `permissions:` in your own jobs.** Composite action
   runs inline in calling job, inherits that job's `GITHUB_TOKEN` scopes;
   cannot reduce them for you. Start from `permissions: {}`, grant only
