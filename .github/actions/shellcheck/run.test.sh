@@ -233,6 +233,24 @@ grep -F '::notice::shellcheck: files listed 2 path(s); none of them is an existi
   <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: a list that keeps nothing prints a notice and exits 0\n'
 
+# A caller-supplied path is data, never shell source. `read -r -a` word-splits
+# without globbing and performs no substitution, and every downstream use keeps
+# each word as one argv element, so a metacharacter in the list is neither
+# expanded nor executed. Both halves are asserted from one run, and the fixture
+# repository is what makes the assertion mean something: it contains a real
+# `script.sh`, so a globbed `*.sh` would have produced an invocation, and the
+# working directory is writable, so an evaluated `$(touch PWNED)` would have
+# produced a file. The list word-splits into three entries, `*.sh`, `$(touch`
+# and `PWNED).sh`; the middle one is dropped for its extension and the other
+# two for not existing, which leaves the same empty-selection notice as above.
+# shellcheck disable=SC2016  # the unexpanded `$(touch PWNED)` literal is the fixture under test.
+run_action 0 FILES='*.sh $(touch PWNED).sh'
+[[ ! -e "$captures/1.args" ]]
+[[ ! -e "$repository/PWNED" ]]
+grep -F '::notice::shellcheck: files listed 3 path(s); none of them is an existing shell script.' \
+  <<<"$ACTION_OUTPUT" >/dev/null
+printf 'PASS: a metacharacter in the list is neither globbed nor evaluated\n'
+
 # Precedence, asserted in both directions from one pair of runs: with a list,
 # `paths` is not consulted at all; with the list blank, `paths` behaves exactly
 # as it does today.
