@@ -28,10 +28,13 @@ checkout of this repo. (Public is required because a public consumer such as
   global-standard defaults. Consumers override repo-specific scope (globs,
   paths, tool versions, config location) through inputs — never by editing the
   action.
-- **Pin by SHA.** Reference every action at a full commit SHA; Dependabot
-  (`github-actions`, weekly) opens bump PRs that are reviewed and merged
-  manually. Dependabot updates only `uses:` SHAs — the tool versions pinned in
-  each action's `version:`/`analyzer-version:` input default (and the
+- **Pin by SHA.** Reference every action at a full commit SHA with a `# vX.Y.Z`
+  comment. Consumers keep this repository out of Dependabot's `github-actions`
+  updates (an `ignore` entry) and move the pin by reviewed pull request in their
+  own repository, so a fix landed here does not reach a consumer until it
+  repins — see Versioning. For the third-party actions a consumer does let
+  Dependabot track, Dependabot updates only `uses:` SHAs — the tool versions
+  pinned in each action's `version:`/`analyzer-version:` input default (and the
   checksum-verified install URLs) have no package manifest it can track, so the
   scheduled `tool-version-drift-check` workflow watches upstream releases and
   files an advisory issue when a default falls behind.
@@ -48,13 +51,14 @@ checkout of this repo. (Public is required because a public consumer such as
 Every tag is full SemVer (`vX.Y.Z`). A release is cut whenever `main` changes
 by something worth pinning to — `release.yml`'s manual `workflow_dispatch`
 (patch/minor/major) makes each release a deliberate act, and cutting one after
-every meaningful change keeps `main` at the latest tag so Dependabot's
-`github-actions` group bumps consumers to a tagged SHA instead of tracking
-`main` HEAD by drift. Because nothing cuts a release automatically, the
-scheduled `release-gap-check` workflow watches for the failure mode of that
-deliberateness — `main` running ahead of the newest published Release for too
-long — and files an advisory rolling issue; cutting the release stays
-manual. There is no calendar cadence; GitHub's own guidance is
+every meaningful change keeps a tagged SHA available for consumers to pin to.
+Consumers are never bumped automatically: each pins this repository by full
+commit SHA with a `# vX.Y.Z` comment, and moving that pin is a reviewed pull
+request in the consumer's own repository. Because nothing cuts a release
+automatically, the scheduled `release-gap-check` workflow watches for the
+failure mode of that deliberateness — `main` running ahead of the newest
+published Release for too long — and files an advisory rolling issue; cutting
+the release stays manual. There is no calendar cadence; GitHub's own guidance is
 silent on release frequency, and a tag-per-change policy is a closer fit for a
 repository whose only "release" event is "a consumer might need to pin to
 this." GitHub's reusable-workflow reference guidance treats a SHA, a release
@@ -530,8 +534,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   The composites run by full path at a pinned SHA, because a relative action
   path inside a called workflow resolves against the caller's checkout. A
   tagged release therefore runs the composite bodies its pins name, one tag
-  behind after a bump, and Dependabot's `github-actions` group moves those pins
-  like any other reference. That pin lag is why this repository keeps a
+  behind after a bump, and this repository's own `github-actions` Dependabot
+  group moves those self-referencing pins like any other reference. That pin lag is why this repository keeps a
   `composites-head` job in its own `ci.yml`: it runs the same composites
   through `./.github/actions/<x>` so a pull request that changes a composite
   body is still exercised at HEAD instead of passing against the pinned copy.
