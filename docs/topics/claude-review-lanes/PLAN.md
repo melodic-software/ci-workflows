@@ -705,7 +705,8 @@ Ordered pre-steps, then waved rollout.
   ORDER. (0) RE-PIN THE ENGINE, before anything else. ENGINE HALF LANDED —
   standards#293 moved `sync.yml` to `8202e03f`; the watchdog half below is
   still outstanding, so read the rest of (0) as the record of why, plus the one
-  step that remains. As written, standards `sync.yml` pinned
+  step that remains. (Amended 2026-09-14: `standards-sync-stuck-automerge-alert.yml`
+  has since been removed, so the watchdog step no longer applies.) As written, standards `sync.yml` pinned
   ci-workflows at `ac223bb`, where auto-merge arming was gated on
   `pull-request-operation == 'created'`. That gate is unsound for THIS phase,
   and the reason is precise — `create-pull-request` (pinned `5f6978f`, v8.1.1)
@@ -1599,6 +1600,10 @@ the observation to a later phase relabels (a)'s evidence without producing
 it.
 
 ### Phase 4: observability — #238 aggregator [DONE]
+
+> Amended 2026-09-14: the incident aggregator (`claude-lane-incident-aggregator.yml`,
+> `claude-lane-incident.cjs` and its write gate) has been removed by owner decision;
+> this phase is historical.
 
 Issue #237 shipped (#248/#249/#251; closed). This phase consumes it. Can be
 developed in parallel with Phase 3 (disjoint files); its acceptance test runs

@@ -30,11 +30,6 @@ test("immutable release assets have a bounded exponential retry budget", () => {
     // their npm installs carry the equivalent fetch-retry budget, asserted
     // separately below.
     ["standards sync", read(".github/workflows/standards-sync.yml"), 0],
-    [
-      "stuck-automerge alert",
-      read(".github/workflows/standards-sync-stuck-automerge-alert.yml"),
-      0,
-    ],
     // Linux (bash) and Windows (pwsh) golangci-lint installs carry the same
     // budget, hence two occurrences.
     ["go quality", read(".github/workflows/go-quality.yml"), 2],
@@ -61,11 +56,6 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   // (mirroring the retired yq step's outage rationale).
   for (const [name, content, expected] of [
     ["standards sync npm", read(".github/workflows/standards-sync.yml"), 2],
-    [
-      "stuck-automerge alert npm",
-      read(".github/workflows/standards-sync-stuck-automerge-alert.yml"),
-      1,
-    ],
     [
       "managed-files-guard npm",
       read(".github/actions/managed-files-guard/action.yml"),
@@ -138,42 +128,6 @@ test("every shared-installer consumer caches its verified release asset", () => 
   ]);
 });
 
-test("small JSON and release-discovery reads use their class budgets", () => {
-  const workflow = read(".github/workflows/tool-version-drift-check.yml");
-
-  assert.match(workflow, /--connect-timeout 10 --max-time 30/u);
-  assert.match(workflow, /--retry 2 --retry-max-time 90/u);
-  assert.doesNotMatch(workflow, /--retry-delay/u);
-  assert.equal(occurrences(workflow, /\bcurl_small_json (?:"?https:)/gu), 6);
-  assert.match(
-    workflow,
-    /bounded_read 60 gh api repos\/google\/osv-scanner\/releases\/latest/u,
-  );
-  assert.match(
-    workflow,
-    /bounded_read\(\)[\s\S]*?>"\$output"[\s\S]*?cat -- "\$output"/u,
-  );
-  assert.match(
-    workflow,
-    /Find existing tracking issue[\s\S]*?set -euo pipefail[\s\S]*?open_issues="\$\(gh_read api --paginate/u,
-  );
-});
-
-test("link-check tracking lookup runs on github-script, not a bare gh CLI call", () => {
-  const workflow = read(".github/workflows/link-check.yml");
-  assert.match(
-    workflow,
-    /Find existing tracking issue[\s\S]*?uses: actions\/github-script@/u,
-  );
-  assert.match(
-    workflow,
-    /github\.paginate\(github\.rest\.issues\.listForRepo/u,
-  );
-  // link-check.test.cjs asserts, per step, that the executable script (not
-  // the surrounding explanatory prose, which may name the gh CLI) contains
-  // no actual invocation.
-});
-
 test("OSV native release downloads are bounded", () => {
   const workflow = read(".github/workflows/osv-scanner.yml");
   assert.equal(
@@ -202,23 +156,6 @@ test("Pulumi stack export has an explicit freshness boundary", () => {
   assert.match(
     guard,
     /timeout --signal=TERM --kill-after=5s 300s(?:[ \t]+|[ \t]*\\\r?\n[ \t]*)"\$pulumi_bin" stack export/u,
-  );
-});
-
-test("Pulumi drift reads have an explicit freshness boundary and a single retry", () => {
-  const drift = read(".github/workflows/pulumi-version-drift-check.yml");
-
-  assert.match(drift, /READ_TIMEOUT_MILLISECONDS = 60_000/u);
-  assert.match(drift, /request: \{ timeout: READ_TIMEOUT_MILLISECONDS \}/u);
-  assert.match(
-    drift,
-    /async function boundedRead\(operation\) \{[\s\S]*?retrying once/u,
-  );
-  // Mutations are never retried: a timed-out mutation may already have
-  // applied server-side, and a rerun reconciles observed state.
-  assert.doesNotMatch(
-    drift,
-    /boundedRead\(\(\) =>\s*\n?\s*github\.rest\.issues\.(create|update|createComment)/u,
   );
 });
 

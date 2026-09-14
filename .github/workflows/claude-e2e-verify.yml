@@ -136,8 +136,7 @@ name: claude-e2e-verify
 #
 # PIN NOTE: PLAYWRIGHT_VERSION below is an in-workflow tool pin with no package
 # manifest, so Dependabot cannot see it (it bumps only `uses:` SHAs). The
-# tool-version-drift-check conventions apply: such pins are watched by advisory
-# tooling and the operator absorbs each bump deliberately.
+# operator absorbs each bump deliberately.
 
 on:
   workflow_call:

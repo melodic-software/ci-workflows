@@ -15,7 +15,7 @@ description: >-
   from the execution file into safe, structured metadata (classify.cjs — the
   sole reader of the file's free-text fields; see its header for the
   projection and classification contract), emits the machine-readable
-  `class=<token>` ::error annotation the downstream aggregator polls for, and
+  `class=<token>` ::error annotation, and
   records the failure class and detail for the marker-comment step. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
   tool dependency.
@@ -100,9 +100,8 @@ runs:
             // default branch's copy (any PR editing the caller hits this, as
             // does the PR first adding it). Nothing was reviewed, so this must
             // not read as a review: the class token below makes the shape
-            // visible to the downstream aggregator, which is otherwise blind
-            // to it by construction (its whole detection surface is the
-            // `class=` annotation, and a skip emits none). A warning, not an
+            // machine-visible on the check run, where a skip would otherwise
+            // leave no `class=` annotation at all. A warning, not an
             // error: the skip is expected and self-correcting on the PRs that
             // edit the caller, and this lane's checks stay green by contract.
             core.warning(

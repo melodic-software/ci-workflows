@@ -19,7 +19,7 @@ node_modules/
 .ruff_cache/
 
 # Link checking — lychee's cache, written at the repository root by a local
-# `lychee` run and cached from that same path by link-check.yml.
+# `lychee` run.
 .lycheecache
 
 # .NET — build output from the dotnet fixtures

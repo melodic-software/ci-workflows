@@ -37,9 +37,7 @@
 // classifier exists for (ci-workflows#228 / claude-code-plugins#1122) is
 // described as a *usage-dead account credential* — a billing/entitlement death,
 // which the API reports as 402, not 401. Leaving 402 in `other` would classify
-// the originating incident as unremarkable. The downstream aggregator routes
-// `auth` to a human-gated incident, correct for a billing death as much as for
-// a revocation.
+// the originating incident as unremarkable.
 //
 // The two sources are disjoint members of the SDK's result union:
 // `api_error_status` exists only on the success variant (the shape a dead

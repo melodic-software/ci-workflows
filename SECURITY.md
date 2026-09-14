@@ -16,9 +16,7 @@ business days.
 Repo publishes composite actions and reusable workflows, consumed by
 reference. No released version stream: security fixes land on `main` and
 reach a consumer only when that consumer repins by reviewed pull request
-in its own repository. Nothing advances a pin automatically; the
-scheduled `release-gap-check` workflow files an advisory issue when
-`main` runs ahead of the newest published Release. Watch this
+in its own repository. Nothing advances a pin automatically. Watch this
 repository's Releases so a security fix is not missed.
 
 ## How to consume securely

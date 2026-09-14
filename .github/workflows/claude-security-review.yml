@@ -45,11 +45,9 @@ name: claude-security-review
 #   disabled` (ci-workflows#448; melodic-software/github-iac#282), so today
 #   nothing gates on `security-review / security-review`. The alarm does not
 #   disappear when the cost applies — it moves off the check conclusion onto
-#   three surfaces that never depended on it: the outcome composite's
-#   machine-readable `class=<token>` ::error annotation, the failure marker
-#   comment on the PR (class + remediation), and the incident aggregator, which
-#   reads lane annotations REGARDLESS of check-run conclusion and escalates the
-#   auth class to the attended queue. Auditing whether a given head was actually
+#   two surfaces that never depended on it: the outcome composite's
+#   machine-readable `class=<token>` ::error annotation and the failure marker
+#   comment on the PR (class + remediation). Auditing whether a given head was actually
 #   reviewed means reading those, never the green.
 #
 #   WHERE THE FLOOR ENDS: it covers what the lane can CLASSIFY, which means the
@@ -1517,12 +1515,11 @@ jobs:
       #     red is withheld deliberately: this cause is outside the PR's and
       #     the org's control, and a required context that reddens on it locks
       #     the fleet for the length of the outage. The alarm rides the
-      #     composite's `class=<token>` ::error annotation, the failure marker
-      #     comment below, and the incident aggregator that reads both
-      #     regardless of conclusion — see POSTURE for what this costs.
-      # The warning text carries no `class=` token of its own: the aggregator
-      # extracts class signals from every annotation on this check run, and a
-      # second token here would double-count the incident.
+      #     composite's `class=<token>` ::error annotation and the failure
+      #     marker comment below — see POSTURE for what this costs.
+      # The warning text carries no `class=` token of its own: the composite's
+      # annotation is the one class signal on this check run, and a second
+      # token here would duplicate it.
       #
       # An empty output matches neither comparison, so a superseded run —
       # whose outcome step never ran — still skips this step entirely.

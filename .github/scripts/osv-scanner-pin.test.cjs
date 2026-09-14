@@ -17,15 +17,6 @@ const workflow = fs.readFileSync(
   path.join(repositoryRoot, ".github", "workflows", "osv-scanner.yml"),
   "utf8",
 );
-const driftWorkflow = fs.readFileSync(
-  path.join(
-    repositoryRoot,
-    ".github",
-    "workflows",
-    "tool-version-drift-check.yml",
-  ),
-  "utf8",
-);
 
 test("OSV pin is a complete native release and provenance contract", () => {
   assert.equal(pin.schemaVersion, 2);
@@ -95,29 +86,4 @@ test("OSV result handling is generated from the tested fail-closed guard", () =>
     /exit \$SCAN_EXIT disagrees with SARIF finding count/u,
   );
   assert.doesNotMatch(workflow, /retention-days|Upload SARIF artifact/u);
-});
-
-test("scheduled drift check tracks both native release asset digests fail-soft", () => {
-  assert.match(driftWorkflow, /\.binary\.asset/u);
-  assert.match(driftWorkflow, /\.binary\.sha256/u);
-  assert.match(driftWorkflow, /\.provenance\.asset/u);
-  assert.match(driftWorkflow, /\.provenance\.sha256/u);
-  assert.match(driftWorkflow, /osv-release-digest\.sh/u);
-  assert.match(driftWorkflow, /2>\/dev\/null\)" \|\| osv_tag=''/u);
-  assert.match(driftWorkflow, /releases\/latest/u);
-  assert.doesNotMatch(driftWorkflow, /docker buildx imagetools inspect/u);
-});
-
-test("digest helper changes trigger every directly dependent workflow", () => {
-  for (const script of [
-    "osv-release-digest.sh",
-    "osv-release-digest.test.sh",
-  ]) {
-    const driftPath = `- '.github/scripts/${script}'`;
-    assert.equal(
-      driftWorkflow.split(driftPath).length - 1,
-      1,
-      `${script} must trigger the drift check on pushes`,
-    );
-  }
 });

@@ -208,13 +208,13 @@ test("an in-scope non-run reaches the ruling step on both signals", () => {
     /echo "::warning::/u,
     "the loud-open tier must emit a warning ANNOTATION, not a plain log line",
   );
-  // The aggregator extracts `class=<token>` from every annotation on this
-  // check run, so a token here would double-count the incident it reports.
+  // The outcome composite's annotation is the check run's one `class=<token>`
+  // signal, so a token here would duplicate it.
   const runBlock = runScript("Rule on an in-scope non-run");
   assert.doesNotMatch(
     runBlock,
     /class=/u,
-    "a class= token in this step's output would pollute the incident aggregator's tally",
+    "a class= token in this step's output would duplicate the composite's class signal",
   );
 
   // The skip shape gets its own log explanation: no re-run retries a
