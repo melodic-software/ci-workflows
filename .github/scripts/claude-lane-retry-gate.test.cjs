@@ -34,11 +34,6 @@ const lanes = [
     step: "Decide whether to retry the review",
     deletesTrackingComment: true,
   },
-  {
-    workflow: "claude-e2e-verify.yml",
-    step: "Decide whether to retry the verification",
-    deletesTrackingComment: false,
-  },
 ];
 
 // github-script bodies are plain JS with no ${{ }} interpolation, which is what
@@ -116,7 +111,7 @@ async function runGate(lane, { executionFile, comments = [] }) {
   process.env.EXECUTION_FILE = executionFile;
   // claude-review resolves the PR via API on workflow_dispatch and passes
   // PR_NUMBER into the gate; keep the harness faithful for that path while
-  // security/e2e still read context.payload.pull_request.
+  // security review still reads context.payload.pull_request.
   process.env.PR_NUMBER = String(context.payload.pull_request.number);
   try {
     const run = new AsyncFunction(
@@ -416,15 +411,13 @@ for (const lane of lanes) {
 // logic: each lane words its own refusal notice for the artifact it posts
 // (inline review comments vs a single findings comment), and that copy is
 // allowed to differ.
-// The evidence guard is its own region: leaving it out is what let the e2e lane
-// diverge into retrying on an unprovable file while its siblings refused.
 const decisionRegions = [
   ["the evidence guard", "let entries;", "core.notice("],
   ["the real-work count", "const isSyntheticErrorTurn", "if (realTurns > 0) {"],
   ["the auth predicate", "const last = entries.length", "if (auth) {"],
 ];
 
-test("all three lanes decide from byte-identical logic", () => {
+test("both review lanes decide from byte-identical logic", () => {
   for (const [label, from, to] of decisionRegions) {
     const regions = lanes.map((lane) => {
       const script = gateScript(lane.workflow, lane.step);

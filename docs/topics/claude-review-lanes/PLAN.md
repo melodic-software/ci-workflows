@@ -4,6 +4,8 @@
 
 ### TLDR
 
+> Amended 2026-09-14: `claude-e2e-verify.yml`, `claude-assistant.yml`, `approval-agent.yml` and `dependabot-lock-regen.yml` (with their dogfood callers and ADRs) have been removed as zero-caller reusables; mentions below are historical.
+
 Modernize and harden the org's Claude CI lanes (claude-review, claude-security-review,
 claude-e2e-verify in ci-workflows) and their fleet rollout: bump/currency-automate the
 action pin, move to claude-sonnet-5, fix two verified config defects, change review

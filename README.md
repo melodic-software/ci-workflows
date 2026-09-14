@@ -678,29 +678,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
   optional inputs on native `zizmor` preserve compatibility.
-- `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
-  `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
-  and pushes the result back to the PR branch, covering the lock-file updates
-  Dependabot's NuGet ecosystem misses. Self-guards to `dependabot[bot]` events
-  on `dependabot/nuget/` branches, so the caller is a thin unconditional
-  `pull_request` job granting `contents: write`. Inputs, the optional
-  `PUSH_TOKEN` Dependabot secret, and the default-token no-retrigger caveat are
-  documented inline.
-- `.github/workflows/approval-agent.yml` — Approval Agent lane
-  ([ci-workflows#256](https://github.com/melodic-software/ci-workflows/issues/256)).
-  Guardrails always run (never approve own policy/workflow files; approver ≠
-  author/pusher; refuse on human-risk findings). Live `APPROVE` is **opt-in**
-  via `enable-approve: true` plus App secrets (default remains `COMMENTED`).
-  Do not add it to production required checks until a fleet caller lands.
-  Dogfood caller `approval-agent-self.yml` is `workflow_dispatch`-only.
-  ADR + probe: `docs/topics/claude-review-lanes/approval-agent-ADR.md`.
-- `.github/workflows/claude-assistant.yml` — org `@claude` mention-responder
-  ([ci-workflows#255](https://github.com/melodic-software/ci-workflows/issues/255)).
-  V1 is **answer / re-review only** (tool-allowlist floor; no Edit/Write, no
-  commit/push/merge). Caller owns mention triggers + `@claude` guards;
-  reusable owns pin, floor tools, timeout, concurrency. Dogfood caller
-  `claude-assistant-self.yml`. ADR:
-  `docs/topics/claude-review-lanes/claude-assistant-ADR.md`.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. All inputs have public-safe defaults
   documented inline in the workflow header (the authoritative list). Consume
@@ -769,43 +746,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
     paths-file: .github/claude-security-paths
   ```
 
-- `.github/workflows/claude-e2e-verify.yml` — Claude-powered end-to-end
-  verification of a PR with `anthropics/claude-code-action`. The caller passes a
-  command that builds and serves its app plus the URL it listens on; the workflow
-  provisions a pinned Playwright/Chromium toolchain, waits for the app to become
-  healthy, then has the agent drive the running app through the caller's journeys
-  and post its findings as a PR comment (the agent step runs
-  `continue-on-error`). This workflow additionally owns the pinned browser
-  toolchain. All inputs are documented inline in the workflow header (the
-  authoritative list).
-  Consume it per the [Claude lanes — shared consumption
-  contract](#claude-lanes--shared-consumption-contract) below, with the caller
-  additionally passing:
-
-  ```yaml
-      with:
-        app-start-command: npm ci && npm run build && npm run start
-        app-url: http://localhost:3000
-  ```
-
-  This lane builds, serves, and browser-drives the PR head — it executes
-  PR-authored code — so the fork-PR safety guarantee in the shared contract is
-  what makes it safe: a fork gets no secrets and a read-only token, so that
-  execution has nothing to exfiltrate. The Playwright CLI version is an
-  in-workflow pin Dependabot cannot see; bumps are absorbed by hand.
-  Promotion: flip to a selector-coupled required gate when the lane's findings
-  prove precision over a sustained window — an earned promotion, mirroring the
-  review lane's discipline.
-
 ## Claude lanes — shared consumption contract
 
-`claude-review.yml`, `claude-security-review.yml`, `claude-e2e-verify.yml`,
-and `claude-assistant.yml` share one consumption shape. Each is **advisory**:
-it posts PR/issue comments and never gates `ci-status`. (The advisory verdict
-is separate from execution evidence: `claude-security-review.yml` scopes itself
-to security-sensitive paths, and its name-stable `security-review` check may be
-made a required status check — see its entry above. `claude-assistant.yml` is
-mention-triggered answer/re-review, not a PR check.) Each is a whole-job
+`claude-review.yml` and `claude-security-review.yml` share one consumption
+shape. Each is **advisory**: it posts PR comments and never gates `ci-status`.
+(The advisory verdict is separate from execution evidence:
+`claude-security-review.yml` scopes itself to security-sensitive paths, and its
+name-stable `security-review` check may be made a required status check — see
+its entry above.) Each is a whole-job
 concern (job `permissions:` plus a `secrets:` interface), which is why each is
 a reusable workflow rather than a composite action — the caller owns the
 triggers and the permission grant, and the workflow owns the SHA-pinned
@@ -904,10 +852,7 @@ success when the incremental delta touches no security-relevant paths
 absent required check from a `pull_request` delivery gap can be re-attached
 without privileged triggers (ci-workflows#227; see
 `docs/topics/claude-review-lanes/security-review-absent-mitigation.md`).
-`claude-e2e-verify`
-keeps `synchronize` too, and gates on nothing but its kill-switches — no draft
-skip, no `skip-actors` input — so the most expensive lane has the loosest gate.
-Scope it with the caller's own trigger types. Take each lane's canonical caller
+Take each lane's canonical caller
 from its own workflow header.
 
 **Bounded retry.** Every lane makes at most **two** agent attempts — one
@@ -925,12 +870,9 @@ lockstep. What this buys on the security lane is a real review against the
 sporadic-429 class, rather than the evidence gap its loud-open tier would
 otherwise leave behind.
 
-One divergence is worth knowing. The two review lanes demand **proof** of zero
-turns: a missing or unparsable execution file is not proof — a hard kill can
-lose the file after turns were already spent — so they do not retry on one.
-`claude-e2e-verify` reads an unreadable file as recording no assistant turn and
-does retry. It also sets no `track_progress` tracking comment, so it has no
-orphan comment to clean up between attempts, which the review lanes do.
+Both lanes demand **proof** of zero turns: a missing or unparsable execution
+file is not proof — a hard kill can lose the file after turns were already
+spent — so they do not retry on one.
 
 **Review-count cap (code-review lane only).** `claude-review.yml` stops
 reviewing a PR after `max-reviews-per-pr` successful reviews, capping spend on
@@ -944,8 +886,7 @@ briefly exceed it by the number of concurrent heads.
 
 **Kill-switches.** Every lane honors two Actions variables at job level:
 `CLAUDE_LANES_DISABLED` (all lanes) and a per-lane switch
-(`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`,
-`CLAUDE_E2E_VERIFY_DISABLED`). `true` skips the lane's job name-stably — a
+(`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`). `true` skips the lane's job name-stably — a
 required security-review check reads the skip as success, so merges are never
 wedged. An absent variable means enabled; a repository-level variable
 overrides an organization-level one, so a single repo can opt out (or back
