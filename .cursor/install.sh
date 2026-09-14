@@ -4,12 +4,12 @@
 # Installs the two runtime toolchains this repository pins at the repo level so
 # the dogfood test/lint inner loop is runnable end to end:
 #   * Node   — from .node-version, the runtime for the `node --test` suites and
-#              the tsc/biome action contracts.
+#              the biome action contract.
 #   * .NET   — from global.json, the SDK the dotnet-build / dotnet-format
 #              fixtures compile against.
 #
 # Go and Python already ship in the base image. The per-tool lint binaries
-# (lefthook, shellcheck, shfmt, actionlint, biome, typos, gitleaks, lychee,
+# (shellcheck, shfmt, actionlint, biome, typos, gitleaks, lychee,
 # ruff, pyright, pwsh) are intentionally NOT installed here: each composite
 # action installs its own pinned, checksum-verified version at run time, so
 # pre-seeding them in the environment would duplicate and drift from those

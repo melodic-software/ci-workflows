@@ -31,8 +31,7 @@ Three cooperating pieces, none of which privilege the security lane:
    resolves the live head via API, checks it out, and runs the always-report
    lane so a real check attaches.
 
-2. **`security-review-absent-mitigate.cjs`** — extends the
-   `check-run-reconcile` taxonomy (`#399` / `#422`) to find open PRs whose
+2. **`security-review-absent-mitigate.cjs`** — finds open PRs whose
    required security-review context has no commit check-run past a grace
    window, then:
    - `report` — print findings

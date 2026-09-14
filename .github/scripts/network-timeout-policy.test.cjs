@@ -120,7 +120,6 @@ test("every shared-installer consumer caches its verified release asset", () => 
     "actionlint",
     "editorconfig",
     "gitleaks",
-    "lefthook-validate",
     "lychee-offline",
     "shellcheck",
     "shfmt",
