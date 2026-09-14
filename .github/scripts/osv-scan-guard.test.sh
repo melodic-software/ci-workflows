@@ -1,9 +1,22 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-guard="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/osv-scan-guard.sh"
+workflow="$(cd "$(dirname "${BASH_SOURCE[0]}")/../workflows" && pwd)/osv-scanner.yml"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
+guard="$temporary_directory/guard.sh"
+# The guard's only copy is the `run:` block of the workflow's classify step.
+awk '
+  /^      - name: Validate and classify OSV result$/ { step = 1; next }
+  step && !body && /^      - name: / { step = 0 }
+  step && /^        run: \|$/ { body = 1; next }
+  body && NF && !/^          / { exit }
+  body { sub(/^          /, ""); print }
+' "$workflow" >"$guard"
+if ! grep -q 'set -euo pipefail' "$guard" || ! grep -q 'results are not trusted' "$guard"; then
+  echo "could not extract the OSV guard block from $workflow" >&2
+  exit 1
+fi
 results="$temporary_directory/results.sarif"
 workspace="$temporary_directory/workspace"
 mkdir -p -- "$workspace/src"
