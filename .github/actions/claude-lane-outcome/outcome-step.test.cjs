@@ -2,8 +2,8 @@
 
 // The validation-skip detection lives in the composite's own step script, not
 // in classify.cjs, so these tests EXECUTE the shipped script text against a
-// mock core — the same execute-the-shipped-text discipline the retry-gate and
-// aggregator suites use. A regex over action.yml could not tell a success
+// mock core — the same execute-the-shipped-text discipline the retry-gate
+// suite uses. A regex over action.yml could not tell a success
 // branch that requires execution evidence from one that does not, and the
 // evidence check is the entire fix: a green step with no execution file is
 // claude-code-action skipping itself, and it must never read as a review.
@@ -20,14 +20,6 @@ const actionSource = fs.readFileSync(
   path.join(__dirname, "action.yml"),
   "utf8",
 );
-
-// The downstream aggregator is the consumer of the annotation this step emits,
-// so its own parser is the oracle: what the composite writes, extractSignals
-// must read back as the intended class token.
-const {
-  RECOGNIZED_CLASSES,
-  extractSignals,
-} = require("../../scripts/claude-lane-incident.cjs");
 
 // The shipped script IS the text under test. `script: |` is the final key in
 // the file, so everything after the marker is the block; the dedent asserts
@@ -108,8 +100,8 @@ test("a success with execution evidence is a review that ran", async () => {
 test("a success with no execution evidence is the validation-skip shape, not a review", async () => {
   // claude-code-action's workflow-validation guard exits 0 before running
   // anything, so the step concludes green while nothing was reviewed. The
-  // step must say so machine-readably (the annotation is the aggregator's
-  // only detection surface) without counting it as a failure — the skip is
+  // step must say so machine-readably (a `class=` annotation on the check
+  // run) without counting it as a failure — the skip is
   // expected on exactly the PRs that edit the caller workflow.
   for (const executionFile of [
     "",
@@ -125,13 +117,7 @@ test("a success with no execution evidence is the validation-skip shape, not a r
     assert.deepEqual(errors, [], executionFile);
     assert.equal(warnings.length, 1, executionFile);
 
-    // Cross-module contract: the aggregator's own parser must recover the
-    // token from the emitted text, and the token must be in its allowlist —
-    // an unrecognized emission would surface as noise, not as a class.
-    const signals = extractSignals(warnings[0]);
-    assert.deepEqual(signals.classes, ["skipped-validation"]);
-    assert.equal(signals.unrecognized, 0);
-    assert.ok(RECOGNIZED_CLASSES.has("skipped-validation"));
+    assert.match(warnings[0], /\bclass=skipped-validation\b/u, executionFile);
   }
 });
 
@@ -153,9 +139,7 @@ test("a genuine failure still classifies and reports as failed", async () => {
   assert.equal(outputs.review_ran, "false");
   assert.equal(outputs.failure_class, "auth");
   assert.equal(errors.length, 1);
-  const signals = extractSignals(errors[0]);
-  assert.deepEqual(signals.classes, ["auth"]);
-  assert.equal(signals.apiErrorStatus, 401);
+  assert.match(errors[0], /\bclass=auth\b/u);
 });
 
 test("a failure with no execution file keeps the fail-path class, not the skip class", async () => {

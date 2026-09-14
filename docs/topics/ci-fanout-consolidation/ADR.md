@@ -50,6 +50,7 @@ to ~3.4s and narrowed the durable case once capacity supply is fixed
    workflows that already keyed on `github.ref` (`tool-version-drift-check.yml`,
    and the since-retired `queue-monitor-liveness.yml`) set
    `cancel-in-progress: false` for the same burst semantics.
+   (Amended 2026-09-14: `tool-version-drift-check.yml` has since been removed.)
 5. **Hygiene lane consolidation (compatible cheapest set).**
    Full mega-lane collapse of every dogfood micro-job would hide per-composite
    failure surfaces this repo depends on. Instead, collapse the cheapest

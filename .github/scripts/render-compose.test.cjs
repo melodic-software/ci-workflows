@@ -35,14 +35,8 @@ test("manifest covers every render-*.cjs thin wrapper still shipped", () => {
         /^render-.+\.cjs$/u.test(name) && !name.startsWith("render-compose"),
     )
     .sort();
-  assert.deepEqual(wrappers, [
-    "render-find-tracking-issue.cjs",
-    "render-osv-scan-guard.cjs",
-  ]);
-  assert.deepEqual(Object.keys(TARGETS).sort(), [
-    "find-tracking-issue",
-    "osv-scan-guard",
-  ]);
+  assert.deepEqual(wrappers, ["render-osv-scan-guard.cjs"]);
+  assert.deepEqual(Object.keys(TARGETS).sort(), ["osv-scan-guard"]);
 });
 
 test("exactly-one ordered block rejects missing, reversed, and duplicate markers", () => {
@@ -174,10 +168,7 @@ test("runRenderPass returns exit 1 when any file drifts under --check", () => {
 });
 
 test("each thin wrapper --check stays green (no generated-output change)", () => {
-  for (const wrapper of [
-    "render-osv-scan-guard.cjs",
-    "render-find-tracking-issue.cjs",
-  ]) {
+  for (const wrapper of ["render-osv-scan-guard.cjs"]) {
     const result = spawnSync(
       process.execPath,
       [path.join(scriptsDirectory, wrapper), "--check"],

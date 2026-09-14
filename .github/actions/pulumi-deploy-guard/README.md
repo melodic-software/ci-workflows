@@ -54,11 +54,6 @@ Ordering follows GitHub's requirement: update cloud trust before changing
 emitted subject. Static matcher tests are supporting evidence, not a replacement
 for the paired live positive/negative exchange.
 
-Companion reusable version-drift workflow intentionally checks out caller to
-read its `.pulumi.version`. Behavioral-tested implementation generated inline
-from canonical `ci-workflows` script — no caller-owned copy or relative
-called-repository path needed.
-
 Contract based on [GitHub's documented OIDC claims](https://docs.github.com/en/actions/reference/security/oidc),
 [Pulumi OIDC issuer policies](https://www.pulumi.com/docs/administration/access-identity/oidc-issuers/),
 Pulumi's read-only [`stack export`](https://www.pulumi.com/docs/iac/cli/commands/pulumi_stack_export/).

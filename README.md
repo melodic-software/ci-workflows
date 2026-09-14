@@ -35,9 +35,8 @@ checkout of this repo. (Public is required because a public consumer such as
   repins — see Versioning. For the third-party actions a consumer does let
   Dependabot track, Dependabot updates only `uses:` SHAs — the tool versions
   pinned in each action's `version:`/`analyzer-version:` input default (and the
-  checksum-verified install URLs) have no package manifest it can track, so the
-  scheduled `tool-version-drift-check` workflow watches upstream releases and
-  files an advisory issue when a default falls behind.
+  checksum-verified install URLs) have no package manifest it can track, so
+  bumping one is a reviewed pull request in this repository.
 - **Each consumer aggregates locally.** One action runs one tool inside a
   consumer job. The required-check contract is a single check named `ci-status`,
   produced by a thin gateway job the consumer keeps local so the required-check
@@ -54,11 +53,8 @@ by something worth pinning to — `release.yml`'s manual `workflow_dispatch`
 every meaningful change keeps a tagged SHA available for consumers to pin to.
 Consumers are never bumped automatically: each pins this repository by full
 commit SHA with a `# vX.Y.Z` comment, and moving that pin is a reviewed pull
-request in the consumer's own repository. Because nothing cuts a release
-automatically, the scheduled `release-gap-check` workflow watches for the
-failure mode of that deliberateness — `main` running ahead of the newest
-published Release for too long — and files an advisory rolling issue; cutting
-the release stays manual. There is no calendar cadence; GitHub's own guidance is
+request in the consumer's own repository. Nothing cuts a release
+automatically. There is no calendar cadence; GitHub's own guidance is
 silent on release frequency, and a tag-per-change policy is a closer fit for a
 repository whose only "release" event is "a consumer might need to pin to
 this." GitHub's reusable-workflow reference guidance treats a SHA, a release
@@ -559,19 +555,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
             **/*.md
   ```
 
-- `.github/workflows/pulumi-version-drift-check.yml` — reusable-only maintenance
-  job for GitHub IaC callers. It accepts only a hosted default-branch push,
-  schedule, or manual dispatch, compares the exact `.pulumi.version` pin with
-  Pulumi's current stable release, and maintains one marker-identified auditable
-  incident across rename or manual closure without resetting its age. It never
-  changes or auto-merges a pin, retires resolved incidents instead of reusing
-  them, and hard-fails after 14 days of unresolved drift. Drift detection runs
-  on `actions/github-script` rather than a `gh`/`jq`-driven shell script: this
-  reusable runs on whatever runner the caller selects, and a self-hosted image
-  is not guaranteed to ship those CLIs, so the implementation lives directly in
-  the workflow on the action's bundled Node runtime instead of a generated,
-  equality-tested copy of a repo-local `.sh` source. Per-caller concurrency
-  serializes issue mutation.
 - `.github/workflows/issue-triage-label.yml` — applies a configured floor label
   (default `priority: needs-triage`) to an issue opened or reopened with no
   label matching a configured prefix (default `priority:`). **Non-gating**:
@@ -629,52 +612,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   creation means a PR opened while a target was opted out is armed once the
   opt-out lifts, while a PR someone deliberately disarmed is never overridden.
   A rejected arm attempt (for example an already-mergeable PR) is logged and
-  does not fail the sync — which is why the watchdog below detects a PR that
-  was never armed as well as one that stayed armed but blocked. See
-  `standards-sync-stuck-automerge-alert.yml`.
-- `.github/workflows/standards-sync-stuck-automerge-alert.yml` — scans the
-  standards-sync target repositories, read from the standards manifest at run
-  time (never hardcoded), for open PRs authored by the standards-sync App in
-  two states that stop a sync PR from merging itself, each past
-  `threshold-hours` (default 4): **armed but stuck** (auto-merge on, GraphQL
-  `mergeStateStatus: BLOCKED`), and **never armed** (no auto-merge and no
-  auto-merge *enabled* event of any merge method in the timeline — a squash arm
-  records `AutoSquashEnabledEvent` — in a target the manifest marks
-  `automerge: true`). The second exists because the sync's arming step
-  downgrades every rejection to a warning: a failed arm otherwise looks exactly
-  like the status quo while the operator believes the PR is armed. Absence of
-  an *enabled* event is what distinguishes arming that never took from
-  auto-merge that was armed and later turned off, whether by a reviewer or by
-  GitHub itself. A target opted out with `automerge: false` is never reported
-  unarmed — that is the intended state, not an incident. Neither check covers
-  an armed PR reporting a non-BLOCKED unmergeable state such as `DIRTY`.
-  Consumed via `uses:` at job level from a *scheduled* caller. The tracking
-  issue (a marker-deduped rolling report, the same mechanism `link-check.yml`
-  and `release-gap-check.yml` use) is authored by the App, not by the
-  caller's ambient token, so the caller grants no `issues:` scope and instead
-  names the destination through the required `tracking-issue-repository`
-  input: a bare repository name under the caller's own owner that the App is
-  installed on. It is required rather than defaulted to the caller because the
-  caller need not be — and for `melodic-software/standards`, the sync source,
-  is not — a repository that installation covers. The run fails when it finds
-  any — both states are actionable conditions, not flaky ones, so this is
-  intentionally not advisory. A `test-mode` input (with a string
-  `test-synthetic-candidates` count) skips live scanning and fabricates
-  synthetic candidates under a test-only marker and title, so a dispatched
-  caller can prove the tracking-issue create/update/close/fail lifecycle
-  end-to-end without a real stuck PR and without touching the production
-  rolling issue.
-- `.github/workflows/link-check.yml` — online external-link checker, consumed
-  via `uses:` at job level from a *scheduled* caller that grants `issues: write`.
-  It is **advisory**: external link health is flaky, so it runs `fail: false` and
-  maintains a rolling tracking issue rather than gating a build—opening or
-  updating it on failure and, by default, closing it after the next clean run.
-  Inputs (documented inline) let a caller shape the rolling issue — title,
-  labels, native issue type, and the auto-close toggle — so a repo with an
-  established issue scheme adopts the workflow without behavior change. (A whole
-  scheduled job with issue maintenance is a reusable-workflow concern, not a
-  composite action; the deterministic on-disk counterpart is the
-  `lychee-offline` action above, which feeds `ci-status`.)
+  does not fail the sync.
 - `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
   **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
@@ -733,38 +671,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   The reviewed pin is machine-readable in `.github/osv-scanner-pin.json` and the
   workflow verifies the downloaded asset's checksum, SLSA provenance, source,
   release tag, and reported version before scanning. The release download is
-  accepted only when it matches the reviewed checksum. The daily
-  `tool-version-drift-check` compares Google's latest stable release and the
-  GitHub-reported asset digests, then refreshes the existing maintenance issue;
-  it never rewrites or auto-merges the pin. Updating requires
+  accepted only when it matches the reviewed checksum. Nothing rewrites or
+  auto-merges the pin. Updating requires
   release review, official asset/provenance checksum verification, exact source
   and tag verification, and a verification run in a consuming repository. See
   the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
   optional inputs on native `zizmor` preserve compatibility.
-- `.github/workflows/dependabot-lock-regen.yml` — regenerates NuGet
-  `packages.lock.json` on Dependabot PRs (`dotnet restore --force-evaluate`)
-  and pushes the result back to the PR branch, covering the lock-file updates
-  Dependabot's NuGet ecosystem misses. Self-guards to `dependabot[bot]` events
-  on `dependabot/nuget/` branches, so the caller is a thin unconditional
-  `pull_request` job granting `contents: write`. Inputs, the optional
-  `PUSH_TOKEN` Dependabot secret, and the default-token no-retrigger caveat are
-  documented inline.
-- `.github/workflows/approval-agent.yml` — Approval Agent lane
-  ([ci-workflows#256](https://github.com/melodic-software/ci-workflows/issues/256)).
-  Guardrails always run (never approve own policy/workflow files; approver ≠
-  author/pusher; refuse on human-risk findings). Live `APPROVE` is **opt-in**
-  via `enable-approve: true` plus App secrets (default remains `COMMENTED`).
-  Do not add it to production required checks until a fleet caller lands.
-  Dogfood caller `approval-agent-self.yml` is `workflow_dispatch`-only.
-  ADR + probe: `docs/topics/claude-review-lanes/approval-agent-ADR.md`.
-- `.github/workflows/claude-assistant.yml` — org `@claude` mention-responder
-  ([ci-workflows#255](https://github.com/melodic-software/ci-workflows/issues/255)).
-  V1 is **answer / re-review only** (tool-allowlist floor; no Edit/Write, no
-  commit/push/merge). Caller owns mention triggers + `@claude` guards;
-  reusable owns pin, floor tools, timeout, concurrency. Dogfood caller
-  `claude-assistant-self.yml`. ADR:
-  `docs/topics/claude-review-lanes/claude-assistant-ADR.md`.
 - `.github/workflows/claude-review.yml` — automated PR code review with
   `anthropics/claude-code-action`. All inputs have public-safe defaults
   documented inline in the workflow header (the authoritative list). Consume
@@ -833,43 +746,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
     paths-file: .github/claude-security-paths
   ```
 
-- `.github/workflows/claude-e2e-verify.yml` — Claude-powered end-to-end
-  verification of a PR with `anthropics/claude-code-action`. The caller passes a
-  command that builds and serves its app plus the URL it listens on; the workflow
-  provisions a pinned Playwright/Chromium toolchain, waits for the app to become
-  healthy, then has the agent drive the running app through the caller's journeys
-  and post its findings as a PR comment (the agent step runs
-  `continue-on-error`). This workflow additionally owns the pinned browser
-  toolchain. All inputs are documented inline in the workflow header (the
-  authoritative list).
-  Consume it per the [Claude lanes — shared consumption
-  contract](#claude-lanes--shared-consumption-contract) below, with the caller
-  additionally passing:
-
-  ```yaml
-      with:
-        app-start-command: npm ci && npm run build && npm run start
-        app-url: http://localhost:3000
-  ```
-
-  This lane builds, serves, and browser-drives the PR head — it executes
-  PR-authored code — so the fork-PR safety guarantee in the shared contract is
-  what makes it safe: a fork gets no secrets and a read-only token, so that
-  execution has nothing to exfiltrate. The Playwright CLI version is an
-  in-workflow pin watched by `tool-version-drift-check`, not Dependabot.
-  Promotion: flip to a selector-coupled required gate when the lane's findings
-  prove precision over a sustained window — an earned promotion, mirroring the
-  review lane's discipline.
-
 ## Claude lanes — shared consumption contract
 
-`claude-review.yml`, `claude-security-review.yml`, `claude-e2e-verify.yml`,
-and `claude-assistant.yml` share one consumption shape. Each is **advisory**:
-it posts PR/issue comments and never gates `ci-status`. (The advisory verdict
-is separate from execution evidence: `claude-security-review.yml` scopes itself
-to security-sensitive paths, and its name-stable `security-review` check may be
-made a required status check — see its entry above. `claude-assistant.yml` is
-mention-triggered answer/re-review, not a PR check.) Each is a whole-job
+`claude-review.yml` and `claude-security-review.yml` share one consumption
+shape. Each is **advisory**: it posts PR comments and never gates `ci-status`.
+(The advisory verdict is separate from execution evidence:
+`claude-security-review.yml` scopes itself to security-sensitive paths, and its
+name-stable `security-review` check may be made a required status check — see
+its entry above.) Each is a whole-job
 concern (job `permissions:` plus a `secrets:` interface), which is why each is
 a reusable workflow rather than a composite action — the caller owns the
 triggers and the permission grant, and the workflow owns the SHA-pinned
@@ -933,12 +817,9 @@ review fork changes to security-sensitive surfaces by hand.
 
 What that sixth shape costs is worth stating plainly: during a provider outage,
 merges land unreviewed behind a green required check. The alarm moves off the
-conclusion onto three surfaces that never depended on it — the outcome
-composite's machine-readable `class=<token>` annotation, the failure marker
-comment on the PR, and the incident aggregator, which reads lane annotations
-regardless of check-run conclusion and escalates the auth and runner classes —
-and a rate-limit storm across several distinct PRs in one polling cycle, the
-shape of an exhausted shared seat — to the attended queue. Availability on that tier is bought by the loud-open itself, helped by
+conclusion onto two surfaces that never depended on it — the outcome
+composite's machine-readable `class=<token>` annotation and the failure marker
+comment on the PR. Availability on that tier is bought by the loud-open itself, helped by
 the bounded retry below; break-glass on the consumer's ruleset remains the
 override for caller drift and for any other red an operator must clear by hand.
 
@@ -971,10 +852,7 @@ success when the incremental delta touches no security-relevant paths
 absent required check from a `pull_request` delivery gap can be re-attached
 without privileged triggers (ci-workflows#227; see
 `docs/topics/claude-review-lanes/security-review-absent-mitigation.md`).
-`claude-e2e-verify`
-keeps `synchronize` too, and gates on nothing but its kill-switches — no draft
-skip, no `skip-actors` input — so the most expensive lane has the loosest gate.
-Scope it with the caller's own trigger types. Take each lane's canonical caller
+Take each lane's canonical caller
 from its own workflow header.
 
 **Bounded retry.** Every lane makes at most **two** agent attempts — one
@@ -992,12 +870,9 @@ lockstep. What this buys on the security lane is a real review against the
 sporadic-429 class, rather than the evidence gap its loud-open tier would
 otherwise leave behind.
 
-One divergence is worth knowing. The two review lanes demand **proof** of zero
-turns: a missing or unparsable execution file is not proof — a hard kill can
-lose the file after turns were already spent — so they do not retry on one.
-`claude-e2e-verify` reads an unreadable file as recording no assistant turn and
-does retry. It also sets no `track_progress` tracking comment, so it has no
-orphan comment to clean up between attempts, which the review lanes do.
+Both lanes demand **proof** of zero turns: a missing or unparsable execution
+file is not proof — a hard kill can lose the file after turns were already
+spent — so they do not retry on one.
 
 **Review-count cap (code-review lane only).** `claude-review.yml` stops
 reviewing a PR after `max-reviews-per-pr` successful reviews, capping spend on
@@ -1011,8 +886,7 @@ briefly exceed it by the number of concurrent heads.
 
 **Kill-switches.** Every lane honors two Actions variables at job level:
 `CLAUDE_LANES_DISABLED` (all lanes) and a per-lane switch
-(`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`,
-`CLAUDE_E2E_VERIFY_DISABLED`). `true` skips the lane's job name-stably — a
+(`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`). `true` skips the lane's job name-stably — a
 required security-review check reads the skip as success, so merges are never
 wedged. An absent variable means enabled; a repository-level variable
 overrides an organization-level one, so a single repo can opt out (or back

@@ -35,28 +35,12 @@ function bundleShellWithSourceHeader({
   endBare,
   sourceComment,
   indentation,
-  prepareLines = shellLines,
 }) {
   return (source) =>
     indentLines(
-      [beginBare, sourceComment, ...prepareLines(source), endBare],
+      [beginBare, sourceComment, ...shellLines(source), endBare],
       indentation,
     ).join("\n");
-}
-
-function prepareFindTrackingLines(source) {
-  // The `shell=bash` directive is for standalone ShellCheck of the source
-  // file. Inlined, it lands mid-run:-block after the per-site fetch, which
-  // ShellCheck rejects (a directive must precede all commands); actionlint
-  // already supplies the bash shell for embedded scripts, so drop it from
-  // the generated copy.
-  const body = shellLines(source).filter(
-    (line) => line.trim() !== "# shellcheck shell=bash",
-  );
-  while (body.length > 0 && body[0].trim() === "") {
-    body.shift();
-  }
-  return body;
 }
 
 /**
@@ -86,30 +70,6 @@ const TARGETS = Object.freeze({
     }),
     driftMessage: () =>
       "osv-scanner.yml is out of sync; run node .github/scripts/render-osv-scan-guard.cjs\n",
-  }),
-  "find-tracking-issue": Object.freeze({
-    id: "find-tracking-issue",
-    source: "find-tracking-issue.sh",
-    // link-check.yml is not a consumer: it runs on a caller-selected runner
-    // and was ported to actions/github-script instead of embedding this
-    // gh/jq-driven source. Only fixed-hosted-runner consumers stay here.
-    workflows: Object.freeze([
-      "release-gap-check.yml",
-      "release-tag-drift-check.yml",
-      "tool-version-drift-check.yml",
-    ]),
-    beginMarker:
-      "          # BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT",
-    endMarker: "          # END GENERATED FIND TRACKING ISSUE",
-    bundle: bundleShellWithSourceHeader({
-      beginBare: "# BEGIN GENERATED FIND TRACKING ISSUE - DO NOT EDIT",
-      endBare: "# END GENERATED FIND TRACKING ISSUE",
-      sourceComment: "# Source: .github/scripts/find-tracking-issue.sh",
-      indentation: "          ",
-      prepareLines: prepareFindTrackingLines,
-    }),
-    driftMessage: (workflowName) =>
-      `${workflowName} is out of sync; run node .github/scripts/render-find-tracking-issue.cjs\n`,
   }),
 });
 

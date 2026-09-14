@@ -5,9 +5,7 @@ name: standards-sync
 # GitHub orchestration only: resolve one immutable source SHA, mint a narrowly
 # scoped App token, materialize each target, open a reviewed signed PR, and
 # (unless the manifest opts a target out via `automerge: false`) arm auto-merge
-# on any sync PR auto-merge has never been armed on. A sync PR left armed but
-# blocked past a threshold, or never armed at all, is a separate concern: see
-# standards-sync-stuck-automerge-alert.yml.
+# on any sync PR auto-merge has never been armed on.
 on:
   workflow_call:
     inputs:

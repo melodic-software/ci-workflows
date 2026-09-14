@@ -22,10 +22,6 @@ const guard = fs.readFileSync(
   path.join(root, ".github", "scripts", "govulncheck-sarif-guard.sh"),
   "utf8",
 );
-const drift = fs.readFileSync(
-  path.join(root, ".github", "workflows", "tool-version-drift-check.yml"),
-  "utf8",
-);
 
 function occurrences(source, pattern) {
   return [...source.matchAll(pattern)].length;
@@ -172,11 +168,4 @@ test("generated govulncheck guard matches the behavioral source", () => {
     .join("\n");
   const source = guard.replace(/^#!\/usr\/bin\/env bash\r?\n/u, "");
   assert.equal(embedded, source);
-});
-
-test("drift workflow tracks both Go quality tool pins", () => {
-  assert.match(drift, /golangci\/golangci-lint\/releases\/latest/u);
-  assert.match(drift, /proxy\.golang\.org\/golang\.org\/x\/vuln\/@latest/u);
-  assert.match(drift, /GOLANGCI_LINT_VERSION/u);
-  assert.match(drift, /GOVULNCHECK_VERSION/u);
 });

@@ -25,7 +25,6 @@
   "update": {
     "releaseApi": "https://api.github.com/repos/google/osv-scanner/releases/latest",
     "tagPrefix": "v",
-    "driftWorkflow": ".github/workflows/tool-version-drift-check.yml",
     "automaticMerge": false
   }
 }

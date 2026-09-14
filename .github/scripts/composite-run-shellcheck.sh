@@ -37,12 +37,10 @@
 #
 # Requires shellcheck on PATH — the ci.yml lane action installs a pinned,
 # checksum-verified one — and yq (mikefarah, preinstalled on ubuntu-24.04).
-# Ratified (not an oversight): the repo has two yq conventions — pinned +
-# checksum-verified (standards-sync.yml, which pushes changes to OTHER
-# repositories) and the documented runner-preinstalled exception
-# (tool-version-drift-check.yml, which only files an advisory tracking issue).
-# This lane runs on `pull_request` and blocks every merge, a higher blast
-# radius than either precedent, yet still takes the preinstalled exception:
+# Ratified (not an oversight): yq's pinned + checksum-verified convention
+# belongs to standards-sync.yml, which pushes changes to OTHER repositories.
+# This lane runs on `pull_request` and blocks every merge, yet takes the
+# runner-preinstalled yq:
 # both this check's false-green guards (the independent `expected` count and
 # the extraction it verifies) read yq's output, so a runner-image yq change
 # that altered its output shape would move them together rather than one

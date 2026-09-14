@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # GitHub accepts either `action.yml` or `action.yaml` for action metadata
 # (docs: metadata-syntax — "The preferred format is action.yml"), but every
-# lane in this repo globs action.yml only: composite-run-shellcheck.sh,
-# ci.yml's "Validate composite actions" check-jsonschema step, and
-# tool-version-drift-check.yml's path filter. A file added as action.yaml
-# would be invisible to every one of them, with nothing in the log to notice
+# lane in this repo globs action.yml only: composite-run-shellcheck.sh and
+# ci.yml's "Validate composite actions" check-jsonschema step. A file added as
+# action.yaml would be invisible to both of them, with nothing in the log to notice
 # — no visit/skip line, no count mismatch, completely silent.
 #
 # Ratified: action.yml is enforced as the
