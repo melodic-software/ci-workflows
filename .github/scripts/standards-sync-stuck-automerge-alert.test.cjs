@@ -61,6 +61,10 @@ async function runScan({
   nodesByRepo = {},
   pagesByRepo = null,
   infinitePagesFor = null,
+  // Phase-2 (single-PR mergeStateStatus) failure injection, keyed by
+  // `${repo}#${number}`: a positive count fails that many attempts before
+  // succeeding; Infinity fails every attempt (exhausts the retry budget).
+  mergeStateStatusFailures = {},
   workspace,
 } = {}) {
   const keys = [
@@ -68,6 +72,7 @@ async function runScan({
     "REPO_NAMES",
     "THRESHOLD_HOURS",
     "GITHUB_WORKSPACE",
+    "RETRY_BASE_DELAY_MS",
   ];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
@@ -79,8 +84,29 @@ async function runScan({
     REPO_NAMES: repoNames.join(","),
     THRESHOLD_HOURS: String(thresholdHours),
     GITHUB_WORKSPACE: effectiveWorkspace,
+    // Real timers, but shrunk to keep the retry/backoff-path tests fast;
+    // the production default (1000ms, set in the workflow YAML) is a
+    // separate concern from proving the retry loop itself is exercised.
+    RETRY_BASE_DELAY_MS: "1",
   });
   const graphqlCalls = [];
+  const mergeStateStatusAttempts = {};
+  // Auto-derived from every phase-1 node supplied (nodesByRepo/pagesByRepo):
+  // a phase-2 fetch for `${repo}#${number}` returns that node's
+  // mergeStateStatus, so tests configure it once, in the same `pullRequest()`
+  // fixture, instead of a separate parallel map.
+  const mergeStateStatusByKey = {};
+  const allPages = pagesByRepo
+    ? Object.entries(pagesByRepo)
+    : Object.entries(nodesByRepo).map(([repo, nodes]) => [repo, [nodes]]);
+  for (const [repo, pages] of allPages) {
+    for (const page of pages) {
+      for (const pullRequest of page) {
+        mergeStateStatusByKey[`${repo}#${pullRequest.number}`] =
+          pullRequest.mergeStateStatus;
+      }
+    }
+  }
   const outputs = {};
   const infos = [];
   let failedWith = null;
@@ -91,9 +117,24 @@ async function runScan({
       // one flat array (nodesByRepo, wrapped as a single page) or as an
       // explicit array-of-pages (pagesByRepo) for multi-page tests. A repo
       // named in infinitePagesFor never terminates, exercising the MAX_PAGES
-      // guard.
+      // guard. A call carrying `variables.number` is the phase-2 single-PR
+      // mergeStateStatus fetch, dispatched separately below.
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
+        if (variables.number !== undefined) {
+          const key = `${variables.repo}#${variables.number}`;
+          const attempt = (mergeStateStatusAttempts[key] ?? 0) + 1;
+          mergeStateStatusAttempts[key] = attempt;
+          const failures = mergeStateStatusFailures[key] ?? 0;
+          if (attempt <= failures) {
+            throw new Error(`simulated server error for ${key} (attempt ${attempt})`);
+          }
+          return {
+            repository: {
+              pullRequest: { mergeStateStatus: mergeStateStatusByKey[key] ?? null },
+            },
+          };
+        }
         const pageIndex = variables.after == null ? 0 : Number(variables.after);
         if (infinitePagesFor?.includes(variables.repo)) {
           return {
@@ -146,7 +187,14 @@ async function runScan({
     const report = fs.existsSync(reportPath)
       ? fs.readFileSync(reportPath, "utf8")
       : null;
-    return { graphqlCalls, outputs, infos, failedWith, report };
+    return {
+      graphqlCalls,
+      mergeStateStatusAttempts,
+      outputs,
+      infos,
+      failedWith,
+      report,
+    };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -154,6 +202,11 @@ async function runScan({
     }
   }
 }
+
+const phase1Calls = (graphqlCalls) =>
+  graphqlCalls.filter((call) => call.variables.number === undefined);
+const phase2Calls = (graphqlCalls) =>
+  graphqlCalls.filter((call) => call.variables.number !== undefined);
 
 test("queries every manifest-derived target repository, not a hardcoded subset", async () => {
   const { graphqlCalls } = await runScan({
@@ -193,9 +246,9 @@ test("an armed PR that is CLEAN (not BLOCKED) is not reported", async () => {
   assert.equal(outputs["stuck-count"], "0");
 });
 
-test("an armed, BLOCKED PR younger than the threshold is not reported", async () => {
+test("an armed, BLOCKED PR younger than the threshold is not reported, and never draws a phase-2 fetch", async () => {
   const recentlyArmed = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
-  const { outputs } = await runScan({
+  const { outputs, graphqlCalls } = await runScan({
     thresholdHours: 4,
     nodesByRepo: {
       dotfiles: [
@@ -204,6 +257,11 @@ test("an armed, BLOCKED PR younger than the threshold is not reported", async ()
     },
   });
   assert.equal(outputs["stuck-count"], "0");
+  assert.equal(
+    phase2Calls(graphqlCalls).length,
+    0,
+    "a PR that cannot be stuck yet (too young) must never trigger the expensive per-PR mergeStateStatus query",
+  );
 });
 
 test("an armed, BLOCKED PR past the threshold is reported with a marker and a recovery section", async () => {
@@ -342,13 +400,21 @@ test("a stuck PR sorted onto a later GraphQL page is still found (manual cursor 
       ],
     },
   });
+  const listCalls = phase1Calls(graphqlCalls);
   assert.equal(
-    graphqlCalls.length,
+    listCalls.length,
     2,
     "both pages must be fetched, and no more than that",
   );
-  assert.equal(graphqlCalls[0].variables.after, null);
-  assert.equal(graphqlCalls[1].variables.after, "1");
+  assert.equal(listCalls[0].variables.after, null);
+  assert.equal(listCalls[1].variables.after, "1");
+  const detailCalls = phase2Calls(graphqlCalls);
+  assert.equal(
+    detailCalls.length,
+    1,
+    "only the one armed-and-overdue candidate found on page 2 draws a phase-2 fetch",
+  );
+  assert.equal(detailCalls[0].variables.number, 99);
   assert.equal(outputs["stuck-count"], "1");
   assert.match(report, /#99/u);
 });
@@ -380,6 +446,48 @@ test("a repository stuck on an unterminated page sequence fails closed via MAX_P
     undefined,
     "must not report a false all-clear after aborting mid-scan",
   );
+});
+
+test("a phase-2 mergeStateStatus fetch that fails transiently is retried with backoff and still reports the PR", async () => {
+  const staleArmed = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+  const { outputs, report, mergeStateStatusAttempts } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({ number: 7, enabledAt: staleArmed, mergeStateStatus: "BLOCKED" }),
+      ],
+    },
+    // Fails the first two attempts, succeeds on the third (RETRY_ATTEMPTS is 3).
+    mergeStateStatusFailures: { "dotfiles#7": 2 },
+  });
+  assert.equal(mergeStateStatusAttempts["dotfiles#7"], 3, "must retry through to the eventual success");
+  assert.equal(outputs["stuck-count"], "1");
+  assert.match(report, /#7/u);
+});
+
+test("a phase-2 mergeStateStatus fetch that fails on every attempt exhausts the retry budget and fails the run loudly, with no partial report", async () => {
+  const staleArmed = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+  const { outputs, report, failedWith, mergeStateStatusAttempts } = await runScan({
+    repoNames: ["dotfiles"],
+    thresholdHours: 4,
+    nodesByRepo: {
+      dotfiles: [
+        pullRequest({ number: 7, enabledAt: staleArmed, mergeStateStatus: "BLOCKED" }),
+      ],
+    },
+    mergeStateStatusFailures: { "dotfiles#7": Infinity },
+  });
+  assert.equal(mergeStateStatusAttempts["dotfiles#7"], 3, "must exhaust exactly RETRY_ATTEMPTS before giving up");
+  assert.ok(failedWith, "expected core.setFailed to be called");
+  assert.match(failedWith, /dotfiles#7/u);
+  assert.match(failedWith, /after 3 attempts/u);
+  assert.equal(
+    outputs["stuck-count"],
+    undefined,
+    "a candidate whose mergeStateStatus can never be confirmed must not be silently treated as not-stuck",
+  );
+  assert.equal(report, null, "no report is written when the scan fails closed mid-flight");
 });
 
 function extractStepScript(stepName) {
