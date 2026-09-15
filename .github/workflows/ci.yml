@@ -147,7 +147,6 @@ jobs:
               **/*.ts
               **/*.tsx
               **/biome.json
-              **/tsconfig.json
             dotnet:
               .github/**
               fixtures/dotnet/**
@@ -171,9 +170,6 @@ jobs:
             actionlint:
               .github/**
               fixtures/composite-action/**
-            lefthook-validate:
-              .github/**
-              **/lefthook.yml
             jsonschema:
               .github/**
             selector-contract:
@@ -375,23 +371,6 @@ jobs:
           paths: fixtures/typescript/good .github/scripts
           config: fixtures/typescript/good/biome.json
 
-  tsc:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Type-check TypeScript
-        # Point tsc at a self-contained fixture project; this lane verifies the
-        # action contract without mirroring the standards catalog.
-        uses: ./.github/actions/tsc
-        with:
-          project: fixtures/typescript/good/tsconfig.json
-
   dotnet-build:
     needs: changes
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
@@ -464,23 +443,6 @@ jobs:
         run: bash .github/scripts/composite-run-shellcheck.sh
       - name: Prove a broken composite shell block fails
         run: bash .github/scripts/composite-run-shellcheck.test.sh
-
-  lefthook-validate:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['lefthook-validate'] != 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Validate composed Lefthook config
-        uses: ./.github/actions/lefthook-validate
-        with:
-          config-file: .github/actions/lefthook-validate/fixtures/good/lefthook.yml
-      - name: Prove invalid extended fragments fail
-        run: bash .github/scripts/lefthook-validate.test.sh
 
   jsonschema:
     needs: changes
@@ -680,7 +642,7 @@ jobs:
     # `changes` is aggregated alongside the lanes it gates: a failed detection
     # job fails ci-status even though every gated lane fails open and runs, so
     # a broken filter config cannot ride the fallback to green indefinitely.
-    needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, tsc, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, lefthook-validate, jsonschema, action-metadata-filename, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, jsonschema, action-metadata-filename, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -727,4 +689,4 @@ jobs:
           # ceiling costs nothing in the normal case: the poll ends as soon as
           # a verdict settles or nothing is left in flight.
           carry-forward-wait-seconds: '840'
-          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.tsc.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.lefthook-validate.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

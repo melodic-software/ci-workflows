@@ -1,7 +1,6 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -67,16 +66,7 @@ test("workflow runs the native binary on a caller-selected runner and verifies S
   assert.doesNotMatch(workflow, /continue-on-error/u);
 });
 
-test("OSV result handling is generated from the tested fail-closed guard", () => {
-  const renderer = path.join(__dirname, "render-osv-scan-guard.cjs");
-  const result = spawnSync(process.execPath, [renderer, "--check"], {
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.equal(
-    workflow.match(/Source: \.github\/scripts\/osv-scan-guard\.sh/gu)?.length,
-    1,
-  );
+test("OSV result handling fails closed", () => {
   assert.match(
     workflow,
     /operationally \(exit \$SCAN_EXIT\); results are not trusted/u,

@@ -166,15 +166,6 @@ consumer to audit it.
   workflow files, with the canonical checksum-pinned ShellCheck release
   installed explicitly so embedded shell validation is identical on hosted and
   self-hosted workers.
-- `.github/actions/lefthook-validate` — installs a checksum-pinned Lefthook
-  binary and runs its official
-  [`validate` command][lefthook-validate] against the caller's fully loaded
-  config. Native discovery is the default; `config-file` selects an explicit
-  main config through Lefthook's documented [`LEFTHOOK_CONFIG` override][lefthook-config].
-  [`extends` fragments][lefthook-extends], remotes, and the matching local config
-  are still loaded. The version and checksum inputs let a caller align the gate
-  with an older consumer pin when necessary. This is a composed schema/load
-  gate; Lefthook does not define it as a command or glob behavior test.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
 - `.github/actions/ci-status` — aggregates a caller-built `needs.*.result` string
@@ -391,8 +382,6 @@ consumer to audit it.
 - `.github/actions/biome` — Biome lint + format-check over the repo's JS/TS
   (via `npx`; `biome ci --error-on-warnings`, emits `--reporter=github`
   annotations).
-- `.github/actions/tsc` — TypeScript `tsc --noEmit` type-check over the repo's
-  TypeScript (via `npx`).
 - `.github/actions/dotnet-build` — builds .NET projects with Roslyn analyzers and
   code-style enforced as warnings-as-errors (the analysis owner: code-quality
   `CAxxxx`, code-style `IDExxxx`, nullable, and compiler warnings). Restores in
@@ -950,9 +939,6 @@ for repositories with a genuinely different policy. The small configs under
 `fixtures/` exist only to exercise action and CI-check contracts; they are not
 mirrors of the standards catalog.
 
-[lefthook-config]: https://lefthook.dev/usage/envs/LEFTHOOK_CONFIG/
-[lefthook-extends]: https://lefthook.dev/configuration/extends/
-[lefthook-validate]: https://lefthook.dev/usage/commands/validate/
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1

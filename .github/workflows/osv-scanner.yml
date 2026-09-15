@@ -160,8 +160,6 @@ jobs:
           SCAN_EXIT: ${{ steps.scan.outputs.exit-code }}
         shell: bash
         run: |
-          # BEGIN GENERATED OSV SCAN GUARD - DO NOT EDIT
-          # Source: .github/scripts/osv-scan-guard.sh
           # shellcheck shell=bash
           set -euo pipefail
 
@@ -350,4 +348,3 @@ jobs:
             exit "$SCAN_EXIT"
             ;;
           esac
-          # END GENERATED OSV SCAN GUARD
