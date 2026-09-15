@@ -521,12 +521,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   self-pins are **not** touched by `release.yml`: cutting a release creates a
   tag and a GitHub Release at the current `main` HEAD and pushes no commit, so
   the commit a release tags still carries whatever self-pins were already in
-  the tree — necessarily an **earlier** release's SHA, never the one being cut.
+  the tree — necessarily an **earlier** commit's SHA, never the one being cut.
   A tagged release therefore runs the composite bodies its pins name, not the
   bodies at that tag. Moving a self-pin is a separate pull request: this
-  repository's own `github-actions` Dependabot group is not `ignore`d against
-  this repository the way a consumer's is, and it has opened self-pin bumps
-  here before; otherwise the bump is made by hand. So the pins can sit several
+  repository's own `github-actions` Dependabot group carries no `ignore` for
+  this repository, unlike a consumer's, and it has opened self-pin bumps here
+  before; otherwise the bump is made by hand. So the pins can sit several
   releases behind, and a release that follows a self-pin bump is what finally
   publishes a SHA in which they are current. That pin lag is why this
   repository keeps a `composites-head` job in its own `ci.yml`: it runs the

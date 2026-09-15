@@ -22,12 +22,18 @@ name: release
 # self-referencing pins. There is no repin workflow here; a release only makes
 # a SHA available to pin TO, and moving a pin is always a separate reviewed
 # pull request. Consumers pin by SHA with a `# vX.Y.Z` comment and `ignore`
-# this repository in their own Dependabot config, so no bump reaches them
-# automatically (README.md, Contract and Versioning). The only automation that
-# proposes such bumps is the fleet re-pin lane in `melodic-software/standards`
-# (`.github/workflows/claude-lanes-repin.yml`), and it covers only the caller
-# files `components/claude-lanes/repin-callers.sh` enumerates there, opening a
-# pull request a human reviews. Everything else repins by hand.
+# this repository in their own Dependabot config, so no release ever reaches
+# them automatically (README.md, Contract and Versioning). Two things propose
+# those pull requests, and neither is triggered by a release:
+#   - For the caller files `components/claude-lanes/repin-callers.sh`
+#     enumerates inside `melodic-software/standards`, that repository's
+#     `.github/workflows/claude-lanes-repin.yml` re-pin lane, on a daily
+#     schedule.
+#   - For this repository's OWN self-pins, this repository's `github-actions`
+#     Dependabot group — `.github/dependabot.yml` here carries no `ignore` for
+#     self-references, unlike a consumer's config.
+# Both only ever open a pull request a human reviews. Every other consumer
+# repins by hand.
 #
 # Cut a release whenever main changes by something worth pinning to, so a
 # repinner has a released SHA for the `# vX.Y.Z` comment form instead of the
