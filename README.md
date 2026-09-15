@@ -517,13 +517,22 @@ GitHub continues the normal weekly patching of each hosted image generation.
   below, so callers that want it keep a separate job.
 
   The composites run by full path at a pinned SHA, because a relative action
-  path inside a called workflow resolves against the caller's checkout. A
-  tagged release therefore runs the composite bodies its pins name, one tag
-  behind after a bump, and this repository's own `github-actions` Dependabot
-  group moves those self-referencing pins like any other reference. That pin lag is why this repository keeps a
-  `composites-head` job in its own `ci.yml`: it runs the same composites
-  through `./.github/actions/<x>` so a pull request that changes a composite
-  body is still exercised at HEAD instead of passing against the pinned copy.
+  path inside a called workflow resolves against the caller's checkout. Those
+  self-pins are **not** touched by `release.yml`: cutting a release creates a
+  tag and a GitHub Release at the current `main` HEAD and pushes no commit, so
+  the commit a release tags still carries whatever self-pins were already in
+  the tree — necessarily an **earlier** release's SHA, never the one being cut.
+  A tagged release therefore runs the composite bodies its pins name, not the
+  bodies at that tag. Moving a self-pin is a separate pull request: this
+  repository's own `github-actions` Dependabot group is not `ignore`d against
+  this repository the way a consumer's is, and it has opened self-pin bumps
+  here before; otherwise the bump is made by hand. So the pins can sit several
+  releases behind, and a release that follows a self-pin bump is what finally
+  publishes a SHA in which they are current. That pin lag is why this
+  repository keeps a `composites-head` job in its own `ci.yml`: it runs the
+  same composites through `./.github/actions/<x>` so a pull request that
+  changes a composite body is still exercised at HEAD instead of passing
+  against the pinned copy.
   Phase 6b retires that job when GitHub's `$/` self-repository syntax becomes
   usable, which needs three things: actionlint shipping the `$/` support of
   rhysd/actionlint#732 in a version this repository pins, actions/runner#4669
