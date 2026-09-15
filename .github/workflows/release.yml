@@ -1,8 +1,10 @@
 name: release
 
-# Cut a semantic-version release on demand: compute the next tag from the
-# latest existing tag + the chosen bump, then create a tag + GitHub Release
-# (auto-generated notes) at the current main HEAD.
+# Cut a semantic-version release on demand: compute the next version from the
+# highest SemVer among this repository's PUBLISHED Releases (draft and
+# prerelease excluded) plus the chosen bump — NOT from the newest tag; see the
+# source-of-truth comment on the "Compute next version" step below — then
+# create a tag + GitHub Release (auto-generated notes) at the current main HEAD.
 #
 # Why this shape:
 #   - NO commit is pushed to main — only a tag is created — so the branch
@@ -15,9 +17,27 @@ name: release
 #   - Manual dispatch (not on: push) so releasing is a deliberate act — every
 #     merge to main does NOT cut a release; you pick when and how much to bump.
 #
-# Consumers pin `ci-workflows` by SHA with a `# vX.Y.Z` comment; Dependabot
-# bumps them to each new release. Cut a release whenever main changes so HEAD
-# stays at the latest tag and Dependabot never falls back to tracking HEAD.
+# CUTTING A RELEASE REPINS NOTHING. This workflow pushes no commit, so it
+# rewrites no `uses:` pin — not a consumer's, and not this repository's own
+# self-referencing pins. There is no repin workflow here; a release only makes
+# a SHA available to pin TO, and moving a pin is always a separate reviewed
+# pull request. Consumers pin by SHA with a `# vX.Y.Z` comment and `ignore`
+# this repository in their own Dependabot config, so no release ever reaches
+# them automatically (README.md, Contract and Versioning). Two things propose
+# those pull requests, and neither is triggered by a release:
+#   - For the caller files `components/claude-lanes/repin-callers.sh`
+#     enumerates inside `melodic-software/standards`, that repository's
+#     `.github/workflows/claude-lanes-repin.yml` re-pin lane, on a daily
+#     schedule.
+#   - For this repository's OWN self-pins, this repository's `github-actions`
+#     Dependabot group — `.github/dependabot.yml` here carries no `ignore` for
+#     self-references, unlike a consumer's config.
+# Both only ever open a pull request a human reviews. Every other consumer
+# repins by hand.
+#
+# Cut a release whenever main changes by something worth pinning to, so a
+# repinner has a released SHA for the `# vX.Y.Z` comment form instead of the
+# `# <short-sha> <YYYY-MM-DD>` fallback an unreleased commit forces.
 
 on:
   workflow_dispatch:
