@@ -129,6 +129,11 @@ jobs:
         env:
           REPO_NAMES: ${{ steps.targets.outputs.repo-names }}
           THRESHOLD_HOURS: ${{ inputs.threshold-hours }}
+          # Internal tuning, not a caller-facing input: overridable via
+          # process.env only so the contract test suite can shrink the
+          # backoff to sub-millisecond delays instead of eating the
+          # production wait on every retry-path test run.
+          RETRY_BASE_DELAY_MS: '1000'
         with:
           github-token: ${{ steps.token.outputs.token }}
           script: |
@@ -136,13 +141,21 @@ jobs:
             const botLogin = process.env.BOT_LOGIN;
             const thresholdHours = Number(process.env.THRESHOLD_HOURS);
             const repoNames = process.env.REPO_NAMES.split(',').filter((name) => name.length > 0);
+            // `Number(x) || 1000` would silently discard a test-supplied `0`;
+            // an explicit undefined check keeps that value meaningful.
+            const retryBaseDelayMs =
+              process.env.RETRY_BASE_DELAY_MS !== undefined ? Number(process.env.RETRY_BASE_DELAY_MS) : 1000;
 
-            const isStuck = (pullRequest) => {
+            // A PR only ever needs its expensive mergeStateStatus checked once
+            // it is bot-armed AND already past the alert threshold; younger
+            // armed PRs and non-bot/unarmed PRs can never be "stuck" no matter
+            // what mergeStateStatus turns out to be, so they are filtered out
+            // before that per-PR query ever runs (see phase 2 below).
+            const isArmedPastThreshold = (pullRequest) => {
               if (pullRequest.author?.__typename !== 'Bot') return false;
               if (pullRequest.author?.login !== botLogin) return false;
               const armedAt = pullRequest.autoMergeRequest?.enabledAt;
               if (!armedAt) return false;
-              if (pullRequest.mergeStateStatus !== 'BLOCKED') return false;
               const armedHoursAgo = (Date.now() - Date.parse(armedAt)) / 3_600_000;
               return armedHoursAgo >= thresholdHours;
             };
@@ -157,9 +170,20 @@ jobs:
             // tracking issue, so under-paginating can convert a real incident
             // into a false recovery signal. MAX_PAGES bounds the loop so a
             // pathological repo cannot hang this workflow indefinitely.
+            //
+            // Phase 1 (this query) pages PR number + author + autoMergeRequest
+            // only — never mergeStateStatus. Bulk-selecting mergeStateStatus
+            // across a 50-node page forces GitHub to compute on-demand
+            // mergeability for every node in the page and reliably errors
+            // server-side (ci-workflows#226: 3/3 scheduled runs failed this
+            // way). mergeStateStatus is fetched in phase 2 below, one PR at a
+            // time, only for candidates this phase already narrowed to
+            // bot-armed-and-overdue — a fan-out small enough (bounded by how
+            // many sync PRs are ever concurrently armed and stale) to stay
+            // inside GitHub's per-query cost budget.
             const PAGE_SIZE = 50;
             const MAX_PAGES = 50;
-            const query = `
+            const listQuery = `
               query($owner: String!, $repo: String!, $after: String) {
                 repository(owner: $owner, name: $repo) {
                   pullRequests(states: OPEN, first: ${PAGE_SIZE}, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -168,14 +192,13 @@ jobs:
                       url
                       author { login __typename }
                       autoMergeRequest { enabledAt }
-                      mergeStateStatus
                     }
                     pageInfo { hasNextPage endCursor }
                   }
                 }
               }`;
 
-            const stuck = [];
+            const candidates = [];
             for (const repo of repoNames) {
               let after = null;
               let hasNextPage = true;
@@ -186,20 +209,73 @@ jobs:
                   core.setFailed(`${repo} has more than ${MAX_PAGES * PAGE_SIZE} open pull requests; refusing to scan an unbounded number of pages.`);
                   return;
                 }
-                const result = await github.graphql(query, { owner, repo, after });
+                const result = await github.graphql(listQuery, { owner, repo, after });
                 const pullRequests = result.repository?.pullRequests;
                 const nodes = pullRequests?.nodes ?? [];
                 for (const pullRequest of nodes) {
-                  if (isStuck(pullRequest)) {
-                    const armedHoursAgo = Math.floor(
-                      (Date.now() - Date.parse(pullRequest.autoMergeRequest.enabledAt)) / 3_600_000,
-                    );
-                    stuck.push({ repo, number: pullRequest.number, url: pullRequest.url, armedHoursAgo });
+                  if (isArmedPastThreshold(pullRequest)) {
+                    candidates.push({
+                      repo,
+                      number: pullRequest.number,
+                      url: pullRequest.url,
+                      enabledAt: pullRequest.autoMergeRequest.enabledAt,
+                    });
                   }
                 }
                 hasNextPage = pullRequests?.pageInfo?.hasNextPage ?? false;
                 after = pullRequests?.pageInfo?.endCursor ?? null;
               }
+            }
+
+            // Phase 2: one mergeStateStatus fetch per surviving candidate,
+            // retried with exponential backoff — this per-PR query is the one
+            // GitHub's server-side error targets (see the phase-1 comment
+            // above), so a bounded retry absorbs a transient failure on it.
+            // A candidate whose fetch never succeeds must fail the run loudly
+            // rather than being silently treated as "not stuck": that would
+            // convert a real incident into a false recovery signal exactly
+            // like an under-paginated phase-1 page would.
+            const singleQuery = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    mergeStateStatus
+                  }
+                }
+              }`;
+            const RETRY_ATTEMPTS = 3;
+
+            async function fetchMergeStateStatus(repo, number) {
+              let lastError;
+              for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt += 1) {
+                try {
+                  const result = await github.graphql(singleQuery, { owner, repo, number });
+                  return result.repository?.pullRequest?.mergeStateStatus ?? null;
+                } catch (error) {
+                  lastError = error;
+                  if (attempt < RETRY_ATTEMPTS) {
+                    const delayMs = retryBaseDelayMs * 2 ** (attempt - 1);
+                    await new Promise((resolve) => setTimeout(resolve, delayMs));
+                  }
+                }
+              }
+              throw lastError;
+            }
+
+            const stuck = [];
+            for (const candidate of candidates) {
+              let mergeStateStatus;
+              try {
+                mergeStateStatus = await fetchMergeStateStatus(candidate.repo, candidate.number);
+              } catch (error) {
+                core.setFailed(
+                  `Failed to fetch mergeStateStatus for ${candidate.repo}#${candidate.number} after ${RETRY_ATTEMPTS} attempts: ${error.message}`,
+                );
+                return;
+              }
+              if (mergeStateStatus !== 'BLOCKED') continue;
+              const armedHoursAgo = Math.floor((Date.now() - Date.parse(candidate.enabledAt)) / 3_600_000);
+              stuck.push({ repo: candidate.repo, number: candidate.number, url: candidate.url, armedHoursAgo });
             }
 
             core.setOutput('stuck-count', String(stuck.length));
