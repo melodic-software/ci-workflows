@@ -19,4 +19,4 @@ jobs:
   issue-triage-label:
     permissions:
       issues: write # Downgraded to exactly what the called reusable needs.
-    uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@906ae7ef379ea4d2b8497f64475dce1d3d8715c4 # v0.22.0
+    uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0

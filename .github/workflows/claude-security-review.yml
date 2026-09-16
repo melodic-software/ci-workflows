@@ -1486,7 +1486,7 @@ jobs:
       - name: Report review outcome
         id: review-outcome
         if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@a570a4214d6d2aeb4591eb8fee82c1d8ea143a2e # a570a42 2026-09-01
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@3160ff662d9d83b2c95f9827b78b92a57b00fbbf # a570a42 2026-09-01
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
