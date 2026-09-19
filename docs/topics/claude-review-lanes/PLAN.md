@@ -1898,12 +1898,12 @@ claude-code-plugins#1327 item is outstanding):
 Every issue in that list except #363 and #364 carries `needs-human`, which bars
 autonomous closure independently of how good the evidence is. So this phase
 cannot be closed out by an autonomous session at all — the remaining work is
-either code (#363, #364, caller-side emission) or a human's judgement, and no
+either code (#363, #364, caller-side emission) or a human's judgment, and no
 amount of further acceptance evidence changes that.
 
 **PHASE 4 CLOSE-OUT AMENDMENT (2026-08-08; tag advanced `[DOING]`→`[DONE]`).**
 The list above is kept verbatim as the 2026-08-06 record; every item is now
-dispositioned. The human judgements were made by the operator in an interactive
+dispositioned. The human judgments were made by the operator in an interactive
 session (2026-08-07) and under the operator's goal directive of 2026-08-08
 ("go with your recommendations"); the code items landed
 fresh-context-verifier-gated.

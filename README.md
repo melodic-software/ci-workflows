@@ -125,7 +125,7 @@ consumer to audit it.
   listed paths that still exist and end in `.sh` or `.bash`. A deleted or
   non-shell path in the list is skipped rather than failing the action, so a
   raw diff can be handed over unfiltered; a non-blank list that keeps nothing
-  prints a notice and exits 0; a blank list (the default) leaves behaviour
+  prints a notice and exits 0; a blank list (the default) leaves behavior
   exactly as it was. `exclude` still applies, and `extra-globs` matches are
   narrowed to the same list. See [Diff-scoping the ShellCheck
   lane](#diff-scoping-the-shellcheck-lane).
@@ -173,7 +173,7 @@ consumer to audit it.
   naming the offending result. `treat-skipped-as` is the caller's policy for
   `skipped` — `pass` (default) or `fail` for repos where a skipped lane means one
   that should have run did not, such as a runner selector falling back. An
-  unrecognised policy value fails rather than defaulting. Empty input fails
+  unrecognized policy value fails rather than defaulting. Empty input fails
   closed. GitHub offers no "all other jobs" selector, so the `needs` list and the
   matching results string stay caller-owned. `results` carries results, not lane
   names, so the recorded status description names the failing lane by its
@@ -215,7 +215,7 @@ consumer to audit it.
   `240`, `0` disables) closes the race the branched concurrency group below
   opens. Before ci-perf Phase 6b a contract-only run shared one concurrency group
   with the full run it reads and queued behind it, so the `ci-lanes` status was
-  always already written; the branched group removes that queueing, so the two
+  always already written; the branched group removes that queuing, so the two
   now race. Carry-forward mode therefore polls.
 
   It reads the current run
@@ -266,7 +266,7 @@ consumer to audit it.
   `success` forward while a re-run of the same SHA is in flight to overwrite it.
   That guard bound only when a full run had already written a verdict for this
   exact SHA and another full run was in flight on it again, and it cost a false
-  red on every same-second sibling. The defences against a forged status
+  red on every same-second sibling. The defenses against a forged status
   (context, creator login, `Bot` type, newest id) are untouched.
 
   The 15-second poll interval is deliberately not a caller input: the only knob a
