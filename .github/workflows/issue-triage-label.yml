@@ -1,8 +1,10 @@
 name: issue-triage-label
 
-# Reusable workflow — applies a configured floor label (default `priority:
-# needs-triage`) to an issue that carries no label matching a configured
-# prefix (default `priority:`). NON-GATING: this never fails a PR or blocks a
+# Reusable workflow — applies a configured floor label (default bare
+# `needs-triage`) to an issue that carries no label matching a configured
+# prefix (default `priority:`). The floor is not a priority value. A real
+# `priority:` tier already on the issue means urgency was set, so the floor
+# is skipped. NON-GATING: this never fails a PR or blocks a
 # merge; it is a best-effort intake guarantee so a forgotten priority label
 # does not silently drop an issue out of the triage queue. Settled mechanism
 # per melodic-software/claude-code-plugins#506's 2026-07-20 Class-B
@@ -47,7 +49,7 @@ on:
           label-prefix. Must already exist in the caller's repository — this
           workflow fails the job rather than create it.
         type: string
-        default: 'priority: needs-triage'
+        default: 'needs-triage'
       label-prefix:
         description: >-
           Prefix defining the label set this workflow treats as "a priority

@@ -554,7 +554,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
 - `.github/workflows/issue-triage-label.yml` — applies a configured floor label
-  (default `priority: needs-triage`) to an issue opened or reopened with no
+  (default bare `needs-triage`, not a priority value) to an issue opened or reopened with no
   label matching a configured prefix (default `priority:`). **Non-gating**:
   never fails a PR or blocks a merge; it only guarantees new issues don't
   silently drop out of the triage queue for lack of a label. The guard is a
