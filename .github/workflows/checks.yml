@@ -104,8 +104,9 @@ on:
           default `**/*.md`. Space-separated: the markdown composite word-splits
           `globs` with `read -a` (IFS whitespace) and passes each word as its
           own argument. Blank (the default) forwards `**/*.md` only. A path
-          containing a space cannot be expressed. Shellcheck's `extra-globs`
-          remains the newline-delimited Git pathspec list.
+          containing a space cannot be expressed. This workflow does not
+          forward the shellcheck composite's `extra-globs` input; that input
+          exists only on the shellcheck action itself.
         type: string
         default: ''
       shellcheck:

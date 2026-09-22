@@ -506,8 +506,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   and each word is one glob argument. With the input empty, the step forwards
   `**/*.md` only. With it set, the step forwards that default followed by the
   caller value, because passing `globs` replaces the composite default. A path
-  containing a space cannot be expressed. Shellcheck's `extra-globs` remains
-  the newline-delimited Git pathspec list. A caller whose markdown does not end
+  containing a space cannot be expressed. This workflow does not forward the
+  shellcheck composite's `extra-globs` input; that input exists only when a
+  caller uses the shellcheck action directly, and its value is a
+  newline-delimited Git pathspec list rather than these space-separated
+  globs. A caller whose markdown does not end
   in `.md` passes the extra paths on `with:`:
 
   ```yaml
