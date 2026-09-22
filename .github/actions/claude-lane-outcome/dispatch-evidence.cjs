@@ -68,7 +68,8 @@ function isIdList(value) {
 }
 
 function parseEvidence(evidenceText) {
-  if (typeof evidenceText !== "string" || evidenceText.trim() === "") return null;
+  if (typeof evidenceText !== "string" || evidenceText.trim() === "")
+    return null;
   let parsed;
   try {
     parsed = JSON.parse(evidenceText);

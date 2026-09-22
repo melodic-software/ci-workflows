@@ -26,7 +26,7 @@ const INLINE_COMMENT_GRANT =
 // not add file tools.
 const DISPATCH_GRANTS = {
   "claude-review.yml":
-    'Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*),Read,Grep,Glob',
+    "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*),Read,Grep,Glob",
   "claude-security-review.yml":
     "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)",
 };
@@ -51,7 +51,12 @@ function tokenizeArgs(input) {
       quote = character;
       continue;
     }
-    if (character === " " || character === "\t" || character === "\n" || character === "\r") {
+    if (
+      character === " " ||
+      character === "\t" ||
+      character === "\n" ||
+      character === "\r"
+    ) {
       if (current !== "") tokens.push(current);
       current = "";
       continue;
@@ -217,7 +222,12 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
       "--model claude-opus-5",
     ];
     for (const baseArgs of cases) {
-      const args = composeArgs(composeStep.run, baseArgs, "", "workflow_dispatch");
+      const args = composeArgs(
+        composeStep.run,
+        baseArgs,
+        "",
+        "workflow_dispatch",
+      );
       assert.ok(
         args.endsWith(quotedGrant),
         `dispatch must append one quoted gh grant, not inline MCP: ${args}`,
@@ -231,7 +241,14 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
       );
       assert.deepEqual(splitAllowedTools([values.at(-1)]), grant.split(","));
       const tools = splitAllowedTools(values);
-      for (const fragment of ["Bash(gh", "pr", "comment:*)", "review:*)", "diff:*)", "LS"]) {
+      for (const fragment of [
+        "Bash(gh",
+        "pr",
+        "comment:*)",
+        "review:*)",
+        "diff:*)",
+        "LS",
+      ]) {
         assert.equal(
           tools.includes(fragment),
           false,

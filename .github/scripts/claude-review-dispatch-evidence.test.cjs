@@ -14,11 +14,18 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { classifyDispatchDelivery } = require("../actions/claude-lane-outcome/dispatch-evidence.cjs");
+const {
+  classifyDispatchDelivery,
+} = require("../actions/claude-lane-outcome/dispatch-evidence.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
-const workflowPath = path.join(repositoryRoot, ".github", "workflows", "claude-review.yml");
+const workflowPath = path.join(
+  repositoryRoot,
+  ".github",
+  "workflows",
+  "claude-review.yml",
+);
 const workflowText = fs.readFileSync(workflowPath, "utf8");
 const workflow = parseWorkflow(workflowText);
 const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
@@ -78,7 +85,12 @@ test("the infra marker does not claim a no-delivery miss is an outage", () => {
 
 test("the security lane does not take the dispatch delivery check", () => {
   const security = fs.readFileSync(
-    path.join(repositoryRoot, ".github", "workflows", "claude-security-review.yml"),
+    path.join(
+      repositoryRoot,
+      ".github",
+      "workflows",
+      "claude-security-review.yml",
+    ),
     "utf8",
   );
   assert.equal(security.includes("delivery-evidence"), false);
@@ -94,7 +106,12 @@ test("the outcome pin declares the delivery inputs", (t) => {
   try {
     pinned = execFileSync(
       "git",
-      ["-C", repositoryRoot, "show", `${OUTCOME_PIN}:.github/actions/claude-lane-outcome/action.yml`],
+      [
+        "-C",
+        repositoryRoot,
+        "show",
+        `${OUTCOME_PIN}:.github/actions/claude-lane-outcome/action.yml`,
+      ],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
   } catch {
@@ -108,8 +125,14 @@ test("the outcome pin declares the delivery inputs", (t) => {
 
 function packerProgram() {
   const run = stepByName("Collect dispatch delivery evidence").run;
-  const match = /node - <<'DISPATCH_EVIDENCE_NODE'\n([\s\S]*?)\nDISPATCH_EVIDENCE_NODE/u.exec(run);
-  assert.ok(match, "the collect step must ship the id packer as a quoted node heredoc");
+  const match =
+    /node - <<'DISPATCH_EVIDENCE_NODE'\n([\s\S]*?)\nDISPATCH_EVIDENCE_NODE/u.exec(
+      run,
+    );
+  assert.ok(
+    match,
+    "the collect step must ship the id packer as a quoted node heredoc",
+  );
   return match[1];
 }
 
@@ -120,7 +143,9 @@ function writeIds(directory, name, lines) {
 }
 
 function runPacker(files) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-evidence-"));
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "dispatch-evidence-"),
+  );
   const program = path.join(directory, "pack.js");
   const evidenceFile = path.join(directory, "evidence.json");
   fs.writeFileSync(program, packerProgram());
@@ -128,11 +153,22 @@ function runPacker(files) {
     ...process.env,
     REVIEW_IDS: writeIds(directory, "reviews.txt", files.reviews),
     COMMENT_IDS: writeIds(directory, "comments.txt", files.comments),
-    BASELINE_REVIEW_IDS: writeIds(directory, "baseline-reviews.txt", files.baselineReviews),
-    BASELINE_COMMENT_IDS: writeIds(directory, "baseline-comments.txt", files.baselineComments),
+    BASELINE_REVIEW_IDS: writeIds(
+      directory,
+      "baseline-reviews.txt",
+      files.baselineReviews,
+    ),
+    BASELINE_COMMENT_IDS: writeIds(
+      directory,
+      "baseline-comments.txt",
+      files.baselineComments,
+    ),
     EVIDENCE_FILE: evidenceFile,
   };
-  const result = spawnSync(process.execPath, [program], { encoding: "utf8", env });
+  const result = spawnSync(process.execPath, [program], {
+    encoding: "utf8",
+    env,
+  });
   return { result, evidenceFile, directory };
 }
 
@@ -256,13 +292,23 @@ function runShell(name, env, routes) {
 }
 
 test("the shipped shell records ids and the classifier sees a new review", () => {
-  const snapshot = runShell("Snapshot dispatch delivery ids", {}, {
-    "/pulls/3939/reviews": ["10"],
-    "/issues/3939/comments": ["20"],
-  });
-  assert.equal(snapshot.result.status, 0, `${snapshot.result.stdout}\n${snapshot.result.stderr}`);
-  const reviewIds = /^review_ids=(?<file>.*)$/mu.exec(snapshot.output)?.groups.file;
-  const commentIds = /^comment_ids=(?<file>.*)$/mu.exec(snapshot.output)?.groups.file;
+  const snapshot = runShell(
+    "Snapshot dispatch delivery ids",
+    {},
+    {
+      "/pulls/3939/reviews": ["10"],
+      "/issues/3939/comments": ["20"],
+    },
+  );
+  assert.equal(
+    snapshot.result.status,
+    0,
+    `${snapshot.result.stdout}\n${snapshot.result.stderr}`,
+  );
+  const reviewIds = /^review_ids=(?<file>.*)$/mu.exec(snapshot.output)?.groups
+    .file;
+  const commentIds = /^comment_ids=(?<file>.*)$/mu.exec(snapshot.output)?.groups
+    .file;
   assert.ok(reviewIds && commentIds, snapshot.output);
   const collect = runShell(
     "Collect dispatch delivery evidence",
@@ -276,9 +322,14 @@ test("the shipped shell records ids and the classifier sees a new review", () =>
     },
   );
   try {
-    assert.equal(collect.result.status, 0, `${collect.result.stdout}\n${collect.result.stderr}`);
+    assert.equal(
+      collect.result.status,
+      0,
+      `${collect.result.stdout}\n${collect.result.stderr}`,
+    );
     assert.equal(collect.result.stdout.includes("10"), false);
-    const evidenceFile = /^file=(?<file>.*)$/mu.exec(collect.output)?.groups.file;
+    const evidenceFile = /^file=(?<file>.*)$/mu.exec(collect.output)?.groups
+      .file;
     assert.ok(evidenceFile, collect.output);
     const decision = classifyDispatchDelivery({
       eventName: "workflow_dispatch",
@@ -313,9 +364,10 @@ test("the shipped shell fails closed when the baseline is missing", () => {
     "Collect dispatch delivery evidence",
     { BASELINE_REVIEW_IDS: "", BASELINE_COMMENT_IDS: "" },
     {
-    "/pulls/3939/reviews": ["10"],
-    "/issues/3939/comments": ["20"],
-  });
+      "/pulls/3939/reviews": ["10"],
+      "/issues/3939/comments": ["20"],
+    },
+  );
   try {
     assert.notEqual(collect.result.status, 0);
     assert.match(collect.result.stdout, /baseline is missing/u);

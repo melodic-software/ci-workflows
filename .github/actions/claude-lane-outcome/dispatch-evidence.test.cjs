@@ -25,11 +25,23 @@ function surfaces(result) {
 
 test("pull_request and a review that was not attempted do not consult evidence", () => {
   for (const input of [
-    { eventName: "pull_request", reviewAttempted: true, evidenceText: undefined },
+    {
+      eventName: "pull_request",
+      reviewAttempted: true,
+      evidenceText: undefined,
+    },
     { eventName: "schedule", reviewAttempted: true, evidenceText: "{}" },
     { eventName: "", reviewAttempted: true },
-    { eventName: "workflow_dispatch", reviewAttempted: false, evidenceText: undefined },
-    { eventName: "workflow_dispatch", reviewAttempted: false, evidenceText: "not-json" },
+    {
+      eventName: "workflow_dispatch",
+      reviewAttempted: false,
+      evidenceText: undefined,
+    },
+    {
+      eventName: "workflow_dispatch",
+      reviewAttempted: false,
+      evidenceText: "not-json",
+    },
   ]) {
     const result = classifyDispatchDelivery(input);
     assert.equal(result.applies, false, JSON.stringify(input));
@@ -52,7 +64,11 @@ test("a dispatch run that attempted a review fails closed without usable evidenc
     "1",
     JSON.stringify({ reviews: [], comments: [] }),
     JSON.stringify({ reviews: [], comments: [], baseline: {} }),
-    JSON.stringify({ reviews: {}, comments: [], baseline: { reviews: [], comments: [] } }),
+    JSON.stringify({
+      reviews: {},
+      comments: [],
+      baseline: { reviews: [], comments: [] },
+    }),
     JSON.stringify({
       reviews: [],
       comments: [],
@@ -135,7 +151,14 @@ test("numeric strings count and unusable ids do not", () => {
     eventName: "workflow_dispatch",
     reviewAttempted: true,
     evidenceText: evidence({
-      reviews: [{ id: 0 }, { id: -3 }, { id: 1.5 }, { id: "01" }, { id: "nope" }, "10"],
+      reviews: [
+        { id: 0 },
+        { id: -3 },
+        { id: 1.5 },
+        { id: "01" },
+        { id: "nope" },
+        "10",
+      ],
       comments: [{ body: CANARY }, null, []],
     }),
   });

@@ -90,7 +90,12 @@ async function runOutcome({
       info: (message) => infos.push(message),
       setFailed: (message) => failed.push(message),
     };
-    const execute = new AsyncFunction("core", "require", "process", stepScript());
+    const execute = new AsyncFunction(
+      "core",
+      "require",
+      "process",
+      stepScript(),
+    );
     await execute(core, require, process);
     return { outputs, errors, warnings, failed, infos };
   } finally {
@@ -165,7 +170,10 @@ const CANARY = "canary-never-publish-this-body";
 
 function writeEvidence(value) {
   const file = path.join(temporaryDirectory, "delivery.json");
-  fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
+  fs.writeFileSync(
+    file,
+    typeof value === "string" ? value : JSON.stringify(value),
+  );
   return file;
 }
 
@@ -215,7 +223,10 @@ test("workflow_dispatch success that posts nothing fails closed and does not rep
   assert.equal(result.outputs.review_failed, "true");
   assert.equal(result.outputs.review_ran, "false");
   assert.equal(result.outputs.failure_class, "no-delivery");
-  assert.match(result.outputs.review_detail, /new reviews: 0, new comments: 0/u);
+  assert.match(
+    result.outputs.review_detail,
+    /new reviews: 0, new comments: 0/u,
+  );
   assert.equal(result.failed.length, 1);
   assert.match(result.failed[0], /\bclass=no-delivery\b/u);
   assert.deepEqual(result.errors, []);
