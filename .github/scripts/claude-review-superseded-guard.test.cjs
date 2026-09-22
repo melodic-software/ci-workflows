@@ -66,27 +66,28 @@ test("every runner-consuming step gates on the guard's superseded output", () =>
   // attempt-resolve step, and outcome reporting (which transitively gates
   // both marker-comment steps and the count upsert). The backoff and retry
   // attempt key on the retry gate's output instead, so the gate carries the
-  // guard for all three. A new runner-consuming or PR-writing step must join
-  // this set deliberately.
+  // guard for all three. Dispatch delivery adds the baseline snapshot and
+  // the collect step (ci-workflows#573). A new runner-consuming or
+  // PR-writing step must join this set deliberately.
   const gates = [
     ...workflowSource.matchAll(
       /steps\.freshness\.outputs\.superseded != 'true'/gu,
     ),
   ].length;
-  assert.equal(gates, 12);
+  assert.equal(gates, 14);
 });
 
 test("every review-producing step also gates on the review-count cap", () => {
   // Same set minus the review-count gate itself (the producer) — a capped
   // run must be a name-stable skip: no checkout, no mount, no review, no
   // retry, no outcome (which would misreport the deliberate skip as an
-  // infra failure).
+  // infra failure). The two dispatch delivery steps are in this set too.
   const gates = [
     ...workflowSource.matchAll(
       /steps\.review-count\.outputs\.capped != 'true'/gu,
     ),
   ].length;
-  assert.equal(gates, 11);
+  assert.equal(gates, 13);
 });
 
 // Actions cannot loop a `uses:` step, so the retry is a verbatim copy of the

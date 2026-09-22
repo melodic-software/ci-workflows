@@ -19,9 +19,87 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const INLINE_COMMENT_GRANT =
   "--allowedTools mcp__github_inline_comment__create_inline_comment";
-const DISPATCH_GH_GRANT =
-  "--allowedTools Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)";
+// The shell assignment escapes the inner quotes; the composed string the
+// action parses contains the quotes themselves. Neither lane grants Read,
+// Grep, or Glob on dispatch: the main checkout still persists the job token
+// until claude-code-action#1236, and those tools could read .git/config.
+const DISPATCH_GRANTS = {
+  "claude-review.yml":
+    "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)",
+  "claude-security-review.yml":
+    "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)",
+};
 const COMPOSED_ARGS = `\${{ steps.compose-args.outputs.args }}`;
+
+// Quote-aware whitespace split, matching the contract the pinned action's
+// shell-quote parse depends on: a quoted --allowedTools value is one token,
+// and an unquoted multi-word value shatters on spaces. This is the regression
+// for ci-workflows#573 — a regex over the source line would still pass if the
+// quotes were eaten before the action saw them.
+function tokenizeArgs(input) {
+  const tokens = [];
+  let current = "";
+  let quote = "";
+  for (const character of input) {
+    if (quote !== "") {
+      if (character === quote) quote = "";
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (
+      character === " " ||
+      character === "\t" ||
+      character === "\n" ||
+      character === "\r"
+    ) {
+      if (current !== "") tokens.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (quote !== "") {
+    throw new Error(`unterminated ${quote} quote in composed args`);
+  }
+  if (current !== "") tokens.push(current);
+  return tokens;
+}
+
+// Mirrors the accumulating --allowedTools consumption in
+// base-action/src/parse-sdk-options.ts at the pinned action SHA, then the
+// comma split and dedupe that build the allowedTools array.
+function allowedToolValues(args) {
+  const tokens = tokenizeArgs(args);
+  const values = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token !== "--allowedTools" && token !== "--allowed-tools") continue;
+    while (index + 1 < tokens.length && !tokens[index + 1].startsWith("--")) {
+      index += 1;
+      values.push(tokens[index]);
+    }
+  }
+  return values;
+}
+
+function splitAllowedTools(values) {
+  const tools = [];
+  const seen = new Set();
+  for (const value of values) {
+    for (const part of value.split(",")) {
+      const trimmed = part.trim();
+      if (trimmed !== "" && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        tools.push(trimmed);
+      }
+    }
+  }
+  return tools;
+}
 
 const workflowsDirectory = path.join(__dirname, "..", "workflows");
 
@@ -133,19 +211,68 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
     }
   });
 
-  if (fileName === "claude-review.yml") {
-    test(`${fileName}: workflow_dispatch compose grants gh delivery tools (#254)`, () => {
+  test(`${fileName}: workflow_dispatch compose keeps one allowedTools value (#254, #573)`, () => {
+    const grant = DISPATCH_GRANTS[fileName];
+    const quotedGrant = `--allowedTools "${grant}"`;
+    const cases = [
+      claudeArgsInput.default.trim(),
+      // A caller that replaced the default wholesale, with no grant of its
+      // own. The dispatch value still has to survive as one token.
+      "--model claude-opus-5",
+    ];
+    for (const baseArgs of cases) {
       const args = composeArgs(
         composeStep.run,
-        claudeArgsInput.default.trim(),
+        baseArgs,
         "",
         "workflow_dispatch",
       );
       assert.ok(
-        args.endsWith(DISPATCH_GH_GRANT),
-        `dispatch must append gh delivery tools, not inline MCP: ${args}`,
+        args.endsWith(quotedGrant),
+        `dispatch must append one quoted gh grant, not inline MCP: ${args}`,
       );
       assert.doesNotMatch(args, /inline_comment/u);
-    });
-  }
+      const values = allowedToolValues(args);
+      assert.equal(
+        values.at(-1),
+        grant,
+        `the dispatch grant must be one token, not whitespace-shattered: ${JSON.stringify(values)}`,
+      );
+      assert.deepEqual(splitAllowedTools([values.at(-1)]), grant.split(","));
+      const tools = splitAllowedTools(values);
+      for (const fragment of [
+        "Bash(gh",
+        "pr",
+        "comment:*)",
+        "review:*)",
+        "diff:*)",
+        "LS",
+      ]) {
+        assert.equal(
+          tools.includes(fragment),
+          false,
+          `shattered or dead tool ${fragment} in ${JSON.stringify(tools)}`,
+        );
+      }
+    }
+  });
 }
+
+test("the quote-aware tokenizer shatters the unquoted dispatch grant", () => {
+  // Pins the oracle itself. The bug was invisible to a source-line regex and
+  // visible only after this split; if the tokenizer stopped splitting on
+  // spaces, the assertions above would go green on the old unquoted grant.
+  const values = allowedToolValues(
+    "--allowedTools Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)",
+  );
+  assert.deepEqual(values, [
+    "Bash(gh",
+    "pr",
+    "comment:*),Bash(gh",
+    "pr",
+    "review:*),Bash(gh",
+    "pr",
+    "diff:*)",
+  ]);
+  assert.ok(values.length > 1);
+});
