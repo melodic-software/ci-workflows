@@ -2,7 +2,13 @@ name: claude-lane-outcome
 description: >-
   Outcome reporter for the Claude lanes. On a successful action outcome WITH
   execution evidence it records review-failed=false / review-ran=true and
-  stops. A successful outcome WITHOUT an execution file is the shape of
+  stops, except on workflow_dispatch: there, dispatch-evidence.cjs must also
+  see a pull-request review or an issue comment that was not already on the
+  PR, or the step fails closed with class=no-delivery instead of reporting
+  success (ci-workflows#573). That check is opt-in via event-name, so a
+  caller that omits it keeps the historical rule. The evidence file is ids
+  only; this action never copies a review or comment body into an annotation.
+  A successful outcome WITHOUT an execution file is the shape of
   claude-code-action skipping itself — its workflow-validation guard exits 0
   with only a warning annotation when the caller's workflow file differs from
   the default branch's copy, so the step concludes green while nothing ran
@@ -37,26 +43,50 @@ inputs:
       Human-readable lane name used in the annotation text, e.g.
       "Claude review" or "Claude security review".
     required: true
+  event-name:
+    description: >-
+      github.event_name of the caller. Delivery evidence is required only
+      when this is exactly workflow_dispatch. Empty (the default) keeps the
+      historical rule: success plus an execution file is a review that ran.
+      Ordinary pull_request runs are never failed for missing evidence.
+    required: false
+    default: ""
+  delivery-evidence:
+    description: >-
+      Path to a JSON file of dispatch delivery evidence. Consulted only when
+      event-name is workflow_dispatch and the action succeeded with an
+      execution file. Shape is reviews/comments id lists plus a baseline of
+      the ids present before the attempt. A review id or issue-comment id
+      absent from that baseline counts as delivery (`gh pr review` or
+      `gh pr comment`). Missing, unreadable, or unparsable fails closed.
+      Write ids only; this step never logs bodies.
+    required: false
+    default: ""
 
 outputs:
   review-failed:
     description: >-
       "true" on a genuine infrastructure failure, else "false". A
       validation skip is NOT a failure (it is expected on caller-editing
-      PRs), so it reports "false" here and "false" on review-ran.
+      PRs), so it reports "false" here and "false" on review-ran. Also
+      "true" when a workflow_dispatch review was attempted and no new
+      pull-request review or issue comment landed (failure-class
+      no-delivery). That case fails the step; it is not an advisory green.
     value: ${{ steps.outcome.outputs.review_failed }}
   review-ran:
     description: >-
       "true" only when the action succeeded WITH execution evidence — the
-      one shape in which a review actually happened. Gate anything that
-      counts, credits, or tidies up after "a successful review" on this,
-      not on review-failed == "false", or a validation skip reads as a
-      review.
+      one shape in which a review actually happened — and, when event-name
+      is workflow_dispatch, delivery evidence shows a new pull-request
+      review or issue comment. Gate anything that counts, credits, or
+      tidies up after "a successful review" on this, not on review-failed
+      == "false", or a validation skip reads as a review.
     value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
     description: >-
       auth | rate-limit | overloaded | other (empty on a genuine success;
-      skipped-validation when the action skipped itself).
+      skipped-validation when the action skipped itself; no-delivery when
+      a workflow_dispatch review ran and posted nothing).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -75,12 +105,17 @@ runs:
         EXECUTION_FILE: ${{ inputs.execution-file }}
         LANE_NAME: ${{ inputs.lane }}
         ACTION_PATH: ${{ github.action_path }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        DELIVERY_EVIDENCE: ${{ inputs.delivery-evidence }}
       with:
         script: |
           const fs = require("node:fs");
           const path = require("node:path");
           const { classifyExecutionFile } = require(
             path.join(process.env.ACTION_PATH, "classify.cjs"),
+          );
+          const { classifyDispatchDelivery } = require(
+            path.join(process.env.ACTION_PATH, "dispatch-evidence.cjs"),
           );
 
           const outcome = process.env.LANE_OUTCOME ?? "";
@@ -89,6 +124,38 @@ runs:
 
           if (outcome === "success") {
             if (executionFile !== "" && fs.existsSync(executionFile)) {
+              // Ids only. A read failure is the same as a missing file:
+              // on workflow_dispatch the classifier fails closed, and on
+              // every other event it ignores the file.
+              const evidenceFile = process.env.DELIVERY_EVIDENCE ?? "";
+              let evidenceText;
+              if (evidenceFile !== "" && fs.existsSync(evidenceFile)) {
+                try {
+                  evidenceText = fs.readFileSync(evidenceFile, "utf8");
+                } catch {
+                  evidenceText = undefined;
+                }
+              }
+              const delivery = classifyDispatchDelivery({
+                eventName: process.env.EVENT_NAME ?? "",
+                reviewAttempted: true,
+                evidenceText,
+              });
+              if (delivery.applies && !delivery.delivered) {
+                // detail is a fixed sentence from the classifier. Do not
+                // interpolate the evidence file; it is untrusted input.
+                const message =
+                  `${lane} concluded: ${outcome} class=${delivery.failureClass} ` +
+                  "on workflow_dispatch (a review was attempted but no " +
+                  "pull-request review or issue comment landed). " +
+                  delivery.detail;
+                core.setFailed(message);
+                core.setOutput("failure_class", delivery.failureClass);
+                core.setOutput("review_detail", delivery.detail);
+                core.setOutput("review_failed", "true");
+                core.setOutput("review_ran", "false");
+                return;
+              }
               core.info(`${lane} completed. Findings (if any) are in the PR comments.`);
               core.setOutput("review_failed", "false");
               core.setOutput("review_ran", "true");
