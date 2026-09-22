@@ -571,6 +571,10 @@ jobs:
         # the gate fails open. It lives here now that the scan itself runs
         # inside the `checks` reusable, which cannot run a repo-local script.
         run: bash .github/actions/comment-hygiene/superset-test.sh
+      - name: Test machine-specific path span filtering
+        # Repo-local driver contract. The checks reusable cannot run this
+        # script, same as the comment-hygiene superset test above.
+        run: bash .github/actions/machine-specific-paths/check-machine-specific-paths.test.sh
       - name: Test comment-hygiene scan-tree collection contracts
         run: bash .github/actions/comment-hygiene/scan-tree.test.sh
       - name: Test the pull-request contract runner
