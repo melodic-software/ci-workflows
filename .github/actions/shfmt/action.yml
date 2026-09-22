@@ -31,7 +31,7 @@ runs:
   steps:
     # Persist the verified binary across jobs so a warm version+sha256 pin
     # never touches the network — the shellcheck action's #156 pattern,
-    # extended here as the primary defence against release-asset outages
+    # extended here as the primary defense against release-asset outages
     # like 2026-08-12 (#444). install-release.sh re-verifies the pinned
     # SHA-256 on every restore and re-downloads on mismatch, so the cache
     # key is never trusted by itself.
@@ -61,7 +61,7 @@ runs:
         # consumer's workflow would silently change how this action formats,
         # and a typo like `auto` or `0` would abort it. Step-level env wins
         # over everything inherited, so setting them here makes the action's
-        # behaviour a property of the action. run.sh reads the same names
+        # behavior a property of the action. run.sh reads the same names
         # with these values as its defaults; that path exists for its
         # self-test, which invokes the script directly rather than through
         # this file.

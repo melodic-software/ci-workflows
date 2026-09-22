@@ -8,7 +8,7 @@ vulnerability**) — opens private advisory, maintainers-only.
 No public issue or PR for security report.
 
 Include affected action/workflow, commit SHA referenced, description or
-proof of concept. Expect an initial acknowledgement within a few
+proof of concept. Expect an initial acknowledgment within a few
 business days.
 
 ## Supported versions

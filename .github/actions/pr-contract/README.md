@@ -55,7 +55,7 @@ upserted by finding a previous comment whose author is a `Bot`; a classic
 personal access token comments as a `User`, so the upsert would never find its
 own comment and would post a new one on every failing run.
 
-## Behaviour worth knowing
+## Behavior worth knowing
 
 - The pull request is read once from `repos/<owner>/<repo>/pulls/<number>`, not
   from the event payload, so `labeled` and `edited` runs see current state and a
