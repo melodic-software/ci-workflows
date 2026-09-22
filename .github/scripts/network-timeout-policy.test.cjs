@@ -72,7 +72,7 @@ test("immutable release assets have a bounded exponential retry budget", () => {
 
 test("every shared-installer consumer caches its verified release asset", () => {
   // The verified-asset cache (the shellcheck action's #156 pattern, extended
-  // fleet-wide by #444) is the primary defence against release-asset
+  // fleet-wide by #444) is the primary defense against release-asset
   // outages: with a warm version+sha256 pin no job touches the network at
   // all. install-release.sh re-verifies the pinned SHA-256 on restore and
   // re-downloads on mismatch, so the cache key is never trusted by itself.

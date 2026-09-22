@@ -76,7 +76,7 @@ jobs:
 
       # SINGLE SOURCE OF TRUTH: the newest PUBLISHED RELEASE, not the newest tag.
       #
-      # These were two different artefacts until 2026-08-12. This step computed
+      # These were two different artifacts until 2026-08-12. This step computed
       # from the newest tag, while the fleet's re-pin lane
       # (melodic-software/standards `components/claude-lanes/repin-callers.sh
       # resolve`) reads `releases/latest`. Tag `v0.13.0` (036c390) exists with no
@@ -84,7 +84,7 @@ jobs:
       # 2026-08-12 produced `v0.14.0`, skipping a version the fleet could never
       # reach — and nothing alarmed on the divergence.
       #
-      # A Release is the artefact both halves consume and the deliberate act
+      # A Release is the artifact both halves consume and the deliberate act
       # this workflow exists to perform; a tag is a side effect any pusher can
       # create out-of-band. So the Release wins, and a stray tag no longer moves
       # the counter. The "tag does not already exist" guard below then FAILS
@@ -96,7 +96,7 @@ jobs:
       # which GitHub sets from the tag target's COMMIT date, so a release cut
       # from an older commit would rank ahead of a newer version. Highest-SemVer
       # is the rule the re-pin lane's `resolve` now applies too, so both halves
-      # share one artefact AND one ordering.
+      # share one artifact AND one ordering.
       - name: Compute next version
         id: ver
         env:

@@ -35,7 +35,7 @@ name: claude-review
 #     # Per-PR: a newer event for the same PR supersedes the older run, so a
 #     # rapid open→ready→reopen burst spends one review, not several. This
 #     # value is per-LANE and deliberate — the security caller must NOT copy
-#     # it (cancelling a REQUIRED check is not a skip and does not read
+#     # it (canceling a REQUIRED check is not a skip and does not read
 #     # success; see claude-security-review.yml's canonical caller).
 #     concurrency:
 #       group: claude-review-${{ github.event.pull_request.number || inputs.pr-number || github.run_id }}
@@ -86,7 +86,7 @@ name: claude-review
 #     it is ever enabled, re-derive this entry rather than assuming it holds.
 #     Both apps push to SAME-REPO branches, so neither reaches a fork's
 #     privileged context, which the fork rule above already closes.
-#     Defence in depth (#443): the review job also gates bot actors (any
+#     Defense in depth (#443): the review job also gates bot actors (any
 #     `github.actor` ending in `[bot]`) on the PR author's association.
 #     `dependabot[bot]` is exempt — its PRs may carry CONTRIBUTOR or NONE.
 #     Any other bot may trigger only when `author_association` is OWNER,
@@ -101,7 +101,7 @@ name: claude-review
 #     comment that can carry a one-click-appliable ```suggestion block. This is
 #     a WIDENED surface, not a new one: the grant predates this and the security
 #     lane already drives the same tool. Do not mistake the action's own
-#     controls for injection defences — it sanitizes bodies (hidden markup,
+#     controls for injection defenses — it sanitizes bodies (hidden markup,
 #     invisible characters, leaked tokens) but not their meaning, and its
 #     buffer-and-classify step filters nothing HERE: classification needs
 #     ANTHROPIC_API_KEY, which this lane never passes (OAuth only), so it fails
@@ -394,7 +394,7 @@ jobs:
     # Skip configured bot/automation actors (saves runner minutes). The action's
     # own write-access gate is the security control; this is just an optimization.
     # Comma-wrap both sides so a substring of one actor can't match another.
-    # Defence-in-depth (#443): bot actors other than dependabot[bot] require
+    # Defense-in-depth (#443): bot actors other than dependabot[bot] require
     # the PR author's association to be OWNER, MEMBER, or COLLABORATOR — see
     # SECURITY MODEL above. Scoped to pull_request like the draft gate.
     # Draft PRs are not reviewed either (the cadence is open/ready/reopen);

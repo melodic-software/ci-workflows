@@ -393,7 +393,7 @@ test("reusable workflows never recommend broad secret inheritance", () => {
 test("root CI runs this repository's own test suite in a gating lane", () => {
   // The lane is still called `selector-contract` although the selector is
   // retired. Renaming it would change a check context and every reference for
-  // no behaviour gain, so ci-perf Phase 7 declines that churn the same way it
+  // no behavior gain, so ci-perf Phase 7 declines that churn the same way it
   // declines renaming the standards `privileged-hosted-only` rule id.
   //
   // Newline-anchored at the job-level two-space indent: the change-detection

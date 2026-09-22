@@ -362,9 +362,9 @@ run_case 1 'success skipped success' fail ''
 expect_log 'A lane did not pass (result: skipped).'
 expect_status_payload '"state": "failure"'
 
-# Without the policy validation an unrecognised value silently takes the laxer
+# Without the policy validation an unrecognized value silently takes the laxer
 # branch and this exits 0.
-echo 'case: an unrecognised treat-skipped-as value is rejected'
+echo 'case: an unrecognized treat-skipped-as value is rejected'
 run_case 1 'success' Fail ''
 expect_log "::error::treat-skipped-as must be 'pass' or 'fail', got: Fail"
 expect_no_gh_call 'statuses/'
@@ -394,12 +394,12 @@ expect_no_gh_call "commits/${sha}/status"
 
 # Without the boolean validation a typo resolves to a branch the caller did not
 # ask for — the same failure mode treat-skipped-as validation exists to prevent.
-echo 'case: an unrecognised contract-only value is rejected'
+echo 'case: an unrecognized contract-only value is rejected'
 run_case 1 'success' pass True
 expect_log "::error::contract-only must be 'true' or 'false', got: True"
 expect_no_gh_call 'statuses/'
 
-echo 'case: an unrecognised same-repo value is rejected'
+echo 'case: an unrecognized same-repo value is rejected'
 run_case 1 'success' pass false yes
 expect_log "::error::same-repo must be 'true' or 'false', got: yes"
 expect_no_gh_call 'statuses/'
@@ -423,7 +423,7 @@ expect_no_gh_call 'statuses/'
 
 # Unreachable from the shipped defaults (the predicate is false for every fork
 # event), but a caller that overrides contract-only owns the claim that the
-# lanes did not run; branching on contract-only FIRST honours it instead of
+# lanes did not run; branching on contract-only FIRST honors it instead of
 # aggregating over results that are all `skipped`.
 echo 'case: contract-only true with same-repo false is still carry-forward'
 status_list "[$(bot_status 100 success)]"
@@ -497,7 +497,7 @@ status_list "[$(bot_status 200 success),$(user_status 300 failure)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
-# Without first-match-wins a later bot failure would be ignored in favour of the
+# Without first-match-wins a later bot failure would be ignored in favor of the
 # earlier success — a re-run that went red could then be carried forward green.
 echo 'case: a bot failure newer than a bot success fails'
 status_list "[$(bot_status 200 failure),$(bot_status 100 success)]"
@@ -592,7 +592,7 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log 'Waiting 15s for in-flight run(s) 4000'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
 
-# The v0.22.1 behaviour this replaces, kept as a test because it is a real
+# The v0.22.1 behavior this replaces, kept as a test because it is a real
 # trade and not an oversight. A settled verdict now ends the wait even with a
 # sibling incomplete, which is what releases two contract-only runs once the
 # full run has written for them. It gives up v0.22.1's guard against carrying an
