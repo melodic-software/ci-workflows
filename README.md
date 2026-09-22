@@ -500,6 +500,20 @@ GitHub continues the normal weekly patching of each hosted image generation.
   on a typo is the failure mode this lane exists to prevent.
   `machine-specific-paths-exclude` and
   `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans.
+  `markdown-extra-globs` (default empty) appends extra markdownlint-cli2 glob
+  arguments after the composite default `**/*.md`. The value is space-separated:
+  the markdown composite word-splits `globs` with `read -a` on IFS whitespace,
+  and each word is one glob argument. With the input empty, the step forwards
+  `**/*.md` only. With it set, the step forwards that default followed by the
+  caller value, because passing `globs` replaces the composite default. A path
+  containing a space cannot be expressed. Shellcheck's `extra-globs` remains
+  the newline-delimited Git pathspec list. A caller whose markdown does not end
+  in `.md` passes the extra paths on `with:`:
+
+  ```yaml
+  markdown-extra-globs: dot_claude/CLAUDE.md.tmpl dot_codex/AGENTS.md.tmpl .chezmoitemplates/agent-instructions-shared
+  ```
+
   Every other composite input keeps its composite-side default. **Skipping is
   by filter group name**: a composite step is skipped when the caller declares
   a group named exactly after its toggle and that group evaluated `false`; an

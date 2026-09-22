@@ -98,6 +98,16 @@ on:
         description: Run the `markdown` (markdownlint-cli2) composite.
         type: boolean
         default: true
+      markdown-extra-globs:
+        description: >-
+          Extra markdownlint-cli2 glob arguments appended after the composite
+          default `**/*.md`. Space-separated: the markdown composite word-splits
+          `globs` with `read -a` (IFS whitespace) and passes each word as its
+          own argument. Blank (the default) forwards `**/*.md` only. A path
+          containing a space cannot be expressed. Shellcheck's `extra-globs`
+          remains the newline-delimited Git pathspec list.
+        type: string
+        default: ''
       shellcheck:
         description: Run the `shellcheck` composite.
         type: boolean
@@ -250,6 +260,11 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         uses: melodic-software/ci-workflows/.github/actions/markdown@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        # Passing `globs` replaces the composite default, so repeat that
+        # default and append `markdown-extra-globs` after it. The `case`
+        # keeps an empty extra value on the default alone.
+        with:
+          globs: ${{ case(inputs.markdown-extra-globs == '', '**/*.md', format('**/*.md {0}', inputs.markdown-extra-globs)) }}
 
       - name: Lint shell scripts
         id: shellcheck
