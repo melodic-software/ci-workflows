@@ -53,15 +53,12 @@ function wordSplit(value) {
   const readLine = /^read -r -d '' -a globs <<<"\$GLOBS" \|\| true$/mu.exec(
     lintStep.run,
   );
-  assert.ok(
-    readLine,
-    "the composite no longer word-splits globs with read -a",
-  );
+  assert.ok(readLine, "the composite no longer word-splits globs with read -a");
   const script = [
     "set -euo pipefail",
     "globs=()",
     readLine[0],
-    "printf '%s\\n' \"${globs[@]}\"",
+    "printf '%s\\n' \"" + "$" + '{globs[@]}"',
     "",
   ].join("\n");
   const result = spawnSync("bash", ["-c", script], {
@@ -101,10 +98,16 @@ test("an empty extra value resolves to the composite default only", () => {
 test("dotfiles template paths are appended after the composite default", () => {
   const forwarded = forwardedGlobs(DOTFILES_EXTRA);
   assert.equal(forwarded, `${BASE_GLOB} ${DOTFILES_EXTRA}`);
-  assert.deepEqual(wordSplit(forwarded), [BASE_GLOB, ...DOTFILES_EXTRA.split(" ")]);
+  assert.deepEqual(wordSplit(forwarded), [
+    BASE_GLOB,
+    ...DOTFILES_EXTRA.split(" "),
+  ]);
   const readme = readRepo("README.md");
   assert.match(
     readme,
-    new RegExp(`markdown-extra-globs: ${DOTFILES_EXTRA.replaceAll(".", "\\.")}`, "u"),
+    new RegExp(
+      `markdown-extra-globs: ${DOTFILES_EXTRA.replaceAll(".", "\\.")}`,
+      "u",
+    ),
   );
 });
