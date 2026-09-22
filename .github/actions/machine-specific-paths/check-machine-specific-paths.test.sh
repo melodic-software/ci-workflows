@@ -113,6 +113,9 @@ assert_caught 'under tests/' '/Users/alice' 'tests/sample.md'
 assert_caught 'CHANGELOG.md' 'C:\Users\Alice\project' 'CHANGELOG.md'
 assert_caught 'under evals/' '/home/alice' 'evals/sample.md'
 assert_caught 'foo.test.sh' 'D:\repos\acme\project' 'foo.test.sh'
+assert_caught 'non-Latin Windows user' 'C:/Users/用户/project'
+assert_caught 'non-Latin Linux user' '/home/δοκιμή/project'
+assert_caught 'non-Latin macOS user' '/Users/δοκιμή'
 
 # Punctuation-only children and the macOS Shared guardrail.
 assert_clean 'Windows forward ellipsis' 'C:/Users/...'

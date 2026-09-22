@@ -6,6 +6,9 @@
 #
 # Placeholder spans are filtered in this driver. The synced pattern file stays
 # byte-identical to standards and is not the place for this exemption.
+# A child is punctuation-only when ASCII [:punct:] (POSIX C locale) and
+# U+2026 HORIZONTAL ELLIPSIS are all it contains. Non-Latin letters stay
+# findings: [^A-Za-z0-9] treats every non-ASCII byte as punctuation.
 #
 # POSIX ERE only (grep -E) for cross-platform parity — never grep -P (macOS BSD
 # grep lacks it). Bash =~ is likewise avoided: it is not POSIX ERE.
@@ -24,6 +27,18 @@ source "${BASH_SOURCE[0]%/*}/machine-path-patterns.sh"
 PATH_BOUNDARY="(^|[[:space:]\"'\`(=]|file://)"
 MACOS_PATTERN="${PATH_BOUNDARY}${HPP_MACOS_USER_BODY}"
 LINUX_PATTERN="${PATH_BOUNDARY}${HPP_LINUX_USER_BODY}"
+
+# 0 when the child is a non-empty placeholder (ASCII punctuation or U+2026).
+# 1 when it is empty or still contains a letter, digit, or other non-ASCII.
+span_child_is_punctuation_only() {
+  local child=$1 rest ellipsis
+  [[ -n "$child" ]] || return 1
+  rest="$(printf '%s' "$child" | LC_ALL=C tr -d '[:punct:]')"
+  # U+2026 is not in the C-locale punct class. Octal keeps this bash 3.2-safe.
+  ellipsis="$(printf '\342\200\246')"
+  rest="${rest//$ellipsis/}"
+  [[ -z "$rest" ]]
+}
 
 # Keep a git-grep hit unless every re-extracted span is a placeholder.
 # path:line:content is split on the first two colons. Each span is pulled back
@@ -58,7 +73,7 @@ filter_machine_path_hits() {
         [[ -z "$span" ]] && continue
         extracted=1
         child="${span##*[/\\]}"
-        if printf '%s\n' "$child" | LC_ALL=C grep -Eq -- '^[^A-Za-z0-9]*$'; then
+        if span_child_is_punctuation_only "$child"; then
           continue
         fi
         if [[ "$macos" -eq 1 ]]; then
