@@ -59,7 +59,7 @@ if grep -F 'SC2296' "$broken"; then
   echo 'An inline GitHub expression reached ShellCheck unsubstituted.' >&2
   exit 1
 fi
-# A step ShellCheck cannot analyse is announced, never silently dropped.
+# A step ShellCheck cannot analyze is announced, never silently dropped.
 grep -F 'shell is pwsh, not bash/sh' "$broken"
 # A composite whose steps are all `uses:` emits no step line at all, so only the
 # visit line keeps it out of the coverage floor's false-negative bucket below.
@@ -119,7 +119,7 @@ findings_at "$spanning" 6 "$spans" | grep -F 'SC2086'
 
 # A `}}` inside the expression's own string literal must not end the span.
 # Ending there leaks the literal's remainder into the script, and the unbalanced
-# quoting stops ShellCheck analysing the file — so the SC2086 on the line below,
+# quoting stops ShellCheck analyzing the file — so the SC2086 on the line below,
 # reported at line 7, is reported at all only because the span survived intact.
 literal=fixtures/composite-action/expression-spans/action.yml.step-1.bash
 expect_findings "$literal" 1 "$spans"

@@ -42,7 +42,7 @@ permissions:
 #
 # Full branch: `<workflow>-<pr number || run_id>` with cancel-in-progress true,
 # so a `synchronize` still cancels the run it supersedes. Keying PRs on the
-# number (not head_ref) keeps fork PRs that share a branch name from cancelling
+# number (not head_ref) keeps fork PRs that share a branch name from canceling
 # each other's required runs. The fallback term is the per-repository push
 # decision: `github.run_id` gives every push its own group and therefore no
 # push-side burst collapse. This repository measured zero cancelled superseded
@@ -481,7 +481,7 @@ jobs:
         uses: ./.github/actions/action-metadata-filename
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
-  # ci-status yet — promote after a clean soak. Exempts standards-sync labelled /
+  # ci-status yet — promote after a clean soak. Exempts standards-sync labeled /
   # melodic-standards-sync[bot] PRs.
   managed-files-guard:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}

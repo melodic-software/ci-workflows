@@ -54,7 +54,7 @@ runs:
       # to be preinstalled on the runner. Re-run pointed at this action's own
       # repo root global.json via `github.action_path` (a caller with none of
       # its own has nothing else to fall back to), so a caller that never
-      # declared a version keeps the exact behaviour it had before
+      # declared a version keeps the exact behavior it had before
       # dotnet-version's default changed here — this always tracks
       # global.json directly, so there is no separate pin to keep in lockstep.
       if: steps.setup-dotnet.outputs.dotnet-version == ''
@@ -69,7 +69,7 @@ runs:
         CONFIGURATION: ${{ inputs.configuration }}
         LOCKED_MODE: ${{ inputs.locked-mode }}
       # Warnings-as-errors lives in the caller's Directory.Build.props
-      # (TreatWarningsAsErrors), which Roslyn honours for both compiler and
+      # (TreatWarningsAsErrors), which Roslyn honors for both compiler and
       # analyzer (CA + IDE) diagnostics — so no rule flags are needed here.
       # RestoreLockedMode rides the build's implicit restore as an MSBuild
       # property, so there is no separate restore step to drift from the build.

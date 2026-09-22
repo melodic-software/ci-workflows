@@ -58,7 +58,7 @@
 # against carrying an older `success` forward while a re-run of the same SHA is
 # in flight to overwrite it. That guard bound only when a full run had already
 # written a verdict for this exact SHA and another full run was in flight on it
-# again, and it cost a false red on every same-second sibling. The defences
+# again, and it cost a false red on every same-second sibling. The defenses
 # against a forged status (context, creator login, Bot type, newest id) are
 # untouched.
 #
@@ -85,7 +85,7 @@ STATUS_RETRY_BASE_DELAY="${STATUS_RETRY_BASE_DELAY:-1}"
 # App token would need its own value and takes on proving that identity itself.
 STATUS_CREATOR="${STATUS_CREATOR:-github-actions[bot]}"
 # Ceiling on the carry-forward wait, in seconds. `0` disables it and restores the
-# fail-immediately behaviour. Validated below, once `escape_annotation` exists.
+# fail-immediately behavior. Validated below, once `escape_annotation` exists.
 CARRY_FORWARD_WAIT_SECONDS="${CARRY_FORWARD_WAIT_SECONDS:-240}"
 # Poll interval, deliberately not a caller input: it is an implementation detail
 # of the wait, and the only knob a consumer should reason about is the ceiling.
@@ -95,7 +95,7 @@ CARRY_FORWARD_POLL_SECONDS=15
 # will.
 INCOMPLETE_RUN_STATUSES='["queued","in_progress","waiting","pending","requested"]'
 
-# Reject an unrecognised policy rather than silently defaulting: a typo such as
+# Reject an unrecognized policy rather than silently defaulting: a typo such as
 # `Fail` would otherwise resolve to the laxer branch and quietly weaken the gate
 # it was written to tighten.
 case "$TREAT_SKIPPED_AS" in
@@ -193,7 +193,7 @@ require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]
 # predicate makes `contract-only` false for every fork event, so the
 # true/false combination is unreachable from the defaults — but a caller that
 # overrides `contract-only` owns the claim that the lanes did not run, and the
-# runner honours it rather than second-guessing it into an aggregation over
+# runner honors it rather than second-guessing it into an aggregation over
 # results that are all `skipped`.
 # ---------------------------------------------------------------------------
 
@@ -271,7 +271,7 @@ set_wait_note() {
 # Every other outcome returns 0. On a 0 the caller applies `carried_state` when
 # `carried_state_read` is true, and otherwise reads the status itself: that is
 # the degraded path, taken when an Actions read fails and when a status read
-# fails part way through the loop, and it is the pre-6b behaviour. A failed read
+# fails part way through the loop, and it is the pre-6b behavior. A failed read
 # never leaves `carried_state_read` true, so the degraded path is a fresh read
 # that fails closed on its own failure; there is no outcome that passes without
 # one completed read.

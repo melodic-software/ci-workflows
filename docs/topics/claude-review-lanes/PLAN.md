@@ -2362,7 +2362,7 @@ contains the trailer-parsing note.
     substantively false one — medley's `claude-code-action` pin described as
     having no Dependabot path when medley#1668 was already open bumping it
     1.0.174 → 1.0.180; and in THIS block, the security-lane always-checks
-    mislabelled as five (there are four) and an inverted `:65`/`:66` citation
+    mislabeled as five (there are four) and an inverted `:65`/`:66` citation
     mapping. Round 4: this verification sentence itself, which undercounted the
     rounds and asserted the round-2 remediations had not been independently
     re-verified when round 3 had in fact re-verified them. The recurring

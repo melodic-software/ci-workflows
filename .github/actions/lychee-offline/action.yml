@@ -28,7 +28,7 @@ runs:
   steps:
     # Persist the verified tarball across jobs so a warm version+sha256 pin
     # never touches the network — the shellcheck action's #156 pattern,
-    # extended here as the primary defence against release-asset outages
+    # extended here as the primary defense against release-asset outages
     # like 2026-08-12 (#444). install-release.sh re-verifies the pinned
     # SHA-256 on every restore and re-downloads on mismatch, so the cache
     # key is never trusted by itself.

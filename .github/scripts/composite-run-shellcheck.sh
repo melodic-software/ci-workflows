@@ -15,9 +15,9 @@
 # .go) matches only a bare "bash"/"sh" or its literal leading word in GitHub's
 # custom-shell form ("bash [options] {0}"), so a path-qualified custom shell
 # (`shell: /usr/bin/bash --noprofile {0}`, which GitHub documents and runs as
-# bash) falls through actionlint's own check unanalysed. This check resolves
+# bash) falls through actionlint's own check unanalyzed. This check resolves
 # by the leading command's BASENAME instead, so a path-qualified shell of
-# either dialect is analysed here too rather than silently skipped as it is
+# either dialect is analyzed here too rather than silently skipped as it is
 # upstream — a composite step is therefore never LESS covered than the
 # identical workflow step would be, only ever equally or more so. It also
 # makes the in-place `# shellcheck disable=` directives those blocks already
@@ -65,11 +65,11 @@ set -euo pipefail
 # has, double quotes being an error — so a `}}` inside a literal cannot end the
 # span. Taking the next one truncates the expression and leaks the literal's
 # remainder into the script, whose unbalanced quoting makes ShellCheck stop
-# analysing the file: every real finding after it is masked, and the parse error
+# analyzing the file: every real finding after it is masked, and the parse error
 # reported instead points at synthesized underscores.
 # Ref: actions/runner, TemplateReader.ParseScalar (`inString`).
 #
-# An unterminated `${{` has no runner behaviour to follow: ParseScalar fails the
+# An unterminated `${{` has no runner behavior to follow: ParseScalar fails the
 # whole document, so GitHub rejects the shape as a workflow-parse error and it
 # never reaches a real action. What happens to it here is therefore this
 # check's own choice, made for diagnosability. A second unquoted `${{` is taken
