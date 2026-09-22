@@ -324,36 +324,46 @@ on:
     #     run. The outcome step is gated on both, so a retired or capped run
     #     reports nothing rather than a stale or unearned verdict.
     #
-    # The advisory contract is unchanged: the check still concludes green on
-    # an infrastructure failure and the marker comment remains the PR-visible
-    # signal. This surface exists so a MACHINE consumer (a caller job, merge
-    # tooling) can tell "reviewed" from "rate-limited into silence" — on
-    # 2026-08-13 every execution attempt across two consumer repositories
-    # 429'd for ~3 hours while every run concluded success, and nothing
-    # machine-readable said so at the caller seam.
+    # The advisory contract is unchanged for infrastructure failures: the
+    # check still concludes green on one, and the marker comment remains the
+    # PR-visible signal. A workflow_dispatch run that attempted a review and
+    # posted neither a pull-request review nor an issue comment is the
+    # exception (ci-workflows#573): the outcome step fails the job with
+    # class no-delivery, so that run does not conclude success. This surface
+    # exists so a MACHINE consumer (a caller job, merge tooling) can tell
+    # "reviewed" from "rate-limited into silence" — on 2026-08-13 every
+    # execution attempt across two consumer repositories 429'd for ~3 hours
+    # while every run concluded success, and nothing machine-readable said so
+    # at the caller seam.
     outputs:
       review-ran:
         description: >-
           'true' only when the action succeeded WITH execution evidence — the
-          one shape in which a review actually happened. 'false' covers both a
-          genuine failure and a workflow-validation skip; use `review-failed`
-          to tell those apart. EMPTY means no verdict was computed, and it has
-          two shapes on this lane, not one: the job never ran (kill-switch,
-          skip-actors, bot-association, draft), or the job ran and attempted
-          no review — the freshness guard retired a superseded head, or
-          max-reviews-per-pr capped the run. Treat empty as "no verdict",
-          never as a pass.
+          one shape in which a review actually happened — and, on
+          workflow_dispatch, a pull-request review or issue comment landed
+          that was not already on the PR. 'false' covers a genuine failure, a
+          workflow-validation skip, and a dispatch run that posted nothing
+          (failure-class no-delivery); use `review-failed` to tell those
+          apart. EMPTY means no verdict was computed, and it has two shapes
+          on this lane, not one: the job never ran (kill-switch, skip-actors,
+          bot-association, draft), or the job ran and attempted no review —
+          the freshness guard retired a superseded head, or max-reviews-per-pr
+          capped the run. Treat empty as "no verdict", never as a pass.
         value: ${{ jobs.review.outputs.review-ran }}
       review-failed:
         description: >-
           'true' on a genuine infrastructure failure, else 'false'. A
           validation skip is NOT a failure and reports 'false' here with
-          'false' on `review-ran`. Empty when no verdict was computed.
+          'false' on `review-ran`. Also 'true' when a workflow_dispatch
+          review was attempted and nothing new was posted (failure-class
+          no-delivery); that case fails the job. Empty when no verdict was
+          computed.
         value: ${{ jobs.review.outputs.review-failed }}
       failure-class:
         description: >-
           auth | rate-limit | overloaded | other on a genuine failure;
-          skipped-validation when the action skipped itself; empty on a
+          skipped-validation when the action skipped itself; no-delivery when
+          a workflow_dispatch review ran and posted nothing; empty on a
           genuine success and when no verdict was computed.
         value: ${{ jobs.review.outputs.failure-class }}
     secrets:
@@ -781,6 +791,56 @@ jobs:
             echo "$delimiter"
           } >> "$GITHUB_ENV"
 
+      # Ids only, taken before the model can post. A later diff against this
+      # baseline is what "landed on this run" means: a PR that already has
+      # comments must not look delivered when this dispatch posted nothing.
+      # continue-on-error so a listing failure does not skip the review via
+      # the implicit success() of later steps; the collect step below fails
+      # closed if the baseline never landed. pull-requests: write already
+      # covers these two reads (list reviews, list issue comments on a PR).
+      # No new permission. Bodies are not requested.
+      - name: Snapshot dispatch delivery ids
+        id: delivery-baseline
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true'
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
+          GH_PROMPT_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            :
+          else
+            echo "::error::Dispatch delivery evidence needs a positive integer pull request number."
+            exit 1
+          fi
+          if [[ "$GITHUB_REPOSITORY" =~ ^[^[:space:]/]+/[^[:space:]/]+$ ]]; then
+            :
+          else
+            echo "::error::GITHUB_REPOSITORY is not an owner/name pair."
+            exit 1
+          fi
+          list_ids() {
+            local endpoint="$1"
+            local dest="$2"
+            gh api --paginate "$endpoint" --jq '.[] | .id' >"$dest"
+            if [[ -s "$dest" ]] && grep -qvE '^[1-9][0-9]*$' "$dest"; then
+              echo "::error::A GitHub id list was not numeric; delivery evidence was discarded."
+              exit 1
+            fi
+          }
+          review_ids="${RUNNER_TEMP}/dispatch-baseline-reviews.txt"
+          comment_ids="${RUNNER_TEMP}/dispatch-baseline-comments.txt"
+          list_ids "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" "$review_ids"
+          list_ids "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" "$comment_ids"
+          {
+            echo "review_ids=${review_ids}"
+            echo "comment_ids=${comment_ids}"
+          } >>"$GITHUB_OUTPUT"
+
       - name: Claude review
         id: claude-review
         if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
@@ -1101,6 +1161,96 @@ jobs:
             echo "execution_file=$execution_file"
           } >>"$GITHUB_OUTPUT"
 
+      # Same attempt gate as review_ran: only a dispatch whose action
+      # succeeded is asked to prove a post. Superseded, cancelled, and
+      # capped runs skip this step. The packer writes ids and nothing else;
+      # dispatch-evidence.cjs makes the pass/fail decision offline.
+      - name: Collect dispatch delivery evidence
+        id: collect-delivery
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          !cancelled() &&
+          steps.freshness.outputs.superseded != 'true' &&
+          steps.review-count.outputs.capped != 'true' &&
+          steps.attempt.outputs.outcome == 'success'
+        env:
+          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
+          BASELINE_REVIEW_IDS: ${{ steps.delivery-baseline.outputs.review_ids }}
+          BASELINE_COMMENT_IDS: ${{ steps.delivery-baseline.outputs.comment_ids }}
+          GH_PROMPT_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            :
+          else
+            echo "::error::Dispatch delivery evidence needs a positive integer pull request number."
+            exit 1
+          fi
+          if [[ "$GITHUB_REPOSITORY" =~ ^[^[:space:]/]+/[^[:space:]/]+$ ]]; then
+            :
+          else
+            echo "::error::GITHUB_REPOSITORY is not an owner/name pair."
+            exit 1
+          fi
+          if [[ -z "${BASELINE_REVIEW_IDS:-}" || -z "${BASELINE_COMMENT_IDS:-}" ]]; then
+            echo "::error::Dispatch delivery baseline is missing; refusing to treat the run as delivered."
+            exit 1
+          fi
+          if [[ ! -f "$BASELINE_REVIEW_IDS" || ! -f "$BASELINE_COMMENT_IDS" ]]; then
+            echo "::error::Dispatch delivery baseline is missing; refusing to treat the run as delivered."
+            exit 1
+          fi
+          list_ids() {
+            local endpoint="$1"
+            local dest="$2"
+            gh api --paginate "$endpoint" --jq '.[] | .id' >"$dest"
+            if [[ -s "$dest" ]] && grep -qvE '^[1-9][0-9]*$' "$dest"; then
+              echo "::error::A GitHub id list was not numeric; delivery evidence was discarded."
+              exit 1
+            fi
+          }
+          review_ids="${RUNNER_TEMP}/dispatch-current-reviews.txt"
+          comment_ids="${RUNNER_TEMP}/dispatch-current-comments.txt"
+          evidence_file="${RUNNER_TEMP}/dispatch-delivery-evidence.json"
+          list_ids "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" "$review_ids"
+          list_ids "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" "$comment_ids"
+          REVIEW_IDS="$review_ids" \
+            COMMENT_IDS="$comment_ids" \
+            BASELINE_REVIEW_IDS="$BASELINE_REVIEW_IDS" \
+            BASELINE_COMMENT_IDS="$BASELINE_COMMENT_IDS" \
+            EVIDENCE_FILE="$evidence_file" \
+            node - <<'DISPATCH_EVIDENCE_NODE'
+          const fs = require("node:fs");
+
+          function ids(file) {
+            const text = fs.readFileSync(file, "utf8");
+            const items = [];
+            for (const line of text.split("\n")) {
+              const trimmed = line.trim();
+              if (trimmed === "") continue;
+              if (!/^[1-9][0-9]*$/u.test(trimmed)) {
+                process.stderr.write("non-numeric delivery id\n");
+                process.exit(1);
+              }
+              items.push({ id: Number(trimmed) });
+            }
+            return items;
+          }
+
+          const evidence = {
+            reviews: ids(process.env.REVIEW_IDS),
+            comments: ids(process.env.COMMENT_IDS),
+            baseline: {
+              reviews: ids(process.env.BASELINE_REVIEW_IDS),
+              comments: ids(process.env.BASELINE_COMMENT_IDS),
+            },
+          };
+          fs.writeFileSync(process.env.EVIDENCE_FILE, JSON.stringify(evidence));
+          DISPATCH_EVIDENCE_NODE
+          {
+            echo "file=${evidence_file}"
+          } >>"$GITHUB_OUTPUT"
+
       # Also gated on the guard and the review-count cap: a superseded or
       # capped run has no outcome to report, and skipping this step leaves
       # review-failed empty so both marker-comment steps below skip too — a
@@ -1109,17 +1259,20 @@ jobs:
       # was deliberately not attempted. The composite owns the classification
       # (classify.cjs —
       # the sole reader of the execution file's free-text fields) and the
-      # machine-readable `class=<token>` annotation.
+      # machine-readable `class=<token>` annotation. On workflow_dispatch it
+      # also owns the delivery decision (dispatch-evidence.cjs).
       - name: Report review outcome
         id: review-outcome
         if: >-
           !cancelled() && steps.freshness.outputs.superseded != 'true' &&
           steps.review-count.outputs.capped != 'true'
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@35b267e65ff71004c697cbc0022d4d6dd56ec580 # a570a42 2026-09-01
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@a392427c9921315f530424f1d227432022306a15 # a392427 2026-09-22
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
           lane: Claude review
+          event-name: ${{ github.event_name }}
+          delivery-evidence: ${{ steps.collect-delivery.outputs.file }}
 
       # Runs only on a genuine infra failure (never on a clean review). The
       # composite owns the ID-safe marker lifecycle, the fork guard, and the
@@ -1133,8 +1286,13 @@ jobs:
       # re-trigger" claim against a `synchronize`-wired caller). The
       # continuation line carries its own `> ` blockquote prefix (the
       # composite prefixes only the first line).
+      # no-delivery is a failed check, not this marker. The marker copy says
+      # the failure is infrastructure, which a dispatch that simply posted
+      # nothing is not.
       - name: Comment on genuine review failure
-        if: "!cancelled() && steps.review-outcome.outputs.review-failed == 'true'"
+        if: >-
+          !cancelled() && steps.review-outcome.outputs.review-failed == 'true' &&
+          steps.review-outcome.outputs.failure-class != 'no-delivery'
         # Reporting an outage must never become one: this step only annotates
         # a PR, and a rejected API call must not turn the infra-failure path
         # red (see the composite's description).
