@@ -707,14 +707,21 @@ jobs:
           # The dispatch value is quoted. parse-sdk-options.ts in the pinned
           # action whitespace-tokenizes claude_args, and an unquoted
           # multi-word grant shatters into entries like "Bash(gh" that match
-          # no tool (ci-workflows#573). Read, Grep, and Glob are the file
-          # tools that build honors; LS is not a tool there, so it is not
-          # granted. Inner quotes are escaped because this assignment is
-          # itself double-quoted.
+          # no tool (ci-workflows#573). Inner quotes are escaped because this
+          # assignment is itself double-quoted.
+          #
+          # Read, Grep, and Glob stay off on this path. The checkout above
+          # must keep persist-credentials at its default until
+          # claude-code-action#1236, so the job token is in .git/config while
+          # the model runs. A file-read tool plus the gh comment/review grant
+          # would let a prompt-injected checkout read that header and post it.
+          # The standards mount already uses persist-credentials: false for
+          # the same reason. File tools can be added here once the main
+          # checkout can stop persisting credentials before the model runs.
           if [ "$EVENT_NAME" = "pull_request" ]; then
             args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
           else
-            args="$args --allowedTools \"Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*),Read,Grep,Glob\""
+            args="$args --allowedTools \"Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)\""
           fi
           # claude-args may be multiline (callers can pass YAML `|`), so emit it
           # with the heredoc output form and a random delimiter — a single-line

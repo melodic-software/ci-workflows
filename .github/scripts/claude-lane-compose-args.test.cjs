@@ -20,13 +20,12 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const INLINE_COMMENT_GRANT =
   "--allowedTools mcp__github_inline_comment__create_inline_comment";
 // The shell assignment escapes the inner quotes; the composed string the
-// action parses contains the quotes themselves. The code-review lane also
-// grants the file tools the pinned Claude Code build still honors. LS is
-// intentionally absent. The security lane quotes the same gh grant and does
-// not add file tools.
+// action parses contains the quotes themselves. Neither lane grants Read,
+// Grep, or Glob on dispatch: the main checkout still persists the job token
+// until claude-code-action#1236, and those tools could read .git/config.
 const DISPATCH_GRANTS = {
   "claude-review.yml":
-    "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*),Read,Grep,Glob",
+    "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)",
   "claude-security-review.yml":
     "Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)",
 };
