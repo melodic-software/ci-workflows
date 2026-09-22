@@ -28,6 +28,12 @@ inputs:
   output-format:
     description: 'Output format: TEXT or JSON. Empty uses the tool default (TEXT).'
     default: ''
+  default-filetype:
+    description: >-
+      Parser for files whose extension is not json/yaml/toml (e.g. yaml for
+      WinGet `.winget` documents). Empty (the default) leaves the tool's own
+      behavior, which parses such a file as JSON and fails on a YAML document.
+    default: ''
   version:
     description: Exact check-jsonschema version to run.
     default: 0.38.0
@@ -51,6 +57,7 @@ runs:
         SCHEMAFILE: ${{ inputs.schemafile }}
         NO_CACHE: ${{ inputs.no-cache }}
         OUTPUT_FORMAT: ${{ inputs.output-format }}
+        DEFAULT_FILETYPE: ${{ inputs.default-filetype }}
         VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
@@ -69,6 +76,7 @@ runs:
         if [[ -n "${SCHEMAFILE// }" ]]; then args+=(--schemafile "$SCHEMAFILE"); fi
         if [[ "$NO_CACHE" == "true" ]]; then args+=(--no-cache); fi
         if [[ -n "${OUTPUT_FORMAT// }" ]]; then args+=(--output-format "$OUTPUT_FORMAT"); fi
+        if [[ -n "${DEFAULT_FILETYPE// }" ]]; then args+=(--default-filetype "$DEFAULT_FILETYPE"); fi
         # $FILES unquoted so multiple targets word-split and shell globs expand.
         # nullglob drops non-matching patterns instead of passing them through as
         # literal filenames; the empty-expansion guard below keeps that from

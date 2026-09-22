@@ -16,6 +16,12 @@ inputs:
       fixtures). Additive on top of the config's own extend-exclude and typos'
       defaults, never replacing them.
     default: ''
+  hidden:
+    description: >-
+      Also check hidden files and directories (true/false). typos skips them by
+      default, so dotted paths such as `.config/` go unchecked without this.
+      `.git/` stays excluded either way.
+    default: 'false'
   format:
     description: >-
       Output format: silent, brief, long, json, or sarif. Empty uses typos'
@@ -75,6 +81,7 @@ runs:
         PATHS: ${{ inputs.paths }}
         CONFIG: ${{ inputs.config }}
         EXCLUDE: ${{ inputs.exclude }}
+        HIDDEN: ${{ inputs.hidden }}
         FORMAT: ${{ inputs.format }}
         REPORT_PATH: ${{ inputs.report-path }}
         ANNOTATIONS: ${{ inputs.annotations }}
@@ -91,6 +98,11 @@ runs:
         set -f
         for e in $EXCLUDE; do args+=(--exclude "$e"); done
         set +f
+        # In args, so the annotation pass and the gate pass walk the same files.
+        # --hidden also descends .git/, whose object database, hook samples and
+        # commit-message logs are not prose to spell-check; excluding it here
+        # keeps every caller from discovering that as a false red.
+        if [[ "$HIDDEN" == "true" ]]; then args+=(--hidden --exclude '.git/'); fi
         # Split into an array at the input boundary so multiple targets reach
         # typos as separate arguments. -d '' takes the whole value so a
         # caller-authored multi-line input still splits; read hits EOF without
