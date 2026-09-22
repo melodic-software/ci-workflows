@@ -128,7 +128,7 @@ Assert-Condition -Condition ($broken.Output -match "pwsh-bad\.step-0\.ps1:${expr
     -Message 'An inline GitHub expression reached PSScriptAnalyzer unsubstituted.' `
     -Context $broken.Output
 
-# A step PSScriptAnalyzer cannot analyse is announced, never silently dropped.
+# A step PSScriptAnalyzer cannot analyze is announced, never silently dropped.
 Assert-Condition -Condition ($broken.Output.Contains('shell is bash, not pwsh/powershell')) `
     -Message 'A non-PowerShell step was dropped instead of being announced.' `
     -Context $broken.Output

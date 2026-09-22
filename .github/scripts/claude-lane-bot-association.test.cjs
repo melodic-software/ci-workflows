@@ -1,6 +1,6 @@
 "use strict";
 
-// Job-level defence-in-depth (#443): bot actors other than dependabot[bot]
+// Job-level defense-in-depth (#443): bot actors other than dependabot[bot]
 // require the PR author's association to be OWNER, MEMBER, or COLLABORATOR.
 // Pins the clause on both review lanes' main attempt jobs (retry is in-job).
 

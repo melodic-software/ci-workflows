@@ -53,7 +53,7 @@ runs:
         args=(--config "$CONFIG")
         # Translate the excludes into an additive extend-exclude TOML override so
         # the config's own excludes (and Ruff's defaults) survive. extend-exclude
-        # is the one exclude mechanism both `check` and `format` honour via
+        # is the one exclude mechanism both `check` and `format` honor via
         # --config; `ruff format` has no --extend-exclude flag, and a bare
         # --exclude would replace the defaults rather than add to them.
         if [[ -n "${EXCLUDE// }" ]]; then
