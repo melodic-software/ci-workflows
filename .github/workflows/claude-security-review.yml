@@ -1077,10 +1077,15 @@ jobs:
           # MCP server is not installed (automation context has no entity PR),
           # so grant gh comment/review/diff instead (ci-workflows#227 / #254).
           # Repeated --allowedTools flags accumulate and dedupe.
+          #
+          # Quoted for the same reason as the code-review lane: the pinned
+          # action whitespace-tokenizes an unquoted multi-word grant
+          # (ci-workflows#573). File-reading tools stay off this lane; only
+          # the code-review dispatch grant adds them.
           if [ "$EVENT_NAME" = "pull_request" ]; then
             args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
           else
-            args="$args --allowedTools Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)"
+            args="$args --allowedTools \"Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)\""
           fi
           # claude-args may be multiline (callers can pass YAML `|`), so emit it
           # with the heredoc output form and a random delimiter — a single-line

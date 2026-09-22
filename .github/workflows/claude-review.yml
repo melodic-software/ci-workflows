@@ -693,10 +693,18 @@ jobs:
           # PR), so grant gh comment/review instead. The grant cannot sit in
           # the claude-args default, which a caller replaces wholesale.
           # Repeated --allowedTools flags accumulate and dedupe.
+          #
+          # The dispatch value is quoted. parse-sdk-options.ts in the pinned
+          # action whitespace-tokenizes claude_args, and an unquoted
+          # multi-word grant shatters into entries like "Bash(gh" that match
+          # no tool (ci-workflows#573). Read, Grep, and Glob are the file
+          # tools that build honors; LS is not a tool there, so it is not
+          # granted. Inner quotes are escaped because this assignment is
+          # itself double-quoted.
           if [ "$EVENT_NAME" = "pull_request" ]; then
             args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
           else
-            args="$args --allowedTools Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)"
+            args="$args --allowedTools \"Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*),Read,Grep,Glob\""
           fi
           # claude-args may be multiline (callers can pass YAML `|`), so emit it
           # with the heredoc output form and a random delimiter — a single-line
