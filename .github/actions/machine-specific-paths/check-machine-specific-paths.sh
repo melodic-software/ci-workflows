@@ -33,9 +33,11 @@ LINUX_PATTERN="${PATH_BOUNDARY}${HPP_LINUX_USER_BODY}"
 span_child_is_punctuation_only() {
   local child=$1 rest ellipsis
   [[ -n "$child" ]] || return 1
-  rest="$(printf '%s' "$child" | LC_ALL=C tr -d '[:punct:]')"
+  # Explicit status: this predicate is called from if, which suppresses set -e.
+  # A printf or tr failure returns 1 so the span stays a finding.
+  rest="$(printf '%s' "$child" | LC_ALL=C tr -d '[:punct:]')" || return 1
   # U+2026 is not in the C-locale punct class. Octal keeps this bash 3.2-safe.
-  ellipsis="$(printf '\342\200\246')"
+  ellipsis="$(printf '\342\200\246')" || return 1
   rest="${rest//$ellipsis/}"
   [[ -z "$rest" ]]
 }
@@ -73,6 +75,7 @@ filter_machine_path_hits() {
         [[ -z "$span" ]] && continue
         extracted=1
         child="${span##*[/\\]}"
+        # shellcheck disable=SC2310 # predicate; a printf or tr failure returns 1 and the span stays a finding.
         if span_child_is_punctuation_only "$child"; then
           continue
         fi
