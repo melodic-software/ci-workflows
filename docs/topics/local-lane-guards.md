@@ -22,3 +22,10 @@ bash tools/shared/local-lane-guards/run-local-lane-guards.sh all
 that gate CI. A follow-up may re-point those wrappers at the synced drivers so
 CI and local share one byte stream; until then, keep behavioral parity with the
 standards component and do not fork policy into action-only copies.
+
+The punctuation-only span exemption and the macOS shared-user directory guard
+are an intentional CI-only exception to the parity rule above. They live in
+the CI driver `check-machine-specific-paths.sh` because the synced pattern
+file is standards-managed and must not be edited here. The standards local
+entrypoint does not apply this filter yet, so the same prose can fail a local
+lane and pass CI. That gap stays tracked on ci-workflows#549.
