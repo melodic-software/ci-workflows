@@ -1,14 +1,14 @@
 name: issue-triage-label-self
 
-# Applies the floor label `priority: needs-triage` to an issue opened or
+# Applies the bare floor label `needs-triage` to an issue opened or
 # reopened with no `priority:*` label. Dogfood caller of this repo's own
 # issue-triage-label reusable (pinned to its merged SHA, not a PR head — the
 # reusable's own security/logic surface is not redefinable by the caller
-# introducing it). Uses this repo's real `priority: needs-triage` label, so
-# this is a genuine end-to-end exercise of the reusable's label-set guard and
-# fail-closed existence check, not a stub. `reopened` is included alongside
-# `opened` so an issue reopened after its tier was cleared re-acquires the
-# floor.
+# introducing it). Passes `label: needs-triage`. Uses this
+# repo's real `needs-triage` label, so this is a genuine end-to-end exercise
+# of the reusable's label-set guard and fail-closed existence check, not a
+# stub. `reopened` is included alongside `opened` so an issue reopened after
+# its tier was cleared re-acquires the floor.
 on:
   issues:
     types: [opened, reopened]
@@ -20,3 +20,5 @@ jobs:
     permissions:
       issues: write # Downgraded to exactly what the called reusable needs.
     uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+    with:
+      label: needs-triage
