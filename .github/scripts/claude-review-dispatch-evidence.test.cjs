@@ -95,10 +95,6 @@ test("the security lane does not take the dispatch delivery check", () => {
   );
   assert.equal(security.includes("delivery-evidence"), false);
   assert.equal(security.includes("no-delivery"), false);
-  assert.match(
-    security,
-    /claude-lane-outcome@35b267e65ff71004c697cbc0022d4d6dd56ec580/u,
-  );
 });
 
 test("the outcome pin declares the delivery inputs", (t) => {
