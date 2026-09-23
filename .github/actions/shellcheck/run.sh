@@ -13,13 +13,26 @@ severity="${SEVERITY:-}"
 # process over a large tree is a serial wall: 747 files took 254 s on a hosted
 # runner. Batches of 40 files across 4 processes measured 2.85x faster on that
 # tree (github-iac docs/topics/ci-perf/research/PROFILE-ccp-scripts.md, 3b);
-# 4 matches the hosted runner's vCPU count. action.yml sets both names on the
-# step with these same values, so a caller's inherited environment can never
-# change the fan-out or abort the action with a malformed value; the reads
-# below exist for the self-test, which runs this script directly. The action
-# exposes neither as an input.
+# 4 matches the public hosted runner's vCPU count. The process count is that 4
+# capped at the CPUs the job may use: extra processes on fewer CPUs add no
+# speed, only concurrent memory. A container's CPU limit is usually a cgroup v2
+# quota (`docker --cpus`), which `nproc` before coreutils 9.8 ignores (it
+# reports every host CPU), so cpu.max is read directly. action.yml pins these
+# names on the step (the jobs knob to empty, meaning "size it here"), so a
+# caller's inherited environment can never change the fan-out or abort the
+# action with a malformed value; the reads below exist for the self-test,
+# which runs this script directly. The action exposes none as an input.
 batch_size="${SHELLCHECK_BATCH_SIZE:-40}"
-jobs="${SHELLCHECK_JOBS:-4}"
+jobs="${SHELLCHECK_JOBS:-}"
+if [[ -z "$jobs" ]]; then
+  jobs="$(nproc)"
+  if read -r quota period <"${SHELLCHECK_CPU_MAX_FILE:-/sys/fs/cgroup/cpu.max}" 2>/dev/null &&
+    [[ "$quota" =~ ^[1-9][0-9]*$ && "$period" =~ ^[1-9][0-9]*$ ]]; then
+    quota_cpus=$(((quota + period - 1) / period))
+    ((quota_cpus >= jobs)) || jobs=$quota_cpus
+  fi
+  ((jobs <= 4)) || jobs=4
+fi
 
 if [[ ! -f "$rcfile" ]]; then
   echo "::error::shellcheck: rcfile not found: $rcfile"
