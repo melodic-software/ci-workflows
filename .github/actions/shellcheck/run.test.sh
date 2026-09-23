@@ -331,7 +331,7 @@ printf 'PASS: a hostile ambient fan-out value fails closed on either knob\n'
 # an empty inherited value cannot turn into a red lane.
 cpu_max="$temporary_directory/cpu.max"
 printf 'max 100000\n' >"$cpu_max"
-unquoted_jobs="$(nproc)"
+unquoted_jobs="$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)"
 ((unquoted_jobs <= 4)) || unquoted_jobs=4
 run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_BATCH_SIZE='' SHELLCHECK_CPU_MAX_FILE="$cpu_max"
 grep -F "in batches of 40 across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
@@ -349,6 +349,10 @@ for case in '200000 100000=2' '150000 100000=2' '100000 100000=1' '800000 100000
   grep -F "across $expected process(es)" <<<"$ACTION_OUTPUT" >/dev/null
 done
 run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_CPU_MAX_FILE="$temporary_directory/missing"
+grep -F "across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
+# nproc reads OpenMP overrides; an inherited one must not steer the fan-out.
+run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_CPU_MAX_FILE="$temporary_directory/missing" \
+  OMP_NUM_THREADS=64 OMP_THREAD_LIMIT=1
 grep -F "across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: unset jobs follow the cgroup CPU quota, capped at 4\n'
 

@@ -25,7 +25,9 @@ severity="${SEVERITY:-}"
 batch_size="${SHELLCHECK_BATCH_SIZE:-40}"
 jobs="${SHELLCHECK_JOBS:-}"
 if [[ -z "$jobs" ]]; then
-  jobs="$(nproc)"
+  # nproc honors OMP_NUM_THREADS/OMP_THREAD_LIMIT, which a caller's env
+  # could otherwise use to steer the fan-out.
+  jobs="$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)"
   if read -r quota period <"${SHELLCHECK_CPU_MAX_FILE:-/sys/fs/cgroup/cpu.max}" 2>/dev/null &&
     [[ "$quota" =~ ^[1-9][0-9]*$ && "$period" =~ ^[1-9][0-9]*$ ]]; then
     quota_cpus=$(((quota + period - 1) / period))
