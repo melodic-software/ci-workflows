@@ -2,9 +2,9 @@
 # Self-check for the machine-specific-paths match filter.
 #
 # The driver re-extracts every git-grep span and drops a line only when every
-# span is a punctuation-only child or the macOS /Users/Shared guardrail.
-# tests/, CHANGELOG.md, evals/, and *.test.* are not exemptions, and short
-# usernames stay findings.
+# span is a punctuation-only child or the macOS /Users/Shared guardrail, or when
+# the line carries the machine-path:allow marker. tests/, CHANGELOG.md, evals/,
+# and *.test.* are not exemptions, and short usernames stay findings.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,6 +128,35 @@ assert_clean 'punctuation-only child' 'C:/Users/...).'
 assert_clean 'backtick Shared' '`/Users/Shared`'
 assert_clean 'Shared sentence period' '/Users/Shared.'
 assert_clean 'only ellipsis spans' 'C:/Users/... plus C:\Users\... plus D:\repos\...'
+
+# Per-line marker: unmarked real paths stay findings, marked lines do not.
+assert_caught 'unmarked Windows user' 'C:\Users\someone\project'
+assert_caught 'unmarked macOS user' '/Users/someone/project'
+assert_caught 'unmarked Linux user' '/home/someone/project'
+assert_caught 'unmarked Windows repo' 'D:\repos\thing'
+assert_caught 'unmarked JSON-escaped user' '"C:\\Users\\someone\\project"' 'fixture.json'
+assert_caught 'unmarked JSON-escaped repo' '"D:\\repos\\thing"' 'fixture.json'
+assert_caught 'unmarked 8.3 short name' 'C:\Users\SOMEON~1\AppData'
+assert_caught 'marker text without the colon' 'C:\Users\someone\project # machine-path allow'
+assert_clean 'marked Windows user' 'C:\Users\someone\project # machine-path:allow'
+assert_clean 'marked macOS user' '/Users/someone/project <!-- machine-path:allow -->'
+assert_clean 'marked Linux user' '/home/someone/project // machine-path:allow'
+assert_clean 'marked Windows repo' 'D:\repos\thing # machine-path:allow'
+assert_clean 'marked escaped repo' '"D:\\repos\\thing" # machine-path:allow'
+assert_clean 'marked 8.3 short name' 'C:\Users\SOMEON~1\AppData # machine-path:allow'
+
+# The marker covers only its own line.
+marked="$temporary_directory/marked"
+init_repo "$marked"
+printf '%s\n' '/home/someone/project # machine-path:allow' '/home/someone/project' >"$marked/notes.md"
+commit_all "$marked"
+run_driver "$marked"
+if [[ "$SCAN_STATUS" -ne 1 || "$SCAN_OUTPUT" != *"notes.md:2:/home/someone/project"* || "$SCAN_OUTPUT" == *"notes.md:1:"* ]]; then
+  fail "the marker must suppress only its own line (status $SCAN_STATUS)"
+  printf '%s\n' "$SCAN_OUTPUT" >&2
+else
+  printf 'PASS: marker suppresses only its own line\n'
+fi
 
 # A same-pattern real span keeps the original line, ellipsis and all.
 mixed="$temporary_directory/mixed"

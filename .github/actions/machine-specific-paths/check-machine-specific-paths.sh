@@ -10,6 +10,9 @@
 # U+2026 HORIZONTAL ELLIPSIS are all it contains. Non-Latin letters stay
 # findings: [^A-Za-z0-9] treats every non-ASCII byte as punctuation.
 #
+# A line that carries the literal marker machine-path:allow, usually in a
+# trailing comment, is not a finding. Lines without it are unaffected.
+#
 # POSIX ERE only (grep -E) for cross-platform parity — never grep -P (macOS BSD
 # grep lacks it). Bash =~ is likewise avoided: it is not POSIX ERE.
 set -euo pipefail
@@ -27,6 +30,7 @@ source "${BASH_SOURCE[0]%/*}/machine-path-patterns.sh"
 PATH_BOUNDARY="(^|[[:space:]\"'\`(=]|file://)"
 MACOS_PATTERN="${PATH_BOUNDARY}${HPP_MACOS_USER_BODY}"
 LINUX_PATTERN="${PATH_BOUNDARY}${HPP_LINUX_USER_BODY}"
+ALLOW_MARKER='machine-path:allow'
 
 # 0 when the child is a non-empty placeholder (ASCII punctuation or U+2026).
 # 1 when it is empty or still contains a letter, digit, or other non-ASCII.
@@ -60,6 +64,7 @@ filter_machine_path_hits() {
     *:*:*)
       rest="${line#*:}"
       content="${rest#*:}"
+      [[ "$content" == *"$ALLOW_MARKER"* ]] && continue
       ;;
     *)
       kept+=("$line")
