@@ -44,7 +44,7 @@ function stepSource(name) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-const OUTCOME_PIN = "57df82e37ff14b27c0b61825c16da02499082cf7";
+const OUTCOME_PIN = "ac062650c46005edb4787aff378347746bf63804";
 
 test("dispatch delivery steps run only when a review was actually attempted", () => {
   const snapshot = stepSource("Snapshot dispatch delivery ids");

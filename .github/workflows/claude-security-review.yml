@@ -1041,7 +1041,7 @@ jobs:
       # workflow_dispatch freshness works when the event has no pull_request.
       - name: Check whether this head is still current
         id: freshness
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@3c37af40fe1d90b16222a2887a27c87022fe111e # 3c37af4 2026-08-12
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           pull-number: ${{ steps.resolve-pr.outputs.number }}
           head-sha: ${{ steps.resolve-pr.outputs.head-sha }}
@@ -1491,7 +1491,7 @@ jobs:
       - name: Report review outcome
         id: review-outcome
         if: "!cancelled() && steps.freshness.outputs.superseded != 'true'"
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@57df82e37ff14b27c0b61825c16da02499082cf7 # 57df82e 2026-09-22
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution_file }}
@@ -1573,7 +1573,7 @@ jobs:
         # comment is the PR-visible half of an alarm whose check is GREEN. It
         # has to carry the weight the conclusion no longer does.
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@3c37af40fe1d90b16222a2887a27c87022fe111e # 3c37af4 2026-08-12
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           marker: "<!-- claude-security-review-infra-status -->"
           mode: post-failure
@@ -1602,7 +1602,7 @@ jobs:
         # Tidying a stale comment is housekeeping, and a rejected API call
         # during it must not turn a successful review red.
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@3c37af40fe1d90b16222a2887a27c87022fe111e # 3c37af4 2026-08-12
+        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           marker: "<!-- claude-security-review-infra-status -->"
           mode: clear-on-success

@@ -230,7 +230,7 @@ jobs:
 
       - name: Detect relevant lanes
         id: detect
-        uses: melodic-software/ci-workflows/.github/actions/change-detection@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/change-detection@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           filters: ${{ inputs.filters }}
 
@@ -239,28 +239,28 @@ jobs:
         if: ${{ inputs.typos && fromJSON(steps.detect.outputs.results || '{}')['typos'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/typos@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/typos@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Scan for secrets
         id: gitleaks
         if: ${{ inputs.gitleaks && fromJSON(steps.detect.outputs.results || '{}')['gitleaks'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/gitleaks@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Check editorconfig conformance
         id: editorconfig
         if: ${{ inputs.editorconfig && fromJSON(steps.detect.outputs.results || '{}')['editorconfig'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/editorconfig@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Lint markdown
         id: markdown
         if: ${{ inputs.markdown && fromJSON(steps.detect.outputs.results || '{}')['markdown'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/markdown@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/markdown@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         # Passing `globs` replaces the composite default, so repeat that
         # default and append `markdown-extra-globs` after it. The `case`
         # keeps an empty extra value on the default alone.
@@ -272,26 +272,26 @@ jobs:
         if: ${{ inputs.shellcheck && fromJSON(steps.detect.outputs.results || '{}')['shellcheck'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/shellcheck@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Lint workflows
         id: actionlint
         if: ${{ inputs.actionlint && fromJSON(steps.detect.outputs.results || '{}')['actionlint'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/actionlint@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Verify shebang files are executable
         id: exec_bit
         if: ${{ inputs.exec-bit && fromJSON(steps.detect.outputs.results || '{}')['exec-bit'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/exec-bit@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/exec-bit@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Check for machine-specific paths
         id: machine_specific_paths
         if: ${{ inputs.machine-specific-paths && fromJSON(steps.detect.outputs.results || '{}')['machine-specific-paths'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           exclude: ${{ inputs.machine-specific-paths-exclude }}
 
@@ -299,13 +299,13 @@ jobs:
         id: eol_renormalize
         if: ${{ inputs.eol-renormalize && fromJSON(steps.detect.outputs.results || '{}')['eol-renormalize'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Scan comment hygiene
         id: comment_hygiene
         if: ${{ inputs.comment-hygiene && fromJSON(steps.detect.outputs.results || '{}')['comment-hygiene'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           exclude: ${{ inputs.comment-hygiene-exclude }}
 
@@ -314,7 +314,7 @@ jobs:
         if: ${{ inputs.lychee-offline && fromJSON(steps.detect.outputs.results || '{}')['lychee-offline'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
 
       - name: Validate against JSON Schema
         id: check_jsonschema
@@ -325,7 +325,7 @@ jobs:
         if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files != '' && fromJSON(steps.detect.outputs.results || '{}')['check-jsonschema'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@2c1de45aa0e1b1489afb8edfebc12cb3a4fa6ac3 # v0.24.0
+        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           files: ${{ inputs.check-jsonschema-files }}
           builtin-schema: ${{ inputs.check-jsonschema-builtin-schema }}
