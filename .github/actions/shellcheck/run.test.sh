@@ -329,9 +329,32 @@ printf 'PASS: a hostile ambient fan-out value fails closed on either knob\n'
 # treats empty as unset, which is what a caller writing `SHELLCHECK_JOBS: ''`
 # in a workflow means. It takes the default and lints rather than aborting, so
 # an empty inherited value cannot turn into a red lane.
-run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_BATCH_SIZE=''
-grep -F 'in batches of 40 across 4 process(es)' <<<"$ACTION_OUTPUT" >/dev/null
+cpu_max="$temporary_directory/cpu.max"
+printf 'max 100000\n' >"$cpu_max"
+unquoted_jobs="$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)"
+((unquoted_jobs <= 4)) || unquoted_jobs=4
+run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_BATCH_SIZE='' SHELLCHECK_CPU_MAX_FILE="$cpu_max"
+grep -F "in batches of 40 across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: an empty ambient fan-out value reads as unset and takes the default\n'
+
+# Unset jobs are sized from the CPUs the job may use, never above 4. A cgroup
+# v2 quota (what `docker --cpus 2` writes) wins over nproc, which reports every
+# host CPU; a fractional quota rounds up; an unreadable cpu.max falls back to
+# nproc.
+for case in '200000 100000=2' '150000 100000=2' '100000 100000=1' '800000 100000=4'; do
+  printf '%s\n' "${case%=*}" >"$cpu_max"
+  expected="${case##*=}"
+  ((expected <= unquoted_jobs)) || expected=$unquoted_jobs
+  run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_CPU_MAX_FILE="$cpu_max"
+  grep -F "across $expected process(es)" <<<"$ACTION_OUTPUT" >/dev/null
+done
+run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_CPU_MAX_FILE="$temporary_directory/missing"
+grep -F "across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
+# nproc reads OpenMP overrides; an inherited one must not steer the fan-out.
+run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_CPU_MAX_FILE="$temporary_directory/missing" \
+  OMP_NUM_THREADS=64 OMP_THREAD_LIMIT=1
+grep -F "across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
+printf 'PASS: unset jobs follow the cgroup CPU quota, capped at 4\n'
 
 # A batch size of 1 makes the batch count observable: two standard files are two
 # invocations, and the extra lane still runs after the whole standard lane.
@@ -410,5 +433,6 @@ printf 'PASS: action metadata forwards the new inputs to the tested runner\n'
 # would abort it. The literals are asserted, not merely their presence: a
 # placeholder pointing back at an input would reopen the same hole.
 grep -F "SHELLCHECK_BATCH_SIZE: '40'" "$action_directory/action.yml" >/dev/null
-grep -F "SHELLCHECK_JOBS: '4'" "$action_directory/action.yml" >/dev/null
+grep -F "SHELLCHECK_JOBS: ''" "$action_directory/action.yml" >/dev/null
+grep -F "SHELLCHECK_CPU_MAX_FILE: ''" "$action_directory/action.yml" >/dev/null
 printf 'PASS: action metadata pins the fan-out knobs against the caller environment\n'
