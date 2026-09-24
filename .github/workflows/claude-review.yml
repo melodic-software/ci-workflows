@@ -14,18 +14,17 @@ name: claude-review
 #
 #     on:
 #       pull_request:
-#         # No `synchronize`: this lane reviews on open/ready/reopen only
-#         # (the security lane, whose check certifies execution, keeps
-#         # `synchronize`). Cuts per-PR spend on active branches. A push does
-#         # NOT re-trigger this lane, and re-running the job does not recover
-#         # a fresh review either: the re-run replays the ORIGINAL event
-#         # payload, and the freshness guard (claude-lane-freshness) compares
-#         # that payload's head SHA against the live head, retiring the run as
-#         # superseded once the head has moved. To review a newer head, reopen
-#         # the PR, mark it draft then ready again, or workflow_dispatch with
-#         # the PR number (ci-workflows#254) — babysit-loop and humans use
-#         # dispatch for on-demand re-review when synchronize is omitted.
-#         types: [opened, ready_for_review, reopened]
+#         # `synchronize` reviews every push, including the push that
+#         # resolves a merge conflict: GitHub runs no pull_request workflow
+#         # while the PR conflicts with its base, so a once-per-PR trigger set
+#         # silently skips PRs that conflicted when opened. A caller that drops
+#         # `synchronize` to cut spend gets no review of a newer head from a
+#         # re-run either (the re-run replays the ORIGINAL payload, and the
+#         # freshness guard, claude-lane-freshness, retires it as superseded);
+#         # it must reopen, flip draft and back, or workflow_dispatch with the
+#         # PR number (ci-workflows#254). `max-reviews-per-pr` still caps how
+#         # many pushes are reviewed.
+#         types: [opened, synchronize, ready_for_review, reopened]
 #       workflow_dispatch:
 #         inputs:
 #           pr-number:
@@ -302,6 +301,18 @@ on:
           guard and review steps run.
         type: string
         default: ""
+      status-check:
+        description: >-
+          Opt-in (ci-workflows#619). When true, a second job,
+          `claude-review-status`, runs after the review and goes red, naming
+          the `failure-class` in its step summary, when `review-failed` is
+          'true'. It is green otherwise, including when no verdict was
+          computed (the review skipped, retired a superseded head, or was
+          capped). The review job stays advisory. Never add this check to
+          required status checks: it exists to be seen, not to block a merge.
+          Default false; with it off the job is skipped, not failed.
+        type: boolean
+        default: false
     # DECLARED EVIDENCE SURFACE (ci-workflows#464, mirroring #460 on the
     # security lane). A consumer that must decide whether a review actually
     # happened reads these; it must not scrape this lane's job log. Log text
@@ -1287,7 +1298,7 @@ jobs:
       # this whole change exists to fix. body-copy is explicit because the
       # default copy's re-run guidance is incomplete for this lane, and
       # whether a push re-triggers it is the CALLER's trigger choice — the
-      # canonical caller drops `synchronize`, but a caller may keep it — so
+      # canonical caller keeps `synchronize`, but a caller may drop it — so
       # the copy states that condition instead of asserting either way
       # (ci-workflows#363 disproved the old unconditional "a push does not
       # re-trigger" claim against a `synchronize`-wired caller). The
@@ -1312,7 +1323,7 @@ jobs:
           failure-class: ${{ steps.review-outcome.outputs.failure-class }}
           review-detail: ${{ steps.review-outcome.outputs.review-detail }}
           body-copy: |-
-            Re-run the job, or workflow_dispatch this workflow with the PR number, to retry the review. A new push re-triggers this lane only if the caller's `pull_request` triggers include `synchronize` (the canonical caller omits it).
+            Re-run the job, or workflow_dispatch this workflow with the PR number, to retry the review. A new push re-triggers this lane only if the caller's `pull_request` triggers include `synchronize` (the canonical caller does).
             > An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator (`auth`).
 
       # Symmetric counterpart to the failure step above: a transient infra
@@ -1406,3 +1417,46 @@ jobs:
       - name: Strip persisted git credentials
         if: always()
         run: git config --unset-all http.https://github.com/.extraheader || true
+
+  # Opt-in failure signal (ci-workflows#619, input `status-check`). The review
+  # job concludes green on an infrastructure failure by design, so a failed
+  # review is easy to miss in the check list. This job reads the declared
+  # outputs, never the log, and turns its own separately named check red when
+  # `review-failed` is 'true'. `always()` so it reports even when the review
+  # job failed or was skipped; empty outputs mean no verdict and report green.
+  # The outputs reach the script through `env:`, never inline expressions.
+  claude-review-status:
+    needs: review
+    if: ${{ always() && inputs.status-check }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Report the review outcome
+        env:
+          LANE: claude-review
+          REVIEW_FAILED: ${{ needs.review.outputs.review-failed }}
+          FAILURE_CLASS: ${{ needs.review.outputs.failure-class }}
+        run: |
+          if [ "$REVIEW_FAILED" != "true" ]; then
+            if [ -z "$REVIEW_FAILED" ]; then
+              echo "$LANE: no verdict (not run, superseded head, or capped)." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "$LANE: no failure reported." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+          case "$FAILURE_CLASS" in
+            auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
+            rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
+            overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
+            no-delivery) why="the review ran but posted nothing to the pull request" ;;
+            *) why="an unclassified failure; read the review job log" ;;
+          esac
+          {
+            echo "### $LANE failed: \`${FAILURE_CLASS:-unknown}\`"
+            echo
+            echo "$why."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=$LANE failed::failure-class=${FAILURE_CLASS:-unknown}: $why"
+          exit 1
