@@ -4,7 +4,7 @@
 // failure by design, so each carries a status job that always runs, goes red
 // and names the failure class. These tests pin the wiring (unconditional,
 // reads the job outputs through env) and run the job's own script for
-// every class, so the check's colour cannot drift from `review-failed`.
+// every class, so the check's color cannot drift from `review-failed`.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -63,6 +63,21 @@ for (const lane of lanes) {
     assert.equal(workflow.on.workflow_call.inputs["status-check"], undefined);
     assert.deepEqual(job.permissions, {});
     assert.equal(job.steps.length, 1);
+  });
+
+  test(`${lane.file}: the review job survives a failed attempt and forwards the verdict`, () => {
+    const reviewJob = workflow.jobs[lane.needs];
+    const claudeStep = reviewJob.steps.find((candidate) =>
+      String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
+    );
+    assert.equal(claudeStep["continue-on-error"], true);
+    assert.ok(claudeStep["timeout-minutes"] > 0);
+    for (const name of ["review-failed", "failure-class"]) {
+      assert.equal(
+        reviewJob.outputs[name],
+        `\${{ steps.review-outcome.outputs.${name} }}`,
+      );
+    }
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
