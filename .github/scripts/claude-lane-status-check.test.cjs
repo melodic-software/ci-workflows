@@ -31,13 +31,25 @@ function load(file) {
 }
 
 function runStep(step, env) {
-  const summary = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "status-")), "summary");
+  const summary = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "status-")),
+    "summary",
+  );
   fs.writeFileSync(summary, "");
   const result = spawnSync("bash", ["-e", "-c", step.run], {
-    env: { PATH: process.env.PATH, ...step.env, ...env, GITHUB_STEP_SUMMARY: summary },
+    env: {
+      PATH: process.env.PATH,
+      ...step.env,
+      ...env,
+      GITHUB_STEP_SUMMARY: summary,
+    },
     encoding: "utf8",
   });
-  return { status: result.status, stdout: result.stdout, summary: fs.readFileSync(summary, "utf8") };
+  return {
+    status: result.status,
+    stdout: result.stdout,
+    summary: fs.readFileSync(summary, "utf8"),
+  };
 }
 
 for (const lane of lanes) {
@@ -53,31 +65,64 @@ for (const lane of lanes) {
 
   test(`${lane.file}: ${lane.job} runs after the review whatever it concluded`, () => {
     assert.equal(job.needs, lane.needs);
-    assert.equal(job.if, "${{ always() && inputs.status-check }}");
+    assert.equal(job.if, `\${{ always() && inputs.status-check }}`);
     assert.deepEqual(job.permissions, {});
     assert.equal(job.steps.length, 1);
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
-    assert.equal(step.env.REVIEW_FAILED, `\${{ needs.${lane.needs}.outputs.review-failed }}`);
-    assert.equal(step.env.FAILURE_CLASS, `\${{ needs.${lane.needs}.outputs.failure-class }}`);
+    assert.equal(
+      step.env.REVIEW_FAILED,
+      `\${{ needs.${lane.needs}.outputs.review-failed }}`,
+    );
+    assert.equal(
+      step.env.FAILURE_CLASS,
+      `\${{ needs.${lane.needs}.outputs.failure-class }}`,
+    );
     assert.doesNotMatch(step.run, /\$\{\{/u);
   });
 
   test(`${lane.file}: a success or an absent verdict stays green`, () => {
-    for (const [failed, klass] of [["false", ""], ["false", "skipped-validation"], ["", ""]]) {
-      const result = runStep(step, { REVIEW_FAILED: failed, FAILURE_CLASS: klass });
-      assert.equal(result.status, 0, `review-failed='${failed}' must not go red`);
+    for (const [failed, klass] of [
+      ["false", ""],
+      ["false", "skipped-validation"],
+      ["", ""],
+    ]) {
+      const result = runStep(step, {
+        REVIEW_FAILED: failed,
+        FAILURE_CLASS: klass,
+      });
+      assert.equal(
+        result.status,
+        0,
+        `review-failed='${failed}' must not go red`,
+      );
       assert.doesNotMatch(result.summary, /failed:/u);
     }
   });
 
   test(`${lane.file}: every failure class goes red and is named`, () => {
-    for (const klass of ["auth", "rate-limit", "overloaded", "no-delivery", "other", ""]) {
-      const result = runStep(step, { REVIEW_FAILED: "true", FAILURE_CLASS: klass });
+    for (const klass of [
+      "auth",
+      "rate-limit",
+      "overloaded",
+      "no-delivery",
+      "other",
+      "",
+    ]) {
+      const result = runStep(step, {
+        REVIEW_FAILED: "true",
+        FAILURE_CLASS: klass,
+      });
       assert.equal(result.status, 1, `class '${klass}' must fail the check`);
-      assert.match(result.summary, new RegExp(`failed: \`${klass || "unknown"}\``, "u"));
-      assert.match(result.stdout, new RegExp(`^::error .*failure-class=${klass || "unknown"}:`, "mu"));
+      assert.match(
+        result.summary,
+        new RegExp(`failed: \`${klass || "unknown"}\``, "u"),
+      );
+      assert.match(
+        result.stdout,
+        new RegExp(`^::error .*failure-class=${klass || "unknown"}:`, "mu"),
+      );
     }
   });
 }
