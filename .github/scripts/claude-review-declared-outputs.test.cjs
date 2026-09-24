@@ -10,9 +10,7 @@
 // These tests pin the declared surface so it cannot quietly drift back out of
 // existence: the `workflow_call.outputs` block, the job-level block that feeds
 // it, and the agreement between both and the composite that owns the
-// classification (ci-workflows#464, mirroring #460's surface on the security
-// lane — whose own pins live in
-// claude-security-review-declared-outputs.test.cjs). The composite's corpus
+// classification (ci-workflows#464). The composite's corpus
 // lives in .github/actions/claude-lane-outcome/classify.test.cjs; what this
 // file owns is the wiring that carries its verdict to the caller.
 
@@ -74,10 +72,7 @@ const reviewJob = jobBody("review");
 const jobOutputs = blockBody(reviewJob, 4, "outputs");
 
 test("the caller can read the lane's verdict without reading its log", () => {
-  // No `relevant` here: unlike the security lane, this lane has no `changes`
-  // job — every non-skipped pull request is in scope.
   assert.deepEqual(declaredKeys(callOutputs, 6), [
-    "review-ran",
     "review-failed",
     "failure-class",
   ]);
@@ -89,7 +84,7 @@ test("each declared output is wired to the job that computes it", () => {
       ...callOutputs.matchAll(/^ {6}([a-z-]+):$[\s\S]*?^ {8}value: (.+)$/gmu),
     ].map((match) => [match[1], match[2].trim()]),
   );
-  for (const name of ["review-ran", "review-failed", "failure-class"]) {
+  for (const name of ["review-failed", "failure-class"]) {
     assert.equal(
       wiring[name],
       `\${{ jobs.review.outputs.${name} }}`,
@@ -105,11 +100,7 @@ test("the review job forwards the composite's verdict verbatim", () => {
       match[2].trim(),
     ]),
   );
-  assert.deepEqual(Object.keys(forwarded), [
-    "review-ran",
-    "review-failed",
-    "failure-class",
-  ]);
+  assert.deepEqual(Object.keys(forwarded), ["review-failed", "failure-class"]);
   for (const [name, value] of Object.entries(forwarded)) {
     assert.equal(
       value,
@@ -124,7 +115,7 @@ test("the forwarded names are the composite's own, so a rename cannot silently e
     blockBody(`\n${composite}`, 0, "outputs"),
     2,
   );
-  for (const name of ["review-ran", "review-failed", "failure-class"]) {
+  for (const name of ["review-failed", "failure-class"]) {
     assert.ok(
       compositeOutputs.includes(name),
       `claude-lane-outcome no longer declares ${name}; the workflow output would resolve to empty`,
@@ -132,21 +123,8 @@ test("the forwarded names are the composite's own, so a rename cannot silently e
   }
 });
 
-test("the empty state documents both of this lane's no-verdict shapes", () => {
-  // On the security lane, empty outputs mean "the job did not run". This lane
-  // has a second empty shape the security lane does not: the outcome step is
-  // gated on the freshness guard and the review-count cap, so the job can RUN
-  // and still compute no verdict (superseded head, capped run). A consumer
-  // that read empty as "the job was skipped, so my own preconditions explain
-  // it" would misread a retired run as reviewed. Pin both shapes into the
-  // declared surface so the distinction cannot drift out of the contract.
-  assert.match(callOutputs, /never as a pass/u);
-  assert.match(callOutputs, /superseded head/u);
-  assert.match(callOutputs, /capped/u);
-});
-
 test("review-detail stays unsurfaced", () => {
-  // Free-text prose shaped for a human reading a marker comment. Surfacing it
+  // Free-text prose shaped for a human reader. Surfacing it
   // invites a consumer to branch on it, which is the log-grepping this whole
   // surface exists to replace.
   assert.doesNotMatch(callOutputs, /review-detail/u);

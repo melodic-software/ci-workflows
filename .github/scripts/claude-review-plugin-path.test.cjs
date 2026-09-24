@@ -1,101 +1,58 @@
 "use strict";
 
-// Dual-path wiring for ci-workflows#258: both review lanes expose
-// plugins / plugin-marketplaces / plugin-command, compose REVIEW_BODY,
-// and pass plugins through to both claude-code-action attempts.
+// Both review lanes expose plugins / plugin-marketplaces / plugin-command,
+// pass the plugins through to the one claude-code-action invocation, and
+// prompt it to run the plugin command.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
 const repositoryRoot = path.join(__dirname, "..", "..");
 
-const LANES = [
-  {
-    file: "claude-review.yml",
-    defaultCommand: "/review:code-review",
-    attemptNames: ["Claude review", "Claude review (retry)"],
-  },
+for (const { file, defaultCommand } of [
+  { file: "claude-review.yml", defaultCommand: "/review:code-review" },
   {
     file: "claude-security-review.yml",
     defaultCommand: "/review:security-review",
-    attemptNames: ["Claude security review", "Claude security review (retry)"],
   },
-];
-
-const laneSource = (file) =>
-  fs.readFileSync(
-    path.join(repositoryRoot, ".github", "workflows", file),
-    "utf8",
+]) {
+  const workflow = parseWorkflow(
+    fs.readFileSync(
+      path.join(repositoryRoot, ".github", "workflows", file),
+      "utf8",
+    ),
   );
-
-function stepSource(workflow, stepName) {
-  const start = workflow.indexOf(`      - name: ${stepName}\n`);
-  assert.notEqual(start, -1, `step not found: ${stepName}`);
-  const rest = workflow.slice(start + 1);
-  const next = rest.indexOf("\n      - name: ");
-  return next === -1 ? rest : rest.slice(0, next);
-}
-
-function inputBlock(workflow, name) {
-  const start = workflow.indexOf(`      ${name}:\n`);
-  assert.notEqual(start, -1, `input not found: ${name}`);
-  const rest = workflow.slice(start);
-  const end = rest.search(/\n {6}[a-z]/);
-  return end === -1 ? rest : rest.slice(0, end);
-}
-
-for (const lane of LANES) {
-  test(`${lane.file} declares plugins / plugin-marketplaces / plugin-command`, () => {
-    const src = laneSource(lane.file);
-    for (const name of ["plugins", "plugin-marketplaces", "plugin-command"]) {
-      assert.match(src, new RegExp(`^ {6}${name}:`, "m"), name);
-    }
-    const plugins = inputBlock(src, "plugins");
-    assert.match(plugins, /review@melodic-software/);
-    const marketplaces = inputBlock(src, "plugin-marketplaces");
-    assert.match(
-      marketplaces,
-      /https:\/\/github\.com\/melodic-software\/claude-code-plugins\.git/,
+  const inputs = workflow.on.workflow_call.inputs;
+  const invocation = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find((step) =>
+      String(step?.uses ?? "").startsWith("anthropics/claude-code-action@"),
     );
-    const command = inputBlock(src, "plugin-command");
+
+  test(`${file} declares the plugin inputs and no prompt input`, () => {
+    assert.match(inputs.plugins.default, /review@melodic-software/u);
     assert.match(
-      command,
-      new RegExp(`default:\\s*${lane.defaultCommand.replace("/", "\\/")}`),
+      inputs["plugin-marketplaces"].default,
+      /https:\/\/github\.com\/melodic-software\/claude-code-plugins\.git/u,
     );
+    assert.equal(inputs["plugin-command"].default, defaultCommand);
+    assert.equal(inputs.prompt, undefined);
   });
 
-  test(`${lane.file} composes REVIEW_BODY with dual-path preference`, () => {
-    const compose = stepSource(
-      laneSource(lane.file),
-      "Compose the review body",
+  test(`${file} passes the plugins through and prompts the plugin command`, () => {
+    assert.equal(invocation.with.plugins, `\${{ inputs.plugins }}`);
+    assert.equal(
+      invocation.with.plugin_marketplaces,
+      `\${{ inputs.plugin-marketplaces }}`,
     );
-    assert.match(compose, /plugins_trim=/);
-    assert.match(compose, /cmd_trim=/);
-    assert.match(compose, /Invoke \$\{PLUGIN_COMMAND\}/);
-    assert.match(compose, /printf '%s\\n' "\$PROMPT"/);
-    assert.match(compose, /delimiter="gha_\$\{RANDOM\}\$\{RANDOM\}_EOF"/);
-    assert.match(compose, /REVIEW_BODY<<\$delimiter/);
-    assert.doesNotMatch(compose, /REVIEW_BODY<<REVIEW_BODY_EOF/);
-  });
-
-  test(`${lane.file} both attempts pass plugins and use REVIEW_BODY`, () => {
-    const src = laneSource(lane.file);
-    for (const name of lane.attemptNames) {
-      const step = stepSource(src, name);
-      assert.match(step, /plugins: \$\{\{ inputs\.plugins \}\}/);
-      assert.match(
-        step,
-        /plugin_marketplaces: \$\{\{ inputs\.plugin-marketplaces \}\}/,
-      );
-      assert.match(step, /\$\{\{ env\.REVIEW_BODY \}\}/);
-      assert.doesNotMatch(
-        step,
-        /\$\{\{ inputs\.prompt \}\}/,
-        `${name} must not embed inputs.prompt directly`,
-      );
-    }
+    assert.match(
+      invocation.with.prompt,
+      /Invoke \$\{\{ inputs\.plugin-command \}\} now/u,
+    );
   });
 }
 

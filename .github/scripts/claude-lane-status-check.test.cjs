@@ -1,10 +1,10 @@
 "use strict";
 
 // ci-workflows#619: both Claude lanes conclude green on an infrastructure
-// failure by design, so each carries an opt-in status job that goes red and
-// names the failure class. These tests pin the wiring (opt-in, default off,
-// reads the declared outputs through env) and run the job's own script for
-// every class, so the check's colour cannot drift from `review-failed`.
+// failure by design, so each carries a status job that always runs, goes red
+// and names the failure class. These tests pin the wiring (unconditional,
+// reads the job outputs through env) and run the job's own script for
+// every class, so the check's color cannot drift from `review-failed`.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -57,17 +57,27 @@ for (const lane of lanes) {
   const job = workflow.jobs[lane.job];
   const [step] = job.steps;
 
-  test(`${lane.file}: status-check is an opt-in boolean, default off`, () => {
-    const input = workflow.on.workflow_call.inputs["status-check"];
-    assert.equal(input.type, "boolean");
-    assert.equal(input.default, false);
-  });
-
   test(`${lane.file}: ${lane.job} runs after the review whatever it concluded`, () => {
     assert.equal(job.needs, lane.needs);
-    assert.equal(job.if, `\${{ always() && inputs.status-check }}`);
+    assert.equal(job.if, "always()");
+    assert.equal(workflow.on.workflow_call.inputs["status-check"], undefined);
     assert.deepEqual(job.permissions, {});
     assert.equal(job.steps.length, 1);
+  });
+
+  test(`${lane.file}: the review job survives a failed attempt and forwards the verdict`, () => {
+    const reviewJob = workflow.jobs[lane.needs];
+    const claudeStep = reviewJob.steps.find((candidate) =>
+      String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
+    );
+    assert.equal(claudeStep["continue-on-error"], true);
+    assert.ok(claudeStep["timeout-minutes"] > 0);
+    for (const name of ["review-failed", "failure-class"]) {
+      assert.equal(
+        reviewJob.outputs[name],
+        `\${{ steps.review-outcome.outputs.${name} }}`,
+      );
+    }
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
@@ -102,14 +112,7 @@ for (const lane of lanes) {
   });
 
   test(`${lane.file}: every failure class goes red and is named`, () => {
-    for (const klass of [
-      "auth",
-      "rate-limit",
-      "overloaded",
-      "no-delivery",
-      "other",
-      "",
-    ]) {
+    for (const klass of ["auth", "rate-limit", "overloaded", "other", ""]) {
       const result = runStep(step, {
         REVIEW_FAILED: "true",
         FAILURE_CLASS: klass,

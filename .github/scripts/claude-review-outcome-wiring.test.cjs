@@ -2,16 +2,11 @@
 
 // The review lanes consume the claude-lane-outcome composite through a
 // SHA-pinned `uses:`, so the composite's checked-in source and the version a
-// lane actually runs can diverge — exactly the window in which a gate reading
-// a not-yet-pinned output evaluates false on every run and silently skips the
-// step it guards (the review-count upsert stopped writing for one PR window
-// this way). These tests pin the wiring from both ends: the gate conditions
-// the review lane must carry, and the rule that every consumed output of the
-// composite is one its source declares — checked against each lane's own
-// pinned revision when the object is reachable, and against the working tree
-// always. The security lane's gate conditions are pinned in its own seam,
-// claude-security-review-fail-closed.test.cjs; here it joins the
-// consumed-vs-declared rule.
+// lane actually runs can diverge, and a lane reading a not-yet-pinned output
+// gets an empty value on every run. These tests pin the rule that every
+// consumed output of the composite is one its source declares, checked
+// against each lane's own pinned revision when the object is reachable, and
+// against the working tree always.
 
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
@@ -55,14 +50,6 @@ test("lane discovery finds the outcome composite's consumers", () => {
 const laneSource = (lane) =>
   fs.readFileSync(path.join(workflowsDir, lane), "utf8");
 
-function stepSource(workflow, stepName) {
-  const start = workflow.indexOf(`      - name: ${stepName}\n`);
-  assert.notEqual(start, -1, `step not found: ${stepName}`);
-  const rest = workflow.slice(start + 1);
-  const next = rest.indexOf("\n      - name: ");
-  return next === -1 ? rest : rest.slice(0, next);
-}
-
 // Every output name the composite's action.yml declares. Indentation-anchored
 // to the `outputs:` block's two-space keys so step ids and input names never
 // leak into the set.
@@ -82,22 +69,6 @@ const consumedOutputs = (workflow) =>
       (match) => match[1],
     ),
   );
-
-test("the count upsert and stale-comment clear gate on a review that RAN", () => {
-  // review-failed == 'false' is also true of a validation skip, which
-  // reviewed nothing; only review-ran distinguishes a review that happened.
-  const workflow = laneSource("claude-review.yml");
-  for (const stepName of [
-    "Update the review-count status comment",
-    "Clear stale failure comment after successful review",
-  ]) {
-    assert.match(
-      stepSource(workflow, stepName),
-      /^ {8}if: "!cancelled\(\) && steps\.review-outcome\.outputs\.review-ran == 'true'"$/mu,
-      `'${stepName}' must gate on review-ran, not on not-failed`,
-    );
-  }
-});
 
 for (const lane of LANES) {
   const workflow = laneSource(lane);
@@ -148,88 +119,3 @@ for (const lane of LANES) {
     }
   });
 }
-
-// Runs a review-count step's github-script body against a recording client.
-const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-
-async function runCountStep(stepName, env) {
-  const source = stepSource(laneSource("claude-review.yml"), stepName);
-  const lines = source
-    .slice(source.indexOf("script: |\n") + "script: |\n".length)
-    .split("\n");
-  const end = lines.findIndex(
-    (line) => line !== "" && !line.startsWith(" ".repeat(12)),
-  );
-  const script = lines
-    .slice(0, end === -1 ? undefined : end)
-    .map((line) => line.slice(12))
-    .join("\n");
-  const calls = [];
-  const outputs = {};
-  const record = (name) => async () => {
-    calls.push(name);
-    return { data: {} };
-  };
-  const github = {
-    paginate: async () => {
-      calls.push("listComments");
-      return [];
-    },
-    rest: {
-      issues: {
-        listComments: record("listComments"),
-        createComment: record("createComment"),
-        updateComment: record("updateComment"),
-      },
-    },
-  };
-  const core = {
-    setOutput: (name, value) => {
-      outputs[name] = value;
-    },
-    info: () => {},
-    notice: () => {},
-    warning: () => {},
-  };
-  const set = { PR_NUMBER: "42", ...env };
-  const previous = Object.fromEntries(
-    Object.keys(set).map((key) => [key, process.env[key]]),
-  );
-  Object.assign(process.env, set);
-  try {
-    await new AsyncFunction("core", "github", "context", script)(core, github, {
-      repo: { owner: "melodic-software", repo: "consumer" },
-    });
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-  return { calls, outputs };
-}
-
-test("a disabled cap (0) neither reads nor posts the review-count comment", async () => {
-  const lookup = await runCountStep("Check the per-PR review count", {
-    MAX_REVIEWS_PER_PR: "0",
-  });
-  assert.deepEqual(lookup.calls, []);
-  assert.equal(lookup.outputs.capped, "false");
-  const upsert = await runCountStep("Update the review-count status comment", {
-    MAX_REVIEWS_PER_PR: "0",
-    PRIOR_COUNT: "0",
-  });
-  assert.deepEqual(upsert.calls, []);
-});
-
-test("a positive cap still reads and posts the review-count comment", async () => {
-  const lookup = await runCountStep("Check the per-PR review count", {
-    MAX_REVIEWS_PER_PR: "5",
-  });
-  assert.deepEqual(lookup.calls, ["listComments"]);
-  const upsert = await runCountStep("Update the review-count status comment", {
-    MAX_REVIEWS_PER_PR: "5",
-    PRIOR_COUNT: "0",
-  });
-  assert.deepEqual(upsert.calls, ["createComment"]);
-});

@@ -1,123 +1,44 @@
 name: claude-review
 
-# Reusable workflow — automated PR code review with anthropics/claude-code-action.
-# A whole-job concern (own job permissions + secrets interface), so a reusable
-# workflow, not a composite action.
+# Reusable workflow: automated PR code review with anthropics/claude-code-action,
+# running the org review plugin's command.
 #
-# CONSUMER CONTRACT (the caller owns these — they are NOT set here):
-#   The triggers and the GITHUB_TOKEN permission grant live in each consumer's
-#   thin caller, because a reusable workflow's `on:` is `workflow_call` and the
-#   caller's own `on:` decides which events invoke it; and because a called
-#   workflow can only DOWNGRADE the caller's permission grant, never elevate it.
-#   So a consumer is never blocked by a choice frozen here — they shape their own
-#   caller. Canonical caller:
+# Canonical caller (the caller owns triggers, concurrency and the permission
+# grant; a called workflow can only downgrade the caller's grant):
 #
 #     on:
 #       pull_request:
-#         # `synchronize` reviews every push, including the push that
-#         # resolves a merge conflict: GitHub runs no pull_request workflow
-#         # while the PR conflicts with its base, so a once-per-PR trigger set
-#         # silently skips PRs that conflicted when opened. A caller that drops
-#         # `synchronize` to cut spend gets no review of a newer head from a
-#         # re-run either (the re-run replays the ORIGINAL payload, and the
-#         # freshness guard, claude-lane-freshness, retires it as superseded);
-#         # it must reopen, flip draft and back, or workflow_dispatch with the
-#         # PR number (ci-workflows#254). `max-reviews-per-pr` still caps how
-#         # many pushes are reviewed.
 #         types: [opened, synchronize, ready_for_review, reopened]
-#       workflow_dispatch:
-#         inputs:
-#           pr-number:
-#             description: Pull request number to re-review
-#             required: true
-#             type: string
-#     # Per-PR: a newer event for the same PR supersedes the older run, so a
-#     # rapid open→ready→reopen burst spends one review, not several. This
-#     # value is per-LANE and deliberate — the security caller must NOT copy
-#     # it (canceling a REQUIRED check is not a skip and does not read
-#     # success; see claude-security-review.yml's canonical caller).
 #     concurrency:
-#       group: claude-review-${{ github.event.pull_request.number || inputs.pr-number || github.run_id }}
+#       group: claude-review-${{ github.event.pull_request.number }}
 #       cancel-in-progress: true
 #     jobs:
 #       review:
-#         # The org's sync-managed caller component additionally carries a
-#         # job-level queue group here — a SEPARATE block, because `queue:`
-#         # cannot share a concurrency block with `cancel-in-progress: true`
-#         # (false is fine; several live fleet workflows pair them that way):
-#         #   concurrency:
-#         #     group: claude-review-${{ github.repository }}
-#         #     queue: max
-#         # It serializes reviews repo-wide, so parallel PRs queue for the
-#         # shared Claude seat instead of contending for it.
 #         permissions:
 #           contents: read         # checkout + read the diff
-#           pull-requests: write   # post review + track_progress tracking comment
-#           id-token: write        # OIDC — mints the Claude GitHub App token (required
-#                                  # even with an OAuth/API-key credential)
+#           pull-requests: write   # post the review + tracking comment
+#           id-token: write        # OIDC for the Claude GitHub App token
 #         uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@<sha>
-#         with:
-#           pr-number: ${{ inputs.pr-number }}
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
-#   A PRIVATE consumer that wants REVIEW.md's native-reference depth tier
-#   additionally passes standards-ref plus the two STANDARDS_REVIEW_APP_*
-#   secrets (see standards-ref's own description below). A PUBLIC consumer
-#   must never pass any of the three.
+# SECURITY MODEL:
+#   - Call it from `pull_request` only. pull_request_target and workflow_run
+#     run with base-repo secrets over untrusted code; the `Reject privileged
+#     triggers` step hard-fails both.
+#   - Fork PRs get no secrets and a read-only token, so the job skips them.
+#   - Bot actors are skipped: the action rejects any bot it was not told to
+#     allow, and this lane allows none.
+#   - Only the one named secret is accepted; the job token is least privilege.
+#   - display_report stays off (public-repo log-leak risk).
+#   - Dependabot's comments are withheld from the model's context
+#     (exclude-comments-by-actor), as prompt-injection hygiene.
+#   - The checkout must persist credentials until claude-code-action#1236
+#     ships; the last step strips them.
 #
-# SECURITY MODEL (see CLAUDE.md for the full rationale):
-#   - Intended for `pull_request` (NEVER pull_request_target / workflow_run with
-#     secrets — privileged context + untrusted fork code = token exfiltration).
-#     The `reject-privileged-triggers` step is a tripwire that hard-fails those
-#     two events; every other event is allowed (the consumer keeps flexibility).
-#   - Fork PRs receive no secrets and a read-only token by design, so they are
-#     simply not reviewed — that is correct, not a gap to "fix".
-#   - The action gates triggering on the actor's write access; bots are blocked
-#     unless named in `allowed-bots`. The default names two org-installed apps.
-#     `dependabot[bot]` is driven by the org's own dependabot.yml. `cursor[bot]`
-#     is driven by an operator: Cursor requires whoever starts a cloud agent to
-#     be "on a paid Cursor plan and have repository permissions"
-#     (https://cursor.com/docs/cloud-agent), so an arbitrary commenter on a
-#     public PR cannot make it act. Bugbot — the one Cursor path documented as
-#     running "for all contributors ... regardless of team membership"
-#     (https://cursor.com/docs/bugbot) — is DISABLED for this org's account; if
-#     it is ever enabled, re-derive this entry rather than assuming it holds.
-#     Both apps push to SAME-REPO branches, so neither reaches a fork's
-#     privileged context, which the fork rule above already closes.
-#     Defense in depth (#443): the review job also gates bot actors (any
-#     `github.actor` ending in `[bot]`) on the PR author's association.
-#     `dependabot[bot]` is exempt — its PRs may carry CONTRIBUTOR or NONE.
-#     Any other bot may trigger only when `author_association` is OWNER,
-#     MEMBER, or COLLABORATOR (e.g. `cursor[bot]` pushing to an operator's
-#     branch). Human actors are unchanged; the check is scoped to
-#     `pull_request` like the draft gate because dispatch carries no
-#     author_association in the event payload.
-#   - `display-report` / `show_full_output` stay off (public-repo log-leak risk).
-#   - The inline-comment tool is now on the hot path (the prompt routes every
-#     line-anchorable finding through it), so untrusted diff content — including
-#     an `allowed-bots` actor's third-party changelog text — reaches a rendered
-#     comment that can carry a one-click-appliable ```suggestion block. This is
-#     a WIDENED surface, not a new one: the grant predates this and the security
-#     lane already drives the same tool. Do not mistake the action's own
-#     controls for injection defenses — it sanitizes bodies (hidden markup,
-#     invisible characters, leaked tokens) but not their meaning, and its
-#     buffer-and-classify step filters nothing HERE: classification needs
-#     ANTHROPIC_API_KEY, which this lane never passes (OAuth only), so it fails
-#     open and posts every buffered comment — and `confirmed: true` skips the
-#     buffer outright anyway.
-#   - The standards-ref mount is opt-in and unenforced HERE by design (see the
-#     CONSUMER CONTRACT note above): this workflow has no reliable way to know
-#     a calling repo's own visibility from within a reusable-workflow context,
-#     so the restriction is a documented caller obligation, not a runtime
-#     check. standards/distribution/REVIEW-CREDENTIAL.md is the SSOT for why.
-#
-# KILL-SWITCH SCOPE NOTE: REVIEW.md scopes security findings OUT of this lane
-#   wherever a claude-security-review workflow FILE exists — static prose that
-#   cannot see Actions variables. While CLAUDE_SECURITY_REVIEW_DISABLED is
-#   'true' with that file present, NO lane reports security findings: this
-#   lane does not re-widen automatically, and re-enabling the security lane is
-#   what closes the window.
+# The review job stays green on an infrastructure failure. The
+# `claude-review-status` job always runs after it and goes red, naming the
+# failure class, when the review failed. Never make that check required.
 
 on:
   workflow_call:
@@ -126,276 +47,56 @@ on:
         description: Runner label selected by the caller's governed selector.
         type: string
         default: ubuntu-24.04
-      prompt:
-        description: >-
-          The review-criteria body. A REPO / PR NUMBER / HEAD SHA header and
-          the lane's reporting mechanics — inline-comment anchoring, and the
-          commit-permalink form for findings no changed line can carry — wrap
-          it automatically, so this input is just the instructions for what to
-          look for.
-        type: string
-        default: >-
-          This is the CODE-REVIEW lane. Review this pull request for
-          correctness and alignment with the project's CLAUDE.md guidelines
-          (and REVIEW.md criteria if the repo has one). Focus on architecture
-          decisions, error handling, test coverage, and maintainability.
-          Where REVIEW.md splits review scope across lanes — it scopes
-          security review to the dedicated security lane wherever a
-          claude-security-review workflow exists — follow that split and
-          leave security findings to the security lane.
-
-
-          Scope your review to the files changed in this PR. Use `gh pr diff` to
-          identify what changed, then review those files. Do not explore
-          unrelated parts of the codebase.
-
-
-          Never restate the PR author's own claimed verification (e.g. a Test
-          plan's described commands or output) as evidence you independently
-          confirmed. Only claim to have verified something you yourself ran
-          with a tool available to you; label anything else as
-          author-claimed and unverified.
-
-          Dual-path (ci-workflows#258): when `plugins` and `plugin-command`
-          are both non-empty (the defaults), the lane invokes the org
-          plugin command instead of this body. Clear `plugins` (empty) to
-          keep this V1 prompt path.
       plugins:
         description: >-
-          Newline-separated Claude Code plugins passed through to
-          anthropics/claude-code-action's `plugins` input (e.g.
-          `review@melodic-software`). Non-empty (after trim), together with
-          a non-empty `plugin-command`, prefers the V2 plugin-command path
-          over the V1 `prompt` body. Empty is safe — V1 prompt path stays.
-          Default installs the org review plugin (minimal).
+          Newline-separated Claude Code plugins passed through to the action's
+          `plugins` input.
         type: string
         default: |
           review@melodic-software
       plugin-marketplaces:
         description: >-
           Newline-separated marketplace Git URLs passed through to
-          `plugin_marketplaces`. Empty-safe when `plugins` is empty.
-          Marketplace name comes from `.claude-plugin/marketplace.json`
-          `name` (`melodic-software`), not the repo name. Default points at
-          the org marketplace.
+          `plugin_marketplaces`.
         type: string
         default: |
           https://github.com/melodic-software/claude-code-plugins.git
       plugin-command:
-        description: >-
-          Slash command invoked when `plugins` is non-empty. Default is
-          `/review:code-review` in the org review plugin. Set empty (with
-          non-empty plugins) only to install plugins while staying on the
-          V1 prompt path.
+        description: Slash command the review runs.
         type: string
         default: /review:code-review
       claude-args:
         description: >-
-          Passed through to the Claude CLI. The universal extension point: model,
-          turn budget, allowed tools, system prompt, MCP config all ride here
-          (the standalone model / max_turns / allowed_tools action inputs are
-          deprecated upstream). A caller's value REPLACES this default outright,
-          so only overridable choices live here: the scoped `Bash(gh pr diff:*)`
-          grant that sanctions the prompt's "use `gh pr diff`" instruction — a
-          read-only diff-enumeration command, matching the minimal-grant pattern
-          the action's own security docs recommend for `gh` subcommands. The
-          inline-comment tool grant is deliberately NOT here — the compose step
-          appends it, so replacing this default cannot drop it (an explicit
-          `--disallowedTools` for that tool still wins, as it should).
+          Passed through to the Claude CLI (model, turn budget, allowed tools).
+          A caller's value replaces this default. The inline-comment tool grant
+          is appended after it, so a caller cannot drop it.
         type: string
         default: >-
           --model claude-sonnet-5 --max-turns 75
           --allowedTools "Bash(gh pr diff:*)"
-      track-progress:
-        description: >-
-          Must remain true. This lane's non-overridable prompt asserts a
-          summary comment that only exists when track-progress keeps the run
-          in tag mode (ci-workflows#343). `false` is unsupported and rejected
-          by the job. Default true; the security lane hardcodes the same
-          posture.
-        type: boolean
-        default: true
-      display-report:
-        description: >-
-          Write the Claude-authored report to the job step summary. Default off:
-          on public repos this would expose model-authored content (and is a
-          secret-leak vector). Private consumers may opt in.
-        type: boolean
-        default: false
-      allowed-bots:
-        description: >-
-          Comma-separated bot actors permitted to trigger the review (bots are
-          blocked by default). Never set '*' on a public repo. The action
-          normalizes both sides of the comparison (lowercase, trailing `[bot]`
-          stripped), so one spelling per actor is enough — unlike
-          `exclude-comments-by-actor` below, which needs both.
-        type: string
-        default: dependabot[bot],cursor[bot]
       exclude-comments-by-actor:
         description: >-
           Comma-separated actors whose comments are withheld from Claude's
-          context (prompt-injection hygiene), not a trigger gate. Both
-          Dependabot spellings are listed because the action matches the
-          bare login for some comment kinds (upstream #1514).
+          context (prompt-injection hygiene). Both Dependabot spellings are
+          listed because the action matches the bare login for some comment
+          kinds (upstream #1514).
         type: string
         default: dependabot,dependabot[bot]
-      skip-actors:
-        description: >-
-          Comma-separated actors (no spaces) for whom the job skips entirely, to
-          save runner minutes on PRs that never need review. Empty reviews all.
-          The default also bans self-triggering: Claude and the org's
-          automation bots must never trigger their own review lanes.
-        type: string
-        default: dependabot[bot],claude[bot],melodic-ai[bot],melodic-standards-sync[bot]
-      timeout-minutes:
-        description: >-
-          Job timeout. The default is sized by the retry formula
-          2 x attempt timeout + retry delay + 5 slack: two 11-minute review
-          attempts (step-level timeouts) plus the jittered backoff (~2) fit
-          with headroom, so a slow first attempt never converts this advisory
-          lane into a red job timeout.
-        type: number
-        default: 30
-      max-reviews-per-pr:
-        description: >-
-          Maximum successful reviews per PR before the lane name-stable-skips
-          further runs (caps spend on long-lived PRs). Counted via a visible
-          per-PR status comment ("Claude has reviewed this PR N times") that
-          is upserted after each successful review. Deleting the comment
-          resets the count (fail-open by design). Zero or negative disables
-          the cap and the comment: the lane neither reads nor posts it.
-          Soft cap: concurrent runs for different heads read the counter
-          before either writes it, so a burst can briefly exceed the cap by
-          the number of concurrent heads.
-        type: number
-        default: 5
-      retry-delay-seconds:
-        description: >-
-          Base delay before the single automatic retry attempt, in seconds. A
-          0-29 second random jitter is added on top so lanes retrying against
-          the same contended seat do not re-collide in lockstep.
-        type: number
-        default: 90
-      standards-ref:
-        description: >-
-          Pinned commit SHA of melodic-software/standards to mount for
-          REVIEW.md's native-reference cites (see standards/REVIEW.md's
-          "Depth" section and standards/distribution/REVIEW-CREDENTIAL.md).
-          Empty (default) skips the mount entirely, which is the required
-          value for any PUBLIC calling repo — this reusable workflow does
-          not enforce that restriction itself, so a public caller must
-          simply never set this input and never pass the two credential
-          secrets below. See distribution/REVIEW-CREDENTIAL.md in standards
-          for the full trust-boundary rationale (mounting private standards
-          content into a review agent whose output lands in public Actions
-          logs is a prompt-injection exfiltration path).
-        type: string
-        default: ""
-      pr-number:
-        description: >-
-          Pull request number for workflow_dispatch re-review
-          (ci-workflows#254). Empty on pull_request — the event payload
-          supplies number and head SHA. When github.event.pull_request is
-          absent, this input is required and the reusable resolves the live
-          head SHA (and related PR fields) via the API before the freshness
-          guard and review steps run.
-        type: string
-        default: ""
-      status-check:
-        description: >-
-          Opt-in (ci-workflows#619). When true, a second job,
-          `claude-review-status`, runs after the review and goes red, naming
-          the `failure-class` in its step summary, when `review-failed` is
-          'true'. It is green otherwise, including when no verdict was
-          computed (the review skipped, retired a superseded head, or was
-          capped). The review job stays advisory. Never add this check to
-          required status checks: it exists to be seen, not to block a merge.
-          Default false; with it off the job is skipped, not failed.
-        type: boolean
-        default: false
-    # DECLARED EVIDENCE SURFACE (ci-workflows#464, mirroring #460 on the
-    # security lane). A consumer that must decide whether a review actually
-    # happened reads these; it must not scrape this lane's job log. Log text
-    # is not a contract — the `Report review outcome` step is an inline
-    # github-script whose SOURCE is echoed into the same log, so a consumer
-    # grepping for a phrase matches the source that mentions it
-    # (claude-code-plugins#2517). These outputs come from the composite that
-    # owns the classification, so they say what happened rather than what the
-    # log happened to print.
-    #
-    # ALL THREE OUTPUTS ARE EMPTY WHEN NO VERDICT WAS COMPUTED, and a consumer
-    # must treat empty as "no verdict", never as a pass. Empty covers two
-    # shapes on this lane, not one:
-    #
-    #   - the `review` job never ran — either kill-switch, a `skip-actors`
-    #     match, a non-dependabot bot actor whose PR author is not
-    #     OWNER/MEMBER/COLLABORATOR, or a draft PR;
-    #   - the job RAN and deliberately attempted no review — the freshness
-    #     guard retired a superseded head, or `max-reviews-per-pr` capped the
-    #     run. The outcome step is gated on both, so a retired or capped run
-    #     reports nothing rather than a stale or unearned verdict.
-    #
-    # The advisory contract is unchanged for infrastructure failures: the
-    # check still concludes green on one, and the marker comment remains the
-    # PR-visible signal. A workflow_dispatch run that attempted a review and
-    # posted neither a pull-request review nor an issue comment is the
-    # exception (ci-workflows#573): the outcome step fails the job with
-    # class no-delivery, so that run does not conclude success. This surface
-    # exists so a MACHINE consumer (a caller job, merge tooling) can tell
-    # "reviewed" from "rate-limited into silence" — on 2026-08-13 every
-    # execution attempt across two consumer repositories 429'd for ~3 hours
-    # while every run concluded success, and nothing machine-readable said so
-    # at the caller seam.
     outputs:
-      review-ran:
-        description: >-
-          'true' only when the action succeeded WITH execution evidence — the
-          one shape in which a review actually happened — and, on
-          workflow_dispatch, a pull-request review or issue comment landed
-          that was not already on the PR. 'false' covers a genuine failure, a
-          workflow-validation skip, and a dispatch run that posted nothing
-          (failure-class no-delivery); use `review-failed` to tell those
-          apart. EMPTY means no verdict was computed, and it has two shapes
-          on this lane, not one: the job never ran (kill-switch, skip-actors,
-          bot-association, draft), or the job ran and attempted no review —
-          the freshness guard retired a superseded head, or max-reviews-per-pr
-          capped the run. Treat empty as "no verdict", never as a pass.
-        value: ${{ jobs.review.outputs.review-ran }}
       review-failed:
         description: >-
-          'true' on a genuine infrastructure failure, else 'false'. A
-          validation skip is NOT a failure and reports 'false' here with
-          'false' on `review-ran`. Also 'true' when a workflow_dispatch
-          review was attempted and nothing new was posted (failure-class
-          no-delivery); that case fails the job. Empty when no verdict was
-          computed.
+          'true' on an infrastructure failure, else 'false'. Empty when the
+          review job did not run.
         value: ${{ jobs.review.outputs.review-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | other on a genuine failure;
-          skipped-validation when the action skipped itself; no-delivery when
-          a workflow_dispatch review ran and posted nothing; empty on a
-          genuine success and when no verdict was computed.
+          auth | rate-limit | overloaded | other on a failure;
+          skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.review.outputs.failure-class }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        description: >-
-          Claude Code OAuth token (from `claude setup-token`). Supply as a
-          same-org organization secret (live visibility: all repositories) and
-          pass this named secret explicitly from the caller.
+        description: Claude Code OAuth token (from `claude setup-token`).
         required: true
-      STANDARDS_REVIEW_APP_ID:
-        description: >-
-          GitHub App client ID for the dedicated, read-only credential
-          scoped to standards, documented in
-          standards/distribution/REVIEW-CREDENTIAL.md. Required only when
-          standards-ref is set; unused (and must not be supplied) otherwise.
-        required: false
-      STANDARDS_REVIEW_APP_PRIVATE_KEY:
-        description: >-
-          Private key for the same App as STANDARDS_REVIEW_APP_ID. Required
-          only when standards-ref is set.
-        required: false
 
 permissions:
   contents: read
@@ -403,76 +104,23 @@ permissions:
 jobs:
   review:
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    # The two vars clauses are the fleet kill-switches: Actions variables an
-    # operator flips to stop this lane (CLAUDE_REVIEW_DISABLED) or every
-    # Claude lane at once (CLAUDE_LANES_DISABLED) without touching workflow
-    # files. An absent variable evaluates to '' — not 'true' — so the lane is
-    # enabled by default, and a repo-level variable overrides an org-level one
-    # (platform-verified), giving one repo an opt-out under an org-wide value.
-    # A kill-switched run is a name-stable job-level SKIP.
-    #
-    # Skip configured bot/automation actors (saves runner minutes). The action's
-    # own write-access gate is the security control; this is just an optimization.
-    # Comma-wrap both sides so a substring of one actor can't match another.
-    # Defense-in-depth (#443): bot actors other than dependabot[bot] require
-    # the PR author's association to be OWNER, MEMBER, or COLLABORATOR — see
-    # SECURITY MODEL above. Scoped to pull_request like the draft gate.
-    # Draft PRs are not reviewed either (the cadence is open/ready/reopen);
-    # the draft test is scoped to pull_request so other events still run.
+    timeout-minutes: 15
+    # Skips bot actors, draft PRs and fork PRs. The draft and fork tests are
+    # scoped to pull_request so a privileged trigger still reaches the tripwire.
     if: >-
-      ${{ vars.CLAUDE_LANES_DISABLED != 'true'
-          && vars.CLAUDE_REVIEW_DISABLED != 'true'
-          && !contains(format(',{0},', inputs.skip-actors), format(',{0},', github.actor))
-          && (!endsWith(github.actor, '[bot]')
-              || github.actor == 'dependabot[bot]'
-              || (github.event_name != 'pull_request'
-                  || contains(format(',{0},', 'OWNER,MEMBER,COLLABORATOR'), format(',{0},', github.event.pull_request.author_association))))
+      ${{ !endsWith(github.actor, '[bot]')
           && (github.event_name != 'pull_request'
-              || github.event.pull_request.draft == false) }}
+              || github.event.pull_request.draft == false)
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name == github.repository) }}
     permissions:
       contents: read
       pull-requests: write
       id-token: write
-    # Lifted straight from the composite that owns the classification, and
-    # forwarded to the caller by the `workflow_call.outputs` block above — see
-    # DECLARED EVIDENCE SURFACE there for what each value means and for why
-    # every one of them is empty when no verdict was computed (job skipped,
-    # superseded head, or a capped run). `review-detail` is deliberately NOT
-    # surfaced: it is a free-text projection of the SDK result shaped for a
-    # human reading a marker comment, and a consumer that branched on it would
-    # be back to parsing prose.
     outputs:
-      review-ran: ${{ steps.review-outcome.outputs.review-ran }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.review-outcome.outputs.failure-class }}
-    concurrency:
-      # Job-level (not workflow-level): a workflow-level group would cancel
-      # before the `if` above evaluates, so a skipped actor could cancel an
-      # in-progress review.
-      #
-      # Keyed per (PR, head SHA), not per PR: GitHub orders a concurrency
-      # group by when jobs start WAITING on it, not by event time, and callers
-      # gate this job behind a runner-selector job whose queue delay varies
-      # per run. Under a shared per-PR group, an older run whose selector was
-      # delayed could enter the group AFTER the newer head's review had
-      # started, cancel it, and review an obsolete head. Runs for different
-      # heads therefore never share a group; the superseded-head guard step
-      # below is what retires a stale run instead. Same-head duplicates
-      # (reopen, ready_for_review, reruns) still supersede each other — there
-      # the entry order is harmless because every member reviews identical
-      # content. workflow_dispatch has no event head SHA at concurrency
-      # evaluation time (head is resolved in a later step), so it keys the
-      # second half on pr-number — effectively per-PR cancel for dispatch
-      # re-reviews, which is the desired "latest dispatch wins" behavior.
-      # Other non-PR events degrade to a per-commit group via the fallbacks.
-      group: claude-review-${{ github.event.pull_request.number || inputs.pr-number || github.sha }}-${{ github.event.pull_request.head.sha || inputs.pr-number || github.sha }}
-      cancel-in-progress: true
     steps:
-      # Tripwire: this workflow handles secrets, so it must never run in a
-      # privileged-context trigger that also exposes untrusted fork code. We do
-      # not whitelist `pull_request` (a consumer may legitimately use
-      # workflow_dispatch / schedule); we only hard-fail the two dangerous ones.
       - name: Reject privileged triggers
         if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_run'
         run: |
@@ -481,260 +129,24 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
-      # track-progress:false drops the summary-comment artifact the
-      # non-overridable prompt still points at (#343). Reject rather than
-      # silently half-break reporting; callers that need no tracking comment
-      # are unsupported on this lane. workflow_dispatch still keeps the
-      # workflow_call input true — the action step forces track_progress off
-      # for non-pull_request events because upstream rejects it there.
-      - name: Reject unsupported track-progress=false
-        if: inputs.track-progress == false
-        run: |
-          echo "::error::claude-review does not support track-progress=false" \
-            "(ci-workflows#343). Keep the default (true), or omit the input."
-          exit 1
-
-      # Resolve PR number + head SHA for both pull_request and
-      # workflow_dispatch. Dispatch has no github.event.pull_request, so the
-      # caller passes pr-number and we fetch the live head (and head-repo)
-      # via the API before freshness / count / review steps consume them
-      # (ci-workflows#254).
-      - name: Resolve PR context
-        id: resolve-pr
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          PR_NUMBER_INPUT: ${{ inputs.pr-number }}
-        with:
-          script: |
-            const fromEvent = context.payload.pull_request;
-            let number = fromEvent?.number;
-            let headSha = fromEvent?.head?.sha ?? "";
-            let headRepo = fromEvent?.head?.repo?.full_name ?? "";
-            let draft = Boolean(fromEvent?.draft);
-
-            if (!number) {
-              const parsed = Number(process.env.PR_NUMBER_INPUT);
-              if (!Number.isInteger(parsed) || parsed <= 0) {
-                core.setFailed(
-                  "pr-number is required when github.event.pull_request is absent " +
-                    "(workflow_dispatch re-review; ci-workflows#254).",
-                );
-                return;
-              }
-              number = parsed;
-              try {
-                const { data: pr } = await github.rest.pulls.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: number,
-                });
-                headSha = pr.head.sha;
-                headRepo = pr.head.repo?.full_name ?? `${context.repo.owner}/${context.repo.repo}`;
-                draft = Boolean(pr.draft);
-                if (pr.state !== "open") {
-                  core.setFailed(`PR #${number} is ${pr.state}; refusing to review a non-open pull request.`);
-                  return;
-                }
-              } catch (error) {
-                core.setFailed(`Could not resolve PR #${number}: ${error.message}`);
-                return;
-              }
-            }
-
-            if (!/^[0-9a-f]{40}$/.test(headSha)) {
-              core.setFailed(`Resolved head SHA for PR #${number} is not a full commit SHA: "${headSha}"`);
-              return;
-            }
-
-            core.setOutput("number", String(number));
-            core.setOutput("head-sha", headSha);
-            core.setOutput("head-repo", headRepo);
-            core.setOutput("draft", draft ? "true" : "false");
-            core.info(`Resolved PR #${number} at ${headSha}${draft ? " (draft)" : ""}`);
-
-      # A stale run must retire itself, not rely on being cancelled: with the
-      # per-head concurrency key above, nothing cancels a run whose head was
-      # superseded while it sat in a queue. The composite owns the live-head
-      # check and its fail-open contract — downstream `!= 'true'` gates treat
-      # a missing output as fresh. Pinned to this repo's own merged SHA: a
-      # local ./ ref resolves against the CALLER's checkout in a reusable
-      # workflow and cannot work. Pass the resolved PR context so
-      # workflow_dispatch freshness works when the event has no pull_request.
-      - name: Check whether this head is still current
-        id: freshness
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-freshness@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
-        with:
-          pull-number: ${{ steps.resolve-pr.outputs.number }}
-          head-sha: ${{ steps.resolve-pr.outputs.head-sha }}
-
-      # Review-count cap (max-reviews-per-pr). A disabled cap (<= 0) skips the
-      # lookup, so the lane never reads or writes the comment. The counter is the visible
-      # status comment this lane upserts after each successful review — chosen
-      # over the runs API (which counts every advisory success including skips
-      # and needs an `actions: read` grant no caller makes) and over a hidden
-      # marker-only comment (which renders as an empty box and races). A
-      # missing, deleted, or unreadable comment counts as zero — fail-open by
-      # design, so deleting the comment re-enables review. Downstream steps
-      # gate on `capped != 'true'` exactly as they gate on the freshness
-      # guard, so a capped run is a name-stable skip, not a red check.
-      - name: Check the per-PR review count
-        id: review-count
-        if: steps.freshness.outputs.superseded != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          MAX_REVIEWS_PER_PR: ${{ inputs.max-reviews-per-pr }}
-          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
-        with:
-          script: |
-            const max = Number(process.env.MAX_REVIEWS_PER_PR);
-            const capEnabled = Number.isFinite(max) && max > 0;
-            const prNumber = Number(process.env.PR_NUMBER);
-            core.setOutput("capped", "false");
-            core.setOutput("count", "0");
-            if (!capEnabled || !Number.isInteger(prNumber) || prNumber <= 0) return;
-            let count = 0;
-            try {
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                per_page: 100,
-              });
-              // The marker carries the machine-readable count; the prose
-              // below it is the human signal. Author-checked so a PR author
-              // cannot spoof the counter from an ordinary comment.
-              const marked = comments.filter(
-                (comment) =>
-                  comment.user?.login === "github-actions[bot]" &&
-                  /^<!-- claude-review-count:\d+ -->/u.test(comment.body ?? ""),
-              );
-              const existing = marked.length > 0 ? marked[marked.length - 1] : undefined;
-              if (existing) {
-                count = Number(existing.body.match(/^<!-- claude-review-count:(\d+) -->/u)[1]);
-                core.setOutput("comment-id", String(existing.id));
-              }
-            } catch (error) {
-              core.warning(`Could not read the review-count comment; not capping: ${error.message}`);
-              return;
-            }
-            core.setOutput("count", String(count));
-            if (count >= max) {
-              core.notice(
-                `Skipping review: this PR already received ${count} reviews ` +
-                  `(max-reviews-per-pr=${max}). Delete the count comment to re-enable.`,
-              );
-              core.setOutput("capped", "true");
-            }
-
-      # persist-credentials stays at its default (true) until upstream
-      # claude-code-action#1236 ships: the action's setupBranch runs
-      # `git fetch origin <ref>` BEFORE configuring git auth, so
-      # persist-credentials:false makes that fetch fail and leaves an orphan
-      # tracking comment. The final strip step below scrubs the persisted token
-      # to restore zizmor `artipacked` compliance. Reversible when #1236 lands.
+      # persist-credentials stays at its default until claude-code-action#1236
+      # ships (the action fetches before configuring git auth). The last step
+      # strips the persisted token.
       - name: Check out
-        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Explicit head SHA so workflow_dispatch checks out the PR under
-          # review (dispatch otherwise lands on the workflow's ref). Same ref
-          # on pull_request keeps the workspace at the event head the
-          # freshness guard compared.
-          ref: ${{ steps.resolve-pr.outputs.head-sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
 
-      # Native-reference mount (standards/REVIEW.md's "Depth" tier). Only runs
-      # when the caller supplied standards-ref, which a public calling repo
-      # must never do (see the input's own description above).
-      - name: Generate standards-read token
-        id: standards-token
-        if: >-
-          inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ secrets.STANDARDS_REVIEW_APP_ID }}
-          private-key: ${{ secrets.STANDARDS_REVIEW_APP_PRIVATE_KEY }}
-          owner: melodic-software
-          repositories: standards
-
-      # The reviewed PR's own tree is checked out at the workspace root, so it
-      # could ship a `.standards-ref` entry (e.g. a symlink to `.`). Clear it
-      # first: without a trailing slash `rm` unlinks the symlink itself instead
-      # of following it, so the checkout below cannot be redirected to delete the
-      # main workspace. Keeps the reference mount off a PR-controlled path.
-      - name: Clear PR-supplied reference-mount path
-        if: >-
-          inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true'
-        env:
-          MOUNT_PATH: ${{ github.workspace }}/.standards-ref
-        run: rm -rf -- "$MOUNT_PATH"
-
-      # persist-credentials:false keeps the standards App token out of
-      # .standards-ref/.git/config, where the Claude step below (which mounts
-      # this directory via --add-dir over PR-controlled context) could be
-      # induced to read and exfiltrate it. Safe here — unlike the main checkout
-      # above, this read-only reference mount runs no later authenticated git
-      # commands, so it is not subject to the #1236 constraint.
-      - name: Check out standards (native-reference mount)
-        if: >-
-          inputs.standards-ref != '' && steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: melodic-software/standards
-          ref: ${{ inputs.standards-ref }}
-          token: ${{ steps.standards-token.outputs.token }}
-          path: .standards-ref
-          persist-credentials: false
-          filter: blob:none
-
-      # Composed in a plain shell step, not a GitHub Actions expression
-      # ternary, so the conditional is testable and reads like ordinary code.
+      # Appends the inline-comment grant after the caller's args, so replacing
+      # the claude-args default cannot drop it. claude-args may be multiline,
+      # hence the heredoc output form.
       - name: Compose Claude CLI arguments
         id: compose-args
-        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
-          STANDARDS_REF: ${{ inputs.standards-ref }}
-          MOUNT_PATH: ${{ github.workspace }}/.standards-ref
-          EVENT_NAME: ${{ github.event_name }}
         run: |
-          args="$BASE_ARGS"
-          if [ -n "$STANDARDS_REF" ]; then
-            args="$args --add-dir $MOUNT_PATH"
-          fi
-          # The prompt below names the delivery tool unconditionally for the
-          # active event class, so the grant has to match. On pull_request the
-          # action installs the inline-comment MCP server from this grant; on
-          # workflow_dispatch it does not (automation context has no entity
-          # PR), so grant gh comment/review instead. The grant cannot sit in
-          # the claude-args default, which a caller replaces wholesale.
-          # Repeated --allowedTools flags accumulate and dedupe.
-          #
-          # The dispatch value is quoted. parse-sdk-options.ts in the pinned
-          # action whitespace-tokenizes claude_args, and an unquoted
-          # multi-word grant shatters into entries like "Bash(gh" that match
-          # no tool (ci-workflows#573). Inner quotes are escaped because this
-          # assignment is itself double-quoted.
-          #
-          # Read, Grep, and Glob stay off on this path. The checkout above
-          # must keep persist-credentials at its default until
-          # claude-code-action#1236, so the job token is in .git/config while
-          # the model runs. A file-read tool plus the gh comment/review grant
-          # would let a prompt-injected checkout read that header and post it.
-          # The standards mount already uses persist-credentials: false for
-          # the same reason. File tools can be added here once the main
-          # checkout can stop persisting credentials before the model runs.
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            args="$args --allowedTools mcp__github_inline_comment__create_inline_comment"
-          else
-            args="$args --allowedTools \"Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr diff:*)\""
-          fi
-          # claude-args may be multiline (callers can pass YAML `|`), so emit it
-          # with the heredoc output form and a random delimiter — a single-line
-          # `args=$args` write corrupts $GITHUB_OUTPUT on any newline.
+          args="$BASE_ARGS --allowedTools mcp__github_inline_comment__create_inline_comment"
           delimiter="gha_${RANDOM}${RANDOM}_EOF"
           {
             echo "args<<$delimiter"
@@ -742,692 +154,60 @@ jobs:
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
-      # Reporting mechanics differ by event: pull_request gets the inline
-      # MCP tool; workflow_dispatch must use gh (ci-workflows#254). Composed
-      # into GITHUB_ENV so both review attempts share identical `with:`
-      # blocks (the retry-identity contract).
-      - name: Compose the reporting instruction
-        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          {
-            echo "REPORT_MECHANICS<<REPORT_MECHANICS_EOF"
-            if [ "$EVENT_NAME" = "pull_request" ]; then
-              printf '%s\n' \
-                "Report findings as a pull request review: call" \
-                "mcp__github_inline_comment__create_inline_comment to anchor each" \
-                "finding to the changed line it is about. That tool is granted to" \
-                "this lane, and a line-anchored comment is what puts a finding next" \
-                "to the code it concerns. Keep your summary comment for the" \
-                "overview."
-            else
-              printf '%s\n' \
-                "This run has no pull_request event payload (workflow_dispatch" \
-                "re-review), so the inline-comment MCP server is not installed." \
-                "Report findings with the granted gh tools:" \
-                "" \
-                "  gh pr review <PR NUMBER> --comment --body \"<summary>\"" \
-                "  gh pr comment <PR NUMBER> --body \"<line-anchored notes>\"" \
-                "" \
-                "Prefer \`gh pr review\` for the overview and \`gh pr comment\` for" \
-                "any follow-up detail. The \`gh\` CLI is already authenticated."
-            fi
-            echo "REPORT_MECHANICS_EOF"
-          } >> "$GITHUB_ENV"
-
-      # Dual-path review body (ci-workflows#258): plugin command when
-      # plugins + plugin-command are configured; otherwise the V1 prompt
-      # body. Written to GITHUB_ENV so both review attempts share one
-      # body (retry-identity contract), matching REPORT_MECHANICS.
-      - name: Compose the review body
-        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
-        env:
-          PLUGINS: ${{ inputs.plugins }}
-          PLUGIN_COMMAND: ${{ inputs.plugin-command }}
-          PROMPT: ${{ inputs.prompt }}
-        run: |
-          set -euo pipefail
-          plugins_trim="$(printf '%s' "$PLUGINS" | tr -d '[:space:]')"
-          cmd_trim="$(printf '%s' "$PLUGIN_COMMAND" | tr -d '[:space:]')"
-          # Random delimiter — caller-controlled PROMPT can contain a fixed
-          # REVIEW_BODY_EOF line and would otherwise truncate/corrupt GITHUB_ENV.
-          delimiter="gha_${RANDOM}${RANDOM}_EOF"
-          {
-            echo "REVIEW_BODY<<$delimiter"
-            if [ -n "$plugins_trim" ] && [ -n "$cmd_trim" ]; then
-              printf '%s\n' \
-                "Invoke ${PLUGIN_COMMAND} now and follow its instructions exactly for this pull request." \
-                "The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command." \
-                "Do not substitute a different review procedure."
-            else
-              printf '%s\n' "$PROMPT"
-            fi
-            echo "$delimiter"
-          } >> "$GITHUB_ENV"
-
-      # Ids only, taken before the model can post. A later diff against this
-      # baseline is what "landed on this run" means: a PR that already has
-      # comments must not look delivered when this dispatch posted nothing.
-      # continue-on-error so a listing failure does not skip the review via
-      # the implicit success() of later steps; the collect step below fails
-      # closed if the baseline never landed. pull-requests: write already
-      # covers these two reads (list reviews, list issue comments on a PR).
-      # No new permission. Bodies are not requested.
-      - name: Snapshot dispatch delivery ids
-        id: delivery-baseline
-        if: >-
-          github.event_name == 'workflow_dispatch' &&
-          steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true'
-        continue-on-error: true
-        env:
-          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
-          GH_PROMPT_DISABLED: "1"
-        run: |
-          set -euo pipefail
-          if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            :
-          else
-            echo "::error::Dispatch delivery evidence needs a positive integer pull request number."
-            exit 1
-          fi
-          if [[ "$GITHUB_REPOSITORY" =~ ^[^[:space:]/]+/[^[:space:]/]+$ ]]; then
-            :
-          else
-            echo "::error::GITHUB_REPOSITORY is not an owner/name pair."
-            exit 1
-          fi
-          list_ids() {
-            local endpoint="$1"
-            local dest="$2"
-            gh api --paginate "$endpoint" --jq '.[] | .id' >"$dest"
-            if [[ -s "$dest" ]] && grep -qvE '^[1-9][0-9]*$' "$dest"; then
-              echo "::error::A GitHub id list was not numeric; delivery evidence was discarded."
-              exit 1
-            fi
-          }
-          review_ids="${RUNNER_TEMP}/dispatch-baseline-reviews.txt"
-          comment_ids="${RUNNER_TEMP}/dispatch-baseline-comments.txt"
-          list_ids "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" "$review_ids"
-          list_ids "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" "$comment_ids"
-          {
-            echo "review_ids=${review_ids}"
-            echo "comment_ids=${comment_ids}"
-          } >>"$GITHUB_OUTPUT"
-
+      # continue-on-error keeps an infrastructure failure off this job so the
+      # outcome step can classify it; the status job carries the red.
       - name: Claude review
         id: claude-review
-        if: steps.freshness.outputs.superseded != 'true' && steps.review-count.outputs.capped != 'true'
-        # claude-code-action exits non-zero only on infrastructure errors; review
-        # findings go to PR comments, not the exit code. continue-on-error keeps
-        # an OIDC/usage-limit/SDK blip from showing as a red check.
-        #
-        # The step timeout bounds each attempt so the job budget (see the
-        # timeout-minutes input's retry formula) always leaves room for the
-        # retry below.
         continue-on-error: true
         timeout-minutes: 11
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # track_progress is pull_request-only upstream; forcing it on
-          # workflow_dispatch throws. Keep the workflow_call input true (#343)
-          # and narrow the action input to pull_request events.
-          track_progress: ${{ github.event_name == 'pull_request' && inputs.track-progress }}
-          display_report: ${{ inputs.display-report }}
-          allowed_bots: ${{ inputs.allowed-bots }}
+          track_progress: true
+          display_report: false
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           claude_args: ${{ steps.compose-args.outputs.args }}
-          # github-context expressions must appear directly in the step (a value
-          # carried in via inputs.prompt is NOT re-evaluated), so the structural
-          # header + reporting mechanics live here and wrap the consumer's body.
-          #
-          # PR number / head SHA come from resolve-pr so workflow_dispatch
-          # re-review (no event.pull_request) still names the right target.
-          # REPORT_MECHANICS is event-class-specific (inline MCP vs gh) and is
-          # identical across attempt + retry via GITHUB_ENV.
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ steps.resolve-pr.outputs.number }}
-            HEAD SHA: ${{ steps.resolve-pr.outputs.head-sha }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
 
-            ${{ env.REVIEW_BODY }}
+            Invoke ${{ inputs.plugin-command }} now and follow its instructions exactly for this pull request.
+            The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.
+            Do not substitute a different review procedure.
 
-            ${{ env.REPORT_MECHANICS }}
+            Report findings as a pull request review: call
+            mcp__github_inline_comment__create_inline_comment to anchor each
+            finding to the changed line it is about. Keep your summary comment
+            for the overview.
 
-            A finding no changed line can carry — cross-file, or about the PR
-            as a whole — goes in the summary instead; link its code
+            A finding no changed line can carry (cross-file, or about the PR
+            as a whole) goes in the summary instead; link its code
             locations to the commit blob (not the PR) with a line-numbered
             permalink:
-            https://github.com/${{ github.repository }}/blob/${{ steps.resolve-pr.outputs.head-sha }}/<path>#L<line>
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
-      # ONE bounded, gated retry: this lane is advisory, but a zero-turn blip
-      # (usage-limit spike, OIDC failure, SDK instant-fail) otherwise silently
-      # costs the PR its review until someone notices and re-runs.
-      #
-      # The gate retries ONLY when the execution file shows ZERO assistant
-      # turns of real work and the failure is not auth-class. Zero real turns
-      # is the artifact-safety condition: the action posts nothing
-      # review-shaped before its first assistant turn, so attempt 2 cannot
-      # duplicate inline comments already on the PR. The auth exclusion skips
-      # the one class no retry can clear — the credential needs an operator. A
-      # mid-review failure (assistant turns already spent, comments possibly
-      # posted) is deliberately NOT retried: the duplicate-comment risk
-      # outweighs the second chance, and the re-run path remains. "Real work"
-      # is load-bearing and not the same as "an assistant entry exists" — see
-      # the gate script for why an API error manufactures an assistant turn
-      # that posted nothing.
-      #
-      # Deliberately ONE retry, not a loop: Actions cannot loop a `uses:`
-      # step, so the retry is a verbatim copy of the step above, and each copy
-      # is a place where the two can silently diverge. The gate honors the
-      # freshness guard and the review-count cap exactly as the first attempt
-      # does, so a retired or capped run never spends a retry.
-      #
-      # The auth predicate covers classify.cjs's auth class in the
-      # claude-lane-outcome composite — the authoritative sibling for the
-      # status-to-class mapping. The composite is fetched at its pinned SHA and
-      # the caller's checkout does not contain this repo's scripts, so
-      # classify.cjs cannot be require()d at runtime and the predicate is
-      # inlined here instead; keep the three auth statuses and three auth error
-      # types identical in both. The gate is deliberately a SUPERSET of its
-      # sibling on inputs, not on classes: classify.cjs reads only the last
-      # entry because its job is to name the class of a completed run, while the
-      # gate must also rule out an auth failure recorded on a synthetic turn
-      # when no result entry was written. Do not widen classify.cjs to match —
-      # that changes the fail-closed mapping.
-      - name: Decide whether to retry the review
-        id: retry-gate
-        if: >-
-          steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true' &&
-          steps.claude-review.outcome == 'failure'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
-          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            core.setOutput("retry", "false");
-            let entries;
-            try {
-              const parsed = JSON.parse(
-                fs.readFileSync(process.env.EXECUTION_FILE, "utf8"),
-              );
-              if (Array.isArray(parsed)) entries = parsed;
-            } catch {
-              // Falls through to the evidence guard below.
-            }
-            // Retry only on EVIDENCE of zero real turns. A missing or
-            // unparsable execution file proves nothing: a hard kill (step
-            // timeout, OOM) can lose the file after turns were already spent,
-            // and retrying then risks exactly the duplicate comment this gate
-            // exists to prevent.
-            if (entries === undefined) {
-              core.notice(
-                "Not retrying: no parseable execution file, so zero assistant turns cannot be proven.",
-              );
-              return;
-            }
-            // An API error does not end the stream quietly. Claude Code emits a
-            // SYNTHETIC assistant turn carrying the error as ordinary text, so a
-            // 429 that killed the run before any real work still records a
-            // `type: "assistant"` entry. Counting those turns is what made this
-            // gate unreachable for the dominant failure class. The
-            // artifact-safety condition is about work that could have POSTED
-            // something, so synthetic error turns do not count as work.
-            //
-            // `error` is carried by the SDK's published message union;
-            // `isApiErrorMessage`, `apiErrorStatus`, and the `<synthetic>` model
-            // sentinel are observed wire fields the types do not declare.
-            // The three markers are OR'd, so ALL THREE would have to be
-            // renamed before a synthetic turn counted as real work again —
-            // renaming one is absorbed by the other two. Both drift shapes are
-            // safe, for different reasons: under partial drift the turn stays
-            // discounted, but `realTurns` is still 0, so nothing was posted and
-            // nothing can be duplicated; under total drift the turn counts as
-            // real and the gate declines outright. Neither shape produces
-            // duplicate comments.
-            const isSyntheticErrorTurn = (entry) =>
-              typeof entry?.error === "string" ||
-              entry?.isApiErrorMessage === true ||
-              entry?.message?.model === "<synthetic>";
-            const assistantTurns = entries.filter(
-              (entry) => entry?.type === "assistant",
-            );
-            const realTurns = assistantTurns.filter(
-              (entry) => !isSyntheticErrorTurn(entry),
-            ).length;
-            if (realTurns > 0) {
-              core.notice(
-                `Not retrying: attempt 1 recorded ${realTurns} assistant turn(s) of real work, ` +
-                  "so it may already have posted comments a second attempt would duplicate.",
-              );
-              return;
-            }
-            // Auth is read from the result entry AND from every synthetic error
-            // turn. The result entry is the primary source, but the action also
-            // writes the file from a path that produces NO result entry, and
-            // discounting synthetic turns above would otherwise let an
-            // auth-class failure through that hole — the one class this gate
-            // must never retry.
-            const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
-            const statuses = [
-              last?.api_error_status,
-              ...assistantTurns.map((entry) => entry?.apiErrorStatus),
-            ].filter((status) => typeof status === "number");
-            const errorText = (Array.isArray(last?.errors) ? last.errors : [])
-              .map((error) => (typeof error === "string" ? error : JSON.stringify(error)))
-              .join("\n");
-            // A retry needs a PROVEN non-auth class, so an unreadable class is a
-            // refusal rather than a default. This is not belt-and-braces: when
-            // no result entry was written, `apiErrorStatus` on the synthetic
-            // turn is the ONLY auth signal there is, and it is also one of the
-            // markers that made the turn synthetic. A payload keeping `error`
-            // or the `<synthetic>` sentinel but dropping the status would
-            // otherwise discount the turn AND blind the auth check in one move,
-            // and retry a credential death. An empty array lands here too: it
-            // proves zero turns but nothing about the class, and the gate
-            // requires both.
-            if (statuses.length === 0 && !Array.isArray(last?.errors)) {
-              core.notice(
-                "Not retrying: no failure class could be read, so a non-auth class cannot be proven.",
-              );
-              return;
-            }
-            const auth =
-              statuses.some(
-                (status) => status === 401 || status === 402 || status === 403,
-              ) ||
-              errorText.includes('"type":"authentication_error"') ||
-              errorText.includes('"type":"billing_error"') ||
-              errorText.includes('"type":"permission_error"');
-            if (auth) {
-              core.notice(
-                "Not retrying: auth-class failure — the credential needs an operator, and a retry cannot clear it.",
-              );
-              return;
-            }
-            // track_progress posts its tracking comment BEFORE the first
-            // assistant turn, so a zero-turn failure strands an orphan the
-            // retry will not adopt. Best-effort delete, identified by author
-            // + this run's URL. The tracking comment is authored by
-            // claude[bot] (the App identity, verified against live PRs);
-            // github-actions[bot] is accepted too in case upstream ever
-            // posts it with the workflow token. This run has posted nothing
-            // else yet, so the run-URL conjunct scopes deletion safely.
-            // Fork PRs run with a read-only token and must never fail the
-            // gate.
-            const trackingAuthors = new Set(["claude[bot]", "github-actions[bot]"]);
-            const prNumber = Number(process.env.PR_NUMBER);
-            if (Number.isInteger(prNumber) && prNumber > 0) {
-              try {
-                const comments = await github.paginate(github.rest.issues.listComments, {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  per_page: 100,
-                });
-                for (const comment of comments) {
-                  if (
-                    trackingAuthors.has(comment.user?.login ?? "") &&
-                    (comment.body ?? "").includes(`/actions/runs/${context.runId}`)
-                  ) {
-                    await github.rest.issues.deleteComment({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      comment_id: comment.id,
-                    });
-                    core.info(`Deleted attempt 1's orphan tracking comment (id ${comment.id}).`);
-                  }
-                }
-              } catch (error) {
-                core.warning(`Could not delete attempt 1's tracking comment: ${error.message}`);
-              }
-            }
-            core.setOutput("retry", "true");
-
-      # Jittered so parallel lanes retrying against the same contended seat do
-      # not re-collide in lockstep; the base delay rides the
-      # retry-delay-seconds input.
-      - name: Back off before the review retry
-        if: steps.retry-gate.outputs.retry == 'true'
-        env:
-          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
-        run: sleep "$((RETRY_DELAY_SECONDS + RANDOM % 30))"
-
-      - name: Claude review (retry)
-        id: claude-review-retry
-        if: steps.retry-gate.outputs.retry == 'true'
-        # Same rationale as the first attempt: an infra failure stays off the
-        # check, and the same step timeout keeps the retry inside the job
-        # budget.
-        continue-on-error: true
-        timeout-minutes: 11
-        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # track_progress is pull_request-only upstream; forcing it on
-          # workflow_dispatch throws. Keep the workflow_call input true (#343)
-          # and narrow the action input to pull_request events.
-          track_progress: ${{ github.event_name == 'pull_request' && inputs.track-progress }}
-          display_report: ${{ inputs.display-report }}
-          allowed_bots: ${{ inputs.allowed-bots }}
-          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
-          plugins: ${{ inputs.plugins }}
-          plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
-          claude_args: ${{ steps.compose-args.outputs.args }}
-          # github-context expressions must appear directly in the step (a value
-          # carried in via inputs.prompt is NOT re-evaluated), so the structural
-          # header + reporting mechanics live here and wrap the consumer's body.
-          #
-          # PR number / head SHA come from resolve-pr so workflow_dispatch
-          # re-review (no event.pull_request) still names the right target.
-          # REPORT_MECHANICS is event-class-specific (inline MCP vs gh) and is
-          # identical across attempt + retry via GITHUB_ENV.
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ steps.resolve-pr.outputs.number }}
-            HEAD SHA: ${{ steps.resolve-pr.outputs.head-sha }}
-
-            ${{ env.REVIEW_BODY }}
-
-            ${{ env.REPORT_MECHANICS }}
-
-            A finding no changed line can carry — cross-file, or about the PR
-            as a whole — goes in the summary instead; link its code
-            locations to the commit blob (not the PR) with a line-numbered
-            permalink:
-            https://github.com/${{ github.repository }}/blob/${{ steps.resolve-pr.outputs.head-sha }}/<path>#L<line>
-
-      # Collapse the two attempts into the one pair of facts the outcome step
-      # needs. Reading the retry's fields directly would be wrong: when it is
-      # skipped its outcome is the literal `skipped` and its execution_file is
-      # empty, so the first attempt's result has to be the fallback.
-      - name: Resolve the effective review attempt
-        id: attempt
-        # !cancelled(), not always(): cancellation is this lane's retirement
-        # mechanism (cancel-in-progress on same-head duplicates), and a
-        # retired run must not go on to report an outcome or touch the newer
-        # run's PR comment state.
-        if: >-
-          !cancelled() && steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true'
-        env:
-          FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
-          FIRST_FILE: ${{ steps.claude-review.outputs.execution_file }}
-          RETRY_OUTCOME: ${{ steps.claude-review-retry.outcome }}
-          RETRY_FILE: ${{ steps.claude-review-retry.outputs.execution_file }}
-        run: |
-          if [ "$RETRY_OUTCOME" = "skipped" ] || [ -z "$RETRY_OUTCOME" ]; then
-            outcome="$FIRST_OUTCOME"
-            execution_file="$FIRST_FILE"
-          else
-            echo "First attempt failed; reporting the retry's result instead."
-            outcome="$RETRY_OUTCOME"
-            execution_file="$RETRY_FILE"
-          fi
-          {
-            echo "outcome=$outcome"
-            echo "execution_file=$execution_file"
-          } >>"$GITHUB_OUTPUT"
-
-      # Same attempt gate as review_ran: only a dispatch whose action
-      # succeeded is asked to prove a post. Superseded, cancelled, and
-      # capped runs skip this step. The packer writes ids and nothing else;
-      # dispatch-evidence.cjs makes the pass/fail decision offline.
-      - name: Collect dispatch delivery evidence
-        id: collect-delivery
-        if: >-
-          github.event_name == 'workflow_dispatch' &&
-          !cancelled() &&
-          steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true' &&
-          steps.attempt.outputs.outcome == 'success'
-        env:
-          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
-          BASELINE_REVIEW_IDS: ${{ steps.delivery-baseline.outputs.review_ids }}
-          BASELINE_COMMENT_IDS: ${{ steps.delivery-baseline.outputs.comment_ids }}
-          GH_PROMPT_DISABLED: "1"
-        run: |
-          set -euo pipefail
-          if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            :
-          else
-            echo "::error::Dispatch delivery evidence needs a positive integer pull request number."
-            exit 1
-          fi
-          if [[ "$GITHUB_REPOSITORY" =~ ^[^[:space:]/]+/[^[:space:]/]+$ ]]; then
-            :
-          else
-            echo "::error::GITHUB_REPOSITORY is not an owner/name pair."
-            exit 1
-          fi
-          if [[ -z "${BASELINE_REVIEW_IDS:-}" || -z "${BASELINE_COMMENT_IDS:-}" ]]; then
-            echo "::error::Dispatch delivery baseline is missing; refusing to treat the run as delivered."
-            exit 1
-          fi
-          if [[ ! -f "$BASELINE_REVIEW_IDS" || ! -f "$BASELINE_COMMENT_IDS" ]]; then
-            echo "::error::Dispatch delivery baseline is missing; refusing to treat the run as delivered."
-            exit 1
-          fi
-          list_ids() {
-            local endpoint="$1"
-            local dest="$2"
-            gh api --paginate "$endpoint" --jq '.[] | .id' >"$dest"
-            if [[ -s "$dest" ]] && grep -qvE '^[1-9][0-9]*$' "$dest"; then
-              echo "::error::A GitHub id list was not numeric; delivery evidence was discarded."
-              exit 1
-            fi
-          }
-          review_ids="${RUNNER_TEMP}/dispatch-current-reviews.txt"
-          comment_ids="${RUNNER_TEMP}/dispatch-current-comments.txt"
-          evidence_file="${RUNNER_TEMP}/dispatch-delivery-evidence.json"
-          list_ids "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" "$review_ids"
-          list_ids "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" "$comment_ids"
-          REVIEW_IDS="$review_ids" \
-            COMMENT_IDS="$comment_ids" \
-            BASELINE_REVIEW_IDS="$BASELINE_REVIEW_IDS" \
-            BASELINE_COMMENT_IDS="$BASELINE_COMMENT_IDS" \
-            EVIDENCE_FILE="$evidence_file" \
-            node - <<'DISPATCH_EVIDENCE_NODE'
-          const fs = require("node:fs");
-
-          function ids(file) {
-            const text = fs.readFileSync(file, "utf8");
-            const items = [];
-            for (const line of text.split("\n")) {
-              const trimmed = line.trim();
-              if (trimmed === "") continue;
-              if (!/^[1-9][0-9]*$/u.test(trimmed)) {
-                process.stderr.write("non-numeric delivery id\n");
-                process.exit(1);
-              }
-              items.push({ id: Number(trimmed) });
-            }
-            return items;
-          }
-
-          const evidence = {
-            reviews: ids(process.env.REVIEW_IDS),
-            comments: ids(process.env.COMMENT_IDS),
-            baseline: {
-              reviews: ids(process.env.BASELINE_REVIEW_IDS),
-              comments: ids(process.env.BASELINE_COMMENT_IDS),
-            },
-          };
-          fs.writeFileSync(process.env.EVIDENCE_FILE, JSON.stringify(evidence));
-          DISPATCH_EVIDENCE_NODE
-          {
-            echo "file=${evidence_file}"
-          } >>"$GITHUB_OUTPUT"
-
-      # Also gated on the guard and the review-count cap: a superseded or
-      # capped run has no outcome to report, and skipping this step leaves
-      # review-failed empty so both marker-comment steps below skip too — a
-      # retired run must not touch the newer run's PR comment state, and a
-      # capped run must not post an infra-failure warning for a review that
-      # was deliberately not attempted. The composite owns the classification
-      # (classify.cjs —
-      # the sole reader of the execution file's free-text fields) and the
-      # machine-readable `class=<token>` annotation. On workflow_dispatch it
-      # also owns the delivery decision (dispatch-evidence.cjs).
       - name: Report review outcome
         id: review-outcome
-        if: >-
-          !cancelled() && steps.freshness.outputs.superseded != 'true' &&
-          steps.review-count.outputs.capped != 'true'
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
-          outcome: ${{ steps.attempt.outputs.outcome }}
-          execution-file: ${{ steps.attempt.outputs.execution_file }}
+          outcome: ${{ steps.claude-review.outcome }}
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
           lane: Claude review
-          event-name: ${{ github.event_name }}
-          delivery-evidence: ${{ steps.collect-delivery.outputs.file }}
 
-      # Runs only on a genuine infra failure (never on a clean review). The
-      # composite owns the ID-safe marker lifecycle, the fork guard, and the
-      # no-PR no-op — clobbering an unrelated bot comment is the failure mode
-      # this whole change exists to fix. body-copy is explicit because the
-      # default copy's re-run guidance is incomplete for this lane, and
-      # whether a push re-triggers it is the CALLER's trigger choice — the
-      # canonical caller keeps `synchronize`, but a caller may drop it — so
-      # the copy states that condition instead of asserting either way
-      # (ci-workflows#363 disproved the old unconditional "a push does not
-      # re-trigger" claim against a `synchronize`-wired caller). The
-      # continuation line carries its own `> ` blockquote prefix (the
-      # composite prefixes only the first line).
-      # no-delivery is a failed check, not this marker. The marker copy says
-      # the failure is infrastructure, which a dispatch that simply posted
-      # nothing is not.
-      - name: Comment on genuine review failure
-        if: >-
-          !cancelled() && steps.review-outcome.outputs.review-failed == 'true' &&
-          steps.review-outcome.outputs.failure-class != 'no-delivery'
-        # Reporting an outage must never become one: this step only annotates
-        # a PR, and a rejected API call must not turn the infra-failure path
-        # red (see the composite's description).
-        continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
-        with:
-          marker: "<!-- claude-review-infra-status -->"
-          mode: post-failure
-          pull-number: ${{ steps.resolve-pr.outputs.number }}
-          failure-class: ${{ steps.review-outcome.outputs.failure-class }}
-          review-detail: ${{ steps.review-outcome.outputs.review-detail }}
-          body-copy: |-
-            Re-run the job, or workflow_dispatch this workflow with the PR number, to retry the review. A new push re-triggers this lane only if the caller's `pull_request` triggers include `synchronize` (the canonical caller does).
-            > An automatic retry may already have run — it is skipped when a partial review could duplicate comments, or when the failure class needs an operator (`auth`).
-
-      # Symmetric counterpart to the failure step above: a transient infra
-      # failure (e.g. an OIDC blip) can leave the marker comment behind on the
-      # PR. Once a retry (rerun or new push) succeeds, clear that stale
-      # warning so it is not mistaken for a still-open problem. Gated on
-      # review-ran, not review-failed == 'false': a validation skip is also
-      # "not failed", but it reviewed nothing, and letting it clear the
-      # warning would erase the one PR-visible signal that review has not
-      # been happening.
-      - name: Clear stale failure comment after successful review
-        if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
-        # Tidying a stale comment is housekeeping, and a rejected API call
-        # during it must not turn a successful review red.
-        continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-marker-comment@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
-        with:
-          marker: "<!-- claude-review-infra-status -->"
-          mode: clear-on-success
-          pull-number: ${{ steps.resolve-pr.outputs.number }}
-
-      # The visible counter the review-count gate reads, posted only while the
-      # cap is enabled (max-reviews-per-pr > 0). Upserted only after a
-      # review that actually RAN (review-ran == 'true' implies the outcome
-      # step ran, so the run was neither superseded nor capped), so failed
-      # runs, validation skips, and skipped runs never inflate the count: the
-      # comment is the human "was this reviewed" signal and it charges the
-      # max-reviews-per-pr budget, so counting a run that reviewed nothing
-      # both misinforms the reader and burns allowance on nothing.
-      - name: Update the review-count status comment
-        if: "!cancelled() && steps.review-outcome.outputs.review-ran == 'true'"
-        # Housekeeping: a rejected API call must not redden a successful
-        # advisory review.
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          PRIOR_COUNT: ${{ steps.review-count.outputs.count }}
-          PRIOR_COMMENT_ID: ${{ steps.review-count.outputs.comment-id }}
-          MAX_REVIEWS_PER_PR: ${{ inputs.max-reviews-per-pr }}
-          PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
-          HEAD_REPO: ${{ steps.resolve-pr.outputs.head-repo }}
-        with:
-          script: |
-            const max = Number(process.env.MAX_REVIEWS_PER_PR);
-            if (!(Number.isFinite(max) && max > 0)) {
-              core.info("max-reviews-per-pr is disabled; posting no count comment.");
-              return;
-            }
-            const prNumber = Number(process.env.PR_NUMBER);
-            if (!Number.isInteger(prNumber) || prNumber <= 0) {
-              core.info("No pull request in this event; nothing to count.");
-              return;
-            }
-            const headRepo = process.env.HEAD_REPO ?? "";
-            if (
-              headRepo &&
-              headRepo !== `${context.repo.owner}/${context.repo.repo}`
-            ) {
-              core.info("Fork-triggered run has a read-only token; skipping the count update.");
-              return;
-            }
-            const count = (Number(process.env.PRIOR_COUNT) || 0) + 1;
-            const body =
-              `<!-- claude-review-count:${count} -->\n` +
-              `Claude has reviewed this PR ${count} time${count === 1 ? "" : "s"}. ` +
-              `The lane skips further automatic reviews after ${max}; deleting this comment resets the count.`;
-            const commentId = Number(process.env.PRIOR_COMMENT_ID);
-            try {
-              if (Number.isInteger(commentId) && commentId > 0) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: commentId,
-                  body,
-                });
-              } else {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  body,
-                });
-              }
-            } catch (error) {
-              // A comment deleted mid-run lands here; the next successful run
-              // recreates it from zero — fail-open, matching the gate.
-              core.warning(`Could not update the review-count comment: ${error.message}`);
-            }
-
-      # zizmor `artipacked` mitigation — scrub the GITHUB_TOKEN that checkout
-      # persisted into .git/config (forced on by #1236, above). Drop this once
-      # the checkout step can use persist-credentials:false again.
+      # zizmor `artipacked` mitigation: scrub the token checkout persisted.
       - name: Strip persisted git credentials
         if: always()
         run: git config --unset-all http.https://github.com/.extraheader || true
 
-  # Opt-in failure signal (ci-workflows#619, input `status-check`). The review
-  # job concludes green on an infrastructure failure by design, so a failed
-  # review is easy to miss in the check list. This job reads the declared
-  # outputs, never the log, and turns its own separately named check red when
-  # `review-failed` is 'true'. `always()` so it reports even when the review
-  # job failed or was skipped; empty outputs mean no verdict and report green.
-  # The outputs reach the script through `env:`, never inline expressions.
+  # Reads the review job's outputs, never its log, and goes red when the review
+  # failed. Empty outputs (the review job skipped) report green. The outputs
+  # reach the script through env, never inline expressions.
   claude-review-status:
     needs: review
-    if: ${{ always() && inputs.status-check }}
+    if: always()
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions: {}
@@ -1440,7 +220,7 @@ jobs:
         run: |
           if [ "$REVIEW_FAILED" != "true" ]; then
             if [ -z "$REVIEW_FAILED" ]; then
-              echo "$LANE: no verdict (not run, superseded head, or capped)." >> "$GITHUB_STEP_SUMMARY"
+              echo "$LANE: no verdict (the review did not run)." >> "$GITHUB_STEP_SUMMARY"
             else
               echo "$LANE: no failure reported." >> "$GITHUB_STEP_SUMMARY"
             fi
@@ -1450,7 +230,6 @@ jobs:
             auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
             rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
-            no-delivery) why="the review ran but posted nothing to the pull request" ;;
             *) why="an unclassified failure; read the review job log" ;;
           esac
           {
