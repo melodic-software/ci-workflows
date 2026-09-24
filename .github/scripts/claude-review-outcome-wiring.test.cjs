@@ -157,7 +157,9 @@ async function runCountStep(stepName, env) {
   const lines = source
     .slice(source.indexOf("script: |\n") + "script: |\n".length)
     .split("\n");
-  const end = lines.findIndex((line) => line !== "" && !line.startsWith(" ".repeat(12)));
+  const end = lines.findIndex(
+    (line) => line !== "" && !line.startsWith(" ".repeat(12)),
+  );
   const script = lines
     .slice(0, end === -1 ? undefined : end)
     .map((line) => line.slice(12))
@@ -190,7 +192,9 @@ async function runCountStep(stepName, env) {
     warning: () => {},
   };
   const set = { PR_NUMBER: "42", ...env };
-  const previous = Object.fromEntries(Object.keys(set).map((key) => [key, process.env[key]]));
+  const previous = Object.fromEntries(
+    Object.keys(set).map((key) => [key, process.env[key]]),
+  );
   Object.assign(process.env, set);
   try {
     await new AsyncFunction("core", "github", "context", script)(core, github, {
