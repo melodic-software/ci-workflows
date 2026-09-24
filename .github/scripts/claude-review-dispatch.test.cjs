@@ -53,12 +53,13 @@ function stepSource(workflow, stepName) {
 test("canonical caller exposes workflow_dispatch with pr-number", () => {
   const caller = parseWorkflow(callerSource);
   assert.ok(caller.on.pull_request, "pull_request trigger must remain");
+  // Every push is reviewed, including the one that resolves a merge conflict.
   assert.deepEqual(caller.on.pull_request.types, [
     "opened",
+    "synchronize",
     "ready_for_review",
     "reopened",
   ]);
-  assert.equal(caller.on.pull_request.types.includes("synchronize"), false);
   assert.ok(caller.on.workflow_dispatch, "workflow_dispatch entry required");
   assert.equal(caller.on.workflow_dispatch.inputs["pr-number"].required, true);
   assert.equal(caller.on.workflow_dispatch.inputs["pr-number"].type, "string");

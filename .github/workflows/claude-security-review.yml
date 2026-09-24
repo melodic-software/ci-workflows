@@ -443,6 +443,18 @@ on:
           and review steps run. Prefer this over privileged triggers.
         type: string
         default: ""
+      status-check:
+        description: >-
+          Opt-in (ci-workflows#619, matching claude-review). When true, a
+          second job, `claude-security-review-status`, runs after the review
+          and goes red, naming the `failure-class` in its step summary, when
+          `review-failed` is 'true'. It is green otherwise, including when no
+          verdict was computed (out of scope, skipped, or a superseded head).
+          The review job keeps its own conclusion. Never add this check to
+          required status checks: it exists to be seen, not to block a merge.
+          Default false; with it off the job is skipped, not failed.
+        type: boolean
+        default: false
     # DECLARED EVIDENCE SURFACE. A consumer that must decide whether a review
     # actually happened reads these; it must not scrape this lane's job log.
     # Log text is not a contract — the `Report review outcome` step is an
@@ -1694,3 +1706,44 @@ jobs:
       - name: Strip persisted git credentials
         if: always()
         run: git config --unset-all http.https://github.com/.extraheader || true
+
+  # Opt-in failure signal (ci-workflows#619, input `status-check`), the same
+  # job as claude-review.yml's `claude-review-status`: it reads the declared
+  # outputs, never the log, and turns its own separately named check red when
+  # `review-failed` is 'true'. `always()` so it reports even when the review
+  # job failed or was skipped; empty outputs mean no verdict and report green.
+  # The outputs reach the script through `env:`, never inline expressions.
+  claude-security-review-status:
+    needs: security-review
+    if: ${{ always() && inputs.status-check }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Report the review outcome
+        env:
+          LANE: claude-security-review
+          REVIEW_FAILED: ${{ needs.security-review.outputs.review-failed }}
+          FAILURE_CLASS: ${{ needs.security-review.outputs.failure-class }}
+        run: |
+          if [ "$REVIEW_FAILED" != "true" ]; then
+            if [ -z "$REVIEW_FAILED" ]; then
+              echo "$LANE: no verdict (not run, out of scope, or superseded head)." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "$LANE: no failure reported." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+          case "$FAILURE_CLASS" in
+            auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
+            rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
+            overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
+            *) why="an unclassified failure; read the review job log" ;;
+          esac
+          {
+            echo "### $LANE failed: \`${FAILURE_CLASS:-unknown}\`"
+            echo
+            echo "$why."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=$LANE failed::failure-class=${FAILURE_CLASS:-unknown}: $why"
+          exit 1

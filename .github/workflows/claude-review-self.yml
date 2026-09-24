@@ -10,11 +10,12 @@ name: Claude Review
 # review degrades to a warning (no leak).
 on:
   pull_request:
-    # No `synchronize` — dogfoods the canonical cadence: review on
-    # open/ready/reopen; re-run the job for a fresh review after a push, or
-    # dispatch with the PR number for on-demand / bot-initiated re-review
+    # Dogfoods the canonical cadence: review every push, including the push
+    # that resolves a merge conflict (GitHub runs no pull_request workflow
+    # while the PR conflicts with its base). Drafts are skipped inside the
+    # reusable. Dispatch with the PR number for on-demand re-review
     # (ci-workflows#254).
-    types: [opened, ready_for_review, reopened]
+    types: [opened, synchronize, ready_for_review, reopened]
   workflow_dispatch:
     inputs:
       pr-number:
@@ -44,6 +45,9 @@ jobs:
       # Empty on pull_request (event payload supplies the PR); required on
       # workflow_dispatch so the reusable can resolve head SHA via API.
       pr-number: ${{ inputs.pr-number }}
+      # Publishes `claude-review-status`, red when the review fails
+      # (ci-workflows#619). Not a required check, and must never become one.
+      status-check: true
     # Pass only the one named secret (least privilege) rather than `secrets:
     # inherit`, which would forward every parent secret to the called workflow.
     secrets:

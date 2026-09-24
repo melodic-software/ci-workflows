@@ -851,14 +851,18 @@ fits under the job's 45-minute ceiling. A caller that raises
 the run in the job-timeout shape above — outside the floor. The guarantee is "no classified failure blocks a
 merge", not "no infrastructure problem ever blocks one".
 
-**Trigger cadence is per lane, deliberately.** `claude-review` runs on
-`opened` / `ready_for_review` / `reopened` and **not** on `synchronize`: a push
-does not re-trigger the code review, so re-run the job or `workflow_dispatch`
-with the PR number (ci-workflows#254) for a fresh pass. That
-caps per-PR spend on active branches, and it is safe precisely because the
-lane's verdict gates nothing. It also skips draft PRs at job level, so an
-`opened` event on a draft costs nothing and `ready_for_review` is what buys the
-review. `claude-security-review` keeps `synchronize`, because its check
+**Trigger cadence.** Both canonical callers run on `opened` / `synchronize` /
+`ready_for_review` / `reopened`. `synchronize` matters beyond freshness: GitHub
+runs no `pull_request` workflow while a PR conflicts with its base, so a
+once-per-PR trigger set silently skips any PR that conflicted when it opened,
+and the push that resolves the conflict is what reviews it. `claude-review`
+caps the number of reviewed pushes with `max-reviews-per-pr`, and a caller may
+still drop `synchronize` to cut spend, re-reviewing by `workflow_dispatch` with
+the PR number (ci-workflows#254). It skips draft PRs at job level, so an
+`opened` event on a draft costs nothing. Either lane can publish an opt-in,
+non-required status check (`status-check: true`, ci-workflows#619) that goes
+red and names the `failure-class` when the review fails; the review job itself
+stays advisory. `claude-security-review` keeps `synchronize`, because its check
 certifies that a security pass ran at the head being merged — a review of an
 earlier head is not that evidence, and it reviews drafts. After a successful
 review it persists that head and, on later pushes, skips with a name-stable
