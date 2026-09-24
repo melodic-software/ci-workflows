@@ -148,3 +148,88 @@ for (const lane of LANES) {
     }
   });
 }
+
+// Runs a review-count step's github-script body against a recording client.
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+
+async function runCountStep(stepName, env) {
+  const source = stepSource(laneSource("claude-review.yml"), stepName);
+  const lines = source
+    .slice(source.indexOf("script: |\n") + "script: |\n".length)
+    .split("\n");
+  const end = lines.findIndex(
+    (line) => line !== "" && !line.startsWith(" ".repeat(12)),
+  );
+  const script = lines
+    .slice(0, end === -1 ? undefined : end)
+    .map((line) => line.slice(12))
+    .join("\n");
+  const calls = [];
+  const outputs = {};
+  const record = (name) => async () => {
+    calls.push(name);
+    return { data: {} };
+  };
+  const github = {
+    paginate: async () => {
+      calls.push("listComments");
+      return [];
+    },
+    rest: {
+      issues: {
+        listComments: record("listComments"),
+        createComment: record("createComment"),
+        updateComment: record("updateComment"),
+      },
+    },
+  };
+  const core = {
+    setOutput: (name, value) => {
+      outputs[name] = value;
+    },
+    info: () => {},
+    notice: () => {},
+    warning: () => {},
+  };
+  const set = { PR_NUMBER: "42", ...env };
+  const previous = Object.fromEntries(
+    Object.keys(set).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, set);
+  try {
+    await new AsyncFunction("core", "github", "context", script)(core, github, {
+      repo: { owner: "melodic-software", repo: "consumer" },
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  return { calls, outputs };
+}
+
+test("a disabled cap (0) neither reads nor posts the review-count comment", async () => {
+  const lookup = await runCountStep("Check the per-PR review count", {
+    MAX_REVIEWS_PER_PR: "0",
+  });
+  assert.deepEqual(lookup.calls, []);
+  assert.equal(lookup.outputs.capped, "false");
+  const upsert = await runCountStep("Update the review-count status comment", {
+    MAX_REVIEWS_PER_PR: "0",
+    PRIOR_COUNT: "0",
+  });
+  assert.deepEqual(upsert.calls, []);
+});
+
+test("a positive cap still reads and posts the review-count comment", async () => {
+  const lookup = await runCountStep("Check the per-PR review count", {
+    MAX_REVIEWS_PER_PR: "5",
+  });
+  assert.deepEqual(lookup.calls, ["listComments"]);
+  const upsert = await runCountStep("Update the review-count status comment", {
+    MAX_REVIEWS_PER_PR: "5",
+    PRIOR_COUNT: "0",
+  });
+  assert.deepEqual(upsert.calls, ["createComment"]);
+});

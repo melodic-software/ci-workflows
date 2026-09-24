@@ -896,9 +896,9 @@ spent — so they do not retry on one.
 **Review-count cap (code-review lane only).** `claude-review.yml` stops
 reviewing a PR after `max-reviews-per-pr` successful reviews, capping spend on
 long-lived PRs. The counter is a **visible** per-PR status comment upserted
-after each successful review — failed and skipped runs never inflate it — which
-doubles as the human "was this reviewed" signal;
-deleting it resets the count, which is fail-open by design. A capped run is a
+after each successful review — failed and skipped runs never inflate it;
+deleting it resets the count, which is fail-open by design. A cap of zero or
+less disables both the cap and the comment. A capped run is a
 name-stable skip, not a red check. Treat it as a soft cap: concurrent runs for
 different heads read the counter before either writes it, so a burst can
 briefly exceed it by the number of concurrent heads.

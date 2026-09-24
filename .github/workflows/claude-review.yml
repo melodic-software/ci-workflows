@@ -261,9 +261,9 @@ on:
           Maximum successful reviews per PR before the lane name-stable-skips
           further runs (caps spend on long-lived PRs). Counted via a visible
           per-PR status comment ("Claude has reviewed this PR N times") that
-          is upserted after each successful review — the comment doubles as
-          the human "was this reviewed" signal. Deleting the comment resets
-          the count (fail-open by design). Zero or negative disables the cap.
+          is upserted after each successful review. Deleting the comment
+          resets the count (fail-open by design). Zero or negative disables
+          the cap and the comment: the lane neither reads nor posts it.
           Soft cap: concurrent runs for different heads read the counter
           before either writes it, so a burst can briefly exceed the cap by
           the number of concurrent heads.
@@ -567,7 +567,8 @@ jobs:
           pull-number: ${{ steps.resolve-pr.outputs.number }}
           head-sha: ${{ steps.resolve-pr.outputs.head-sha }}
 
-      # Review-count cap (max-reviews-per-pr). The counter is the visible
+      # Review-count cap (max-reviews-per-pr). A disabled cap (<= 0) skips the
+      # lookup, so the lane never reads or writes the comment. The counter is the visible
       # status comment this lane upserts after each successful review — chosen
       # over the runs API (which counts every advisory success including skips
       # and needs an `actions: read` grant no caller makes) and over a hidden
@@ -590,10 +591,7 @@ jobs:
             const prNumber = Number(process.env.PR_NUMBER);
             core.setOutput("capped", "false");
             core.setOutput("count", "0");
-            if (!Number.isInteger(prNumber) || prNumber <= 0) return;
-            // The lookup runs even when the cap is disabled: the upsert step
-            // reads count and comment-id from here, so skipping it would
-            // degrade the upsert to an insert-per-review.
+            if (!capEnabled || !Number.isInteger(prNumber) || prNumber <= 0) return;
             let count = 0;
             try {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -620,7 +618,7 @@ jobs:
               return;
             }
             core.setOutput("count", String(count));
-            if (capEnabled && count >= max) {
+            if (count >= max) {
               core.notice(
                 `Skipping review: this PR already received ${count} reviews ` +
                   `(max-reviews-per-pr=${max}). Delete the count comment to re-enable.`,
@@ -1345,7 +1343,8 @@ jobs:
           mode: clear-on-success
           pull-number: ${{ steps.resolve-pr.outputs.number }}
 
-      # The visible counter the review-count gate reads. Upserted only after a
+      # The visible counter the review-count gate reads, posted only while the
+      # cap is enabled (max-reviews-per-pr > 0). Upserted only after a
       # review that actually RAN (review-ran == 'true' implies the outcome
       # step ran, so the run was neither superseded nor capped), so failed
       # runs, validation skips, and skipped runs never inflate the count: the
@@ -1366,6 +1365,11 @@ jobs:
           HEAD_REPO: ${{ steps.resolve-pr.outputs.head-repo }}
         with:
           script: |
+            const max = Number(process.env.MAX_REVIEWS_PER_PR);
+            if (!(Number.isFinite(max) && max > 0)) {
+              core.info("max-reviews-per-pr is disabled; posting no count comment.");
+              return;
+            }
             const prNumber = Number(process.env.PR_NUMBER);
             if (!Number.isInteger(prNumber) || prNumber <= 0) {
               core.info("No pull request in this event; nothing to count.");
@@ -1380,14 +1384,10 @@ jobs:
               return;
             }
             const count = (Number(process.env.PRIOR_COUNT) || 0) + 1;
-            const max = Number(process.env.MAX_REVIEWS_PER_PR);
-            const capNote =
-              Number.isFinite(max) && max > 0
-                ? ` The lane skips further automatic reviews after ${max}; deleting this comment resets the count.`
-                : " Deleting this comment resets the count.";
             const body =
               `<!-- claude-review-count:${count} -->\n` +
-              `Claude has reviewed this PR ${count} time${count === 1 ? "" : "s"}.${capNote}`;
+              `Claude has reviewed this PR ${count} time${count === 1 ? "" : "s"}. ` +
+              `The lane skips further automatic reviews after ${max}; deleting this comment resets the count.`;
             const commentId = Number(process.env.PRIOR_COMMENT_ID);
             try {
               if (Number.isInteger(commentId) && commentId > 0) {
