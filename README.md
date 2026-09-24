@@ -332,8 +332,7 @@ consumer to audit it.
   changed files make relevant, so a caller can skip lanes at JOB level and
   stop paying for runs a change cannot affect. Checkout-free: the PR file
   listing comes from the API, and caller-named filter groups match it with
-  root-anchored gitignore rules — the same matcher `claude-security-review.yml`'s
-  `changes` job uses, generalized to many named groups. One `results` JSON
+  root-anchored gitignore rules across many named groups. One `results` JSON
   output maps each group to `"true"`/`"false"` strings; every operational
   fault (non-PR event, API failure, a listing at the 3,000-file API cap)
   fails OPEN to `"true"`, while unhonorable pattern syntax (`!`, `?`, `+`)
@@ -694,91 +693,33 @@ GitHub continues the normal weekly patching of each hosted image generation.
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
   optional inputs on native `zizmor` preserve compatibility.
 - `.github/workflows/claude-review.yml` — automated PR code review with
-  `anthropics/claude-code-action`. All inputs have public-safe defaults
-  documented inline in the workflow header (the authoritative list). Consume
-  it per the [Claude lanes — shared consumption
-  contract](#claude-lanes--shared-consumption-contract) below.
+  `anthropics/claude-code-action`, running the org review plugin's
+  `/review:code-review` command. Consume it per the [Claude lanes — shared
+  consumption contract](#claude-lanes--shared-consumption-contract) below.
 - `.github/workflows/claude-security-review.yml` — a dedicated LLM
-  **security-review** pass with `anthropics/claude-code-action`, sibling of
-  `claude-review.yml` with the same secrets interface and safe-handling model
-  but a security-only prompt. It reviews the PR's changed files for the
-  vulnerabilities static analysis misses — logic flaws, authorization gaps,
-  injection surfaces, token/secret handling, dangerous workflow patterns
-  (`pull_request_target`, script injection via the `github` context),
-  permission-widening config changes, supply-chain pin loosening — and reports
-  findings as a PR review with severity (CRITICAL/IMPORTANT/SUGGESTION) and a
-  confidence axis, security only. The intended promotion path for the VERDICT
-  is to flip to blocking on CRITICAL findings once the lane's precision is
-  proven over a sustained window — an earned promotion (trust-before-scale).
-  **Always-report shape:** a security pass on every PR is noise in a doc-heavy
-  repo, so the lane scopes itself to security-sensitive surfaces — but the
-  caller must NOT express that scope with a workflow-level `on.pull_request.paths`
-  filter, because a path miss leaves a required check Pending forever and wedges
-  every prose PR. Instead the caller triggers on all PR events and supplies that
-  scope as a pattern list of root-anchored globs (workflow files,
-  permission/settings configs, hook and shell scripts, auth/token-touching code,
-  network-call sites); the workflow's `changes` job evaluates it and a
-  not-applicable PR yields a name-stable skipped `security-review` check. After
-  a successful review the lane persists the reviewed head in a marker comment;
-  on later `synchronize` pushes it matches only the incremental delta, so a
-  docs-only follow-up does not re-run a full security pass (deleting the marker
-  forces a full re-review). A consumer's ruleset may make that EXECUTION check
-  required (check context `<caller job> / security-review`); the VERDICT stays
-  advisory.
-
-  **Absent-check mitigation (ci-workflows#227):** an intermittent `pull_request`
-  event-delivery gap can leave that required context ABSENT (not failed). Do
-  not move the lane onto `pull_request_target` / `workflow_run`. Consumers
-  should expose `workflow_dispatch` + `pr-number` on the caller (dogfood:
-  `claude-security-review-self.yml`) so a missing context can be re-attached by
-  dispatching the caller. The scheduled `security-review-absent-mitigate`
-  companion that automated this is retired (ci-perf Phase 7); the historical
-  design is `docs/topics/claude-review-lanes/security-review-absent-mitigation.md`.
-
-  **Where that pattern list lives** is the caller's choice between two inputs.
-  The conventional shape is `paths-file`, pointing at a repo-owned file
-  (`.github/claude-security-paths`) so each repo keeps its own
-  security-sensitive-surface list in its own tree; the inline `paths` input
-  takes the same content directly and, when non-empty, wins over the file. The
-  file is read from the PR's **base** branch, never the head, so a PR cannot
-  edit its content to skip its own security review — repointing the input is
-  still possible, but only as a visible caller diff, which is the pre-existing
-  trust boundary. An absent or unreadable file **fails open** (every PR
-  reviewed, with a warning), matching the `changes` job's fail-open discipline
-  throughout; both inputs empty means no filtering, so a consumer that passes
-  nothing is unaffected. Patterns are matched as root-anchored **gitignore**
-  patterns rather than Actions `paths:` patterns — identical for the ordinary
-  `*` / `**` globs worth writing here, but `!` negation cannot be honored as
-  Actions defines it and is rejected outright, so express an exclusion by
-  narrowing the positive patterns. All inputs have public-safe defaults
-  documented inline
-  in the workflow header (the authoritative list). Consume it per the [Claude
-  lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
-  below, triggering on all PR events (no workflow-level `paths:`):
-
-  ```yaml
-  with:
-    paths-file: .github/claude-security-paths
-  ```
+  **security-review** pass, sibling of `claude-review.yml` with the same
+  secrets interface and safe-handling model, running `/review:security-review`.
+  It reviews the PR's changed files for the vulnerabilities static analysis
+  misses and reports findings as a PR review. Findings are advisory: they never
+  fail the job. It runs on every non-draft pull request.
 
 ## Claude lanes — shared consumption contract
 
 `claude-review.yml` and `claude-security-review.yml` share one consumption
-shape. Each is **advisory**: it posts PR comments and never gates `ci-status`.
-(The advisory verdict is separate from execution evidence:
-`claude-security-review.yml` scopes itself to security-sensitive paths, and its
-name-stable `security-review` check may be made a required status check — see
-its entry above.) Each is a whole-job
-concern (job `permissions:` plus a `secrets:` interface), which is why each is
-a reusable workflow rather than a composite action — the caller owns the
-triggers and the permission grant, and the workflow owns the SHA-pinned
-`anthropics/claude-code-action` and the safe handling. Security rules live in
-[CLAUDE.md](CLAUDE.md).
+shape. Each is a whole-job concern (job `permissions:` plus a `secrets:`
+interface), which is why each is a reusable workflow rather than a composite
+action: the caller owns the triggers, concurrency and the permission grant,
+and the workflow owns the SHA-pinned `anthropics/claude-code-action` and the
+safe handling. Security rules live in [CLAUDE.md](CLAUDE.md). Canonical
+caller (each workflow header carries its own copy):
 
 ```yaml
 on:
   pull_request:
-    types: [<per lane — see below>]
+    types: [opened, synchronize, ready_for_review, reopened]
+concurrency:
+  group: <lane>-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   <lane>:
     permissions:
@@ -794,142 +735,37 @@ The caller's job must grant those three permissions (a called workflow can only
 downgrade, not elevate); the `CLAUDE_CODE_OAUTH_TOKEN` org secret has
 visibility "all repositories", so every org repo receives it. Pass that one
 named secret explicitly rather than `secrets: inherit`, which forwards every
-parent secret. Fork PRs receive no secrets by design and are not reviewed. On
-both review lanes the caller can name actors whose comments are withheld from
-the agent's context — prompt-injection hygiene, not a trigger gate.
+parent secret.
 
-**What the security lane's required check proves — and does not.** Only
-`claude-security-review`'s check is designed to be required: it reports under
-its own context (`<caller job> / security-review`), never through `ci-status`.
-Its claim is narrow: a security pass RAN at this head, or the PR was judged not
-applicable. The verdict stays advisory — findings never fail the job. Execution
-is enforced in **two tiers**, split by whether the PR can clear the cause.
-**Caller drift** — the action skipping itself because the caller's workflow file
-differs from the default branch's copy — reports FAILURE, because `success`,
-`neutral` and `skipped` all satisfy a required check, so failure is the only
-conclusion that does not silently authorize a merge on absent evidence, and the
-PR that caused it clears it by merging. An **external failure** — every class
-the classifier emits: `auth` (dead credential, billing), `rate-limit` (usage
-limit), `overloaded` (5xx), and the `other` catch-all, which also takes an
-unparsable or missing execution file — emits a loud
-`::warning` annotation and reports SUCCESS: the cause is outside the author's
-and the org's control, and a required context that reddens on a provider outage
-locks every merge in the fleet for the length of that outage. That mapping is
-scoped to `pull_request` runs; a non-PR event cannot run the review at all and
-keeps the historical pass-through, and a fork PR skips the job outright —
-neither green is execution evidence.
+**Inputs** (both lanes, all optional):
 
-The corollary is what the check does not prove. Every non-run reads as success
-to a ruleset. Four are name-stable job-level skips: a fork PR, an out-of-scope
-PR, a skip-listed actor, a kill-switched lane. A fifth is not a skip at all — a
-run whose head was superseded while it queued retires itself step by step and
-reports a **green** job having reviewed nothing, on the premise that the newer
-run for the current head reports the same context. The sixth is the
-external-failure tier above: a classified infrastructure failure now also
-reports green, deliberately. So a green required check is not by itself proof
-that this head was reviewed, and it never establishes that a fork PR was:
-review fork changes to security-sensitive surfaces by hand.
+| Input | Default | Purpose |
+|---|---|---|
+| `runner` | `ubuntu-24.04` | Runner label |
+| `plugins` | `review@melodic-software` | Plugins the action installs |
+| `plugin-marketplaces` | the org marketplace URL | Marketplaces for `plugins` |
+| `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
+| `claude-args` | `--model claude-sonnet-5 --max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the inline-comment grant is always appended |
+| `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
 
-What that sixth shape costs is worth stating plainly: during a provider outage,
-merges land unreviewed behind a green required check. The alarm moves off the
-conclusion onto two surfaces that never depended on it — the outcome
-composite's machine-readable `class=<token>` annotation and the failure marker
-comment on the PR. Availability on that tier is bought by the loud-open itself, helped by
-the bounded retry below; break-glass on the consumer's ruleset remains the
-override for caller drift and for any other red an operator must clear by hand.
+**Skips.** The review job skips draft PRs, fork PRs (no secrets reach them;
+review fork changes by hand) and every bot actor (the action rejects bots it
+was not told to allow). Calling either lane from `pull_request_target` or
+`workflow_run` fails the job.
 
-That floor has an edge worth knowing. It covers what the lane can **classify**,
-which means the ruling step has to be reached — a run that dies before it still
-reddens the check. A genuine runner fault, the job hitting its 45-minute
-`timeout-minutes`, or a pre-ruling step throwing (the resolve and outcome steps
-carry no `continue-on-error`, so a crashed classifier fails rather than passing
-through) all land outside the floor. Step-level timeouts are inside it at the
-default configuration: each attempt is bounded at 18 minutes behind
-`continue-on-error`, and at the default `retry-delay-seconds` the retry budget
-fits under the job's 45-minute ceiling. A caller that raises
-`retry-delay-seconds` far enough can push the retry past that ceiling, landing
-the run in the job-timeout shape above — outside the floor. The guarantee is "no classified failure blocks a
-merge", not "no infrastructure problem ever blocks one".
+**Status check, always on.** The review job stays green on an infrastructure
+failure. Each lane's status job (`claude-review-status`,
+`claude-security-review-status`) always runs after it and goes red, naming the
+failure class (`auth`, `rate-limit`, `overloaded`, `other`), when the review
+failed. A skipped review reports green. Never make the status check required.
+`claude-review.yml` also exposes `review-failed` and `failure-class` as
+workflow outputs.
 
-**Trigger cadence.** Both canonical callers run on `opened` / `synchronize` /
-`ready_for_review` / `reopened`. `synchronize` matters beyond freshness: GitHub
-runs no `pull_request` workflow while a PR conflicts with its base, so a
-once-per-PR trigger set silently skips any PR that conflicted when it opened,
-and the push that resolves the conflict is what reviews it. `claude-review`
-caps the number of reviewed pushes with `max-reviews-per-pr`, and a caller may
-still drop `synchronize` to cut spend, re-reviewing by `workflow_dispatch` with
-the PR number (ci-workflows#254). It skips draft PRs at job level, so an
-`opened` event on a draft costs nothing. Either lane can publish an opt-in,
-non-required status check (`status-check: true`, ci-workflows#619) that goes
-red and names the `failure-class` when the review fails; the review job itself
-stays advisory. `claude-security-review` keeps `synchronize`, because its check
-certifies that a security pass ran at the head being merged — a review of an
-earlier head is not that evidence, and it reviews drafts. After a successful
-review it persists that head and, on later pushes, skips with a name-stable
-success when the incremental delta touches no security-relevant paths
-(ci-workflows#259). It also accepts `workflow_dispatch` + `pr-number` so an
-absent required check from a `pull_request` delivery gap can be re-attached
-without privileged triggers (ci-workflows#227; see
-`docs/topics/claude-review-lanes/security-review-absent-mitigation.md`).
-Take each lane's canonical caller
-from its own workflow header.
-
-**Bounded retry.** Every lane makes at most **two** agent attempts — one
-automatic retry, never a loop. The retry is deliberately narrow, because a
-second attempt after the agent has already spoken duplicates its comments: it
-fires only on **zero assistant turns** in the first attempt's execution file.
-Nor does an **auth-class** failure retry — HTTP 401/402/403, or an
-`authentication_error` / `billing_error` / `permission_error` in the error
-payload — because the credential needs an operator and no retry can clear it.
-The gate also honors the same guards the first attempt does, so a superseded
-run (and, on the code-review lane, a capped one) never spends a retry. Between
-the attempts the lane backs off `retry-delay-seconds` plus a 0–29 second
-jitter, so lanes retrying against the same contended seat do not re-collide in
-lockstep. What this buys on the security lane is a real review against the
-sporadic-429 class, rather than the evidence gap its loud-open tier would
-otherwise leave behind.
-
-Both lanes demand **proof** of zero turns: a missing or unparsable execution
-file is not proof — a hard kill can lose the file after turns were already
-spent — so they do not retry on one.
-
-**Review-count cap (code-review lane only).** `claude-review.yml` stops
-reviewing a PR after `max-reviews-per-pr` successful reviews, capping spend on
-long-lived PRs. The counter is a **visible** per-PR status comment upserted
-after each successful review — failed and skipped runs never inflate it;
-deleting it resets the count, which is fail-open by design. A cap of zero or
-less disables both the cap and the comment. A capped run is a
-name-stable skip, not a red check. Treat it as a soft cap: concurrent runs for
-different heads read the counter before either writes it, so a burst can
-briefly exceed it by the number of concurrent heads.
-
-**Kill-switches.** Every lane honors two Actions variables at job level:
-`CLAUDE_LANES_DISABLED` (all lanes) and a per-lane switch
-(`CLAUDE_REVIEW_DISABLED`, `CLAUDE_SECURITY_REVIEW_DISABLED`). `true` skips the lane's job name-stably — a
-required security-review check reads the skip as success, so merges are never
-wedged. An absent variable means enabled; a repository-level variable
-overrides an organization-level one, so a single repo can opt out (or back
-in) without an org-wide change. Incident use: set the org-level variable to
-`true` to stop a misbehaving lane fleet-wide. While the security lane is
-disabled NO lane reports security findings — REVIEW.md's code-review
-exclusion keys on the security workflow file existing, and the file remains —
-so re-enable promptly and treat the outage window as security-unreviewed.
-
-All four organization variables carry **all-repositories** visibility. That is
-a deliberate deviation from the org's selected-visibility convention for
-Actions variables, not an oversight: a switch scoped to a selection is invisible
-to every repo outside it, so flipping it during an incident would silently
-no-op exactly where nobody is looking. A kill-switch is only worth having if it
-reaches the whole fleet. Do not "correct" the visibility to selected.
-
-**Adoption.** Each lane's own workflow header carries its canonical caller;
-copy it from there. Callers are additionally being brought under the org's
-sync-managed component distribution in
-[`melodic-software/standards`](https://github.com/melodic-software/standards),
-which materializes a canonical per-lane caller into every target repo and keeps
-it current through the ordinary sync PR. Where a repo's caller is
-sync-managed, change it at the component source and let the sync carry it to
-every target — never edit the materialized caller in the target repo.
+**Adoption.** Callers are distributed through the org's sync-managed
+components in
+[`melodic-software/standards`](https://github.com/melodic-software/standards).
+Where a repo's caller is sync-managed, change it at the component source and
+let the sync carry it to every target.
 
 ## Triage: fleet-wide single-workflow failure spikes
 

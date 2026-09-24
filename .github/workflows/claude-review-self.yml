@@ -1,37 +1,18 @@
 name: Claude Review
 
-# Dogfood caller: this repo is the first consumer of its own claude-review
-# reusable workflow, exercising the exact pattern downstream consumers use
-# (caller owns `on:` + permissions; reusable workflow owns the action pin and
-# safe handling). Local `./` ref works because the checkout IS this repo.
-#
-# The CLAUDE_CODE_OAUTH_TOKEN org secret has visibility "all repositories",
-# so this repo receives it; fork PRs still get no token by design and the
-# review degrades to a warning (no leak).
+# Dogfood caller: this repo consumes its own claude-review reusable workflow
+# with the canonical caller shape. Local `./` ref works because the checkout
+# IS this repo.
 on:
   pull_request:
-    # Dogfoods the canonical cadence: review every push, including the push
-    # that resolves a merge conflict (GitHub runs no pull_request workflow
-    # while the PR conflicts with its base). Drafts are skipped inside the
-    # reusable. Dispatch with the PR number for on-demand re-review
-    # (ci-workflows#254).
     types: [opened, synchronize, ready_for_review, reopened]
-  workflow_dispatch:
-    inputs:
-      pr-number:
-        description: Pull request number to re-review
-        required: true
-        type: string
 
 permissions:
   contents: read
 
-# Cancel a superseded in-flight review when the PR gets a new push or a
-# newer dispatch for the same PR; the PR number is set on pull_request and
-# on workflow_dispatch (via inputs.pr-number). Unlike head_ref, the number
-# is unique per PR even across forks; run_id is a non-grouping fallback.
+# A new push to the same PR cancels the superseded review.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr-number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -41,13 +22,6 @@ jobs:
       pull-requests: write
       id-token: write
     uses: ./.github/workflows/claude-review.yml
-    with:
-      # Empty on pull_request (event payload supplies the PR); required on
-      # workflow_dispatch so the reusable can resolve head SHA via API.
-      pr-number: ${{ inputs.pr-number }}
-      # Publishes `claude-review-status`, red when the review fails
-      # (ci-workflows#619). Not a required check, and must never become one.
-      status-check: true
     # Pass only the one named secret (least privilege) rather than `secrets:
     # inherit`, which would forward every parent secret to the called workflow.
     secrets:

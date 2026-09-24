@@ -3,12 +3,10 @@ set -euo pipefail
 
 # Matches a PR's changed-file listing against named filter groups and emits a
 # `results` JSON object mapping each group name to "true" / "false" strings.
-# The matcher reuses the hardened relevance semantics of
-# claude-security-review.yml's `changes` job — root-anchored gitignore
-# matching via `git check-ignore` in a scratch repository, `!` / `?` / `+`
-# rejected before matching, every operational fault failing OPEN to "true" —
-# generalized to many named groups with one shared file listing. That
-# workflow's inline comments carry the full reasoning behind each guard.
+# The matcher uses root-anchored gitignore matching via `git check-ignore` in
+# a scratch repository, rejects `!` / `?` / `+` before matching, and fails
+# every operational fault OPEN to "true", over many named groups with one
+# shared file listing.
 
 # Environment contract (see action.yml). `:?` doubles as the SC2154
 # unassigned-uppercase satisfaction and a loud failure on a miswired caller.
@@ -83,8 +81,8 @@ fi
 # defines them. `?` and `+` fail in the DANGEROUS direction — the pattern
 # silently matches fewer files than the caller wrote, so a lane that should
 # have run reads as out-of-scope — which is exactly the failure mode this
-# action exists to prevent. See claude-security-review.yml's `changes` job
-# for the full per-character reasoning. Parsing already trimmed each line,
+# action exists to prevent. `!` is rejected because gitignore cannot
+# re-include below an excluded directory. Parsing already trimmed each line,
 # so the guards anchor on the pattern itself.
 for file in "${group_files[@]}"; do
   if grep -qE '^!' "$file"; then
