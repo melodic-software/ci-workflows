@@ -22,6 +22,16 @@ an action's bundled script is reached via `$GITHUB_ACTION_PATH` without any
 checkout of this repo. (Public is required because a public consumer such as
 `melodic-software/claude-code-plugins` can only `uses:` public repos.)
 
+## Contents
+
+- [Contract](#contract)
+- [Versioning](#versioning)
+- [Actions](#actions)
+- [Reusable workflows](#reusable-workflows)
+- [Claude lanes — shared consumption contract](#claude-lanes--shared-consumption-contract)
+- [Triage: fleet-wide single-workflow failure spikes](#triage-fleet-wide-single-workflow-failure-spikes)
+- [Policy ownership and action inputs](#policy-ownership-and-action-inputs)
+
 ## Contract
 
 - **Configurable, not forkable.** Each action exposes typed `inputs` with
@@ -710,7 +720,7 @@ shape. Each is a whole-job concern (job `permissions:` plus a `secrets:`
 interface), which is why each is a reusable workflow rather than a composite
 action: the caller owns the triggers, concurrency and the permission grant,
 and the workflow owns the SHA-pinned `anthropics/claude-code-action` and the
-safe handling. Security rules live in [CLAUDE.md](CLAUDE.md). Canonical
+safe handling. Each workflow header states its security model. Canonical
 caller (each workflow header carries its own copy):
 
 ```yaml
