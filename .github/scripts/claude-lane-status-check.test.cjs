@@ -116,7 +116,11 @@ for (const lane of lanes) {
         REVIEW_FAILED: failed,
         FAILURE_CLASS: klass,
       });
-      assert.equal(result.status, 1, `'${failed}'/'${klass}' must fail the check`);
+      assert.equal(
+        result.status,
+        1,
+        `'${failed}'/'${klass}' must fail the check`,
+      );
       assert.match(result.summary, new RegExp(`failed: \`${named}\``, "u"));
       assert.match(
         result.stdout,

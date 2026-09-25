@@ -59,7 +59,8 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
   const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
   const claudeArgsInput = workflow.on.workflow_call.inputs["claude-args"];
   const composeStep = steps.find((step) => step?.id === "compose-args");
-  const pluginCommand = workflow.on.workflow_call.inputs["plugin-command"].default;
+  const pluginCommand =
+    workflow.on.workflow_call.inputs["plugin-command"].default;
 
   test(`${fileName}: the one Claude invocation consumes the composed args`, () => {
     const invocations = steps.filter((step) =>
@@ -113,7 +114,10 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
   test(`${fileName}: the Skill grant follows the plugin-command input`, () => {
     // Without it the headless session is denied the command it is told to
     // run and falls back to an unscripted pass (claude-code-plugins#4306).
-    assert.equal(composeStep.env.PLUGIN_COMMAND, `\${{ inputs.plugin-command }}`);
+    assert.equal(
+      composeStep.env.PLUGIN_COMMAND,
+      `\${{ inputs.plugin-command }}`,
+    );
     for (const [command, grant] of [
       ["/review:code-review", "Skill(review:code-review)"],
       ["/other:lane --flag", "Skill(other:lane)"],
