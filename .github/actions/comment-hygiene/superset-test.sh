@@ -1,27 +1,13 @@
 #!/usr/bin/env bash
-# Self-check for the comment-hygiene coarse prefilter.
-#
-# scan-tree.sh runs a fast `git grep -iE` prefilter (chp::coarse_re) and feeds
-# only the hits to the policy library (chp::scan_text) for authoritative
-# validation. Correctness rests on one invariant: the prefilter must be a
-# SUPERSET of the library — every line the library flags must also be admitted
-# by the prefilter. If the prefilter under-matches, scan-tree silently drops a
-# real violation before the validator sees it (a fail-open gate).
-#
-# The prefilter and default policy ship in the same action, but remain separate
-# executable expressions. This test makes their invariant self-enforcing — it
-# sources both and asserts, for a representative line per library rule across
-# all five comment prefixes, that the library flags it AND the prefilter admits
-# it. A narrowed prefilter, or a policy that grows a rule the prefilter misses,
-# turns this red.
+# Every line chp::scan_text flags must pass chp::coarse_re, or scan-tree.sh
+# silently drops a real violation (a fail-open gate).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=coarse-prefilter.sh
 source "$here/coarse-prefilter.sh"
-# Policy library left opaque to ShellCheck (it is linted at its normative
-# source); following it here would treat chp::scan_text as a known function and
-# trip check-set-e-suppressed on the intentional exit-code capture below.
+# Opaque to ShellCheck: following it would trip check-set-e-suppressed on the
+# intentional exit-code capture below.
 # shellcheck source=/dev/null
 source "$here/comment-hygiene-patterns.sh"
 

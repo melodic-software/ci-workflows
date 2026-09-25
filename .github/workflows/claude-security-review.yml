@@ -99,8 +99,8 @@ jobs:
   security-review:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 25
-    # Skips bot actors, draft PRs and fork PRs. The draft and fork tests are
-    # scoped to pull_request so a privileged trigger still reaches the tripwire.
+    # The draft and fork tests are scoped to pull_request so a privileged
+    # trigger still reaches the tripwire.
     if: >-
       ${{ !endsWith(github.actor, '[bot]')
           && (github.event_name != 'pull_request'
@@ -123,18 +123,16 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
-      # persist-credentials stays at its default until claude-code-action#1236
-      # ships (the action fetches before configuring git auth). The last step
-      # strips the persisted token.
+      # persist-credentials stays default until claude-code-action#1236 ships
+      # (the action fetches before configuring git auth); the last step strips it.
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
 
-      # Appends the inline-comment grant after the caller's args, so replacing
-      # the claude-args default cannot drop it. claude-args may be multiline,
-      # hence the heredoc output form.
+      # The inline-comment grant goes after the caller's args so replacing
+      # claude-args cannot drop it; heredoc output as claude-args may be multiline.
       - name: Compose Claude CLI arguments
         id: compose-args
         env:
@@ -189,9 +187,8 @@ jobs:
         if: always()
         run: git config --unset-all http.https://github.com/.extraheader || true
 
-  # Reads the review job's outputs, never its log, and goes red when the review
-  # failed. Empty outputs (the review job skipped) report green. The outputs
-  # reach the script through env, never inline expressions.
+  # Reads the review job's outputs, never its log. The outputs reach the
+  # script through env, never inline expressions.
   claude-security-review-status:
     needs: security-review
     if: always()

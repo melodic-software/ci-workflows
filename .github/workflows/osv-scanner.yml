@@ -74,13 +74,6 @@ jobs:
           results="$work_dir/results.sarif"
 
           download() {
-            # Nine attempts under curl's exponential backoff (~4-5 minutes,
-            # capped by --retry-max-time) instead of a burst that ends
-            # within seconds, and --retry-all-errors so a mid-body
-            # connection death (curl exit 56) retries like an HTTP 5xx
-            # does — the two failure classes of the 2026-08-12
-            # release-asset outage (#444). The pinned SHA-256 checks below
-            # stay the integrity gate regardless of what a retry fetched.
             curl --fail --show-error --location --proto '=https' \
               --proto-redir '=https' --tlsv1.2 \
               --connect-timeout 10 --max-time 180 \
@@ -198,12 +191,7 @@ jobs:
               v=${v//$'\n'/'%0A'}
               printf '%s' "$v"
             }
-            # A workflow-command PROPERTY value escapes everything a DATA value does and
-            # two delimiters besides, so it is exactly `escape_data` plus those two. The
-            # order matters and is preserved: `%` is encoded first, so the `%` each later
-            # substitution introduces is left alone. `escape_data` emits no newline and
-            # can produce none (both CR and LF are already encoded), so the command
-            # substitution has nothing to strip.
+            # `escape_data` already encodes CR and LF, so the command substitution strips nothing.
             escape_property() {
               local v
               v="$(escape_data "$1")"

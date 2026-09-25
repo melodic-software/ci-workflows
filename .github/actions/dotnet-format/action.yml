@@ -31,17 +31,8 @@ runs:
         dotnet-version: ${{ inputs.dotnet-version }}
 
     - name: Set up .NET (fallback — no version or global.json found)
-      # setup-dotnet leaves its `dotnet-version` output unset (empty string
-      # here) when the `dotnet-version` input is empty AND it can't find a
-      # global.json anywhere in the caller's tree: it logs "nothing will be
-      # installed" and exits 0 without provisioning an SDK, so the `dotnet
-      # format` steps below would otherwise fall through to whatever (if
-      # anything) happens to be preinstalled on the runner. Re-run pointed at
-      # this action's own repo root global.json via `github.action_path` (a
-      # caller with none of its own has nothing else to fall back to), so a
-      # caller that never declared a version keeps the exact behavior it had
-      # before dotnet-version's default changed here — this always tracks
-      # global.json directly, so there is no separate pin to keep in lockstep.
+      # setup-dotnet installs nothing and exits 0 when given no version and no
+      # global.json; fall back to this repository's own global.json.
       if: steps.setup-dotnet.outputs.dotnet-version == ''
       uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
@@ -51,12 +42,6 @@ runs:
       shell: bash
       env:
         PROJECT: ${{ inputs.project }}
-      # The `whitespace` subcommand runs only the formatting fixers (no IDE/CA
-      # analyzers), so it never double-reports what the build enforces.
-      # --verify-no-changes exits non-zero on any file that is not already
-      # formatted. $PROJECT is appended only when non-empty, so an empty value
-      # omits the argument entirely rather than risking word-splitting a path
-      # that contains a space.
       run: |
         set -euo pipefail
         args=()
@@ -67,14 +52,8 @@ runs:
       shell: bash
       env:
         PROJECT: ${{ inputs.project }}
-      # `dotnet format style` restricted to IDE0055 gates only using-directive
-      # organization. The OrganizeImports pass runs regardless of IDE0055's
-      # configured severity, and --diagnostics IDE0055 keeps this lane from
-      # re-reporting whitespace or any other IDExxxx/CAxxxx rule the build
-      # already owns — so the build, whitespace lane, and this lane never
-      # double-report. $PROJECT is appended only when non-empty, so an empty
-      # value omits the argument entirely rather than risking word-splitting a
-      # path that contains a space.
+      # The OrganizeImports pass runs regardless of IDE0055's configured severity,
+      # so --diagnostics IDE0055 gates import ordering and nothing the build owns.
       run: |
         set -euo pipefail
         args=()

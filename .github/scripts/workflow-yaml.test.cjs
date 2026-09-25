@@ -213,7 +213,7 @@ test("a mapping key is data, never a prototype assignment", () => {
     "nothing may leak onto the parent",
   );
 
-  // The flow form binds through a different branch, and had the same bug.
+  // The flow form binds through a different branch.
   assert.deepEqual(
     Object.keys(parseWorkflow("jobs: {__proto__: {a: 1}, b: 2}\n").jobs),
     ["__proto__", "b"],

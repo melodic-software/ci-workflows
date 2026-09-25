@@ -19,11 +19,8 @@ inputs:
     default: 'true'
   version:
     description: Exact markdownlint-cli2 version to run.
-    # Authority: melodic-software/standards' markdownlint-cli2 pin
-    # (package.json + distributed configs' $schema). Absorb bumps to match
-    # that pin, never past it; npm latest can lead standards. SHA-pinned
-    # consumers pick this default up
-    # only on their next re-pin of this repository (#394).
+    # Authority: melodic-software/standards' markdownlint-cli2 pin. Absorb bumps
+    # to match that pin, never past it; npm latest can lead standards.
     default: 0.23.2
   node-version:
     description: Node.js version to set up.
@@ -51,17 +48,10 @@ runs:
           echo "::error::markdown: config file not found: $CONFIG"
           exit 2
         fi
-        # Register the matcher so the lint output below is annotated inline;
-        # remove it afterwards and exit with the real lint result.
         if [[ "$ANNOTATIONS" == "true" ]]; then echo "::add-matcher::$MATCHER"; fi
         rc=0
-        # Split into an array at the input boundary so multiple glob arguments
-        # reach markdownlint-cli2 as separate arguments. $GLOBS is
-        # markdownlint-cli2's own glob syntax (it expands ** itself via globby);
-        # quoting the array keeps bash from pathname-expanding it, so no noglob
-        # is needed here. -d '' takes the whole value so a caller-authored
-        # multi-line input still splits; read hits EOF without finding that
-        # delimiter, hence the `|| true`.
+        # -d '' takes the whole value so a multi-line input still splits; read hits
+        # EOF without finding that delimiter, hence the `|| true`.
         globs=()
         read -r -d '' -a globs <<<"$GLOBS" || true
         npx --yes "markdownlint-cli2@$VERSION" --config "$CONFIG" "${globs[@]}" || rc=$?

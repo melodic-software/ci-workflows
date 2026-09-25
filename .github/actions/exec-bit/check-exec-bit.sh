@@ -1,57 +1,18 @@
 #!/usr/bin/env bash
-# Verify every tracked file whose content starts with a shebang (#! at byte 0)
-# has git index mode 100755. A shebang file committed as 100644 loses its
-# executable bit on clone/checkout, so anything that execs it (CI hooks,
-# bootstrap scripts, tooling) fails with "Permission denied". The check is
-# extension-agnostic: shebangs appear in .py / .js / .ts / .sh / .rb and more.
-#
-# Deliberately NOT `set -e`: git grep's "no matches" exit 1 is a legitimate
-# clean result, distinguished from a fatal error by hand below.
+# Fail every tracked file starting with `#!` whose index mode is 100644: it
+# loses its exec bit on checkout. Not `set -e`: grep's no-match exit 1 is clean.
 set -uo pipefail
 
-# Scan pathspec (word-split; default '.' = whole repo).
 read -ra paths <<<"${PATHS:-.}"
 
 failed=0
-# Two-process shebang detection — extension-agnostic, no per-file Git forks.
-#
-# The previous shape listed candidates with `git grep -l` and then, for each
-# path, forked `git ls-files --stage` plus `git cat-file blob` to read the
-# whole object into a bash variable and test bytes 0-1. On a docs-heavy tree
-# that is one blob-load per markdown file that merely mentions `#!` in a fence:
-# 800 such files measured 2.38s here, and the org CI profile recorded 5.9s on
-# claude-code-plugins (github-iac docs/topics/ci-perf/research/PROFILE-ccp-scripts.md).
-#
-# Git's own batch family (git-cat-file --batch) exists to collapse that
-# per-object spawn (https://git-scm.com/docs/git-cat-file). This gate can skip
-# the blob entirely: for a non-binary (`-I`) blob, line 1 matching `^#!` is
-# the same predicate as `blob[0:2] == '#!'`. A BOM-prefixed shebang matches
-# neither; a fenced example on a later line matches grep but is not byte 0.
-#
-#   1. One `git grep --cached -z -n --max-count=1 -IE '^#!'` emits at most one
-#      record per file, the lowest matching line, as `path\0lineno\0content\n`
-#      (`-z` + `-n` on git 2.43; `--max-count` is the documented cap).
-#   2. One `git ls-files --stage -z` builds a path→mode map. Only a line-1
-#      hit with index mode 100644 is a finding; 100755 never fails, and any
-#      other mode is skipped as before.
-#
-# `-z` / `core.quotePath=false` keep filenames with non-ASCII / tabs /
-# newlines intact. `-I` still skips binaries.
-#
-# Pre-seed grep output into a tempfile so the exit code can be read before
-# consuming it:
-#   0   = at least one match
-#   1   = no matches (legitimate — zero shebang files)
-#   128 (or other) = fatal (object read, promisor fetch, corrupt index). A
-#         blob:none checkout can surface real read errors here, so fail CLOSED
-#         rather than swallow them into a silent pass.
+# Line 1 of a non-binary (-I) blob matching `^#!` is the same test as byte 0, so
+# no blob is read. A grep exit other than 0/1 (blob:none read error) fails closed.
 candidates=$(mktemp)
 errfile=$(mktemp)
 trap 'rm -f "$candidates" "$errfile"' EXIT
 grep_rc=0
-# stderr to its own file: $candidates is parsed as NUL-delimited records, so a
-# stderr line merged in would corrupt an adjacent record and silently drop a
-# real shebang file. stderr is only needed for the fatal-error report.
+# stderr merged into the NUL-delimited records could silently drop a file.
 git -c core.quotePath=false grep --cached -z -n --max-count=1 -IE '^#!' -- "${paths[@]}" \
   >"$candidates" 2>"$errfile" || grep_rc=$?
 if [[ "$grep_rc" -ne 0 && "$grep_rc" -ne 1 ]]; then
@@ -62,8 +23,6 @@ if [[ "$grep_rc" -ne 0 && "$grep_rc" -ne 1 ]]; then
   exit 1
 fi
 
-# First-line shebang paths (NUL-delimited). A later-line `#!` is a grep hit
-# that is not byte 0, so it never reaches the mode check.
 line1=$(mktemp)
 trap 'rm -f "$candidates" "$errfile" "$line1"' EXIT
 : >"$line1"
@@ -78,9 +37,7 @@ if [[ ! -s "$line1" ]]; then
   exit 0
 fi
 
-# One stage listing for the whole index. Entry format is
-# "<mode> <hash> <stage>\t<path>\0"; the metadata half never contains tabs,
-# and `-z` keeps a newline inside the path from splitting a record.
+# Entry: "<mode> <hash> <stage>\t<path>\0"; the metadata half has no tabs.
 stage=$(mktemp)
 trap 'rm -f "$candidates" "$errfile" "$line1" "$stage"' EXIT
 ls_rc=0

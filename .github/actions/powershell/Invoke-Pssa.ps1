@@ -108,13 +108,8 @@ if (-not (Test-Path -LiteralPath $Settings)) {
 
 $files = [System.Collections.Generic.List[string]]::new()
 if ($Path.Count -eq 0) {
-    # Git-tracked discovery (default): only tracked *.ps1/*.psm1, so ignored or
-    # generated scripts in a dirty tree are never gated. Filter to on-disk files
-    # so a sparse checkout (skip-worktree entries absent) is handled cleanly.
-    # NUL-delimited with quoting disabled so paths with non-ASCII/special bytes
-    # (which git C-quotes by default) and embedded newlines survive — mirrors the
-    # check-exec-bit.sh discovery idiom. PowerShell may split native stdout on
-    # newline, so reassemble and split on the NUL separator.
+    # PowerShell may split native stdout on newline, so reassemble and split on
+    # NUL. Filter to on-disk files so a sparse checkout is handled cleanly.
     $raw = & git -c core.quotePath=false ls-files -z -- '*.ps1' '*.psm1'
     if ($LASTEXITCODE -ne 0) {
         Write-Error 'git ls-files failed — not a git checkout?' -ErrorAction Continue
@@ -129,7 +124,6 @@ if ($Path.Count -eq 0) {
         }
     }
 } else {
-    # -Force so dot-prefixed directories (.github, etc.) are descended on Linux pwsh.
     foreach ($entry in $Path) {
         if (Test-Path -LiteralPath $entry -PathType Leaf) {
             $resolved = (Resolve-Path -LiteralPath $entry).Path
@@ -155,7 +149,6 @@ if ($Path.Count -eq 0) {
 
 if ($files.Count -eq 0) {
     if ($FailOnNoFiles) {
-        # Non-terminating so the exit-1 contract holds under $ErrorActionPreference='Stop'.
         Write-Error 'No .ps1/.psm1 files matched, but -FailOnNoFiles is set.' -ErrorAction Continue
         exit 1
     }

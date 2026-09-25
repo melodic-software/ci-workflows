@@ -51,7 +51,7 @@ function normalizeExpression(text) {
 // every job's `if:`. True only for a SAME-REPOSITORY pull request on a label
 // flip, or on an `edited` event that did not change the base branch — a base
 // change moves the merge commit the lanes test, and a fork cannot record lane
-// state, so both run the full workflow (Phase 3.1 of the ci-perf program).
+// state, so both run the full workflow.
 const CONTRACT_ONLY_PREDICATE =
   "github.event.pull_request.head.repo.full_name == github.repository && " +
   '(contains(fromJSON(\'["labeled","unlabeled"]\'), github.event.action) || ' +
@@ -59,11 +59,11 @@ const CONTRACT_ONLY_PREDICATE =
 const CONTRACT_ONLY_GATE = `!(${CONTRACT_ONLY_PREDICATE})`;
 
 test("ci.yml branches the concurrency group on the contract-only predicate", () => {
-  // ci-perf Phase 6b. Eviction of a PENDING run is unconditional in GitHub's
+  // Eviction of a PENDING run is unconditional in GitHub's
   // queueing and is not governed by `cancel-in-progress`, so a shared group let
   // one contract-only event evict another and leave the current head with a
   // check suite carrying no `ci-status` check run at all, a required check that
-  // silently stops reporting (dotfiles#647). The contract-only branch therefore
+  // silently stops reporting. The contract-only branch therefore
   // carries `github.run_id` and is unique per run.
   const groupBlock =
     /^concurrency:\n {2}group: >-\n(?<value>(?: {4}.*\n)+) {2}cancel-in-progress: true\n/mu.exec(
@@ -91,8 +91,7 @@ test("ci.yml branches the concurrency group on the contract-only predicate", () 
     normalizeExpression(CONTRACT_ONLY_PREDICATE),
   );
   // This repository's fallback term is `github.run_id`: no push-side burst
-  // collapse, so the `github.event_name == 'pull_request'` guard that existed
-  // only to protect it is gone.
+  // collapse, so no `github.event_name == 'pull_request'` guard.
   assert.doesNotMatch(groupBlock[0], /github\.event_name/u);
   assert.doesNotMatch(groupBlock[0], /github\.ref/u);
 });
@@ -233,9 +232,7 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
 });
 
 test("ci.yml consolidates the hygiene composites into the checks reusable", () => {
-  // The hygiene fan-out first collapsed into a local `hygiene` job (#122); it
-  // now lives in the `checks` reusable every consumer adopts (ci-perf Phase
-  // 6a), so this repository dogfoods the same contract it publishes.
+  // This repository dogfoods the `checks` reusable every consumer adopts.
   assert.match(ciWorkflow, /^ {2}checks:$/mu);
   assert.match(
     ciWorkflow,
@@ -345,11 +342,6 @@ test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
   );
 });
 
-// Re-homed from the retired hosted-runner-pins.test.cjs and
-// select-runner.test.cjs (ci-perf Phase 7). Those files went with the
-// selector, but the three assertions below were never about the selector:
-// they are repository-wide guards on moving image labels, secret
-// inheritance, and the lane that executes this repository's own test suite.
 function yamlFilesUnder(directory) {
   return fs
     .readdirSync(directory, { withFileTypes: true })
@@ -392,9 +384,7 @@ test("reusable workflows never recommend broad secret inheritance", () => {
 
 test("root CI runs this repository's own test suite in a gating lane", () => {
   // The lane is still called `selector-contract` although the selector is
-  // retired. Renaming it would change a check context and every reference for
-  // no behavior gain, so ci-perf Phase 7 declines that churn the same way it
-  // declines renaming the standards `privileged-hosted-only` rule id.
+  // retired: renaming it would change a check context for no behavior gain.
   //
   // Newline-anchored at the job-level two-space indent: the change-detection
   // filter config declares a deeper-indented group with the same name, which a

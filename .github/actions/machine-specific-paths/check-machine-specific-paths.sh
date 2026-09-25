@@ -1,27 +1,10 @@
 #!/usr/bin/env bash
-# Fail when tracked files contain machine-specific absolute paths — a
-# developer's checkout root or user-home directory. Portable placeholders such
-# as C:\Users\<user>\ and <repo-root>/ are allowed (the negative character
-# classes exclude '<').
-#
-# Placeholder spans are filtered in this driver. The synced pattern file stays
-# byte-identical to standards and is not the place for this exemption.
-# A child is punctuation-only when ASCII [:punct:] (POSIX C locale) and
-# U+2026 HORIZONTAL ELLIPSIS are all it contains. Non-Latin letters stay
-# findings: [^A-Za-z0-9] treats every non-ASCII byte as punctuation.
-#
-# A line that carries the literal marker machine-path:allow, usually in a
-# trailing comment, is not a finding. Lines without it are unaffected.
-#
-# POSIX ERE only (grep -E) for cross-platform parity — never grep -P (macOS BSD
-# grep lacks it). Bash =~ is likewise avoided: it is not POSIX ERE.
+# Fail on tracked checkout-root or user-home paths; placeholders and lines marked
+# machine-path:allow pass. POSIX ERE only: BSD grep lacks -P; bash =~ is not ERE.
 set -euo pipefail
 
-# The per-OS regex BODIES (HPP_*) live in machine-path-patterns.sh — the
-# org-shared, standards-managed materialization — so a pattern change lands
-# upstream once and reaches every scan driver in lockstep. This driver keeps
-# only its own wrapping (the PATH_BOUNDARY prefix, git-grep execution, and the
-# match-level placeholder filter).
+# HPP_* bodies come from the standards-synced machine-path-patterns.sh; change
+# them upstream, not here.
 # shellcheck source=machine-path-patterns.sh
 source "${BASH_SOURCE[0]%/*}/machine-path-patterns.sh"
 
@@ -46,10 +29,8 @@ span_child_is_punctuation_only() {
   [[ -z "$rest" ]]
 }
 
-# Keep a git-grep hit unless every re-extracted span is a placeholder.
-# path:line:content is split on the first two colons. Each span is pulled back
-# out of the content with grep -oE and the same POSIX ERE. A hit that yields
-# no span stays a finding (fail closed).
+# Keep a git-grep hit unless every re-extracted span is a placeholder; a hit
+# that yields no span stays a finding (fail closed).
 filter_machine_path_hits() {
   local pattern=$1
   local line rest content spans span child trimmed
@@ -85,10 +66,8 @@ filter_machine_path_hits() {
           continue
         fi
         if [[ "$macos" -eq 1 ]]; then
-          # One trailing run outside [A-Za-z0-9._-]. "." stays in that class,
-          # so a sentence-final "/Users/Shared." trims to "Shared." and one
-          # period is removed before the comparison. "Shared.foo" and
-          # "Shared%2026" do not become "Shared".
+          # A sentence-final "/Users/Shared." is exempt; "Shared.foo" and
+          # "Shared%2026" are not.
           # shellcheck disable=SC2001
           trimmed="$(printf '%s\n' "$child" | LC_ALL=C sed 's/[^A-Za-z0-9._-]*$//')"
           trimmed="${trimmed%.}"
@@ -112,10 +91,8 @@ filter_machine_path_hits() {
 
 run_check() {
   local label=$1 pattern=$2 matches rc=0 filtered
-  # Capture git grep's status separately so a fatal error (bad pathspec, blob
-  # read failure: exit >=2) fails the gate CLOSED instead of looking like a
-  # clean "no match". Exit 1 (no match) is the only non-zero treated as clean.
-  # Piping straight to head would lose that status under pipefail + `|| true`.
+  # Not piped to head: that would lose a fatal (>=2) grep status, and only
+  # exit 1 (no match) is clean.
   matches=$(git grep -nIE "$pattern" -- "${scan_paths[@]}" "${excludes[@]}") || rc=$?
   if [[ "$rc" -ne 0 && "$rc" -ne 1 ]]; then
     echo "::error::git grep failed (exit $rc) scanning for ${label} — refusing to pass without a full scan." >&2

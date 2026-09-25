@@ -41,9 +41,7 @@ on:
           mutable download.
         type: string
         # Keep in step with the fleet pin in melodic-software/dotfiles
-        # (.chezmoidata/uv-tools.yaml). A developer auditing locally with the
-        # fleet zizmor while this lane runs an older one gets findings the lane
-        # cannot see, and misses findings the lane raises.
+        # (.chezmoidata/uv-tools.yaml), or local and lane findings diverge.
         default: v1.29.0
       sha256:
         description: >-
@@ -99,9 +97,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Always granted; the upload-sarif step remains gated on the input so
-      # annotations-only callers never call the code-scanning API. Expressions
-      # are not valid in this permissions scope (workflow fails to parse).
+      # Always granted (expressions fail to parse here); the upload step's input
+      # gate keeps annotations-only callers off the code-scanning API.
       security-events: write
     steps:
       - name: Check out
@@ -147,9 +144,6 @@ jobs:
               fi
               ;;
           esac
-          # --format=github was added in zizmor v1.6.0; a caller-pinned older
-          # version would otherwise fail argument parsing well past this
-          # point, so reject it here with a clear reason.
           IFS='.' read -r zizmor_major zizmor_minor _ <<<"$resolved_version"
           if ((zizmor_major < 1 || (zizmor_major == 1 && zizmor_minor < 6))); then
             echo "::error::zizmor version must be 1.6.0 or newer (this workflow requires --format=github, added in v1.6.0)."
@@ -178,13 +172,6 @@ jobs:
           trap 'rm -rf -- "$work_dir"' EXIT
           archive="$work_dir/$ASSET_NAME"
           url="https://github.com/zizmorcore/zizmor/releases/download/v${resolved_version}/${ASSET_NAME}"
-          # Nine attempts under curl's exponential backoff (~4-5 minutes,
-          # capped by --retry-max-time) instead of a burst that ends within
-          # seconds, and --retry-all-errors so a mid-body connection death
-          # (curl exit 56) retries like an HTTP 5xx does — the two failure
-          # classes of the 2026-08-12 release-asset outage (#444). The
-          # pinned SHA-256 below stays the integrity gate regardless of
-          # what a retry eventually fetched.
           curl --fail --show-error --location --proto '=https' \
             --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 120 \
@@ -215,9 +202,6 @@ jobs:
             exit 2
           fi
 
-          # Resolve the effective blocking threshold: fail-on-severity wins when
-          # above 'never'; otherwise the legacy fail-on-findings boolean maps
-          # true to low and false to never.
           if [[ "$FAIL_ON_SEVERITY" != never ]]; then
             effective_severity=$FAIL_ON_SEVERITY
           elif [[ "$FAIL_ON_FINDINGS" == true ]]; then
@@ -236,16 +220,7 @@ jobs:
             args+=(--no-online-audits)
           fi
 
-          # --format=github emits native ::error/::warning/::notice workflow
-          # commands to stdout for every finding, so the run must stream
-          # straight through (tee, not a redirect) for the runner to parse
-          # them as annotations; a captured copy lets the summary line below
-          # count them without re-parsing zizmor's own output format. zizmor
-          # then exits with its own graduated code keyed to the highest
-          # severity found: 0 none, 11 informational, 12 low, 13 medium, 14
-          # high (https://docs.zizmor.sh/usage/#exit-codes). Any other
-          # nonzero code is a download, argument, or collection failure,
-          # which fails closed rather than trusting a partial result.
+          # tee, not a redirect: the runner must see zizmor's stdout workflow commands to annotate.
           annotations="$work_dir/zizmor-annotations.txt"
           set +e
           GH_TOKEN="$token" "$binary" "${args[@]}" -- "${targets[@]}" | tee -- "$annotations"
@@ -261,13 +236,8 @@ jobs:
             ;;
           esac
 
-          # Optional visibility path. --format=sarif always exits 0 for
-          # findings (not graduated 11-14): docs.zizmor.sh/usage/#exit-codes
-          # ("Successful audit; no findings … (or SARIF mode enabled)" and
-          # "If you use --format=sarif, zizmor will not use exit codes 11 and
-          # above"). Non-zero here is a real tool failure. Second pass doubles
-          # audit cost when online-audits is on. Write outside work_dir so the
-          # EXIT trap does not remove the file before the upload step.
+          # --format=sarif exits 0 for findings (docs.zizmor.sh/usage/#exit-codes), so nonzero
+          # is a tool failure. Written outside work_dir so the EXIT trap spares it for upload.
           if [[ "$UPLOAD_SARIF" == true ]]; then
             sarif_args=(
               --format=sarif
@@ -297,11 +267,6 @@ jobs:
           fi
           unset token
 
-          # The blocking threshold maps directly onto zizmor's own graduated
-          # exit codes. 'low' blocks on any finding (11-14), matching the
-          # legacy fail-on-findings alias and zizmor's note-level annotation
-          # grouping of informational and low together; 'medium' blocks on
-          # 13-14; 'high' blocks only on 14.
           blocking=false
           case "$effective_severity" in
           never) ;;

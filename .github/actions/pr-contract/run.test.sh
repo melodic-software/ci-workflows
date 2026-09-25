@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # Fixture harness for the pr-contract runner: Conventional Commits title, the
-# do-not-merge label gate, and the ported issue-linkage rule with its advisory
+# do-not-merge label gate, and the issue-linkage rule with its advisory
 # comment/label upsert.
 #
 # Every case names, in a comment, the check it would pass without. A case that

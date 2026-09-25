@@ -17,7 +17,7 @@ function occurrences(content, pattern) {
 
 test("immutable release assets have a bounded exponential retry budget", () => {
   // Release-asset downloads must outlast a multi-minute upstream outage, not
-  // just a packet-loss burst (2026-08-12, #444): nine attempts under curl's
+  // just a packet-loss burst: nine attempts under curl's
   // exponential backoff span ~4-5 minutes, hard-capped by --retry-max-time,
   // and --retry-all-errors covers the connection-died class (curl exit 56)
   // that curl's default transient-only classification never retries.
@@ -25,10 +25,8 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   // exponential backoff rather than bound it.
   for (const [name, content, expected] of [
     ["zizmor", read(".github/workflows/zizmor.yml"), 1],
-    // The standards-sync reusables download no release asset since the
-    // engine's Node cutover retired their yq installs (standards Phase 6.4);
-    // their npm installs carry the equivalent fetch-retry budget, asserted
-    // separately below.
+    // The standards-sync reusables download no release asset; their npm
+    // installs carry the equivalent fetch-retry budget, asserted below.
     ["standards sync", read(".github/workflows/standards-sync.yml"), 0],
     // Linux (bash) and Windows (pwsh) golangci-lint installs carry the same
     // budget, hence two occurrences.
@@ -52,8 +50,7 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   }
 
   // The standards-sync path's remaining network dependency is npm: every
-  // engine-dependency install carries the equivalent bounded retry budget
-  // (mirroring the retired yq step's outage rationale).
+  // engine-dependency install carries the equivalent bounded retry budget.
   for (const [name, content, expected] of [
     ["standards sync npm", read(".github/workflows/standards-sync.yml"), 2],
     [
@@ -71,8 +68,7 @@ test("immutable release assets have a bounded exponential retry budget", () => {
 });
 
 test("every shared-installer consumer caches its verified release asset", () => {
-  // The verified-asset cache (the shellcheck action's #156 pattern, extended
-  // fleet-wide by #444) is the primary defense against release-asset
+  // The verified-asset cache is the primary defense against release-asset
   // outages: with a warm version+sha256 pin no job touches the network at
   // all. install-release.sh re-verifies the pinned SHA-256 on restore and
   // re-downloads on mismatch, so the cache key is never trusted by itself.

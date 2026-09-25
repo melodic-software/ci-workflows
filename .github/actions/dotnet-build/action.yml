@@ -46,17 +46,8 @@ runs:
         dotnet-version: ${{ inputs.dotnet-version }}
 
     - name: Set up .NET (fallback — no version or global.json found)
-      # setup-dotnet leaves its `dotnet-version` output unset (empty string
-      # here) when the `dotnet-version` input is empty AND it can't find a
-      # global.json anywhere in the caller's tree: it logs "nothing will be
-      # installed" and exits 0 without provisioning an SDK, so `dotnet build`
-      # below would otherwise fall through to whatever (if anything) happens
-      # to be preinstalled on the runner. Re-run pointed at this action's own
-      # repo root global.json via `github.action_path` (a caller with none of
-      # its own has nothing else to fall back to), so a caller that never
-      # declared a version keeps the exact behavior it had before
-      # dotnet-version's default changed here — this always tracks
-      # global.json directly, so there is no separate pin to keep in lockstep.
+      # setup-dotnet installs nothing and exits 0 when given no version and no
+      # global.json; fall back to this repository's own global.json.
       if: steps.setup-dotnet.outputs.dotnet-version == ''
       uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
@@ -68,15 +59,8 @@ runs:
         PROJECT: ${{ inputs.project }}
         CONFIGURATION: ${{ inputs.configuration }}
         LOCKED_MODE: ${{ inputs.locked-mode }}
-      # Warnings-as-errors lives in the caller's Directory.Build.props
-      # (TreatWarningsAsErrors), which Roslyn honors for both compiler and
-      # analyzer (CA + IDE) diagnostics — so no rule flags are needed here.
-      # RestoreLockedMode rides the build's implicit restore as an MSBuild
-      # property, so there is no separate restore step to drift from the build.
-      # $PROJECT is appended to the array only when non-empty, so an empty value
-      # omits the argument entirely and the working-directory project/solution
-      # is built, without unquoted expansion risking word-splitting a path that
-      # contains a space.
+      # Warnings-as-errors lives in the caller's Directory.Build.props, and
+      # RestoreLockedMode rides the build's implicit restore, so no restore step.
       run: |
         set -euo pipefail
         args=()

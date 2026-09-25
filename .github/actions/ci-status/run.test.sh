@@ -271,12 +271,10 @@ user_status() {
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
 current_run_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242'
 workflow_runs_key='GET_repos_melodic-software_ci-workflows_actions_workflows_777_runs'
-# The run under test: workflow 777, run id 4242, created at 12:00:30Z. The wait
-# no longer orders the runs it sees: every incomplete sibling counts whatever
-# its id, and only 4242 itself is excluded. Ids below and above 4242 appear
-# below to pin that, and the `created_at` values are kept both because the real
-# API returns them and because the same-second cases prove the runner ignores
-# them.
+# The run under test: workflow 777, run id 4242, created at 12:00:30Z. Every
+# incomplete sibling counts whatever its id, and only 4242 itself is excluded;
+# ids on both sides of 4242 pin that, and the same-second `created_at` cases
+# prove the runner ignores creation time.
 current_run_created_at='2026-09-05T12:00:30Z'
 
 # status_list_on_call <n> <json-array>
@@ -538,10 +536,8 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 
 # --- carry-forward: the bounded wait ---------------------------------------
 #
-# The branched concurrency group (ci-perf Phase 6b) stops a contract-only run
-# queueing behind the full run whose `ci-lanes` status it reads, so the two race.
 # Every case here sets the ceiling explicitly; the harness default is 0, which
-# keeps every case above on the pre-6b fail-immediately path.
+# keeps every case above on the fail-immediately path.
 
 # Without the wait this run reads the absent status while the sibling is still
 # in flight and goes red on the first poll.
@@ -592,13 +588,9 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log 'Waiting 15s for in-flight run(s) 4000'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
 
-# The v0.22.1 behavior this replaces, kept as a test because it is a real
-# trade and not an oversight. A settled verdict now ends the wait even with a
-# sibling incomplete, which is what releases two contract-only runs once the
-# full run has written for them. It gives up v0.22.1's guard against carrying an
-# older verdict forward while a re-run of the same SHA is in flight. Fail-closed
-# is unaffected: an absent or `pending` status still waits, as the case above
-# shows.
+# A deliberate trade: a settled verdict ends the wait even with a sibling
+# incomplete, so an older verdict can carry forward while a re-run is in flight.
+# An absent or `pending` status still waits, as the case above shows.
 echo 'case: a settled status ends the wait even with a sibling still incomplete'
 clear_status_fixtures
 clear_run_fixtures
@@ -624,7 +616,7 @@ expect_no_log 'in-flight run(s):'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
 
 # Without the 403 branch the missing scope reads as "no earlier run", which is
-# the same outcome but unattributable. The run degrades to the pre-6b contract,
+# the same outcome but unattributable. The run degrades to
 # reading the recorded status and deciding, and must not pass on an absent one.
 echo 'case: a 403 on the workflow-runs endpoint warns naming actions: read and still fails'
 clear_status_fixtures
@@ -702,27 +694,9 @@ expect_log '::error::carry-forward-wait-seconds must be a non-negative integer n
 expect_no_gh_calls_at_all
 
 # --- carry-forward: waiting on ANY in-flight sibling ------------------------
-#
-# The defect v0.22.1 left behind. Its wait set held only siblings with a
-# STRICTLY LOWER run id, on the reasoning that ordering the pair makes a mutual
-# wait impossible. A pull request opened with labels already applied creates the
-# `opened` full run and the `labeled` contract-only run together, and nothing
-# orders the two: the contract-only run draws the lower id roughly half the
-# time. Its wait set is then empty, it reads a status the sibling has not
-# written yet, and it fails instantly. Three of three post-merge contract-only
-# runs did this on 2026-09-06 (dotfiles 34041131183 against sibling
-# 34041131475, github-iac 34015549526 against 34015549933, provisioning
-# 34019887317 against 34019887725; every sibling wrote `ci-lanes=success`
-# minutes later).
-#
-# The wait set is now every incomplete sibling, whatever its run id. Ordering
-# the pair no longer prevents a mutual wait, so reading the settled status each
-# poll is what releases two contract-only runs once the full run writes its
-# verdict.
 
 # Without waiting on a HIGHER-id sibling this reads the absent status on the
-# first poll and exits 1. Same `created_at` as this run, which is the shape the
-# three production runs above had: the sibling is same-second AND higher-id, so
+# first poll and exits 1. The sibling is same-second AND higher-id, so
 # neither a `created_at` term nor a run-id term puts it in the wait set.
 echo 'case: a same-second sibling with a HIGHER run id is waited on until its status appears'
 clear_status_fixtures
@@ -761,8 +735,7 @@ expect_no_log 'waited '
 # SHA with no full run in flight and no status to release them. Each waits on
 # the other until the ceiling and then FAILS. Without the fail-closed ceiling
 # this would pass on an absent verdict, which is the whole gate. The pair is
-# same-second and straddles this run's id (4100 below, 4300 above), so it also
-# covers what the retired run-id ordering term used to select.
+# same-second and straddles this run's id (4100 below, 4300 above).
 echo 'case: two contract-only siblings with no full run wait to the ceiling and fail closed'
 clear_status_fixtures
 clear_run_fixtures

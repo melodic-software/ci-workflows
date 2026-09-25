@@ -2,7 +2,7 @@
 # Aggregate lane results into the single required gate check, and carry that
 # verdict forward to contract-only pull-request events.
 #
-# Full mode (`contract-only` false): aggregate `results` exactly as before, then
+# Full mode (`contract-only` false): aggregate `results`, then
 # record the verdict as a commit status on the head SHA under `status-context`.
 # That status is the only signal a contract-only run can trust, because a check
 # run cannot say which event produced it — a chain of contract-only runs could
@@ -16,7 +16,7 @@
 # overrides an earlier success. The combined-status endpoint would be shorter
 # but exposes no author; see `read_carried_state` for why that matters.
 #
-# The branched concurrency group (ci-perf Phase 6b) stops a contract-only run
+# The branched concurrency group stops a contract-only run
 # queueing behind the full run whose status it reads, so the two now race.
 # `carry-forward-wait-seconds` bounds a poll loop that closes that race. Each
 # poll does three things, in this order:
@@ -30,16 +30,11 @@
 #      still write a verdict exists, and an absent status fails the run as it
 #      always has. If something IS in flight, sleep and poll again.
 #
-# ANY in-flight sibling, not only one with a lower run id. v0.22.1 waited only
-# on lower ids, reasoning that ordering the pair makes a mutual wait impossible.
-# The ordering is real; the premise that a full run always holds the lower id is
-# not. A pull request opened with labels already applied creates the `opened`
-# full run and the `labeled` contract-only run together, and nothing decides
-# which of the two draws the lower id. When the contract-only run drew it, its
-# wait set was empty, it read a status its sibling had not written yet, and it
-# failed instantly. Widening the set to every in-flight sibling fixes that and
-# gives up the ordering, so step 2 is what now breaks a mutual wait: once the
-# full run writes its verdict, both contract-only runs read it and stop.
+# ANY in-flight sibling, not only one with a lower run id: a pull request opened
+# with labels already applied creates the `opened` full run and the `labeled`
+# contract-only run together, and either may draw the lower id. Step 2 is what
+# breaks a mutual wait: once the full run writes its verdict, both contract-only
+# runs read it and stop.
 #
 # Step 1 before step 2 WITHIN a poll. A sibling writes the status and flips to
 # `completed` a moment later. Listing after reading would let that completion
@@ -53,14 +48,10 @@
 # full run in flight to write a verdict for them: they wait on each other and
 # then both fail closed.
 #
-# Reading a settled status before the wait set empties is a deliberate trade. It
-# is what releases the mutual wait above, and it gives up the guard v0.22.1 had
-# against carrying an older `success` forward while a re-run of the same SHA is
-# in flight to overwrite it. That guard bound only when a full run had already
-# written a verdict for this exact SHA and another full run was in flight on it
-# again, and it cost a false red on every same-second sibling. The defenses
-# against a forged status (context, creator login, Bot type, newest id) are
-# untouched.
+# Reading a settled status before the wait set empties is a deliberate trade: it
+# releases the mutual wait above, and it can carry an older `success` forward
+# while a re-run of the same SHA is in flight to overwrite it. The defenses
+# against a forged status (context, creator login, Bot type, newest id) hold.
 #
 # `same-repo` false is a fork pull request. Its token is read-only on
 # `pull_request` whatever `permissions:` requests, so it cannot record lane
@@ -84,8 +75,8 @@ STATUS_RETRY_BASE_DELAY="${STATUS_RETRY_BASE_DELAY:-1}"
 # the harness can exercise the check; a caller minting statuses with a GitHub
 # App token would need its own value and takes on proving that identity itself.
 STATUS_CREATOR="${STATUS_CREATOR:-github-actions[bot]}"
-# Ceiling on the carry-forward wait, in seconds. `0` disables it and restores the
-# fail-immediately behavior. Validated below, once `escape_annotation` exists.
+# Ceiling on the carry-forward wait, in seconds; `0` disables the wait.
+# Validated below, once `escape_annotation` exists.
 CARRY_FORWARD_WAIT_SECONDS="${CARRY_FORWARD_WAIT_SECONDS:-240}"
 # Poll interval, deliberately not a caller input: it is an implementation detail
 # of the wait, and the only knob a consumer should reason about is the ceiling.
@@ -239,7 +230,7 @@ read_carried_state() {
 # Both Actions reads need `actions: read`, which an explicit `permissions:` block
 # does not grant by default. Name the scope rather than printing a bare 403, and
 # never treat the refusal as permission to pass: the caller falls through to the
-# status read it would have done without the wait, which is the pre-6b contract.
+# status read it would have done without the wait.
 warn_actions_read_failed() {
   local endpoint="$1"
   if [[ "$GH_HTTP_STATUS" == 403 ]]; then
@@ -264,14 +255,14 @@ set_wait_note() {
 }
 
 # Poll until this SHA's verdict settles, nothing that could still write one is
-# in flight, or the ceiling is reached. See the header for the ordering and for
-# why the wait set is every sibling rather than the lower-id ones.
+# in flight, or the ceiling is reached. See the header for the ordering and the
+# wait set.
 #
 # Returns 1 at the ceiling, which the caller turns into the fail-closed error.
 # Every other outcome returns 0. On a 0 the caller applies `carried_state` when
 # `carried_state_read` is true, and otherwise reads the status itself: that is
 # the degraded path, taken when an Actions read fails and when a status read
-# fails part way through the loop, and it is the pre-6b behavior. A failed read
+# fails part way through the loop. A failed read
 # never leaves `carried_state_read` true, so the degraded path is a fresh read
 # that fails closed on its own failure; there is no outcome that passes without
 # one completed read.
@@ -281,9 +272,6 @@ wait_for_sibling_runs() {
     echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from its own wait set. Reading the recorded status without waiting."
     return 0
   fi
-  # One fetch of the current run gives the workflow to enumerate. The ordering
-  # term needs nothing from it: `GITHUB_RUN_ID` is this run's own id, which is
-  # what the wait set is compared against.
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
     warn_actions_read_failed "repos/${REPOSITORY}/actions/runs/${run_id}"
@@ -325,7 +313,7 @@ wait_for_sibling_runs() {
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! read_carried_state; then
       # The same degraded path the listing failure above takes, for the same
-      # reason. This endpoint is now read once per poll, up to sixteen times
+      # reason. This endpoint is read once per poll, up to sixteen times
       # under the 240s ceiling, so failing the run on the first transient 5xx
       # would let one bad read of sixteen turn the sole required check red. Break
       # instead, and let the caller take its single fresh re-read, which fails
@@ -380,9 +368,6 @@ wait_for_sibling_runs() {
 
 if [[ "$contract_only" == true ]]; then
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
-  # The poll loop reads the status itself, once per poll and after listing the
-  # in-flight siblings. It stops on a settled verdict, on an empty wait set, on
-  # a read it could not complete, or at the ceiling.
   if [[ "$CARRY_FORWARD_WAIT_SECONDS" -gt 0 ]]; then
     carry_forward_wait_status=0
     # shellcheck disable=SC2310 # wait_for_sibling_runs reports the ceiling through its status; the caller exits on it.
@@ -394,9 +379,8 @@ if [[ "$contract_only" == true ]]; then
       exit 1
     fi
   fi
-  # Only when the loop did not read it. Both a failed Actions read and a status
-  # read that failed part way through the loop degrade to the pre-6b path, where
-  # this is the single status read, and a second failure here fails the run.
+  # Only when the loop did not read it: a failed Actions read or a mid-loop
+  # status-read failure degrades to this single read, whose failure fails the run.
   if [[ "$carried_state_read" != true ]]; then
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! read_carried_state; then
@@ -414,7 +398,7 @@ if [[ "$contract_only" == true ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Full mode — aggregate exactly as before.
+# Full mode — aggregate the lane results.
 # ---------------------------------------------------------------------------
 # Unquoted expansion word-splits on all of IFS (space, tab, newline), so a YAML
 # block scalar spanning lines is parsed in full. `read` would stop at the first

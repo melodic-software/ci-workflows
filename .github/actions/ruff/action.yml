@@ -19,11 +19,7 @@ inputs:
   version:
     description: Exact Ruff version to run.
     # Keep in step with the fleet pin in melodic-software/dotfiles
-    # (.chezmoidata/uv-tools.yaml). A caller whose developers run the fleet ruff
-    # while this action runs an older one gets findings CI cannot see, and — as
-    # of 0.16.0, which changed the DEFAULT rule set — findings that differ in
-    # both directions. Callers pass an explicit `config`, so a default-set change
-    # cannot reach them; the parity that matters here is version, not rules.
+    # (.chezmoidata/uv-tools.yaml), or developers see findings CI cannot.
     default: 0.16.5
   python-version:
     description: Exact Python patch version uv provisions for the ephemeral tool environment.
@@ -51,33 +47,25 @@ runs:
           exit 2
         fi
         args=(--config "$CONFIG")
-        # Translate the excludes into an additive extend-exclude TOML override so
-        # the config's own excludes (and Ruff's defaults) survive. extend-exclude
-        # is the one exclude mechanism both `check` and `format` honor via
-        # --config; `ruff format` has no --extend-exclude flag, and a bare
-        # --exclude would replace the defaults rather than add to them.
+        # extend-exclude via --config is the one additive exclude both `check` and
+        # `format` honor; `ruff format` has no --extend-exclude flag.
         if [[ -n "${EXCLUDE// }" ]]; then
           quoted=()
-          # set -f: $EXCLUDE is unquoted to word-split, but its entries are Ruff
-          # extend-exclude PATTERNS (e.g. fixtures/**) — without noglob bash would
-          # pathname-expand them to today's matching paths before Ruff sees them.
+          # set -f: entries are Ruff PATTERNS (e.g. fixtures/**) that bash would
+          # otherwise pathname-expand before Ruff sees them.
           set -f
           for e in $EXCLUDE; do quoted+=("'$e'"); done
           set +f
           IFS=,; joined="${quoted[*]}"; unset IFS
           args+=(--config "extend-exclude=[$joined]")
         fi
-        # Split into an array at the input boundary so multiple targets reach
-        # ruff as separate arguments. -d '' takes the whole value so a
-        # caller-authored multi-line input still splits; read hits EOF without
-        # finding that delimiter, hence the `|| true`.
+        # -d '' takes the whole value so a multi-line input still splits; read hits
+        # EOF without finding that delimiter, hence the `|| true`.
         paths=()
         read -r -d '' -a paths <<<"$PATHS" || true
         rc=0
         # Run both checks even if the first fails, so a single run surfaces
-        # every issue. --output-format=github emits inline PR annotations for
-        # lint findings (the formatter has no such format; its diff goes to the
-        # log).
+        # every issue; only `check` has a GitHub annotation format.
         uvx "ruff@${VERSION}" check "${paths[@]}" "${args[@]}" --output-format=github || rc=1
         uvx "ruff@${VERSION}" format --check "${paths[@]}" "${args[@]}" || rc=1
         exit $rc
