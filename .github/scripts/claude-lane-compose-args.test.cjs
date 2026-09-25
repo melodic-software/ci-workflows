@@ -4,9 +4,8 @@
 // appends it AFTER the caller's claude-args, so a caller replacing the
 // caller-facing default wholesale cannot silently drop the grant — which
 // would not merely un-grant the tool: the action derives which MCP servers
-// to install from these args, so the server would never be installed. The
-// lanes once diverged on this shape (ciw#382); these tests pin the
-// drop-proof shape in BOTH lanes so the asymmetry class cannot return.
+// to install from these args, so the server would never be installed. These
+// tests pin the drop-proof shape in BOTH lanes.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -89,7 +88,7 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
     for (const baseArgs of [
       claudeArgsInput.default.trim(),
       // A caller replacing the default wholesale, with no inline-comment
-      // grant of its own — the ciw#382 shape.
+      // grant of its own.
       '--model claude-opus-5 --allowedTools "Bash(git log:*)"',
       // Multiline caller args are the reason for the heredoc output form: a
       // single-line $GITHUB_OUTPUT write corrupts on any embedded newline.

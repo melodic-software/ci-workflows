@@ -37,12 +37,8 @@ inputs:
 runs:
   using: composite
   steps:
-    # Persist the verified tarball across jobs so a warm version+sha256 pin
-    # never touches the network — the shellcheck action's #156 pattern,
-    # extended here as the primary defense against release-asset outages
-    # like 2026-08-12 (#444). install-release.sh re-verifies the pinned
-    # SHA-256 on every restore and re-downloads on mismatch, so the cache
-    # key is never trusted by itself.
+    # A warm pin never touches the network. install-release.sh re-verifies the
+    # pinned SHA-256 on every restore, so the cache key is never trusted by itself.
     - name: Cache actionlint release asset
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -85,18 +81,13 @@ runs:
         COLOR: ${{ inputs.color }}
       run: |
         set -euo pipefail
-        # ShellCheck is installed above instead of relying on a runner image, so
-        # embedded bash/sh `run:` scripts receive identical checks on hosted and
-        # self-hosted workers. Pyflakes remains actionlint's optional PATH-based
-        # integration; neither supported runner contract preinstalls it.
+        # ShellCheck comes from the pinned install above, not the runner image.
+        # Pyflakes stays PATH-based; neither supported runner contract preinstalls it.
         args=()
         if [[ "$COLOR" == "true" ]]; then args+=(-color); fi
         if [[ -n "${CONFIG_FILE// }" ]]; then args+=(-config-file "$CONFIG_FILE"); fi
-        # Split into an array at the input boundary so multiple targets reach
-        # actionlint as separate arguments; empty appends nothing and actionlint
-        # auto-discovers .github/workflows. -d '' takes the whole value so a
-        # caller-authored multi-line input still splits; read hits EOF without
-        # finding that delimiter, hence the `|| true`.
+        # -d '' takes the whole value so a multi-line input still splits; read hits
+        # EOF without finding that delimiter, hence the `|| true`.
         paths=()
         read -r -d '' -a paths <<<"$PATHS" || true
         actionlint "${args[@]}" "${paths[@]}"

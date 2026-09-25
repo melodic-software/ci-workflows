@@ -139,13 +139,10 @@ matcher="$scratch/matcher"
 git init -q "$matcher"
 : >"$matcher/.gitignore"
 values=()
-# Per-group check-ignore is a process-per-group fork. Groups are independent
-# (each has its own pattern set), so they can run concurrently against one
-# scratch repo via core.excludesFile — check-ignore is read-only. Results are
-# collected and then folded in `names` order so emit_results and the warnings
-# stay in the same sequence as the serial loop. An empty pattern file is the
-# vacuous-filter fail-OPEN (no usable patterns); check-ignore exit 0 = at
-# least one match, 1 = none, >1 = fatal (also fail OPEN, never "no match").
+# Groups are independent, so their read-only check-ignore runs execute
+# concurrently against one scratch repo via core.excludesFile, then fold in
+# `names` order. An empty pattern file is the vacuous-filter fail-OPEN;
+# check-ignore exit 0 = match, 1 = none, >1 = fatal (also fail OPEN).
 for index in "${!names[@]}"; do
   ignore="$scratch/ignore-$index"
   : >"$ignore"
@@ -156,9 +153,8 @@ for index in "${!names[@]}"; do
     esac
   done <"${group_files[$index]}"
 done
-# Cap at 4, matching the hosted runner's vCPU count and the ShellCheck /
-# shfmt fan-outs in this same change. Unbounded `& … wait` oversubscribes
-# a filters.yml that grows past a handful of groups; xargs -P reaps.
+# Cap at 4, the hosted runner's vCPU count. Unbounded `& … wait`
+# oversubscribes a filters.yml that grows past a handful of groups.
 jobs=4
 worker_indices=()
 for index in "${!names[@]}"; do

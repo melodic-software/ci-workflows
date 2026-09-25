@@ -1,6 +1,6 @@
 "use strict";
 
-// ci-workflows#619: both Claude lanes conclude green on an infrastructure
+// Both Claude lanes conclude green on an infrastructure
 // failure by design, so each carries a status job that always runs, goes red
 // and names the failure class. These tests pin the wiring (unconditional,
 // reads the job outputs through env) and run the job's own script for

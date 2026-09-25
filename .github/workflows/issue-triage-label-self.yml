@@ -1,14 +1,9 @@
 name: issue-triage-label-self
 
-# Applies the bare floor label `needs-triage` to an issue opened or
-# reopened with no `priority:*` label. Dogfood caller of this repo's own
-# issue-triage-label reusable (pinned to its merged SHA, not a PR head — the
-# reusable's own security/logic surface is not redefinable by the caller
-# introducing it). Passes `label: needs-triage`. Uses this
-# repo's real `needs-triage` label, so this is a genuine end-to-end exercise
-# of the reusable's label-set guard and fail-closed existence check, not a
-# stub. `reopened` is included alongside `opened` so an issue reopened after
-# its tier was cleared re-acquires the floor.
+# Dogfood caller of this repo's issue-triage-label reusable, pinned to its
+# merged SHA, not a PR head, so a PR cannot redefine the reusable it runs.
+# Uses the real `needs-triage` label, exercising the label-set guard and
+# fail-closed existence check end to end.
 on:
   issues:
     types: [opened, reopened]

@@ -59,8 +59,7 @@ test("the arming step uses the target-scoped App token, not the caller's default
 });
 
 // Two GraphQL semantics no mock can enforce, both verified against live
-// GitHub and both silently wrong in an earlier revision of this step:
-// `totalCount` reports the WHOLE timeline and ignores `itemTypes`, and a
+// GitHub: `totalCount` reports the WHOLE timeline and ignores `itemTypes`, and a
 // `mergeMethod: SQUASH` arm records AutoSquashEnabledEvent — so reading
 // totalCount, or naming only AUTO_MERGE_ENABLED_EVENT, makes the arming gate
 // answer the opposite of the truth on every PR.

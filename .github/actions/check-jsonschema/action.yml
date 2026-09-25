@@ -64,7 +64,6 @@ runs:
         if [[ -z "${FILES// }" ]]; then
           echo '::error::files is required.'; exit 1
         fi
-        # Exactly one schema source (the tool treats them as mutually exclusive).
         if [[ -n "${BUILTIN// }" && -n "${SCHEMAFILE// }" ]]; then
           echo '::error::Set only one of builtin-schema or schemafile, not both.'; exit 1
         fi
@@ -77,9 +76,7 @@ runs:
         if [[ "$NO_CACHE" == "true" ]]; then args+=(--no-cache); fi
         if [[ -n "${OUTPUT_FORMAT// }" ]]; then args+=(--output-format "$OUTPUT_FORMAT"); fi
         if [[ -n "${DEFAULT_FILETYPE// }" ]]; then args+=(--default-filetype "$DEFAULT_FILETYPE"); fi
-        # $FILES unquoted so multiple targets word-split and shell globs expand.
-        # nullglob drops non-matching patterns instead of passing them through as
-        # literal filenames; the empty-expansion guard below keeps that from
+        # nullglob drops non-matching patterns; the guard below keeps that from
         # degrading into a zero-file invocation, which would exit 0 (false green).
         shopt -s nullglob
         # shellcheck disable=SC2206

@@ -1,10 +1,8 @@
 name: release
 
-# Cut a semantic-version release on demand: compute the next version from the
-# highest SemVer among this repository's PUBLISHED Releases (draft and
-# prerelease excluded) plus the chosen bump — NOT from the newest tag; see the
-# source-of-truth comment on the "Compute next version" step below — then
-# create a tag + GitHub Release (auto-generated notes) at the current main HEAD.
+# Cut a semantic-version release on demand: the next version is the highest
+# SemVer among PUBLISHED Releases (not tags) plus the chosen bump, released as a
+# tag + GitHub Release (auto-generated notes) at the current main HEAD.
 #
 # Why this shape:
 #   - NO commit is pushed to main — only a tag is created — so the branch
@@ -17,23 +15,11 @@ name: release
 #   - Manual dispatch (not on: push) so releasing is a deliberate act — every
 #     merge to main does NOT cut a release; you pick when and how much to bump.
 #
-# CUTTING A RELEASE REPINS NOTHING. This workflow pushes no commit, so it
-# rewrites no `uses:` pin — not a consumer's, and not this repository's own
-# self-referencing pins. There is no repin workflow here; a release only makes
-# a SHA available to pin TO, and moving a pin is always a separate reviewed
-# pull request. Consumers pin by SHA with a `# vX.Y.Z` comment and `ignore`
-# this repository in their own Dependabot config, so no release ever reaches
-# them automatically (README.md, Contract and Versioning). Two things propose
-# those pull requests, and neither is triggered by a release:
-#   - For the caller files `components/claude-lanes/repin-callers.sh`
-#     enumerates inside `melodic-software/standards`, that repository's
-#     `.github/workflows/claude-lanes-repin.yml` re-pin lane, on a daily
-#     schedule.
-#   - For this repository's OWN self-pins, this repository's `github-actions`
-#     Dependabot group — `.github/dependabot.yml` here carries no `ignore` for
-#     self-references, unlike a consumer's config.
-# Both only ever open a pull request a human reviews. Every other consumer
-# repins by hand.
+# CUTTING A RELEASE REPINS NOTHING: it rewrites no `uses:` pin, here or in a
+# consumer. Repins are separate reviewed pull requests: the standards
+# `claude-lanes-repin.yml` lane for the callers `repin-callers.sh` enumerates,
+# this repository's `github-actions` Dependabot group for its self-pins, and by
+# hand everywhere else.
 #
 # Cut a release whenever main changes by something worth pinning to, so a
 # repinner has a released SHA for the `# vX.Y.Z` comment form instead of the
@@ -74,29 +60,10 @@ jobs:
             exit 1
           fi
 
-      # SINGLE SOURCE OF TRUTH: the newest PUBLISHED RELEASE, not the newest tag.
-      #
-      # These were two different artifacts until 2026-08-12. This step computed
-      # from the newest tag, while the fleet's re-pin lane
-      # (melodic-software/standards `components/claude-lanes/repin-callers.sh
-      # resolve`) reads `releases/latest`. Tag `v0.13.0` (036c390) exists with no
-      # Release, so it silently advanced the counter here — a `minor` bump on
-      # 2026-08-12 produced `v0.14.0`, skipping a version the fleet could never
-      # reach — and nothing alarmed on the divergence.
-      #
-      # A Release is the artifact both halves consume and the deliberate act
-      # this workflow exists to perform; a tag is a side effect any pusher can
-      # create out-of-band. So the Release wins, and a stray tag no longer moves
-      # the counter. The "tag does not already exist" guard below then FAILS
-      # CLOSED on a stray tag at the computed version: releases stop until the
-      # operator reconciles it, rather than silently stepping over it.
-      #
-      # Selection is by highest SemVer among published releases, deliberately
-      # NOT the `releases/latest` endpoint: that endpoint orders by `created_at`,
-      # which GitHub sets from the tag target's COMMIT date, so a release cut
-      # from an older commit would rank ahead of a newer version. Highest-SemVer
-      # is the rule the re-pin lane's `resolve` now applies too, so both halves
-      # share one artifact AND one ordering.
+      # SINGLE SOURCE OF TRUTH: the highest-SemVer PUBLISHED RELEASE, the same
+      # artifact and ordering the fleet's re-pin lane `resolve` uses. A stray
+      # tag must not move the counter. Not `releases/latest`: it orders by the
+      # tag target's commit date.
       - name: Compute next version
         id: ver
         env:
@@ -104,20 +71,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The API call is deliberately SEPARATE from the filtering pipe.
-          # Folding them together and appending `|| true` — the earlier shape —
-          # tolerated far more than intended: under `pipefail` that trailing
-          # `|| true` masks a failing `gh api` (auth, rate limit, transient 5xx,
-          # or a mid-pagination error on any of the additional sequential
-          # requests `--paginate` makes) exactly as if grep had simply found no
-          # releases. The run would then fall through to the `v0.0.0` default
-          # and compute a version from the wrong baseline — cutting `v0.1.0` on
-          # a repository that already has a v0.14.0, or colliding with an
-          # existing tag. For the workflow that decides what the whole fleet
-          # pins to, a transient API blip must never silently rebase the
-          # version. So: an API failure aborts under errexit, and only grep's
-          # expected exit 1 (no release matches, on a repository with none yet)
-          # is tolerated.
+          # The API call stays SEPARATE from the `|| true` pipe, so a failing
+          # `gh api` aborts instead of falling through to the `v0.0.0` default.
           releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
             --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
           latest="$(printf '%s\n' "$releases" \
@@ -133,10 +88,8 @@ jobs:
           echo "next=${next}" >> "$GITHUB_OUTPUT"
           echo "Next release: ${next} (from newest published release ${latest}, bump=${BUMP})"
 
-      # The checkout above is still `fetch-depth: 0` because this guard reads
-      # local tags. It is now also the fail-closed half of the source-of-truth
-      # change: with the version computed from Releases, a tag that exists
-      # without one lands here as a hard stop instead of being stepped over.
+      # Reads local tags (hence `fetch-depth: 0`); fails closed on a stray tag
+      # at the computed version rather than stepping over it.
       - name: Guard — tag does not already exist
         env:
           NEXT: ${{ steps.ver.outputs.next }}

@@ -121,9 +121,7 @@ gitleaks "${args[@]}"
 status=$?
 set -e
 
-# Gitleaks uses 0 for a clean scan and 1 for findings. Every other status is an
-# operational failure and therefore remains blocking in both normal and report
-# modes.
+# Gitleaks exits 0 clean and 1 on findings; anything else blocks in every mode.
 if ((status != 0 && status != 1)); then
   echo "::error::gitleaks failed before completing a trustworthy scan (exit $status)."
   exit "$status"

@@ -201,9 +201,8 @@ test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
     "--connect-timeout",
     "--max-time",
     "--retry",
-    // The connection-died class (curl exit 56) observed in the 2026-08-12
-    // release-asset outage (#444) is not in curl's default transient-only
-    // retry classification, so the sledgehammer flag is required.
+    // The connection-died class (curl exit 56) is not in curl's default
+    // transient-only retry classification, so the sledgehammer flag is required.
     "--retry-all-errors",
     "--retry-max-time",
   ])

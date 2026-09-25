@@ -33,11 +33,8 @@
 // `auth` is the credential-unusable class, not the 401-only class: it covers
 // every status where the credential cannot be used until a human acts. Per the
 // published error table that is 401 `authentication_error`, 402 `billing_error`,
-// and 403 `permission_error`. 402 belongs here because the incident this
-// classifier exists for (ci-workflows#228 / claude-code-plugins#1122) is
-// described as a *usage-dead account credential* — a billing/entitlement death,
-// which the API reports as 402, not 401. Leaving 402 in `other` would classify
-// the originating incident as unremarkable.
+// and 403 `permission_error`. 402 belongs here because a usage-dead
+// account credential is a billing/entitlement death, which the API reports as 402.
 //
 // The two sources are disjoint members of the SDK's result union:
 // `api_error_status` exists only on the success variant (the shape a dead
@@ -77,9 +74,8 @@ function matchErrorType(text) {
   return { errorType: null, failureClass: "other" };
 }
 
-// Mirrors jq's `tostring`: strings pass through, everything else serializes
-// compactly — an object error entry must expose its `"type":"..."` body to the
-// substring pass exactly as the jq implementation did.
+// Mirrors jq's `tostring`, so an object error entry exposes its
+// `"type":"..."` body to the substring pass.
 function toStringLikeJq(value) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
@@ -108,9 +104,8 @@ function classifyExecutionFile(executionFilePath) {
 
   const status = last.api_error_status;
   let failureClass;
-  // error_type is set only on the substring path (allowlist token matched).
-  // Numeric-status classification already has api_error_status as its
-  // discriminator, so error_type stays null there (ci-workflows#253).
+  // error_type is set only on the substring path: numeric-status classification
+  // already has api_error_status as its discriminator.
   let errorType = null;
   if (typeof status === "number") {
     failureClass = classFromStatus(status);

@@ -202,8 +202,6 @@ printf 'PASS: ShellCheck findings propagate after both lanes run\n'
 
 # --- explicit file list -------------------------------------------------------
 
-# A caller assembling the list from `git diff --name-only` gets newlines; a
-# caller writing it inline gets spaces. Both spellings select the same set.
 for spelling in $'script.sh\nnested/tool.bash' 'script.sh nested/tool.bash'; do
   run_action 0 FILES="$spelling"
   load_args 1
@@ -214,8 +212,6 @@ for spelling in $'script.sh\nnested/tool.bash' 'script.sh nested/tool.bash'; do
 done
 printf 'PASS: newline- and space-separated lists select the same files\n'
 
-# A raw diff carries deletions and non-shell paths. Both are skipped rather
-# than failing the action, so the caller does not have to pre-filter for them.
 run_action 0 FILES=$'script.sh\nmissing/gone.sh\n.shellcheckrc\nnested/tool.bash'
 load_args 1
 [[ ! -e "$captures/2.args" ]]
@@ -224,25 +220,14 @@ assert_contains 'mixed list keeps the second existing file' nested/tool.bash "${
 assert_not_contains 'mixed list skips a deleted path' missing/gone.sh "${captured_args[@]}"
 assert_not_contains 'mixed list skips a non-shell path' .shellcheckrc "${captured_args[@]}"
 
-# Empty after filtering is the ordinary diff-scoped case where the diff touched
-# no shell script. It exits 0 with its own notice, distinct from the discovery
-# message, so a reader can tell a caller-filtered empty set from an empty repo.
 run_action 0 FILES=$'docs/README.md\nmissing/gone.sh'
 [[ ! -e "$captures/1.args" ]]
 grep -F '::notice::shellcheck: files listed 2 path(s); none of them is an existing shell script.' \
   <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: a list that keeps nothing prints a notice and exits 0\n'
 
-# A caller-supplied path is data, never shell source. `read -r -a` word-splits
-# without globbing and performs no substitution, and every downstream use keeps
-# each word as one argv element, so a metacharacter in the list is neither
-# expanded nor executed. Both halves are asserted from one run, and the fixture
-# repository is what makes the assertion mean something: it contains a real
-# `script.sh`, so a globbed `*.sh` would have produced an invocation, and the
-# working directory is writable, so an evaluated `$(touch PWNED)` would have
-# produced a file. The list word-splits into three entries, `*.sh`, `$(touch`
-# and `PWNED).sh`; the middle one is dropped for its extension and the other
-# two for not existing, which leaves the same empty-selection notice as above.
+# The fixture has a real script.sh and a writable cwd, so a globbed `*.sh` or an
+# evaluated `$(touch PWNED)` would each leave evidence.
 # shellcheck disable=SC2016  # the unexpanded `$(touch PWNED)` literal is the fixture under test.
 run_action 0 FILES='*.sh $(touch PWNED).sh'
 [[ ! -e "$captures/1.args" ]]
@@ -251,9 +236,6 @@ grep -F '::notice::shellcheck: files listed 3 path(s); none of them is an existi
   <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: a metacharacter in the list is neither globbed nor evaluated\n'
 
-# Precedence, asserted in both directions from one pair of runs: with a list,
-# `paths` is not consulted at all; with the list blank, `paths` behaves exactly
-# as it does today.
 run_action 0 FILES=script.sh PATHS=raw
 load_args 1
 assert_contains 'files wins over paths' script.sh "${captured_args[@]}"
@@ -269,14 +251,11 @@ run_action 0 FILES=raw/untracked.sh
 load_args 1
 assert_contains 'an explicit list checks an untracked file' raw/untracked.sh "${captured_args[@]}"
 
-# `exclude` is a property of the action, not of the discovery mode, so it still
-# applies to a caller-supplied list.
 run_action 0 EXCLUDE=nested FILES=$'script.sh\nnested/tool.bash'
 load_args 1
 assert_contains 'path exclusion retains the other listed file' script.sh "${captured_args[@]}"
 assert_not_contains 'path exclusion applies to an explicit list' nested/tool.bash "${captured_args[@]}"
 
-# A repeated path is checked once.
 run_action 0 SHELLCHECK_BATCH_SIZE=1 FILES=$'script.sh\nscript.sh script.sh'
 load_args 1
 [[ ! -e "$captures/2.args" ]]
@@ -290,9 +269,6 @@ if [[ ${#listed_files[@]} -ne 1 ]]; then
 fi
 printf 'PASS: a repeated path in the list is checked once\n'
 
-# "Exactly the listed files" has to hold for the extra lane too, or a
-# diff-scoped caller that also passes extra-globs keeps paying for a
-# repository-wide scan of the extensionless lane.
 run_action 0 FILES=$'script.sh\ndot_bashrc' EXTRA_GLOBS=$'dot_bash*\ndot bash*'
 load_args 2
 [[ ! -e "$captures/3.args" ]]
@@ -310,11 +286,6 @@ run_action 2 SHELLCHECK_JOBS=0
 grep -F 'must be positive integers' <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: a non-positive fan-out knob fails closed before ShellCheck\n'
 
-# A hostile or mistyped ambient value is rejected the same way a numeric-but-
-# invalid one is: no lane starts, and the message names both knobs. `auto` is
-# the realistic shape (a caller copying a --jobs idiom from another tool), and
-# a non-numeric string would otherwise reach the arithmetic in the batching
-# loop rather than being refused up front.
 for hostile in auto -1 '4 4' ' ' 04x 1e3; do
   run_action 2 SHELLCHECK_JOBS="$hostile"
   [[ ! -e "$captures/1.args" ]]
@@ -325,10 +296,6 @@ for hostile in auto -1 '4 4' ' ' 04x 1e3; do
 done
 printf 'PASS: a hostile ambient fan-out value fails closed on either knob\n'
 
-# An EMPTY value is the one ambient spelling that is not hostile: `${VAR:-40}`
-# treats empty as unset, which is what a caller writing `SHELLCHECK_JOBS: ''`
-# in a workflow means. It takes the default and lints rather than aborting, so
-# an empty inherited value cannot turn into a red lane.
 cpu_max="$temporary_directory/cpu.max"
 printf 'max 100000\n' >"$cpu_max"
 unquoted_jobs="$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)"
@@ -337,10 +304,8 @@ run_action 0 SHELLCHECK_JOBS='' SHELLCHECK_BATCH_SIZE='' SHELLCHECK_CPU_MAX_FILE
 grep -F "in batches of 40 across $unquoted_jobs process(es)" <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: an empty ambient fan-out value reads as unset and takes the default\n'
 
-# Unset jobs are sized from the CPUs the job may use, never above 4. A cgroup
-# v2 quota (what `docker --cpus 2` writes) wins over nproc, which reports every
-# host CPU; a fractional quota rounds up; an unreadable cpu.max falls back to
-# nproc.
+# A cgroup v2 quota wins over nproc and rounds up; a missing cpu.max falls back
+# to nproc.
 for case in '200000 100000=2' '150000 100000=2' '100000 100000=1' '800000 100000=4'; do
   printf '%s\n' "${case%=*}" >"$cpu_max"
   expected="${case##*=}"
@@ -402,18 +367,12 @@ fi
 printf 'PASS: batches partition the file list without duplication\n'
 load_args 4
 assert_contains 'extra lane runs after the fanned-out standard lane' dot_bashrc "${captured_args[@]}"
-# Batch outputs are replayed in batch order once every batch has finished, so
-# the three invocation lines appear in the log in one block rather than
-# interleaved with each other.
 if [[ "$(grep -c '^fake shellcheck invocation' <<<"$ACTION_OUTPUT")" -ne 4 ]]; then
   printf 'FAIL: expected every batch output to be replayed once\n%s\n' "$ACTION_OUTPUT" >&2
   exit 1
 fi
 printf 'PASS: every batch output is replayed exactly once\n'
 
-# The exit status is the maximum over the batches: a processing error (2) in
-# one batch outranks findings (1) in another and a clean third batch, and
-# findings alone still fail the action when every other batch is clean.
 run_action 2 FAKE_STATUS_MATCH='fanout/f50.sh=2,fanout/f01.sh=1'
 printf 'PASS: the most severe batch status is the action status\n'
 run_action 1 FAKE_STATUS_MATCH='fanout/f50.sh=1'
@@ -425,13 +384,8 @@ grep -F "EXTRA_EXCLUDE_CODES: \${{ inputs.extra-exclude-codes }}" "$action_direc
 grep -F "run: bash \"\$GITHUB_ACTION_PATH/run.sh\"" "$action_directory/action.yml" >/dev/null
 printf 'PASS: action metadata forwards the new inputs to the tested runner\n'
 
-# The fan-out shape must be a property of the action, not of whatever the
-# caller happens to have in scope. A composite action inherits the caller's
-# env, so both knobs are set on the step itself, where step-level env wins.
-# Without these two lines an unrelated SHELLCHECK_JOBS in a consumer workflow
-# would change how this action lints, and a value the loop above proves fatal
-# would abort it. The literals are asserted, not merely their presence: a
-# placeholder pointing back at an input would reopen the same hole.
+# Literals, not mere presence: a placeholder pointing at an input would let the
+# caller env steer the fan-out again.
 grep -F "SHELLCHECK_BATCH_SIZE: '40'" "$action_directory/action.yml" >/dev/null
 grep -F "SHELLCHECK_JOBS: ''" "$action_directory/action.yml" >/dev/null
 grep -F "SHELLCHECK_CPU_MAX_FILE: ''" "$action_directory/action.yml" >/dev/null

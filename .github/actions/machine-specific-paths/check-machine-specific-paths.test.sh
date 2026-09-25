@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Self-check for the machine-specific-paths match filter.
-#
-# The driver re-extracts every git-grep span and drops a line only when every
-# span is a punctuation-only child or the macOS /Users/Shared guardrail, or when
-# the line carries the machine-path:allow marker. tests/, CHANGELOG.md, evals/,
-# and *.test.* are not exemptions, and short usernames stay findings.
+# Self-check for the machine-specific-paths match filter. tests/, CHANGELOG.md,
+# evals/ and *.test.* are not exemptions; short usernames stay findings.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
