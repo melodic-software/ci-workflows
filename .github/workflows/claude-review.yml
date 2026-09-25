@@ -37,8 +37,9 @@ name: claude-review
 #     ships; the last step strips them.
 #
 # The review job stays green on an infrastructure failure. The
-# `claude-review-status` job always runs after it and goes red, naming the
-# failure class, when the review failed. Never make that check required.
+# `claude-review-status` job runs after it whenever it was not skipped, and
+# goes red, naming the cause, when no review happened. Never make that check
+# required.
 
 on:
   workflow_call:
@@ -68,8 +69,9 @@ on:
       claude-args:
         description: >-
           Passed through to the Claude CLI (model, turn budget, allowed tools).
-          A caller's value replaces this default. The inline-comment tool grant
-          is appended after it, so a caller cannot drop it.
+          A caller's value replaces this default. The inline-comment and
+          plugin-command Skill grants are appended after it, so a caller
+          cannot drop them.
         type: string
         default: >-
           --model claude-sonnet-5 --max-turns 75
@@ -138,15 +140,20 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
 
-      # Appends the inline-comment grant after the caller's args, so replacing
-      # the claude-args default cannot drop it. claude-args may be multiline,
+      # Appends the inline-comment grant and the Skill grant for the plugin
+      # command after the caller's args, so replacing the claude-args default
+      # cannot drop them. Without the Skill grant the headless session is
+      # denied the command it is told to run. claude-args may be multiline,
       # hence the heredoc output form.
       - name: Compose Claude CLI arguments
         id: compose-args
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
+          PLUGIN_COMMAND: ${{ inputs.plugin-command }}
         run: |
-          args="$BASE_ARGS --allowedTools mcp__github_inline_comment__create_inline_comment"
+          skill="${PLUGIN_COMMAND#/}"
+          skill="${skill%% *}"
+          args="$BASE_ARGS --allowedTools mcp__github_inline_comment__create_inline_comment --allowedTools \"Skill($skill)\""
           delimiter="gha_${RANDOM}${RANDOM}_EOF"
           {
             echo "args<<$delimiter"
@@ -202,12 +209,14 @@ jobs:
         if: always()
         run: git config --unset-all http.https://github.com/.extraheader || true
 
-  # Reads the review job's outputs, never its log, and goes red when the review
-  # failed. Empty outputs (the review job skipped) report green. The outputs
-  # reach the script through env, never inline expressions.
+  # Reads the review job's outputs, never its log, and goes red when no review
+  # happened: a failed attempt, a validation self-skip, or a review job that
+  # ended before reporting an outcome. A skipped review job (draft, fork, bot)
+  # skips this job too. The outputs reach the script through env, never inline
+  # expressions.
   claude-review-status:
     needs: review
-    if: always()
+    if: always() && needs.review.result != 'skipped'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions: {}
@@ -215,21 +224,22 @@ jobs:
       - name: Report the review outcome
         env:
           LANE: claude-review
+          REVIEW_RESULT: ${{ needs.review.result }}
           REVIEW_FAILED: ${{ needs.review.outputs.review-failed }}
           FAILURE_CLASS: ${{ needs.review.outputs.failure-class }}
         run: |
-          if [ "$REVIEW_FAILED" != "true" ]; then
-            if [ -z "$REVIEW_FAILED" ]; then
-              echo "$LANE: no verdict (the review did not run)." >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "$LANE: no failure reported." >> "$GITHUB_STEP_SUMMARY"
-            fi
+          if [ -z "$REVIEW_FAILED" ]; then
+            FAILURE_CLASS=no-outcome
+          elif [ "$REVIEW_FAILED" != "true" ] && [ "$FAILURE_CLASS" != "skipped-validation" ]; then
+            echo "$LANE: no failure reported." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           case "$FAILURE_CLASS" in
             auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
             rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
+            skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
+            no-outcome) why="the review job ended ($REVIEW_RESULT) before reporting an outcome; read the review job log" ;;
             *) why="an unclassified failure; read the review job log" ;;
           esac
           {

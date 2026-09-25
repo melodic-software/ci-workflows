@@ -745,7 +745,7 @@ parent secret.
 | `plugins` | `review@melodic-software` | Plugins the action installs |
 | `plugin-marketplaces` | the org marketplace URL | Marketplaces for `plugins` |
 | `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
-| `claude-args` | `--model claude-sonnet-5 --max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the inline-comment grant is always appended |
+| `claude-args` | `--model claude-sonnet-5 --max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the inline-comment grant and a `Skill(<plugin-command>)` grant are always appended |
 | `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
 
 **Skips.** The review job skips draft PRs, fork PRs (no secrets reach them;
@@ -755,9 +755,12 @@ was not told to allow). Calling either lane from `pull_request_target` or
 
 **Status check, always on.** The review job stays green on an infrastructure
 failure. Each lane's status job (`claude-review-status`,
-`claude-security-review-status`) always runs after it and goes red, naming the
-failure class (`auth`, `rate-limit`, `overloaded`, `other`), when the review
-failed. A skipped review reports green. Never make the status check required.
+`claude-security-review-status`) runs after it and goes red, naming the cause,
+whenever no review happened: a failed attempt (`auth`, `rate-limit`,
+`overloaded`, `other`), the action skipping itself because the PR edits the
+caller workflow (`skipped-validation`), or a review job that ended before
+reporting (`no-outcome`). A skipped review job skips the status job too. Never
+make the status check required.
 `claude-review.yml` also exposes `review-failed` and `failure-class` as
 workflow outputs.
 

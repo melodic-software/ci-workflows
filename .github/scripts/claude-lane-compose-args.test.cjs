@@ -26,7 +26,7 @@ const workflowsDirectory = path.join(__dirname, "..", "workflows");
 // The compose run block is expression-free shell (env carries the ${{ }}
 // values), so the append contract is executed here rather than
 // pattern-matched.
-function composeArgs(script, baseArgs) {
+function composeArgs(script, baseArgs, pluginCommand) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "compose-args-"));
   try {
     const githubOutput = path.join(directory, "github-output");
@@ -36,6 +36,7 @@ function composeArgs(script, baseArgs) {
       env: {
         ...process.env,
         BASE_ARGS: baseArgs,
+        PLUGIN_COMMAND: pluginCommand,
         GITHUB_OUTPUT: githubOutput,
       },
     });
@@ -59,6 +60,7 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
   const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
   const claudeArgsInput = workflow.on.workflow_call.inputs["claude-args"];
   const composeStep = steps.find((step) => step?.id === "compose-args");
+  const pluginCommand = workflow.on.workflow_call.inputs["plugin-command"].default;
 
   test(`${fileName}: the one Claude invocation consumes the composed args`, () => {
     const invocations = steps.filter((step) =>
@@ -79,7 +81,7 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
     assert.match(claudeArgsInput.default, /Bash\(gh pr diff:\*\)/u);
   });
 
-  test(`${fileName}: the compose step appends the grant to any caller value`, () => {
+  test(`${fileName}: the compose step appends both grants to any caller value`, () => {
     assert.ok(composeStep, "compose-args step not found");
     assert.doesNotMatch(
       composeStep.run,
@@ -95,15 +97,30 @@ for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
       // single-line $GITHUB_OUTPUT write corrupts on any embedded newline.
       "--model claude-opus-5\n--max-turns 5",
     ]) {
-      const args = composeArgs(composeStep.run, baseArgs);
+      const args = composeArgs(composeStep.run, baseArgs, pluginCommand);
       assert.ok(
         args.startsWith(baseArgs),
         `the caller's own args must survive composition: ${args}`,
       );
       assert.ok(
-        args.endsWith(INLINE_COMMENT_GRANT),
-        `the inline-comment grant must be appended after the caller's args: ${args}`,
+        args.endsWith(
+          `${INLINE_COMMENT_GRANT} --allowedTools "Skill(${pluginCommand.slice(1)})"`,
+        ),
+        `both grants must be appended after the caller's args: ${args}`,
       );
+    }
+  });
+
+  test(`${fileName}: the Skill grant follows the plugin-command input`, () => {
+    // Without it the headless session is denied the command it is told to
+    // run and falls back to an unscripted pass (claude-code-plugins#4306).
+    assert.equal(composeStep.env.PLUGIN_COMMAND, `\${{ inputs.plugin-command }}`);
+    for (const [command, grant] of [
+      ["/review:code-review", "Skill(review:code-review)"],
+      ["/other:lane --flag", "Skill(other:lane)"],
+    ]) {
+      const args = composeArgs(composeStep.run, "--max-turns 5", command);
+      assert.ok(args.endsWith(`--allowedTools "${grant}"`), args);
     }
   });
 }

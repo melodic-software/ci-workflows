@@ -1,10 +1,10 @@
 "use strict";
 
-// ci-workflows#619: both Claude lanes conclude green on an infrastructure
-// failure by design, so each carries a status job that always runs, goes red
-// and names the failure class. These tests pin the wiring (unconditional,
-// reads the job outputs through env) and run the job's own script for
-// every class, so the check's color cannot drift from `review-failed`.
+// Both Claude lanes conclude green on an infrastructure failure by design, so
+// each carries a status job that runs whenever the review job was not skipped,
+// goes red whenever no review happened, and names the cause. These tests pin
+// the wiring (reads the job result and outputs through env) and run the job's
+// own script for every cause, so a green check always means a review ran.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -57,9 +57,9 @@ for (const lane of lanes) {
   const job = workflow.jobs[lane.job];
   const [step] = job.steps;
 
-  test(`${lane.file}: ${lane.job} runs after the review whatever it concluded`, () => {
+  test(`${lane.file}: ${lane.job} runs after the review unless the review was skipped`, () => {
     assert.equal(job.needs, lane.needs);
-    assert.equal(job.if, "always()");
+    assert.equal(job.if, `always() && needs.${lane.needs}.result != 'skipped'`);
     assert.equal(workflow.on.workflow_call.inputs["status-check"], undefined);
     assert.deepEqual(job.permissions, {});
     assert.equal(job.steps.length, 1);
@@ -81,6 +81,7 @@ for (const lane of lanes) {
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
+    assert.equal(step.env.REVIEW_RESULT, `\${{ needs.${lane.needs}.result }}`);
     assert.equal(
       step.env.REVIEW_FAILED,
       `\${{ needs.${lane.needs}.outputs.review-failed }}`,
@@ -92,39 +93,34 @@ for (const lane of lanes) {
     assert.doesNotMatch(step.run, /\$\{\{/u);
   });
 
-  test(`${lane.file}: a success or an absent verdict stays green`, () => {
-    for (const [failed, klass] of [
-      ["false", ""],
-      ["false", "skipped-validation"],
-      ["", ""],
+  test(`${lane.file}: a review that ran stays green`, () => {
+    const result = runStep(step, { REVIEW_FAILED: "false", FAILURE_CLASS: "" });
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.summary, /failed:/u);
+  });
+
+  test(`${lane.file}: every way no review happened goes red and is named`, () => {
+    for (const [failed, klass, named] of [
+      ["true", "auth", "auth"],
+      ["true", "rate-limit", "rate-limit"],
+      ["true", "overloaded", "overloaded"],
+      ["true", "other", "other"],
+      ["true", "", "unknown"],
+      // The action skipped itself: green step, nothing reviewed.
+      ["false", "skipped-validation", "skipped-validation"],
+      // The review job ended before the outcome step wrote any output.
+      ["", "", "no-outcome"],
     ]) {
       const result = runStep(step, {
+        REVIEW_RESULT: "failure",
         REVIEW_FAILED: failed,
         FAILURE_CLASS: klass,
       });
-      assert.equal(
-        result.status,
-        0,
-        `review-failed='${failed}' must not go red`,
-      );
-      assert.doesNotMatch(result.summary, /failed:/u);
-    }
-  });
-
-  test(`${lane.file}: every failure class goes red and is named`, () => {
-    for (const klass of ["auth", "rate-limit", "overloaded", "other", ""]) {
-      const result = runStep(step, {
-        REVIEW_FAILED: "true",
-        FAILURE_CLASS: klass,
-      });
-      assert.equal(result.status, 1, `class '${klass}' must fail the check`);
-      assert.match(
-        result.summary,
-        new RegExp(`failed: \`${klass || "unknown"}\``, "u"),
-      );
+      assert.equal(result.status, 1, `'${failed}'/'${klass}' must fail the check`);
+      assert.match(result.summary, new RegExp(`failed: \`${named}\``, "u"));
       assert.match(
         result.stdout,
-        new RegExp(`^::error .*failure-class=${klass || "unknown"}:`, "mu"),
+        new RegExp(`^::error .*failure-class=${named}:`, "mu"),
       );
     }
   });
