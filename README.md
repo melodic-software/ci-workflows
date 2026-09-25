@@ -763,7 +763,7 @@ review fork changes by hand) and every bot actor (the action rejects bots it
 was not told to allow). Calling either lane from `pull_request_target` or
 `workflow_run` fails the job.
 
-**Status check, always on.** The review job stays green on an infrastructure
+**Status check, red means no review.** The review job stays green on an infrastructure
 failure. Each lane's status job (`claude-review-status`,
 `claude-security-review-status`) runs after it and goes red, naming the cause,
 whenever no review happened: a failed attempt (`auth`, `rate-limit`,
