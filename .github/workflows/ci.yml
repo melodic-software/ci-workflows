@@ -6,61 +6,27 @@ on:
   pull_request:
     # `edited`, `labeled` and `unlabeled` can change the pr-title /
     # do-not-merge / issue-linkage answers without a new commit, so the required
-    # check has to re-evaluate. Whether such an event is CONTRACT-ONLY (lanes
-    # gated off, ci-status carrying the recorded `ci-lanes` verdict forward) is
-    # decided by one predicate, repeated verbatim in `concurrency.group` and in
-    # every job's `if:`:
-    #
-    #   github.event.pull_request.head.repo.full_name == github.repository &&
-    #   (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
-    #    (github.event.action == 'edited' && !github.event.changes.base))
-    #
-    # An `edited` event carrying `changes.base` is a BASE-BRANCH change: the
-    # merge commit the lanes test changes with it, so that runs in full. A fork
-    # pull request is never contract-only — its token is read-only on
-    # `pull_request` whatever `permissions:` requests, so it cannot record lane
-    # state — and runs the full workflow on every event exactly as before.
+    # check has to re-evaluate. Such an event is CONTRACT-ONLY (lanes gated off,
+    # ci-status carrying the recorded `ci-lanes` verdict forward) by one
+    # predicate, repeated verbatim in `concurrency.group` and every job's `if:`.
+    # A base-branch `edited` changes the merge commit, so it runs in full. A
+    # fork pull request is never contract-only: its read-only token cannot
+    # record lane state.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
 
-# The concurrency GROUP branches on the contract-only predicate (ci-perf Phase
-# 6b); `cancel-in-progress` is a plain `true` because it takes one value per
-# workflow and cannot branch.
+# Contract-only runs get a group unique per run: GitHub evicts a PENDING run
+# in a shared group regardless of `cancel-in-progress`, which can leave the
+# head with no `ci-status` check run at all (dotfiles#647). They then race the
+# full run they carry forward; `carry-forward-wait-seconds` below closes that.
 #
-# Contract-only branch: `ci-contract-<pr>-<run_id>`, unique per run. No
-# contract-only run can be cancelled, evict anything, or be evicted. That is
-# deliberate. Eviction of a *pending* run is unconditional in GitHub's queueing
-# ("any existing pending job or workflow in the same concurrency group will be
-# canceled") and is NOT governed by `cancel-in-progress`, so the old shared
-# group let one contract-only event evict another and leave a check suite on the
-# current head with no `ci-status` check run at all, a required check that
-# stops reporting until someone re-runs that specific run (dotfiles#647, 2h14m
-# silent). Uniqueness costs a burst of one-job runs when labels flip repeatedly,
-# seconds each, writing nothing.
+# Full runs key on the PR number (not head_ref, so same-named fork branches do
+# not cancel each other); pushes key on `github.run_id`.
 #
-# Full branch: `<workflow>-<pr number || run_id>` with cancel-in-progress true,
-# so a `synchronize` still cancels the run it supersedes. Keying PRs on the
-# number (not head_ref) keeps fork PRs that share a branch name from canceling
-# each other's required runs. The fallback term is the per-repository push
-# decision: `github.run_id` gives every push its own group and therefore no
-# push-side burst collapse. This repository measured zero cancelled superseded
-# push runs in the 30 days to 2026-09-05, so the collapse #122 added is not in
-# use, and the `github.event_name == 'pull_request'` guard that existed only to
-# protect it goes with it.
-#
-# The cost of the branch: a contract-only run no longer queues behind the full
-# run whose `ci-lanes` status it carries forward, so the two race. The
-# `ci-status` composite closes that with a bounded wait on in-flight sibling
-# runs on the same head SHA; see `carry-forward-wait-seconds` on the job below.
-#
-# One hazard the branch does not remove, because no concurrency setting both
-# removes it and keeps supersession: the full branch is keyed on the pull
-# request number, which does not vary with the head SHA, so re-running a STALE
-# run on a superseded head SHA lands in the CURRENT head's group and cancels the
-# run that is actually reporting. Re-run the run on the current head instead.
-# Contract-only runs are immune, being unique per `github.run_id`.
+# Hazard: re-running a STALE run on a superseded head SHA lands in the current
+# head's group and cancels the run that is reporting. Re-run on the current head.
 concurrency:
   group: >-
     ${{ (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -70,36 +36,14 @@ concurrency:
     || format('{0}-{1}', github.workflow, github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: true
 
-# Dogfood: this repo is the first consumer of its own composite actions. Each
-# lane checks out this repo and runs a lane action against either a root-native
-# standards config or a small fixture-local contract input; the local ci-status
-# gateway aggregates them into the single required check. Local (./) action refs
-# work here because the checkout IS this repo.
+# Dogfood: this repo is the first consumer of its own composite actions. Local
+# (./) action refs work here because the checkout IS this repo.
 #
-# Change-scoped execution (dogfooding ./.github/actions/change-detection):
-# file-type-scoped lanes gate on `changes` at JOB level, so a skipped lane
-# still reports `skipped` under the always-running `ci-status` required check
-# — never workflow-level `paths:`, which would wedge a required check Pending.
-# Each gate reads `!= 'false'`, never `== 'true'`: with `!cancelled()` a
-# failed or unset detection output runs the lane rather than skipping it, and
-# `changes` itself is aggregated by `ci-status` so a broken detection goes
-# red instead of riding fail-open to silent green forever.
-#
-# The content-agnostic hygiene composites (typos, gitleaks, editorconfig,
-# markdown, exec-bit, machine-specific-paths, eol-renormalize, comment-hygiene,
-# lychee-offline, and one check-jsonschema family) run inside the `checks`
-# reusable, which is the consolidation lane every consumer adopts — dogfooding
-# it here is the only way its contract is exercised before they do. It runs its
-# own change-detection pass for the composites it owns; `changes` stays for the
-# language and toolchain lanes this repo fans out and Phase 6b converges. The
-# `composites-head` job runs those same composite bodies from this commit,
-# because the reusable can only reach them at a pinned SHA and would otherwise
-# let a broken body pass its own repository's CI.
-# `actionlint` and `shellcheck` stay separate jobs with their toggles off: each
-# carries extra dogfood steps that need the composite's pinned binary on PATH,
-# which no `uses:` in a shared reusable can hand back. `action-metadata-filename`
-# stays separate for its dedicated failure surface, and osv-scanner is also
-# ungated — see its job comment.
+# File-type-scoped lanes gate on `changes` at JOB level, never workflow-level
+# `paths:`, which would wedge the required check Pending. Each gate reads
+# `!= 'false'`, never `== 'true'`: with `!cancelled()` a failed or unset
+# detection output runs the lane rather than skipping it, and `ci-status`
+# aggregates `changes` so a broken detection goes red.
 jobs:
   changes:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
@@ -119,10 +63,8 @@ jobs:
         id: detect
         uses: ./.github/actions/change-detection
         with:
-          # Conservative by design: every group includes `.github/**`, so any
-          # change to a workflow, an action, or a bundled script re-runs every
-          # scoped lane; language groups also glob their file types repo-wide,
-          # not just the fixture trees the lanes currently point at.
+          # Every group includes `.github/**`, so any workflow, action, or
+          # bundled script change re-runs every scoped lane.
           filters: |
             powershell:
               .github/**
@@ -182,24 +124,15 @@ jobs:
               **/go.mod
               **/go.sum
               **/.golangci.yml
-            # Repo-wide `**/action.yml`, unlike the sibling lanes above: zizmor
-            # is the only lane whose target discovery is not confined to
-            # `.github/` — it runs with `paths: .` and audits composite-action
-            # metadata wherever it lives, so a composite added outside
-            # `.github/actions/` (say `tools/example/action.yml`) would
-            # otherwise skip a lane that does audit it. `action.yml` alone is
-            # the complete pattern because `action.yaml` is rejected repo-wide
-            # by the always-run action-metadata-filename gate (#267).
+            # Repo-wide `**/action.yml`: zizmor audits composite metadata
+            # anywhere (`paths: .`); `action.yaml` is rejected repo-wide (#267).
             zizmor:
               .github/**
               fixtures/composite-action/**
               **/action.yml
 
-  # The consolidation lane (ci-perf Phase 6a). A local reusable-workflow
-  # reference executes checks.yml from this exact commit, so the dogfood proves
-  # the contract a consumer pins by tag. It runs its own change-detection pass
-  # over the groups its composites are gated on; the groups this repo's other
-  # lanes read stay in `changes`.
+  # A local reusable-workflow reference executes checks.yml from this exact
+  # commit, so the dogfood proves the contract a consumer pins by tag.
   checks:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
@@ -221,13 +154,11 @@ jobs:
       check-jsonschema: true
       check-jsonschema-files: .github/dependabot.yml
       check-jsonschema-builtin-schema: vendor.dependabot
-      # The bundled pattern script and marker policy contain the literal regex
-      # bodies and marker tokens, so each scan skips its own action's source to
-      # avoid self-matching.
+      # Each scan skips its own action's source, whose pattern script and
+      # marker policy contain the literal bodies it matches.
       machine-specific-paths-exclude: ':(exclude).github/actions/machine-specific-paths/**'
       comment-hygiene-exclude: ':(exclude).github/actions/comment-hygiene/**'
-      # Only the composites this repo gates on file class get a group; the rest
-      # are ungated here exactly as their separate jobs were.
+      # Composites without a group here run ungated.
       filters: |
         markdown:
           .github/**
@@ -236,17 +167,10 @@ jobs:
         check-jsonschema:
           .github/**
 
-  # The pin-lag counterweight to `checks`. Inside a CALLED workflow a relative
-  # action path resolves against the CALLER's checkout, so checks.yml references
-  # its composites by full path at a pinned SHA and therefore runs the bodies of
-  # the release it was pinned at, not the bodies in this commit. Without this
-  # job a pull request that breaks one of those composite bodies would go green
-  # here while the dogfood ran the old body. These nine run from this commit, so
-  # their behavior is covered at HEAD as it was before the consolidation.
-  # `actionlint`, `shellcheck` and `check-jsonschema` are deliberately absent:
-  # each already runs at HEAD in its own job. Gated on the `actionlint` group,
-  # which is the narrowest `changes` group naming composite actions; every group
-  # in that job includes `.github/**`, so any composite edit selects this lane.
+  # checks.yml reaches its composites only at a pinned SHA, so a pull request
+  # breaking a composite body would pass there; this job runs them from this
+  # commit. actionlint, shellcheck and check-jsonschema already run at HEAD in
+  # their own jobs. Gated on `actionlint`, the narrowest group naming composites.
   composites-head:
     name: Composites at HEAD
     needs: changes
@@ -269,9 +193,7 @@ jobs:
       - name: Verify shebang files are executable
         uses: ./.github/actions/exec-bit
       - name: Check for machine-specific paths
-        # Same exclusions the `checks` caller passes: the bundled pattern script
-        # and marker policy carry the literal bodies, so each scan skips its own
-        # action's source to avoid self-matching.
+        # Same self-exclusion the `checks` caller passes.
         uses: ./.github/actions/machine-specific-paths
         with:
           exclude: ':(exclude).github/actions/machine-specific-paths/**'
@@ -297,10 +219,8 @@ jobs:
       - name: Analyze PowerShell
         uses: ./.github/actions/powershell
       - name: Analyze composite action PowerShell
-        # The lane action discovers *.ps1/*.psm1, so the pwsh embedded in
-        # composite metadata is invisible to it — and to actionlint and the
-        # bash/sh sibling check, which announces those blocks as skipped. Runs
-        # here because the lane action already installed the pinned analyzer.
+        # pwsh embedded in composite metadata is invisible to the lane action
+        # and to actionlint; the lane action installed the pinned analyzer.
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.ps1
       - name: Prove a broken composite pwsh block fails
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
@@ -437,9 +357,8 @@ jobs:
           grep -F '[shellcheck]' "$output"
           grep -F 'SC2086' "$output"
       - name: Lint composite action shell
-        # actionlint covers workflows only, so this extends the same embedded-
-        # shell contract to composite metadata, which it cannot read. Runs here
-        # because the lane action already put the pinned ShellCheck on PATH.
+        # actionlint cannot read composite metadata; the lane action already
+        # put the pinned ShellCheck on PATH.
         run: bash .github/scripts/composite-run-shellcheck.sh
       - name: Prove a broken composite shell block fails
         run: bash .github/scripts/composite-run-shellcheck.test.sh
@@ -454,9 +373,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # dependabot.yml is validated by the `checks` lane instead: one
-      # check-jsonschema call carries one schema family, and that is the family
-      # a consumer of the reusable is most likely to want.
+      # dependabot.yml is validated by the `checks` lane: one check-jsonschema
+      # call carries one schema family.
       - name: Validate workflows
         uses: ./.github/actions/check-jsonschema
         with:
@@ -481,8 +399,7 @@ jobs:
         uses: ./.github/actions/action-metadata-filename
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
-  # ci-status yet — promote after a clean soak. Exempts standards-sync labeled /
-  # melodic-standards-sync[bot] PRs.
+  # ci-status yet: promote after a clean soak.
   managed-files-guard:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -496,9 +413,6 @@ jobs:
       - name: Guard managed files
         uses: ./.github/actions/managed-files-guard
         with:
-          # standards main post engine-Node-port retirement (standards Phase
-          # 6.4): the guard's engine path now runs the Node engine through the
-          # wrapper, exercising the gated dependency install added alongside.
           standards-ref: c4d865bb123f476cf1cb36d8f8a1ffb588204f00
 
   shellcheck:
@@ -529,9 +443,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell formatting
-        # The root EditorConfig owns the same two-space, case-indented contract
-        # as `shfmt -i 2 -ci`; include the selector/OSV shell sources so their
-        # generated security boundary cannot bypass the required formatter.
+        # Includes the selector/OSV shell sources so their generated security
+        # boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
           paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status .github/actions/exec-bit .github/actions/shfmt
@@ -566,10 +479,8 @@ jobs:
       - name: Test Gitleaks scan policy guard
         run: bash .github/actions/gitleaks/scan.test.sh
       - name: Verify the comment-hygiene prefilter is a superset of the policy library
-        # Self-enforces the scan's load-bearing invariant: the coarse git-grep
-        # prefilter must admit every line the bundled default policy flags, or
-        # the gate fails open. It lives here now that the scan itself runs
-        # inside the `checks` reusable, which cannot run a repo-local script.
+        # The git-grep prefilter must admit every line the policy flags, or the
+        # gate fails open. The checks reusable cannot run a repo-local script.
         run: bash .github/actions/comment-hygiene/superset-test.sh
       - name: Test machine-specific path span filtering
         # Repo-local driver contract. The checks reusable cannot run this
@@ -591,11 +502,8 @@ jobs:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
-      # Reusable zizmor.yml always declares security-events: write (expressions
-      # are illegal in that scope). Callers must grant it too — reusable
-      # workflows cannot elevate. Dogfood stays annotations-only
-      # (upload-sarif defaults false); grant write so the job can start, and
-      # enable upload-sarif: true here when dogfooding code-scanning upload.
+      # zizmor.yml always declares this and a called workflow cannot elevate,
+      # so grant it although the dogfood stays annotations-only.
       security-events: write
     # Audit this repo's own workflows AND composite actions (paths: .) — strong
     # dogfood. Advisory: findings annotate without blocking ci-status.
@@ -604,14 +512,8 @@ jobs:
       paths: .
 
   osv-scanner:
-    # Deliberately ungated: the scanner discovers every manifest and lockfile
-    # format OSV supports, and a filter enumerating that set would drift as
-    # upstream adds formats — an unlisted new lockfile type would then skip
-    # the scan that covers it. Running always is the conservative posture.
-    #
-    # The contract-only gate is the one exception: on `edited`, `labeled` and
-    # `unlabeled` no file changed, so there is nothing new to scan and the
-    # carry-forward branch of ci-status supplies the verdict.
+    # Not change-gated: a filter enumerating every lockfile format OSV
+    # discovers would drift and skip an unlisted new one.
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
@@ -620,10 +522,8 @@ jobs:
       # This public repository's hosted lane is free; private consumers must pass
       # their strict selector output instead.
       runner: ubuntu-24.04
-      # This repo carries no dependency lockfiles, so declare it dependency-less
-      # and let the empty scan pass: the dogfood proves the wrapper's wiring
-      # (inputs forward, advisory posture holds) without inventing a fixture
-      # manifest.
+      # This repo has no lockfiles; the dogfood proves the wrapper's wiring
+      # without inventing a fixture manifest.
       allow-no-lockfiles: true
 
   go-quality-dogfood:
@@ -631,10 +531,8 @@ jobs:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
     permissions:
       contents: read
-    # A local reusable-workflow reference executes the workflow from this exact
-    # commit. The fixture includes a Windows-only assertion that the test binary
-    # was built with the race detector, so this is behavioral hosted-runner
-    # evidence rather than a source-text contract alone.
+    # The fixture asserts on Windows that the test binary was built with the
+    # race detector: behavioral evidence, not a source-text contract alone.
     uses: ./.github/workflows/go-quality.yml
     with:
       config: .golangci.yml
@@ -643,23 +541,19 @@ jobs:
 
   ci-status:
     if: always()
-    # `changes` is aggregated alongside the lanes it gates: a failed detection
-    # job fails ci-status even though every gated lane fails open and runs, so
-    # a broken filter config cannot ride the fallback to green indefinitely.
+    # `changes` is aggregated so a failed detection fails ci-status even though
+    # every gated lane fails open and runs.
     needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, jsonschema, action-metadata-filename, go-quality-dogfood, zizmor, osv-scanner]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
-      # pr-contract upserts the advisory linkage comment and moves the linkage
-      # label; ci-status records the `ci-lanes` commit status the carry-forward
-      # branch reads back on the next contract-only event.
+      # pr-contract upserts the linkage comment and label; ci-status records
+      # the `ci-lanes` status the next contract-only run reads back.
       pull-requests: write
       statuses: write
-      # The carry-forward wait enumerates this workflow's runs on this head SHA.
-      # Under an explicit `permissions:` block every unlisted scope defaults to
-      # none, so without this the Actions reads 403; the composite then warns
-      # naming the scope and fails, it never passes.
+      # The carry-forward wait lists this workflow's runs on this head SHA;
+      # without it the Actions reads 403 and the composite fails.
       actions: read
     steps:
       - name: Check out
@@ -669,28 +563,15 @@ jobs:
       - name: Check the pull-request contract
         uses: ./.github/actions/pr-contract
         with:
-          # Carried over from the retired pr-issue-linkage-self.yml caller, which
-          # passed the same list: Dependabot pull requests link no issue and the
-          # advisory comment plus label on every one of them is noise.
+          # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
       - name: Aggregate lane results
         # `!cancelled()` so a failing pr-contract step does not skip the
-        # aggregation: the job still fails on the contract step's exit code, and
-        # the `ci-lanes` status is on the SHA for the next contract-only run.
+        # `ci-lanes` status write the next contract-only run needs.
         if: ${{ !cancelled() }}
         uses: ./.github/actions/ci-status
         with:
-          # Derived from this repository's own measured full run, per the rule
-          # in README.md, rather than from the job budget: the ceiling must
-          # cover the queue wait plus the p95 wall of the full `ci` run. Over
-          # the last 84 successful runs the wall p95 is 124 s and 80 of the 84
-          # queued for 0 s on hosted runners, with a worst non-outlier queue of
-          # 331 s, so the floor is about 7.6 minutes. `timeout-minutes: 15`
-          # clears that floor with room, and the ceiling is then
-          # `timeout-minutes * 60 - 60`. The 60-second margin is the constraint
-          # that keeps the fail-closed error, not a job timeout preempting it,
-          # as what a contract-only run reports at the ceiling. A higher
-          # ceiling costs nothing in the normal case: the poll ends as soon as
-          # a verdict settles or nothing is left in flight.
+          # `timeout-minutes * 60 - 60`, sized per README.md. Keep the 60 s
+          # margin: a job timeout would preempt the fail-closed error.
           carry-forward-wait-seconds: '840'
           results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}

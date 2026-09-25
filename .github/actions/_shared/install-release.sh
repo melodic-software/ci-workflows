@@ -81,19 +81,8 @@ if [[ -n "$cached_asset" && -f "$cached_asset" ]] &&
   # Cache hit: reuse the already-verified release asset (skip the network).
   cp -- "$cached_asset" "$asset"
 else
-  # Retry budget (2026-08-12 release-asset outage, #444): a burst of
-  # near-instant retries rides out packet loss but not a multi-minute
-  # upstream window — with the previous `--retry 2`, all attempts landed
-  # inside a few seconds and the outage reddened every consumer at once.
-  # Nine attempts under curl's exponential backoff (1s, 2s, 4s, ... between
-  # attempts) span roughly 4-5 minutes, hard-capped by --retry-max-time.
-  # --retry-all-errors covers the outage's observed `curl: (56) Connection
-  # died` class, which curl's default transient-only classification (
-  # timeouts and HTTP 408/429/5xx) never retries; the trade is that a
-  # permanent failure such as a 404 from a mistyped pin also burns the full
-  # window before failing — acceptable for a bounded install step, and the
-  # pinned SHA-256 below stays the integrity gate no matter what a retry
-  # eventually fetched.
+  # Nine backed-off attempts span ~4-5 minutes to outlast an upstream outage; a
+  # mistyped pin's 404 burns that window too. The SHA-256 check stays the gate.
   curl -q --fail --silent --show-error --location \
     --proto '=https' --proto-redir '=https' \
     --connect-timeout 10 --max-time 120 \

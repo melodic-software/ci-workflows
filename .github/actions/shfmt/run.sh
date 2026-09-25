@@ -4,14 +4,7 @@ set -euo pipefail
 
 paths="${PATHS:-}"
 exclude="${EXCLUDE:-}"
-# Fan-out shape. shfmt has no file-level parallelism of its own, so one
-# process over a large tree is a serial wall. Batches of 40 files across 4
-# processes measured 1.51x faster on a 2500-file tree; 4 matches the hosted
-# runner's vCPU count. action.yml sets both names on the step with these
-# same values, so a caller's inherited environment can never change the
-# fan-out or abort the action with a malformed value; the reads below exist
-# for the self-test, which runs this script directly. The action exposes
-# neither as an input.
+# action.yml pins these on the step; the env reads exist for run.test.sh.
 batch_size="${SHFMT_BATCH_SIZE:-40}"
 jobs="${SHFMT_JOBS:-4}"
 
@@ -21,31 +14,17 @@ if [[ ! "$batch_size" =~ ^[1-9][0-9]*$ || ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 if [[ -z "${paths// /}" ]]; then
-  # Git-tracked discovery (default): tracked *.sh/*.bash only, so ignored
-  # or generated scripts in a dirty tree are never gated. NUL-delimited so
-  # any path is safe; ls-files output is already sorted.
+  # Tracked files only, so ignored or generated scripts are never gated.
   mapfile -d '' -t files < <(git ls-files -z -- '*.sh' '*.bash')
 else
-  # Explicit roots opt into a raw filesystem walk that does not consult
-  # .gitignore. Split into an array so each root reaches find as its own
-  # path operand: an unquoted $PATHS would let bash pathname-expand a
-  # root first, and find treats a stray operand as a -exec-capable
-  # expression rather than a mere argument. -d '' takes the whole value
-  # (a newline is an IFS separator too, so a caller-authored multi-line
-  # input still splits correctly); read hits EOF without finding that
-  # delimiter, hence the `|| true`.
+  # An array keeps each root one find operand, never pathname-expanded. read
+  # hits EOF without the '' delimiter, hence `|| true`.
   path_roots=()
   read -r -d '' -a path_roots <<<"$paths" || true
   mapfile -t files < <(find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
 fi
 
-# Keep only on-disk files: a sparse checkout leaves tracked-but-absent
-# (skip-worktree) entries that shfmt cannot open. Drop excluded substrings
-# (space-separated, fixed-string match) in the same pass with bash
-# `[[ == *sub* ]]` rather than forking `grep -vF` per exclude — the same
-# filter_files shape the ShellCheck action uses, so a path containing a
-# newline cannot re-split and an emptied list cannot become a spurious
-# empty-string element.
+# Sparse checkouts can leave tracked, skip-worktree entries absent on disk.
 kept=()
 for file in ${files[@]+"${files[@]}"}; do
   [[ -f "$file" ]] || continue
@@ -62,16 +41,8 @@ if [[ ${#files[@]} -eq 0 ]]; then
 fi
 printf 'Checking %d file(s):\n' "${#files[@]}"
 printf '  %s\n' "${files[@]}"
-# No formatting flags: shfmt reads each file's .editorconfig for indent
-# width, switch-case indent, and binary-next-line. Passing any -i/-ci/-bn
-# would make shfmt IGNORE .editorconfig entirely, so formatting policy
-# stays externalized in the caller's .editorconfig. -d prints a unified
-# diff and exits non-zero when a file is not already formatted.
-#
-# One process when the list fits a single batch: identical to the previous
-# inline `shfmt -d "${files[@]}"`. Otherwise split like shellcheck/run.sh so
-# diffs replay in batch (file) order and the exit status is the maximum over
-# batches (1 = diffs, 2+ = operational).
+# No -i/-ci/-bn: any formatting flag makes shfmt ignore the caller's
+# .editorconfig entirely.
 if ((${#files[@]} <= batch_size)); then
   shfmt -d "${files[@]}"
   exit $?
@@ -85,10 +56,8 @@ run_shfmt() {
     index=$((index + batch_size))
     batch=$((batch + 1))
   done
-  # Each xargs invocation appends ONE batch-list path after `_`, so inside
-  # the worker it is the last positional. The worker body is a single-quoted
-  # script on purpose: its expansions belong to the worker shell, not to
-  # this one.
+  # xargs appends one batch-list path as the worker's last positional; the body
+  # is single-quoted so it expands in the worker shell.
   # shellcheck disable=SC2016
   printf '%s\0' "$capture"/*.files | xargs -0 -n 1 -P "$jobs" bash -c '
     list="${!#}"

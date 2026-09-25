@@ -1,30 +1,9 @@
 #!/usr/bin/env bash
-# GitHub accepts either `action.yml` or `action.yaml` for action metadata
-# (docs: metadata-syntax — "The preferred format is action.yml"), but every
-# lane in this repo globs action.yml only: composite-run-shellcheck.sh and
-# ci.yml's "Validate composite actions" check-jsonschema step. A file added as
-# action.yaml would be invisible to both of them, with nothing in the log to notice
-# — no visit/skip line, no count mismatch, completely silent.
-#
-# Ratified: action.yml is enforced as the
-# ONLY accepted metadata filename, repo-wide, rather than teaching every
-# current and future enumeration site a second pattern for a spelling GitHub
-# itself calls non-preferred and nothing here uses. This converts the silent
-# miss into a loud, immediate failure at the moment the wrong filename is
-# introduced.
-#
-# Deliberately NOT `set -e`: git ls-files exits 0 whether or not the pathspec
-# matched anything, so there is no legitimate non-zero exit to distinguish
-# from a fatal one the way exec-bit's git-grep check must.
+# Every lane here (composite-run-shellcheck.sh, ci.yml's schema step) globs
+# action.yml only, so a GitHub-legal action.yaml would be skipped silently.
 set -uo pipefail
 
-# Whole tracked tree, not scoped to .github/actions/ — a stray action.yaml
-# anywhere (a fixture, a future actions/ subdirectory) still fails loudly.
-# :(glob) magic is required for that whole-tree claim: with the default
-# pathspec match, a leading `**/` matches nested files only, silently
-# missing a repository-root action.yaml; glob magic matches both.
-# -z / core.quotePath=false so a path with a space, tab, or non-ASCII byte is
-# read back intact rather than split or C-escaped.
+# :(glob) so `**/` also matches a repository-root action.yaml.
 candidates=$(mktemp)
 errfile=$(mktemp)
 trap 'rm -f "$candidates" "$errfile"' EXIT

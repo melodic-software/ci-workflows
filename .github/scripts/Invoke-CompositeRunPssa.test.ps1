@@ -204,8 +204,7 @@ foreach ($action in @(($raw -join "`n") -split "`0" | Where-Object { $_ })) {
         -Context $covered.Output
 }
 
-# The issue's first acceptance criterion is about the real action, not the
-# fixtures: a visit line fires before any shape check, so on its own it would
+# This pins the real action, not the fixtures: a visit line fires before any shape check, so on its own it would
 # still pass if that action's blocks stopped being extracted. Counted against an
 # independent selector so the assertion does not encode a step ordering, and so
 # it keeps its power once a second action grows a PowerShell block.

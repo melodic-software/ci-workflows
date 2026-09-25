@@ -53,13 +53,8 @@ runs:
         path: .managed-files-guard-standards
         persist-credentials: false
 
-    # Node-engine prep, gated mechanically on the engine flavor the pinned
-    # standards ref carries: a checkout with sync-manifest.mjs needs the
-    # engine's locked dependencies before dest-paths can run post-cutover.
-    # Uses the runner-preinstalled node/npm — the same runner-image posture
-    # this action already takes for yq (recorded in the standards
-    # distribution THREAT-MODEL), acceptable for this advisory-first PR
-    # check; the sync reusables pin their own Node.
+    # Runner-preinstalled node/npm, the posture already taken for yq (standards
+    # distribution THREAT-MODEL); the sync reusables pin their own Node.
     - name: Install engine dependencies
       if: steps.skip.outputs.skip != 'true'
       shell: bash

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reject PR diffs that touch sync-manifest-managed destinations (#208).
+# Reject PR diffs that touch sync-manifest-managed destinations.
 set -euo pipefail
 
 : "${REPOSITORY:?REPOSITORY is required}"
@@ -32,20 +32,16 @@ for path in "${managed[@]}"; do
   managed_set["$path"]=1
 done
 
-# Prefer triple-dot against the merge base so rename/copy detection matches PR
-# changed-file semantics. Fall back to HEAD_REF alone when BASE_REF is empty.
+# Triple-dot against the merge base so rename/copy detection matches PR
+# changed-file semantics.
 if [[ -n "$BASE_REF" && "$BASE_REF" != "$HEAD_REF" ]]; then
   diff_range="$BASE_REF...$HEAD_REF"
 else
   diff_range="$HEAD_REF"
 fi
 
-# Capture through a command substitution, not `mapfile < <(git …)`: process
-# substitution is not reaped, so mapfile reports success even when git failed.
-# An unfetched or bogus ref would then yield an empty change list and this
-# guard would announce "no hand-edits" and exit 0 — passing precisely when it
-# could not see the diff. Same `if ! var="$(…)"` shape the dest-paths call
-# above uses, for the same reason.
+# Command substitution, not `mapfile < <(git …)`: process substitution drops
+# git's exit status, so a bad ref would pass as an empty diff.
 if ! changed_paths="$(
   git diff --name-only --diff-filter=ACMRTUXB "$diff_range"
 )"; then

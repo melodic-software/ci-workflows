@@ -64,16 +64,7 @@ jobs:
           ref: ${{ inputs.standards-ref }}
           persist-credentials: false
 
-      # Node-engine prep (standards Phase 6 cutover): behavior-inert while the
-      # Bash engine is live, load-bearing the moment sync-manifest.sh becomes
-      # the exec wrapper. Gated on the checked-out ref actually carrying the
-      # Node engine, same as managed-files-guard: standards-ref accepts any
-      # ref, and a pre-port pin must keep running the Bash engine instead of
-      # failing on missing prep inputs. --ignore-scripts is a standing
-      # control — no npm lifecycle script may ever execute inside this
-      # workflow — and the npm fetch retries mirror the yq install's outage
-      # hardening below (#444): the registry is now an availability
-      # dependency of every run at a post-port pin.
+      # --ignore-scripts is a standing control: no npm lifecycle script may run in this workflow.
       - name: Detect the engine flavor
         id: engine
         run: |
@@ -399,10 +390,8 @@ jobs:
           repositories: ${{ matrix.repo_name }}
           permission-contents: write
           permission-pull-requests: write
-          # Gated on the App-side grant: the mint fails if the
-          # melodic-standards-sync App lacks a requested permission, so this
-          # line must not ship before an org owner grants Workflows read/write
-          # on the App and approves it on installation 144867070.
+          # The mint fails unless the melodic-standards-sync App holds Workflows
+          # read/write, approved on installation 144867070.
           permission-workflows: write
 
       - name: Check out exact standards source
@@ -413,11 +402,8 @@ jobs:
           path: .standards-src
           persist-credentials: false
 
-      # Node-engine prep — same rationale, gating, and flags as the plan
-      # job's steps; this job's standards checkout lives under .standards-src.
-      # The install runs AFTER the App-token mint, so --ignore-scripts is the
-      # control that keeps dependency lifecycle scripts out of the
-      # credentialed job.
+      # The install runs AFTER the App-token mint, so --ignore-scripts keeps
+      # dependency lifecycle scripts out of the credentialed job.
       - name: Detect the engine flavor
         id: engine
         run: |
@@ -507,24 +493,8 @@ jobs:
           body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync
 
-      # Arm auto-merge on any sync PR the manifest says should be armed and
-      # that has NEVER been armed. Keying on "never armed" rather than "just
-      # created" is what makes the manifest's `automerge: true` mean what it
-      # says: a PR opened while the target was opted out (`automerge: false`,
-      # how a rollout window is held) is otherwise unarmed forever, because
-      # every later sync reports `updated` or `none`, never `created`. An
-      # auto-merge enabled event proves arming already took, so a reviewer who
-      # then disarmed the PR to hold it back is never overridden — and unlike
-      # AutoMergeDisabledEvent it does not conflate a human's choice with
-      # GitHub disabling auto-merge on its own (a push from someone without
-      # write access, or a base-branch switch). Verified live: disarming does
-      # not erase the enabled event.
-      #
-      # The body is gate-compliant by construction: the App identity that
-      # opened the PR is the whole risk gate. Every target repo has
-      # allow_auto_merge=true and required ci-status/pr-title checks on main,
-      # so a sync PR is normally not immediately mergeable — except the rare
-      # case GitHub's mutation itself rejects, handled below.
+      # Key on "never armed", not "just created": a PR opened while opted out still
+      # gets armed later, and a reviewer's disarm (the enabled event survives it) holds.
       - name: Arm auto-merge on the sync PR
         if: steps.cpr.outputs.pull-request-number != '' && matrix.automerge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -558,14 +528,8 @@ jobs:
               core.warning(`Could not read ${owner}/${repo}#${pull_number} to arm auto-merge.`);
               return;
             }
-            // Read `nodes`, never `totalCount`: totalCount counts the WHOLE
-            // timeline and ignores itemTypes (verified live — a PR with four
-            // timeline items and no arming event reports totalCount 4). All
-            // three enabled-event types are listed because which one GitHub
-            // records depends on the merge method: SQUASH emits
-            // AutoSquashEnabledEvent, not AutoMergeEnabledEvent (verified
-            // live), so naming only the latter would read "never armed" on
-            // every PR this workflow has ever armed.
+            // Read `nodes`, never `totalCount` (it ignores itemTypes). SQUASH arming
+            // records AutoSquashEnabledEvent, so all three event types are listed.
             if (pull.autoMergeRequest || pull.timelineItems.nodes.length > 0) {
               core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number}; leaving its current state alone.`);
               return;
@@ -585,11 +549,8 @@ jobs:
               );
               core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number}.`);
             } catch (error) {
-              // Known rejection: a PR that is already immediately mergeable
-              // (GraphQL mergeStateStatus CLEAN) has nothing to wait for, and
-              // GitHub's mutation errors instead of no-op succeeding. Any
-              // other transient rejection is handled the same way: log and
-              // let the sync continue, never fail the run over arming.
+              // An already-mergeable PR (mergeStateStatus CLEAN) makes the mutation
+              // error instead of no-op; never fail the sync over arming.
               core.warning(
                 `Could not arm auto-merge on ${owner}/${repo}#${pull_number}: ${error.message}`,
               );

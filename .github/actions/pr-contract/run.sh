@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Single-run pull-request contract: title, do-not-merge label, issue linkage.
 #
-# Ports the semantics of the three standalone reusables (semantic-pr.yml,
-# do-not-merge-gate.yml, pr-issue-linkage.yml) into one composite step so a
-# consumer needs exactly one required check (`ci-status`) instead of four.
-# Every check reads the LIVE pull request from the API rather than the event
+# One composite step, so a consumer needs exactly one required check
+# (`ci-status`). Every check reads the LIVE pull request from the API rather than the event
 # payload, so `edited`, `labeled` and `unlabeled` runs see current state.
 set -euo pipefail
 
@@ -58,10 +56,7 @@ require_pattern() {
 }
 
 # Percent-encode a label so it reaches the DELETE path as one segment. `@uri`
-# rather than a bash character loop: `printf '%%%02X' "'$c"` emits the code
-# point, so a label carrying an emoji or any non-ASCII character would be
-# mis-encoded. `@uri` percent-encodes the UTF-8 bytes, which is what the API
-# expects.
+# encodes UTF-8 bytes, so an emoji or non-ASCII label survives.
 # shellcheck disable=SC2329 # invoked from remove_linkage_label, itself reached through best_effort.
 url_encode() {
   jq -rn --arg text "$1" '$text|@uri'
@@ -167,9 +162,8 @@ fi
 types_alternation="$(printf '%s' "$types_list" | paste -sd '|' -)"
 types_human="${types_alternation//|/, }"
 
-# `: +`, not `: `: the conventional-commits parser behind semantic-pr.yml
-# tolerates more than one space after the colon, so requiring exactly one would
-# fail titles that pass the gate this composite replaces.
+# `: +`, not `: `: the conventional-commits parser tolerates more than one space
+# after the colon.
 # shellcheck disable=SC2016 # the backticks are Markdown code spans in a message, not command substitution.
 if [[ "$REQUIRE_SCOPE" == true ]]; then
   title_regex="^(${types_alternation})\([^)]+\)!?: +[^[:space:]]"
@@ -197,7 +191,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 4 — issue linkage.
 #
-# Ported from pr-issue-linkage.yml (ci-workflows#153, #521, #544): the body must
+# The body must
 # carry a native closing keyword, an explicit non-closing `Refs:`/`Relates to:`
 # marker, or a no-issue opt-out, AND four non-empty contract sections. A negated
 # closing reference fails outright and is never excused by a valid marker

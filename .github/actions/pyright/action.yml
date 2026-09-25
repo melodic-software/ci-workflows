@@ -44,8 +44,7 @@ runs:
         CONFIG: ${{ inputs.config }}
         WARNINGS_AS_ERRORS: ${{ inputs.warnings-as-errors }}
         VERSION: ${{ inputs.version }}
-        # Pin the pyright-python wrapper to the requested build exactly. Its
-        # "new version available" notice (stderr, exit stays 0) is benign and
+        # The wrapper's "new version available" notice (stderr, exit stays 0) is
         # left unsuppressed so a genuine toolchain change stays visible.
         PYRIGHT_PYTHON_FORCE_VERSION: ${{ inputs.version }}
       run: |
@@ -54,15 +53,8 @@ runs:
           echo "::error::pyright: config path not found: $CONFIG"
           exit 2
         fi
-        # --warnings makes residual warnings fail the build (strict posture, the
-        # default). Pyright has no native GitHub-annotation output format, so
-        # findings are plain text. Each flag is a defined (possibly empty) array
-        # so unquoted expansion is set -u-safe. $PATHS is split into an array at
-        # the input boundary so multiple targets reach pyright as separate
-        # arguments; empty appends nothing and the config's `include` drives
-        # discovery. -d '' takes the whole value so a caller-authored multi-line
-        # input still splits; read hits EOF without finding that delimiter,
-        # hence the `|| true`.
+        # Pyright has no native GitHub-annotation output, so findings are plain
+        # text. read hits EOF without the -d '' delimiter, hence the `|| true`.
         warn=()
         if [[ "$WARNINGS_AS_ERRORS" == "true" ]]; then warn=(--warnings); fi
         paths=()

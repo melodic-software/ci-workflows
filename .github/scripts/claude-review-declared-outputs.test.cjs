@@ -2,15 +2,14 @@
 
 // A consumer that must decide whether a code review actually happened has two
 // places to look: what this lane DECLARES, or what its job log happened to
-// print. Only one of those is a contract. claude-code-plugins#2517 is what the
-// other one costs — its guard grepped the log for the phrases that name a
-// validation skip, and matched the inline github-script SOURCE that mentions
-// them, reddening every successful in-scope pull request it exists to approve.
+// print. Only one of those is a contract: a log grep for the phrases that name
+// a validation skip also matches the inline github-script SOURCE that mentions
+// them.
 //
 // These tests pin the declared surface so it cannot quietly drift back out of
 // existence: the `workflow_call.outputs` block, the job-level block that feeds
 // it, and the agreement between both and the composite that owns the
-// classification (ci-workflows#464). The composite's corpus
+// classification. The composite's corpus
 // lives in .github/actions/claude-lane-outcome/classify.test.cjs; what this
 // file owns is the wiring that carries its verdict to the caller.
 

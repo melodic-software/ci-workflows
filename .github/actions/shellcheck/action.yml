@@ -101,16 +101,8 @@ runs:
         RCFILE: ${{ inputs.rcfile }}
         EXCLUDE: ${{ inputs.exclude }}
         SEVERITY: ${{ inputs.severity }}
-        # The fan-out shape is PINNED here, not left to the environment. A
-        # composite action inherits the caller's workflow-, job- and step-level
-        # env, so without these two lines an unrelated `SHELLCHECK_JOBS` in a
-        # consumer's workflow would silently change how this action lints, and
-        # a typo like `auto` or `0` would abort it. Step-level env wins over
-        # everything inherited, so setting them here makes the action's
-        # behavior a property of the action. Empty jobs and cpu.max path mean
-        # run.sh sizes the process count from the runner's CPUs (at most 4);
-        # the non-empty forms exist for its self-test, which invokes the script
-        # directly rather than through this file.
+        # Pinned so an inherited caller env cannot change or abort the fan-out.
+        # Empty means run.sh sizes it from the runner's CPUs (at most 4).
         SHELLCHECK_BATCH_SIZE: '40'
         SHELLCHECK_JOBS: ''
         SHELLCHECK_CPU_MAX_FILE: ''

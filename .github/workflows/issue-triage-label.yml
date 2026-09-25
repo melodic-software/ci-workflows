@@ -6,9 +6,7 @@ name: issue-triage-label
 # `priority:` tier already on the issue means urgency was set, so the floor
 # is skipped. NON-GATING: this never fails a PR or blocks a
 # merge; it is a best-effort intake guarantee so a forgotten priority label
-# does not silently drop an issue out of the triage queue. Settled mechanism
-# per melodic-software/claude-code-plugins#506's 2026-07-20 Class-B
-# research-resolution comment, filed as melodic-software/ci-workflows#155.
+# does not silently drop an issue out of the triage queue.
 #
 # The caller owns the trigger and MUST use `on: issues: types: [opened,
 # reopened]` — `reopened` re-acquires the floor if the tier was cleared while
@@ -71,10 +69,8 @@ jobs:
       issues: write # Read the issue's current labels and add the floor label.
     steps:
       - name: Apply the floor label when no priority tier is present
-        # Defensive guard: the caller is required to trigger only on
-        # `issues: opened`/`reopened` (see README), but this keeps the job a
-        # clean no-op rather than misbehaving if a caller's trigger matrix is
-        # ever broadened to include other issue activity types.
+        # Keeps the job a no-op if a caller broadens its trigger beyond
+        # `opened`/`reopened`.
         if: >-
           github.event_name == 'issues' &&
           (github.event.action == 'opened' || github.event.action == 'reopened')
@@ -108,12 +104,8 @@ jobs:
               return;
             }
 
-            // Verify the target label exists before ever calling addLabels: that
-            // endpoint auto-creates an unknown label name (bare, default color, no
-            // description) instead of failing, which would silently violate the
-            // "never define a label" contract. getLabel 404s on a genuinely missing
-            // label -- verified against the live API -- so treat that as fail-closed
-            // and any other error as an infrastructure failure, not a green skip.
+            // addLabels auto-creates an unknown label, so check first: a 404 fails
+            // closed, any other error is an infrastructure failure, not a skip.
             try {
               await github.rest.issues.getLabel({ ...context.repo, name: targetLabel });
             } catch (error) {

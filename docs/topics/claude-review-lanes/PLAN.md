@@ -1,5 +1,22 @@
 # claude-review-lanes
 
+## Contents
+
+- [Brief](#brief)
+- [Plan](#plan)
+  - [Phase 0: Throwaway probes, then the actionlint disposition](#phase-0-throwaway-probes-then-the-actionlint-disposition-done)
+  - [Phase 1: standards — REVIEW.md restructure + REVIEW-CREDENTIAL re-derivation](#phase-1-standards--reviewmd-restructure--review-credential-re-derivation-done)
+  - [Phase 2: ci-workflows change set](#phase-2-ci-workflows-change-set-done)
+  - [Phase 3: fleet rollout via standards sync-manifest](#phase-3-fleet-rollout-via-standards-sync-manifest-done)
+  - [Phase 4: observability — #238 aggregator](#phase-4-observability--238-aggregator-done)
+  - [Phase 5: close-out](#phase-5-close-out-doing)
+- [Blast radius](#blast-radius)
+- [Stress-test summary](#stress-test-summary)
+- [Execution shape](#execution-shape)
+- [Approval record](#approval-record)
+- [Open questions (resolved — see Approval record)](#open-questions-resolved--see-approval-record)
+- [Handoff to implementation](#handoff-to-implementation)
+
 ## Brief
 
 ### TLDR

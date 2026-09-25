@@ -10,18 +10,10 @@
 #
 # This extracts each bash/sh `run:` block and hands it to ShellCheck under the
 # same contract actionlint applies to workflow `run:` blocks, so a step is
-# judged AT LEAST AS STRICTLY whether it lives in a workflow or a composite —
-# not merely identically. actionlint's own dialect resolution (rule_shellcheck
-# .go) matches only a bare "bash"/"sh" or its literal leading word in GitHub's
-# custom-shell form ("bash [options] {0}"), so a path-qualified custom shell
-# (`shell: /usr/bin/bash --noprofile {0}`, which GitHub documents and runs as
-# bash) falls through actionlint's own check unanalyzed. This check resolves
-# by the leading command's BASENAME instead, so a path-qualified shell of
-# either dialect is analyzed here too rather than silently skipped as it is
-# upstream — a composite step is therefore never LESS covered than the
-# identical workflow step would be, only ever equally or more so. It also
-# makes the in-place `# shellcheck disable=` directives those blocks already
-# carry take effect.
+# judged AT LEAST AS STRICTLY whether it lives in a workflow or a composite:
+# dialect resolution deliberately exceeds actionlint's (see the shell case
+# below). It also makes the in-place `# shellcheck disable=` directives those
+# blocks already carry take effect.
 #
 # The pwsh blocks this announces as skipped are covered by the PowerShell
 # counterpart, .github/scripts/Invoke-CompositeRunPssa.ps1. The two run in
@@ -37,17 +29,9 @@
 #
 # Requires shellcheck on PATH — the ci.yml lane action installs a pinned,
 # checksum-verified one — and yq (mikefarah, preinstalled on ubuntu-24.04).
-# Ratified (not an oversight): yq's pinned + checksum-verified convention
-# belongs to standards-sync.yml, which pushes changes to OTHER repositories.
-# This lane runs on `pull_request` and blocks every merge, yet takes the
-# runner-preinstalled yq:
-# both this check's false-green guards (the independent `expected` count and
-# the extraction it verifies) read yq's output, so a runner-image yq change
-# that altered its output shape would move them together rather than one
-# catching the other. That residual is accepted for now rather than pinning
-# yq here in isolation, which would duplicate the install standards-sync.yml
-# already performs; a shared, non-duplicated install is tracked as a
-# prerequisite in #200. Revisit there if that lands.
+# yq is deliberately unpinned: both false-green guards (the independent
+# `expected` count and the extraction it verifies) read its output, so a
+# runner-image yq change would move them together. Shared pinned install: #200.
 set -euo pipefail
 
 # GitHub expands `${{ }}` before the runner writes the step script, so a raw
@@ -183,13 +167,10 @@ for file in "${files[@]}"; do
   # `uses:` is legitimate and emits no step line of its own.
   printf 'visit %s\n' "$file"
 
-  # One yq process per file. The previous loop forked yq once for `.runs.using`,
-  # once for the independent expected-count selector, once for the step listing,
-  # and once more per `run:` body. Those queries stay independent expressions
-  # inside this single invocation — the false-green guard still compares two
-  # selectors that can disagree — and each run body is base64 so a newline in
-  # the block cannot split a STEP record. `@base64` / `-r` work on both
-  # mikefarah yq (ubuntu-24.04) and kislyuk yq.
+  # One yq process per file. The queries stay independent expressions so the
+  # false-green guard still compares two selectors that can disagree, and each
+  # run body is base64 so a newline in the block cannot split a STEP record.
+  # `@base64` / `-r` work on both mikefarah yq (ubuntu-24.04) and kislyuk yq.
   dump="$(yq -r '
     "USING " + (.runs.using // ""),
     "EXPECTED " + ((.runs.steps // []) | [.[] | select(has("run")) | select((.shell // "") | test("^([^ ]*/)?(bash|sh)( |$)"))] | length | tostring),
