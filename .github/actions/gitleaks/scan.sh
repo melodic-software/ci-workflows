@@ -2,7 +2,10 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+BASE_SHA="${BASE_SHA:-}"
 CONFIG="${CONFIG:-}"
+EVENT_NAME="${EVENT_NAME:-}"
+LOG_OPTS="${LOG_OPTS:-}"
 PATH_TO_SCAN="${PATH_TO_SCAN:-}"
 REDACT="${REDACT:-}"
 REPORT_FORMAT="${REPORT_FORMAT:-}"
@@ -109,7 +112,26 @@ fi
 
 args=("$SCAN_MODE" "$PATH_TO_SCAN")
 if [[ "$SCAN_MODE" == git ]]; then
-  args+=(--log-opts=--all)
+  # Always pass --log-opts: an empty value makes gitleaks fall back to --all.
+  if [[ -z "${LOG_OPTS// /}" ]]; then
+    case "$EVENT_NAME" in
+    pull_request | pull_request_target)
+      if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "::error::gitleaks: $EVENT_NAME event has no valid pull_request.base.sha to scope the scan"
+        exit 2
+      fi
+      LOG_OPTS="$BASE_SHA..HEAD"
+      # pull_request_target checks out the base by default, leaving an empty range.
+      if ! commit_count="$(git -C "$resolved_scan" rev-list --count "$LOG_OPTS")" || ((commit_count == 0)); then
+        echo "::error::gitleaks: $LOG_OPTS selects no commits; check out the pull request head"
+        exit 2
+      fi
+      ;;
+    schedule | workflow_dispatch) LOG_OPTS=--all ;;
+    *) LOG_OPTS=HEAD ;;
+    esac
+  fi
+  args+=("--log-opts=$LOG_OPTS")
 fi
 args+=(--config "$CONFIG" --no-banner --redact)
 if [[ -n "${REPORT_FORMAT// /}" ]]; then
