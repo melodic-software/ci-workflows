@@ -161,6 +161,19 @@ for event in pull_request pull_request_target; do
   assert_captured_args "$event scans only the PR's commits" \
     git "$full_repository" "--log-opts=$base_sha..HEAD" --config "$temporary_directory/config.toml" --no-banner --redact
 done
+for event in schedule workflow_dispatch; do
+  EVENT_NAME="$event" run_case "$event scan" 0 clean '' '' true git "$full_repository"
+  assert_captured_args "$event sweeps every ref" \
+    git "$full_repository" --log-opts=--all --config "$temporary_directory/config.toml" --no-banner --redact
+done
+head_sha="$(git -C "$full_repository" rev-parse HEAD)"
+for bad_base in "$head_sha" "$(printf 'f%.0s' {1..40})"; do
+  EVENT_NAME=pull_request_target BASE_SHA="$bad_base" run_case "unscannable PR range $bad_base fails closed" 2 clean '' '' true git "$full_repository"
+  if [[ -e "$temporary_directory/args" ]]; then
+    echo "scanner ran over an unscannable range from $bad_base" >&2
+    exit 1
+  fi
+done
 EVENT_NAME=pull_request BASE_SHA="$base_sha" LOG_OPTS=--all run_case 'explicit log-opts' 0 clean '' '' true git "$full_repository"
 assert_captured_args 'explicit log-opts overrides the event default' \
   git "$full_repository" --log-opts=--all --config "$temporary_directory/config.toml" --no-banner --redact

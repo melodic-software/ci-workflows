@@ -121,7 +121,13 @@ if [[ "$SCAN_MODE" == git ]]; then
         exit 2
       fi
       LOG_OPTS="$BASE_SHA..HEAD"
+      # pull_request_target checks out the base by default, leaving an empty range.
+      if ! commit_count="$(git -C "$resolved_scan" rev-list --count "$LOG_OPTS")" || ((commit_count == 0)); then
+        echo "::error::gitleaks: $LOG_OPTS selects no commits; check out the pull request head"
+        exit 2
+      fi
       ;;
+    schedule | workflow_dispatch) LOG_OPTS=--all ;;
     *) LOG_OPTS=HEAD ;;
     esac
   fi

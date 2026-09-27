@@ -18,9 +18,10 @@ inputs:
       Git-mode revision set passed to gitleaks as --log-opts (split on single
       spaces). Empty picks a default from the triggering event:
       `<pull_request.base.sha>..HEAD` on pull_request and pull_request_target
-      (the PR's own commits), and `HEAD` otherwise (the checked-out branch's
-      history). Other branches are not scanned, so one branch's fixture cannot
-      fail another branch's run. Pass `--all` for a sweep of every local ref.
+      (the PR's own commits; an empty range fails closed), `--all` on schedule
+      and workflow_dispatch (a sweep of every local ref), and `HEAD` otherwise
+      (the checked-out branch's history). PR and push runs do not scan other
+      branches, so one branch's fixture cannot fail another branch's run.
       Mark token-shaped test fixtures with an inline `gitleaks:allow` comment;
       the marker travels with the commit into every scan.
     default: ''
