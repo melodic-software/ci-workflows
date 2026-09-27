@@ -36,7 +36,7 @@ inputs:
     default: ''
   version:
     description: Exact check-jsonschema version to run.
-    default: 0.38.0
+    default: 0.38.2
   python-version:
     description: Exact Python patch version uv provisions for the ephemeral tool environment.
     default: '3.14.7'

@@ -43,12 +43,12 @@ inputs:
     default: 'true'
   version:
     description: Exact typos version to install.
-    default: 1.50.1
+    default: 1.50.3
   sha256:
     description: >-
       SHA-256 of the x86_64-unknown-linux-musl .tar.gz release asset for
       `version`. Change together with `version`.
-    default: edf0545109aee6a22751d04ddecb97c45be47d3aa0409564fb895eeeace91b1e
+    default: aca6b5d546307092b8d0a8e0a89dd80f9da51f2f7617c5e45c5607c1684ffbf2
 
 runs:
   using: composite
