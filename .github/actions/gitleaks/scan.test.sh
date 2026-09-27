@@ -152,9 +152,23 @@ run_git_preflight_rejection() {
 run_case 'clean scan' 0 clean
 assert_captured_args 'directory mode argument contract' \
   dir "$temporary_directory" --config "$temporary_directory/config.toml" --no-banner --redact
-run_case 'complete Git history scan' 0 clean '' '' true git "$full_repository"
-assert_captured_args 'Git mode argument contract' \
+run_case 'Git history scan outside a pull request' 0 clean '' '' true git "$full_repository"
+assert_captured_args 'Git mode scans only HEAD history by default' \
+  git "$full_repository" --log-opts=HEAD --config "$temporary_directory/config.toml" --no-banner --redact
+base_sha="$(git -C "$full_repository" rev-parse HEAD~1)"
+for event in pull_request pull_request_target; do
+  EVENT_NAME="$event" BASE_SHA="$base_sha" run_case "$event scan" 0 clean '' '' true git "$full_repository"
+  assert_captured_args "$event scans only the PR's commits" \
+    git "$full_repository" "--log-opts=$base_sha..HEAD" --config "$temporary_directory/config.toml" --no-banner --redact
+done
+EVENT_NAME=pull_request BASE_SHA="$base_sha" LOG_OPTS=--all run_case 'explicit log-opts' 0 clean '' '' true git "$full_repository"
+assert_captured_args 'explicit log-opts overrides the event default' \
   git "$full_repository" --log-opts=--all --config "$temporary_directory/config.toml" --no-banner --redact
+EVENT_NAME=pull_request BASE_SHA='' run_case 'pull request without base SHA fails closed' 2 clean '' '' true git "$full_repository"
+if [[ -e "$temporary_directory/args" ]]; then
+  echo 'scanner ran without a pull request base SHA' >&2
+  exit 1
+fi
 run_case 'Git finding remains blocking' 1 finding '' '' true git "$full_repository"
 run_case 'Git operational error fails closed' 7 error '' '' true git "$full_repository"
 run_git_preflight_rejection 'shallow Git repository fails closed' "$shallow_repository"
