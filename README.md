@@ -163,12 +163,12 @@ consumer to audit it.
   caller-supplied config.
 - `.github/actions/gitleaks` — gitleaks secret scan over a directory or local
   Git history against a caller-supplied config. Git mode requires a valid,
-  non-shallow local worktree or repository and explicitly scans commits
-  reachable from `HEAD` and every locally present ref under `refs/` (`--all`),
-  including refs the remote advertised and the caller fetched into the checkout.
-  Callers must use `fetch-depth: 0` for advertised branch and tag history and
-  fetch every other intended ref because hidden, unadvertised, or unfetched
-  remote refs are absent locally and cannot be scanned. The action installs a
+  non-shallow local worktree or repository (`fetch-depth: 0`) and always passes
+  an explicit revision set: the `log-opts` input, or by default the pull
+  request's own commits (`<base.sha>..HEAD`, failing closed when that range is
+  empty) on pull request events, every locally present ref (`--all`) on
+  `schedule` and `workflow_dispatch`, and `HEAD` otherwise. Hidden, unadvertised,
+  or unfetched remote refs are absent locally and cannot be scanned. The action installs a
   pinned, checksum-verified binary,
   unconditionally redacts secret values, validates requested reports, and fails
   closed on missing, malformed, or operationally incomplete results.
