@@ -26,17 +26,18 @@ inputs:
     default: ''
   format:
     description: >-
-      Output format: default, gcc, github-actions, or codeclimate. Empty uses
-      the tool default. Use github-actions for inline PR annotations.
+      Output format: default, gcc, github-actions, or codeclimate. Empty lets
+      the tool choose, which in CI is github-actions (inline PR annotations).
+      Pass `default` to restore the plain-text output.
     default: ''
   version:
     description: Exact editorconfig-checker version to install.
-    default: 3.11.2
+    default: 4.0.2
   sha256:
     description: >-
-      SHA-256 of the ec-linux-amd64.tar.gz release asset for `version`. Change
-      together with `version`.
-    default: bc815e5b3b1891a0ee9e1242fe3475312655f8b0f4c4a79510be0a009294571a
+      SHA-256 of the editorconfig-checker-linux-amd64.tar.gz release asset for
+      `version`. Change together with `version`.
+    default: 44efaef3ed14c6ab52eb87481d78e5e5c204796dccf26e2f4598a61ba17f8003
 
 runs:
   using: composite
@@ -52,10 +53,10 @@ runs:
     - name: Install editorconfig-checker
       shell: bash
       env:
-        URL: https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${{ inputs.version }}/ec-linux-amd64.tar.gz
+        URL: https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${{ inputs.version }}/editorconfig-checker-linux-amd64.tar.gz
         SHA256: ${{ inputs.sha256 }}
-        BIN: ec
-        ARCHIVE_MEMBER: bin/ec-linux-amd64
+        BIN: editorconfig-checker
+        ARCHIVE_MEMBER: editorconfig-checker
         ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/editorconfig-checker
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
@@ -79,4 +80,4 @@ runs:
         # EOF without finding that delimiter, hence the `|| true`.
         paths=()
         read -r -d '' -a paths <<<"$PATHS" || true
-        ec "${args[@]}" "${paths[@]}"
+        editorconfig-checker "${args[@]}" "${paths[@]}"
