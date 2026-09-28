@@ -53,9 +53,8 @@ runs:
         path: .managed-files-guard-standards
         persist-credentials: false
 
-    # Runner-preinstalled node/npm, the posture already taken for yq (standards
-    # distribution THREAT-MODEL); the sync reusables pin their own Node.
-    - name: Install engine dependencies
+    - name: Detect the engine flavor
+      id: engine
       if: steps.skip.outputs.skip != 'true'
       shell: bash
       env:
@@ -63,13 +62,32 @@ runs:
       run: |
         set -euo pipefail
         if [[ -f "$STANDARDS_ROOT/distribution/sync-manifest.mjs" ]]; then
-          npm ci --prefix "$STANDARDS_ROOT/distribution" \
-            --omit=dev --ignore-scripts --no-audit --no-fund \
-            --fetch-retries=8 --fetch-retry-mintimeout=1000 \
-            --fetch-retry-maxtimeout=60000
+          echo "node=true" >>"$GITHUB_OUTPUT"
         else
-          echo "Pinned standards ref predates the Node engine — no dependencies to install."
+          echo "node=false" >>"$GITHUB_OUTPUT"
+          echo "Pinned standards ref predates the Node engine: no dependencies to install."
         fi
+
+    # Self-hosted fleet runners ship no Node, so install the runtime the
+    # standards tree pins instead of relying on the runner image.
+    - name: Set up Node
+      if: steps.engine.outputs.node == 'true'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version-file: .managed-files-guard-standards/.node-version
+        package-manager-cache: false
+
+    - name: Install engine dependencies
+      if: steps.engine.outputs.node == 'true'
+      shell: bash
+      env:
+        STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+      run: |
+        set -euo pipefail
+        npm ci --prefix "$STANDARDS_ROOT/distribution" \
+          --omit=dev --ignore-scripts --no-audit --no-fund \
+          --fetch-retries=8 --fetch-retry-mintimeout=1000 \
+          --fetch-retry-maxtimeout=60000
 
     - name: Reject hand-edits of managed files
       if: steps.skip.outputs.skip != 'true'
