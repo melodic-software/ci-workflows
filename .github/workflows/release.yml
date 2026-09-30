@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/${NEXT}" >/dev/null; then
-            echo "::error::Tag ${NEXT} already exists but is not a published Release, so the version computed from Releases collides with it. Reconcile the two — publish the missing Release for ${NEXT} or delete the stray tag — then re-run. See .github/workflows/release-tag-drift-check.yml and its tracking issue."
+            echo "::error::Tag ${NEXT} already exists but is not a published Release, so the version computed from Releases collides with it. Reconcile the two — publish the missing Release for ${NEXT} or delete the stray tag — then re-run."
             exit 1
           fi
 
