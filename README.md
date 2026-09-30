@@ -237,11 +237,13 @@ consumer to audit it.
   the `status-context` list, read as above: newest entry by
   `github-actions[bot]`.
 
-  A `success` or `failure` on that read is a settled verdict, so the poll stops
-  and the verdict applies. Otherwise, if the first call found nothing in flight
-  the poll stops too, because nothing that could still write a verdict exists
-  and an absent status fails as it always has. If something is in flight, it
-  sleeps and polls again. Four properties are load-bearing:
+  A `success` on that read is a settled verdict, so the poll stops and the
+  verdict applies. A `failure` or `error` is settled too, unless the full run
+  that wrote it is being re-run: then the poll waits on that one run (see
+  below). Otherwise, if the first call found nothing in flight the poll stops
+  too, because nothing that could still write a verdict exists and an absent
+  status fails as it always has. If something is in flight, it sleeps and polls
+  again. Five properties are load-bearing:
 
   - **Any in-flight sibling is waited on, at any run id.** Waiting only on lower
     run ids, as v0.22.1 did, assumed a full run always outranks the
@@ -255,7 +257,20 @@ consumer to audit it.
     a pair waits on nothing. Two contract-only runs on one SHA now wait on each
     other until the full run writes its verdict, which releases both. With no
     full run in flight to write one, they run to the ceiling and both fail
-    closed. That is the only case that waits to the ceiling in normal operation.
+    closed.
+  - **Only the writer's re-run holds a failure open.** After a full run fails
+    and is re-run, a contract-only run that reads the old `failure` waits for
+    the re-run instead of going red at once. The re-run is recognized as the
+    run the status's `target_url` names, in flight with a `run_started_at`
+    later than the status's `created_at`. Only a full run writes the status, so
+    a contract-only sibling is never that run, and two contract-only runs on a
+    failed SHA still stop at once. A `run_attempt > 1` test would also match a
+    re-run contract-only run and bring the mutual wait back. The start-time
+    test keeps the writer's own first attempt, which writes the status a moment
+    before it completes, out of the wait. A re-run of a different full run on
+    the same SHA does not hold the failure open; that run fails at once, as it
+    did before. A writer re-run slower than the ceiling runs to it and fails
+    closed.
   - **Listing before reading, within a poll.** A sibling writes the status and
     flips to `completed` moments later. Reading first would let that completion
     land between the two calls and report both no status and nothing in flight,
@@ -263,7 +278,10 @@ consumer to audit it.
   - **The wait never turns a verdict green.** Reaching the ceiling prints
     `::error::no successful <context> status on <sha>; re-run the full workflow`,
     extended with how long it waited and on which run ids, and exits 1. There is
-    no pass-on-timeout path.
+    no pass-on-timeout path. Every carry-forward red ends with `Once <context>
+    on <sha> is success, re-run this run instead.`: the run cannot see a verdict
+    recorded after it, and once the lanes pass, re-running the red run replaces
+    its check run where a new commit would re-run every lane.
 
   **The calling job needs `actions: read`.** Under an explicit `permissions:`
   block the default for every scope is none, so both Actions calls 403 without
@@ -271,8 +289,8 @@ consumer to audit it.
   a single status read, which is the pre-6b contract: loud, and never a pass on
   an absent status. Any other read failure warns the same way.
 
-  **The trade this makes.** Ending the wait on a settled status is what releases
-  the mutual wait, and it gives up v0.22.1's guard against carrying an older
+  **The trade this makes.** Ending the wait on a settled `success` is what
+  releases the mutual wait on a green SHA, and it gives up v0.22.1's guard against carrying an older
   `success` forward while a re-run of the same SHA is in flight to overwrite it.
   That guard bound only when a full run had already written a verdict for this
   exact SHA and another full run was in flight on it again, and it cost a false

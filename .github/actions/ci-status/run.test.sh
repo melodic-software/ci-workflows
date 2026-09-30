@@ -266,6 +266,14 @@ user_status() {
   printf '{"id":%s,"context":"ci-lanes","state":"%s","creator":{"login":"a-collaborator","type":"User"}}' "$1" "$2"
 }
 
+# writer_status <id> <state> <created_at> <writer-run-id>
+# A bot status as a full run records it: `target_url` names the run that wrote
+# it, which is how the wait recognizes that run's re-run.
+writer_status() {
+  printf '{"id":%s,"context":"ci-lanes","state":"%s","created_at":"%s","target_url":"https://github.com/%s/actions/runs/%s","creator":{"login":"github-actions[bot]","type":"Bot"}}' \
+    "$1" "$2" "$3" "$repository" "$4"
+}
+
 # --- carry-forward wait fixtures -------------------------------------------
 
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
@@ -311,6 +319,13 @@ workflow_runs_on_call() {
 # run_entry <id> <status> <created_at>
 run_entry() {
   printf '{"id":%s,"status":"%s","created_at":"%s"}' "$1" "$2" "$3"
+}
+
+# attempt_entry <id> <status> <created_at> <run_attempt> <run_started_at>
+# `run_started_at` is when the CURRENT attempt started; a re-run moves it and
+# leaves `created_at` alone.
+attempt_entry() {
+  printf '{"id":%s,"status":"%s","created_at":"%s","run_attempt":%s,"run_started_at":"%s"}' "$1" "$2" "$3" "$4" "$5"
 }
 
 earlier_full_run="$(run_entry 4000 in_progress 2026-09-05T12:00:00Z)"
@@ -588,8 +603,8 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log 'Waiting 15s for in-flight run(s) 4000'
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
 
-# A deliberate trade: a settled verdict ends the wait even with a sibling
-# incomplete, so an older verdict can carry forward while a re-run is in flight.
+# A settled failure ends the wait even with a sibling incomplete, when that
+# sibling is not the writer re-running (this status names no writer at all).
 # An absent or `pending` status still waits, as the case above shows.
 echo 'case: a settled status ends the wait even with a sibling still incomplete'
 clear_status_fixtures
@@ -759,6 +774,96 @@ workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
 expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# --- carry-forward: a stale failure while its writer re-runs ----------------
+#
+# Full run 4000 fails and records ci-lanes=failure at 12:00:10Z. Someone re-runs
+# it: attempt 2 starts at 12:00:20Z. A contract-only run arrives meanwhile.
+
+stale_failure="$(writer_status 100 failure 2026-09-05T12:00:10Z 4000)"
+writer_rerun="$(attempt_entry 4000 in_progress 2026-09-05T11:59:00Z 2 2026-09-05T12:00:20Z)"
+
+# Without holding a settled failure open for the writer's re-run, this reads
+# the stale failure on the first poll and goes red while the re-run that
+# replaces it is still in flight.
+echo 'case: a stale failure waits for the in-flight re-run of its writer and carries its success'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list_on_call 1 "[${stale_failure}]"
+status_list_on_call 2 "[$(writer_status 200 success 2026-09-05T12:04:00Z 4000),${stale_failure}]"
+workflow_runs_on_call 1 "[${writer_rerun}]"
+workflow_runs_on_call 2 '[]'
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "The ci-lanes status on ${sha} settled after 15s."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the ceiling a re-run slower than it holds the run forever, and
+# without "never pass on timeout" it would have to resolve to something.
+echo 'case: a writer re-run that outlasts the ceiling fails closed naming it'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[${stale_failure}]"
+workflow_runs "[${writer_rerun}]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with in-flight run(s) 4000'
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on in-flight run(s): 4000). Once ci-lanes on ${sha} is success, re-run this run instead."
+
+# Without the start-time term this waits on the writer's own first attempt,
+# which records the status a moment before it completes, and turns a prompt
+# red into a wait.
+echo 'case: the writer attempt that recorded the failure is not waited on'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[${stale_failure}]"
+workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T11:59:00Z 1 2026-09-05T11:59:00Z)]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_no_log 'Waiting '
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+
+# Without narrowing the wait to the writer, a failed SHA brings back the mutual
+# wait: each contract-only run holds the failure open for the other until the
+# ceiling. 4300 is itself a re-run started after the failure, so a
+# `run_attempt > 1` test in place of the writer test waits on it too.
+echo 'case: two contract-only siblings on a failed SHA do not wait on each other'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[${stale_failure}]"
+workflow_runs "[$(attempt_entry 4100 in_progress "$current_run_created_at" 1 "$current_run_created_at"),$(attempt_entry 4300 in_progress 2026-09-05T12:00:00Z 2 2026-09-05T12:01:00Z)]"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_no_log 'Waiting '
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow."
+
+# Without the unsettled-state fail a re-run of the full run that ends without
+# recording anything would leave an absent status to pass. No status names no
+# writer, so this is the ordinary wait on any sibling, and it still fails.
+echo 'case: a missing status still fails after the re-run ends without recording one'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list '[]'
+workflow_runs_on_call 1 "[${writer_rerun}]"
+workflow_runs_on_call 2 '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)."
+expect_no_log 'Carried forward'
+
+# Without the second remedy the message only ever says to re-run the full
+# workflow, and a red that outlived its failure gets a new commit (every lane
+# again) where re-running this run is enough.
+echo 'case: the failure message names the re-run-this-run remedy for a later success'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list "[${stale_failure}]"
+workflow_runs '[]'
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow. Once ci-lanes on ${sha} is success, re-run this run instead."
 
 # The documented trade, pinned deliberately from the passing side. A recorded
 # success ends the wait even with a sibling in flight, so a re-run of this SHA
