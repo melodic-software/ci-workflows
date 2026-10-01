@@ -55,8 +55,11 @@ inputs:
       Ceiling, in seconds, on the carry-forward wait. In carry-forward mode this
       action polls every 15 seconds. Each poll lists the runs of this same
       workflow on this same head SHA that are still incomplete, excluding this
-      run, and then reads the `status-context` status list. A `success` or
-      `failure` is a settled verdict and ends the poll; otherwise the run stops
+      run, and then reads the `status-context` status list. A `success` is a
+      settled verdict and ends the poll. A `failure` or `error` ends it too,
+      unless the full run that wrote it (the run its `target_url` names) is
+      re-running with an attempt that started after the status was created;
+      then the poll waits on that run alone. Otherwise the run stops
       when nothing is in flight, which is the immediate fail on an absent status
       that this action has always had when no full run is coming, and sleeps
       when something is.
@@ -72,10 +75,12 @@ inputs:
       status and flips to `completed` moments later, and the other order lets
       that completion land between the two calls and report both no status and
       nothing in flight.
-      Reaching the ceiling fails the run; there is no pass-on-timeout path. The
-      one case that runs to the ceiling is two or more contract-only runs on a
-      SHA with no full run in flight to write a verdict for them, and it fails
-      closed. `0` disables the wait and goes straight to a single status read.
+      Reaching the ceiling fails the run; there is no pass-on-timeout path. Two
+      cases run to the ceiling and fail closed: two or more contract-only runs
+      on a SHA with no status and no full run in flight to write one, and a
+      writer re-run slower than the ceiling. Every red names both remedies:
+      re-run the full workflow, or, once the status is `success`, re-run this
+      run. `0` disables the wait and goes straight to a single status read.
       The calling job needs `actions: read`: under an explicit `permissions:`
       block the default is none, and a 403 warns naming the scope and degrades
       to the status read alone.

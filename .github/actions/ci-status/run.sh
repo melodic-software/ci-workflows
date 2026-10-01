@@ -24,8 +24,11 @@
 #   1. List the runs of this same workflow on this same head SHA that are still
 #      incomplete, excluding this run. Any run id; see below.
 #   2. Read the newest `github-actions[bot]` status for `status-context`. A
-#      `success` or `failure` is a settled verdict, so stop polling and apply
-#      it under the usual rules.
+#      `success` is a settled verdict, so stop polling and apply it. A
+#      `failure` or `error` is settled too, unless the full run that wrote it
+#      (the run its `target_url` names) is in flight again with a current
+#      attempt that started after the status was created: that is a re-run
+#      about to replace the verdict, so the wait narrows to that one run.
 #   3. Otherwise, if step 1 found nothing in flight, stop: no run that could
 #      still write a verdict exists, and an absent status fails the run as it
 #      always has. If something IS in flight, sleep and poll again.
@@ -36,6 +39,15 @@
 # breaks a mutual wait: once the full run writes its verdict, both contract-only
 # runs read it and stop.
 #
+# Only the writer's re-run holds a settled failure open. Only a full run writes
+# the status, so a contract-only sibling is never that run, and two contract-only
+# runs on a failed SHA still stop at once instead of waiting on each other. A
+# `run_attempt > 1` test would also catch a re-run contract-only run and bring
+# that mutual wait back. The start-time test keeps the writer's own first
+# attempt, which writes the status a moment before it completes, out of the
+# wait. The known limit: a re-run of a DIFFERENT full run on the same SHA does
+# not hold a failure open, and the run fails at once as it did before.
+#
 # Step 1 before step 2 WITHIN a poll. A sibling writes the status and flips to
 # `completed` a moment later. Listing after reading would let that completion
 # land in the gap between the two calls and report both "no status" and "nothing
@@ -43,15 +55,19 @@
 # gap, because a status written before the listing is still read after it.
 #
 # The loop never turns a verdict green. Reaching the ceiling exits 1 rather than
-# passing on an unsettled status; there is no pass-on-timeout path. The one case
-# that runs to the ceiling is two or more contract-only runs on a SHA with no
-# full run in flight to write a verdict for them: they wait on each other and
-# then both fail closed.
+# passing on an unsettled status; there is no pass-on-timeout path. Two cases
+# run to the ceiling: two or more contract-only runs on a SHA with no status and
+# no full run in flight to write one (they wait on each other and then both fail
+# closed), and a writer re-run that outlasts the ceiling.
 #
-# Reading a settled status before the wait set empties is a deliberate trade: it
-# releases the mutual wait above, and it can carry an older `success` forward
+# Reading a settled `success` before the wait set empties is a deliberate trade:
+# it releases the mutual wait above, and it can carry an older `success` forward
 # while a re-run of the same SHA is in flight to overwrite it. The defenses
 # against a forged status (context, creator login, Bot type, newest id) hold.
+#
+# Every red names both remedies. The run cannot see a later verdict, so the
+# message says to re-run the full workflow, and to re-run this run instead once
+# `status-context` on the SHA is `success`.
 #
 # `same-repo` false is a fork pull request. Its token is read-only on
 # `pull_request` whatever `permissions:` requests, so it cannot record lane
@@ -193,12 +209,20 @@ require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]
 # echoing it so the caller can distinguish "read failed" from "read empty"
 # through the return status.
 carried_state=""
+# When that entry was created, and the run id its `target_url` names (the full
+# run that wrote it). Empty when absent; either one empty means the wait never
+# treats a run as the writer's re-run.
+carried_created_at=""
+carried_writer_run_id=""
 # Whether `carried_state` holds a completed read. The poll loop reads the status
 # itself, so the caller below must not read a second time and overwrite what the
 # loop decided on.
 carried_state_read=false
 read_carried_state() {
+  local entry
   carried_state=""
+  carried_created_at=""
+  carried_writer_run_id=""
   carried_state_read=false
   # The LIST endpoint, not the combined one: `commits/<sha>/status` collapses to
   # one entry per context and exposes no author, so any collaborator with write
@@ -221,9 +245,13 @@ read_carried_state() {
   # explicit check a malformed or truncated body would make jq exit nonzero,
   # that status would be discarded, and the function would report a completed
   # read of an empty state. A body this function cannot parse is a failed read.
-  carried_state="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
-    '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id).state // "")' \
+  # One pass, `|`-joined: tab is IFS whitespace, so `read` would collapse an
+  # empty middle field and shift the ones after it.
+  entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
+    '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id) // {})
+     | [(.state // ""), (.created_at // ""), ((.target_url // "") | capture("/actions/runs/(?<id>[0-9]+)").id // "")] | join("|")' \
     <"$gh_stdout")" || return 1
+  IFS='|' read -r carried_state carried_created_at carried_writer_run_id <<<"$entry"
   carried_state_read=true
 }
 
@@ -307,6 +335,9 @@ wait_for_sibling_runs() {
     ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$run_id" \
       '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
       <"$gh_stdout")"
+    # Kept for the settled-failure check below, which runs after the status
+    # read has overwritten gh_stdout.
+    cp -- "$gh_stdout" "$scratch/runs.json"
     # The status read comes AFTER the listing above, never before it: a sibling
     # writes the status and flips to `completed` moments later, and the other
     # order lets that completion land between the two calls.
@@ -329,11 +360,19 @@ wait_for_sibling_runs() {
       cat "$gh_stderr" >&2
       break
     fi
-    # A settled verdict ends the wait whatever is still in flight. This is what
-    # releases two contract-only runs that would otherwise wait on each other.
-    # `error` is settled alongside `failure`: both are terminal states the API
-    # accepts, and neither passes below, so waiting on one only delays a red.
-    if [[ "$carried_state" == success || "$carried_state" == failure || "$carried_state" == error ]]; then
+    # A failure is stale while the full run that wrote it is re-running, so the
+    # wait narrows to that one run; see the header for why only the writer.
+    # `error` goes with `failure`: both are terminal states the API accepts, and
+    # neither passes below.
+    if [[ "$carried_state" == failure || "$carried_state" == error ]]; then
+      ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg writer "$carried_writer_run_id" --arg since "$carried_created_at" \
+        '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select($since != "" and (.id | tostring) == $writer and (.run_started_at // "") > $since) | .id ] | join(" ")' \
+        <"$scratch/runs.json")"
+    fi
+    # A settled verdict with no writer re-run in flight ends the wait whatever
+    # else is in flight. This is what releases two contract-only runs that
+    # would otherwise wait on each other.
+    if [[ "$carried_state" == success || ("$carried_state" =~ ^(failure|error)$ && -z "$ids") ]]; then
       if [[ "$carry_forward_waited" -gt 0 ]]; then
         echo "The ${STATUS_CONTEXT} status on ${SHA} settled after ${carry_forward_waited}s."
       fi
@@ -366,6 +405,15 @@ wait_for_sibling_runs() {
   set_wait_note "$all_ids"
 }
 
+# Every carry-forward red. The run cannot see a verdict recorded after it, so
+# the message names both remedies: a failed or missing full run needs the full
+# workflow again, and once the status is `success` re-running this run is
+# enough, where a new commit would re-run every lane.
+fail_carry_forward() {
+  echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}. Once ${STATUS_CONTEXT} on ${SHA} is success, re-run this run instead."
+  exit 1
+}
+
 if [[ "$contract_only" == true ]]; then
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
   if [[ "$CARRY_FORWARD_WAIT_SECONDS" -gt 0 ]]; then
@@ -375,8 +423,7 @@ if [[ "$contract_only" == true ]]; then
     if [[ "$carry_forward_wait_status" -ne 0 ]]; then
       # Never pass on timeout: a run that could still write this SHA's verdict
       # is in flight, so whatever is on the SHA right now is not settled.
-      echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
-      exit 1
+      fail_carry_forward
     fi
   fi
   # Only when the loop did not read it: a failed Actions read or a mid-loop
@@ -385,16 +432,14 @@ if [[ "$contract_only" == true ]]; then
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! read_carried_state; then
       cat "$gh_stderr" >&2
-      echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
-      exit 1
+      fail_carry_forward
     fi
   fi
   if [[ "$carried_state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
     exit 0
   fi
-  echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}"
-  exit 1
+  fail_carry_forward
 fi
 
 # ---------------------------------------------------------------------------
