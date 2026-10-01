@@ -96,7 +96,7 @@ which the current SHA-pin governance model gives no reason to expect.
 **`v0.x` carries no stability guarantee.** Per SemVer's own terms, "Major
 version zero (0.y.z) is for initial development. Anything MAY change at any
 time. The public API SHOULD NOT be considered stable" ([SemVer, item
-4][semver]). This repository is `v0.7.0` at the time of writing: a release may
+4][semver]). This repository is on the `v0.x` line: a release may
 still ship a change a post-1.0 line would have to treat as its own
 minor/patch distinction. Committing to `v1.0.0` — SemVer's "defines the public
 API" milestone ([SemVer, item 5][semver]) — is a deliberate, separate decision
