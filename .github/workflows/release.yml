@@ -18,8 +18,10 @@ name: release
 # CUTTING A RELEASE REPINS NOTHING: it rewrites no `uses:` pin, here or in a
 # consumer. Repins are separate reviewed pull requests: the standards
 # `claude-lanes-repin.yml` lane for the callers `repin-callers.sh` enumerates,
-# this repository's `github-actions` Dependabot group for its self-pins, and by
-# hand everywhere else.
+# this repository's `github-actions` Dependabot group for its self-pins,
+# github-iac's Dependabot `github-actions` updates for the composite actions it
+# uses (it ignores only `melodic-software/ci-workflows/.github/workflows/*`),
+# and by hand everywhere else.
 #
 # Cut a release whenever main changes by something worth pinning to, so a
 # repinner has a released SHA for the `# vX.Y.Z` comment form instead of the
