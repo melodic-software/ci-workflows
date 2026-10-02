@@ -729,7 +729,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   secrets interface and safe-handling model, running `/review:security-review`.
   It reviews the PR's changed files for the vulnerabilities static analysis
   misses and reports findings as a PR review. Findings are advisory: they never
-  fail the job. It runs on every non-draft pull request.
+  fail the job. It skips a pull request whose files in scope are all
+  documentation (`docs-only-paths`).
 
 ## Claude lanes — shared consumption contract
 
@@ -775,20 +776,34 @@ parent secret.
 | `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
 | `claude-args` | `--model claude-sonnet-5 --max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the inline-comment grant and a `Skill(<plugin-command>)` grant are always appended |
 | `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
+| `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |
+| `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs |
 
-**Skips.** The review job skips draft PRs, fork PRs (no secrets reach them;
-review fork changes by hand) and every bot actor (the action rejects bots it
-was not told to allow). Calling either lane from `pull_request_target` or
+**Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
+fork changes by hand) and every bot actor (the action rejects bots it was not
+told to allow). Calling either lane from `pull_request_target` or
 `workflow_run` fails the job.
 
-**Status check, red means no review.** The review job stays green on an infrastructure
-failure. Each lane's status job (`claude-review-status`,
-`claude-security-review-status`) runs after it and goes red, naming the cause,
-whenever no review happened: a failed attempt (`auth`, `rate-limit`,
+**Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
+request. A later push reviews only the pull request's files that changed since
+the lane's last completed review; the prompt names them and the job writes
+their diff to `.claude-lane/incremental.diff`. The last reviewed head is kept
+in the pull request's Actions cache. A push reviews the whole pull request
+instead when no earlier review is recorded, the recorded head is not an
+ancestor of the new head (force push or rebase), 300 or more files changed
+since, or a base-branch merge since then changed a file the pull request also
+changes. A push that changes no file of the pull request is not reviewed
+again.
+
+**Status check, red means no review.** Each lane is one job, named
+`claude-review-status` or `claude-security-review-status`, so its check is
+`<caller job> / claude-review-status`. Its last step goes red, naming the
+cause, whenever no review happened: a failed attempt (`auth`, `rate-limit`,
 `overloaded`, `other`), the action skipping itself because the PR edits the
-caller workflow (`skipped-validation`), or a review job that ended before
-reporting (`no-outcome`). A skipped review job skips the status job too. Never
-make the status check required.
+caller workflow (`skipped-validation`), or a job that ended before the review
+reported (`no-outcome`). A review that was not needed (nothing changed, or
+docs only) stays green and says why in the job summary. Re-run a failed review
+with `gh run rerun --failed`. Never make the status check required.
 `claude-review.yml` also exposes `review-failed` and `failure-class` as
 workflow outputs.
 

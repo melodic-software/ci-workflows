@@ -2,9 +2,9 @@ name: claude-security-review
 
 # Reusable workflow: dedicated LLM security review with
 # anthropics/claude-code-action, running the org review plugin's security
-# command. A sibling of claude-review.yml with the same secrets interface and
-# safe-handling model. Findings are advisory: they never fail the job. It runs
-# on every non-draft pull request.
+# command. A sibling of claude-review.yml with the same secrets interface,
+# safe-handling model and review cadence. Findings are advisory: they never
+# fail the job.
 #
 # Canonical caller (the caller owns triggers, concurrency and the permission
 # grant; a called workflow can only downgrade the caller's grant):
@@ -39,11 +39,22 @@ name: claude-security-review
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
 #   - The checkout must persist credentials until claude-code-action#1236
 #     ships; the last step strips them.
+#   - The last reviewed head is kept in the pull request's Actions cache, which
+#     any workflow run on the PR's branch can write. A writer to that branch can
+#     therefore narrow a later incremental review; same-repository writers
+#     already receive this lane's secret, so the lane trusts them.
 #
-# The review job stays green on an infrastructure failure. The
-# `claude-security-review-status` job runs after it whenever it was not
-# skipped, and goes red, naming the cause, when no review happened. Never make
-# that check required.
+# REVIEW CADENCE: the same as claude-review.yml (see its header): drafts are
+# skipped, `opened`, `reopened` and `ready_for_review` review the whole pull
+# request, and a later push reviews only the files changed since this lane's
+# last completed review. When every file in scope matches `docs-only-paths`
+# (by default top-level `docs/` markdown, READMEs and changelogs), no security
+# review runs.
+#
+# One job reviews and reports. It is named `claude-security-review-status`, so
+# its check is `<caller job> / claude-security-review-status`, and it goes red,
+# naming the cause, when no review happened. A review that is not needed stays
+# green. Never make that check required.
 
 on:
   workflow_call:
@@ -88,6 +99,25 @@ on:
           kinds (upstream #1514).
         type: string
         default: dependabot,dependabot[bot]
+      incremental-review:
+        description: >-
+          On a push to a reviewed pull request, review only the files changed
+          since the last completed review. false reviews the whole pull
+          request on every push.
+        type: boolean
+        default: true
+      docs-only-paths:
+        description: >-
+          Newline-separated path globs (`*` within one path segment, `**`
+          across segments). When every file in the review's scope matches one,
+          no review runs and the check stays green. Empty never skips. Agent
+          instruction files (CLAUDE.md, AGENTS.md, skills, rules) are not
+          documentation here; keep them out of this list.
+        type: string
+        default: |
+          docs/**/*.md
+          **/README.md
+          **/CHANGELOG.md
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token (from `claude setup-token`).
@@ -98,8 +128,13 @@ permissions:
 
 jobs:
   security-review:
+    name: claude-security-review-status
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 25
+    # Measured on claude-code-plugins, 428 successful jobs: p95 307 s, max
+    # 1,040 s, which puts ceil(max(1.5 x p95, 1.1 x max) / 60) at 20. Capped at
+    # the 16-minute ceiling set for every CI job; incremental scoping shortens
+    # the tail.
+    timeout-minutes: 16
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
     if: >-
@@ -132,11 +167,175 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
 
+      # The newest cache under the PR's prefix holds the last head this lane
+      # finished reviewing. A miss means a whole-PR review.
+      - name: Restore the last reviewed head
+        if: inputs.incremental-review && github.event.action == 'synchronize'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .claude-lane/reviewed-sha
+          key: claude-security-review-reviewed-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          restore-keys: claude-security-review-reviewed-${{ github.event.pull_request.number }}-
+
+      # Decides whole-PR, incremental, or no review (see REVIEW CADENCE). Any
+      # failure here leaves `review` unset, which reviews the whole PR.
+      - name: Scope the review
+        id: scope
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INCREMENTAL: ${{ inputs.incremental-review }}
+          DOCS_ONLY_PATHS: ${{ inputs.docs-only-paths }}
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          STATE_FILE: .claude-lane/reviewed-sha
+          DIFF_FILE: .claude-lane/incremental.diff
+        with:
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const env = process.env;
+            const { owner, repo } = context.repo;
+            const head = env.HEAD_SHA;
+            const FILE_CAP = 300;
+
+            const globToRegExp = (glob) => {
+              let out = "";
+              for (let i = 0; i < glob.length; i += 1) {
+                if (glob.startsWith("**/", i)) {
+                  out += "(?:.*/)?";
+                  i += 2;
+                } else if (glob.startsWith("**", i)) {
+                  out += ".*";
+                  i += 1;
+                } else if (glob[i] === "*") {
+                  out += "[^/]*";
+                } else if (glob[i] === "?") {
+                  out += "[^/]";
+                } else {
+                  out += glob[i].replace(/[.+^$(){}|[\]\\]/u, "\\$&");
+                }
+              }
+              return new RegExp(`^${out}$`, "u");
+            };
+            const docsOnly = (env.DOCS_ONLY_PATHS ?? "")
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map(globToRegExp);
+            const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
+            const isDocs = (file) => names(file).every((name) => docsOnly.some((re) => re.test(name)));
+            const compare = async (basehead) =>
+              (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
+
+            // Returns { files, patches } for an incremental review, or { full: reason }.
+            const sinceLastReview = async (prFiles, last) => {
+              if (!/^[0-9a-f]{40}$/u.test(last)) return { full: "no earlier review is recorded" };
+              if (last === head) return { files: [], patches: new Map() };
+              const since = await compare(`${last}...${head}`);
+              if (since.status !== "ahead") {
+                return { full: `the last reviewed head ${last} is not an ancestor of ${head}` };
+              }
+              const changed = since.files ?? [];
+              if (changed.length >= FILE_CAP) return { full: `${FILE_CAP} or more files changed since ${last}` };
+              const prNames = new Set(prFiles.flatMap(names));
+              const [before, now] = await Promise.all(
+                [last, head].map(async (ref) => (await compare(`${env.BASE_REF}...${ref}`)).merge_base_commit.sha),
+              );
+              if (before !== now) {
+                const moved = (await compare(`${before}...${now}`)).files ?? [];
+                if (moved.length >= FILE_CAP || moved.some((file) => names(file).some((name) => prNames.has(name)))) {
+                  return { full: "a base-branch merge since the last review changed a file this pull request changes" };
+                }
+              }
+              const patches = new Map();
+              for (const file of changed) for (const name of names(file)) patches.set(name, file);
+              return { files: prFiles.filter((file) => names(file).some((name) => patches.has(name))), patches };
+            };
+
+            const writeDiff = (files, patches) => {
+              const text = files.map((file) => {
+                const change = patches.get(file.filename) ?? patches.get(file.previous_filename);
+                return [
+                  `diff --git a/${change.previous_filename ?? change.filename} b/${change.filename}`,
+                  `status: ${change.status}`,
+                  change.patch ?? "(no patch from the API; read the file at the head commit)",
+                  "",
+                ].join("\n");
+              });
+              fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
+              fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+            };
+
+            const incremental = env.INCREMENTAL === "true";
+            try {
+              const prFiles = await github.paginate(github.rest.pulls.listFiles, {
+                owner,
+                repo,
+                pull_number: Number(env.PR_NUMBER),
+                per_page: 100,
+              });
+              let scope = prFiles;
+              let last = "";
+              if (incremental && env.EVENT_ACTION === "synchronize") {
+                let recorded = "";
+                try {
+                  recorded = fs.readFileSync(env.STATE_FILE, "utf8").trim();
+                } catch {
+                  recorded = "";
+                }
+                const result = await sinceLastReview(prFiles, recorded);
+                if (result.full) {
+                  core.info(`Reviewing the whole pull request: ${result.full}.`);
+                } else {
+                  last = recorded;
+                  scope = result.files;
+                  if (scope.length > 0) writeDiff(scope, result.patches);
+                }
+              }
+
+              if (last && scope.length === 0) {
+                core.setOutput("review", "false");
+                core.setOutput("skip-reason", `no file of this pull request changed since the review of ${last}`);
+              } else if (docsOnly.length > 0 && scope.length > 0 && scope.every(isDocs)) {
+                core.setOutput("review", "false");
+                core.setOutput("skip-reason", "every file in scope matches docs-only-paths");
+              } else {
+                core.setOutput("review", "true");
+                if (last) {
+                  const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
+                  if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
+                  core.setOutput(
+                    "note",
+                    [
+                      `REVIEW SCOPE: incremental. This lane last reviewed ${last}.`,
+                      "Review only what changed since then, in these files:",
+                      ...shown,
+                      `That change is in ${env.DIFF_FILE}; read it, and use \`gh pr diff\` only for context.`,
+                      `Every other file of this pull request is unchanged since ${last} and was reviewed then.`,
+                    ].join("\n"),
+                  );
+                }
+                core.info(last ? `Incremental review of ${scope.length} file(s) since ${last}.` : "Whole pull request review.");
+              }
+            } catch (error) {
+              core.warning(`Scoping failed, reviewing the whole pull request: ${error.message}`);
+              core.setOutput("review", "true");
+            }
+            if (incremental) {
+              fs.mkdirSync(path.dirname(env.STATE_FILE), { recursive: true });
+              fs.writeFileSync(env.STATE_FILE, `${head}\n`);
+              core.setOutput("record", "true");
+            }
+
       # The inline-comment and plugin-command Skill grants go after the caller's
       # args so replacing claude-args cannot drop them; heredoc output as
       # claude-args may be multiline.
       - name: Compose Claude CLI arguments
         id: compose-args
+        if: steps.scope.outputs.review != 'false'
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
           PLUGIN_COMMAND: ${{ inputs.plugin-command }}
@@ -151,12 +350,13 @@ jobs:
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
-      # continue-on-error keeps an infrastructure failure off this job so the
-      # outcome step can classify it; the status job carries the red.
+      # continue-on-error keeps an infrastructure failure from ending the job
+      # before the outcome step classifies it; the last step carries the red.
       - name: Claude security review
         id: claude-review
+        if: steps.scope.outputs.review != 'false'
         continue-on-error: true
-        timeout-minutes: 18
+        timeout-minutes: 15
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1.0.235
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -170,6 +370,7 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
             HEAD SHA: ${{ github.event.pull_request.head.sha }}
+            ${{ steps.scope.outputs.note }}
 
             Invoke ${{ inputs.plugin-command }} now and follow its instructions exactly for this pull request.
             The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.
@@ -181,34 +382,45 @@ jobs:
 
       - name: Report review outcome
         id: review-outcome
+        if: steps.scope.outputs.review != 'false'
         uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
         with:
           outcome: ${{ steps.claude-review.outcome }}
           execution-file: ${{ steps.claude-review.outputs.execution_file }}
           lane: Claude security review
 
+      # Only a completed review, or a review that was not needed, moves the
+      # recorded head forward.
+      - name: Record the reviewed head
+        if: >-
+          steps.scope.outputs.record == 'true'
+          && (steps.scope.outputs.review == 'false'
+              || steps.review-outcome.outputs.review-ran == 'true')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .claude-lane/reviewed-sha
+          key: claude-security-review-reviewed-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+
       # zizmor `artipacked` mitigation: scrub the token checkout persisted.
       - name: Strip persisted git credentials
         if: always()
         run: git config --unset-all http.https://github.com/.extraheader || true
 
-  # Reads the review job's outputs, never its log, and goes red whenever no
-  # review happened. The outputs reach the script through env, never inline
-  # expressions.
-  claude-security-review-status:
-    needs: security-review
-    if: always() && needs.security-review.result != 'skipped'
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Report the review outcome
+      # Goes red whenever no review happened and none was skipped on purpose.
+      # Every value reaches the script through env, never inline expressions.
+      - name: Report the review status
+        if: always()
         env:
           LANE: claude-security-review
-          REVIEW_RESULT: ${{ needs.security-review.result }}
-          REVIEW_FAILED: ${{ needs.security-review.outputs.review-failed }}
-          FAILURE_CLASS: ${{ needs.security-review.outputs.failure-class }}
+          JOB_STATUS: ${{ job.status }}
+          SKIP_REASON: ${{ steps.scope.outputs.skip-reason }}
+          REVIEW_FAILED: ${{ steps.review-outcome.outputs.review-failed }}
+          FAILURE_CLASS: ${{ steps.review-outcome.outputs.failure-class }}
         run: |
+          if [ -n "$SKIP_REASON" ]; then
+            echo "$LANE: no review needed: $SKIP_REASON." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ -z "$REVIEW_FAILED" ]; then
             FAILURE_CLASS=no-outcome
           elif [ "$REVIEW_FAILED" != "true" ] && [ "$FAILURE_CLASS" != "skipped-validation" ]; then
@@ -220,8 +432,8 @@ jobs:
             rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
-            no-outcome) why="the review job ended ($REVIEW_RESULT) before reporting an outcome; read the review job log" ;;
-            *) why="an unclassified failure; read the review job log" ;;
+            no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
+            *) why="an unclassified failure; read the job log" ;;
           esac
           {
             echo "### $LANE failed: \`${FAILURE_CLASS:-unknown}\`"
