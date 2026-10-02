@@ -2,6 +2,7 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+# Runs check-exec-bit.sh against throwaway repositories under a temporary directory.
 action_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
