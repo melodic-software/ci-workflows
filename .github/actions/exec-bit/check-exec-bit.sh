@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fail every tracked file starting with `#!` whose index mode is 100644: it
-# loses its exec bit on checkout. Not `set -e`: grep's no-match exit 1 is clean.
+# loses its exec bit on checkout. No `set -e`: grep's no-match exit 1 is clean.
 set -uo pipefail
 
 read -ra paths <<<"${PATHS:-.}"
