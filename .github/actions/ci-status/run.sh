@@ -8,6 +8,18 @@
 # run cannot say which event produced it — a chain of contract-only runs could
 # otherwise self-certify.
 #
+# With `rerun-contract-only-siblings`, a full run that records `success` then
+# re-runs every failed contract-only run of this workflow on the SHA, so its red
+# check run is replaced by one that reads the success. See
+# `rerun_failed_contract_only_siblings` for how a contract-only run is
+# recognized and why the re-run cannot loop.
+#
+# Pending mode (`record-pending` true): the first job of a full run marks
+# `status-context` `pending` and stops. A contract-only run that reads the
+# status while that full run is in flight then fails instead of carrying an
+# older run's `success` forward, and the full run's gate overwrites the marker
+# with its verdict.
+#
 # Carry-forward mode (`contract-only` true): the lanes were gated off by
 # construction, so aggregation is skipped and the recorded commit status for
 # `status-context` on the same SHA decides. It is read from the status LIST
@@ -58,16 +70,17 @@
 # passing on an unsettled status; there is no pass-on-timeout path. Two cases
 # run to the ceiling: two or more contract-only runs on a SHA with no status and
 # no full run in flight to write one (they wait on each other and then both fail
-# closed), and a writer re-run that outlasts the ceiling.
+# closed), and a writer re-run that outlasts the ceiling. The ceiling is elapsed
+# wall-clock time since the wait began, API calls included, not the sum of the
+# sleeps, so a large ceiling stays under the job budget it was sized against.
 #
 # Reading a settled `success` before the wait set empties is a deliberate trade:
 # it releases the mutual wait above, and it can carry an older `success` forward
 # while a re-run of the same SHA is in flight to overwrite it. The defenses
 # against a forged status (context, creator login, Bot type, newest id) hold.
 #
-# Every red names both remedies. The run cannot see a later verdict, so the
-# message says to re-run the full workflow, and to re-run this run instead once
-# `status-context` on the SHA is `success`.
+# Every red names the remedy that fits the state it read; see
+# `fail_carry_forward`.
 #
 # `same-repo` false is a fork pull request. Its token is read-only on
 # `pull_request` whatever `permissions:` requests, so it cannot record lane
@@ -81,6 +94,8 @@ set -euo pipefail
 RESULTS="${RESULTS:-}"
 CONTRACT_ONLY="${CONTRACT_ONLY:-}"
 SAME_REPO="${SAME_REPO:-}"
+RERUN_CONTRACT_ONLY_SIBLINGS="${RERUN_CONTRACT_ONLY_SIBLINGS:-}"
+RECORD_PENDING="${RECORD_PENDING:-}"
 STATUS_CONTEXT="${STATUS_CONTEXT:-ci-lanes}"
 REPOSITORY="${REPOSITORY:-}"
 SHA="${SHA:-}"
@@ -162,6 +177,14 @@ fi
 if ! same_repo="$(read_boolean same-repo "$SAME_REPO" true)"; then
   exit 1
 fi
+# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
+if ! rerun_contract_only_siblings="$(read_boolean rerun-contract-only-siblings "$RERUN_CONTRACT_ONLY_SIBLINGS" false)"; then
+  exit 1
+fi
+# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
+if ! record_pending="$(read_boolean record-pending "$RECORD_PENDING" false)"; then
+  exit 1
+fi
 
 # GitHub's documented escaping for workflow-command data, so a value echoed back
 # in an annotation cannot close it and inject a second command. `%` first, or the
@@ -194,6 +217,67 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # value would otherwise make the comparison an error under `set -e` or the sleep
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+
+# POST one `status-context` entry on `sha` naming this run, retrying after 1s,
+# 2s and 4s. Every write is load-bearing, not best-effort: the carry-forward
+# branch reads nothing else, so a silently missing status turns every later
+# contract-only run red, or lets one carry an older verdict, with no way to tell
+# a refused write from a real result. Returns 1 after printing the error.
+write_status() {
+  local state="$1" description="$2" attempt delay
+  jq -n \
+    --arg state "$state" \
+    --arg context "$STATUS_CONTEXT" \
+    --arg description "$description" \
+    --arg target_url "${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-0}" \
+    '{state: $state, context: $context, description: $description, target_url: $target_url}' \
+    >"$scratch/status-payload.json"
+  for attempt in 1 2 3 4; do
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
+    if gh_api POST "repos/${REPOSITORY}/statuses/${SHA}" --input "$scratch/status-payload.json"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt 4 ]]; then
+      delay=$((STATUS_RETRY_BASE_DELAY * (1 << (attempt - 1))))
+      echo "::warning::could not record ${STATUS_CONTEXT} on ${SHA} (HTTP ${GH_HTTP_STATUS:-unknown}); retrying in ${delay}s"
+      sleep "$delay"
+    fi
+  done
+  cat "$gh_stderr" >&2
+  echo "::error::could not record ${STATUS_CONTEXT} on ${SHA} (${GH_HTTP_STATUS:-unknown}); the calling job needs statuses: write"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Pending mode. Only the full run a contract-only run would wait for marks its
+# verdict pending: a contract-only run marking it would fail itself and every
+# sibling with nothing coming to replace the marker, a fork's token cannot
+# write, and a push has no contract-only sibling to protect. Each of those
+# passes with a notice, so the step is safe in a job that runs on every event.
+# ---------------------------------------------------------------------------
+if [[ "$record_pending" == true ]]; then
+  if [[ "$contract_only" == true ]]; then
+    echo "::notice::contract-only event: ${STATUS_CONTEXT} is not marked pending; only a full run marks its own verdict pending."
+    exit 0
+  fi
+  if [[ "$same_repo" != true ]]; then
+    echo "::notice::fork pull request: ${STATUS_CONTEXT} is not marked pending; a fork never carries a verdict forward."
+    exit 0
+  fi
+  case "${GITHUB_EVENT_NAME:-}" in
+  pull_request | pull_request_target) ;;
+  *)
+    echo "::notice::${GITHUB_EVENT_NAME:-unknown} event: ${STATUS_CONTEXT} is not marked pending; only a pull request has contract-only runs."
+    exit 0
+    ;;
+  esac
+  # shellcheck disable=SC2310 # write_status prints its own error; the caller exits on it.
+  if ! write_status pending 'Full run in flight; lanes not yet aggregated.'; then
+    exit 1
+  fi
+  echo "Recorded ${STATUS_CONTEXT}=pending on ${SHA}; a contract-only run fails until this run's gate records its verdict."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Carry-forward mode. Branched on first, before `same-repo`: the caller's
@@ -255,22 +339,44 @@ read_carried_state() {
   carried_state_read=true
 }
 
-# Both Actions reads need `actions: read`, which an explicit `permissions:` block
-# does not grant by default. Name the scope rather than printing a bare 403, and
-# never treat the refusal as permission to pass: the caller falls through to the
-# status read it would have done without the wait.
-warn_actions_read_failed() {
-  local endpoint="$1"
+# The Actions calls need a scope an explicit `permissions:` block does not grant
+# by default: `actions: read` to wait, `actions: write` to re-run siblings. Name
+# the scope rather than printing a bare 403, and say what the run does instead.
+# Neither caller treats a refusal as permission to pass.
+warn_actions_failed() {
+  local endpoint="$1" scope="$2" consequence="$3"
   if [[ "$GH_HTTP_STATUS" == 403 ]]; then
-    echo "::warning::${endpoint} returned HTTP 403; the ci-status job needs 'actions: read' to wait for a sibling run. Reading the recorded status without waiting."
+    echo "::warning::${endpoint} returned HTTP 403; the ci-status job needs '${scope}'. ${consequence}"
   else
-    echo "::warning::could not read ${endpoint} (HTTP ${GH_HTTP_STATUS:-unknown}); reading the recorded status without waiting."
+    echo "::warning::could not read ${endpoint} (HTTP ${GH_HTTP_STATUS:-unknown}). ${consequence}"
   fi
   cat "$gh_stderr" >&2
 }
 
-# Seconds actually slept, and the sibling run ids waited on, for the ceiling
-# message. Set by wait_for_sibling_runs.
+# Sets `workflow_id` to this run's workflow, the key both the wait and the
+# sibling re-run list runs under, and validates `GITHUB_RUN_ID`, which both
+# exclude from that list. Returns 1 after a warning ending in `consequence`.
+workflow_id=""
+resolve_workflow_id() {
+  local scope="$1" consequence="$2" run_id="${GITHUB_RUN_ID:-}"
+  if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+    echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from the runs on ${SHA}. ${consequence}"
+    return 1
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${run_id}" "$scope" "$consequence"
+    return 1
+  fi
+  workflow_id="$(jq -r '.workflow_id // ""' <"$gh_stdout")"
+  if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
+    echo "::warning::run ${run_id} reported no workflow_id. ${consequence}"
+    return 1
+  fi
+}
+
+# Wall-clock seconds since the wait began, and the sibling run ids waited on,
+# for the ceiling message. Set by wait_for_sibling_runs.
 carry_forward_waited=0
 carry_forward_wait_note=""
 
@@ -295,19 +401,14 @@ set_wait_note() {
 # that fails closed on its own failure; there is no outcome that passes without
 # one completed read.
 wait_for_sibling_runs() {
-  local run_id="${GITHUB_RUN_ID:-}" workflow_id ids all_ids="" sleep_for remaining
-  if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
-    echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from its own wait set. Reading the recorded status without waiting."
-    return 0
-  fi
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
-    warn_actions_read_failed "repos/${REPOSITORY}/actions/runs/${run_id}"
-    return 0
-  fi
-  workflow_id="$(jq -r '.workflow_id // ""' <"$gh_stdout")"
-  if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
-    echo "::warning::run ${run_id} reported no workflow_id; reading the recorded status without waiting."
+  local ids all_ids="" sleep_for remaining wait_started now
+  local no_wait='Reading the recorded status without waiting.'
+  # `date`, not bash's `SECONDS`: an external clock is one the harness can
+  # advance from its `sleep` and `gh` shims, so the ceiling arithmetic stays
+  # real in tests without a test-only knob in this script.
+  wait_started="$(date +%s)"
+  # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller degrades to one read.
+  if ! resolve_workflow_id 'actions: read' "$no_wait"; then
     return 0
   fi
   while :; do
@@ -316,7 +417,7 @@ wait_for_sibling_runs() {
     # is already far past the burst this wait exists for.
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
-      warn_actions_read_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs"
+      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$no_wait"
       # Discard any earlier poll's read so the caller takes the single fresh
       # read the warning above promises. Without this, a listing that fails on
       # the second or later poll would decide on the state read before the
@@ -332,12 +433,14 @@ wait_for_sibling_runs() {
     # covers a run object with no `id`, keeping a malformed entry out rather
     # than waiting on it forever. Sorted so the ids read in run order and the
     # log line is stable from one poll to the next.
-    ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$run_id" \
+    ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
       '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
       <"$gh_stdout")"
     # Kept for the settled-failure check below, which runs after the status
     # read has overwritten gh_stdout.
     cp -- "$gh_stdout" "$scratch/runs.json"
+    now="$(date +%s)"
+    carry_forward_waited=$((now - wait_started))
     # The status read comes AFTER the listing above, never before it: a sibling
     # writes the status and flips to `completed` moments later, and the other
     # order lets that completion land between the two calls.
@@ -400,17 +503,41 @@ wait_for_sibling_runs() {
     fi
     echo "Waiting ${sleep_for}s for in-flight run(s) ${ids} on ${SHA} to finish (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s)."
     sleep "$sleep_for"
-    carry_forward_waited=$((carry_forward_waited + sleep_for))
   done
   set_wait_note "$all_ids"
 }
 
-# Every carry-forward red. The run cannot see a verdict recorded after it, so
-# the message names both remedies: a failed or missing full run needs the full
-# workflow again, and once the status is `success` re-running this run is
-# enough, where a new commit would re-run every lane.
+# Every carry-forward red. The remedy follows the state read. `pending` names
+# the full run in flight, whose own gate check run supersedes this one, so
+# nothing needs re-running unless that run was cancelled. A `failure` or `error`
+# names the run that recorded it. An absent status, or a read that failed,
+# cannot tell whether a full run is coming, so it gives both cases. The closing
+# sentence says who replaces this red once the lanes pass: the full run itself
+# when this workflow re-runs contract-only siblings (the same step runs in both
+# modes, so this run's input is the full run's), otherwise whoever re-runs this
+# run, which is cheaper than a new commit that re-runs every lane.
 fail_carry_forward() {
-  echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; re-run the full workflow${carry_forward_wait_note}. Once ${STATUS_CONTEXT} on ${SHA} is success, re-run this run instead."
+  local writer="" remedy closing
+  if [[ -n "$carried_writer_run_id" ]]; then
+    writer="${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${carried_writer_run_id}"
+  fi
+  case "$carried_state" in
+  pending)
+    remedy="full run ${writer:-on this SHA} is still in flight, and its own ci-status check supersedes this one when it finishes. Re-run that run only if it was cancelled"
+    ;;
+  failure | error)
+    remedy="the lanes verdict is ${carried_state}${writer:+ (${writer})}; fix the failing lane, or re-run that run's failed jobs if the failure was transient"
+    ;;
+  *)
+    remedy="if a full run on this SHA is in flight, its ci-status check supersedes this one; otherwise re-run the full workflow"
+    ;;
+  esac
+  if [[ "$rerun_contract_only_siblings" == true ]]; then
+    closing="A full run that records ${STATUS_CONTEXT}=success on ${SHA} re-runs this run; re-run it yourself only if it stays red after that."
+  else
+    closing="Once ${STATUS_CONTEXT} on ${SHA} is success, re-run this run instead."
+  fi
+  echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; ${remedy}${carry_forward_wait_note}. ${closing}"
   exit 1
 }
 
@@ -491,10 +618,7 @@ if [[ "$lanes_state" == success ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Record the verdict as a commit status. Load-bearing on a same-repository run,
-# not best-effort: the carry-forward branch reads nothing else, so a silently
-# missing status turns every later contract-only run red with no way to tell a
-# refused write from a genuinely failing lane.
+# Record the verdict as a commit status (see `write_status`).
 #
 # A fork pull request is the one exception: its token cannot write a status at
 # all, and nothing will ever read one for it, so the run reports the lanes
@@ -508,32 +632,8 @@ if [[ "$same_repo" != true ]]; then
   exit 0
 fi
 
-target_url="${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-0}"
-jq -n \
-  --arg state "$lanes_state" \
-  --arg context "$STATUS_CONTEXT" \
-  --arg description "$lanes_description" \
-  --arg target_url "$target_url" \
-  '{state: $state, context: $context, description: $description, target_url: $target_url}' \
-  >"$scratch/status-payload.json"
-
-status_written=false
-for attempt in 1 2 3 4; do
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
-  if gh_api POST "repos/${REPOSITORY}/statuses/${SHA}" --input "$scratch/status-payload.json"; then
-    status_written=true
-    break
-  fi
-  if [[ "$attempt" -lt 4 ]]; then
-    delay=$((STATUS_RETRY_BASE_DELAY * (1 << (attempt - 1))))
-    echo "::warning::could not record ${STATUS_CONTEXT} on ${SHA} (HTTP ${GH_HTTP_STATUS:-unknown}); retrying in ${delay}s"
-    sleep "$delay"
-  fi
-done
-
-if [[ "$status_written" != true ]]; then
-  cat "$gh_stderr" >&2
-  echo "::error::could not record ${STATUS_CONTEXT} on ${SHA} (${GH_HTTP_STATUS:-unknown}); the ci-status job needs statuses: write"
+# shellcheck disable=SC2310 # write_status prints its own error; the caller exits on it.
+if ! write_status "$lanes_state" "$lanes_description"; then
   exit 1
 fi
 
@@ -541,4 +641,68 @@ echo "Recorded ${STATUS_CONTEXT}=${lanes_state} on ${SHA}."
 
 if [[ "$lanes_state" == failure ]]; then
   exit 1
+fi
+
+# Re-run every failed contract-only run of this workflow on this SHA, so its red
+# check run is replaced by one that reads the success just recorded. Runs only
+# after that write, so a re-run cannot read anything older.
+#
+# A contract-only run is recognized by its jobs, not its event, which the run
+# object does not carry: in its latest attempt every job but one was skipped,
+# and that one failed. A full run always runs more than its gate, and this run
+# is excluded by id, so neither is ever re-run. A re-run attempt keeps its
+# original event, so it is contract-only again and never reaches this code: no
+# loop. A contract-only run that is red for a contract reason (title,
+# `do-not-merge`) just goes red again, at the cost of one short job.
+#
+# The known gap: a contract-only run still in flight when this lists the runs
+# read the status before this run wrote it, finishes red after, and is not
+# re-run. Its message therefore ends by telling the reader to re-run it if it
+# stays red after the full run's success.
+#
+# Nothing here changes this run's verdict: the success is already recorded, so
+# a refusal warns and moves on.
+rerun_failed_contract_only_siblings() {
+  local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
+  # shellcheck disable=SC2310 # resolve_workflow_id warns itself; a refusal only skips the re-run.
+  if ! resolve_workflow_id 'actions: write' "$skip"; then
+    return 0
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+  if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+    warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: write' "$skip"
+    return 0
+  fi
+  candidates="$(jq -r --argjson self "$GITHUB_RUN_ID" \
+    '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "failure" and (.id // $self) != $self) | .id ] | sort | join(" ")' \
+    <"$gh_stdout")"
+  for id in $candidates; do
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: write' "Not re-running run ${id}."
+      continue
+    fi
+    contract_shaped="$(jq -r '[ .jobs[]? | .conclusion ] | ((map(select(. != "skipped")) == ["failure"]) and (length > 1))' <"$gh_stdout")"
+    if [[ "$contract_shaped" != true ]]; then
+      continue
+    fi
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api POST "repos/${REPOSITORY}/actions/runs/${id}/rerun-failed-jobs"; then
+      if [[ "$GH_HTTP_STATUS" == 403 ]]; then
+        echo "::warning::re-running run ${id} returned HTTP 403; rerun-contract-only-siblings needs 'actions: write' on the ci-status job."
+      else
+        echo "::warning::could not re-run run ${id} (HTTP ${GH_HTTP_STATUS:-unknown})."
+      fi
+      cat "$gh_stderr" >&2
+      continue
+    fi
+    echo "Re-running failed contract-only run ${id} on ${SHA}."
+    rerun_count=$((rerun_count + 1))
+  done
+  echo "Re-ran ${rerun_count} failed contract-only run(s) on ${SHA}."
+}
+
+if [[ "$rerun_contract_only_siblings" == true ]]; then
+  # shellcheck disable=SC2310 # errexit is off inside on purpose: the success is recorded, and a body jq cannot parse must not turn it red.
+  rerun_failed_contract_only_siblings || true
 fi

@@ -276,14 +276,25 @@ consumer to audit it.
     land between the two calls and report both no status and nothing in flight,
     failing a SHA that does carry a verdict.
   - **The wait never turns a verdict green.** Reaching the ceiling prints
-    `::error::no successful <context> status on <sha>; re-run the full workflow`,
-    extended with how long it waited and on which run ids, and exits 1. There is
-    no pass-on-timeout path. Every carry-forward red ends with `Once <context>
-    on <sha> is success, re-run this run instead.`: the run cannot see a verdict
-    recorded after it, and once the lanes pass, re-running the red run replaces
-    its check run where a new commit would re-run every lane.
+    `::error::no successful <context> status on <sha>; <remedy>`, extended
+    with how long it waited and on which run ids, and exits 1. There is no
+    pass-on-timeout path. The ceiling counts elapsed wall-clock time from the
+    start of the wait, API calls included, so it overruns by at most the few
+    seconds one poll's calls take.
 
-  **The calling job needs `actions: read`.** Under an explicit `permissions:`
+  Every carry-forward red names the remedy for the state it read. `pending`
+  names the full run in flight, whose own `ci-status` check run supersedes the
+  red one, so nothing needs re-running unless that run was cancelled. A
+  `failure` or `error` names the run that recorded it: fix the lane, or re-run
+  that run's failed jobs. An absent status says a full run in flight will
+  supersede the red one and to re-run the full workflow only when none is. The
+  closing sentence says who replaces the red once the lanes pass: with
+  `rerun-contract-only-siblings` on, the full run re-runs it (the same step runs
+  in both modes, so the contract-only run knows); otherwise `Once <context> on
+  <sha> is success, re-run this run instead.`, which replaces its check run
+  where a new commit would re-run every lane.
+
+  **A wait above `0` needs `actions: read`.** Under an explicit `permissions:`
   block the default for every scope is none, so both Actions calls 403 without
   it. A 403 prints a `::warning::` naming the missing scope and then degrades to
   a single status read, which is the pre-6b contract: loud, and never a pass on
@@ -300,8 +311,73 @@ consumer to audit it.
   The 15-second poll interval is deliberately not a caller input: the only knob a
   consumer should have to reason about is the ceiling.
 
-  **Size the ceiling from the repository's own measured full run, then derive
-  `timeout-minutes` from it.** `carry-forward-wait-seconds` must cover the wall
+  **Recommended: no run waits for another.** Three opt-in settings together
+  remove the wait, and with it the dependency on how long the full run takes:
+
+  - `carry-forward-wait-seconds: '0'` and `timeout-minutes: 3` on the
+    `ci-status` job. A contract-only run reads the status once, makes no
+    Actions call, and finishes in seconds: green on a recorded `success`, red
+    otherwise.
+  - `record-pending: 'true'`, called as the first step of the full run's first
+    job (for example `changes`). It marks `status-context` `pending` on the
+    head SHA, so a contract-only run on that SHA while the lanes run reads
+    `pending` and goes red instead of carrying an older `success` forward (a
+    draft run's, for example). The full run's gate overwrites the marker with
+    its verdict. It writes only on a same-repository pull request event that is
+    not contract-only, and passes with a notice otherwise, so it is safe in a
+    job that runs on every event. `results` is ignored.
+  - `rerun-contract-only-siblings: 'true'` on the `ci-status` step. After the
+    full run records `success`, it re-runs, through
+    `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs`, every
+    failed run of the same workflow on the SHA whose latest attempt skipped
+    every job but one failed gate. Full runs and the run itself are never
+    re-run. A re-run attempt keeps its original event, so it is contract-only
+    again, reads the new `success`, replaces the red check run, and never
+    re-runs anything itself. A refusal warns and does not change the verdict.
+
+  A red contract-only check does not hold a merge in the meantime: GitHub's
+  docs do not say how several same-name check runs on one SHA are judged, and
+  on claude-code-plugins the merge gate followed the newest one in every case
+  measured, so the full run's later `ci-status` supersedes the red. The
+  remaining gap: a contract-only run still in flight when the full run lists
+  its siblings read the status before it was written, finishes red, and is not
+  re-run; its message ends by saying to re-run it if it stays red.
+
+  Permissions: the first job needs `statuses: write`; the `ci-status` job needs
+  `statuses: write` and `actions: write` (which covers the `actions: read` a
+  wait above `0` needs).
+
+  ```yaml
+  jobs:
+    changes:
+      permissions:
+        contents: read
+        statuses: write
+      steps:
+        - name: Mark the lanes verdict pending
+          uses: melodic-software/ci-workflows/.github/actions/ci-status@<sha> # <tag>
+          with:
+            record-pending: 'true'
+        # ... change detection
+    ci-status:
+      if: always()
+      timeout-minutes: 3
+      permissions:
+        contents: read
+        statuses: write
+        actions: write
+      steps:
+        - name: Aggregate lane results
+          uses: melodic-software/ci-workflows/.github/actions/ci-status@<sha> # <tag>
+          with:
+            carry-forward-wait-seconds: '0'
+            rerun-contract-only-siblings: 'true'
+            results: ${{ needs.changes.result }} ...
+  ```
+
+  **To keep a wait instead, size the ceiling from the repository's own measured
+  full run, then derive `timeout-minutes` from it.**
+  `carry-forward-wait-seconds` must cover the wall
   time the contract-only run may have to wait out: the queue wait plus the p95
   wall of the full `ci` run on this repository. Set `timeout-minutes` to at
   least that figure plus two minutes, then set `carry-forward-wait-seconds` to
@@ -321,10 +397,11 @@ consumer to audit it.
   The 60-second margin survives as a **constraint, not a sizing rule**: a
   ceiling at or above the job budget lets the job timeout preempt the
   fail-closed error, which reports as a cancelled job rather than the
-  actionable "re-run the full workflow" message.
+  actionable message. Because the ceiling counts wall-clock time, the margin
+  holds at any ceiling size.
 
   The `240` default therefore suits only a repository whose full run finishes in
-  well under two minutes. The values in use across the fleet today:
+  well under two minutes. The waiting values in use across the fleet today:
 
   | repository | `timeout-minutes` | `carry-forward-wait-seconds` |
   | --- | --- | --- |

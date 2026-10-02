@@ -12,7 +12,8 @@ inputs:
       Whitespace-separated job results, one per aggregated lane — the caller
       builds this from `needs.<lane>.result`. Empty fails: a gate with nothing
       to aggregate is a miswired `needs` list, not a pass. Ignored when
-      `contract-only` is true, where every lane is `skipped` by construction.
+      `contract-only` is true, where every lane is `skipped` by construction,
+      and when `record-pending` is true.
     required: true
   treat-skipped-as:
     description: >-
@@ -78,24 +79,55 @@ inputs:
       Reaching the ceiling fails the run; there is no pass-on-timeout path. Two
       cases run to the ceiling and fail closed: two or more contract-only runs
       on a SHA with no status and no full run in flight to write one, and a
-      writer re-run slower than the ceiling. Every red names both remedies:
-      re-run the full workflow, or, once the status is `success`, re-run this
-      run. `0` disables the wait and goes straight to a single status read.
-      The calling job needs `actions: read`: under an explicit `permissions:`
-      block the default is none, and a 403 warns naming the scope and degrades
-      to the status read alone.
-      SIZE THIS FROM THE REPOSITORY'S OWN MEASURED FULL RUN, not from the
-      calling job's budget. The ceiling must cover the queue wait plus the p95
-      wall of the full `ci` run; set the calling job's `timeout-minutes` to at
-      least that figure plus two minutes, then set this input to
-      `timeout-minutes * 60 - 60`. Staying 60 seconds below `timeout-minutes`
-      is a constraint on the result, not the sizing rule: it keeps the job
-      timeout from preempting the fail-closed error, but a ceiling derived from
-      an underived budget cannot outlast the run it waits for. The `240`
-      default suits only a repository whose full run finishes in well under two
-      minutes; see the composite's README section for the measured per-
-      repository values in use.
+      writer re-run slower than the ceiling. The ceiling counts elapsed
+      wall-clock time from the start of the wait, API calls included, so it
+      overruns by at most one poll's calls. Every red names the remedy that
+      fits the status it read (see `rerun-contract-only-siblings`).
+      `0` reads the status once, never waits, and makes no Actions call. With
+      `record-pending` and `rerun-contract-only-siblings` it is the
+      recommended setting, with a calling-job `timeout-minutes` of 3: no run
+      then waits for another.
+      A wait above `0` needs `actions: read` on the calling job: under an
+      explicit `permissions:` block the default is none, and a 403 warns
+      naming the scope and degrades to the status read alone.
+      A WAIT ABOVE `0` IS SIZED FROM THE REPOSITORY'S OWN MEASURED FULL RUN,
+      not from the calling job's budget. The ceiling must cover the queue wait
+      plus the p95 wall of the full `ci` run; set the calling job's
+      `timeout-minutes` to at least that figure plus two minutes, then set
+      this input to `timeout-minutes * 60 - 60`. Staying 60 seconds below
+      `timeout-minutes` keeps the job timeout from preempting the fail-closed
+      error. The `240` default suits only a repository whose full run finishes
+      in well under two minutes; see the composite's README section for the
+      values in use.
     default: '240'
+  rerun-contract-only-siblings:
+    description: >-
+      `true` to have a full run that records `success` re-run every failed
+      contract-only run of this same workflow on the same head SHA, so each
+      red `ci-status` check run is replaced by one that reads the success.
+      A contract-only run is recognized by its jobs: in its latest attempt
+      every job but one was skipped, and that one failed. A full run always
+      runs more than its gate and this run is excluded by id, so neither is
+      ever re-run. A re-run attempt keeps its original event and is
+      contract-only again, so it never re-runs anything itself. A
+      carry-forward red then says the full run will re-run it instead of
+      telling the reader to. The calling job needs `actions: write`; a
+      refusal warns and never changes this run's verdict. Off by default.
+    default: 'false'
+  record-pending:
+    description: >-
+      `true` to mark `status-context` `pending` on `sha` and stop, with no
+      aggregation and no carry-forward. Call it from the first job of the
+      full run: a contract-only run that reads the status while this run is
+      in flight then finds `pending` and fails, instead of carrying an older
+      run's `success` forward (a draft run's, for example), and this run's
+      own gate records the real verdict over it. It writes only on a
+      same-repository pull request event that is not contract-only, and
+      notes the skip and passes otherwise: a fork's token is read-only, and
+      neither a push nor a contract-only run is the full run a contract-only
+      run waits for. `results` is ignored. The calling job needs
+      `statuses: write`. Off by default.
+    default: 'false'
   token:
     description: >-
       Token used to write and read the commit status. The calling job needs
@@ -121,6 +153,8 @@ runs:
         SAME_REPO: ${{ inputs.same-repo }}
         STATUS_CONTEXT: ${{ inputs.status-context }}
         CARRY_FORWARD_WAIT_SECONDS: ${{ inputs.carry-forward-wait-seconds }}
+        RERUN_CONTRACT_ONLY_SIBLINGS: ${{ inputs.rerun-contract-only-siblings }}
+        RECORD_PENDING: ${{ inputs.record-pending }}
         GH_TOKEN: ${{ inputs.token }}
         REPOSITORY: ${{ inputs.repository }}
         SHA: ${{ inputs.sha }}

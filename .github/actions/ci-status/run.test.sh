@@ -22,21 +22,44 @@ mkdir -p "$fixtures" "$calls" "$shim_directory"
 sha=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 repository=melodic-software/ci-workflows
 
-# A no-op `sleep` first on PATH. The carry-forward wait accounts for elapsed
-# time arithmetically against its own 15-second interval, so shimming the sleep
-# keeps the ceiling arithmetic real while the suite runs instantly. Unlike a
-# test-only poll-interval knob, it adds nothing to the shipped runner.
+# The carry-forward red, one remedy per state read; see `fail_carry_forward`.
+fail_prefix="::error::no successful ci-lanes status on ${sha}; "
+absent_remedy='if a full run on this SHA is in flight, its ci-status check supersedes this one; otherwise re-run the full workflow'
+failure_remedy="the lanes verdict is failure; fix the failing lane, or re-run that run's failed jobs if the failure was transient"
+writer_failure_remedy="the lanes verdict is failure (https://github.com/${repository}/actions/runs/4000); fix the failing lane, or re-run that run's failed jobs if the failure was transient"
+pending_remedy='full run on this SHA is still in flight, and its own ci-status check supersedes this one when it finishes. Re-run that run only if it was cancelled'
+manual_closing="Once ci-lanes on ${sha} is success, re-run this run instead."
+automatic_closing="A full run that records ci-lanes=success on ${sha} re-runs this run; re-run it yourself only if it stays red after that."
+
+# A `sleep` and a `date` first on PATH that share a fake clock: sleeping
+# advances it, and `date +%s` reads it. The wait's ceiling is elapsed wall-clock
+# time, so this keeps the ceiling arithmetic real while the suite runs
+# instantly, and adds nothing test-only to the shipped runner. Every sleep is
+# logged so a case can assert that none happened.
+clock_file="$temporary_directory/clock"
+sleep_log="$temporary_directory/sleep.log"
 cat >"$shim_directory/sleep" <<'SLEEP_SHIM'
 #!/usr/bin/env bash
-exit 0
+printf '%s\n' "$1" >>"$SLEEP_LOG"
+printf '%s\n' "$(($(cat "$FAKE_CLOCK") + $1))" >"$FAKE_CLOCK"
 SLEEP_SHIM
 chmod +x "$shim_directory/sleep"
+cat >"$shim_directory/date" <<'DATE_SHIM'
+#!/usr/bin/env bash
+if [[ "$*" != '+%s' ]]; then
+  echo "date shim: only +%s is supported, got: $*" >&2
+  exit 1
+fi
+cat "$FAKE_CLOCK"
+DATE_SHIM
+chmod +x "$shim_directory/date"
 
 # A `gh` shim first on PATH: it serves fixture JSON keyed by method plus API
 # path, records every call so the harness can assert on writes that did and did
 # not happen, can fail a keyed call a fixed number of times before succeeding
-# (the retry case), and can serve a DIFFERENT body on the Nth call to the same
-# key (`<key>.<n>.json`), which is how a status appearing mid-wait is fixtured.
+# (the retry case), can serve a DIFFERENT body on the Nth call to the same key
+# (`<key>.<n>.json`), which is how a status appearing mid-wait is fixtured, and
+# can make every call to a key take time on the fake clock (`<key>.advance`).
 cat >"$shim_directory/gh" <<'SHIM'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -93,6 +116,10 @@ if [[ -f "$count_file" ]]; then
 fi
 printf '%s\n' "$call_number" >"$count_file"
 
+if [[ -f "$GH_FIXTURES/${key}.advance" ]]; then
+  printf '%s\n' "$(($(cat "$FAKE_CLOCK") + $(cat "$GH_FIXTURES/${key}.advance")))" >"$FAKE_CLOCK"
+fi
+
 fail_times="$GH_FIXTURES/${key}.fail-times"
 if [[ -f "$fail_times" ]]; then
   remaining="$(cat "$fail_times")"
@@ -140,6 +167,8 @@ run_case() {
   shift $(($# > 5 ? 5 : $#))
   local actual_status
   : >"$gh_log"
+  : >"$sleep_log"
+  printf '0\n' >"$clock_file"
   rm -rf -- "$calls"
   mkdir -p "$calls"
   set +e
@@ -148,6 +177,8 @@ run_case() {
     GH_LOG="$gh_log" \
     GH_FIXTURES="$fixtures" \
     GH_CALLS="$calls" \
+    FAKE_CLOCK="$clock_file" \
+    SLEEP_LOG="$sleep_log" \
     GH_TOKEN=fixture-token \
     RESULTS="$results" \
     TREAT_SKIPPED_AS="$treat_skipped_as" \
@@ -155,11 +186,14 @@ run_case() {
     SAME_REPO="$same_repo" \
     STATUS_CONTEXT=ci-lanes \
     CARRY_FORWARD_WAIT_SECONDS=0 \
+    RERUN_CONTRACT_ONLY_SIBLINGS=false \
+    RECORD_PENDING=false \
     REPOSITORY="$repository" \
     SHA="$sha" \
     STATUS_RETRY_BASE_DELAY=0 \
     GITHUB_SERVER_URL=https://github.com \
     GITHUB_RUN_ID=4242 \
+    GITHUB_EVENT_NAME=pull_request \
     "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
@@ -219,6 +253,30 @@ expect_gh_call_before() {
   if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
     echo "FAIL: expected a gh call matching '$first' before one matching '$second', got:"
     cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
+# expect_status_reads <n>
+# The shim counts calls per key, so this pins how many times the status list
+# was read, independent of which fixture answered.
+expect_status_reads() {
+  local expected="$1" actual=0
+  local count_file="$calls/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.count"
+  if [[ -f "$count_file" ]]; then
+    actual="$(cat "$count_file")"
+  fi
+  if [[ "$actual" -ne "$expected" ]]; then
+    echo "FAIL: expected $expected status read(s), got $actual"
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
+expect_no_sleep() {
+  if [[ -s "$sleep_log" ]]; then
+    echo 'FAIL: expected no sleep, got:'
+    cat "$sleep_log"
     failures=$((failures + 1))
   fi
 }
@@ -352,7 +410,7 @@ echo 'case: full mode fails the run when the status write is refused after retri
 printf '%s\n' 99 >"$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 run_case 1 'success success' pass ''
 expect_log 'All lanes passed or were skipped.'
-expect_log "::error::could not record ci-lanes on ${sha} (500); the ci-status job needs statuses: write"
+expect_log "::error::could not record ci-lanes on ${sha} (500); the calling job needs statuses: write"
 rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 
 # Without the retry loop the first 500 fails the run.
@@ -460,19 +518,22 @@ expect_no_log 'All lanes passed'
 echo 'case: carry-forward fails on a recorded ci-lanes failure'
 status_list "[$(bot_status 100 failure)]"
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${failure_remedy}. ${manual_closing}"
 
 # Without the explicit `== success` test, a pending status would ride through.
+# Without the pending branch of the message, the reader is told to re-run a
+# full run that is still in flight.
 echo 'case: carry-forward fails on a pending ci-lanes status'
 status_list "[$(bot_status 100 pending)]"
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${pending_remedy}. ${manual_closing}"
+expect_no_log 're-run the full workflow'
 
 # Without the context filter, another context's success would satisfy the gate.
 echo 'case: carry-forward fails when no entry carries the ci-lanes context'
 status_list '[{"context":"other-lane","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 
 # Without the context filter, the FIRST entry (a failure under another context)
 # would decide.
@@ -488,7 +549,7 @@ echo 'case: carry-forward fails closed when the status list cannot be read'
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.json"
 printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.err"
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.err"
 
 # --- carry-forward: forged statuses ----------------------------------------
@@ -501,7 +562,7 @@ rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statu
 echo 'case: a forged success by a user account does not satisfy the carry-forward'
 status_list "[$(user_status 200 success),$(bot_status 100 failure)]"
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${failure_remedy}"
 
 # Without newest-first selection an older user failure would shadow the bot's
 # real success.
@@ -515,26 +576,35 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 echo 'case: a bot failure newer than a bot success fails'
 status_list "[$(bot_status 200 failure),$(bot_status 100 success)]"
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${failure_remedy}"
+
+# The marker a full run's first job writes under `record-pending`. Without
+# newest-id selection the older success is carried forward while that full run
+# is still in flight, which is the stale green the marker exists to stop.
+echo 'case: a bot pending newer than a bot success fails'
+status_list "[$(writer_status 200 pending 2026-09-05T12:00:20Z 4000),$(bot_status 100 success)]"
+run_case 1 'skipped skipped' pass true
+expect_log "${fail_prefix}full run https://github.com/${repository}/actions/runs/4000 is still in flight"
+expect_no_log 'Carried forward'
 
 # Without the empty-list guard an absent status would read as an empty state.
 echo 'case: an empty status list fails the carry-forward'
 status_list '[]'
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 
 # Without the creator filter, a context that ONLY a user ever wrote satisfies
 # the gate — the plant-then-label attack in its simplest form.
 echo 'case: the ci-lanes context present only from a user account fails'
 status_list "[$(user_status 100 success)]"
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 
 # Without the Bot type check, an account merely NAMED like the bot passes.
 echo 'case: a user account impersonating the bot login fails'
 status_list '[{"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"User"}}]'
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 
 # Without `max_by(.id)` the selection depends on the array order the API
 # happens to return; an oldest-first list would then hand back the stale
@@ -542,7 +612,7 @@ expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full wo
 echo 'case: an oldest-first status list still selects the newest bot entry'
 status_list '[{"id":10,"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}},{"id":20,"context":"ci-lanes","state":"failure","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
 run_case 1 'skipped skipped' pass true
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${failure_remedy}"
 
 echo 'case: an oldest-first status list still carries a newer bot success forward'
 status_list '[{"id":10,"context":"ci-lanes","state":"failure","creator":{"login":"github-actions[bot]","type":"Bot"}},{"id":20,"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
@@ -586,7 +656,25 @@ current_run
 workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
 expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with in-flight run(s) 4000'
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on in-flight run(s): 4000)"
+expect_log "${fail_prefix}${pending_remedy} (waited 30s of 30s on in-flight run(s): 4000)"
+
+# The ceiling is elapsed wall-clock time, API calls included. Each listing here
+# takes 10 seconds, so after one 15-second sleep 35 seconds have passed and the
+# 30-second ceiling is reached on the second poll. Counting only the sleeps
+# (15, then 30) would poll a third time and report 30 of 30, which is how a
+# large ceiling used to outlast the job budget sized for it.
+echo 'case: the ceiling counts elapsed wall-clock time, not summed sleeps'
+clear_status_fixtures
+clear_run_fixtures
+status_list "[$(bot_status 100 pending)]"
+current_run
+workflow_runs "[${earlier_full_run}]"
+printf '%s\n' 10 >"$fixtures/${workflow_runs_key}.advance"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 10s of 30s)."
+expect_log "${fail_prefix}${pending_remedy} (waited 35s of 30s on in-flight run(s): 4000)"
+expect_no_log 'waited 30s of 30s'
+rm -f -- "$fixtures/${workflow_runs_key}.advance"
 
 # What decides the gate is the verdict the sibling left behind, not whatever was
 # on the SHA when this run started. Serving nothing on the first read and a
@@ -601,7 +689,7 @@ workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log 'Waiting 15s for in-flight run(s) 4000'
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
+expect_log "${fail_prefix}${failure_remedy} (waited 15s of 60s on in-flight run(s): 4000)"
 
 # A settled failure ends the wait even with a sibling incomplete, when that
 # sibling is not the writer re-running (this status names no writer at all).
@@ -614,7 +702,7 @@ current_run
 workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${failure_remedy}"
 
 # Without the self-exclusion term this run waits on itself forever; without the
 # status filter it waits on a run that already finished.
@@ -628,7 +716,7 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_gh_call 'actions/workflows/777/runs'
 expect_no_log 'Waiting '
 expect_no_log 'in-flight run(s):'
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 
 # Without the 403 branch the missing scope reads as "no earlier run", which is
 # the same outcome but unattributable. The run degrades to
@@ -641,7 +729,7 @@ current_run
 printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${workflow_runs_key}.err"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "::warning::repos/${repository}/actions/workflows/777/runs returned HTTP 403; the ci-status job needs 'actions: read'"
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 expect_no_log 'Waiting '
 
 # Without discarding the earlier poll's read, a listing that fails PART WAY
@@ -672,16 +760,27 @@ expect_log "::warning::repos/${repository}/actions/runs/4242 returned HTTP 403; 
 expect_no_gh_call 'actions/workflows/'
 
 # Without the `> 0` guard, a consumer that disabled the wait still pays two
-# Actions API calls and still needs the `actions: read` scope.
-echo 'case: carry-forward-wait-seconds 0 disables the wait and makes no Actions API call'
+# Actions API calls, still needs the `actions: read` scope, and holds its runner
+# while a sibling is in flight. Wait 0 is one status read and nothing else.
+echo 'case: carry-forward-wait-seconds 0 reads the status once, never waits, and makes no Actions API call'
 clear_status_fixtures
 clear_run_fixtures
 status_list '[]'
 current_run
 workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=0
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 expect_no_gh_call 'actions/'
+expect_status_reads 1
+expect_no_sleep
+
+echo 'case: carry-forward-wait-seconds 0 carries a recorded success after one read'
+clear_status_fixtures
+status_list "[$(bot_status 100 success)]"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=0
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_status_reads 1
+expect_no_sleep
 
 # Without the runner-side default, an action.yml regression that stopped passing
 # the input would silently disable the wait rather than fall back to 240.
@@ -742,7 +841,7 @@ current_run
 status_list '[]'
 workflow_runs "[$(run_entry 3000 completed 2026-09-05T11:59:00Z)]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 expect_no_log 'Waiting '
 expect_no_log 'waited '
 
@@ -760,7 +859,7 @@ workflow_runs "[$(run_entry 4100 in_progress "$current_run_created_at"),$(run_en
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
 expect_log "Waiting 15s for in-flight run(s) 4100 4300 on ${sha} to finish (waited 0s of 30s)."
 expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with in-flight run(s) 4100 4300'
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on in-flight run(s): 4100 4300)"
+expect_log "${fail_prefix}${absent_remedy} (waited 30s of 30s on in-flight run(s): 4100 4300)"
 
 # Without `error` in the settled set this waits the full 60s on a verdict that
 # can never change, then fails anyway. `error` is a terminal commit-status state
@@ -773,7 +872,7 @@ status_list "[$(bot_status 100 error)]"
 workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}the lanes verdict is error; fix the failing lane"
 
 # --- carry-forward: a stale failure while its writer re-runs ----------------
 #
@@ -809,7 +908,7 @@ status_list "[${stale_failure}]"
 workflow_runs "[${writer_rerun}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
 expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with in-flight run(s) 4000'
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 30s of 30s on in-flight run(s): 4000). Once ci-lanes on ${sha} is success, re-run this run instead."
+expect_log "${fail_prefix}${writer_failure_remedy} (waited 30s of 30s on in-flight run(s): 4000). ${manual_closing}"
 
 # Without the start-time term this waits on the writer's own first attempt,
 # which records the status a moment before it completes, and turns a prompt
@@ -822,7 +921,7 @@ status_list "[${stale_failure}]"
 workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T11:59:00Z 1 2026-09-05T11:59:00Z)]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${writer_failure_remedy}"
 
 # Without narrowing the wait to the writer, a failed SHA brings back the mutual
 # wait: each contract-only run holds the failure open for the other until the
@@ -836,7 +935,7 @@ status_list "[${stale_failure}]"
 workflow_runs "[$(attempt_entry 4100 in_progress "$current_run_created_at" 1 "$current_run_created_at"),$(attempt_entry 4300 in_progress 2026-09-05T12:00:00Z 2 2026-09-05T12:01:00Z)]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow."
+expect_log "${fail_prefix}${writer_failure_remedy}. ${manual_closing}"
 
 # Without the unsettled-state fail a re-run of the full run that ends without
 # recording anything would leave an absent status to pass. No status names no
@@ -850,20 +949,36 @@ workflow_runs_on_call 1 "[${writer_rerun}]"
 workflow_runs_on_call 2 '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)."
+expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000)."
 expect_no_log 'Carried forward'
 
-# Without the second remedy the message only ever says to re-run the full
-# workflow, and a red that outlived its failure gets a new commit (every lane
-# again) where re-running this run is enough.
-echo 'case: the failure message names the re-run-this-run remedy for a later success'
+# Without the closing remedy a red that outlived its failure gets a new commit
+# (every lane again) where re-running this run is enough. Without naming the
+# writer the reader has to hunt for the run whose failed jobs to re-run.
+echo 'case: the failure message names the writer and the re-run-this-run remedy for a later success'
 clear_status_fixtures
 clear_run_fixtures
 current_run
 status_list "[${stale_failure}]"
 workflow_runs '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow. Once ci-lanes on ${sha} is success, re-run this run instead."
+expect_log "${fail_prefix}${writer_failure_remedy}. ${manual_closing}"
+
+# The same step runs in both modes, so this run's rerun-contract-only-siblings
+# is the full run's. Without branching the closing on it, the reader is told to
+# re-run by hand a run the full run is about to re-run itself.
+echo 'case: with rerun-contract-only-siblings the closing says the full run re-runs this run'
+clear_status_fixtures
+clear_run_fixtures
+status_list "[$(writer_status 200 pending 2026-09-05T12:00:20Z 4000)]"
+run_case 1 'skipped skipped' pass true true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "${fail_prefix}full run https://github.com/${repository}/actions/runs/4000 is still in flight, and its own ci-status check supersedes this one when it finishes. Re-run that run only if it was cancelled. ${automatic_closing}"
+expect_no_log "$manual_closing"
+expect_no_log 're-run the full workflow'
+# A contract-only run never re-runs anything, even with the input on: the
+# re-run is a full-mode step, which is what keeps it from looping.
+expect_no_gh_call 'rerun-failed-jobs'
+expect_no_gh_call 'actions/'
 
 # The documented trade, pinned deliberately from the passing side. A recorded
 # success ends the wait even with a sibling in flight, so a re-run of this SHA
@@ -893,7 +1008,7 @@ workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${statuses_key}.err"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses (HTTP 404)"
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 expect_log 'gh: Not Found (HTTP 404)'
 rm -f -- "$fixtures/${statuses_key}.err"
 
@@ -929,7 +1044,7 @@ workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 "[${earlier_full_run},$(run_entry 4700 in_progress "$current_run_created_at")]"
 printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000 4700)"
+expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000 4700)"
 rm -f -- "$fixtures/${statuses_key}.fail-on-call"
 
 # A sibling can finish without ever recording a verdict: cancelled, or failed
@@ -945,7 +1060,7 @@ workflow_runs_on_call 2 '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "No run on ${sha} is still in flight after 15s; using the ci-lanes status."
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow (waited 15s of 60s on in-flight run(s): 4000)"
+expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000)"
 
 # A truncated body is what a cut-off response looks like: valid JSON up to the
 # point the connection dropped. `status_list` writes its argument verbatim, so
@@ -961,10 +1076,181 @@ status_list "[$(bot_status 100 success)"
 workflow_runs '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
-expect_log "::error::no successful ci-lanes status on ${sha}; re-run the full workflow"
+expect_log "${fail_prefix}${absent_remedy}"
 expect_no_log 'Waiting '
 
 clear_status_fixtures
+
+# --- pending mode ----------------------------------------------------------
+
+status_write_key="POST_repos_melodic-software_ci-workflows_statuses_${sha}"
+
+# Without pending mode, a contract-only run that reads the status while a full
+# run is in flight carries an older run's success forward over lanes nobody has
+# run yet. The marker names this run, which is how a contract-only red names
+# the run to wait for. No aggregation: `results` is empty here and must not fail.
+echo 'case: record-pending marks ci-lanes pending on a same-repository pull request and stops'
+run_case 0 '' pass false true RECORD_PENDING=true
+expect_status_payload '"state": "pending"'
+expect_status_payload '"context": "ci-lanes"'
+expect_status_payload "\"target_url\": \"https://github.com/${repository}/actions/runs/4242\""
+expect_log "Recorded ci-lanes=pending on ${sha}"
+expect_no_log 'results is required'
+expect_no_gh_call 'actions/'
+expect_no_gh_call "commits/${sha}/statuses"
+
+echo 'case: record-pending writes on a pull_request_target event too'
+run_case 0 '' pass false true RECORD_PENDING=true GITHUB_EVENT_NAME=pull_request_target
+expect_status_payload '"state": "pending"'
+
+# Without the contract-only guard this run would mark the verdict pending, and
+# it and every contract-only sibling would go red with no full run coming to
+# overwrite the marker.
+echo 'case: record-pending on a contract-only event writes nothing and passes'
+run_case 0 '' pass true true RECORD_PENDING=true
+expect_log '::notice::contract-only event: ci-lanes is not marked pending'
+expect_no_gh_calls_at_all
+
+# Without the fork guard the read-only token's refused write fails the job.
+echo 'case: record-pending on a fork pull request writes nothing and passes'
+run_case 0 '' pass false false RECORD_PENDING=true
+expect_log '::notice::fork pull request: ci-lanes is not marked pending'
+expect_no_gh_calls_at_all
+
+# Without the event guard a push leaves a pending marker on a main commit that
+# no full pull-request run will ever overwrite.
+echo 'case: record-pending on a push writes nothing and passes'
+run_case 0 '' pass '' true RECORD_PENDING=true GITHUB_EVENT_NAME=push
+expect_log '::notice::push event: ci-lanes is not marked pending'
+expect_no_gh_calls_at_all
+
+# Without the load-bearing write a refused marker passes silently, and the stale
+# green it exists to stop comes back with nothing to say why.
+echo 'case: record-pending fails the run when the write is refused after retries'
+printf '%s\n' 99 >"$fixtures/${status_write_key}.fail-times"
+run_case 1 '' pass false true RECORD_PENDING=true
+expect_log "::error::could not record ci-lanes on ${sha} (500); the calling job needs statuses: write"
+rm -f -- "$fixtures/${status_write_key}.fail-times"
+
+echo 'case: an unrecognized record-pending value is rejected'
+run_case 1 '' pass false true RECORD_PENDING=yes
+expect_log "::error::record-pending must be 'true' or 'false', got: yes"
+expect_no_gh_calls_at_all
+
+# --- full mode: re-running failed contract-only siblings -------------------
+
+# completed_run <id> <conclusion>
+completed_run() {
+  printf '{"id":%s,"status":"completed","conclusion":"%s"}' "$1" "$2"
+}
+
+# jobs_for <id> <conclusion>...
+# The latest attempt's jobs of run <id>, one per conclusion.
+jobs_for() {
+  local id="$1" jobs="" conclusion
+  shift
+  for conclusion in "$@"; do
+    jobs="${jobs}${jobs:+,}{\"name\":\"job\",\"conclusion\":\"${conclusion}\"}"
+  done
+  printf '{"jobs":[%s]}' "$jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${id}_jobs.json"
+}
+
+clear_rerun_fixtures() {
+  rm -f -- "$fixtures"/GET_repos_melodic-software_ci-workflows_actions_runs_*_jobs.* \
+    "$fixtures"/POST_repos_melodic-software_ci-workflows_actions_runs_*
+}
+
+# 5000 and 4242 (this run, completed only in this fixture) are contract-only
+# shaped: one failed gate, every other job skipped. 5100 is a failed full run,
+# 5500 a failed single-job run, and 5200, 5300 and 5400 did not fail.
+clear_run_fixtures
+clear_rerun_fixtures
+current_run
+workflow_runs "[$(completed_run 5000 failure),$(completed_run 5100 failure),$(completed_run 5200 success),$(run_entry 5300 in_progress 2026-09-05T12:00:40Z),$(completed_run 5400 cancelled),$(completed_run 5500 failure),$(completed_run 4242 failure)]"
+jobs_for 5000 failure skipped skipped
+jobs_for 5100 success failure failure
+jobs_for 5500 failure
+jobs_for 4242 failure skipped skipped
+
+# Without the re-run the contract-only red stays beside this run's green until
+# someone re-runs it by hand. Without the shape test the failed full run 5100 is
+# re-run too, every lane again for a verdict already recorded; without the
+# single-job guard so is 5500; without the conclusion filter the green,
+# in-flight and cancelled runs are fetched; without excluding this run's id it
+# re-runs itself.
+echo 'case: a full-mode success re-runs only the failed contract-only siblings'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Recorded ci-lanes=success on ${sha}."
+expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
+expect_log "Re-running failed contract-only run 5000 on ${sha}."
+expect_log "Re-ran 1 failed contract-only run(s) on ${sha}."
+for not_rerun in 5100 5500 4242; do
+  expect_no_gh_call "actions/runs/${not_rerun}/rerun-failed-jobs"
+done
+for not_fetched in 5200 5300 5400 4242; do
+  expect_no_gh_call "actions/runs/${not_fetched}/jobs"
+done
+# The re-run reads the status, so it must come after the write.
+expect_gh_call_before "POST repos/${repository}/statuses/${sha}" 'rerun-failed-jobs'
+
+# Without the success gate a failing run re-runs siblings that can only read
+# its failure and go red again.
+echo 'case: a full-mode failure re-runs nothing'
+run_case 1 'success failure' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_status_payload '"state": "failure"'
+expect_no_gh_call 'actions/'
+
+# Without the opt-in every consumer would need `actions: write` on upgrade.
+echo 'case: rerun-contract-only-siblings off by default makes no Actions call'
+run_case 0 'success success' pass false true
+expect_no_gh_call 'actions/'
+
+echo 'case: a fork run re-runs nothing'
+run_case 0 'success success' pass false false RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_no_gh_call 'actions/'
+
+# The verdict is already recorded, so a refused re-run must not turn it red,
+# and must not stop the next candidate.
+echo 'case: a refused re-run warns naming actions: write and moves to the next sibling'
+jobs_for 5600 failure skipped
+workflow_runs "[$(completed_run 5000 failure),$(completed_run 5600 failure)]"
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_5000_rerun-failed-jobs.err"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "::warning::re-running run 5000 returned HTTP 403; rerun-contract-only-siblings needs 'actions: write' on the ci-status job."
+expect_gh_call "POST repos/${repository}/actions/runs/5600/rerun-failed-jobs"
+expect_log "Re-ran 1 failed contract-only run(s) on ${sha}."
+rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_5000_rerun-failed-jobs.err"
+
+echo 'case: a jobs read failure skips that sibling and still passes'
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5000_jobs.err"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "::warning::could not read repos/${repository}/actions/runs/5000/jobs (HTTP 500). Not re-running run 5000."
+expect_no_gh_call 'actions/runs/5000/rerun-failed-jobs'
+expect_gh_call "POST repos/${repository}/actions/runs/5600/rerun-failed-jobs"
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5000_jobs.err"
+
+echo 'case: a 403 listing the runs warns naming actions: write and still passes'
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${workflow_runs_key}.err"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "::warning::repos/${repository}/actions/workflows/777/runs returned HTTP 403; the ci-status job needs 'actions: write'. Not re-running failed contract-only runs."
+expect_no_gh_call 'rerun-failed-jobs'
+
+# Without errexit off inside the re-run, jq failing on a cut-off body exits the
+# script nonzero after the success is recorded, turning a green gate red.
+echo 'case: a malformed run list re-runs nothing and still passes'
+rm -f -- "$fixtures/${workflow_runs_key}.err"
+printf '%s' '{"workflow_runs":[' >"$fixtures/${workflow_runs_key}.json"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Recorded ci-lanes=success on ${sha}."
+expect_no_gh_call 'rerun-failed-jobs'
+
+echo 'case: an unrecognized rerun-contract-only-siblings value is rejected'
+run_case 1 'success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=on
+expect_log "::error::rerun-contract-only-siblings must be 'true' or 'false', got: on"
+expect_no_gh_calls_at_all
+
+clear_run_fixtures
+clear_rerun_fixtures
 
 # --- input validation ------------------------------------------------------
 #
@@ -991,15 +1277,25 @@ expect_status_payload '"context": "CI Lanes"'
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings record-pending token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RECORD_PENDING GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
+    failures=$((failures + 1))
+  fi
+done
+
+# Both A+ inputs are opt-in: a consumer that passes nothing keeps today's
+# behavior and needs no new permission.
+for input_name in rerun-contract-only-siblings record-pending; do
+  input_default="$(awk -v key="  ${input_name}:" '$0 == key { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
+  if [[ "$input_default" != "    default: 'false'" ]]; then
+    echo "FAIL: action.yml does not default ${input_name} to 'false' (got: ${input_default})"
     failures=$((failures + 1))
   fi
 done
