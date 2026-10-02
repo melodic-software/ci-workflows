@@ -76,15 +76,27 @@ for (const lane of lanes) {
     assert.equal(claudeStep["continue-on-error"], true);
     assert.ok(claudeStep["timeout-minutes"] > 0);
     for (const name of ["review-failed", "failure-class"]) {
-      assert.equal(job.outputs[name], `\${{ steps.review-outcome.outputs.${name} }}`);
+      assert.equal(
+        job.outputs[name],
+        `\${{ steps.review-outcome.outputs.${name} }}`,
+      );
     }
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
-    assert.equal(step.env.JOB_STATUS, "${{ job.status }}");
-    assert.equal(step.env.SKIP_REASON, "${{ steps.scope.outputs.skip-reason }}");
-    assert.equal(step.env.REVIEW_FAILED, "${{ steps.review-outcome.outputs.review-failed }}");
-    assert.equal(step.env.FAILURE_CLASS, "${{ steps.review-outcome.outputs.failure-class }}");
+    assert.equal(step.env.JOB_STATUS, `\${{ job.status }}`);
+    assert.equal(
+      step.env.SKIP_REASON,
+      `\${{ steps.scope.outputs.skip-reason }}`,
+    );
+    assert.equal(
+      step.env.REVIEW_FAILED,
+      `\${{ steps.review-outcome.outputs.review-failed }}`,
+    );
+    assert.equal(
+      step.env.FAILURE_CLASS,
+      `\${{ steps.review-outcome.outputs.failure-class }}`,
+    );
     assert.doesNotMatch(step.run, /\$\{\{/u);
   });
 
@@ -120,9 +132,16 @@ for (const lane of lanes) {
         REVIEW_FAILED: failed,
         FAILURE_CLASS: klass,
       });
-      assert.equal(result.status, 1, `'${failed}'/'${klass}' must fail the check`);
+      assert.equal(
+        result.status,
+        1,
+        `'${failed}'/'${klass}' must fail the check`,
+      );
       assert.match(result.summary, new RegExp(`failed: \`${named}\``, "u"));
-      assert.match(result.stdout, new RegExp(`^::error .*failure-class=${named}:`, "mu"));
+      assert.match(
+        result.stdout,
+        new RegExp(`^::error .*failure-class=${named}:`, "mu"),
+      );
     }
   });
 }
