@@ -184,12 +184,17 @@ test("both lanes run the same scope and record scripts", () => {
   }
 });
 
-test("the code-review step keeps its 11-minute limit", () => {
-  const claudeStep = codeLane.job.steps.find(
-    (step) => step.id === "claude-review",
-  );
-  assert.equal(claudeStep["timeout-minutes"], 11);
-  assert.equal(codeLane.job["timeout-minutes"], 13);
+test("each review step leaves its job the measured overhead", () => {
+  for (const [lane, step, job] of [
+    [codeLane, 11, 13],
+    [securityLane, 14, 16],
+  ]) {
+    const claudeStep = lane.job.steps.find(
+      (candidate) => candidate.id === "claude-review",
+    );
+    assert.equal(claudeStep["timeout-minutes"], step, lane.file);
+    assert.equal(lane.job["timeout-minutes"], job, lane.file);
+  }
 });
 
 for (const lane of [codeLane, securityLane]) {
@@ -487,6 +492,35 @@ test("a rewritten history or 300 or more changed files forces a whole review", a
   }
 });
 
+test("a changed file the API returns no patch for forces a whole review", async () => {
+  const result = await runScope(codeLane, {
+    prFiles: [file("src/a.js"), file("img.png"), file("src/c.js")],
+    compares: unmovedBase([
+      file("img.png", { changes: 0 }),
+      file("src/c.js", { changes: 0, previous_filename: "src/b.js" }),
+      file("src/a.js", { changes: 4000 }),
+    ]),
+    comments: [await markerFor(codeLane, LAST)],
+  });
+  assert.equal(result.outputs.note, undefined);
+  assert.ok(
+    result.messages.some((message) => /no patch for src\/a\.js/u.test(message)),
+  );
+});
+
+test("a binary or pure-rename change without a patch stays incremental", async () => {
+  const result = await runScope(codeLane, {
+    prFiles: [file("img.png"), file("src/c.js")],
+    compares: unmovedBase([
+      file("img.png", { changes: 0 }),
+      file("src/c.js", { changes: 0, previous_filename: "src/b.js" }),
+    ]),
+    comments: [await markerFor(codeLane, LAST)],
+  });
+  assert.match(result.outputs.note, /^- img\.png$/mu);
+  assert.match(result.diff, /no patch from the API/u);
+});
+
 test("299 changed files still review incrementally", async () => {
   const since = Array.from({ length: 299 }, (_, i) => file(`f${i}`));
   const result = await runScope(codeLane, {
@@ -561,6 +595,29 @@ test("the security lane's default docs-only paths skip documentation, not code o
       "true",
       filenames.join(", "),
     );
+  }
+});
+
+test("a caller's wider docs-only-paths never skips agent instructions", async () => {
+  const decide = async (filenames) =>
+    (
+      await runScope(securityLane, {
+        env: { DOCS_ONLY_PATHS: "**/*.md", EVENT_ACTION: "opened" },
+        prFiles: filenames.map((name) => file(name)),
+      })
+    ).outputs.review;
+  assert.equal(await decide(["README.md", "docs/a.md"]), "false");
+  for (const name of [
+    "CLAUDE.md",
+    "sub/AGENTS.md",
+    "plugins/x/skills/y/SKILL.md",
+    "plugins/x/skills/y/reference/notes.md",
+    ".claude/rules/a.md",
+    "plugins/x/agents/a.md",
+    "plugins/x/commands/c.md",
+    ".github/copilot-instructions.md",
+  ]) {
+    assert.equal(await decide(["README.md", name]), "true", name);
   }
 });
 

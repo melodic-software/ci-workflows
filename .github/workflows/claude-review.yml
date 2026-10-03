@@ -48,9 +48,10 @@ name: claude-review
 # completed review (`incremental-review`). It reviews the whole pull request
 # instead when no earlier review is recorded, the recorded head is not an
 # ancestor of the new head (force push or rebase), 300 or more files changed
-# since, or a base-branch merge since then changed a file this pull request
-# also changes (or 300 or more files, too many to check). A push that changes
-# no file of the pull request is not reviewed again.
+# since, a base-branch merge since then changed a file this pull request also
+# changes (or 300 or more files, too many to check), or the API returns no
+# patch for a changed text file (too large to show). A push that changes no
+# file of the pull request is not reviewed again.
 #
 # One job reviews and reports. It is named `claude-review-status`, so its check
 # is `<caller job> / claude-review-status`, and it goes red, naming the cause,
@@ -112,7 +113,10 @@ on:
         description: >-
           Newline-separated path globs (`*` within one path segment, `**`
           across segments). When every file in the review's scope matches one,
-          no review runs and the check stays green. Empty never skips.
+          no review runs and the check stays green. Empty never skips. Agent
+          instruction files (CLAUDE.md, AGENTS.md, SKILL.md, and anything under
+          .claude/, skills/, agents/, commands/, rules/, hooks/, instructions/
+          or prompts/) never count as documentation, whatever this list says.
         type: string
         default: ""
     outputs:
@@ -142,7 +146,7 @@ jobs:
     # longer step, shortens the reviews that reached it. Outside that step,
     # 1,169 successful jobs on claude-code-plugins (2026-09-29 to 2026-10-01)
     # took p95 17 s, max 82 s, which leaves 38 s of 13 minutes (780 s) for the
-    # scope and record steps.
+    # scope and record steps; they took 1 s each on ci-workflows#653.
     timeout-minutes: 13
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
@@ -227,8 +231,12 @@ jobs:
               .map((line) => line.trim())
               .filter(Boolean)
               .map(globToRegExp);
+            // Agent instructions are never documentation, whatever docs-only-paths says.
+            const INSTRUCTIONS =
+              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts)\/)/u;
             const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
-            const isDocs = (file) => names(file).every((name) => docsOnly.some((re) => re.test(name)));
+            const isDocs = (file) =>
+              names(file).every((name) => !INSTRUCTIONS.test(name) && docsOnly.some((re) => re.test(name)));
             const compare = async (basehead) =>
               (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
 
@@ -257,7 +265,14 @@ jobs:
               }
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
-              return { files: prFiles.filter((file) => names(file).some((name) => patches.has(name))), patches };
+              const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              // The API drops the patch of a large text change; only a whole review covers it.
+              const unshown = files.find((file) => {
+                const change = patches.get(file.filename) ?? patches.get(file.previous_filename);
+                return change.patch === undefined && change.changes > 0;
+              });
+              if (unshown) return { full: `the API returned no patch for ${unshown.filename}` };
+              return { files, patches };
             };
 
             const writeDiff = (files, patches) => {

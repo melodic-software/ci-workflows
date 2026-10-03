@@ -115,8 +115,9 @@ on:
           Newline-separated path globs (`*` within one path segment, `**`
           across segments). When every file in the review's scope matches one,
           no review runs and the check stays green. Empty never skips. Agent
-          instruction files (CLAUDE.md, AGENTS.md, skills, rules) are not
-          documentation here; keep them out of this list.
+          instruction files (CLAUDE.md, AGENTS.md, SKILL.md, and anything under
+          .claude/, skills/, agents/, commands/, rules/, hooks/, instructions/
+          or prompts/) never count as documentation, whatever this list says.
         type: string
         default: |
           docs/**/*.md
@@ -134,10 +135,11 @@ jobs:
   security-review:
     name: security-review
     runs-on: ${{ inputs.runner }}
-    # Measured on claude-code-plugins, 428 successful jobs: p95 307 s, max
-    # 1,040 s, which puts ceil(max(1.5 x p95, 1.1 x max) / 60) at 20. Capped at
-    # the 16-minute ceiling set for every CI job; incremental scoping shortens
-    # the tail.
+    # Capped at the 16-minute ceiling set for every CI job (960 s). Outside the
+    # review step, 1,366 successful jobs on claude-code-plugins (2026-09-29 to
+    # 2026-10-01) took p95 17 s, max 82 s, and the scope and record steps took
+    # 1 s each on ci-workflows#653, so the step gets 14 minutes (840 s);
+    # incremental scoping, not a longer step, shortens the reviews that reach it.
     timeout-minutes: 16
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
@@ -222,8 +224,12 @@ jobs:
               .map((line) => line.trim())
               .filter(Boolean)
               .map(globToRegExp);
+            // Agent instructions are never documentation, whatever docs-only-paths says.
+            const INSTRUCTIONS =
+              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts)\/)/u;
             const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
-            const isDocs = (file) => names(file).every((name) => docsOnly.some((re) => re.test(name)));
+            const isDocs = (file) =>
+              names(file).every((name) => !INSTRUCTIONS.test(name) && docsOnly.some((re) => re.test(name)));
             const compare = async (basehead) =>
               (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
 
@@ -252,7 +258,14 @@ jobs:
               }
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
-              return { files: prFiles.filter((file) => names(file).some((name) => patches.has(name))), patches };
+              const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              // The API drops the patch of a large text change; only a whole review covers it.
+              const unshown = files.find((file) => {
+                const change = patches.get(file.filename) ?? patches.get(file.previous_filename);
+                return change.patch === undefined && change.changes > 0;
+              });
+              if (unshown) return { full: `the API returned no patch for ${unshown.filename}` };
+              return { files, patches };
             };
 
             const writeDiff = (files, patches) => {
@@ -363,7 +376,7 @@ jobs:
         id: claude-review
         if: steps.scope.outputs.review != 'false'
         continue-on-error: true
-        timeout-minutes: 15
+        timeout-minutes: 14
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1.0.235
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
