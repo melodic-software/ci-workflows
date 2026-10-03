@@ -3,9 +3,10 @@
 // Both Claude lanes scope each review: the whole pull request on open, reopen
 // and ready, only the files changed since the lane's last completed review on
 // a later push, and no review when nothing in scope changed or every file in
-// scope is documentation. The last reviewed head travels in the PR's Actions
-// cache. These tests pin the wiring and run the inline github-script against
-// a mocked API for every branch of that decision.
+// scope is documentation. The last reviewed head travels in a marker comment
+// the lane's job token writes on the PR. These tests pin the wiring and run
+// the inline github-script steps against a mocked API for every branch of
+// that decision.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -19,15 +20,11 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const workflowsDir = path.join(__dirname, "..", "workflows");
 
 const lanes = [
-  {
-    file: "claude-review.yml",
-    job: "review",
-    prefix: "claude-review-reviewed-",
-  },
+  { file: "claude-review.yml", job: "review", lane: "claude-review" },
   {
     file: "claude-security-review.yml",
     job: "security-review",
-    prefix: "claude-security-review-reviewed-",
+    lane: "claude-security-review",
   },
 ];
 
@@ -39,6 +36,7 @@ const HEAD = "a".repeat(40);
 const LAST = "b".repeat(40);
 const MB_OLD = "c".repeat(40);
 const MB_NEW = "d".repeat(40);
+const BOT = "github-actions[bot]";
 
 const file = (filename, extra = {}) => ({
   filename,
@@ -46,17 +44,7 @@ const file = (filename, extra = {}) => ({
   ...extra,
 });
 
-async function runScope(
-  script,
-  { env, prFiles, compares = {}, fail = false, state },
-) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scope-"));
-  const stateFile = path.join(directory, "state", "reviewed-sha");
-  const diffFile = path.join(directory, "state", "incremental.diff");
-  if (state !== undefined) {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, `${state}\n`);
-  }
+async function runScript(script, values, github) {
   const outputs = {};
   const messages = [];
   const core = {
@@ -66,9 +54,74 @@ async function runScope(
     info: (message) => messages.push(message),
     warning: (message) => messages.push(`warning: ${message}`),
   };
+  const saved = Object.fromEntries(
+    Object.keys(values).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    await new AsyncFunction("require", "github", "context", "core", script)(
+      require,
+      {
+        paginate: async (method, params) => (await method(params)).data,
+        ...github,
+      },
+      { repo: { owner: "o", repo: "r" } },
+      core,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  return { outputs, messages };
+}
+
+// Runs a lane's record step and returns the comment call it made.
+async function record(lane, { sha = HEAD, markerId = "" } = {}) {
+  const calls = [];
+  const capture = (kind) => async (params) => {
+    calls.push({ kind, ...params });
+    return { data: {} };
+  };
+  await runScript(
+    lane.recordScript,
+    { LANE: lane.lane, PR_NUMBER: "7", HEAD_SHA: sha, MARKER_ID: markerId },
+    {
+      rest: {
+        issues: {
+          createComment: capture("create"),
+          updateComment: capture("update"),
+        },
+      },
+    },
+  );
+  assert.equal(calls.length, 1);
+  return calls[0];
+}
+
+// The marker comment the lane's own record step writes for `sha`.
+async function markerFor(lane, sha, { id = 41, login = BOT } = {}) {
+  const { body } = await record(lane, { sha });
+  return { id, user: { login }, body };
+}
+
+async function runScope(
+  lane,
+  { env, prFiles, compares = {}, fail = false, comments = [] },
+) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scope-"));
+  const diffFile = path.join(directory, "state", "incremental.diff");
+  let listedComments = 0;
   const github = {
-    paginate: async (method, params) => (await method(params)).data,
     rest: {
+      issues: {
+        listComments: async ({ issue_number }) => {
+          assert.equal(issue_number, 7);
+          listedComments += 1;
+          return { data: comments };
+        },
+      },
       pulls: {
         listFiles: async () => {
           if (fail) throw new Error("listFiles failed");
@@ -83,37 +136,25 @@ async function runScope(
       },
     },
   };
-  const values = {
-    INCREMENTAL: "true",
-    DOCS_ONLY_PATHS: "",
-    EVENT_ACTION: "synchronize",
-    PR_NUMBER: "7",
-    HEAD_SHA: HEAD,
-    BASE_REF: "main",
-    STATE_FILE: stateFile,
-    DIFF_FILE: diffFile,
-    ...env,
-  };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((key) => [key, process.env[key]]),
+  const { outputs, messages } = await runScript(
+    lane.script,
+    {
+      LANE: lane.lane,
+      INCREMENTAL: "true",
+      DOCS_ONLY_PATHS: "",
+      EVENT_ACTION: "synchronize",
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      BASE_REF: "main",
+      DIFF_FILE: diffFile,
+      ...env,
+    },
+    github,
   );
-  Object.assign(process.env, values);
-  try {
-    await new AsyncFunction("require", "github", "context", "core", script)(
-      require,
-      github,
-      { repo: { owner: "o", repo: "r" } },
-      core,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-  const read = (target) =>
-    fs.existsSync(target) ? fs.readFileSync(target, "utf8") : undefined;
-  return { outputs, messages, state: read(stateFile), diff: read(diffFile) };
+  const diff = fs.existsSync(diffFile)
+    ? fs.readFileSync(diffFile, "utf8")
+    : undefined;
+  return { outputs, messages, diff, listedComments };
 }
 
 // The base did not move between the last review and the head.
@@ -131,12 +172,24 @@ const [codeLane, securityLane] = lanes.map((lane) => {
     workflow,
     job,
     script: stepNamed(job, "Scope the review").with.script,
+    recordScript: stepNamed(job, "Record the reviewed head").with.script,
   };
 });
 
-test("both lanes run the same scope script", () => {
+test("both lanes run the same scope and record scripts", () => {
   assert.equal(codeLane.script, securityLane.script);
-  assert.doesNotMatch(codeLane.script, /\$\{\{/u);
+  assert.equal(codeLane.recordScript, securityLane.recordScript);
+  for (const script of [codeLane.script, codeLane.recordScript]) {
+    assert.doesNotMatch(script, /\$\{\{/u);
+  }
+});
+
+test("the code-review step keeps its 11-minute limit", () => {
+  const claudeStep = codeLane.job.steps.find(
+    (step) => step.id === "claude-review",
+  );
+  assert.equal(claudeStep["timeout-minutes"], 11);
+  assert.equal(codeLane.job["timeout-minutes"], 13);
 });
 
 for (const lane of [codeLane, securityLane]) {
@@ -155,6 +208,7 @@ for (const lane of [codeLane, securityLane]) {
     assert.equal(scope.id, "scope");
     assert.equal(scope["continue-on-error"], true);
     assert.match(scope.uses, /^actions\/github-script@[0-9a-f]{40}$/u);
+    assert.equal(scope.env.LANE, lane.lane);
     assert.equal(scope.env.INCREMENTAL, `\${{ inputs.incremental-review }}`);
     assert.equal(scope.env.DOCS_ONLY_PATHS, `\${{ inputs.docs-only-paths }}`);
     assert.equal(scope.env.EVENT_ACTION, `\${{ github.event.action }}`);
@@ -168,26 +222,31 @@ for (const lane of [codeLane, securityLane]) {
     );
   });
 
-  test(`${lane.file}: the reviewed head is restored and saved under one per-PR key`, () => {
-    const key = `${lane.prefix}\${{ github.event.pull_request.number }}-\${{ github.event.pull_request.head.sha }}`;
-    const restore = stepNamed(job, "Restore the last reviewed head");
+  test(`${lane.file}: the reviewed head lives in the lane's PR comment, never the Actions cache`, () => {
     const save = stepNamed(job, "Record the reviewed head");
-    const scope = stepNamed(job, "Scope the review");
-    assert.match(restore.uses, /^actions\/cache\/restore@[0-9a-f]{40}$/u);
-    assert.match(save.uses, /^actions\/cache\/save@[0-9a-f]{40}$/u);
-    assert.equal(restore.with.key, key);
+    assert.match(save.uses, /^actions\/github-script@[0-9a-f]{40}$/u);
+    assert.equal(save["continue-on-error"], true);
+    assert.equal(save.env.LANE, lane.lane);
+    assert.equal(save.env.MARKER_ID, `\${{ steps.scope.outputs.marker-id }}`);
     assert.equal(
-      restore.with["restore-keys"],
-      `${lane.prefix}\${{ github.event.pull_request.number }}-`,
+      save.env.HEAD_SHA,
+      `\${{ github.event.pull_request.head.sha }}`,
     );
-    assert.equal(save.with.key, key);
-    assert.equal(restore.with.path, scope.env.STATE_FILE);
-    assert.equal(save.with.path, scope.env.STATE_FILE);
     assert.match(save.if, /steps\.scope\.outputs\.record == 'true'/u);
     assert.match(
       save.if,
       /steps\.review-outcome\.outputs\.review-ran == 'true'/u,
     );
+    assert.ok(
+      job.steps.every(
+        (step) => !String(step.uses ?? "").startsWith("actions/cache"),
+      ),
+    );
+    assert.deepEqual(job.permissions, {
+      contents: "read",
+      "pull-requests": "write",
+      "id-token": "write",
+    });
   });
 
   test(`${lane.file}: a not-needed review skips every review step and the prompt carries the scope note`, () => {
@@ -207,24 +266,77 @@ for (const lane of [codeLane, securityLane]) {
       /^\$\{\{ steps\.scope\.outputs\.note \}\}$/mu,
     );
   });
+
+  test(`${lane.file}: the record step creates the marker once, then updates it`, async () => {
+    const created = await record(lane);
+    assert.equal(created.kind, "create");
+    assert.equal(created.issue_number, 7);
+    assert.match(
+      created.body,
+      new RegExp(
+        `^<!-- claude-lane-reviewed-head lane=${lane.lane} sha=a{40} -->\n`,
+        "u",
+      ),
+    );
+    const updated = await record(lane, { markerId: "41" });
+    assert.equal(updated.kind, "update");
+    assert.equal(updated.comment_id, 41);
+  });
+
+  test(`${lane.file}: a push reads back the head its own record step wrote`, async () => {
+    const result = await runScope(lane, {
+      prFiles: [file("src/a.js")],
+      compares: unmovedBase([file("src/a.js", { patch: "@@ -1 +1 @@" })]),
+      comments: [await markerFor(lane, LAST)],
+    });
+    assert.equal(result.outputs["marker-id"], "41");
+    assert.match(result.outputs.note, /last reviewed b{40}/u);
+  });
 }
+
+test("a marker from another author or another lane is ignored", async () => {
+  for (const comments of [
+    [await markerFor(codeLane, LAST, { login: "someone" })],
+    [await markerFor(securityLane, LAST)],
+  ]) {
+    const result = await runScope(codeLane, {
+      prFiles: [file("src/a.js")],
+      comments,
+    });
+    assert.equal(result.outputs.review, "true");
+    assert.equal(result.outputs.note, undefined);
+    assert.equal(result.outputs["marker-id"], undefined);
+  }
+});
+
+test("the newest of several markers wins", async () => {
+  const older = await markerFor(codeLane, "e".repeat(40), { id: 40 });
+  const newer = await markerFor(codeLane, LAST, { id: 42 });
+  const result = await runScope(codeLane, {
+    prFiles: [file("src/a.js")],
+    compares: unmovedBase([file("src/a.js")]),
+    comments: [older, newer],
+  });
+  assert.equal(result.outputs["marker-id"], "42");
+  assert.match(result.outputs.note, /last reviewed b{40}/u);
+});
 
 test("opened, reopened and ready_for_review review the whole pull request and record the head", async () => {
   for (const action of ["opened", "reopened", "ready_for_review"]) {
-    const result = await runScope(codeLane.script, {
+    const result = await runScope(codeLane, {
       env: { EVENT_ACTION: action },
       prFiles: [file("src/a.js")],
-      state: LAST,
+      comments: [await markerFor(codeLane, LAST)],
     });
     assert.equal(result.outputs.review, "true");
     assert.equal(result.outputs.note, undefined);
     assert.equal(result.outputs.record, "true");
-    assert.equal(result.state, `${HEAD}\n`);
+    assert.equal(result.outputs["marker-id"], "41");
   }
 });
 
 test("a push with no recorded review reviews the whole pull request", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [file("src/a.js")],
   });
   assert.equal(result.outputs.review, "true");
@@ -237,7 +349,7 @@ test("a push with no recorded review reviews the whole pull request", async () =
 });
 
 test("a push reviews only the pull request's files changed since the last review", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [
       file("src/a.js"),
       file("src/b.js"),
@@ -248,7 +360,7 @@ test("a push reviews only the pull request's files changed since the last review
       file("src/old.js"),
       file("unrelated.txt"),
     ]),
-    state: LAST,
+    comments: [await markerFor(codeLane, LAST)],
   });
   assert.equal(result.outputs.review, "true");
   assert.match(
@@ -263,14 +375,14 @@ test("a push reviews only the pull request's files changed since the last review
     /^diff --git a\/src\/a\.js b\/src\/a\.js\nstatus: modified\n@@ -1 \+1 @@/mu,
   );
   assert.match(result.diff, /no patch from the API/u);
-  assert.equal(result.state, `${HEAD}\n`);
+  assert.equal(result.outputs.record, "true");
 });
 
 test("a push that changes no file of the pull request is not reviewed again", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [file("src/a.js")],
     compares: unmovedBase([file("elsewhere.js")]),
-    state: LAST,
+    comments: [await markerFor(codeLane, LAST)],
   });
   assert.equal(result.outputs.review, "false");
   assert.match(
@@ -280,15 +392,15 @@ test("a push that changes no file of the pull request is not reviewed again", as
 });
 
 test("a re-run of a head already reviewed is not reviewed again", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [file("src/a.js")],
-    state: HEAD,
+    comments: [await markerFor(codeLane, HEAD)],
   });
   assert.equal(result.outputs.review, "false");
 });
 
 test("a base merge that changed a file of the pull request forces a whole review", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [file("src/a.js"), file("src/b.js")],
     compares: {
       [`${LAST}...${HEAD}`]: {
@@ -301,17 +413,42 @@ test("a base merge that changed a file of the pull request forces a whole review
         files: [file("src/b.js"), file("other.js")],
       },
     },
-    state: LAST,
+    comments: [await markerFor(codeLane, LAST)],
   });
   assert.equal(result.outputs.review, "true");
   assert.equal(result.outputs.note, undefined);
   assert.ok(
-    result.messages.some((message) => /base-branch merge/u.test(message)),
+    result.messages.some((message) =>
+      /base-branch merge .* changed a file this pull request changes/u.test(
+        message,
+      ),
+    ),
+  );
+});
+
+test("a base merge of 300 or more files forces a whole review and says so", async () => {
+  const result = await runScope(codeLane, {
+    prFiles: [file("src/a.js")],
+    compares: {
+      [`${LAST}...${HEAD}`]: { status: "ahead", files: [file("src/a.js")] },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+      [`${MB_OLD}...${MB_NEW}`]: {
+        files: Array.from({ length: 300 }, (_, i) => file(`base${i}`)),
+      },
+    },
+    comments: [await markerFor(codeLane, LAST)],
+  });
+  assert.equal(result.outputs.note, undefined);
+  assert.ok(
+    result.messages.some((message) =>
+      /changed 300 or more files/u.test(message),
+    ),
   );
 });
 
 test("a base merge that changed only other files keeps the review incremental", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [file("src/a.js"), file("src/b.js")],
     compares: {
       [`${LAST}...${HEAD}`]: {
@@ -322,35 +459,49 @@ test("a base merge that changed only other files keeps the review incremental", 
       [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
       [`${MB_OLD}...${MB_NEW}`]: { files: [file("other.js")] },
     },
-    state: LAST,
+    comments: [await markerFor(codeLane, LAST)],
   });
   assert.match(result.outputs.note, /^- src\/a\.js$/mu);
   assert.doesNotMatch(result.outputs.note, /src\/b\.js|other\.js/u);
 });
 
-test("a rewritten history or an oversized change forces a whole review", async () => {
-  for (const since of [
-    { status: "diverged", files: [] },
-    {
-      status: "ahead",
-      files: Array.from({ length: 300 }, (_, i) => file(`f${i}`)),
-    },
+test("a rewritten history or 300 or more changed files forces a whole review", async () => {
+  for (const [since, reason] of [
+    [{ status: "diverged", files: [] }, /is not an ancestor/u],
+    [
+      {
+        status: "ahead",
+        files: Array.from({ length: 300 }, (_, i) => file(`f${i}`)),
+      },
+      /300 or more files changed since/u,
+    ],
   ]) {
-    const result = await runScope(codeLane.script, {
+    const result = await runScope(codeLane, {
       prFiles: [file("src/a.js")],
       compares: { [`${LAST}...${HEAD}`]: since },
-      state: LAST,
+      comments: [await markerFor(codeLane, LAST)],
     });
     assert.equal(result.outputs.review, "true");
     assert.equal(result.outputs.note, undefined);
+    assert.ok(result.messages.some((message) => reason.test(message)));
   }
 });
 
+test("299 changed files still review incrementally", async () => {
+  const since = Array.from({ length: 299 }, (_, i) => file(`f${i}`));
+  const result = await runScope(codeLane, {
+    prFiles: [file("f0")],
+    compares: unmovedBase(since),
+    comments: [await markerFor(codeLane, LAST)],
+  });
+  assert.match(result.outputs.note, /^- f0$/mu);
+});
+
 test("an API failure reviews the whole pull request with a warning", async () => {
-  const result = await runScope(codeLane.script, {
+  const result = await runScope(codeLane, {
     prFiles: [],
     fail: true,
-    state: LAST,
+    comments: [await markerFor(codeLane, LAST)],
   });
   assert.equal(result.outputs.review, "true");
   assert.ok(
@@ -361,15 +512,15 @@ test("an API failure reviews the whole pull request with a warning", async () =>
   assert.equal(result.outputs.record, "true");
 });
 
-test("incremental-review false neither narrows the review nor records a head", async () => {
-  const result = await runScope(codeLane.script, {
+test("incremental-review false neither reads, narrows nor records", async () => {
+  const result = await runScope(codeLane, {
     env: { INCREMENTAL: "false" },
     prFiles: [file("src/a.js")],
-    state: LAST,
+    comments: [await markerFor(codeLane, LAST)],
   });
   assert.equal(result.outputs.review, "true");
   assert.equal(result.outputs.record, undefined);
-  assert.equal(result.state, `${LAST}\n`);
+  assert.equal(result.listedComments, 0);
 });
 
 test("the security lane's default docs-only paths skip documentation, not code or agent instructions", async () => {
@@ -381,7 +532,7 @@ test("the security lane's default docs-only paths skip documentation, not code o
   );
   const decide = async (filenames) =>
     (
-      await runScope(securityLane.script, {
+      await runScope(securityLane, {
         env: { DOCS_ONLY_PATHS: docs, EVENT_ACTION: "opened" },
         prFiles: filenames.map((name) => file(name)),
       })
@@ -414,7 +565,7 @@ test("the security lane's default docs-only paths skip documentation, not code o
 });
 
 test("a rename into the documentation paths still reviews the source it came from", async () => {
-  const result = await runScope(securityLane.script, {
+  const result = await runScope(securityLane, {
     env: { DOCS_ONLY_PATHS: "docs/**/*.md", EVENT_ACTION: "opened" },
     prFiles: [file("docs/moved.md", { previous_filename: "src/run.sh" })],
   });

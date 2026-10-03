@@ -787,23 +787,29 @@ told to allow). Calling either lane from `pull_request_target` or
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
 request. A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
-their diff to `.claude-lane/incremental.diff`. The last reviewed head is kept
-in the pull request's Actions cache. A push reviews the whole pull request
-instead when no earlier review is recorded, the recorded head is not an
-ancestor of the new head (force push or rebase), 300 or more files changed
-since, or a base-branch merge since then changed a file the pull request also
-changes. A push that changes no file of the pull request is not reviewed
-again.
+their diff to `.claude-lane/incremental.diff`. Each lane keeps the last head
+it reviewed in one pull request comment that the job writes with its own token
+(author `github-actions[bot]`) and edits after each completed review. A push
+reviews the whole pull request instead when no earlier review is recorded, the
+recorded head is not an ancestor of the new head (force push or rebase), 300
+or more files changed since, or a base-branch merge since then changed a file
+the pull request also changes (or 300 or more files, too many to check). A
+push that changes no file of the pull request is not reviewed again.
 
-**Status check, red means no review.** Each lane is one job, named
-`claude-review-status` or `claude-security-review-status`, so its check is
-`<caller job> / claude-review-status`. Its last step goes red, naming the
-cause, whenever no review happened: a failed attempt (`auth`, `rate-limit`,
-`overloaded`, `other`), the action skipping itself because the PR edits the
-caller workflow (`skipped-validation`), or a job that ended before the review
-reported (`no-outcome`). A review that was not needed (nothing changed, or
-docs only) stays green and says why in the job summary. Re-run a failed review
-with `gh run rerun --failed`. Never make the status check required.
+**Status check, red means no review.** Each lane is one job. The code-review
+job is named `claude-review-status`, so its check is
+`<caller job> / claude-review-status`. The security-review job is named
+`security-review`, so with the canonical caller its check is
+`security-review / security-review`, the context the github-iac
+`security-review-gate` org ruleset names. The job's last step goes red, naming
+the cause, whenever no review happened: a failed attempt (`auth`,
+`rate-limit`, `overloaded`, `other`), the action skipping itself because the
+PR edits the caller workflow (`skipped-validation`), or a job that ended
+before the review reported (`no-outcome`). A review that was not needed
+(nothing changed, or docs only) stays green and says why in the job summary.
+Re-run a failed review with `gh run rerun --failed`. github-iac keeps
+`security-review-gate` disabled (its ADR 0011 keeps agentic review advisory);
+do not make either check required anywhere else.
 `claude-review.yml` also exposes `review-failed` and `failure-class` as
 workflow outputs.
 

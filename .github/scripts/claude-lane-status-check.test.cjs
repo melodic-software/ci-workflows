@@ -1,11 +1,12 @@
 "use strict";
 
 // Each Claude lane is one job that reviews and reports. The job carries the
-// status-check name consumers read (`<caller job> / claude-review-status`),
-// and its last step goes red whenever no review happened and names the cause,
-// so a green check always means a review ran or was not needed. These tests
-// pin the wiring (values reach the script through env) and run the step's own
-// script for every cause.
+// check name consumers read (`<caller job> / claude-review-status`, and
+// `security-review / security-review`, the context the github-iac
+// `security-review-gate` ruleset names), and its last step goes red whenever
+// no review happened and names the cause, so a green check always means a
+// review ran or was not needed. These tests pin the wiring (values reach the
+// script through env) and run the step's own script for every cause.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -23,7 +24,7 @@ const lanes = [
   {
     file: "claude-security-review.yml",
     job: "security-review",
-    name: "claude-security-review-status",
+    name: "security-review",
   },
 ];
 

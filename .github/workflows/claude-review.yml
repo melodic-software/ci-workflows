@@ -35,20 +35,22 @@ name: claude-review
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
 #   - The checkout must persist credentials until claude-code-action#1236
 #     ships; the last step strips them.
-#   - The last reviewed head is kept in the pull request's Actions cache, which
-#     any workflow run on the PR's branch can write. A writer to that branch can
-#     therefore narrow a later incremental review; same-repository writers
-#     already receive this lane's secret, so the lane trusts them.
+#   - The last reviewed head is kept in a pull request comment this job writes
+#     with its own token, so its author is github-actions[bot]; the lane reads
+#     only that author's marker. Any workflow in the repository holding
+#     `pull-requests: write` could write one and narrow a later incremental
+#     review; same-repository writers already receive this lane's secret, so
+#     the lane trusts them.
 #
 # REVIEW CADENCE: drafts are skipped. `opened`, `reopened` and
 # `ready_for_review` review the whole pull request. A later push
 # (`synchronize`) reviews only the files that changed since this lane's last
 # completed review (`incremental-review`). It reviews the whole pull request
 # instead when no earlier review is recorded, the recorded head is not an
-# ancestor of the new head (force push or rebase), more than 300 files changed
+# ancestor of the new head (force push or rebase), 300 or more files changed
 # since, or a base-branch merge since then changed a file this pull request
-# also changes. A push that changes no file of the pull request is not
-# reviewed again.
+# also changes (or 300 or more files, too many to check). A push that changes
+# no file of the pull request is not reviewed again.
 #
 # One job reviews and reports. It is named `claude-review-status`, so its check
 # is `<caller job> / claude-review-status`, and it goes red, naming the cause,
@@ -136,9 +138,11 @@ jobs:
   review:
     name: claude-review-status
     runs-on: ${{ inputs.runner }}
-    # Measured on claude-code-plugins, 407 successful jobs: p95 434 s, max 688 s
-    # (7 jobs reached the old 11-minute step limit), so
-    # ceil(max(1.5 x p95, 1.1 x max) / 60) = 13.
+    # The review step stops at 11 minutes (660 s); incremental scoping, not a
+    # longer step, shortens the reviews that reached it. Outside that step,
+    # 1,169 successful jobs on claude-code-plugins (2026-09-29 to 2026-10-01)
+    # took p95 17 s, max 82 s, which leaves 38 s of 13 minutes (780 s) for the
+    # scope and record steps.
     timeout-minutes: 13
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
@@ -172,30 +176,22 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
 
-      # The newest cache under the PR's prefix holds the last head this lane
-      # finished reviewing. A miss means a whole-PR review.
-      - name: Restore the last reviewed head
-        if: inputs.incremental-review && github.event.action == 'synchronize'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .claude-lane/reviewed-sha
-          key: claude-review-reviewed-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
-          restore-keys: claude-review-reviewed-${{ github.event.pull_request.number }}-
-
-      # Decides whole-PR, incremental, or no review (see REVIEW CADENCE). Any
-      # failure here leaves `review` unset, which reviews the whole PR.
+      # Decides whole-PR, incremental, or no review (see REVIEW CADENCE). The
+      # last head this lane finished reviewing is read from the lane's marker
+      # comment on the PR. Any failure here leaves `review` unset, which
+      # reviews the whole PR.
       - name: Scope the review
         id: scope
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          LANE: claude-review
           INCREMENTAL: ${{ inputs.incremental-review }}
           DOCS_ONLY_PATHS: ${{ inputs.docs-only-paths }}
           EVENT_ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          STATE_FILE: .claude-lane/reviewed-sha
           DIFF_FILE: .claude-lane/incremental.diff
         with:
           script: |
@@ -205,6 +201,7 @@ jobs:
             const { owner, repo } = context.repo;
             const head = env.HEAD_SHA;
             const FILE_CAP = 300;
+            const MARKER = `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=`;
 
             const globToRegExp = (glob) => {
               let out = "";
@@ -251,7 +248,10 @@ jobs:
               );
               if (before !== now) {
                 const moved = (await compare(`${before}...${now}`)).files ?? [];
-                if (moved.length >= FILE_CAP || moved.some((file) => names(file).some((name) => prNames.has(name)))) {
+                if (moved.length >= FILE_CAP) {
+                  return { full: `a base-branch merge since the last review changed ${FILE_CAP} or more files` };
+                }
+                if (moved.some((file) => names(file).some((name) => prNames.has(name)))) {
                   return { full: "a base-branch merge since the last review changed a file this pull request changes" };
                 }
               }
@@ -274,6 +274,22 @@ jobs:
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
             };
 
+            // The newest marker comment this lane's job token wrote.
+            const readMarker = async () => {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: Number(env.PR_NUMBER),
+                per_page: 100,
+              });
+              const marker = comments
+                .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER))
+                .at(-1);
+              if (!marker) return "";
+              core.setOutput("marker-id", String(marker.id));
+              return marker.body.slice(MARKER.length, MARKER.length + 40);
+            };
+
             const incremental = env.INCREMENTAL === "true";
             try {
               const prFiles = await github.paginate(github.rest.pulls.listFiles, {
@@ -284,13 +300,8 @@ jobs:
               });
               let scope = prFiles;
               let last = "";
+              const recorded = incremental ? await readMarker() : "";
               if (incremental && env.EVENT_ACTION === "synchronize") {
-                let recorded = "";
-                try {
-                  recorded = fs.readFileSync(env.STATE_FILE, "utf8").trim();
-                } catch {
-                  recorded = "";
-                }
                 const result = await sinceLastReview(prFiles, recorded);
                 if (result.full) {
                   core.info(`Reviewing the whole pull request: ${result.full}.`);
@@ -329,11 +340,7 @@ jobs:
               core.warning(`Scoping failed, reviewing the whole pull request: ${error.message}`);
               core.setOutput("review", "true");
             }
-            if (incremental) {
-              fs.mkdirSync(path.dirname(env.STATE_FILE), { recursive: true });
-              fs.writeFileSync(env.STATE_FILE, `${head}\n`);
-              core.setOutput("record", "true");
-            }
+            if (incremental) core.setOutput("record", "true");
 
       # The inline-comment and plugin-command Skill grants go after the caller's
       # args so replacing claude-args cannot drop them; heredoc output as
@@ -361,7 +368,7 @@ jobs:
         id: claude-review
         if: steps.scope.outputs.review != 'false'
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 11
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1.0.235
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -402,16 +409,33 @@ jobs:
           lane: Claude review
 
       # Only a completed review, or a review that was not needed, moves the
-      # recorded head forward.
+      # recorded head forward. A failure here costs the next push a whole
+      # review, not this one its verdict.
       - name: Record the reviewed head
         if: >-
           steps.scope.outputs.record == 'true'
           && (steps.scope.outputs.review == 'false'
               || steps.review-outcome.outputs.review-ran == 'true')
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          LANE: claude-review
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MARKER_ID: ${{ steps.scope.outputs.marker-id }}
         with:
-          path: .claude-lane/reviewed-sha
-          key: claude-review-reviewed-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          script: |
+            const env = process.env;
+            const { owner, repo } = context.repo;
+            const body = [
+              `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=${env.HEAD_SHA} -->`,
+              `${env.LANE} has reviewed this pull request through ${env.HEAD_SHA}; a later push is reviewed from there.`,
+            ].join("\n");
+            if (env.MARKER_ID) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: Number(env.MARKER_ID), body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: Number(env.PR_NUMBER), body });
+            }
 
       # zizmor `artipacked` mitigation: scrub the token checkout persisted.
       - name: Strip persisted git credentials
