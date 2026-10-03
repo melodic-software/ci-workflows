@@ -609,6 +609,8 @@ test("a caller's wider docs-only-paths never skips agent instructions", async ()
   assert.equal(await decide(["README.md", "docs/a.md"]), "false");
   for (const name of [
     "CLAUDE.md",
+    "CLAUDE.local.md",
+    "GEMINI.md",
     "sub/AGENTS.md",
     "plugins/x/skills/y/SKILL.md",
     "plugins/x/skills/y/reference/notes.md",

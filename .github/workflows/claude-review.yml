@@ -114,9 +114,10 @@ on:
           Newline-separated path globs (`*` within one path segment, `**`
           across segments). When every file in the review's scope matches one,
           no review runs and the check stays green. Empty never skips. Agent
-          instruction files (CLAUDE.md, AGENTS.md, SKILL.md, and anything under
-          .claude/, skills/, agents/, commands/, rules/, hooks/, instructions/
-          or prompts/) never count as documentation, whatever this list says.
+          instruction files (CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md,
+          SKILL.md, copilot-instructions.md, and anything under .claude/,
+          skills/, agents/, commands/, rules/, hooks/, instructions/ or
+          prompts/) never count as documentation, whatever this list says.
         type: string
         default: ""
     outputs:
