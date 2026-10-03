@@ -475,8 +475,7 @@ consumer to audit it.
 
   Local (non-CI) invocation of the four bespoke guards above is **not** owned
   here: use the standards `local-lane-guards` component
-  ([pointer](docs/topics/local-lane-guards.md); standards ADR-0004 /
-  ci-workflows#190). Composite actions remain the CI wrappers.
+  (standards ADR-0004 / ci-workflows#190). Composite actions remain the CI wrappers.
 - `.github/actions/eol-renormalize` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
 - `.github/actions/ruff` — Ruff lint + format-check over the repo's Python
