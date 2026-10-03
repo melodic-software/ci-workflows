@@ -807,6 +807,20 @@ GitHub continues the normal weekly patching of each hosted image generation.
   misses and reports findings as a PR review. Findings are advisory: they never
   fail the job. It skips a pull request whose files in scope are all
   documentation (`docs-only-paths`).
+- `.github/workflows/claude-intake-triage.yml` — the intake-triage lane. On
+  `issues: [opened]`, a read-only Claude run (`--permission-mode dontAsk`,
+  read-only `gh` queries, JSON output) proposes labels and a comment; a step
+  with no model in it applies only labels in the caller's `allowed-labels`
+  that exist in the repository. On a permission denial, a max-turns stop,
+  unusable output, a credential-like comment or a request for a person it
+  applies only
+  `escalation-label` (default `needs-human`) and a fixed note, dropping the
+  run's own labels and text. It installs the newest Claude Code CLI at run time (`cli-version`,
+  else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
+  the action's own). The caller grants `contents: read` and `issues: write`
+  and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries
+  the canonical caller and the security model. Runs for any issue author,
+  including people without write access.
 
 ## Claude lanes — shared consumption contract
 
