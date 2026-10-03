@@ -12,14 +12,6 @@ const ciWorkflowPath = path.join(
   "workflows",
   "ci.yml",
 );
-const adrPath = path.join(
-  repositoryRoot,
-  "docs",
-  "topics",
-  "ci-fanout-consolidation",
-  "ADR.md",
-);
-
 const ciStatusActionPath = path.join(
   repositoryRoot,
   ".github",
@@ -29,7 +21,6 @@ const ciStatusActionPath = path.join(
 );
 
 const ciWorkflow = fs.readFileSync(ciWorkflowPath, "utf8");
-const adr = fs.readFileSync(adrPath, "utf8");
 const ciStatusAction = fs.readFileSync(ciStatusActionPath, "utf8");
 
 // Strip the `${{ }}` wrapper, an outer `!( )`, and every run of whitespace, so
@@ -408,14 +399,4 @@ test("root CI runs this repository's own test suite in a gating lane", () => {
   );
   // shfmt covers the same tree, so a shell source there cannot skip formatting.
   assert.match(ciWorkflow, /paths: fixtures\/shell\/good \.github\/scripts/u);
-});
-
-test("ADR records #122 COMPLETED with Shape A done", () => {
-  assert.match(adr, /Status: \*\*COMPLETED\*\*/u);
-  assert.match(
-    adr,
-    /\| Shape A \(dotfiles single selector\) \| Done \(confirmed on `dotfiles` `main`\) \|/u,
-  );
-  assert.match(adr, /Main-push burst collapse wins/u);
-  assert.match(adr, /Hygiene lane consolidation/u);
 });

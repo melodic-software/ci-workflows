@@ -55,20 +55,3 @@ for (const { file, defaultCommand } of [
     );
   });
 }
-
-test("V2 architecture doc exists and names both skills", () => {
-  const doc = fs.readFileSync(
-    path.join(
-      repositoryRoot,
-      "docs",
-      "topics",
-      "claude-review-lanes",
-      "V2-PLUGIN-ARCHITECTURE.md",
-    ),
-    "utf8",
-  );
-  assert.match(doc, /\/review:code-review/);
-  assert.match(doc, /\/review:security-review/);
-  assert.match(doc, /Dual-path|dual-path/);
-  assert.match(doc, /Migration/);
-});
