@@ -1,6 +1,7 @@
 ## Code Review Rules
 
-Each line names a rule CI does not enforce; a linked file states it in full.
+Each line names a rule CI does not enforce. A line with a link points at the file that states the
+rule in full; a line without one states the whole rule itself.
 
 - Org-wide criteria: [`REVIEW.md`](REVIEW.md), synced from `melodic-software/standards`.
 - Claude lane security model (`SECURITY MODEL` headers):
