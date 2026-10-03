@@ -36,8 +36,10 @@ name: claude-intake-triage
 #     the caller's allowlist AND exist in the repository (addLabels would
 #     otherwise create an unknown label), breaks @mentions in the comment, and
 #     withholds a comment that looks like it carries a credential.
-#   - Any permission denial, a max-turns stop or `needs_human: true` applies
-#     the escalation label instead of trusting the run.
+#   - Any permission denial, a max-turns stop, unusable output, a
+#     credential-like comment or `needs_human: true` escalates: the run's
+#     labels and text are dropped, and only the escalation label and a fixed
+#     note are applied. A rerun edits the lane's earlier comment.
 #   - Only the `issues` event is accepted, and bot actors are skipped (agent
 #     mode rejects bots it was not told to allow).
 #
@@ -198,7 +200,11 @@ jobs:
               type: "object",
               additionalProperties: false,
               properties: {
-                labels: { type: "array", uniqueItems: true, items: { type: "string", enum: allowed } },
+                // An enum needs at least one value; with nothing allowed, labels must be empty.
+                labels:
+                  allowed.length > 0
+                    ? { type: "array", uniqueItems: true, items: { type: "string", enum: allowed } }
+                    : { type: "array", maxItems: 0 },
                 comment: { type: "string", maxLength: 3000 },
                 needs_human: { type: "boolean" },
                 reason: { type: "string", maxLength: 500 },
@@ -310,34 +316,56 @@ jobs:
             }
             if (!Array.isArray(output?.labels) || typeof output?.needs_human !== "boolean") output = null;
 
+            // A run that finished is acted on; one that left no result is an
+            // infrastructure failure, which the status step reports.
+            const ran = Boolean(result.subtype);
+            if (ran && !output) escalate.push("the run returned no usable structured output");
+            if (output?.needs_human) escalate.push(`the model asked for a person: ${output.reason ?? ""}`);
+
             const labels = new Set();
             const rejected = [];
             for (const label of output?.labels ?? []) {
               if (typeof label === "string" && allowed.has(label)) labels.add(label);
               else rejected.push(String(label));
             }
-            if (output?.needs_human) escalate.push(`the model asked for a person: ${output.reason ?? ""}`);
 
             let comment = typeof output?.comment === "string" ? output.comment.trim().slice(0, 3000) : "";
             const CREDENTIAL = /(sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/u;
-            if (CREDENTIAL.test(comment)) {
-              comment = "";
-              escalate.push("the comment looked like it carried a credential and was withheld");
-            }
+            if (CREDENTIAL.test(comment)) escalate.push("the comment looked like it carried a credential");
             comment = comment.replace(/@(?=[A-Za-z0-9])/gu, "@​");
 
-            const ran = Boolean(result.subtype);
-            if (ran && escalate.length > 0) labels.add(env.ESCALATION_LABEL);
-
-            if (labels.size > 0) {
-              await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [...labels] });
+            // An escalated run is not trusted: none of its labels or text is
+            // applied, only the escalation label and a fixed note.
+            const escalated = ran && escalate.length > 0;
+            if (escalated) {
+              labels.clear();
+              labels.add(env.ESCALATION_LABEL);
+              comment = "Thanks for the report. Automated triage handed this issue to a maintainer.";
             }
-            if (comment) {
-              await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number,
-                body: `<!-- claude-lane intake-triage -->\n${comment}\n\n<sub>Automated triage. A maintainer reviews it.</sub>`,
-              });
+            if (!ran) {
+              labels.clear();
+              comment = "";
+            }
+
+            // The comment goes first, so a failed label write leaves an
+            // explanation rather than an unexplained label, and a rerun edits
+            // the lane's earlier comment instead of adding another.
+            const MARKER = "<!-- claude-lane intake-triage -->";
+            let failure;
+            try {
+              if (comment) {
+                const body = `${MARKER}\n${comment}\n\n<sub>Automated triage. A maintainer reviews it.</sub>`;
+                const earlier = (
+                  await github.paginate(github.rest.issues.listComments, { ...context.repo, issue_number, per_page: 100 })
+                ).find((c) => c.user?.login === "github-actions[bot]" && c.body?.startsWith(MARKER));
+                if (earlier) await github.rest.issues.updateComment({ ...context.repo, comment_id: earlier.id, body });
+                else await github.rest.issues.createComment({ ...context.repo, issue_number, body });
+              }
+              if (labels.size > 0) {
+                await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [...labels] });
+              }
+            } catch (error) {
+              failure = error;
             }
 
             const summary = [
@@ -351,8 +379,10 @@ jobs:
               `- Escalation: ${escalate.join("; ") || "none"}`,
               `- Comment posted: ${comment ? "yes" : "no"}`,
               `- Reason: ${output?.reason ?? "(none)"}`,
+              `- Write error: ${failure?.message ?? "none"}`,
             ];
             await core.summary.addRaw(summary.join("\n")).write();
+            if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
 
       - name: Report the triage status
         if: always()
