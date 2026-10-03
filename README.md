@@ -812,7 +812,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   read-only `gh` queries, JSON output) proposes labels and a comment; a step
   with no model in it applies only labels in the caller's `allowed-labels`
   that exist in the repository. On a permission denial, a max-turns stop,
-  unusable output or a request for a person it applies only
+  unusable output, a credential-like comment or a request for a person it
+  applies only
   `escalation-label` (default `needs-human`) and a fixed note, dropping the
   run's own labels and text. It installs the newest Claude Code CLI at run time (`cli-version`,
   else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
