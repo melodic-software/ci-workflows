@@ -187,7 +187,7 @@ test("both lanes run the same scope and record scripts", () => {
 test("each review step leaves its job the measured overhead", () => {
   for (const [lane, step, job] of [
     [codeLane, 11, 13],
-    [securityLane, 14, 16],
+    [securityLane, 10, 12],
   ]) {
     const claudeStep = lane.job.steps.find(
       (candidate) => candidate.id === "claude-review",

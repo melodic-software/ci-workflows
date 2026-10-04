@@ -136,12 +136,12 @@ jobs:
   security-review:
     name: security-review
     runs-on: ${{ inputs.runner }}
-    # Capped at the 16-minute ceiling set for every CI job (960 s). Outside the
-    # review step, 1,366 successful jobs on claude-code-plugins (2026-09-29 to
-    # 2026-10-01) took p95 17 s, max 82 s, and the scope and record steps took
-    # 1 s each on ci-workflows#653, so the step gets 14 minutes (840 s);
-    # incremental scoping, not a longer step, shortens the reviews that reach it.
-    timeout-minutes: 16
+    # The review step stops at 10 minutes (600 s); incremental scoping, not a
+    # longer step, shortens the reviews that reach it. Outside that step,
+    # 1,366 successful jobs on claude-code-plugins (2026-09-29 to 2026-10-01)
+    # took p95 17 s, max 82 s, which leaves 38 s of 12 minutes (720 s) for the
+    # scope and record steps; they took 1 s each on ci-workflows#653.
+    timeout-minutes: 12
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
     if: >-
@@ -377,7 +377,7 @@ jobs:
         id: claude-review
         if: steps.scope.outputs.review != 'false'
         continue-on-error: true
-        timeout-minutes: 14
+        timeout-minutes: 10
         uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.240
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
