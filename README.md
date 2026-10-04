@@ -640,9 +640,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the repository and commit that host the called workflow, not the caller's
   checkout. A consumer pinned to a tag therefore runs the composite bodies at
   that tag, and this repository's own `./` call runs them at the commit under
-  test. The two standards-synced composites, `comment-hygiene` and
-  `machine-specific-paths`, are still referenced by full path at a pinned SHA
-  until their sync destinations move.
+  test.
 
   ```yaml
   jobs:
