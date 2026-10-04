@@ -25,8 +25,14 @@ updates:
     # SHA-rewrite supply-chain risk that motivates SHA-pinning (architecture D5).
     cooldown:
       default-days: 3
-    # Collapse all action bumps into a single PR to cut review noise.
+    # Vendor bumps get their own PR so a community bump never blocks the
+    # auto-merge lane; a dependency joins the first group that matches it.
     groups:
+      vendor-actions:
+        patterns:
+          - actions/*
+          - github/*
+          - anthropics/*
       github-actions:
         patterns:
           - '*'
