@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@<sha>
-      - uses: melodic-software/ci-workflows/.github/actions/markdown@<sha>
+      - uses: melodic-software/ci-workflows/.github/actions/markdownlint@<sha>
 ```
 
 This repo is public, so its actions and reusable workflows are consumable by any
@@ -58,7 +58,7 @@ checkout of this repo. (Public is required because a public consumer such as
 ## Versioning
 
 Every tag is full SemVer (`vX.Y.Z`). A release is cut whenever `main` changes
-by something worth pinning to — `release.yml`'s manual `workflow_dispatch`
+by something worth pinning to — `release-tag.yml`'s manual `workflow_dispatch`
 (patch/minor/major) makes each release a deliberate act, and cutting one after
 every meaningful change keeps a tagged SHA available for consumers to pin to.
 Consumers are never bumped automatically: each pins this repository by full
@@ -124,7 +124,7 @@ consumer to audit it.
 
 ## Actions
 
-- `.github/actions/markdown` — markdownlint-cli2 over the repo's markdown.
+- `.github/actions/markdownlint` — markdownlint-cli2 over the repo's markdown.
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
   (installs a pinned, checksum-verified binary). Its default discovery remains
   tracked `*.sh`/`*.bash`; `extra-globs` adds tracked extensionless inputs as
@@ -142,12 +142,12 @@ consumer to audit it.
 - `.github/actions/shfmt` — shfmt formatting check over the repo's shell
   scripts, driven by the caller's `.editorconfig` (installs a pinned,
   checksum-verified binary).
-- `.github/actions/powershell` — PSScriptAnalyzer over the repo's PowerShell,
+- `.github/actions/psscriptanalyzer` — PSScriptAnalyzer over the repo's PowerShell,
   via the bundled `Invoke-Pssa.ps1`. Each file is analyzed exactly once and any
   analyzer or rule error fails closed. `PSUseCorrectCasing` remains disabled
   while the upstream [runspace-affinity defect][pssa-1708] is open; retrying a
   crashing rule is not a quality gate.
-- `.github/actions/pulumi-deploy-guard` — verifies the complete Pulumi personal
+- `.github/actions/verify-pulumi-deploy-policy` — verifies the complete Pulumi personal
   [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
   then [exports stack state][pulumi-stack-export] without plaintext secrets and
   classifies reviewed operational
@@ -157,7 +157,7 @@ consumer to audit it.
   IDs and rejects Pulumi's `*`, `?`, and `.` pattern operators. Callers reserve
   its exact workflow name uniquely and require paired live positive/near-match
   negative token-exchange evidence before removing the legacy trust rules.
-- `.github/actions/editorconfig` — editorconfig-checker validation of tracked
+- `.github/actions/editorconfig-checker` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a
   caller-supplied config.
@@ -178,7 +178,7 @@ consumer to audit it.
   self-hosted workers.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
-- `.github/actions/ci-status` — aggregates a caller-built `needs.*.result` string
+- `.github/actions/pr-require-checks/aggregate-results` — aggregates a caller-built `needs.*.result` string
   into the single required gate check: `success` passes, anything else fails
   naming the offending result. `treat-skipped-as` is the caller's policy for
   `skipped` — `pass` (default) or `fail` for repos where a skipped lane means one
@@ -349,13 +349,13 @@ consumer to audit it.
 
   ```yaml
   jobs:
-    changes:
+    detect-changes:
       permissions:
         contents: read
         statuses: write
       steps:
         - name: Mark the lanes verdict pending
-          uses: melodic-software/ci-workflows/.github/actions/ci-status@<sha> # <tag>
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
           with:
             record-pending: 'true'
         # ... change detection
@@ -368,11 +368,11 @@ consumer to audit it.
         actions: write
       steps:
         - name: Aggregate lane results
-          uses: melodic-software/ci-workflows/.github/actions/ci-status@<sha> # <tag>
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
           with:
             carry-forward-wait-seconds: '0'
             rerun-contract-only-siblings: 'true'
-            results: ${{ needs.changes.result }} ...
+            results: ${{ needs.detect-changes.result }} ...
   ```
 
   **To keep a wait instead, size the ceiling from the repository's own measured
@@ -421,7 +421,7 @@ consumer to audit it.
   for as long as it waits, so the ceiling is a real cost and not a free margin.
   It is a ceiling, not a delay: the poll ends the moment a verdict settles or
   nothing is left in flight.
-- `.github/actions/pr-contract` — the whole pull-request contract in one step:
+- `.github/actions/pr-require-checks/check-contract` — the whole pull-request contract in one step:
   Conventional Commits title and the `do-not-merge` label gate the step, and
   issue linkage is advisory by default (a warning plus one upserted marker
   comment plus a label, exit code unchanged; `linkage-mode: enforce` makes it
@@ -432,8 +432,8 @@ consumer to audit it.
   so `edited` and `labeled` runs see current state. Needs `pull-requests: write`
   for the comment and label; every write is best-effort and degrades to a
   `::notice::` on a read-only token. See
-  [its README](.github/actions/pr-contract/README.md) for the consumer wiring.
-- `.github/actions/change-detection` — decides which CI lanes a pull request's
+  [its README](.github/actions/pr-require-checks/check-contract/README.md) for the consumer wiring.
+- `.github/actions/detect-changes` — decides which CI lanes a pull request's
   changed files make relevant, so a caller can skip lanes at JOB level and
   stop paying for runs a change cannot affect. Checkout-free: the PR file
   listing comes from the API, and caller-named filter groups match it with
@@ -443,7 +443,7 @@ consumer to audit it.
   fails OPEN to `"true"`, while unhonorable pattern syntax (`!`, `?`, `+`)
   and malformed group config are hard errors even on fallback runs. The
   required-check interplay is load-bearing: gate each lane job with
-  `!cancelled() && fromJSON(needs.changes.outputs.results || '{}')['<group>']
+  `!cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['<group>']
   != 'false'` (never `== 'true'` — an unset output must run the lane, not
   skip it), keep aggregating through the always-running `ci-status` gateway
   with `treat-skipped-as: pass` (a job-level skip reports `skipped`, which
@@ -455,16 +455,16 @@ consumer to audit it.
   forever. Filter conservatively: include `.github/**` in every group so CI
   changes re-run everything, and leave content-agnostic lanes (spell-check,
   secret scan, editorconfig, link integrity, and kin) ungated — any file can
-  carry the defect they gate on. This repo's own `ci.yml` `changes` job is
+  carry the defect they gate on. This repo's own `pr-require-checks.yml` `changes` job is
   the reference wiring.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network).
-- `.github/actions/reference-integrity` — resolves `file.md` "Anchor" prose
+- `.github/actions/check-markdown-references` — resolves `file.md` "Anchor" prose
   citations against each cited file's headings and bold lead-ins (dependency-free
   awk); pairs with `lychee-offline`, which covers link/fragment targets.
-- `.github/actions/exec-bit` — verifies every tracked shebang file carries git
+- `.github/actions/check-exec-bit` — verifies every tracked shebang file carries git
   index mode 100755, so executable scripts keep their bit on checkout.
-- `.github/actions/action-metadata-filename` — rejects any tracked
+- `.github/actions/check-action-filename` — rejects any tracked
   `action.yaml` (GitHub also accepts this spelling, but every lane here globs
   `action.yml` only); repo-wide, not scoped to `.github/actions/`.
 - `.github/actions/machine-specific-paths` — rejects machine-specific absolute /
@@ -476,7 +476,7 @@ consumer to audit it.
   Local (non-CI) invocation of the four bespoke guards above is **not** owned
   here: use the standards `local-lane-guards` component
   (standards ADR-0004 / ci-workflows#190). Composite actions remain the CI wrappers.
-- `.github/actions/eol-renormalize` — detects index-level line-ending drift via
+- `.github/actions/check-line-endings` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
 - `.github/actions/ruff` — Ruff lint + format-check over the repo's Python
   (via `uvx`; emits `--output-format=github` annotations).
@@ -585,7 +585,7 @@ Hosted workflow defaults use explicit GA operating-system generations
 keeps hosted/self-hosted parity reviews tied to a declared image contract while
 GitHub continues the normal weekly patching of each hosted image generation.
 
-- `.github/workflows/checks.yml` — the consolidated hygiene lane: **one job, one
+- `.github/workflows/pr-run-checks.yml` — the consolidated hygiene lane: **one job, one
   runner spin-up**, `change-detection` once, then every content-agnostic
   composite as a step. It replaces a fan-out of one job per tool, which is the
   cost it exists to remove, and it never calls a per-tool reusable workflow —
@@ -628,43 +628,27 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `outcome` (`success` or `failure`). Every composite runs under
   `continue-on-error: true` and one join step names the first failure and fails
   the job, so one failing tool never hides the rest. Gate downstream lanes with
-  `fromJSON(needs.checks.outputs.results || '{}')['<group>'] != 'false'`: a
+  `fromJSON(needs.pr-run-checks.outputs.results || '{}')['<group>'] != 'false'`: a
   reusable workflow publishes no outputs when its job fails, so
-  `needs.checks.result` stays the authoritative verdict. The caller's job block
+  `needs.pr-run-checks.result` stays the authoritative verdict. The caller's job block
   must grant `contents: read` and `pull-requests: read` — a called workflow
   cannot elevate, and the detection pass reads the pull request's file listing.
   `zizmor` is not among the toggles: it has no composite, only the reusable
   below, so callers that want it keep a separate job.
 
-  The composites run by full path at a pinned SHA, because a relative action
-  path inside a called workflow resolves against the caller's checkout. Those
-  self-pins are **not** touched by `release.yml`: cutting a release creates a
-  tag and a GitHub Release at the current `main` HEAD and pushes no commit, so
-  the commit a release tags still carries whatever self-pins were already in
-  the tree — necessarily an **earlier** commit's SHA, never the one being cut.
-  A tagged release therefore runs the composite bodies its pins name, not the
-  bodies at that tag. Moving a self-pin is a separate pull request: this
-  repository's own `github-actions` Dependabot group carries no `ignore` for
-  this repository, unlike a consumer's, and it has opened self-pin bumps here
-  before; otherwise the bump is made by hand. So the pins can sit several
-  releases behind, and a release that follows a self-pin bump is what finally
-  publishes a SHA in which they are current. That pin lag is why this
-  repository keeps a `composites-head` job in its own `ci.yml`: it runs the
-  same composites through `./.github/actions/<x>` so a pull request that
-  changes a composite body is still exercised at HEAD instead of passing
-  against the pinned copy.
-  Phase 6b retires that job when GitHub's `$/` self-repository syntax becomes
-  usable, which needs three things: actionlint shipping the `$/` support of
-  rhysd/actionlint#732 in a version this repository pins, actions/runner#4669
-  merging, and one measured cross-repository `$/` run.
+  The composites run through `$/.github/actions/<x>`, which resolves against
+  the repository and commit that host the called workflow, not the caller's
+  checkout. A consumer pinned to a tag therefore runs the composite bodies at
+  that tag, and this repository's own `./` call runs them at the commit under
+  test.
 
   ```yaml
   jobs:
-    checks:
+    pr-run-checks:
       permissions:
         contents: read
         pull-requests: read
-      uses: melodic-software/ci-workflows/.github/workflows/checks.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks.yml@<sha>
       with:
         runner: ubuntu-24.04
         filters: |
@@ -673,7 +657,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
             **/*.md
   ```
 
-- `.github/workflows/issue-triage-label.yml` — applies a configured floor label
+- `.github/workflows/intake-label-needs-triage.yml` — applies a configured floor label
   (default bare `needs-triage`, not a priority value) to an issue opened or reopened with no
   label matching a configured prefix (default `priority:`). **Non-gating**:
   never fails a PR or blocks a merge; it only guarantees new issues don't
@@ -700,7 +684,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     issue-triage-label:
       permissions:
         issues: write
-      uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@<sha>
   ```
 
   Loop-safe by construction: adding a label emits `issues.labeled`, never
@@ -711,7 +695,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   present. A human triager assigning a real tier after this workflow ran is
   expected to remove the floor label as part of that transition — this
   workflow only guarantees a floor and does not police tier assignment.
-- `.github/workflows/standards-sync.yml` — orchestrates exact-file distribution
+- `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
   resolves one immutable standards SHA, then blocks every write lane until a
@@ -731,7 +715,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   opt-out lifts, while a PR someone deliberately disarmed is never overridden.
   A rejected arm attempt (for example an already-mergeable PR) is logged and
   does not fail the sync.
-- `.github/workflows/zizmor.yml` — GitHub Actions security/static-analysis lint
+- `.github/workflows/pr-audit-workflows.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
   **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
   without failing); consumed via `uses:` at job level. The
@@ -758,7 +742,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   workflows cannot elevate caller permissions, so the called job's
   `security-events: write` only applies when the caller already granted it.
   Inputs are documented inline.
-- `.github/workflows/osv-scanner.yml` — dependency vulnerability scan with
+- `.github/workflows/pr-scan-dependencies.yml` — dependency vulnerability scan with
   Google's official native OSV-Scanner v2.5.1 Linux X64 binary. The exact binary,
   its provenance, and the SLSA verifier are checksum-pinned; the verifier then
   attests the expected Google source repository and exact release tag before the
@@ -796,18 +780,18 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
   optional inputs on native `zizmor` preserve compatibility.
-- `.github/workflows/claude-review.yml` — automated PR code review with
+- `.github/workflows/pr-review.yml` — automated PR code review with
   `anthropics/claude-code-action`, running the org review plugin's
   `/review:code-review` command. Consume it per the [Claude lanes — shared
   consumption contract](#claude-lanes--shared-consumption-contract) below.
-- `.github/workflows/claude-security-review.yml` — a dedicated LLM
-  **security-review** pass, sibling of `claude-review.yml` with the same
+- `.github/workflows/pr-review-security.yml` — a dedicated LLM
+  **security-review** pass, sibling of `pr-review.yml` with the same
   secrets interface and safe-handling model, running `/review:security-review`.
   It reviews the PR's changed files for the vulnerabilities static analysis
   misses and reports findings as a PR review. Findings are advisory: they never
   fail the job. It skips a pull request whose files in scope are all
   documentation (`docs-only-paths`).
-- `.github/workflows/claude-intake-triage.yml` — the intake-triage lane. On
+- `.github/workflows/intake-triage.yml` — the intake-triage lane. On
   `issues: [opened]`, a read-only Claude run (`--permission-mode dontAsk`,
   read-only `gh` queries, JSON output) proposes labels and a comment; a step
   with no model in it applies only labels in the caller's `allowed-labels`
@@ -824,7 +808,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
 ## Claude lanes — shared consumption contract
 
-`claude-review.yml` and `claude-security-review.yml` share one consumption
+`pr-review.yml` and `pr-review-security.yml` share one consumption
 shape. Each is a whole-job concern (job `permissions:` plus a `secrets:`
 interface), which is why each is a reusable workflow rather than a composite
 action: the caller owns the triggers, concurrency and the permission grant,
@@ -901,7 +885,7 @@ before the review reported (`no-outcome`). A review that was not needed
 Re-run a failed review with `gh run rerun --failed`. github-iac keeps
 `security-review-gate` disabled (its ADR 0011 keeps agentic review advisory);
 do not make either check required anywhere else.
-`claude-review.yml` also exposes `review-failed` and `failure-class` as
+`pr-review.yml` also exposes `review-failed` and `failure-class` as
 workflow outputs.
 
 **Adoption.** Callers are distributed through the org's sync-managed

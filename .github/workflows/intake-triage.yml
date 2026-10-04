@@ -1,4 +1,4 @@
-name: claude-intake-triage
+name: intake-triage
 
 # Reusable workflow: the intake-triage lane. A read-only Claude run reads one
 # newly opened issue and returns labels and a comment as structured output; a
@@ -18,7 +18,7 @@ name: claude-intake-triage
 #         permissions:
 #           contents: read   # check out the default branch for AGENTS.md
 #           issues: write    # apply labels and post the triage comment
-#         uses: melodic-software/ci-workflows/.github/workflows/claude-intake-triage.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@<sha>
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -105,12 +105,12 @@ on:
         description: >-
           'true' on an infrastructure failure, else 'false'. Empty when the
           lane did not run.
-        value: ${{ jobs.intake-triage.outputs.triage-failed }}
+        value: ${{ jobs.claude.outputs.triage-failed }}
       failure-class:
         description: >-
           auth | rate-limit | overloaded | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
-        value: ${{ jobs.intake-triage.outputs.failure-class }}
+        value: ${{ jobs.claude.outputs.failure-class }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token (from `claude setup-token`).
@@ -120,7 +120,7 @@ permissions:
   contents: read
 
 jobs:
-  intake-triage:
+  claude:
     name: claude-intake-triage-status
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 12
@@ -271,7 +271,7 @@ jobs:
 
       - name: Report triage outcome
         id: review-outcome
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude.outcome }}
           execution-file: ${{ steps.claude.outputs.execution_file }}

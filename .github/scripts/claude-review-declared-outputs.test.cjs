@@ -10,7 +10,7 @@
 // existence: the `workflow_call.outputs` block, the job-level block that feeds
 // it, and the agreement between both and the composite that owns the
 // classification. The composite's corpus
-// lives in .github/actions/claude-lane-outcome/classify.test.cjs; what this
+// lives in .github/actions/report-lane-outcome/classify.test.cjs; what this
 // file owns is the wiring that carries its verdict to the caller.
 
 const assert = require("node:assert/strict");
@@ -23,14 +23,14 @@ const workflowPath = path.join(
   repositoryRoot,
   ".github",
   "workflows",
-  "claude-review.yml",
+  "pr-review.yml",
 );
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const compositePath = path.join(
   repositoryRoot,
   ".github",
   "actions",
-  "claude-lane-outcome",
+  "report-lane-outcome",
   "action.yml",
 );
 const composite = fs.readFileSync(compositePath, "utf8");
@@ -67,7 +67,7 @@ function declaredKeys(body, indent) {
 }
 
 const callOutputs = blockBody(callSurface, 4, "outputs");
-const reviewJob = jobBody("review");
+const reviewJob = jobBody("claude");
 const jobOutputs = blockBody(reviewJob, 4, "outputs");
 
 test("the caller can read the lane's verdict without reading its log", () => {
@@ -86,7 +86,7 @@ test("each declared output is wired to the job that computes it", () => {
   for (const name of ["review-failed", "failure-class"]) {
     assert.equal(
       wiring[name],
-      `\${{ jobs.review.outputs.${name} }}`,
+      `\${{ jobs.claude.outputs.${name} }}`,
       `${name} must read the review job, not a step or a literal`,
     );
   }
@@ -117,7 +117,7 @@ test("the forwarded names are the composite's own, so a rename cannot silently e
   for (const name of ["review-failed", "failure-class"]) {
     assert.ok(
       compositeOutputs.includes(name),
-      `claude-lane-outcome no longer declares ${name}; the workflow output would resolve to empty`,
+      `report-lane-outcome no longer declares ${name}; the workflow output would resolve to empty`,
     );
   }
 });
@@ -137,6 +137,6 @@ test("the step the job forwards from is the outcome composite", () => {
   assert.match(step, /^ {8}id: review-outcome$/mu);
   assert.match(
     step,
-    /^ {8}uses: melodic-software\/ci-workflows\/\.github\/actions\/claude-lane-outcome@[0-9a-f]{40} #/mu,
+    /^ {8}uses: \$\/\.github\/actions\/report-lane-outcome$/mu,
   );
 });

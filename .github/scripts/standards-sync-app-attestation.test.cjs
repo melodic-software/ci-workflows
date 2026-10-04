@@ -11,7 +11,7 @@ const workflowPath = path.join(
   __dirname,
   "..",
   "workflows",
-  "standards-sync.yml",
+  "maintenance-sync-standards.yml",
 );
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });

@@ -1,4 +1,4 @@
-name: issue-triage-label
+name: intake-label-needs-triage
 
 # Reusable workflow — applies a configured floor label (default bare
 # `needs-triage`) to an issue that carries no label matching a configured
@@ -61,7 +61,7 @@ on:
 permissions: {}
 
 jobs:
-  issue-triage-label:
+  apply-label:
     name: Apply floor label when no priority tier is present
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5

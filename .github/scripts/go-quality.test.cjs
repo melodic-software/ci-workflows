@@ -7,11 +7,11 @@ const test = require("node:test");
 
 const root = path.join(__dirname, "..", "..");
 const workflow = fs.readFileSync(
-  path.join(root, ".github", "workflows", "go-quality.yml"),
+  path.join(root, ".github", "workflows", "pr-run-checks-go.yml"),
   "utf8",
 );
 const ciWorkflow = fs.readFileSync(
-  path.join(root, ".github", "workflows", "ci.yml"),
+  path.join(root, ".github", "workflows", "pr-require-checks.yml"),
   "utf8",
 );
 const windowsFixtureTest = fs.readFileSync(
@@ -47,8 +47,8 @@ test("Go quality exposes only the consumer-owned path contract", () => {
 });
 
 test("native Linux and Windows analyzer lanes use immutable verified binaries", () => {
-  assert.match(workflow, /^ {2}linux:[\s\S]*?runs-on: ubuntu-24\.04/mu);
-  assert.match(workflow, /^ {2}windows:[\s\S]*?runs-on: windows-2025/mu);
+  assert.match(workflow, /^ {2}check-linux:[\s\S]*?runs-on: ubuntu-24\.04/mu);
+  assert.match(workflow, /^ {2}check-windows:[\s\S]*?runs-on: windows-2025/mu);
   assert.equal(occurrences(workflow, /timeout-minutes: 30/gu), 3);
 
   // The exact SHA and version tag move with Dependabot bumps; the invariant
@@ -111,12 +111,12 @@ test("approved native tests and module hygiene stay blocking", () => {
 test("this exact workflow head is behaviorally dogfooded on native Windows", () => {
   assert.match(
     ciWorkflow,
-    /^ {2}go-quality-dogfood:[\s\S]*?uses: \.\/\.github\/workflows\/go-quality\.yml[\s\S]*?working-directory: fixtures\/go\/windows-race/mu,
+    /^ {2}pr-run-checks-go:[\s\S]*?uses: \.\/\.github\/workflows\/pr-run-checks-go\.yml[\s\S]*?working-directory: fixtures\/go\/windows-race/mu,
   );
-  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*go-quality-dogfood[^\n]*\]$/mu);
+  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*pr-run-checks-go[^\n]*\]$/mu);
   assert.match(
     ciWorkflow,
-    /^ {10}results: [^\n]*\$\{\{ needs\.go-quality-dogfood\.result \}\}[^\n]*$/mu,
+    /^ {10}results: [^\n]*\$\{\{ needs\.pr-run-checks-go\.result \}\}[^\n]*$/mu,
   );
   assert.match(windowsFixtureTest, /^\/\/go:build windows$/mu);
   assert.match(windowsFixtureTest, /if !raceDetectorEnabled/u);

@@ -99,13 +99,13 @@ Both steps go in the `ci-status` job, in this order:
       statuses: write
     runs-on: ubuntu-24.04
     steps:
-      - uses: melodic-software/ci-workflows/.github/actions/pr-contract@<sha> # vX.Y.Z
+      - uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@<sha> # vX.Y.Z
       - name: Aggregate lane results
         # `!cancelled()` so a failing pr-contract step does not skip the
         # aggregation: the job still fails on the contract step's exit code, and
         # the ci-lanes status lands on the SHA for the next contract-only run.
         if: ${{ !cancelled() }}
-        uses: melodic-software/ci-workflows/.github/actions/ci-status@<sha> # vX.Y.Z
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # vX.Y.Z
         with:
           results: ${{ needs.lane-a.result }} ${{ needs.lane-b.result }}
 ```
@@ -132,12 +132,12 @@ branches on it before it looks at `same-repo`, so `contract-only: true` with
 `same-repo: false` is treated as a carry-forward even though the shipped
 defaults never produce that combination.
 
-This repository's own `.github/workflows/ci.yml` is the reference wiring.
+This repository's own `.github/workflows/pr-require-checks.yml` is the reference wiring.
 
 ## Tests
 
 `run.test.sh` drives `run.sh` against fixture JSON served by a `gh` shim placed
 first on `PATH`, which also logs every API call so the harness can assert on the
 writes that did and did not happen. Run it with
-`bash .github/actions/pr-contract/run.test.sh`; the `selector-contract` lane runs
+`bash .github/actions/pr-require-checks/check-contract/run.test.sh`; the `selector-contract` lane runs
 it in CI.

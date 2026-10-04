@@ -13,7 +13,7 @@ const pin = JSON.parse(
   ),
 );
 const workflow = fs.readFileSync(
-  path.join(repositoryRoot, ".github", "workflows", "osv-scanner.yml"),
+  path.join(repositoryRoot, ".github", "workflows", "pr-scan-dependencies.yml"),
   "utf8",
 );
 

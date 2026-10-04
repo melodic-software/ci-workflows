@@ -7,7 +7,7 @@ const test = require("node:test");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
 const workflow = fs.readFileSync(
-  path.join(repositoryRoot, ".github", "workflows", "zizmor.yml"),
+  path.join(repositoryRoot, ".github", "workflows", "pr-audit-workflows.yml"),
   "utf8",
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
@@ -257,9 +257,9 @@ test("zizmor no longer bundles a generated SARIF guard", () => {
   );
 });
 
-test("the ci.yml zizmor gate is as wide as the lane's audit scope", () => {
+test("the pr-require-checks.yml zizmor gate is as wide as the lane's audit scope", () => {
   const ci = fs.readFileSync(
-    path.join(repositoryRoot, ".github", "workflows", "ci.yml"),
+    path.join(repositoryRoot, ".github", "workflows", "pr-require-checks.yml"),
     "utf8",
   );
   const filter = ci
@@ -268,7 +268,7 @@ test("the ci.yml zizmor gate is as wide as the lane's audit scope", () => {
 
   assert.match(
     ci,
-    /uses: \.\/\.github\/workflows\/zizmor\.yml\n {4}with:\n {6}paths: \./u,
+    /uses: \.\/\.github\/workflows\/pr-audit-workflows\.yml\n {4}with:\n {6}paths: \./u,
     "the zizmor lane is expected to audit repo-wide (paths: .)",
   );
   assert.match(
@@ -281,8 +281,8 @@ test("the ci.yml zizmor gate is as wide as the lane's audit scope", () => {
 
 test("documentation removes only the retired zizmor Docker exception", () => {
   const zizmorSection = readme.slice(
-    readme.indexOf("- `.github/workflows/zizmor.yml`"),
-    readme.indexOf("- `.github/workflows/osv-scanner.yml`"),
+    readme.indexOf("- `.github/workflows/pr-audit-workflows.yml`"),
+    readme.indexOf("- `.github/workflows/pr-scan-dependencies.yml`"),
   );
   assert.match(zizmorSection, /verifies its committed SHA-256/u);
   assert.match(zizmorSection, /without Docker/u);

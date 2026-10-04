@@ -1,6 +1,6 @@
 "use strict";
 
-// The `checks.yml` outcome join decides the consolidated lane's verdict. It is
+// The `pr-run-checks.yml` outcome join decides the consolidated lane's verdict. It is
 // the one place where a bug is silently catastrophic rather than noisy: every
 // composite runs under `continue-on-error: true`, so a join that forgot a
 // composite reports success for a run in which that composite failed, and
@@ -20,11 +20,19 @@ const { test } = require("node:test");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
-const workflowPath = path.join(__dirname, "..", "workflows", "checks.yml");
+const workflowPath = path.join(
+  __dirname,
+  "..",
+  "workflows",
+  "pr-run-checks.yml",
+);
 const workflow = parseWorkflow(fs.readFileSync(workflowPath, "utf8"));
-const steps = workflow.jobs.checks.steps;
+const steps = workflow.jobs.check.steps;
 const joinStep = steps.find((step) => step?.id === "outcome");
-assert.ok(joinStep !== undefined, "checks.yml has no `outcome` join step");
+assert.ok(
+  joinStep !== undefined,
+  "pr-run-checks.yml has no `outcome` join step",
+);
 
 // Every step the join owns: the composites, plus the input-combination guard
 // that must go red rather than let an enabled toggle skip silently.
@@ -89,17 +97,22 @@ test("the join reads every continue-on-error step", () => {
       `step ${step.id} is never reported by the join`,
     );
   }
+  const renamed = {
+    "change-detection": "detect-changes",
+    editorconfig: "editorconfig-checker",
+    markdown: "markdownlint",
+    "exec-bit": "check-exec-bit",
+    "eol-renormalize": "check-line-endings",
+  };
   for (const step of composites) {
     const name = step.id.replaceAll("_", "-");
-    assert.match(
-      String(step.uses ?? ""),
-      new RegExp(
-        `^melodic-software/ci-workflows/\\.github/actions/${name}@[0-9a-f]{40}$`,
-        "u",
-      ),
-      // A relative `./` reference inside a CALLED workflow resolves against the
-      // CALLER's checkout, so it would fail in every consumer.
-      `step ${step.id} does not reference its composite by pinned full path`,
+    const uses = String(step.uses ?? "");
+    // `$/` resolves against the repository and commit that host the called
+    // workflow, so it works in every consumer.
+    assert.equal(
+      uses,
+      `$/.github/actions/${renamed[name] ?? name}`,
+      `step ${step.id} does not reference its composite through the called workflow's own commit`,
     );
   }
   // The join reports nothing the steps do not produce: an env name left behind
@@ -184,7 +197,10 @@ test("an enabled toggle with no configuration fails, it does not skip quietly", 
   // `check-jsonschema-files`; the join is what turns it into the job's verdict,
   // so a silently skipped schema gate cannot report success.
   const guard = steps.find((step) => step?.id === "configuration");
-  assert.ok(guard !== undefined, "checks.yml has no input-combination guard");
+  assert.ok(
+    guard !== undefined,
+    "pr-run-checks.yml has no input-combination guard",
+  );
   assert.equal(
     guard.if,
     `\${{ inputs.check-jsonschema && inputs.check-jsonschema-files == '' }}`,

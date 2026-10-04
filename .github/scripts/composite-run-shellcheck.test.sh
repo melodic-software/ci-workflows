@@ -191,7 +191,7 @@ while IFS= read -r action; do
 done < <(git ls-files -- '.github/actions/*/action.yml')
 
 empty="$temp/composite-run-shellcheck-empty.txt"
-if bash "$check" .github/workflows/ci.yml >"$empty" 2>&1; then
+if bash "$check" .github/workflows/pr-require-checks.yml >"$empty" 2>&1; then
   echo 'A file set containing no composite run: block unexpectedly passed.' >&2
   exit 1
 fi

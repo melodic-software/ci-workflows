@@ -30,7 +30,7 @@ $customFixture = 'fixtures/composite-action/pwsh-custom-shell/action.yml'
 $usesOnlyFixture = 'fixtures/composite-action/uses-only/action.yml'
 $mappingFixture = 'fixtures/composite-action/mapping-steps/action.yml'
 $noShellFixture = 'fixtures/composite-action/no-shell/action.yml'
-$coveredAction = '.github/actions/powershell/action.yml'
+$coveredAction = '.github/actions/psscriptanalyzer/action.yml'
 
 function Assert-Condition {
     [CmdletBinding()]
@@ -228,7 +228,7 @@ Assert-Condition -Condition ($noShell.Output.Contains('refusing to guess the dia
     -Message 'The missing shell: was not reported.' `
     -Context $noShell.Output
 
-$empty = Invoke-Check -Argument @('.github/workflows/ci.yml')
+$empty = Invoke-Check -Argument @('.github/workflows/pr-require-checks.yml')
 Assert-Condition -Condition ($empty.ExitCode -ne 0) `
     -Message 'A file set containing no composite pwsh run: block unexpectedly passed.' `
     -Context $empty.Output

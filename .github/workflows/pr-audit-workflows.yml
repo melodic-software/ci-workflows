@@ -1,4 +1,4 @@
-name: zizmor
+name: pr-audit-workflows
 
 # Reusable workflow — GitHub Actions security/static analysis with zizmor
 # (supply-chain risks, dangerous triggers, excessive permissions, template

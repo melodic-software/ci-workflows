@@ -52,7 +52,7 @@ function composeArgs(script, baseArgs, pluginCommand) {
   }
 }
 
-for (const fileName of ["claude-review.yml", "claude-security-review.yml"]) {
+for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
   const workflow = parseWorkflow(
     fs.readFileSync(path.join(workflowsDirectory, fileName), "utf8"),
   );

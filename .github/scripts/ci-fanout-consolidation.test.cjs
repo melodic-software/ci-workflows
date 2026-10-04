@@ -10,13 +10,13 @@ const ciWorkflowPath = path.join(
   repositoryRoot,
   ".github",
   "workflows",
-  "ci.yml",
+  "pr-require-checks.yml",
 );
 const ciStatusActionPath = path.join(
   repositoryRoot,
   ".github",
   "actions",
-  "ci-status",
+  "pr-require-checks/aggregate-results",
   "action.yml",
 );
 
@@ -49,7 +49,7 @@ const CONTRACT_ONLY_PREDICATE =
   "(github.event.action == 'edited' && !github.event.changes.base))";
 const CONTRACT_ONLY_GATE = `!(${CONTRACT_ONLY_PREDICATE})`;
 
-test("ci.yml branches the concurrency group on the contract-only predicate", () => {
+test("pr-require-checks.yml branches the concurrency group on the contract-only predicate", () => {
   // Eviction of a PENDING run is unconditional in GitHub's
   // queueing and is not governed by `cancel-in-progress`, so a shared group let
   // one contract-only event evict another and leave the current head with a
@@ -62,7 +62,7 @@ test("ci.yml branches the concurrency group on the contract-only predicate", () 
     );
   assert.ok(
     groupBlock !== null,
-    "ci.yml has no branched concurrency group with a literal cancel-in-progress: true",
+    "pr-require-checks.yml has no branched concurrency group with a literal cancel-in-progress: true",
   );
   const group = normalizeExpression(groupBlock.groups.value);
   const branched =
@@ -107,26 +107,68 @@ test("the contract-only predicate excludes forks and base changes", () => {
   );
 });
 
-test("ci.yml re-runs on the contract-only pull_request actions", () => {
+test("pr-require-checks.yml re-runs on the contract-only pull_request actions", () => {
   assert.match(
     ciWorkflow,
-    /^ {4}types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]$/mu,
+    /^ {4}types: \[opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled\]$/mu,
   );
 });
 
-test("every job except ci-status carries the contract-only gate", () => {
-  // Job keys are the two-space-indented mapping keys under `jobs:`; the `if:`
-  // that follows a job key before the next one is that job's condition.
-  const jobsSection = ciWorkflow.slice(ciWorkflow.search(/^jobs:$/mu));
-  const jobBlocks = jobsSection.split(/^ {2}(?=[a-z0-9-]+:$)/mu).slice(1);
+// Job keys are the two-space-indented mapping keys under `jobs:`; the `if:`
+// that follows a job key before the next one is that job's condition.
+const jobBlocks = ciWorkflow
+  .slice(ciWorkflow.search(/^jobs:$/mu))
+  .split(/^ {2}(?=[a-z0-9-]+:$)/mu)
+  .slice(1);
+const jobName = (block) => /^([a-z0-9-]+):$/mu.exec(block)?.[1];
+const jobCondition = (block) => /^ {4}if: (.*)$/mu.exec(block)?.[1] ?? "";
+
+// The issue labeler is the only job an `issues` event may start. Any other job
+// that ran there would have no pull request to check, and `ci-status` would
+// publish a verdict for an issue.
+const ISSUE_JOB = "intake-label-needs-triage";
+
+test("only the issue labeler runs on an issues event", () => {
+  assert.match(ciWorkflow, /^ {2}issues:\n {4}types: \[opened, reopened\]$/mu);
+  const unguarded = [];
+  for (const block of jobBlocks) {
+    const name = jobName(block);
+    if (name === ISSUE_JOB) {
+      assert.equal(
+        jobCondition(block),
+        `\${{ github.event_name == 'issues' }}`,
+      );
+    } else if (
+      !jobCondition(block).startsWith("${{ github.event_name != 'issues' && ")
+    ) {
+      unguarded.push(name);
+    }
+  }
+  assert.deepEqual(unguarded, []);
+});
+
+test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
+  // Claude lane checks are advisory: a model outage must never block a merge.
+  const needs =
+    /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu.exec(
+      ciWorkflow,
+    )?.groups?.list;
+  assert.ok(needs !== undefined, "ci-status has no needs list");
+  for (const job of ["pr-review", "pr-review-security", ISSUE_JOB]) {
+    assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
+    assert.ok(!needs.split(/,\s*/u).includes(job), `ci-status waits on ${job}`);
+    assert.doesNotMatch(ciWorkflow, new RegExp(`needs\\.${job}\\.result`, "u"));
+  }
+});
+
+test("every job except ci-status and the issue labeler carries the contract-only gate", () => {
   const ungated = [];
   for (const block of jobBlocks) {
-    const name = /^([a-z0-9-]+):$/mu.exec(block)?.[1];
-    if (name === undefined || name === "ci-status") {
+    const name = jobName(block);
+    if (name === undefined || name === "ci-status" || name === ISSUE_JOB) {
       continue;
     }
-    const condition = /^ {4}if: (.*)$/mu.exec(block)?.[1] ?? "";
-    if (!condition.includes(CONTRACT_ONLY_GATE)) {
+    if (!jobCondition(block).includes(CONTRACT_ONLY_GATE)) {
       ungated.push(name);
     }
   }
@@ -154,19 +196,21 @@ test("the ci-status contract-only default matches every job gate", () => {
   const actionDefault = normalizeExpression(defaultBlock.groups.value);
   assert.equal(actionDefault, normalizeExpression(CONTRACT_ONLY_PREDICATE));
 
-  const jobsSection = ciWorkflow.slice(ciWorkflow.search(/^jobs:$/mu));
-  const jobBlocks = jobsSection.split(/^ {2}(?=[a-z0-9-]+:$)/mu).slice(1);
   let compared = 0;
   for (const block of jobBlocks) {
-    const name = /^([a-z0-9-]+):$/mu.exec(block)?.[1];
-    if (name === undefined || name === "ci-status") {
+    const name = jobName(block);
+    if (name === undefined || name === "ci-status" || name === ISSUE_JOB) {
       continue;
     }
-    const condition = /^ {4}if: \$\{\{ (?<body>.*) \}\}$/mu.exec(block)?.groups
+    const body = /^ {4}if: \$\{\{ (?<body>.*) \}\}$/mu.exec(block)?.groups
       ?.body;
-    assert.ok(condition !== undefined, `job ${name} has no inline if:`);
-    // The gate is the leading term; anything after it is the job's own
-    // condition, ANDed on.
+    assert.ok(body !== undefined, `job ${name} has no inline if:`);
+    // The gate leads once the event-name guards are dropped; anything after it
+    // is the job's own condition, ANDed on.
+    const condition = body.replace(
+      /^(?:github\.event_name [!=]= '[a-z_]+' && )+/u,
+      "",
+    );
     const gate = condition.startsWith(CONTRACT_ONLY_GATE)
       ? CONTRACT_ONLY_GATE
       : condition;
@@ -187,8 +231,12 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   // The carry-forward wait enumerates this workflow's runs on the head SHA.
   // Without the scope both Actions reads 403 and the wait never engages.
   assert.match(ciStatusJob, /^ {6}actions: read$/mu);
-  const contractStep = ciStatusJob.indexOf("./.github/actions/pr-contract");
-  const aggregateStep = ciStatusJob.indexOf("./.github/actions/ci-status");
+  const contractStep = ciStatusJob.indexOf(
+    "./.github/actions/pr-require-checks/check-contract",
+  );
+  const aggregateStep = ciStatusJob.indexOf(
+    "./.github/actions/pr-require-checks/aggregate-results",
+  );
   assert.ok(contractStep !== -1 && aggregateStep !== -1);
   assert.ok(contractStep < aggregateStep);
   // `!cancelled()` so a failing contract step does not skip the status write.
@@ -222,19 +270,19 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   );
 });
 
-test("ci.yml consolidates the hygiene composites into the checks reusable", () => {
+test("pr-require-checks.yml consolidates the hygiene composites into the checks reusable", () => {
   // This repository dogfoods the `checks` reusable every consumer adopts.
-  assert.match(ciWorkflow, /^ {2}checks:$/mu);
+  assert.match(ciWorkflow, /^ {2}pr-run-checks:$/mu);
   assert.match(
     ciWorkflow,
-    /^ {4}uses: \.\/\.github\/workflows\/checks\.yml$/mu,
+    /^ {4}uses: \.\/\.github\/workflows\/pr-run-checks\.yml$/mu,
   );
 
   // change-detection reads the PR file listing, and a called workflow cannot
   // elevate: without the caller's own grant the job fails at startup.
   const checksJob = ciWorkflow.slice(
-    ciWorkflow.search(/^ {2}checks:$/mu),
-    ciWorkflow.search(/^ {2}composites-head:$/mu),
+    ciWorkflow.search(/^ {2}pr-run-checks:$/mu),
+    ciWorkflow.search(/^ {2}psscriptanalyzer:$/mu),
   );
   assert.match(checksJob, /^ {6}contents: read$/mu);
   assert.match(checksJob, /^ {6}pull-requests: read$/mu);
@@ -255,10 +303,10 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
     assert.doesNotMatch(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
   }
 
-  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bchecks\b[^\n]*\]$/mu);
+  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bpr-run-checks\b[^\n]*\]$/mu);
   assert.match(
     ciWorkflow,
-    /^ {10}results: [^\n]*\$\{\{ needs\.checks\.result \}\}[^\n]*$/mu,
+    /^ {10}results: [^\n]*\$\{\{ needs\.pr-run-checks\.result \}\}[^\n]*$/mu,
   );
   for (const lane of [
     "hygiene",
@@ -282,54 +330,6 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
   assert.match(
     ciWorkflow,
     /^ {8}run: bash \.github\/actions\/comment-hygiene\/superset-test\.sh$/mu,
-  );
-});
-
-test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
-  // checks.yml can only reach its composites at a pinned SHA (a relative path
-  // inside a called workflow resolves against the caller's checkout), so the
-  // reusable runs the bodies of the release it was pinned at. This job runs the
-  // same bodies from the commit under test; without it a pull request that
-  // breaks one of them passes this repository's own CI.
-  const start = ciWorkflow.search(/^ {2}composites-head:$/mu);
-  assert.notEqual(start, -1, "ci.yml has no composites-head job");
-  const composites = ciWorkflow.slice(
-    start,
-    ciWorkflow.search(/^ {2}powershell:$/mu),
-  );
-  assert.match(composites, /^ {4}name: Composites at HEAD$/mu);
-  assert.match(composites, /^ {4}needs: changes$/mu);
-
-  // Every composite the reusable moved off HEAD, and only those: actionlint,
-  // shellcheck and check-jsonschema already run at HEAD in their own jobs.
-  for (const composite of [
-    "typos",
-    "gitleaks",
-    "editorconfig",
-    "markdown",
-    "exec-bit",
-    "machine-specific-paths",
-    "eol-renormalize",
-    "comment-hygiene",
-    "lychee-offline",
-  ]) {
-    assert.match(
-      composites,
-      new RegExp(`^ {8}uses: \\./\\.github/actions/${composite}$`, "mu"),
-      `composites-head does not run ${composite} at HEAD`,
-    );
-  }
-  // A pinned reference here would reintroduce the lag the job exists to close.
-  assert.doesNotMatch(composites, /uses: melodic-software\/ci-workflows\//u);
-
-  // The lane is only real if the required check aggregates it.
-  assert.match(
-    ciWorkflow,
-    /^ {4}needs: \[[^\n]*\bcomposites-head\b[^\n]*\]$/mu,
-  );
-  assert.match(
-    ciWorkflow,
-    /^ {10}results: [^\n]*\$\{\{ needs\.composites-head\.result \}\}[^\n]*$/mu,
   );
 });
 
@@ -380,17 +380,17 @@ test("root CI runs this repository's own test suite in a gating lane", () => {
   // Newline-anchored at the job-level two-space indent: the change-detection
   // filter config declares a deeper-indented group with the same name, which a
   // bare substring search would match first.
-  const laneStart = ciWorkflow.indexOf("\n  selector-contract:");
-  const laneEnd = ciWorkflow.indexOf("\n  zizmor:");
+  const laneStart = ciWorkflow.indexOf("\n  test-contracts:");
+  const laneEnd = ciWorkflow.indexOf("\n  pr-audit-workflows:");
   assert.ok(
     laneStart !== -1 && laneEnd > laneStart,
-    "ci.yml must declare the test-execution lane before the zizmor lane",
+    "pr-require-checks.yml must declare the test-execution lane before the zizmor lane",
   );
   const lane = ciWorkflow.slice(laneStart, laneEnd);
   assert.match(lane, /node --test \.github\/scripts\/\*\.test\.cjs/u);
   assert.match(lane, /bash \.github\/scripts\/osv-scan-guard\.test\.sh/u);
   // The required check must aggregate the lane, or a red suite reports green.
-  assert.match(ciWorkflow, /needs: \[[^\]]*selector-contract[^\]]*\]/u);
+  assert.match(ciWorkflow, /needs: \[[^\]]*test-contracts[^\]]*\]/u);
   // And a script-only change must actually start it.
   assert.match(
     ciWorkflow,

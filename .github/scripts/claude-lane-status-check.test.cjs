@@ -20,10 +20,10 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const workflowsRoot = path.join(__dirname, "..", "workflows");
 
 const lanes = [
-  { file: "claude-review.yml", job: "review", name: "claude-review-status" },
+  { file: "pr-review.yml", job: "claude", name: "claude-review-status" },
   {
-    file: "claude-security-review.yml",
-    job: "security-review",
+    file: "pr-review-security.yml",
+    job: "claude",
     name: "security-review",
   },
 ];

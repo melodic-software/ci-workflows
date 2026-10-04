@@ -27,7 +27,7 @@
 # Run from the repository root; each path must be repo-relative. With no
 # arguments, every tracked .github/actions/*/action.yml is checked.
 #
-# Requires shellcheck on PATH — the ci.yml lane action installs a pinned,
+# Requires shellcheck on PATH — the pr-require-checks.yml lane action installs a pinned,
 # checksum-verified one — and yq (mikefarah, preinstalled on ubuntu-24.04).
 # yq is deliberately unpinned: both false-green guards (the independent
 # `expected` count and the extraction it verifies) read its output, so a

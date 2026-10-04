@@ -1,4 +1,4 @@
-name: checks
+name: pr-run-checks
 
 # One job, one runner, every content-agnostic hygiene composite as a step:
 # `change-detection` runs once, then each composite behind its own toggle, and a
@@ -9,26 +9,13 @@ name: checks
 # which is the cost this lane exists to remove.
 #
 # `zizmor` is deliberately absent — it has no composite, only the reusable
-# `.github/workflows/zizmor.yml`, which needs `security-events: write` and an
+# `.github/workflows/pr-audit-workflows.yml`, which needs `security-events: write` and an
 # optional SARIF upload. Callers that want it keep a separate job.
 #
-# Composites are referenced by FULL PATH at a pinned SHA, never
-# `./.github/actions/...`: inside a CALLED workflow a relative action path
-# resolves against the CALLER's checkout, so a relative reference would fail in
-# every consumer (actions/runner#1348). The pins therefore lag one release
-# behind the workflow that carries them; Dependabot's `github-actions` group
-# bumps them like any other `uses:`.
-#
-# That pin lag is why ci.yml carries a `composites-head` job alongside its
-# dogfood call of this workflow. A pull request against this repository that
-# breaks one of the composite bodies would otherwise run the OLD body here and
-# pass, so the job runs the same composites through `./.github/actions/<x>` at
-# the commit under test and restores behavioral coverage at HEAD.
-#
-# GitHub's `$/<action>` self-repository syntax would remove the pin lag, but
-# the pinned actionlint rejects it. `composites-head` stays until
-# rhysd/actionlint#732 ships, actions/runner#4669 merges, and a `$/` run is
-# measured.
+# Composites are referenced with `$/.github/actions/<x>`, never `./`: inside a
+# CALLED workflow `./` resolves against the CALLER's checkout, while `$/`
+# resolves against the repository and commit hosting this workflow. Every
+# composite therefore runs from the same release as the workflow that calls it.
 #
 # Skipping: every composite step is gated twice — by its boolean toggle, and by
 # the `change-detection` filter group NAMED AFTER that toggle. A group the
@@ -176,20 +163,20 @@ on:
           `fromJSON(needs.<job>.outputs.results || '{}')['<group>'] != 'false'`
           — never `== 'true'`. The fail-open form matters twice over here,
           because a reusable workflow publishes no outputs when its job fails.
-        value: ${{ jobs.checks.outputs.results }}
+        value: ${{ jobs.check.outputs.results }}
       outcome:
         description: >-
           `success` when no enabled composite failed, `failure` otherwise. It
           mirrors the job's own result and is published for callers that want
           the verdict as a value; `needs.<job>.result` stays authoritative,
           since a failed reusable-workflow job publishes no outputs at all.
-        value: ${{ jobs.checks.outputs.outcome }}
+        value: ${{ jobs.check.outputs.outcome }}
 
 permissions:
   contents: read
 
 jobs:
-  checks:
+  check:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
@@ -220,7 +207,7 @@ jobs:
 
       - name: Detect relevant lanes
         id: detect
-        uses: melodic-software/ci-workflows/.github/actions/change-detection@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/detect-changes
         with:
           filters: ${{ inputs.filters }}
 
@@ -229,28 +216,28 @@ jobs:
         if: ${{ inputs.typos && fromJSON(steps.detect.outputs.results || '{}')['typos'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/typos@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/typos
 
       - name: Scan for secrets
         id: gitleaks
         if: ${{ inputs.gitleaks && fromJSON(steps.detect.outputs.results || '{}')['gitleaks'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/gitleaks@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/gitleaks
 
       - name: Check editorconfig conformance
         id: editorconfig
         if: ${{ inputs.editorconfig && fromJSON(steps.detect.outputs.results || '{}')['editorconfig'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/editorconfig@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/editorconfig-checker
 
       - name: Lint markdown
         id: markdown
         if: ${{ inputs.markdown && fromJSON(steps.detect.outputs.results || '{}')['markdown'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/markdown@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/markdownlint
         # Passing `globs` replaces the composite default, so repeat that
         # default before `markdown-extra-globs`.
         with:
@@ -261,26 +248,26 @@ jobs:
         if: ${{ inputs.shellcheck && fromJSON(steps.detect.outputs.results || '{}')['shellcheck'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/shellcheck@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/shellcheck
 
       - name: Lint workflows
         id: actionlint
         if: ${{ inputs.actionlint && fromJSON(steps.detect.outputs.results || '{}')['actionlint'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/actionlint@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/actionlint
 
       - name: Verify shebang files are executable
         id: exec_bit
         if: ${{ inputs.exec-bit && fromJSON(steps.detect.outputs.results || '{}')['exec-bit'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/exec-bit@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/check-exec-bit
 
       - name: Check for machine-specific paths
         id: machine_specific_paths
         if: ${{ inputs.machine-specific-paths && fromJSON(steps.detect.outputs.results || '{}')['machine-specific-paths'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/machine-specific-paths@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/machine-specific-paths
         with:
           exclude: ${{ inputs.machine-specific-paths-exclude }}
 
@@ -288,13 +275,13 @@ jobs:
         id: eol_renormalize
         if: ${{ inputs.eol-renormalize && fromJSON(steps.detect.outputs.results || '{}')['eol-renormalize'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/eol-renormalize@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/check-line-endings
 
       - name: Scan comment hygiene
         id: comment_hygiene
         if: ${{ inputs.comment-hygiene && fromJSON(steps.detect.outputs.results || '{}')['comment-hygiene'] != 'false' }}
         continue-on-error: true
-        uses: melodic-software/ci-workflows/.github/actions/comment-hygiene@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/comment-hygiene
         with:
           exclude: ${{ inputs.comment-hygiene-exclude }}
 
@@ -303,7 +290,7 @@ jobs:
         if: ${{ inputs.lychee-offline && fromJSON(steps.detect.outputs.results || '{}')['lychee-offline'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/lychee-offline@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/lychee-offline
 
       - name: Validate against JSON Schema
         id: check_jsonschema
@@ -312,7 +299,7 @@ jobs:
         if: ${{ inputs.check-jsonschema && inputs.check-jsonschema-files != '' && fromJSON(steps.detect.outputs.results || '{}')['check-jsonschema'] != 'false' }}
         continue-on-error: true
         timeout-minutes: 8
-        uses: melodic-software/ci-workflows/.github/actions/check-jsonschema@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/check-jsonschema
         with:
           files: ${{ inputs.check-jsonschema-files }}
           builtin-schema: ${{ inputs.check-jsonschema-builtin-schema }}
