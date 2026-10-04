@@ -1,0 +1,150 @@
+name: pr-automerge-dependabot
+
+# Reusable workflow: arms GitHub auto-merge (squash) on a Dependabot pull
+# request that bumps only allowlisted GitHub Actions publishers by a patch or
+# minor version. Arming never merges: GitHub merges once every required check,
+# `ci-status` included, passes. Nothing here calls a merge mutation, so this
+# workflow cannot bypass the required check. A repository without a required
+# check makes GitHub refuse the arm (the pull request is already mergeable),
+# and the job fails rather than merging.
+#
+# Canonical caller (the caller owns the trigger, concurrency and the
+# permission grant; a called workflow can only downgrade the caller's grant):
+#
+#     on:
+#       pull_request:
+#     concurrency:
+#       group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+#       cancel-in-progress: true
+#     permissions: {}
+#     jobs:
+#       pr-automerge-dependabot:
+#         permissions:
+#           contents: write        # enablePullRequestAutoMerge
+#           pull-requests: write   # enable/disable auto-merge on the PR
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+#
+# GATES (all must hold, or the pull request is left for a human):
+#   - the event is `pull_request` and the PR author's id is 49699333
+#     (dependabot[bot]); an id, not a login, so no look-alike account matches;
+#   - every updated dependency's ecosystem is `github_actions`;
+#   - every dependency name matches a PUBLISHER_ALLOWLIST glob, mirroring
+#     standards `components/dependabot-policy/policy.json` `autoMerge`;
+#   - every update is a semver patch or minor; a grouped PR with one major
+#     bump, or an update type Dependabot could not compute, is skipped;
+#   - every commit on the PR, the head included, is authored by Dependabot and
+#     carries a verified signature, so a PR someone pushed onto is skipped.
+#
+# A skipped PR that is already armed is disarmed: GitHub keeps auto-merge on
+# when a user with write access pushes to the branch, so the commit gate
+# would otherwise hold only until the first arm. The arm also passes the
+# verified head SHA as `expectedHeadOid`, so a push that lands between the
+# check and the arm makes the arm fail instead of covering the new commit.
+#
+# TRUST: every PR-derived value (dependency names, versions, the metadata
+# JSON) is untrusted. Values reach the script through `env:` only, never a
+# `${{ }}` expansion inside script text. No checkout: nothing from the pull
+# request is executed.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        default: ubuntu-24.04
+
+permissions: {}
+
+jobs:
+  enable-auto-merge:
+    name: Arm auto-merge for allowlisted Dependabot bumps
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.id == 49699333 }}
+    runs-on: ${{ inputs.runner }}
+    # One metadata fetch, one commit listing and one GraphQL mutation. Ten
+    # minutes bounds a hung API call without the six-hour default.
+    timeout-minutes: 10
+    permissions:
+      contents: write # enablePullRequestAutoMerge requires it.
+      pull-requests: write # Arm or disarm auto-merge; list the PR's commits.
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Gate and arm auto-merge
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          UPDATED_DEPENDENCIES_JSON: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
+        with:
+          script: |
+            const DEPENDABOT_ID = 49699333;
+            const ECOSYSTEM = "github_actions";
+            const UPDATE_TYPES = new Set([
+              "version-update:semver-patch",
+              "version-update:semver-minor",
+            ]);
+            const pr = context.payload.pull_request;
+
+            const globToRegExp = (glob) =>
+              new RegExp(
+                `^${glob.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join(".*")}$`,
+                "u",
+              );
+            const allowlist = JSON.parse(process.env.PUBLISHER_ALLOWLIST).map(globToRegExp);
+
+            async function gateFailure() {
+              if (pr.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
+              let updates;
+              try {
+                updates = JSON.parse(process.env.UPDATED_DEPENDENCIES_JSON || "");
+              } catch {
+                return "the Dependabot metadata is not valid JSON";
+              }
+              if (!Array.isArray(updates) || updates.length === 0) return "no updated dependencies";
+              for (const update of updates) {
+                const name = String(update?.dependencyName ?? "");
+                if (update?.packageEcosystem !== ECOSYSTEM) return `${name} is not a GitHub Actions update`;
+                if (!allowlist.some((pattern) => pattern.test(name))) return `${name} is not an allowlisted publisher`;
+                if (!UPDATE_TYPES.has(update?.updateType)) return `${name} is not a patch or minor update`;
+              }
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
+                ...context.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              if (commits.length === 0 || commits.at(-1).sha !== pr.head.sha) {
+                return "the PR head moved after this event";
+              }
+              for (const commit of commits) {
+                if (commit.author?.id !== DEPENDABOT_ID || commit.commit?.verification?.verified !== true) {
+                  return `commit ${commit.sha} is not a verified Dependabot commit`;
+                }
+              }
+              return "";
+            }
+
+            const reason = await gateFailure();
+            if (reason) {
+              core.notice(`Auto-merge not armed: ${reason}.`);
+              if (pr.auto_merge) {
+                await github.graphql(
+                  `mutation($id: ID!) {
+                    disablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId }
+                  }`,
+                  { id: pr.node_id },
+                );
+                core.notice("Disarmed the auto-merge armed on an earlier head.");
+              }
+              return;
+            }
+
+            await github.graphql(
+              `mutation($id: ID!, $head: GitObjectID!) {
+                enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH, expectedHeadOid: $head}) {
+                  clientMutationId
+                }
+              }`,
+              { id: pr.node_id, head: pr.head.sha },
+            );
+            core.info(`Armed squash auto-merge on #${pr.number} at ${pr.head.sha}.`);
