@@ -695,6 +695,35 @@ GitHub continues the normal weekly patching of each hosted image generation.
   present. A human triager assigning a real tier after this workflow ran is
   expected to remove the floor label as part of that transition — this
   workflow only guarantees a floor and does not police tier assignment.
+- `.github/workflows/pr-automerge-dependabot.yml` — arms squash auto-merge on a
+  Dependabot pull request, so GitHub merges it once `ci-status` and every other
+  required check pass. It never merges directly. All gates must hold: the PR
+  author and the event sender are account id `49699333` (dependabot[bot]);
+  fetch-metadata succeeded; every update is
+  `github_actions`; every dependency name matches the publisher allowlist
+  (`actions/*`, `github/*`, `anthropics/*`, mirroring standards
+  `dependabot-policy` `autoMerge`); every update is semver patch or minor; and
+  every commit, head included, has author `49699333`, committer web-flow
+  (`19864447`) and a signature verified with reason `valid`. A
+  skipped PR that was armed earlier is disarmed. A repository that adopts it
+  records it as the merge authority for Dependabot PRs. The caller owns the
+  trigger and concurrency:
+
+  ```yaml
+  on:
+    pull_request:
+  concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: true
+  permissions: {}
+  jobs:
+    pr-automerge-dependabot:
+      permissions:
+        contents: write
+        pull-requests: write
+      uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+  ```
+
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
