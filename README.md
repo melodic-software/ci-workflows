@@ -868,11 +868,13 @@ parent secret.
 | `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
 | `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |
 | `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
+| `allowed-bots` | empty | Comma-separated bot logins (e.g. `cursor[bot]`) admitted as pushers; never `*`. The PR author still must not be a bot. |
 
 **Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
-fork changes by hand) and every bot actor (the action rejects bots it was not
-told to allow). Calling either lane from `pull_request_target` or
-`workflow_run` fails the job.
+fork changes by hand) and bot-authored PRs. A bot pusher is skipped unless
+named in `allowed-bots` (never `*`; the same list is passed to the action,
+which rejects bots it was not told to allow). Calling either lane from
+`pull_request_target` or `workflow_run` fails the job.
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
 request. A later push reviews only the pull request's files that changed since

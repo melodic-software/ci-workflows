@@ -27,8 +27,9 @@ name: claude-review
 #     run with base-repo secrets over untrusted code; the `Reject privileged
 #     triggers` step hard-fails both.
 #   - Fork PRs get no secrets and a read-only token, so the job skips them.
-#   - Bot actors are skipped: the action rejects any bot it was not told to
-#     allow, and this lane allows none.
+#   - Bot-authored pull requests are skipped. A bot pusher is skipped unless
+#     named in `allowed-bots` (never `*`); the same list is passed to the
+#     action, which rejects any bot it was not told to allow.
 #   - Only the one named secret is accepted; the job token is least privilege.
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
@@ -120,6 +121,12 @@ on:
           prompts/) never count as documentation, whatever this list says.
         type: string
         default: ""
+      allowed-bots:
+        description: >-
+          Comma-separated bot logins e.g. `cursor[bot]` admitted as pushers;
+          never '*'. The pull-request author still must not be a bot.
+        type: string
+        default: ""
     outputs:
       review-failed:
         description: >-
@@ -152,11 +159,12 @@ jobs:
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
     if: >-
-      ${{ !endsWith(github.actor, '[bot]')
-          && (github.event_name != 'pull_request'
-              || github.event.pull_request.draft == false)
-          && (github.event_name != 'pull_request'
-              || github.event.pull_request.head.repo.full_name == github.repository) }}
+      ${{ (github.event_name != 'pull_request'
+          || (github.event.pull_request.head.repo.full_name == github.repository
+              && github.event.pull_request.draft == false
+              && !endsWith(github.event.pull_request.user.login, '[bot]')))
+          && (!endsWith(github.actor, '[bot]')
+              || contains(format(',{0},', inputs.allowed-bots), format(',{0},', github.actor))) }}
     permissions:
       contents: read
       pull-requests: write
@@ -391,6 +399,7 @@ jobs:
           track_progress: true
           display_report: false
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          allowed_bots: ${{ inputs.allowed-bots }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           claude_args: ${{ steps.compose-args.outputs.args }}
