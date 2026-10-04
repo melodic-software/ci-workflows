@@ -314,10 +314,22 @@ consumer to audit it.
   **Recommended: no run waits for another.** Three opt-in settings together
   remove the wait, and with it the dependency on how long the full run takes:
 
-  - `carry-forward-wait-seconds: '0'` and `timeout-minutes: 3` on the
-    `ci-status` job. A contract-only run reads the status once, makes no
-    Actions call, and finishes in seconds: green on a recorded `success`, red
-    otherwise.
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 3` on the `ci-status`
+    job. A contract-only run lists this workflow's in-flight runs on the head
+    SHA once, then reads the status once, and finishes in seconds. A full run
+    in flight supersedes it: it fails with `superseded by full run <url>`,
+    because that run's own `ci-status` check run is newer and decides the merge
+    gate. With nothing in flight it is green on a recorded `success` and red
+    otherwise. An in-flight sibling whose latest attempt skipped every job but
+    one is contract-only and ignored; any other sibling, including one whose
+    jobs are not listed yet or cannot be read, counts as a full run, so a
+    misread goes red, never green. The writer of a `success` already on the SHA
+    is ignored while the attempt that wrote it finishes, which is what lets the
+    re-run it starts pass. It overrides `carry-forward-wait-seconds`, needs
+    `actions: read`, and fails the run when the listing fails three times.
+    (`carry-forward-wait-seconds: '0'` alone reads the status once with no
+    listing, so it can carry an older `success` across a full run that is
+    queued or has not yet written its `pending` marker.)
   - `record-pending: 'true'`, called as the first step of the full run's first
     job (for example `changes`). It marks `status-context` `pending` on the
     head SHA, so a contract-only run on that SHA while the lanes run reads
@@ -338,14 +350,16 @@ consumer to audit it.
   A red contract-only check does not hold a merge in the meantime: GitHub's
   docs do not say how several same-name check runs on one SHA are judged, and
   on claude-code-plugins the merge gate followed the newest one in every case
-  measured, so the full run's later `ci-status` supersedes the red. The
-  remaining gap: a contract-only run still in flight when the full run lists
-  its siblings read the status before it was written, finishes red, and is not
-  re-run; its message ends by saying to re-run it if it stays red.
+  measured, so the full run's later `ci-status` supersedes the red. Only
+  `success`, `skipped` and `neutral` satisfy a required check, so the red never
+  passes on its own. The remaining gap: a contract-only run still in flight
+  when the full run lists its siblings read the status before it was written,
+  finishes red, and is not re-run; its message ends by saying to re-run it if
+  it stays red.
 
   Permissions: the first job needs `statuses: write`; the `ci-status` job needs
-  `statuses: write` and `actions: write` (which covers the `actions: read` a
-  wait above `0` needs).
+  `statuses: write` and `actions: write` (which covers the `actions: read`
+  `yield-to-full-run` and a wait above `0` need).
 
   ```yaml
   jobs:
@@ -370,7 +384,7 @@ consumer to audit it.
         - name: Aggregate lane results
           uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
           with:
-            carry-forward-wait-seconds: '0'
+            yield-to-full-run: 'true'
             rerun-contract-only-siblings: 'true'
             results: ${{ needs.detect-changes.result }} ...
   ```
