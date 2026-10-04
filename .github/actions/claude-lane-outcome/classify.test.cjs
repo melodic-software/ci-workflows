@@ -191,11 +191,15 @@ test("an unparsable execution file degrades to `other` and says so", () => {
 test("no execution file at all (the action failed before producing one)", () => {
   fs.rmSync(executionFile, { force: true });
   let result = classifyExecutionFile(executionFile);
-  assert.equal(result.failureClass, "other");
+  assert.equal(result.failureClass, "no-execution");
   assert.equal(result.reviewDetail, "(no execution file was produced)");
 
   result = classifyExecutionFile("");
-  assert.equal(result.failureClass, "other");
+  assert.equal(result.failureClass, "no-execution");
+  assert.equal(result.reviewDetail, "(no execution file was produced)");
+
+  result = classifyExecutionFile(undefined);
+  assert.equal(result.failureClass, "no-execution");
   assert.equal(result.reviewDetail, "(no execution file was produced)");
 });
 

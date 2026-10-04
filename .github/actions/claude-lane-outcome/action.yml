@@ -29,7 +29,8 @@ inputs:
   execution-file:
     description: >-
       The Claude action step's execution_file output. May be unset, missing,
-      or unparsable — all degrade to failure class `other`.
+      or unparsable. Unset or missing on a non-success outcome is
+      `no-execution`; unparsable degrades to `other`.
     required: false
     default: ""
   lane:
@@ -54,8 +55,8 @@ outputs:
     value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
     description: >-
-      auth | rate-limit | overloaded | other (empty on a genuine success;
-      skipped-validation when the action skipped itself).
+      auth | rate-limit | overloaded | no-execution | other (empty on a
+      genuine success; skipped-validation when the action skipped itself).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-

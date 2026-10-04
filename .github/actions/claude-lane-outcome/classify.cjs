@@ -1,8 +1,8 @@
 // Project the last claude-code-action SDK result message into safe, structured
 // metadata and classify a genuine infrastructure failure into exactly one coarse
-// class: auth | rate-limit | overloaded | other. Reads the action's
-// execution_file output (which may be unset, missing, or unparsable) and returns
-// the review detail plus failure class.
+// class: auth | rate-limit | overloaded | no-execution | other. Reads the
+// action's execution_file output (which may be unset, missing, or unparsable)
+// and returns the review detail plus failure class.
 //
 // This runs on a PUBLIC repo. The result message's `result` field is
 // model-authored free text and its `errors[]` entries are raw error stacks; both
@@ -11,6 +11,8 @@
 // either field, and never emit the result message wholesale.
 //
 // Classification order:
+//   0. no execution file — `no-execution`. A step timeout and an early crash
+//      both end the review with `outcome: failure` and nothing to parse.
 //   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.
@@ -84,7 +86,7 @@ function classifyExecutionFile(executionFilePath) {
   if (!executionFilePath || !fs.existsSync(executionFilePath)) {
     return {
       reviewDetail: "(no execution file was produced)",
-      failureClass: "other",
+      failureClass: "no-execution",
     };
   }
 

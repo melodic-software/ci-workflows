@@ -119,3 +119,17 @@ for (const lane of LANES) {
     }
   });
 }
+
+test("the review lanes' status case includes no-execution", () => {
+  for (const lane of ["claude-review.yml", "claude-security-review.yml"]) {
+    assert.ok(
+      LANES.includes(lane),
+      `${lane} must consume the outcome composite`,
+    );
+    assert.match(
+      laneSource(lane),
+      /^\s+no-execution\) why=/mu,
+      `${lane} status case is missing no-execution`,
+    );
+  }
+});

@@ -108,7 +108,7 @@ on:
         value: ${{ jobs.intake-triage.outputs.triage-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | other on a failure;
+          auth | rate-limit | overloaded | no-execution | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.intake-triage.outputs.failure-class }}
     secrets:

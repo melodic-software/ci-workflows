@@ -128,7 +128,7 @@ on:
         value: ${{ jobs.review.outputs.review-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | other on a failure;
+          auth | rate-limit | overloaded | no-execution | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.review.outputs.failure-class }}
     secrets:
@@ -483,6 +483,7 @@ jobs:
             auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
             rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
+            no-execution) why="the review step produced no output before it ended (likely the step timeout); re-run the job" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;

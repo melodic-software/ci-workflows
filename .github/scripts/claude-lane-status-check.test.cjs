@@ -32,6 +32,24 @@ function load(file) {
   return parseWorkflow(fs.readFileSync(path.join(workflowsRoot, file), "utf8"));
 }
 
+const NAMED_FAILURE_ARMS = [
+  "auth",
+  "rate-limit",
+  "overloaded",
+  "no-execution",
+  "skipped-validation",
+  "no-outcome",
+];
+
+function namedCaseArms(run) {
+  const start = run.indexOf('case "$FAILURE_CLASS" in');
+  assert.notEqual(start, -1, "the status step must switch on FAILURE_CLASS");
+  const block = run.slice(start, run.indexOf("esac", start));
+  return [...block.matchAll(/^\s+([a-z-]+)\) why=/gmu)].map(
+    (match) => match[1],
+  );
+}
+
 function runStep(step, env) {
   const summary = path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), "status-")),
@@ -122,6 +140,7 @@ for (const lane of lanes) {
       ["true", "auth", "auth"],
       ["true", "rate-limit", "rate-limit"],
       ["true", "overloaded", "overloaded"],
+      ["true", "no-execution", "no-execution"],
       ["true", "other", "other"],
       ["true", "", "unknown"],
       // The action skipped itself: green step, nothing reviewed.
@@ -145,4 +164,18 @@ for (const lane of lanes) {
       );
     }
   });
+
+  test(`${lane.file}: the status case names every failure class including no-execution`, () => {
+    assert.deepEqual(namedCaseArms(step.run), NAMED_FAILURE_ARMS);
+  });
 }
+
+test("both review lanes share one status case", () => {
+  const blocks = lanes.map((lane) => {
+    const step = load(lane.file).jobs[lane.job].steps.at(-1);
+    const start = step.run.indexOf('case "$FAILURE_CLASS" in');
+    const end = step.run.indexOf("esac", start);
+    return step.run.slice(start, end);
+  });
+  assert.equal(blocks[0], blocks[1]);
+});

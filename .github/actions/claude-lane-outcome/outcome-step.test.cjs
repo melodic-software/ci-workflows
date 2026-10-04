@@ -150,15 +150,23 @@ test("a genuine failure still classifies and reports as failed", async () => {
   assert.match(errors[0], /\bclass=auth\b/u);
 });
 
-test("a failure with no execution file keeps the fail-path class, not the skip class", async () => {
+test("a failure with no execution file is `no-execution`, not the skip class", async () => {
   // The skip shape is specifically SUCCESS with no evidence. A failed step
-  // with no file is an infrastructure failure classify.cjs already owns —
-  // conflating the two would relabel real failures as benign skips.
-  const { outputs } = await runOutcome({
-    outcome: "failure",
-    executionFile: "",
-  });
-  assert.equal(outputs.review_failed, "true");
-  assert.equal(outputs.review_ran, "false");
-  assert.equal(outputs.failure_class, "other");
+  // with no file is its own class: a step timeout and an early crash both
+  // report outcome failure and produce nothing to parse.
+  for (const executionFile of [
+    "",
+    path.join(temporaryDirectory, "never-written.json"),
+  ]) {
+    const { outputs, errors } = await runOutcome({
+      outcome: "failure",
+      executionFile,
+    });
+    assert.equal(outputs.review_failed, "true", executionFile);
+    assert.equal(outputs.review_ran, "false", executionFile);
+    assert.equal(outputs.failure_class, "no-execution", executionFile);
+    assert.equal(outputs.review_detail, "(no execution file was produced)", executionFile);
+    assert.equal(errors.length, 1, executionFile);
+    assert.match(errors[0], /\bclass=no-execution\b/u, executionFile);
+  }
 });
