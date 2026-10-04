@@ -904,16 +904,15 @@ changes no file of the pull request is not reviewed again.
 job is named `claude-review-status`, so its check is
 `<caller job> / claude-review-status`. The security-review job is named
 `security-review`, so with the canonical caller its check is
-`security-review / security-review`, the context the github-iac
-`security-review-gate` org ruleset names. The job's last step goes red, naming
+`security-review / security-review`. The job's last step goes red, naming
 the cause, whenever no review happened: a failed attempt (`auth`,
 `rate-limit`, `overloaded`, `other`), the action skipping itself because the
 PR edits the caller workflow (`skipped-validation`), or a job that ended
 before the review reported (`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
-Re-run a failed review with `gh run rerun --failed`. github-iac keeps
-`security-review-gate` disabled (its ADR 0011 keeps agentic review advisory);
-do not make either check required anywhere else.
+Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
+(github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
+required check); do not make either check required.
 `pr-review.yml` also exposes `review-failed` and `failure-class` as
 workflow outputs.
 
