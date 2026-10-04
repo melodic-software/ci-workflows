@@ -1,8 +1,9 @@
 version: 2
 updates:
-  # Keep SHA-pinned actions current. Vendor (actions/*, github/*, anthropics/*)
-  # non-major bumps are the auto-merge lane once ci-status passes; everything
-  # else is merged manually (standards dependabot-policy component). The "/"
+  # Keep SHA-pinned actions current. Merge lanes per the standards
+  # dependabot-policy component: the vendor-actions group (non-major only) is
+  # the auto-merge lane once its shared workflow is wired in; every other PR is
+  # reviewed by hand. The "/"
   # target scans .github/workflows; the glob target is required to also scan
   # the composite actions' own action.yml files (Dependabot does not descend
   # into .github/actions/<name>/ from "/" alone).
@@ -33,6 +34,8 @@ updates:
           - actions/*
           - github/*
           - anthropics/*
+        # Majors fall through to the reviewed group below.
+        update-types: [minor, patch]
       github-actions:
         patterns:
           - '*'
