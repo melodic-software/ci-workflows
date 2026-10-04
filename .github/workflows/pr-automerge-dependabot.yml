@@ -76,6 +76,9 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
+        # dependabot/* is GitHub's own verified organization, and this is the
+        # documented parser for Dependabot's update metadata; a script would
+        # reimplement its version and update-type logic. Its bumps stay manual.
         # fetch-metadata fails when the PR's first commit is not Dependabot's
         # (a force-push by another user). The gate must still run then, to
         # disarm, so a failure here is a skip, not a stop.
