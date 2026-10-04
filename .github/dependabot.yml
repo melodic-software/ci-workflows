@@ -1,10 +1,11 @@
 version: 2
 updates:
-  # Keep SHA-pinned actions current. Review every PR before merge; never
-  # auto-merge (a SHA bump is executable CI logic). The "/" target scans
-  # .github/workflows; the glob target is required to also scan the composite
-  # actions' own action.yml files (Dependabot does not descend into
-  # .github/actions/<name>/ from "/" alone).
+  # Keep SHA-pinned actions current. Vendor (actions/*, github/*, anthropics/*)
+  # non-major bumps are the auto-merge lane once ci-status passes; everything
+  # else is merged manually (standards dependabot-policy component). The "/"
+  # target scans .github/workflows; the glob target is required to also scan
+  # the composite actions' own action.yml files (Dependabot does not descend
+  # into .github/actions/<name>/ from "/" alone).
   #
   # Dependabot only updates `uses:` action SHAs. The tool versions pinned inside
   # the actions' run scripts and input defaults have no ecosystem manifest here
@@ -22,19 +23,10 @@ updates:
     # Delay version bumps so a compromised or yanked release is caught before we
     # adopt it; security updates bypass cooldown. Defense-in-depth for the
     # SHA-rewrite supply-chain risk that motivates SHA-pinning (architecture D5).
-    # claude-code-action is exempt: the review lanes track its releases closely
-    # and each bump is reviewed on its own PR, so the cooldown would only delay
-    # fixes the lanes are waiting on.
     cooldown:
-      default-days: 7
-      exclude:
-        - anthropics/claude-code-action
-    # Collapse all action bumps into a single PR to cut review noise —
-    # except claude-code-action, whose bumps arrive as standalone PRs so a
-    # lane-relevant change is never buried in an unrelated batch.
+      default-days: 3
+    # Collapse all action bumps into a single PR to cut review noise.
     groups:
       github-actions:
         patterns:
           - '*'
-        exclude-patterns:
-          - anthropics/claude-code-action
