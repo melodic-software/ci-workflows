@@ -97,7 +97,6 @@ test("the join reads every continue-on-error step", () => {
       `step ${step.id} is never reported by the join`,
     );
   }
-  const syncManaged = new Set(["comment-hygiene", "machine-specific-paths"]);
   const renamed = {
     "change-detection": "detect-changes",
     editorconfig: "editorconfig-checker",
@@ -108,17 +107,6 @@ test("the join reads every continue-on-error step", () => {
   for (const step of composites) {
     const name = step.id.replaceAll("_", "-");
     const uses = String(step.uses ?? "");
-    if (syncManaged.has(name)) {
-      assert.match(
-        uses,
-        new RegExp(
-          `^melodic-software/ci-workflows/\\.github/actions/${name}@[0-9a-f]{40}$`,
-          "u",
-        ),
-        `step ${step.id} does not reference its composite by pinned full path`,
-      );
-      continue;
-    }
     // `$/` resolves against the repository and commit that host the called
     // workflow, so it works in every consumer.
     assert.equal(

@@ -7,11 +7,23 @@ const test = require("node:test");
 
 const root = path.join(__dirname, "..", "..");
 const action = fs.readFileSync(
-  path.join(root, ".github", "actions", "verify-pulumi-deploy-policy", "action.yml"),
+  path.join(
+    root,
+    ".github",
+    "actions",
+    "verify-pulumi-deploy-policy",
+    "action.yml",
+  ),
   "utf8",
 );
 const guard = fs.readFileSync(
-  path.join(root, ".github", "actions", "verify-pulumi-deploy-policy", "guard.sh"),
+  path.join(
+    root,
+    ".github",
+    "actions",
+    "verify-pulumi-deploy-policy",
+    "guard.sh",
+  ),
   "utf8",
 );
 const contract = JSON.parse(
