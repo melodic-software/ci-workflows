@@ -140,7 +140,9 @@ inputs:
       `success`. An in-flight sibling whose latest attempt skipped every job
       but one is contract-only and ignored; any other sibling, including one
       whose jobs cannot be read yet, counts as a full run, so a misread goes
-      red, never green. The writer of a `success` already on the SHA is
+      red, never green. So every full run must run at least one job besides
+      this gate (calling `record-pending` from its first job does), or it
+      reads as contract-only. The writer of a `success` already on the SHA is
       ignored while the attempt that wrote it finishes. Overrides
       `carry-forward-wait-seconds`. Closes the gap `record-pending` alone
       leaves, a full run queued before its `pending` marker is written. The

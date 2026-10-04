@@ -1315,6 +1315,16 @@ expect_gh_call_before 'actions/workflows/777/runs' "commits/${sha}/statuses"
 expect_status_reads 1
 expect_no_sleep
 
+# Without `queued` in the in-flight set, a full run waiting for a runner would
+# read as nothing in flight and the older success would carry across it.
+echo 'case: yield is superseded by a queued full run over an older success'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[$(run_entry 4000 queued 2026-09-05T12:00:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+
 # Without counting an unlisted run as full, a full run created a moment ago,
 # whose jobs the API does not list yet, would read as nothing in flight.
 echo 'case: yield counts an in-flight run with no jobs listed yet as a full run'
@@ -1340,7 +1350,9 @@ rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jo
 echo 'case: yield ignores an in-flight contract-only sibling and carries a recorded success'
 reset_yield_fixtures
 status_list "[$(bot_status 100 success)]"
-workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+# This run (4242) is listed too: without excluding itself it would count as a
+# full run in flight and always fail.
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
 jobs_raw 4300 "$contract_only_jobs"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
