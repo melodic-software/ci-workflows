@@ -509,22 +509,22 @@ jobs:
   # reviews it. Advisory: none of the three is in `ci-status`. Each passes only
   # the one named secret its reusable declares.
   pr-review:
-    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) }}
+    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
     permissions:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@632130a974770e50825c8747e87b0e18ecb2b36e # v0.33.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   pr-review-security:
-    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) }}
+    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
     permissions:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@632130a974770e50825c8747e87b0e18ecb2b36e # v0.33.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -534,7 +534,7 @@ jobs:
     if: ${{ github.event_name == 'issues' }}
     permissions:
       issues: write
-    uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@632130a974770e50825c8747e87b0e18ecb2b36e # v0.33.0
+    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
 
   ci-status:
     if: ${{ github.event_name != 'issues' && always() }}
