@@ -101,7 +101,7 @@ jq -e '
     .rules.ref_type == "branch" and
     .rules.environment == "github-iac-production" and
     .rules.event_name == "workflow_dispatch" and
-    .rules.workflow == "github-iac-production-deploy-v1" and
+    .rules.workflow == "release-deploy" and
     .rules.runner_environment == "self-hosted" and
     .rules.repository_visibility == "private" and
     .rules.run_attempt == "1"
