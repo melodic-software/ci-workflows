@@ -1,4 +1,4 @@
-name: go-quality
+name: pr-run-checks-go
 
 # Reusable blocking Go contract. Standards owns analyzer policy; this workflow
 # owns exact native installation and execution. Consume at job level with a full
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  linux:
+  check-linux:
     name: Go quality (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -171,7 +171,7 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
 
-  windows:
+  check-windows:
     name: Go quality (Windows)
     runs-on: windows-2025
     timeout-minutes: 30

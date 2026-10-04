@@ -9,14 +9,13 @@
 // against the working tree always.
 
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
 
-const COMPOSITE_PATH = ".github/actions/claude-lane-outcome/action.yml";
+const COMPOSITE_PATH = ".github/actions/report-lane-outcome/action.yml";
 
 // Every lane workflow that invokes the outcome composite, discovered by
 // scanning the workflows directory for its `uses:` reference — a new consumer
@@ -29,7 +28,7 @@ const LANES = fs
       name.endsWith(".yml") &&
       fs
         .readFileSync(path.join(workflowsDir, name), "utf8")
-        .includes("/.github/actions/claude-lane-outcome@"),
+        .includes("uses: $/.github/actions/report-lane-outcome"),
   )
   .sort();
 
@@ -39,8 +38,8 @@ test("lane discovery finds the outcome composite's consumers", () => {
     `expected at least the review and security lanes, found: ${LANES.join(", ")}`,
   );
   assert.ok(
-    LANES.includes("claude-review.yml") &&
-      LANES.includes("claude-security-review.yml"),
+    LANES.includes("pr-review.yml") &&
+      LANES.includes("pr-review-security.yml"),
     `known consumers missing from discovery: ${LANES.join(", ")}`,
   );
 });
@@ -83,38 +82,6 @@ for (const lane of LANES) {
       assert.ok(
         declared.has(name),
         `${lane} reads steps.review-outcome.outputs.${name}, which ${COMPOSITE_PATH} does not declare`,
-      );
-    }
-  });
-
-  test(`${lane}: every consumed outcome output is declared at the pinned revision, when reachable`, (t) => {
-    // The tree check above cannot see the one divergence that matters: a tree
-    // that declares an output the PINNED revision predates. Reading the
-    // composite at the pin closes that hole — but only where the pinned
-    // object exists locally (a shallow CI checkout does not carry history),
-    // so an unreachable pin skips rather than fails: this half is a
-    // local/deep-clone guard, and the tree check above is the floor that
-    // always runs.
-    const pin = workflow.match(
-      /uses: melodic-software\/ci-workflows\/\.github\/actions\/claude-lane-outcome@([0-9a-f]{40})/u,
-    );
-    assert.ok(pin, "the outcome composite must be SHA-pinned");
-    let pinnedYaml;
-    try {
-      pinnedYaml = execFileSync(
-        "git",
-        ["-C", repositoryRoot, "show", `${pin[1]}:${COMPOSITE_PATH}`],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-      );
-    } catch {
-      t.skip(`pinned revision ${pin[1]} is not reachable in this clone`);
-      return;
-    }
-    const declared = declaredOutputs(pinnedYaml);
-    for (const name of consumed) {
-      assert.ok(
-        declared.has(name),
-        `${lane} reads steps.review-outcome.outputs.${name}, which the composite at pinned ${pin[1]} does not declare — repoint the pin and the gates in the same commit`,
       );
     }
   });

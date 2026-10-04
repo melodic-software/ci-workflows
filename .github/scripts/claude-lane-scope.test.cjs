@@ -20,10 +20,10 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const workflowsDir = path.join(__dirname, "..", "workflows");
 
 const lanes = [
-  { file: "claude-review.yml", job: "review", lane: "claude-review" },
+  { file: "pr-review.yml", job: "claude", lane: "claude-review" },
   {
-    file: "claude-security-review.yml",
-    job: "security-review",
+    file: "pr-review-security.yml",
+    job: "claude",
     lane: "claude-security-review",
   },
 ];

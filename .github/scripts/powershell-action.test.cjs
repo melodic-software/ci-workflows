@@ -7,7 +7,7 @@ const test = require("node:test");
 
 const root = path.join(__dirname, "..", "..");
 const runner = fs.readFileSync(
-  path.join(root, ".github", "actions", "powershell", "Invoke-Pssa.ps1"),
+  path.join(root, ".github", "actions", "psscriptanalyzer", "Invoke-Pssa.ps1"),
   "utf8",
 );
 const settings = fs.readFileSync(

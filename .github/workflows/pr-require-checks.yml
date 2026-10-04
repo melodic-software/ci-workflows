@@ -1,4 +1,4 @@
-name: ci
+name: pr-require-checks
 
 on:
   push:
@@ -45,7 +45,7 @@ concurrency:
 # detection output runs the lane rather than skipping it, and `ci-status`
 # aggregates `changes` so a broken detection goes red.
 jobs:
-  changes:
+  detect-changes:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -61,7 +61,7 @@ jobs:
           persist-credentials: false
       - name: Detect relevant lanes
         id: detect
-        uses: ./.github/actions/change-detection
+        uses: ./.github/actions/detect-changes
         with:
           # Every group includes `.github/**`, so any workflow, action, or
           # bundled script change re-runs every scoped lane.
@@ -131,16 +131,16 @@ jobs:
               fixtures/composite-action/**
               **/action.yml
 
-  # A local reusable-workflow reference executes checks.yml from this exact
+  # A local reusable-workflow reference executes pr-run-checks.yml from this exact
   # commit, so the dogfood proves the contract a consumer pins by tag.
-  checks:
+  pr-run-checks:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
       # change-detection lists the pull request's files. A called workflow
-      # cannot elevate, so the grant has to be here as well as in checks.yml.
+      # cannot elevate, so the grant has to be here as well as in pr-run-checks.yml.
       pull-requests: read
-    uses: ./.github/workflows/checks.yml
+    uses: ./.github/workflows/pr-run-checks.yml
     with:
       # This public repository's hosted lane is free; private consumers pass
       # their hardcoded fleet label instead.
@@ -167,14 +167,14 @@ jobs:
         check-jsonschema:
           .github/**
 
-  # checks.yml reaches its composites only at a pinned SHA, so a pull request
+  # pr-run-checks.yml reaches its composites only at a pinned SHA, so a pull request
   # breaking a composite body would pass there; this job runs them from this
   # commit. actionlint, shellcheck and check-jsonschema already run at HEAD in
   # their own jobs. Gated on `actionlint`, the narrowest group naming composites.
-  composites-head:
+  test-composites-head:
     name: Composites at HEAD
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -187,18 +187,18 @@ jobs:
       - name: Scan for secrets
         uses: ./.github/actions/gitleaks
       - name: Check editorconfig conformance
-        uses: ./.github/actions/editorconfig
+        uses: ./.github/actions/editorconfig-checker
       - name: Lint markdown
-        uses: ./.github/actions/markdown
+        uses: ./.github/actions/markdownlint
       - name: Verify shebang files are executable
-        uses: ./.github/actions/exec-bit
+        uses: ./.github/actions/check-exec-bit
       - name: Check for machine-specific paths
         # Same self-exclusion the `checks` caller passes.
         uses: ./.github/actions/machine-specific-paths
         with:
           exclude: ':(exclude).github/actions/machine-specific-paths/**'
       - name: Check index-level EOL drift
-        uses: ./.github/actions/eol-renormalize
+        uses: ./.github/actions/check-line-endings
       - name: Scan comment hygiene
         uses: ./.github/actions/comment-hygiene
         with:
@@ -206,9 +206,9 @@ jobs:
       - name: Check links and anchors (offline)
         uses: ./.github/actions/lychee-offline
 
-  powershell:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['powershell'] != 'false' }}
+  psscriptanalyzer:
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['powershell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -217,7 +217,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Analyze PowerShell
-        uses: ./.github/actions/powershell
+        uses: ./.github/actions/psscriptanalyzer
       - name: Analyze composite action PowerShell
         # pwsh embedded in composite metadata is invisible to the lane action
         # and to actionlint; the lane action installed the pinned analyzer.
@@ -225,9 +225,9 @@ jobs:
       - name: Prove a broken composite pwsh block fails
         run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
 
-  reference-integrity:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
+  check-markdown-references:
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -238,13 +238,13 @@ jobs:
       - name: Resolve heading citations
         # Scope to the fixture corpus: the repo's own docs use no `file.md`
         # "Anchor" prose-cite convention, so the fixture is what exercises it.
-        uses: ./.github/actions/reference-integrity
+        uses: ./.github/actions/check-markdown-references
         with:
           globs: fixtures/reference-integrity/*.md
 
   ruff:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -259,8 +259,8 @@ jobs:
           config: fixtures/python/good/ruff.toml
 
   pyright:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['python'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -274,8 +274,8 @@ jobs:
           config: fixtures/python/good/pyrightconfig.json
 
   biome:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['typescript'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -292,8 +292,8 @@ jobs:
           config: fixtures/typescript/good/biome.json
 
   dotnet-build:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -309,8 +309,8 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   dotnet-format:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -324,8 +324,8 @@ jobs:
           project: fixtures/dotnet/good/good.csproj
 
   actionlint:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['actionlint'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -364,8 +364,8 @@ jobs:
         run: bash .github/scripts/composite-run-shellcheck.test.sh
 
   jsonschema:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['jsonschema'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['jsonschema'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -386,7 +386,7 @@ jobs:
           builtin-schema: vendor.github-actions
           files: .github/actions/*/action.yml
 
-  action-metadata-filename:
+  check-action-filename:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -396,11 +396,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Reject action.yaml metadata (action.yml is enforced exclusively)
-        uses: ./.github/actions/action-metadata-filename
+        uses: ./.github/actions/check-action-filename
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
   # ci-status yet: promote after a clean soak.
-  managed-files-guard:
+  check-managed-files:
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -411,13 +411,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Guard managed files
-        uses: ./.github/actions/managed-files-guard
+        uses: ./.github/actions/check-managed-files
         with:
           standards-ref: c4d865bb123f476cf1cb36d8f8a1ffb588204f00
 
   shellcheck:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -430,11 +430,11 @@ jobs:
       - name: Test ShellCheck discovery and scoped exclusions
         run: bash .github/actions/shellcheck/run.test.sh
       - name: Test exec-bit shebang mode scan
-        run: bash .github/actions/exec-bit/check-exec-bit.test.sh
+        run: bash .github/actions/check-exec-bit/check-exec-bit.test.sh
 
   shfmt:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['shell'] != 'false' }}
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -447,13 +447,13 @@ jobs:
         # boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/pulumi-deploy-guard .github/actions/change-detection .github/actions/pr-contract .github/actions/ci-status .github/actions/exec-bit .github/actions/shfmt
+          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 
-  selector-contract:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['selector-contract'] != 'false' }}
+  test-contracts:
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['selector-contract'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -471,9 +471,9 @@ jobs:
       - name: Test selector and generated workflow contracts
         run: node --test .github/scripts/*.test.cjs
       - name: Test change-detection matcher
-        run: bash .github/actions/change-detection/match.test.sh
+        run: bash .github/actions/detect-changes/match.test.sh
       - name: Test Claude lane outcome classifier
-        run: node --test .github/actions/claude-lane-outcome/*.test.cjs
+        run: node --test .github/actions/report-lane-outcome/*.test.cjs
       - name: Test OSV scan policy guard
         run: bash .github/scripts/osv-scan-guard.test.sh
       - name: Test Gitleaks scan policy guard
@@ -489,35 +489,35 @@ jobs:
       - name: Test comment-hygiene scan-tree collection contracts
         run: bash .github/actions/comment-hygiene/scan-tree.test.sh
       - name: Test the pull-request contract runner
-        run: bash .github/actions/pr-contract/run.test.sh
+        run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
-        run: bash .github/actions/ci-status/run.test.sh
+        run: bash .github/actions/pr-require-checks/aggregate-results/run.test.sh
       - name: Test Pulumi deployment guard
-        run: bash .github/actions/pulumi-deploy-guard/guard.test.sh
+        run: bash .github/actions/verify-pulumi-deploy-policy/guard.test.sh
       - name: Test govulncheck SARIF classification
         run: bash .github/scripts/govulncheck-sarif-guard.test.sh
 
-  zizmor:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['zizmor'] != 'false' }}
+  pr-audit-workflows:
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
-      # zizmor.yml always declares this and a called workflow cannot elevate,
+      # pr-audit-workflows.yml always declares this and a called workflow cannot elevate,
       # so grant it although the dogfood stays annotations-only.
       security-events: write
     # Audit this repo's own workflows AND composite actions (paths: .) — strong
     # dogfood. Advisory: findings annotate without blocking ci-status.
-    uses: ./.github/workflows/zizmor.yml
+    uses: ./.github/workflows/pr-audit-workflows.yml
     with:
       paths: .
 
-  osv-scanner:
+  pr-scan-dependencies:
     # Not change-gated: a filter enumerating every lockfile format OSV
     # discovers would drift and skip an unlisted new one.
     if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
-    uses: ./.github/workflows/osv-scanner.yml
+    uses: ./.github/workflows/pr-scan-dependencies.yml
     with:
       # This public repository's hosted lane is free; private consumers must pass
       # their strict selector output instead.
@@ -526,14 +526,14 @@ jobs:
       # without inventing a fixture manifest.
       allow-no-lockfiles: true
 
-  go-quality-dogfood:
-    needs: changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.changes.outputs.results || '{}')['go'] != 'false' }}
+  pr-run-checks-go:
+    needs: detect-changes
+    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['go'] != 'false' }}
     permissions:
       contents: read
     # The fixture asserts on Windows that the test binary was built with the
     # race detector: behavioral evidence, not a source-text contract alone.
-    uses: ./.github/workflows/go-quality.yml
+    uses: ./.github/workflows/pr-run-checks-go.yml
     with:
       config: .golangci.yml
       working-directory: fixtures/go/windows-race
@@ -543,7 +543,7 @@ jobs:
     if: always()
     # `changes` is aggregated so a failed detection fails ci-status even though
     # every gated lane fails open and runs.
-    needs: [changes, checks, composites-head, powershell, reference-integrity, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, selector-contract, actionlint, jsonschema, action-metadata-filename, go-quality-dogfood, zizmor, osv-scanner]
+    needs: [detect-changes, pr-run-checks, test-composites-head, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -561,7 +561,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check the pull-request contract
-        uses: ./.github/actions/pr-contract
+        uses: ./.github/actions/pr-require-checks/check-contract
         with:
           # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
@@ -569,9 +569,9 @@ jobs:
         # `!cancelled()` so a failing pr-contract step does not skip the
         # `ci-lanes` status write the next contract-only run needs.
         if: ${{ !cancelled() }}
-        uses: ./.github/actions/ci-status
+        uses: ./.github/actions/pr-require-checks/aggregate-results
         with:
           # `timeout-minutes * 60 - 60`, sized per README.md. Keep the 60 s
           # margin: a job timeout would preempt the fail-closed error.
           carry-forward-wait-seconds: '840'
-          results: ${{ needs.changes.result }} ${{ needs.checks.result }} ${{ needs.composites-head.result }} ${{ needs.powershell.result }} ${{ needs.reference-integrity.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.selector-contract.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.action-metadata-filename.result }} ${{ needs.go-quality-dogfood.result }} ${{ needs.zizmor.result }} ${{ needs.osv-scanner.result }}
+          results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.test-composites-head.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}

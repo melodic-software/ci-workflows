@@ -14,7 +14,7 @@
     to bash/sh: expression substitution, line-number mapping, and guards that
     stop a selector matching nothing from passing as a clean scan.
 
-    Analysis itself is delegated to .github/actions/powershell/Invoke-Pssa.ps1
+    Analysis itself is delegated to .github/actions/psscriptanalyzer/Invoke-Pssa.ps1
     so the repo keeps one analyzer invocation and one pinned version, read here
     from the `powershell` action's own `analyzer-version` default.
 
@@ -48,8 +48,8 @@ param(
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-$actionMetadata = '.github/actions/powershell/action.yml'
-$runner = '.github/actions/powershell/Invoke-Pssa.ps1'
+$actionMetadata = '.github/actions/psscriptanalyzer/action.yml'
+$runner = '.github/actions/psscriptanalyzer/Invoke-Pssa.ps1'
 
 # The repo's own ruleset, applied unchanged: an embedded block is this repo's
 # PowerShell and is held to the same policy as a .ps1. The bash/sh sibling

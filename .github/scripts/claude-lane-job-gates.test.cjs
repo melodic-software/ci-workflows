@@ -14,8 +14,8 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const workflowsDir = path.join(__dirname, "..", "workflows");
 
 for (const { file, job } of [
-  { file: "claude-review.yml", job: "review" },
-  { file: "claude-security-review.yml", job: "security-review" },
+  { file: "pr-review.yml", job: "claude" },
+  { file: "pr-review-security.yml", job: "claude" },
 ]) {
   const workflow = parseWorkflow(
     fs.readFileSync(path.join(workflowsDir, file), "utf8"),

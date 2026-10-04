@@ -20,7 +20,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: ./.github/workflows/claude-review.yml
+    uses: ./.github/workflows/pr-review.yml
     # Pass only the one named secret (least privilege) rather than `secrets:
     # inherit`, which would forward every parent secret to the called workflow.
     secrets:

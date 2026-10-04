@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Every lane here (composite-run-shellcheck.sh, ci.yml's schema step) globs
+# Every lane here (composite-run-shellcheck.sh, pr-require-checks.yml's schema step) globs
 # action.yml only, so a GitHub-legal action.yaml would be skipped silently.
 set -uo pipefail
 

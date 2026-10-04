@@ -1,7 +1,10 @@
-name: claude-review
+name: pr-review-security
 
-# Reusable workflow: automated PR code review with anthropics/claude-code-action,
-# running the org review plugin's command.
+# Reusable workflow: dedicated LLM security review with
+# anthropics/claude-code-action, running the org review plugin's security
+# command. A sibling of pr-review.yml with the same secrets interface,
+# safe-handling model and review cadence. Findings are advisory: they never
+# fail the job.
 #
 # Canonical caller (the caller owns triggers, concurrency and the permission
 # grant; a called workflow can only downgrade the caller's grant):
@@ -10,15 +13,15 @@ name: claude-review
 #       pull_request:
 #         types: [opened, synchronize, ready_for_review, reopened]
 #     concurrency:
-#       group: claude-review-${{ github.event.pull_request.number }}
+#       group: claude-security-review-${{ github.event.pull_request.number }}
 #       cancel-in-progress: true
 #     jobs:
-#       review:
+#       security-review:
 #         permissions:
 #           contents: read         # checkout + read the diff
 #           pull-requests: write   # post the review + tracking comment
 #           id-token: write        # OIDC for the Claude GitHub App token
-#         uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@<sha>
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -26,7 +29,8 @@ name: claude-review
 #   - Call it from `pull_request` only. pull_request_target and workflow_run
 #     run with base-repo secrets over untrusted code; the `Reject privileged
 #     triggers` step hard-fails both.
-#   - Fork PRs get no secrets and a read-only token, so the job skips them.
+#   - Fork PRs get no secrets and a read-only token, so the job skips them. A
+#     human must review fork changes to security-sensitive surfaces.
 #   - Bot actors are skipped: the action rejects any bot it was not told to
 #     allow, and this lane allows none.
 #   - Only the one named secret is accepted; the job token is least privilege.
@@ -42,22 +46,19 @@ name: claude-review
 #     review; same-repository writers already receive this lane's secret, so
 #     the lane trusts them.
 #
-# REVIEW CADENCE: drafts are skipped. `opened`, `reopened` and
-# `ready_for_review` review the whole pull request. A later push
-# (`synchronize`) reviews only the files that changed since this lane's last
-# completed review (`incremental-review`). It reviews the whole pull request
-# instead when no earlier review is recorded, the recorded head is not an
-# ancestor of the new head (force push or rebase), 300 or more files changed
-# since, a base-branch merge since then changed a file this pull request also
-# changes (or 300 or more files, too many to check), or the API returns no
-# patch for a changed text file (too large to show). A push that changes no
-# file of the pull request is not reviewed again.
+# REVIEW CADENCE: the same as pr-review.yml (see its header): drafts are
+# skipped, `opened`, `reopened` and `ready_for_review` review the whole pull
+# request, and a later push reviews only the files changed since this lane's
+# last completed review; 300 or more files changed since forces a whole review.
+# When every file in scope matches `docs-only-paths` (by default top-level
+# `docs/` markdown, READMEs and changelogs), no security review runs.
 #
-# One job reviews and reports. It is named `claude-review-status`, so its check
-# is `<caller job> / claude-review-status`, and it goes red, naming the cause,
-# when no review happened. A review that is not needed (nothing changed, or
-# every file in scope matches `docs-only-paths`) stays green. Never make that
-# check required.
+# One job reviews and reports. It is named `security-review`, so with the
+# canonical caller its check is `security-review / security-review`, the
+# context the github-iac `security-review-gate` org ruleset names. It goes
+# red, naming the cause, when no review happened; a review that is not needed
+# stays green. That ruleset is disabled (github-iac ADR 0011 keeps agentic
+# review advisory); do not make the check required elsewhere.
 
 on:
   workflow_call:
@@ -83,7 +84,7 @@ on:
       plugin-command:
         description: Slash command the review runs.
         type: string
-        default: /review:code-review
+        default: /review:security-review
       claude-args:
         description: >-
           Passed through to the Claude CLI (model, turn budget, allowed tools).
@@ -119,18 +120,10 @@ on:
           skills/, agents/, commands/, rules/, hooks/, instructions/ or
           prompts/) never count as documentation, whatever this list says.
         type: string
-        default: ""
-    outputs:
-      review-failed:
-        description: >-
-          'true' on an infrastructure failure, else 'false'. Empty when the
-          review did not run.
-        value: ${{ jobs.review.outputs.review-failed }}
-      failure-class:
-        description: >-
-          auth | rate-limit | overloaded | other on a failure;
-          skipped-validation when the action skipped itself; empty otherwise.
-        value: ${{ jobs.review.outputs.failure-class }}
+        default: |
+          docs/**/*.md
+          **/README.md
+          **/CHANGELOG.md
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token (from `claude setup-token`).
@@ -140,15 +133,15 @@ permissions:
   contents: read
 
 jobs:
-  review:
-    name: claude-review-status
+  claude:
+    name: security-review
     runs-on: ${{ inputs.runner }}
-    # The review step stops at 11 minutes (660 s); incremental scoping, not a
-    # longer step, shortens the reviews that reached it. Outside that step,
-    # 1,169 successful jobs on claude-code-plugins (2026-09-29 to 2026-10-01)
-    # took p95 17 s, max 82 s, which leaves 38 s of 13 minutes (780 s) for the
-    # scope and record steps; they took 1 s each on ci-workflows#653.
-    timeout-minutes: 13
+    # Capped at the 16-minute ceiling set for every CI job (960 s). Outside the
+    # review step, 1,366 successful jobs on claude-code-plugins (2026-09-29 to
+    # 2026-10-01) took p95 17 s, max 82 s, and the scope and record steps took
+    # 1 s each on ci-workflows#653, so the step gets 14 minutes (840 s);
+    # incremental scoping, not a longer step, shortens the reviews that reach it.
+    timeout-minutes: 16
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire.
     if: >-
@@ -168,7 +161,7 @@ jobs:
       - name: Reject privileged triggers
         if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_run'
         run: |
-          echo "::error::claude-review must not be called from '${{ github.event_name }}'." \
+          echo "::error::claude-security-review must not be called from '${{ github.event_name }}'." \
             "Call it from a 'pull_request' workflow. pull_request_target/workflow_run run" \
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
@@ -190,7 +183,7 @@ jobs:
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          LANE: claude-review
+          LANE: claude-security-review
           INCREMENTAL: ${{ inputs.incremental-review }}
           DOCS_ONLY_PATHS: ${{ inputs.docs-only-paths }}
           EVENT_ACTION: ${{ github.event.action }}
@@ -380,11 +373,11 @@ jobs:
 
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.
-      - name: Claude review
+      - name: Claude security review
         id: claude-review
         if: steps.scope.outputs.review != 'false'
         continue-on-error: true
-        timeout-minutes: 11
+        timeout-minutes: 14
         uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.240
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -404,25 +397,18 @@ jobs:
             The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.
             Do not substitute a different review procedure.
 
-            Report findings as a pull request review: call
-            mcp__github_inline_comment__create_inline_comment to anchor each
-            finding to the changed line it is about. Keep your summary comment
-            for the overview.
-
-            A finding no changed line can carry (cross-file, or about the PR
-            as a whole) goes in the summary instead; link its code
-            locations to the commit blob (not the PR) with a line-numbered
-            permalink:
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
       - name: Report review outcome
         id: review-outcome
         if: steps.scope.outputs.review != 'false'
-        uses: melodic-software/ci-workflows/.github/actions/claude-lane-outcome@ac062650c46005edb4787aff378347746bf63804 # v0.27.0
+        uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude-review.outcome }}
           execution-file: ${{ steps.claude-review.outputs.execution_file }}
-          lane: Claude review
+          lane: Claude security review
 
       # Only a completed review, or a review that was not needed, moves the
       # recorded head forward. A failure here costs the next push a whole
@@ -435,7 +421,7 @@ jobs:
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          LANE: claude-review
+          LANE: claude-security-review
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MARKER_ID: ${{ steps.scope.outputs.marker-id }}
@@ -463,7 +449,7 @@ jobs:
       - name: Report the review status
         if: always()
         env:
-          LANE: claude-review
+          LANE: claude-security-review
           JOB_STATUS: ${{ job.status }}
           SKIP_REASON: ${{ steps.scope.outputs.skip-reason }}
           REVIEW_FAILED: ${{ steps.review-outcome.outputs.review-failed }}

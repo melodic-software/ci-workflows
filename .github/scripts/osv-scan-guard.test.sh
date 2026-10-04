@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-workflow="$(cd "$(dirname "${BASH_SOURCE[0]}")/../workflows" && pwd)/osv-scanner.yml"
+workflow="$(cd "$(dirname "${BASH_SOURCE[0]}")/../workflows" && pwd)/pr-scan-dependencies.yml"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 guard="$temporary_directory/guard.sh"

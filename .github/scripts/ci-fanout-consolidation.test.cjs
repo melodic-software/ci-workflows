@@ -10,13 +10,13 @@ const ciWorkflowPath = path.join(
   repositoryRoot,
   ".github",
   "workflows",
-  "ci.yml",
+  "pr-require-checks.yml",
 );
 const ciStatusActionPath = path.join(
   repositoryRoot,
   ".github",
   "actions",
-  "ci-status",
+  "pr-require-checks/aggregate-results",
   "action.yml",
 );
 
@@ -49,7 +49,7 @@ const CONTRACT_ONLY_PREDICATE =
   "(github.event.action == 'edited' && !github.event.changes.base))";
 const CONTRACT_ONLY_GATE = `!(${CONTRACT_ONLY_PREDICATE})`;
 
-test("ci.yml branches the concurrency group on the contract-only predicate", () => {
+test("pr-require-checks.yml branches the concurrency group on the contract-only predicate", () => {
   // Eviction of a PENDING run is unconditional in GitHub's
   // queueing and is not governed by `cancel-in-progress`, so a shared group let
   // one contract-only event evict another and leave the current head with a
@@ -62,7 +62,7 @@ test("ci.yml branches the concurrency group on the contract-only predicate", () 
     );
   assert.ok(
     groupBlock !== null,
-    "ci.yml has no branched concurrency group with a literal cancel-in-progress: true",
+    "pr-require-checks.yml has no branched concurrency group with a literal cancel-in-progress: true",
   );
   const group = normalizeExpression(groupBlock.groups.value);
   const branched =
@@ -107,7 +107,7 @@ test("the contract-only predicate excludes forks and base changes", () => {
   );
 });
 
-test("ci.yml re-runs on the contract-only pull_request actions", () => {
+test("pr-require-checks.yml re-runs on the contract-only pull_request actions", () => {
   assert.match(
     ciWorkflow,
     /^ {4}types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]$/mu,
@@ -187,8 +187,8 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   // The carry-forward wait enumerates this workflow's runs on the head SHA.
   // Without the scope both Actions reads 403 and the wait never engages.
   assert.match(ciStatusJob, /^ {6}actions: read$/mu);
-  const contractStep = ciStatusJob.indexOf("./.github/actions/pr-contract");
-  const aggregateStep = ciStatusJob.indexOf("./.github/actions/ci-status");
+  const contractStep = ciStatusJob.indexOf("./.github/actions/pr-require-checks/check-contract");
+  const aggregateStep = ciStatusJob.indexOf("./.github/actions/pr-require-checks/aggregate-results");
   assert.ok(contractStep !== -1 && aggregateStep !== -1);
   assert.ok(contractStep < aggregateStep);
   // `!cancelled()` so a failing contract step does not skip the status write.
@@ -222,19 +222,19 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   );
 });
 
-test("ci.yml consolidates the hygiene composites into the checks reusable", () => {
+test("pr-require-checks.yml consolidates the hygiene composites into the checks reusable", () => {
   // This repository dogfoods the `checks` reusable every consumer adopts.
-  assert.match(ciWorkflow, /^ {2}checks:$/mu);
+  assert.match(ciWorkflow, /^ {2}pr-run-checks:$/mu);
   assert.match(
     ciWorkflow,
-    /^ {4}uses: \.\/\.github\/workflows\/checks\.yml$/mu,
+    /^ {4}uses: \.\/\.github\/workflows\/pr-run-checks\.yml$/mu,
   );
 
   // change-detection reads the PR file listing, and a called workflow cannot
   // elevate: without the caller's own grant the job fails at startup.
   const checksJob = ciWorkflow.slice(
-    ciWorkflow.search(/^ {2}checks:$/mu),
-    ciWorkflow.search(/^ {2}composites-head:$/mu),
+    ciWorkflow.search(/^ {2}pr-run-checks:$/mu),
+    ciWorkflow.search(/^ {2}test-composites-head:$/mu),
   );
   assert.match(checksJob, /^ {6}contents: read$/mu);
   assert.match(checksJob, /^ {6}pull-requests: read$/mu);
@@ -255,10 +255,10 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
     assert.doesNotMatch(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
   }
 
-  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bchecks\b[^\n]*\]$/mu);
+  assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*\bpr-run-checks\b[^\n]*\]$/mu);
   assert.match(
     ciWorkflow,
-    /^ {10}results: [^\n]*\$\{\{ needs\.checks\.result \}\}[^\n]*$/mu,
+    /^ {10}results: [^\n]*\$\{\{ needs\.pr-run-checks\.result \}\}[^\n]*$/mu,
   );
   for (const lane of [
     "hygiene",
@@ -285,31 +285,31 @@ test("ci.yml consolidates the hygiene composites into the checks reusable", () =
   );
 });
 
-test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
-  // checks.yml can only reach its composites at a pinned SHA (a relative path
+test("pr-require-checks.yml runs the moved composites at HEAD alongside the reusable", () => {
+  // pr-run-checks.yml can only reach its composites at a pinned SHA (a relative path
   // inside a called workflow resolves against the caller's checkout), so the
   // reusable runs the bodies of the release it was pinned at. This job runs the
   // same bodies from the commit under test; without it a pull request that
   // breaks one of them passes this repository's own CI.
-  const start = ciWorkflow.search(/^ {2}composites-head:$/mu);
-  assert.notEqual(start, -1, "ci.yml has no composites-head job");
+  const start = ciWorkflow.search(/^ {2}test-composites-head:$/mu);
+  assert.notEqual(start, -1, "pr-require-checks.yml has no composites-head job");
   const composites = ciWorkflow.slice(
     start,
-    ciWorkflow.search(/^ {2}powershell:$/mu),
+    ciWorkflow.search(/^ {2}psscriptanalyzer:$/mu),
   );
   assert.match(composites, /^ {4}name: Composites at HEAD$/mu);
-  assert.match(composites, /^ {4}needs: changes$/mu);
+  assert.match(composites, /^ {4}needs: detect-changes$/mu);
 
   // Every composite the reusable moved off HEAD, and only those: actionlint,
   // shellcheck and check-jsonschema already run at HEAD in their own jobs.
   for (const composite of [
     "typos",
     "gitleaks",
-    "editorconfig",
-    "markdown",
-    "exec-bit",
+    "editorconfig-checker",
+    "markdownlint",
+    "check-exec-bit",
     "machine-specific-paths",
-    "eol-renormalize",
+    "check-line-endings",
     "comment-hygiene",
     "lychee-offline",
   ]) {
@@ -325,11 +325,11 @@ test("ci.yml runs the moved composites at HEAD alongside the reusable", () => {
   // The lane is only real if the required check aggregates it.
   assert.match(
     ciWorkflow,
-    /^ {4}needs: \[[^\n]*\bcomposites-head\b[^\n]*\]$/mu,
+    /^ {4}needs: \[[^\n]*\btest-composites-head\b[^\n]*\]$/mu,
   );
   assert.match(
     ciWorkflow,
-    /^ {10}results: [^\n]*\$\{\{ needs\.composites-head\.result \}\}[^\n]*$/mu,
+    /^ {10}results: [^\n]*\$\{\{ needs\.test-composites-head\.result \}\}[^\n]*$/mu,
   );
 });
 
@@ -380,17 +380,17 @@ test("root CI runs this repository's own test suite in a gating lane", () => {
   // Newline-anchored at the job-level two-space indent: the change-detection
   // filter config declares a deeper-indented group with the same name, which a
   // bare substring search would match first.
-  const laneStart = ciWorkflow.indexOf("\n  selector-contract:");
-  const laneEnd = ciWorkflow.indexOf("\n  zizmor:");
+  const laneStart = ciWorkflow.indexOf("\n  test-contracts:");
+  const laneEnd = ciWorkflow.indexOf("\n  pr-audit-workflows:");
   assert.ok(
     laneStart !== -1 && laneEnd > laneStart,
-    "ci.yml must declare the test-execution lane before the zizmor lane",
+    "pr-require-checks.yml must declare the test-execution lane before the zizmor lane",
   );
   const lane = ciWorkflow.slice(laneStart, laneEnd);
   assert.match(lane, /node --test \.github\/scripts\/\*\.test\.cjs/u);
   assert.match(lane, /bash \.github\/scripts\/osv-scan-guard\.test\.sh/u);
   // The required check must aggregate the lane, or a red suite reports green.
-  assert.match(ciWorkflow, /needs: \[[^\]]*selector-contract[^\]]*\]/u);
+  assert.match(ciWorkflow, /needs: \[[^\]]*test-contracts[^\]]*\]/u);
   // And a script-only change must actually start it.
   assert.match(
     ciWorkflow,

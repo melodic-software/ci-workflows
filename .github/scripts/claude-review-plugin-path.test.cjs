@@ -14,9 +14,9 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const repositoryRoot = path.join(__dirname, "..", "..");
 
 for (const { file, defaultCommand } of [
-  { file: "claude-review.yml", defaultCommand: "/review:code-review" },
+  { file: "pr-review.yml", defaultCommand: "/review:code-review" },
   {
-    file: "claude-security-review.yml",
+    file: "pr-review-security.yml",
     defaultCommand: "/review:security-review",
   },
 ]) {

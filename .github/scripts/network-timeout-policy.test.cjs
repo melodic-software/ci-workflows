@@ -24,13 +24,13 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   // --retry-delay stays banned: a fixed interval would replace the
   // exponential backoff rather than bound it.
   for (const [name, content, expected] of [
-    ["zizmor", read(".github/workflows/zizmor.yml"), 1],
+    ["zizmor", read(".github/workflows/pr-audit-workflows.yml"), 1],
     // The standards-sync reusables download no release asset; their npm
     // installs carry the equivalent fetch-retry budget, asserted below.
-    ["standards sync", read(".github/workflows/standards-sync.yml"), 0],
+    ["standards sync", read(".github/workflows/maintenance-sync-standards.yml"), 0],
     // Linux (bash) and Windows (pwsh) golangci-lint installs carry the same
     // budget, hence two occurrences.
-    ["go quality", read(".github/workflows/go-quality.yml"), 2],
+    ["go quality", read(".github/workflows/pr-run-checks-go.yml"), 2],
     ["shared installer", read(".github/actions/_shared/install-release.sh"), 1],
   ]) {
     assert.equal(
@@ -52,10 +52,10 @@ test("immutable release assets have a bounded exponential retry budget", () => {
   // The standards-sync path's remaining network dependency is npm: every
   // engine-dependency install carries the equivalent bounded retry budget.
   for (const [name, content, expected] of [
-    ["standards sync npm", read(".github/workflows/standards-sync.yml"), 2],
+    ["standards sync npm", read(".github/workflows/maintenance-sync-standards.yml"), 2],
     [
       "managed-files-guard npm",
-      read(".github/actions/managed-files-guard/action.yml"),
+      read(".github/actions/check-managed-files/action.yml"),
       1,
     ],
   ]) {
@@ -114,7 +114,7 @@ test("every shared-installer consumer caches its verified release asset", () => 
   }
   assert.deepEqual(cachedActions.sort(), [
     "actionlint",
-    "editorconfig",
+    "editorconfig-checker",
     "gitleaks",
     "lychee-offline",
     "shellcheck",
@@ -124,7 +124,7 @@ test("every shared-installer consumer caches its verified release asset", () => 
 });
 
 test("OSV native release downloads are bounded", () => {
-  const workflow = read(".github/workflows/osv-scanner.yml");
+  const workflow = read(".github/workflows/pr-scan-dependencies.yml");
   assert.equal(
     occurrences(workflow, /--connect-timeout 10 --max-time 180/gu),
     1,
@@ -141,7 +141,7 @@ test("OSV native release downloads are bounded", () => {
 });
 
 test("Pulumi stack export has an explicit freshness boundary", () => {
-  const guard = read(".github/actions/pulumi-deploy-guard/guard.sh");
+  const guard = read(".github/actions/verify-pulumi-deploy-policy/guard.sh");
 
   assert.match(guard, /for attempt in 1 2/u);
   assert.match(
@@ -155,7 +155,7 @@ test("Pulumi stack export has an explicit freshness boundary", () => {
 });
 
 test("Standards App attestation uses bounded fresh API reads", () => {
-  const workflow = read(".github/workflows/standards-sync.yml");
+  const workflow = read(".github/workflows/maintenance-sync-standards.yml");
 
   assert.match(workflow, /const REQUEST_TIMEOUT_MILLISECONDS = 30_000;/u);
   assert.equal(

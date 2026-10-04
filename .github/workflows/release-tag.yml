@@ -1,4 +1,4 @@
-name: release
+name: release-tag
 
 # Cut a semantic-version release on demand: the next version is the highest
 # SemVer among PUBLISHED Releases (not tags) plus the chosen bump, released as a
@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  tag:
     runs-on: ubuntu-24.04
     permissions:
       contents: write # create the tag + GitHub Release

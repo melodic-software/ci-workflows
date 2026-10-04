@@ -1,6 +1,6 @@
 "use strict";
 
-// `checks.yml` forwards markdownlint globs. Passing `globs` replaces the
+// `pr-run-checks.yml` forwards markdownlint globs. Passing `globs` replaces the
 // composite default, so the workflow repeats that default and appends
 // `markdown-extra-globs`. The expression is the GitHub `case`/`format` pair
 // pinned below; the arguments markdownlint-cli2 actually receives are that
@@ -20,11 +20,11 @@ function readRepo(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
-const checks = parseWorkflow(readRepo(".github/workflows/checks.yml"));
+const checks = parseWorkflow(readRepo(".github/workflows/pr-run-checks.yml"));
 const markdownAction = parseWorkflow(
-  readRepo(".github/actions/markdown/action.yml"),
+  readRepo(".github/actions/markdownlint/action.yml"),
 );
-const markdownStep = checks.jobs.checks.steps.find(
+const markdownStep = checks.jobs.check.steps.find(
   (step) => step?.id === "markdown",
 );
 const extraGlobs = checks.on.workflow_call.inputs["markdown-extra-globs"];
@@ -41,7 +41,7 @@ const DOTFILES_EXTRA = [
   ".chezmoitemplates/agent-instructions-shared",
 ].join(" ");
 
-assert.ok(markdownStep !== undefined, "checks.yml has no markdown step");
+assert.ok(markdownStep !== undefined, "pr-run-checks.yml has no markdown step");
 assert.ok(lintStep !== undefined, "markdown composite has no glob split");
 
 function forwardedGlobs(extra) {
@@ -71,7 +71,7 @@ function wordSplit(value) {
 }
 
 test("markdown-extra-globs is an optional string and defaults empty", () => {
-  assert.ok(extraGlobs, "checks.yml has no markdown-extra-globs input");
+  assert.ok(extraGlobs, "pr-run-checks.yml has no markdown-extra-globs input");
   assert.equal(extraGlobs.type, "string");
   assert.equal(extraGlobs.default, "");
   // Omitted `required` is optional. workflow_call inputs are required only

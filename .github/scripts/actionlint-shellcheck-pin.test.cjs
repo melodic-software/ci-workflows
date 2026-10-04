@@ -68,7 +68,7 @@ test("actionlint installs the canonical checksum-pinned ShellCheck release", () 
   );
 
   const ciWorkflow = fs.readFileSync(
-    path.join(workflowsRoot, "ci.yml"),
+    path.join(workflowsRoot, "pr-require-checks.yml"),
     "utf8",
   );
   assert.match(ciWorkflow, /actionlint-shellcheck\.txt/u);
