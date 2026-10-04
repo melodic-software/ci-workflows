@@ -47,11 +47,18 @@ const gateScript = extractGateScript();
 const DEPENDABOT_ID = 49699333;
 const HEAD = "a".repeat(40);
 
+// The shape of a real Dependabot commit, read live from
+// `gh api repos/melodic-software/medley/pulls/2094/commits` and
+// ci-workflows PRs #651, #655 and #674: author dependabot[bot] (49699333),
+// committer web-flow (19864447), verified with reason "valid".
+const WEB_FLOW_ID = 19864447;
 const dependabotCommit = (sha = HEAD) => ({
   sha,
   author: { id: DEPENDABOT_ID },
-  commit: { verification: { verified: true } },
+  committer: { id: WEB_FLOW_ID },
+  commit: { verification: { verified: true, reason: "valid" } },
 });
+const foreignHead = { ...dependabotCommit(), author: { id: 12345 } };
 
 const update = (dependencyName, updateType, packageEcosystem = "github_actions") => ({
   dependencyName,
@@ -64,12 +71,20 @@ async function runGate({
   authorId = DEPENDABOT_ID,
   commits = [dependabotCommit()],
   autoMerge = null,
+  senderId = DEPENDABOT_ID,
+  metadataOutcome = "success",
+  metadataJson = JSON.stringify(updates),
 } = {}) {
   const graphqlCalls = [];
   const notices = [];
+  const env = {
+    UPDATED_DEPENDENCIES_JSON: metadataJson,
+    PUBLISHER_ALLOWLIST: stepEnv("PUBLISHER_ALLOWLIST"),
+    SENDER_ID: String(senderId),
+    METADATA_OUTCOME: metadataOutcome,
+  };
   const original = { ...process.env };
-  process.env.UPDATED_DEPENDENCIES_JSON = JSON.stringify(updates);
-  process.env.PUBLISHER_ALLOWLIST = stepEnv("PUBLISHER_ALLOWLIST");
+  Object.assign(process.env, env);
   try {
     const github = {
       rest: { pulls: { listCommits: Symbol("listCommits") } },
@@ -105,7 +120,7 @@ async function runGate({
       core,
     );
   } finally {
-    for (const key of ["UPDATED_DEPENDENCIES_JSON", "PUBLISHER_ALLOWLIST"]) {
+    for (const key of Object.keys(env)) {
       if (original[key] === undefined) delete process.env[key];
       else process.env[key] = original[key];
     }
@@ -134,6 +149,11 @@ test("the job runs only on pull_request events authored by Dependabot's account 
   const ifLine = workflowLines.slice(job, job + 4).find((line) => line.trim().startsWith("if:"));
   assert.match(ifLine, /github\.event_name == 'pull_request'/u);
   assert.match(ifLine, /github\.event\.pull_request\.user\.id == 49699333/u);
+});
+
+test("the sender and metadata outcome come from the event and the metadata step", () => {
+  assert.equal(stepEnv("SENDER_ID"), "${{ github.event.sender.id }}");
+  assert.equal(stepEnv("METADATA_OUTCOME"), "${{ steps.metadata.outcome }}");
 });
 
 test("PR-derived values reach the script through env, never an expression", () => {
@@ -216,17 +236,64 @@ test("a non-Dependabot author is skipped", async () => {
   assertSkipped(await runGate({ authorId: 12345 }), /the PR author is not Dependabot/u);
 });
 
+test("an event sent by anyone but Dependabot is skipped", async () => {
+  assertSkipped(await runGate({ senderId: 12345 }), /this event was not sent by Dependabot/u);
+});
+
 test("a foreign head commit is skipped", async () => {
-  const foreign = { sha: HEAD, author: { id: 12345 }, commit: { verification: { verified: true } } };
   assertSkipped(
-    await runGate({ commits: [dependabotCommit("b".repeat(40)), foreign] }),
+    await runGate({ commits: [dependabotCommit("b".repeat(40)), foreignHead] }),
     new RegExp(`commit ${HEAD} is not a verified Dependabot commit`, "u"),
   );
 });
 
+test("a forged Dependabot author with the pusher's own signature is skipped", async () => {
+  const forged = { ...dependabotCommit(), committer: { id: 12345 } };
+  assertSkipped(await runGate({ commits: [forged] }), /is not a verified Dependabot commit/u);
+});
+
 test("an unsigned commit claiming Dependabot authorship is skipped", async () => {
-  const unsigned = { ...dependabotCommit(), commit: { verification: { verified: false } } };
+  const unsigned = { ...dependabotCommit(), commit: { verification: { verified: false, reason: "unsigned" } } };
   assertSkipped(await runGate({ commits: [unsigned] }), /is not a verified Dependabot commit/u);
+});
+
+test("a verified commit whose reason is not valid is skipped", async () => {
+  const odd = { ...dependabotCommit(), commit: { verification: { verified: true, reason: "unknown_key" } } };
+  assertSkipped(await runGate({ commits: [odd] }), /is not a verified Dependabot commit/u);
+});
+
+test("a publisher spelled in another case stays rejected", async () => {
+  assertSkipped(
+    await runGate({ updates: [update("Actions/checkout", "version-update:semver-patch")] }),
+    /Actions\/checkout is not an allowlisted publisher/u,
+  );
+});
+
+test("empty metadata is skipped", async () => {
+  assertSkipped(await runGate({ metadataJson: "" }), /the Dependabot metadata is not valid JSON/u);
+});
+
+test("invalid metadata is skipped", async () => {
+  assertSkipped(await runGate({ metadataJson: "{not json" }), /the Dependabot metadata is not valid JSON/u);
+});
+
+test("a failed metadata fetch on an armed PR is skipped and disarmed", async () => {
+  const result = await runGate({
+    metadataOutcome: "failure",
+    metadataJson: "",
+    autoMerge: { merge_method: "squash" },
+  });
+  assert.equal(result.armCalls.length, 0);
+  assert.match(result.notices[0], /fetching the Dependabot metadata failed/u);
+  assert.equal(result.disarmCalls.length, 1);
+});
+
+test("the gate step runs after a failed metadata fetch", () => {
+  const metadata = workflowLines.findIndex((line) => line.includes("- name: Fetch Dependabot metadata"));
+  assert.ok(
+    workflowLines.slice(metadata, gateStepIndex).some((line) => line.trim() === "continue-on-error: true"),
+  );
+  assert.equal(workflowLines[gateStepIndex + 1].trim(), "if: ${{ !cancelled() }}");
 });
 
 test("a head that moved after the event is skipped", async () => {
@@ -244,9 +311,8 @@ test("a non-actions ecosystem is skipped", async () => {
 });
 
 test("a skipped PR armed on an earlier head is disarmed", async () => {
-  const foreign = { sha: HEAD, author: { id: 12345 }, commit: { verification: { verified: true } } };
   const result = await runGate({
-    commits: [foreign],
+    commits: [foreignHead],
     autoMerge: { merge_method: "squash" },
   });
   assert.equal(result.armCalls.length, 0);

@@ -698,11 +698,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
 - `.github/workflows/pr-automerge-dependabot.yml` — arms squash auto-merge on a
   Dependabot pull request, so GitHub merges it once `ci-status` and every other
   required check pass. It never merges directly. All gates must hold: the PR
-  author is account id `49699333` (dependabot[bot]); every update is
+  author and the event sender are account id `49699333` (dependabot[bot]);
+  fetch-metadata succeeded; every update is
   `github_actions`; every dependency name matches the publisher allowlist
   (`actions/*`, `github/*`, `anthropics/*`, mirroring standards
   `dependabot-policy` `autoMerge`); every update is semver patch or minor; and
-  every commit, head included, is a signature-verified Dependabot commit. A
+  every commit, head included, has author `49699333`, committer web-flow
+  (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. A repository that adopts it
   records it as the merge authority for Dependabot PRs. The caller owns the
   trigger and concurrency:

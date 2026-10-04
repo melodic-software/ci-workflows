@@ -32,12 +32,19 @@ name: pr-automerge-dependabot
 #     standards `components/dependabot-policy/policy.json` `autoMerge`;
 #   - every update is a semver patch or minor; a grouped PR with one major
 #     bump, or an update type Dependabot could not compute, is skipped;
-#   - every commit on the PR, the head included, is authored by Dependabot and
-#     carries a verified signature, so a PR someone pushed onto is skipped.
+#   - the event's sender (the pusher on opened/synchronize/reopened) is
+#     49699333, so a push or reopen by anyone else is skipped;
+#   - fetch-metadata succeeded; it fails when the first commit is not
+#     Dependabot's, and missing or invalid metadata is a skip;
+#   - every commit on the PR, the head included, has author 49699333,
+#     committer 19864447 (web-flow, GitHub's signing identity for Dependabot
+#     commits) and a signature verified with reason `valid`. "Verified" vouches
+#     for the committer only, so the author id alone is forgeable.
 #
 # A skipped PR that is already armed is disarmed: GitHub keeps auto-merge on
 # when a user with write access pushes to the branch, so the commit gate
-# would otherwise hold only until the first arm. The arm also passes the
+# would otherwise hold only until the first arm. The gate step runs even when
+# fetch-metadata fails, so that disarm still happens. The arm also passes the
 # verified head SHA as `expectedHeadOid`, so a push that lands between the
 # check and the arm makes the arm fail instead of covering the new commit.
 #
@@ -69,16 +76,24 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
+        # fetch-metadata fails when the PR's first commit is not Dependabot's
+        # (a force-push by another user). The gate must still run then, to
+        # disarm, so a failure here is a skip, not a stop.
+        continue-on-error: true
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       - name: Gate and arm auto-merge
+        if: ${{ !cancelled() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          METADATA_OUTCOME: ${{ steps.metadata.outcome }}
+          SENDER_ID: ${{ github.event.sender.id }}
           UPDATED_DEPENDENCIES_JSON: ${{ steps.metadata.outputs.updated-dependencies-json }}
           PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
         with:
           script: |
             const DEPENDABOT_ID = 49699333;
+            const WEB_FLOW_ID = 19864447;
             const ECOSYSTEM = "github_actions";
             const UPDATE_TYPES = new Set([
               "version-update:semver-patch",
@@ -95,6 +110,8 @@ jobs:
 
             async function gateFailure() {
               if (pr.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
+              if (process.env.SENDER_ID !== String(DEPENDABOT_ID)) return "this event was not sent by Dependabot";
+              if (process.env.METADATA_OUTCOME !== "success") return "fetching the Dependabot metadata failed";
               let updates;
               try {
                 updates = JSON.parse(process.env.UPDATED_DEPENDENCIES_JSON || "");
@@ -117,7 +134,13 @@ jobs:
                 return "the PR head moved after this event";
               }
               for (const commit of commits) {
-                if (commit.author?.id !== DEPENDABOT_ID || commit.commit?.verification?.verified !== true) {
+                const verification = commit.commit?.verification;
+                if (
+                  commit.author?.id !== DEPENDABOT_ID ||
+                  commit.committer?.id !== WEB_FLOW_ID ||
+                  verification?.verified !== true ||
+                  verification?.reason !== "valid"
+                ) {
                   return `commit ${commit.sha} is not a verified Dependabot commit`;
                 }
               }
