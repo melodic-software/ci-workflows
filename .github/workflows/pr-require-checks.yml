@@ -514,7 +514,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@fb56986808750d6856c27de78df15e150027b8dc # v0.36.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -524,7 +524,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@fb56986808750d6856c27de78df15e150027b8dc # v0.36.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -534,7 +534,7 @@ jobs:
     if: ${{ github.event_name == 'issues' }}
     permissions:
       issues: write
-    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@7446b5165511796b7b0d30b68d341689ebb8de61 # v0.34.0
+    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@fb56986808750d6856c27de78df15e150027b8dc # v0.36.0
 
   ci-status:
     if: ${{ github.event_name != 'issues' && always() }}
