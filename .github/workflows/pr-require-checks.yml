@@ -349,7 +349,7 @@ jobs:
         uses: ./.github/actions/check-jsonschema
         with:
           builtin-schema: vendor.github-actions
-          files: .github/actions/*/action.yml
+          files: .github/actions/*/action.yml .github/actions/*/*/action.yml
 
   check-action-filename:
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
