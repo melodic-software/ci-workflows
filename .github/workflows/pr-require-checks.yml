@@ -12,7 +12,11 @@ on:
     # A base-branch `edited` changes the merge commit, so it runs in full. A
     # fork pull request is never contract-only: its read-only token cannot
     # record lane state.
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+  # Only `intake-label-needs-triage` runs on an issue event; every other job,
+  # `ci-status` included, guards on `github.event_name != 'issues'`.
+  issues:
+    types: [opened, reopened]
 
 permissions:
   contents: read
@@ -46,7 +50,7 @@ concurrency:
 # aggregates `changes` so a broken detection goes red.
 jobs:
   detect-changes:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -134,7 +138,7 @@ jobs:
   # A local reusable-workflow reference executes pr-run-checks.yml from this exact
   # commit, so the dogfood proves the contract a consumer pins by tag.
   pr-run-checks:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
       # change-detection lists the pull request's files. A called workflow
@@ -167,48 +171,9 @@ jobs:
         check-jsonschema:
           .github/**
 
-  # pr-run-checks.yml reaches its composites only at a pinned SHA, so a pull request
-  # breaking a composite body would pass there; this job runs them from this
-  # commit. actionlint, shellcheck and check-jsonschema already run at HEAD in
-  # their own jobs. Gated on `actionlint`, the narrowest group naming composites.
-  test-composites-head:
-    name: Composites at HEAD
-    needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint'] != 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Spell-check
-        uses: ./.github/actions/typos
-      - name: Scan for secrets
-        uses: ./.github/actions/gitleaks
-      - name: Check editorconfig conformance
-        uses: ./.github/actions/editorconfig-checker
-      - name: Lint markdown
-        uses: ./.github/actions/markdownlint
-      - name: Verify shebang files are executable
-        uses: ./.github/actions/check-exec-bit
-      - name: Check for machine-specific paths
-        # Same self-exclusion the `checks` caller passes.
-        uses: ./.github/actions/machine-specific-paths
-        with:
-          exclude: ':(exclude).github/actions/machine-specific-paths/**'
-      - name: Check index-level EOL drift
-        uses: ./.github/actions/check-line-endings
-      - name: Scan comment hygiene
-        uses: ./.github/actions/comment-hygiene
-        with:
-          exclude: ':(exclude).github/actions/comment-hygiene/**'
-      - name: Check links and anchors (offline)
-        uses: ./.github/actions/lychee-offline
-
   psscriptanalyzer:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['powershell'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['powershell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -227,7 +192,7 @@ jobs:
 
   check-markdown-references:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -244,7 +209,7 @@ jobs:
 
   ruff:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['python'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -260,7 +225,7 @@ jobs:
 
   pyright:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['python'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['python'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -275,7 +240,7 @@ jobs:
 
   biome:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['typescript'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['typescript'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -293,7 +258,7 @@ jobs:
 
   dotnet-build:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -310,7 +275,7 @@ jobs:
 
   dotnet-format:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['dotnet'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['dotnet'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -325,7 +290,7 @@ jobs:
 
   actionlint:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -365,7 +330,7 @@ jobs:
 
   jsonschema:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['jsonschema'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['jsonschema'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -387,7 +352,7 @@ jobs:
           files: .github/actions/*/action.yml
 
   check-action-filename:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -401,7 +366,7 @@ jobs:
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
   # ci-status yet: promote after a clean soak.
   check-managed-files:
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -417,7 +382,7 @@ jobs:
 
   shellcheck:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['shell'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -434,7 +399,7 @@ jobs:
 
   shfmt:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['shell'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['shell'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -453,7 +418,7 @@ jobs:
 
   test-contracts:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['selector-contract'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['selector-contract'] != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -499,7 +464,7 @@ jobs:
 
   pr-audit-workflows:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['zizmor'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['zizmor'] != 'false' }}
     permissions:
       contents: read
       # pr-audit-workflows.yml always declares this and a called workflow cannot elevate,
@@ -514,7 +479,7 @@ jobs:
   pr-scan-dependencies:
     # Not change-gated: a filter enumerating every lockfile format OSV
     # discovers would drift and skip an unlisted new one.
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
     uses: ./.github/workflows/pr-scan-dependencies.yml
@@ -528,7 +493,7 @@ jobs:
 
   pr-run-checks-go:
     needs: detect-changes
-    if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['go'] != 'false' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['go'] != 'false' }}
     permissions:
       contents: read
     # The fixture asserts on Windows that the test binary was built with the
@@ -539,11 +504,43 @@ jobs:
       working-directory: fixtures/go/windows-race
       go-version-file: fixtures/go/windows-race/go.mod
 
+  # Dogfood of the Claude lanes and the issue labeler, pinned to a merged SHA
+  # rather than `./` so a pull request cannot redefine the reusable that
+  # reviews it. Advisory: none of the three is in `ci-status`. Each passes only
+  # the one named secret its reusable declares.
+  pr-review:
+    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: melodic-software/ci-workflows/.github/workflows/claude-review.yml@632130a974770e50825c8747e87b0e18ecb2b36e # v0.33.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  pr-review-security:
+    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: melodic-software/ci-workflows/.github/workflows/claude-security-review.yml@632130a974770e50825c8747e87b0e18ecb2b36e # v0.33.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # Labels with the real `needs-triage` label (the reusable's default), so the
+  # label-set guard and the fail-closed existence check run end to end.
+  intake-label-needs-triage:
+    if: ${{ github.event_name == 'issues' }}
+    permissions:
+      issues: write
+    uses: melodic-software/ci-workflows/.github/workflows/issue-triage-label.yml@632130a974770e50825c8747e87b0e18ecb2b36e # v0.33.0
+
   ci-status:
-    if: always()
+    if: ${{ github.event_name != 'issues' && always() }}
     # `changes` is aggregated so a failed detection fails ci-status even though
     # every gated lane fails open and runs.
-    needs: [detect-changes, pr-run-checks, test-composites-head, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
+    needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -574,4 +571,4 @@ jobs:
           # `timeout-minutes * 60 - 60`, sized per README.md. Keep the 60 s
           # margin: a job timeout would preempt the fail-closed error.
           carry-forward-wait-seconds: '840'
-          results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.test-composites-head.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
+          results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}

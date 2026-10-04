@@ -1,12 +1,10 @@
 "use strict";
 
-// The review lanes consume the claude-lane-outcome composite through a
-// SHA-pinned `uses:`, so the composite's checked-in source and the version a
-// lane actually runs can diverge, and a lane reading a not-yet-pinned output
-// gets an empty value on every run. These tests pin the rule that every
-// consumed output of the composite is one its source declares, checked
-// against each lane's own pinned revision when the object is reachable, and
-// against the working tree always.
+// The review lanes reach the report-lane-outcome composite through `$/`, so a
+// lane runs the composite from its own commit, and a lane reading an output
+// the composite does not declare gets an empty value on every run. These
+// tests pin the rule that every consumed output of the composite is one its
+// source in the same tree declares.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -38,8 +36,7 @@ test("lane discovery finds the outcome composite's consumers", () => {
     `expected at least the review and security lanes, found: ${LANES.join(", ")}`,
   );
   assert.ok(
-    LANES.includes("pr-review.yml") &&
-      LANES.includes("pr-review-security.yml"),
+    LANES.includes("pr-review.yml") && LANES.includes("pr-review-security.yml"),
     `known consumers missing from discovery: ${LANES.join(", ")}`,
   );
 });

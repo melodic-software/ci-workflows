@@ -20,11 +20,19 @@ const { test } = require("node:test");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
-const workflowPath = path.join(__dirname, "..", "workflows", "pr-run-checks.yml");
+const workflowPath = path.join(
+  __dirname,
+  "..",
+  "workflows",
+  "pr-run-checks.yml",
+);
 const workflow = parseWorkflow(fs.readFileSync(workflowPath, "utf8"));
 const steps = workflow.jobs.check.steps;
 const joinStep = steps.find((step) => step?.id === "outcome");
-assert.ok(joinStep !== undefined, "pr-run-checks.yml has no `outcome` join step");
+assert.ok(
+  joinStep !== undefined,
+  "pr-run-checks.yml has no `outcome` join step",
+);
 
 // Every step the join owns: the composites, plus the input-combination guard
 // that must go red rather than let an enabled toggle skip silently.
@@ -201,7 +209,10 @@ test("an enabled toggle with no configuration fails, it does not skip quietly", 
   // `check-jsonschema-files`; the join is what turns it into the job's verdict,
   // so a silently skipped schema gate cannot report success.
   const guard = steps.find((step) => step?.id === "configuration");
-  assert.ok(guard !== undefined, "pr-run-checks.yml has no input-combination guard");
+  assert.ok(
+    guard !== undefined,
+    "pr-run-checks.yml has no input-combination guard",
+  );
   assert.equal(
     guard.if,
     `\${{ inputs.check-jsonschema && inputs.check-jsonschema-files == '' }}`,
