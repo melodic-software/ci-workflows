@@ -103,6 +103,8 @@ test("the join reads every continue-on-error step", () => {
     markdown: "markdownlint",
     "exec-bit": "check-exec-bit",
     "eol-renormalize": "check-line-endings",
+    "machine-specific-paths": "check-machine-paths",
+    "comment-hygiene": "check-comment-markers",
   };
   for (const step of composites) {
     const name = step.id.replaceAll("_", "-");

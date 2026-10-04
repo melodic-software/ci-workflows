@@ -467,9 +467,9 @@ consumer to audit it.
 - `.github/actions/check-action-filename` — rejects any tracked
   `action.yaml` (GitHub also accepts this spelling, but every lane here globs
   `action.yml` only); repo-wide, not scoped to `.github/actions/`.
-- `.github/actions/machine-specific-paths` — rejects machine-specific absolute /
+- `.github/actions/check-machine-paths` — rejects machine-specific absolute /
   user-home paths in tracked files (portable placeholders allowed).
-- `.github/actions/comment-hygiene` — scans comments for deferred-work markers
+- `.github/actions/check-comment-markers` — scans comments for deferred-work markers
   (TODO/FIXME/HACK/XXX) and tracker references against its bundled organization
   policy, with an optional complete caller replacement.
 
