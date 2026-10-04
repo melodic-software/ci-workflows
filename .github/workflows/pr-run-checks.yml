@@ -267,7 +267,7 @@ jobs:
         id: machine_specific_paths
         if: ${{ inputs.machine-specific-paths && fromJSON(steps.detect.outputs.results || '{}')['machine-specific-paths'] != 'false' }}
         continue-on-error: true
-        uses: $/.github/actions/machine-specific-paths
+        uses: $/.github/actions/check-machine-paths
         with:
           exclude: ${{ inputs.machine-specific-paths-exclude }}
 
@@ -281,7 +281,7 @@ jobs:
         id: comment_hygiene
         if: ${{ inputs.comment-hygiene && fromJSON(steps.detect.outputs.results || '{}')['comment-hygiene'] != 'false' }}
         continue-on-error: true
-        uses: $/.github/actions/comment-hygiene
+        uses: $/.github/actions/check-comment-markers
         with:
           exclude: ${{ inputs.comment-hygiene-exclude }}
 

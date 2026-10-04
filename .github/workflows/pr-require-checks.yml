@@ -160,8 +160,8 @@ jobs:
       check-jsonschema-builtin-schema: vendor.dependabot
       # Each scan skips its own action's source, whose pattern script and
       # marker policy contain the literal bodies it matches.
-      machine-specific-paths-exclude: ':(exclude).github/actions/machine-specific-paths/**'
-      comment-hygiene-exclude: ':(exclude).github/actions/comment-hygiene/**'
+      machine-specific-paths-exclude: ':(exclude).github/actions/check-machine-paths/**'
+      comment-hygiene-exclude: ':(exclude).github/actions/check-comment-markers/**'
       # Composites without a group here run ungated.
       filters: |
         markdown:
@@ -446,13 +446,13 @@ jobs:
       - name: Verify the comment-hygiene prefilter is a superset of the policy library
         # The git-grep prefilter must admit every line the policy flags, or the
         # gate fails open. The checks reusable cannot run a repo-local script.
-        run: bash .github/actions/comment-hygiene/superset-test.sh
+        run: bash .github/actions/check-comment-markers/superset-test.sh
       - name: Test machine-specific path span filtering
         # Repo-local driver contract. The checks reusable cannot run this
         # script, same as the comment-hygiene superset test above.
-        run: bash .github/actions/machine-specific-paths/check-machine-specific-paths.test.sh
+        run: bash .github/actions/check-machine-paths/check-machine-specific-paths.test.sh
       - name: Test comment-hygiene scan-tree collection contracts
-        run: bash .github/actions/comment-hygiene/scan-tree.test.sh
+        run: bash .github/actions/check-comment-markers/scan-tree.test.sh
       - name: Test the pull-request contract runner
         run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
