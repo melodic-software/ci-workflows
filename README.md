@@ -349,7 +349,7 @@ consumer to audit it.
 
   ```yaml
   jobs:
-    changes:
+    detect-changes:
       permissions:
         contents: read
         statuses: write
@@ -372,7 +372,7 @@ consumer to audit it.
           with:
             carry-forward-wait-seconds: '0'
             rerun-contract-only-siblings: 'true'
-            results: ${{ needs.changes.result }} ...
+            results: ${{ needs.detect-changes.result }} ...
   ```
 
   **To keep a wait instead, size the ceiling from the repository's own measured
@@ -443,7 +443,7 @@ consumer to audit it.
   fails OPEN to `"true"`, while unhonorable pattern syntax (`!`, `?`, `+`)
   and malformed group config are hard errors even on fallback runs. The
   required-check interplay is load-bearing: gate each lane job with
-  `!cancelled() && fromJSON(needs.changes.outputs.results || '{}')['<group>']
+  `!cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['<group>']
   != 'false'` (never `== 'true'` — an unset output must run the lane, not
   skip it), keep aggregating through the always-running `ci-status` gateway
   with `treat-skipped-as: pass` (a job-level skip reports `skipped`, which
@@ -628,9 +628,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `outcome` (`success` or `failure`). Every composite runs under
   `continue-on-error: true` and one join step names the first failure and fails
   the job, so one failing tool never hides the rest. Gate downstream lanes with
-  `fromJSON(needs.checks.outputs.results || '{}')['<group>'] != 'false'`: a
+  `fromJSON(needs.pr-run-checks.outputs.results || '{}')['<group>'] != 'false'`: a
   reusable workflow publishes no outputs when its job fails, so
-  `needs.checks.result` stays the authoritative verdict. The caller's job block
+  `needs.pr-run-checks.result` stays the authoritative verdict. The caller's job block
   must grant `contents: read` and `pull-requests: read` — a called workflow
   cannot elevate, and the detection pass reads the pull request's file listing.
   `zizmor` is not among the toggles: it has no composite, only the reusable
@@ -644,7 +644,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   ```yaml
   jobs:
-    checks:
+    pr-run-checks:
       permissions:
         contents: read
         pull-requests: read
