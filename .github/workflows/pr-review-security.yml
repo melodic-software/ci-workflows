@@ -54,11 +54,11 @@ name: pr-review-security
 # `docs/` markdown, READMEs and changelogs), no security review runs.
 #
 # One job reviews and reports. It is named `security-review`, so with the
-# canonical caller its check is `security-review / security-review`, the
-# context the github-iac `security-review-gate` org ruleset names. It goes
+# canonical caller its check is `security-review / security-review`. It goes
 # red, naming the cause, when no review happened; a review that is not needed
-# stays green. That ruleset is disabled (github-iac ADR 0011 keeps agentic
-# review advisory); do not make the check required elsewhere.
+# stays green. The check is advisory (github-iac ADR 0011 keeps agentic review
+# advisory, and `ci-status` is the only required check); do not make it
+# required.
 
 on:
   workflow_call:
