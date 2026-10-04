@@ -21,7 +21,7 @@ inputs:
     description: Exact markdownlint-cli2 version to run.
     # Authority: melodic-software/standards' markdownlint-cli2 pin. Absorb bumps
     # to match that pin, never past it; npm latest can lead standards.
-    default: 0.23.2
+    default: 0.23.3
   node-version:
     description: Node.js version to set up.
     default: 24.20.0
