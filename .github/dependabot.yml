@@ -1,10 +1,12 @@
 version: 2
 updates:
-  # Keep SHA-pinned actions current. Review every PR before merge; never
-  # auto-merge (a SHA bump is executable CI logic). The "/" target scans
-  # .github/workflows; the glob target is required to also scan the composite
-  # actions' own action.yml files (Dependabot does not descend into
-  # .github/actions/<name>/ from "/" alone).
+  # Keep SHA-pinned actions current. Merge lanes per the standards
+  # dependabot-policy component: the vendor-actions group (non-major only) is
+  # the auto-merge lane once its shared workflow is wired in; every other PR is
+  # reviewed by hand. The "/"
+  # target scans .github/workflows; the glob target is required to also scan
+  # the composite actions' own action.yml files (Dependabot does not descend
+  # into .github/actions/<name>/ from "/" alone).
   #
   # Dependabot only updates `uses:` action SHAs. The tool versions pinned inside
   # the actions' run scripts and input defaults have no ecosystem manifest here
@@ -22,19 +24,18 @@ updates:
     # Delay version bumps so a compromised or yanked release is caught before we
     # adopt it; security updates bypass cooldown. Defense-in-depth for the
     # SHA-rewrite supply-chain risk that motivates SHA-pinning (architecture D5).
-    # claude-code-action is exempt: the review lanes track its releases closely
-    # and each bump is reviewed on its own PR, so the cooldown would only delay
-    # fixes the lanes are waiting on.
     cooldown:
-      default-days: 7
-      exclude:
-        - anthropics/claude-code-action
-    # Collapse all action bumps into a single PR to cut review noise —
-    # except claude-code-action, whose bumps arrive as standalone PRs so a
-    # lane-relevant change is never buried in an unrelated batch.
+      default-days: 3
+    # Vendor bumps get their own PR so a community bump never blocks the
+    # auto-merge lane; a dependency joins the first group that matches it.
     groups:
+      vendor-actions:
+        patterns:
+          - actions/*
+          - github/*
+          - anthropics/*
+        # Majors fall through to the reviewed group below.
+        update-types: [minor, patch]
       github-actions:
         patterns:
           - '*'
-        exclude-patterns:
-          - anthropics/claude-code-action
