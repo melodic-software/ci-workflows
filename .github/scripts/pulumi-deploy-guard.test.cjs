@@ -124,7 +124,7 @@ test("bundled OIDC contract is exact, wildcard-free, and covers the organization
       policy.rules.sub,
       `repo:${owner}@${identity.ownerId}/${repository}@${identity.repositoryId}:environment:github-iac-production`,
     );
-    assert.equal(policy.rules.workflow, "github-iac-production-deploy-v1");
+    assert.equal(policy.rules.workflow, "release-deploy");
     for (const ruleValue of Object.values(policy.rules)) {
       assert.doesNotMatch(ruleValue, /[*?.]/u);
     }

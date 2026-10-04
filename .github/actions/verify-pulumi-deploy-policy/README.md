@@ -19,8 +19,8 @@ claims for: private repo, owner ID, actor ID, protected environment, main ref,
 manual event, first run attempt, self-hosted runner, reserved workflow name.
 Pulumi treats `*`, `?`, `.` as pattern operators — validator rejects all three
 from every rule value. The workflow claim is a GitHub workflow **name**, not a
-file identity; each caller must reserve `github-iac-production-deploy-v1`
-exclusively for `.github/workflows/deploy.yml`, enforce uniqueness in own repo
+file identity; each caller must reserve `release-deploy`
+exclusively for `.github/workflows/release-deploy.yml`, enforce uniqueness in own repo
 tests.
 
 Existing operational resources emit as newline-delimited refresh targets. Absent
