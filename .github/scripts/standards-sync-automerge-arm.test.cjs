@@ -118,6 +118,7 @@ async function runArming({
   const graphqlCalls = [];
   const warnings = [];
   const infos = [];
+  const failures = [];
   try {
     const github = {
       graphql: async (query, variables) => {
@@ -166,6 +167,7 @@ async function runArming({
     const core = {
       info: (message) => infos.push(message),
       warning: (message) => warnings.push(message),
+      setFailed: (message) => failures.push(message),
     };
     const execute = new AsyncFunction(
       "github",
@@ -174,7 +176,7 @@ async function runArming({
       armingScript,
     );
     await execute(github, core, require);
-    return { graphqlCalls, warnings, infos };
+    return { graphqlCalls, warnings, infos, failures };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -274,6 +276,30 @@ test("a disarmed PR whose head the sync replaced is re-armed at the new head", a
   assert.equal(disarmCalls(graphqlCalls).length, 0);
   const [mutation] = mutationCalls(graphqlCalls);
   assert.equal(mutation.variables.expectedHeadOid, newHead);
+});
+
+test("a failed re-arm after this run disarmed the PR fails the step", async () => {
+  const { graphqlCalls, warnings, failures } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    graphqlError: new Error("Head sha did not match"),
+  });
+  assert.equal(disarmCalls(graphqlCalls).length, 1);
+  assert.equal(warnings.length, 0);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /melodic-software\/dotfiles#42/u);
+  assert.match(failures[0], /Head sha did not match/u);
+});
+
+test("a failed first arm of a never-armed PR only warns", async () => {
+  const { warnings, failures } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    graphqlError: new Error("Pull request is in clean status"),
+  });
+  assert.equal(failures.length, 0);
+  assert.equal(warnings.length, 1);
 });
 
 test("an empty head sha warns and never arms or disarms", async () => {

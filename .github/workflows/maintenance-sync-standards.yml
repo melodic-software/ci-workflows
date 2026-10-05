@@ -546,6 +546,7 @@ jobs:
               return;
             }
 
+            let disarmed = false;
             try {
               // Drop an arm made on an earlier head before arming at this run's
               // head; if re-arming then fails, the PR is left disarmed.
@@ -558,6 +559,7 @@ jobs:
                   }`,
                   { pullRequestId: pull.id },
                 );
+                disarmed = true;
               }
               await github.graphql(
                 `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
@@ -573,8 +575,15 @@ jobs:
               );
               core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number} at ${expectedHeadOid}.`);
             } catch (error) {
+              // This run disarmed the PR, so a failed re-arm must be visible.
+              if (disarmed) {
+                core.setFailed(
+                  `Disarmed auto-merge on ${owner}/${repo}#${pull_number} but could not re-arm it: ${error.message}`,
+                );
+                return;
+              }
               // An already-mergeable PR (mergeStateStatus CLEAN) makes the mutation
-              // error instead of no-op; never fail the sync over arming.
+              // error instead of no-op; never fail the sync over a first arm.
               core.warning(
                 `Could not arm auto-merge on ${owner}/${repo}#${pull_number}: ${error.message}`,
               );
