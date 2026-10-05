@@ -73,3 +73,7 @@ test("label matching is exact, not a substring", () => {
 test("dependabot PRs stay exempt without a label", () => {
   assert.equal(skips("dependabot[bot]", ""), "skip=true");
 });
+
+test("a user login named dependabot without [bot] is not exempt", () => {
+  assert.equal(skips("dependabot", ""), "skip=false");
+});
