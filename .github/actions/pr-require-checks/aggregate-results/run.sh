@@ -116,6 +116,14 @@ CARRY_FORWARD_WAIT_SECONDS="${CARRY_FORWARD_WAIT_SECONDS:-240}"
 # Poll interval, deliberately not a caller input: it is an implementation detail
 # of the wait, and the only knob a consumer should reason about is the ceiling.
 CARRY_FORWARD_POLL_SECONDS=15
+# Ceiling, in seconds, on how long a full run that records `success` waits for
+# in-flight contract-only siblings to finish before re-running the failed ones;
+# see `rerun_failed_contract_only_siblings`. `0` disables the wait. The default
+# fits inside the 3-minute `timeout-minutes` the README recommends for the
+# ci-status job. Validated below. The re-list interval is fixed, like the poll
+# above.
+RERUN_WAIT_SECONDS="${RERUN_WAIT_SECONDS:-90}"
+RERUN_WAIT_POLL_SECONDS=10
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
 # will.
@@ -225,6 +233,7 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # value would otherwise make the comparison an error under `set -e` or the sleep
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 
 # POST one `status-context` entry on `sha` naming this run, retrying after 1s,
 # 2s and 4s. Every write is load-bearing, not best-effort: the carry-forward
@@ -905,27 +914,82 @@ fi
 # loop. A contract-only run that is red for a contract reason (title,
 # `do-not-merge`) just goes red again, at the cost of one short job.
 #
-# The known gap: a contract-only run still in flight when this lists the runs
-# read the status before this run wrote it, finishes red after, and is not
-# re-run. Its message therefore ends by telling the reader to re-run it if it
-# stays red after the full run's success.
+# A contract-only run still in flight when this lists the runs may have read
+# the status before this run wrote it (or while this step, its writer, was
+# still running) and will finish red. It cannot be re-run while in flight, so
+# under `yield-to-full-run`, or a carry-forward wait of `0`, where such a run
+# reads the status once and never polls, this waits up to `rerun-wait-seconds`
+# for it to complete, re-listing every RERUN_WAIT_POLL_SECONDS. A run that
+# polls (a wait above `0` without yield) reads this success itself once this
+# step finishes, so nothing waits for it: it would be waiting on this run.
+#
+# An in-flight sibling is waited for unless it is known to be a full run: two
+# or more of its latest attempt's jobs are running or ran (any conclusion but
+# `skipped`). A contract-only run only ever runs its gate. A sibling whose jobs
+# cannot be read is waited for, and so is a full run whose lanes are still
+# queued, for at most the ceiling. Re-runs are issued last, so this step
+# usually finishes before a re-run's runner starts; a re-run that reads the
+# status while this step is still running reads `pending` and goes red, as it
+# could before. A sibling still in flight at the ceiling is not re-run, and its
+# message still ends by telling the reader to re-run it if it stays red.
 #
 # Nothing here changes this run's verdict: the success is already recorded, so
 # a refusal warns and moves on.
 rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
+  local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining sleep_for ran
+  local wait_for_in_flight=false
+  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
+    wait_for_in_flight=true
+  fi
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; a refusal only skips the re-run.
   if ! resolve_workflow_id 'actions: write' "$skip"; then
     return 0
   fi
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
-    warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: write' "$skip"
-    return 0
-  fi
+  wait_started="$(date +%s)"
+  while :; do
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: write' "$skip"
+      return 0
+    fi
+    cp -- "$gh_stdout" "$runs"
+    if [[ "$wait_for_in_flight" != true ]]; then
+      break
+    fi
+    in_flight="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
+      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
+      <"$runs")"
+    waiting=""
+    for id in $in_flight; do
+      ran=0
+      # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling is waited for.
+      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+        ran="$(jq -r '[ .jobs[]? | select(.status == "in_progress" or ((.conclusion // "skipped") != "skipped")) ] | length' <"$gh_stdout")" || ran=0
+      fi
+      if [[ ! "$ran" =~ ^[0-9]+$ || "$ran" -lt 2 ]]; then
+        waiting="${waiting}${waiting:+ }${id}"
+      fi
+    done
+    if [[ -z "$waiting" ]]; then
+      break
+    fi
+    waited=$(($(date +%s) - wait_started))
+    remaining=$((RERUN_WAIT_SECONDS - waited))
+    if [[ "$remaining" -le 0 ]]; then
+      echo "::warning::contract-only run(s) ${waiting} still in flight on ${SHA} after ${waited}s; not waiting longer to re-run them."
+      break
+    fi
+    sleep_for="$RERUN_WAIT_POLL_SECONDS"
+    if [[ "$sleep_for" -gt "$remaining" ]]; then
+      sleep_for="$remaining"
+    fi
+    echo "Waiting ${sleep_for}s for in-flight run(s) ${waiting} on ${SHA} to finish before re-running failed contract-only runs."
+    sleep "$sleep_for"
+  done
   candidates="$(jq -r --argjson self "$GITHUB_RUN_ID" \
     '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "failure" and (.id // $self) != $self) | .id ] | sort | join(" ")' \
-    <"$gh_stdout")"
+    <"$runs")"
   for id in $candidates; do
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then

@@ -1372,9 +1372,10 @@ jobs_for 4242 failure skipped skipped
 # re-run too, every lane again for a verdict already recorded; without the
 # single-job guard so is 5500; without the conclusion filter the green,
 # in-flight and cancelled runs are fetched; without excluding this run's id it
-# re-runs itself.
+# re-runs itself. A carry-forward wait above 0 without yield, so the in-flight
+# run 5300 is not waited for (the in-flight wait has cases of its own below).
 echo 'case: a full-mode success re-runs only the failed contract-only siblings'
-run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Recorded ci-lanes=success on ${sha}."
 expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
 expect_log "Re-running failed contract-only run 5000 on ${sha}."
@@ -1675,15 +1676,149 @@ run_case 0 'success success' pass false true YIELD_TO_FULL_RUN=true
 expect_log 'All lanes passed or were skipped.'
 expect_no_gh_call 'actions/'
 
+# --- full mode: waiting for in-flight contract-only siblings -----------------
+
+rerun_runs_count="$calls/${workflow_runs_key}.count"
+inflight_contract_only_jobs='[{"name":"lint","status":"completed","conclusion":"skipped"},{"name":"ci-status","status":"in_progress","conclusion":null}]'
+inflight_full_jobs='[{"name":"changes","status":"completed","conclusion":"success"},{"name":"lint","status":"in_progress","conclusion":null},{"name":"ci-status","status":"queued","conclusion":null}]'
+
+# expect_rerun_after_last_listing <run-id>
+# The re-run must be issued after the final listing, never between polls: an
+# early re-run would read this step's success while it is still running.
+expect_rerun_after_last_listing() {
+  local last_listing rerun_line
+  last_listing="$(grep -nF 'actions/workflows/777/runs' "$gh_log" | tail -n1 | cut -d: -f1)"
+  rerun_line="$(grep -nF "actions/runs/${1}/rerun-failed-jobs" "$gh_log" | head -n1 | cut -d: -f1)"
+  if [[ -z "$last_listing" || -z "$rerun_line" || "$rerun_line" -le "$last_listing" ]]; then
+    echo "FAIL: expected the re-run of ${1} after the last run listing, got:"
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
+# The race #684 names. Without the wait, run 5300, still in flight on the
+# first listing, finishes red after it and is never re-run, leaving its red
+# check run on a green SHA. Without re-listing, the second poll could not see
+# it complete; without issuing re-runs after the wait, the completed sibling
+# 5000 is re-run while this step is still running.
+echo 'case: under yield a full-mode success waits for an in-flight contract-only sibling, then re-runs it'
+reset_yield_fixtures
+workflow_runs_on_call 1 "[$(completed_run 5000 failure),$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+workflow_runs "[$(completed_run 5000 failure),$(completed_run 5300 failure)]"
+jobs_for 5000 failure skipped
+printf '{"jobs":%s}' "$inflight_contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.1.json"
+jobs_for 5300 failure skipped
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
+expect_log "Waiting 10s for in-flight run(s) 5300 on ${sha} to finish before re-running failed contract-only runs."
+expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
+expect_rerun_after_last_listing 5000
+expect_rerun_after_last_listing 5300
+expect_log "Re-ran 2 failed contract-only run(s) on ${sha}."
+
+# A carry-forward wait of 0 reads once and never polls, so it has the same race.
+echo 'case: with a carry-forward wait of 0 a full-mode success also waits for an in-flight contract-only sibling'
+reset_yield_fixtures
+workflow_runs_on_call 1 "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+workflow_runs "[$(completed_run 5300 failure)]"
+printf '{"jobs":%s}' "$inflight_contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.1.json"
+jobs_for 5300 failure skipped
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true CARRY_FORWARD_WAIT_SECONDS=0
+expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
+
+# Without excluding a known full run, every full run on a SHA with a second
+# full run in flight would hold its required check open to the ceiling.
+echo 'case: a full-mode success does not wait for an in-flight full run'
+reset_yield_fixtures
+workflow_runs "[$(completed_run 5000 failure),$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+jobs_for 5000 failure skipped
+jobs_raw 5300 "$inflight_full_jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
+expect_no_sleep
+expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
+expect_no_gh_call 'actions/runs/5300/rerun-failed-jobs'
+
+# Without the mode check, a polling contract-only run, which waits on this run
+# to finish, and this run, waiting on it, would hold each other to the ceiling.
+echo 'case: with a carry-forward wait above 0 and no yield a full-mode success does not wait'
+reset_yield_fixtures
+workflow_runs "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+jobs_raw 5300 "$inflight_contract_only_jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true CARRY_FORWARD_WAIT_SECONDS=60
+expect_no_sleep
+expect_no_gh_call 'actions/runs/5300/jobs'
+
+# Without counting an unreadable sibling as one to wait for, a jobs read error
+# would drop a contract-only run back into the gap.
+echo 'case: a full-mode success waits for an in-flight sibling whose jobs cannot be read'
+reset_yield_fixtures
+workflow_runs_on_call 1 "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+workflow_runs "[$(completed_run 5300 failure)]"
+printf '1\n' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.fail-on-call"
+jobs_for 5300 failure skipped
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
+expect_log 'Waiting 10s for in-flight run(s) 5300'
+expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.fail-on-call"
+
+# Without the ceiling a sibling that never finishes would hold this run's
+# required check open until the job timeout. The success stays recorded and
+# the completed sibling is still re-run.
+echo 'case: a full-mode success stops waiting at the ceiling and still re-runs what completed'
+reset_yield_fixtures
+workflow_runs "[$(completed_run 5000 failure),$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+jobs_for 5000 failure skipped
+jobs_raw 5300 "$inflight_contract_only_jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
+expect_log "::warning::contract-only run(s) 5300 still in flight on ${sha} after 90s; not waiting longer to re-run them."
+expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
+expect_no_gh_call 'actions/runs/5300/rerun-failed-jobs'
+if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 90 ]]; then
+  echo "FAIL: expected the wait to sleep 90s in total, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+if [[ "$(cat "$rerun_runs_count")" -ne 10 ]]; then
+  echo "FAIL: expected 10 run listings (one per 10s poll plus the last), got: $(cat "$rerun_runs_count")"
+  failures=$((failures + 1))
+fi
+
+# Without reading the input, a consumer whose gate jobs queue longer could not
+# move the ceiling without forking the action.
+echo 'case: rerun-wait-seconds sets the ceiling of the in-flight wait'
+reset_yield_fixtures
+workflow_runs "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+jobs_raw 5300 "$inflight_contract_only_jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true RERUN_WAIT_SECONDS=30
+expect_log "::warning::contract-only run(s) 5300 still in flight on ${sha} after 30s; not waiting longer to re-run them."
+if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]]; then
+  echo "FAIL: expected the wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the zero check, `0` would still list and read every in-flight
+# sibling's jobs and log a ceiling warning.
+echo 'case: rerun-wait-seconds 0 never waits'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true RERUN_WAIT_SECONDS=0
+expect_no_sleep
+expect_no_gh_call 'actions/runs/5300/jobs'
+
+# Without validation a non-numeric value makes the arithmetic an error, which
+# the `|| true` around the re-run would swallow silently.
+echo 'case: a non-numeric rerun-wait-seconds is rejected'
+run_case 1 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_WAIT_SECONDS=soon
+expect_log '::error::rerun-wait-seconds must be a non-negative integer number of seconds, got: soon'
+expect_no_gh_calls_at_all
+
+reset_yield_fixtures
+
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings record-pending yield-to-full-run token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds record-pending yield-to-full-run token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
@@ -1706,6 +1841,15 @@ done
 # above, which sets the value explicitly.
 if ! grep -qF "    default: '240'" "$action_metadata"; then
   echo "FAIL: action.yml does not default carry-forward-wait-seconds to 240"
+  failures=$((failures + 1))
+fi
+
+# The rerun wait holds the full run's ci-status open, so its default must stay
+# inside the 3-minute ci-status job the README recommends. Every case above
+# runs on run.sh's own fallback, which this does not see.
+rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
+if [[ "$rerun_wait_default" != "    default: '90'" ]]; then
+  echo "FAIL: action.yml does not default rerun-wait-seconds to '90' (got: ${rerun_wait_default})"
   failures=$((failures + 1))
 fi
 
