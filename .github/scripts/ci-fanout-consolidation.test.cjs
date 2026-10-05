@@ -233,9 +233,10 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   const ciStatusJob = ciWorkflow.slice(ciWorkflow.search(/^ {2}ci-status:$/mu));
   assert.match(ciStatusJob, /^ {6}statuses: write$/mu);
   assert.match(ciStatusJob, /^ {6}pull-requests: write$/mu);
-  // The carry-forward wait enumerates this workflow's runs on the head SHA.
-  // Without the scope both Actions reads 403 and the wait never engages.
-  assert.match(ciStatusJob, /^ {6}actions: read$/mu);
+  // `yield-to-full-run` lists this workflow's runs on the head SHA and
+  // `rerun-contract-only-siblings` re-runs the red contract-only ones; write
+  // covers the read, and without the scope the Actions calls 403.
+  assert.match(ciStatusJob, /^ {6}actions: write$/mu);
   const contractStep = ciStatusJob.indexOf(
     "./.github/actions/pr-require-checks/check-contract",
   );
@@ -273,6 +274,13 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
     waitSeconds <= timeoutMinutes * 60 - 60,
     `carry-forward-wait-seconds ${waitSeconds} is not at least 60s below timeout-minutes ${timeoutMinutes}`,
   );
+
+  // A contract-only run yields to an in-flight full run instead of waiting,
+  // and the full run re-runs its red contract-only siblings on success.
+  assert.equal(timeoutMinutes, 3);
+  assert.equal(waitSeconds, 0);
+  assert.match(ciStatusJob, /^ {10}yield-to-full-run: 'true'$/mu);
+  assert.match(ciStatusJob, /^ {10}rerun-contract-only-siblings: 'true'$/mu);
 });
 
 test("pr-require-checks.yml consolidates the hygiene composites into the checks reusable", () => {
