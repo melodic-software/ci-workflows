@@ -49,7 +49,10 @@ inputs:
       carry-forward mode. Distinct from the `ci-status` check-run name on
       purpose: a check run cannot say which event produced it, so only a status
       only full runs write can stop a chain of contract-only runs from
-      self-certifying.
+      self-certifying. A carried `success` passes only when the run its
+      `target_url` names is a run of this same workflow, so any carry-forward
+      needs `actions: read` on the calling job; a writer that cannot be read
+      fails the run.
     default: ci-lanes
   carry-forward-wait-seconds:
     description: >-
@@ -83,7 +86,7 @@ inputs:
       wall-clock time from the start of the wait, API calls included, so it
       overruns by at most one poll's calls. Every red names the remedy that
       fits the status it read (see `rerun-contract-only-siblings`).
-      `0` reads the status once, never waits, and makes no Actions call.
+      `0` reads the status once and never waits.
       `yield-to-full-run` replaces the wait instead and is the recommended
       setting, with `record-pending`, `rerun-contract-only-siblings` and a
       calling-job `timeout-minutes` of 3: no run then waits for another.

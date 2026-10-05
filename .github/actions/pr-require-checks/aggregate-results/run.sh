@@ -26,7 +26,9 @@
 # endpoint, which carries `.creator`, and the newest entry by id from
 # `github-actions[bot]` wins, so a later full-run failure on the same SHA
 # overrides an earlier success. The combined-status endpoint would be shorter
-# but exposes no author; see `read_carried_state` for why that matters.
+# but exposes no author; see `read_carried_state` for why that matters. A
+# `success` passes only when its writer run belongs to this same workflow; see
+# `verify_carried_writer`.
 #
 # The branched concurrency group stops a contract-only run
 # queueing behind the full run whose status it reads, so the two now race.
@@ -77,7 +79,8 @@
 # Reading a settled `success` before the wait set empties is a deliberate trade:
 # it releases the mutual wait above, and it can carry an older `success` forward
 # while a re-run of the same SHA is in flight to overwrite it. The defenses
-# against a forged status (context, creator login, Bot type, newest id) hold.
+# against a forged status (context, creator login, Bot type, newest id, writer
+# workflow) hold.
 #
 # Every red names the remedy that fits the state it read; see
 # `fail_carry_forward`.
@@ -318,9 +321,11 @@ read_carried_state() {
   # could POST a forged `ci-lanes=success` and then flip a label to turn the
   # sole required check green over failing lanes. The list carries `.creator`,
   # newest first, so the gate can insist the newest entry for this context was
-  # written by the Actions bot and ignore anything a human pushed.
+  # written by the Actions bot and ignore anything a human pushed. `--slurp`
+  # wraps every page in one outer array so `max_by` below sees the whole list;
+  # without it jq runs once per page and picks a winner per page.
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/commits/${SHA}/statuses?per_page=100" --paginate; then
+  if ! gh_api GET "repos/${REPOSITORY}/commits/${SHA}/statuses?per_page=100" --paginate --slurp; then
     return 1
   fi
   # Highest id wins, not first element: status ids are monotonic, so `max_by`
@@ -335,13 +340,55 @@ read_carried_state() {
   # that status would be discarded, and the function would report a completed
   # read of an empty state. A body this function cannot parse is a failed read.
   # One pass, `|`-joined: tab is IFS whitespace, so `read` would collapse an
-  # empty middle field and shift the ones after it.
+  # empty middle field and shift the ones after it. The writer run id comes only
+  # from a `target_url` of the exact shape `write_status` records, on this
+  # server and repository; any other URL yields no writer.
   entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
-    '[ .[] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id) // {})
-     | [(.state // ""), (.created_at // ""), ((.target_url // "") | capture("/actions/runs/(?<id>[0-9]+)").id // "")] | join("|")' \
+    --arg runs_prefix "${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/" \
+    '[ .[][] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id) // {})
+     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("^[0-9]+$")) then ltrimstr($runs_prefix) else "" end)] | join("|")' \
     <"$gh_stdout")" || return 1
   IFS='|' read -r carried_state carried_created_at carried_writer_run_id <<<"$entry"
+  if [[ "$carried_state" == success ]]; then
+    # shellcheck disable=SC2310 # verify_carried_writer reports a failed lookup through its status.
+    if ! verify_carried_writer; then
+      return 1
+    fi
+  fi
   carried_state_read=true
+}
+
+# Every workflow in the repository posts as the Actions bot, so the creator
+# check alone lets ANY workflow write the `success` that turns the required
+# check green. Only `success` is verified, as the only state that passes: the
+# run its `target_url` names must be a run of this same workflow. A `success`
+# naming no run, or a run of another workflow, is discarded and the read goes
+# on as if no status were recorded. A failed lookup returns 1, a failed read,
+# which every caller turns red: an unverifiable writer never passes.
+verify_carried_writer() {
+  local writer_workflow_id
+  local unverified='Cannot verify which workflow wrote the carried status, so this run fails closed.'
+  if [[ -z "$carried_writer_run_id" ]]; then
+    echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names no run of ${REPOSITORY} in its target_url; ignoring it."
+    carried_state=""
+    return 0
+  fi
+  if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
+    # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
+    if ! resolve_workflow_id 'actions: read' "$unverified"; then
+      return 1
+    fi
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}"; then
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}" 'actions: read' "$unverified"
+    return 1
+  fi
+  writer_workflow_id="$(jq -r '.workflow_id // "" | tostring' <"$gh_stdout")" || return 1
+  if [[ "$writer_workflow_id" != "$workflow_id" ]]; then
+    echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} was written by run ${carried_writer_run_id} of workflow ${writer_workflow_id:-unknown}, not this workflow (${workflow_id}); ignoring it."
+    carried_state=""
+  fi
 }
 
 # The Actions calls need a scope an explicit `permissions:` block does not grant

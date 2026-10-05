@@ -519,14 +519,16 @@ fi
 # ---------------------------------------------------------------------------
 find_marker_comment() {
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate; then
+  if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp; then
     return 1
   fi
   # Bot-authored only, newest first. On a public repository anyone can comment,
   # so a stranger who plants the marker would otherwise capture the upsert and
-  # the gate would edit their comment instead of posting its own.
+  # the gate would edit their comment instead of posting its own. `--slurp`
+  # wraps every page in one outer array, so `max_by` sees all pages at once
+  # rather than printing one id per page.
   jq -r --arg marker "$LINKAGE_MARKER" \
-    '[ .[] | select((.user.type // "") == "Bot" and ((.body // "") | contains($marker))) ] | (max_by(.id).id // empty)' \
+    '[ .[][] | select((.user.type // "") == "Bot" and ((.body // "") | contains($marker))) ] | (max_by(.id).id // empty)' \
     <"$gh_stdout"
 }
 

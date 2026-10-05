@@ -69,6 +69,7 @@ printf '%s\n' "$*" >>"$GH_LOG"
 method=GET
 path=""
 input=""
+slurp=false
 seen_api=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -83,6 +84,10 @@ while [[ $# -gt 0 ]]; do
     --input)
       input="$2"
       shift 2
+      ;;
+    --slurp)
+      slurp=true
+      shift
       ;;
     --paginate | --silent)
       shift
@@ -144,17 +149,29 @@ if [[ -f "$GH_FIXTURES/${key}.err" ]]; then
   exit 1
 fi
 
+# Pagination as `gh` does it: `<key>.pages.json` holds an array of pages, which
+# `--slurp` prints as one array and a bare `--paginate` prints one page after
+# another. A one-page fixture is wrapped the same way under `--slurp`.
+if [[ -f "$GH_FIXTURES/${key}.pages.json" ]]; then
+  if [[ "$slurp" == true ]]; then
+    cat "$GH_FIXTURES/${key}.pages.json"
+  else
+    jq -c '.[]' "$GH_FIXTURES/${key}.pages.json"
+  fi
+  exit 0
+fi
+
+body='{}'
 if [[ -f "$GH_FIXTURES/${key}.${call_number}.json" ]]; then
-  cat "$GH_FIXTURES/${key}.${call_number}.json"
-  exit 0
+  body="$(cat "$GH_FIXTURES/${key}.${call_number}.json")"
+elif [[ -f "$GH_FIXTURES/${key}.json" ]]; then
+  body="$(cat "$GH_FIXTURES/${key}.json")"
 fi
-
-if [[ -f "$GH_FIXTURES/${key}.json" ]]; then
-  cat "$GH_FIXTURES/${key}.json"
-  exit 0
+if [[ "$slurp" == true ]]; then
+  printf '[%s]\n' "$body"
+else
+  printf '%s\n' "$body"
 fi
-
-echo '{}'
 SHIM
 chmod +x "$shim_directory/gh"
 
@@ -333,6 +350,22 @@ writer_status() {
     "$1" "$2" "$3" "$repository" "$4"
 }
 
+# full_run_success <id>
+# A success as this workflow's full run 4100 records it. Run 4100 is never in a
+# run listing, so it is only ever the verified writer, never a sibling.
+full_run_success() {
+  writer_status "$1" success 2026-09-05T12:00:05Z 4100
+}
+
+# run_of_workflow <run-id> <workflow-id>
+# The run object a carried success's writer is verified against.
+run_of_workflow() {
+  printf '{"id":%s,"workflow_id":%s}' "$1" "$2" \
+    >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${1}.json"
+}
+run_of_workflow 4100 777
+run_of_workflow 4000 777
+
 # --- carry-forward wait fixtures -------------------------------------------
 
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
@@ -363,6 +396,7 @@ current_run() {
   printf '{"id":4242,"workflow_id":777,"created_at":"%s"}' "$current_run_created_at" \
     >"$fixtures/${current_run_key}.json"
 }
+current_run
 
 # workflow_runs <json-array-of-run-objects>
 workflow_runs() {
@@ -498,7 +532,7 @@ expect_no_gh_call 'statuses/'
 # lanes did not run; branching on contract-only FIRST honors it instead of
 # aggregating over results that are all `skipped`.
 echo 'case: contract-only true with same-repo false is still carry-forward'
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' fail true false
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_gh_call 'statuses/'
@@ -508,7 +542,7 @@ expect_no_gh_call 'statuses/'
 # Without the carry-forward branch, `skipped skipped` under treat-skipped-as
 # fail would go red.
 echo 'case: carry-forward passes on a recorded ci-lanes success without aggregating'
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' fail true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_gh_call "commits/${sha}/statuses?per_page=100"
@@ -539,7 +573,7 @@ expect_log "${fail_prefix}${absent_remedy}"
 # Without the context filter, the FIRST entry (a failure under another context)
 # would decide.
 echo 'case: carry-forward selects the ci-lanes entry regardless of its position'
-status_list "[{\"context\":\"other-lane\",\"state\":\"failure\",\"creator\":{\"login\":\"github-actions[bot]\",\"type\":\"Bot\"}},$(bot_status 100 success)]"
+status_list "[{\"context\":\"other-lane\",\"state\":\"failure\",\"creator\":{\"login\":\"github-actions[bot]\",\"type\":\"Bot\"}},$(full_run_success 100)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
@@ -568,14 +602,14 @@ expect_log "${fail_prefix}${failure_remedy}"
 # Without newest-first selection an older user failure would shadow the bot's
 # real success.
 echo 'case: a bot success newer than a user failure passes'
-status_list "[$(bot_status 200 success),$(user_status 300 failure)]"
+status_list "[$(full_run_success 200),$(user_status 300 failure)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
 # Without first-match-wins a later bot failure would be ignored in favor of the
 # earlier success — a re-run that went red could then be carried forward green.
 echo 'case: a bot failure newer than a bot success fails'
-status_list "[$(bot_status 200 failure),$(bot_status 100 success)]"
+status_list "[$(bot_status 200 failure),$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true
 expect_log "${fail_prefix}${failure_remedy}"
 
@@ -583,7 +617,7 @@ expect_log "${fail_prefix}${failure_remedy}"
 # newest-id selection the older success is carried forward while that full run
 # is still in flight, which is the stale green the marker exists to stop.
 echo 'case: a bot pending newer than a bot success fails'
-status_list "[$(writer_status 200 pending 2026-09-05T12:00:20Z 4000),$(bot_status 100 success)]"
+status_list "[$(writer_status 200 pending 2026-09-05T12:00:20Z 4000),$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true
 expect_log "${fail_prefix}full run https://github.com/${repository}/actions/runs/4000 is still in flight"
 expect_no_log 'Carried forward'
@@ -616,9 +650,84 @@ run_case 1 'skipped skipped' pass true
 expect_log "${fail_prefix}${failure_remedy}"
 
 echo 'case: an oldest-first status list still carries a newer bot success forward'
-status_list '[{"id":10,"context":"ci-lanes","state":"failure","creator":{"login":"github-actions[bot]","type":"Bot"}},{"id":20,"context":"ci-lanes","state":"success","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
+status_list "[$(bot_status 10 failure),$(full_run_success 20)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# --- carry-forward: the writer must be this workflow -------------------------
+
+# Without the writer check this passes before any Actions call: the creator
+# check alone accepts the success.
+echo 'case: a success written by this workflow is carried after verifying its writer run'
+status_list "[$(full_run_success 100)]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_gh_call "GET repos/${repository}/actions/runs/4242"
+expect_gh_call "GET repos/${repository}/actions/runs/4100"
+
+# Without the workflow comparison a bot success from any workflow passes.
+echo 'case: a bot success written by another workflow is rejected'
+run_of_workflow 5000 888
+status_list "[$(writer_status 100 success 2026-09-05T12:00:05Z 5000)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} was written by run 5000 of workflow 888, not this workflow (777); ignoring it."
+expect_log "${fail_prefix}${absent_remedy}"
+
+echo 'case: yield mode rejects a bot success written by another workflow'
+clear_run_fixtures
+current_run
+workflow_runs '[]'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log 'not this workflow (777); ignoring it.'
+expect_log "${fail_prefix}${absent_remedy}"
+
+# Without the exact-shape target_url parse, a URL on another repository that
+# ends in a run id of this workflow would be looked up here and pass.
+echo 'case: a bot success whose target_url names another repository is rejected'
+status_list '[{"id":100,"context":"ci-lanes","state":"success","target_url":"https://github.com/someone/else/actions/runs/4100","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} names no run of ${repository} in its target_url; ignoring it."
+expect_no_gh_call 'actions/runs/4100'
+
+echo 'case: a bot success with no target_url is rejected'
+status_list "[$(bot_status 100 success)]"
+run_case 1 'skipped skipped' pass true
+expect_log 'names no run of'
+expect_log "${fail_prefix}${absent_remedy}"
+
+# Without fail-closed handling an unreadable writer run would leave the success
+# standing and pass.
+echo 'case: a writer run that cannot be read fails closed'
+status_list "[$(full_run_success 100)]"
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' \
+  >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100.err"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::repos/${repository}/actions/runs/4100 returned HTTP 403; the ci-status job needs 'actions: read'"
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100.err"
+
+echo 'case: a current run whose workflow cannot be read fails closed'
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${current_run_key}.err"
+run_case 1 'skipped skipped' pass true
+expect_no_log 'Carried forward'
+expect_no_gh_call 'actions/runs/4100'
+rm -f -- "$fixtures/${current_run_key}.err"
+
+# --- carry-forward: pagination -----------------------------------------------
+
+# Without `--slurp` jq runs once per page, so the filter never sees both pages
+# together and the newest entry on a later page is not selected.
+echo 'case: the newest bot entry is selected across pages (failure on a later page)'
+clear_status_fixtures
+printf '[[%s],[%s]]' "$(full_run_success 10)" "$(bot_status 20 failure)" >"$fixtures/${statuses_key}.pages.json"
+run_case 1 'skipped skipped' pass true
+expect_log "${fail_prefix}${failure_remedy}"
+
+echo 'case: the newest bot entry is selected across pages (success on a later page)'
+printf '[[%s],[%s]]' "$(bot_status 10 failure)" "$(full_run_success 20)" >"$fixtures/${statuses_key}.pages.json"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures/${statuses_key}.pages.json"
 
 # --- carry-forward: the bounded wait ---------------------------------------
 #
@@ -631,7 +740,7 @@ echo 'case: the wait holds until the sibling full run finishes, then reads the s
 clear_status_fixtures
 clear_run_fixtures
 status_list_on_call 1 '[]'
-status_list_on_call 2 "[$(bot_status 100 success)]"
+status_list_on_call 2 "[$(full_run_success 100)]"
 current_run
 workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 '[]'
@@ -742,7 +851,7 @@ clear_status_fixtures
 clear_run_fixtures
 current_run
 status_list_on_call 1 '[]'
-status_list_on_call 2 "[$(bot_status 100 success)]"
+status_list_on_call 2 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 2 >"$fixtures/${workflow_runs_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
@@ -777,7 +886,7 @@ expect_no_sleep
 
 echo 'case: carry-forward-wait-seconds 0 carries a recorded success after one read'
 clear_status_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=0
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_status_reads 1
@@ -819,7 +928,7 @@ clear_run_fixtures
 current_run
 status_list_on_call 1 '[]'
 status_list_on_call 2 '[]'
-status_list_on_call 3 "[$(bot_status 100 success)]"
+status_list_on_call 3 "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 5000 in_progress "$current_run_created_at")]"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 5000 on ${sha} to finish (waited 0s of 60s)."
@@ -990,7 +1099,7 @@ echo 'case: a settled success ends the wait even with a sibling in flight'
 clear_status_fixtures
 clear_run_fixtures
 current_run
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
@@ -1022,7 +1131,7 @@ clear_status_fixtures
 clear_run_fixtures
 current_run
 status_list_on_call 1 '[]'
-status_list_on_call 3 "[$(bot_status 100 success)]"
+status_list_on_call 3 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
@@ -1073,7 +1182,7 @@ echo 'case: a malformed statuses body fails the read rather than reading as an e
 clear_status_fixtures
 clear_run_fixtures
 current_run
-status_list "[$(bot_status 100 success)"
+status_list "[$(full_run_success 100)"
 workflow_runs '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
@@ -1306,7 +1415,7 @@ reset_yield_fixtures() {
 # exists to close.
 echo 'case: yield fails at once, superseded, when a full run is in flight over an older success'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1320,7 +1429,7 @@ expect_no_sleep
 # read as nothing in flight and the older success would carry across it.
 echo 'case: yield is superseded by a queued full run over an older success'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 4000 queued 2026-09-05T12:00:00Z)]"
 jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1330,7 +1439,7 @@ expect_log "${superseded_prefix}${superseded_manual}"
 # whose jobs the API does not list yet, would read as nothing in flight.
 echo 'case: yield counts an in-flight run with no jobs listed yet as a full run'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "${superseded_prefix}${superseded_manual}"
@@ -1339,7 +1448,7 @@ expect_log "${superseded_prefix}${superseded_manual}"
 # the sibling and let the older success through.
 echo 'case: yield counts an in-flight run whose jobs cannot be read as a full run'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.err"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1350,7 +1459,7 @@ rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jo
 # would each fail on the other.
 echo 'case: yield ignores an in-flight contract-only sibling and carries a recorded success'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 # This run (4242) is listed too: without excluding itself it would count as a
 # full run in flight and always fail.
 workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
@@ -1364,7 +1473,7 @@ expect_no_sleep
 # and the older success would carry across it.
 echo 'case: yield is superseded by a full run whose lanes skipped before its gate exists'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 jobs_raw 4000 '[{"name":"changes","conclusion":"success"},{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"}]'
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1376,7 +1485,7 @@ expect_log "${superseded_prefix}${superseded_manual}"
 # would hide a full-run job on a later page.
 echo 'case: yield counts a sibling with more jobs than one page lists as a full run'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
 printf '{"total_count":150,"jobs":%s}' "$contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4300_jobs.json"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1386,7 +1495,7 @@ echo 'case: yield counts every sibling as a full run when its own jobs cannot be
 reset_yield_fixtures
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.json"
 printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.err"
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
 jobs_raw 4300 "$contract_only_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1448,7 +1557,7 @@ expect_no_sleep
 # read and carry the older success across any full run in flight.
 echo 'case: yield fails closed when the runs cannot be listed'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${workflow_runs_key}.err"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "needs 'actions: read'"
@@ -1460,7 +1569,7 @@ rm -f -- "$fixtures/${workflow_runs_key}.err"
 # check red.
 echo 'case: yield retries a transient listing failure'
 reset_yield_fixtures
-status_list "[$(bot_status 100 success)]"
+status_list "[$(full_run_success 100)]"
 workflow_runs '[]'
 printf '2\n' >"$fixtures/${workflow_runs_key}.fail-times"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
