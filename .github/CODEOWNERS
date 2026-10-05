@@ -9,3 +9,4 @@
 
 .github/scripts/** @kyle-sexton
 .github/actions/**/*.test.* @kyle-sexton
+.github/actions/**/*-test.* @kyle-sexton
