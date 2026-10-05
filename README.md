@@ -767,7 +767,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
   without failing); consumed via `uses:` at job level. The
   workflow downloads the official x86_64 GNU/Linux archive for the reviewed
-  [v1.29.0 release][zizmor-release-v1-29-0], verifies its committed SHA-256
+  [v1.30.0 release][zizmor-release-v1-30-0], verifies its committed SHA-256
   before extraction, and verifies the CLI-reported version before auditing.
   `latest` remains accepted for compatibility but resolves to that reviewed
   default rather than a mutable release. zizmor runs in its own native
@@ -988,4 +988,4 @@ mirrors of the standards catalog.
 [reuse-workflows]: https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
 [reusing-workflow-configurations]: https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
 [semver]: https://semver.org/
-[zizmor-release-v1-29-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.29.0
+[zizmor-release-v1-30-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.30.0
