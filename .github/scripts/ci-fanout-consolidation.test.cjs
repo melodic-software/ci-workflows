@@ -154,7 +154,12 @@ test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
       ciWorkflow,
     )?.groups?.list;
   assert.ok(needs !== undefined, "ci-status has no needs list");
-  for (const job of ["pr-review", "pr-review-security", ISSUE_JOB]) {
+  for (const job of [
+    "pr-review",
+    "pr-review-security",
+    "pr-automerge-dependabot",
+    ISSUE_JOB,
+  ]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
     assert.ok(!needs.split(/,\s*/u).includes(job), `ci-status waits on ${job}`);
     assert.doesNotMatch(ciWorkflow, new RegExp(`needs\\.${job}\\.result`, "u"));
