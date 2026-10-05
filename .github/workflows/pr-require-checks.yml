@@ -514,7 +514,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@95732fda50a95d3297320a6f2c791a1a91870a7f # v0.38.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@2531d56a21e79b7b5222643fadbee95c23a4525b # v0.38.1
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -524,7 +524,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@95732fda50a95d3297320a6f2c791a1a91870a7f # v0.38.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@2531d56a21e79b7b5222643fadbee95c23a4525b # v0.38.1
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -534,7 +534,7 @@ jobs:
     if: ${{ github.event_name == 'issues' }}
     permissions:
       issues: write
-    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@95732fda50a95d3297320a6f2c791a1a91870a7f # v0.38.0
+    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@2531d56a21e79b7b5222643fadbee95c23a4525b # v0.38.1
 
   # Arms auto-merge on this repo's vendor Dependabot bumps, pinned so a bump
   # cannot redefine the code holding the write token. Never in `ci-status`:
@@ -544,7 +544,7 @@ jobs:
     permissions:
       contents: write # enablePullRequestAutoMerge
       pull-requests: write # Arm or disarm auto-merge; list the PR's commits.
-    uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@95732fda50a95d3297320a6f2c791a1a91870a7f # v0.38.0
+    uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@2531d56a21e79b7b5222643fadbee95c23a4525b # v0.38.1
     with:
       runner: ubuntu-24.04
 
