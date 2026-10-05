@@ -1372,6 +1372,16 @@ expect_log "${superseded_prefix}${superseded_manual}"
 
 # Without failing closed on this run's own unreadable jobs, there is no gate
 # name to match and a sibling's shape could not be told apart.
+# Without the total_count check, a first page of 100 jobs in contract-only shape
+# would hide a full-run job on a later page.
+echo 'case: yield counts a sibling with more jobs than one page lists as a full run'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+printf '{"total_count":150,"jobs":%s}' "$contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4300_jobs.json"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
+
 echo 'case: yield counts every sibling as a full run when its own jobs cannot be read'
 reset_yield_fixtures
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.json"

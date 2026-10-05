@@ -566,7 +566,8 @@ fail_carry_forward() {
 # finishes. The name check stops a full run whose first job has finished and
 # whose lanes were skipped, before its gate job exists, from passing for one.
 # The gate name is this run's own one non-skipped job; when that cannot be
-# read, every sibling is a full run. Every other sibling is a full run,
+# read, every sibling is a full run, as is one with more jobs than the one page
+# of 100 lists. Every other sibling is a full run,
 # including one whose jobs are not listed yet or cannot be read, so a misread
 # fails closed. The one full run
 # excluded is the writer of a `success` already on the SHA, when the attempt in
@@ -614,7 +615,7 @@ list_in_flight_full_runs() {
     shape=false
     # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
     if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-      shape="$(jq -r --arg gate "$gate" '[ .jobs[]? ] | length > 1 and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
+      shape="$(jq -r --arg gate "$gate" '(.total_count // 0) as $total | [ .jobs[]? ] | length > 1 and length >= $total and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
     else
       warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
     fi
