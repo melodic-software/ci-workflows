@@ -419,8 +419,9 @@ consumer to audit it.
   holds at any ceiling size.
 
   The `240` default therefore suits only a repository whose full run finishes in
-  well under two minutes. This repository's own `ci-status` uses the
-  recommended no-wait wiring above.
+  well under two minutes. This repository's own `ci-status` uses
+  `yield-to-full-run` and `rerun-contract-only-siblings` with no wait, without
+  `record-pending`.
 
   A waiting run holds a fleet runner slot, or bills a hosted minute per minute,
   for as long as it waits, so the ceiling is a real cost and not a free margin.
