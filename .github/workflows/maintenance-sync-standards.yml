@@ -364,7 +364,8 @@ jobs:
     needs: [plan, attest]
     if: ${{ !inputs.dry-run }}
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    # Covers the merge-queue wait (MAX_POLLS x POLL_SECONDS = 30 minutes) plus the sync itself.
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
@@ -428,6 +429,83 @@ jobs:
             --omit=dev --ignore-scripts --no-audit --no-fund \
             --fetch-retries=8 --fetch-retry-mintimeout=1000 \
             --fetch-retry-maxtimeout=60000
+
+      # A merge queue refuses pushes to a queued PR's branch, so wait for the
+      # previous sync PR to merge or drop out before checking the target out:
+      # a merge lands first and this run then opens a fresh PR on top of it.
+      - name: Wait for a queued sync PR to leave the merge queue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BRANCH: chore/standards-sync
+          MAX_POLLS: '60'
+          OWNER: ${{ matrix.repo_owner }}
+          POLL_SECONDS: '30'
+          REPO: ${{ matrix.repo_name }}
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: |
+            const owner = process.env.OWNER;
+            const repo = process.env.REPO;
+            const headRefName = process.env.BRANCH;
+            const maxPolls = Number(process.env.MAX_POLLS);
+            const pollSeconds = Number(process.env.POLL_SECONDS);
+            if (!Number.isInteger(maxPolls) || maxPolls < 1 || !(pollSeconds > 0)) {
+              core.setFailed(`MAX_POLLS (${process.env.MAX_POLLS}) and POLL_SECONDS (${process.env.POLL_SECONDS}) must be positive numbers.`);
+              return;
+            }
+
+            const queuedPulls = async () => {
+              const { repository } = await github.graphql(
+                `query($owner: String!, $repo: String!, $headRefName: String!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequests(headRefName: $headRefName, states: [OPEN], first: 10) {
+                      nodes {
+                        number
+                        isInMergeQueue
+                        headRepositoryOwner { login }
+                        timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+                          nodes { __typename }
+                        }
+                      }
+                    }
+                  }
+                }`,
+                { owner, repo, headRefName },
+              );
+              // The token holds no merge-queues permission, so the latest
+              // queue event backs up isInMergeQueue; pull-requests read covers it.
+              const queued = (pull) =>
+                pull.isInMergeQueue ||
+                pull.timelineItems?.nodes?.at(-1)?.__typename === 'AddedToMergeQueueEvent';
+              return (repository?.pullRequests?.nodes ?? [])
+                .filter((pull) => queued(pull) && pull.headRepositoryOwner?.login === owner)
+                .map((pull) => `#${pull.number}`);
+            };
+
+            for (let poll = 0; ; poll += 1) {
+              let queued;
+              try {
+                queued = await queuedPulls();
+              } catch (error) {
+                // An unreadable queue state must not block the sync it guards.
+                core.warning(`Could not read the merge-queue state of ${owner}/${repo}:${headRefName}: ${error.message}`);
+                return;
+              }
+              if (queued.length === 0) {
+                if (poll > 0) core.info(`${owner}/${repo}:${headRefName} left the merge queue.`);
+                return;
+              }
+              if (poll >= maxPolls) {
+                core.setFailed(
+                  `${owner}/${repo} ${queued.join(', ')} on ${headRefName} is still in the merge queue ` +
+                  `after ${maxPolls * pollSeconds}s. Re-run this failed job once it leaves the queue; otherwise ` +
+                  'the next push to standards main or the weekly reconciliation carries this target.',
+                );
+                return;
+              }
+              core.info(`${owner}/${repo} ${queued.join(', ')} is in the merge queue; checking again in ${pollSeconds}s.`);
+              await new Promise((resolve) => setTimeout(resolve, pollSeconds * 1000));
+            }
 
       - name: Check out target
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
