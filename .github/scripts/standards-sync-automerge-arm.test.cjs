@@ -274,6 +274,18 @@ test("a disarmed PR whose head the sync replaced is re-armed at the new head", a
   assert.equal(mutation.variables.expectedHeadOid, newHead);
 });
 
+test("an empty head sha warns and never arms or disarms", async () => {
+  const { graphqlCalls, warnings } = await runArming({
+    operation: "updated",
+    headSha: "",
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+  });
+  assert.equal(mutationCalls(graphqlCalls).length, 0);
+  assert.equal(disarmCalls(graphqlCalls).length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /No head SHA/u);
+});
+
 test("dry runs and real syncs never share a concurrency slot", () => {
   const block = /^concurrency:\n {2}group: (?<group>.+)\n {2}cancel-in-progress: false$/mu.exec(
     workflow,

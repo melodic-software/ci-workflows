@@ -495,8 +495,8 @@ jobs:
           labels: standards-sync
 
       # Arm when the PR was never armed (a PR opened while opted out still gets armed
-      # later) or this run pushed a new head, binding the arm to that head through
-      # expectedHeadOid. On an unchanged head a reviewer's disarm holds.
+      # later) or this run pushed a new head, which expectedHeadOid checks at arm
+      # time. On an unchanged head a reviewer's disarm holds.
       - name: Arm auto-merge on the sync PR
         if: steps.cpr.outputs.pull-request-number != '' && matrix.automerge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -513,7 +513,7 @@ jobs:
             const repo = process.env.REPO;
             const pull_number = Number(process.env.PR_NUMBER);
             const headChanged = ["created", "updated"].includes(process.env.OPERATION);
-            const expectedHeadOid = process.env.HEAD_SHA || null;
+            const expectedHeadOid = process.env.HEAD_SHA;
 
             const { repository } = await github.graphql(
               `query($owner: String!, $repo: String!, $number: Int!) {
@@ -541,10 +541,14 @@ jobs:
               core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number} and its head is unchanged; leaving its current state alone.`);
               return;
             }
+            if (!expectedHeadOid) {
+              core.warning(`No head SHA for ${owner}/${repo}#${pull_number}; not arming auto-merge without a head check.`);
+              return;
+            }
 
             try {
-              // Drop an arm made on an earlier head so the new one binds to this
-              // run's head; if re-arming then fails, the PR is left disarmed.
+              // Drop an arm made on an earlier head before arming at this run's
+              // head; if re-arming then fails, the PR is left disarmed.
               if (pull.autoMergeRequest) {
                 await github.graphql(
                   `mutation($pullRequestId: ID!) {
@@ -556,7 +560,7 @@ jobs:
                 );
               }
               await github.graphql(
-                `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID) {
+                `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
                   enablePullRequestAutoMerge(input: {
                     pullRequestId: $pullRequestId
                     mergeMethod: SQUASH
@@ -567,7 +571,7 @@ jobs:
                 }`,
                 { pullRequestId: pull.id, expectedHeadOid },
               );
-              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number} at ${expectedHeadOid ?? "its current head"}.`);
+              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number} at ${expectedHeadOid}.`);
             } catch (error) {
               // An already-mergeable PR (mergeStateStatus CLEAN) makes the mutation
               // error instead of no-op; never fail the sync over arming.
