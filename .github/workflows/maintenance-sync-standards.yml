@@ -448,20 +448,24 @@ jobs:
             const headRefName = process.env.BRANCH;
             const maxPolls = Number(process.env.MAX_POLLS);
             const pollSeconds = Number(process.env.POLL_SECONDS);
+            if (!Number.isInteger(maxPolls) || maxPolls < 1 || !(pollSeconds > 0)) {
+              core.setFailed(`MAX_POLLS (${process.env.MAX_POLLS}) and POLL_SECONDS (${process.env.POLL_SECONDS}) must be positive numbers.`);
+              return;
+            }
 
             const queuedPulls = async () => {
               const { repository } = await github.graphql(
                 `query($owner: String!, $repo: String!, $headRefName: String!) {
                   repository(owner: $owner, name: $repo) {
                     pullRequests(headRefName: $headRefName, states: [OPEN], first: 10) {
-                      nodes { number isInMergeQueue }
+                      nodes { number isInMergeQueue headRepositoryOwner { login } }
                     }
                   }
                 }`,
                 { owner, repo, headRefName },
               );
               return (repository?.pullRequests?.nodes ?? [])
-                .filter((pull) => pull.isInMergeQueue)
+                .filter((pull) => pull.isInMergeQueue && pull.headRepositoryOwner?.login === owner)
                 .map((pull) => `#${pull.number}`);
             };
 
@@ -481,7 +485,8 @@ jobs:
               if (poll >= maxPolls) {
                 core.setFailed(
                   `${owner}/${repo} ${queued.join(', ')} on ${headRefName} is still in the merge queue ` +
-                  `after ${maxPolls * pollSeconds}s; the next sync run reconciles this target.`,
+                  `after ${maxPolls * pollSeconds}s. Re-run this failed job once it leaves the queue; otherwise ` +
+                  'the next push to standards main or the weekly reconciliation carries this target.',
                 );
                 return;
               }

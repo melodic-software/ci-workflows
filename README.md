@@ -764,7 +764,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   does not fail the sync. GitHub refuses pushes to a branch whose PR is in a
   merge queue, so before checking a target out the workflow waits up to 30
   minutes for the previous sync PR to merge or leave the queue; past that
-  budget the target fails and the next sync run reconciles it.
+  budget the target fails: re-run it, or the next push to standards main or the
+  weekly reconciliation carries it.
 - `.github/workflows/pr-audit-workflows.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
   **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
