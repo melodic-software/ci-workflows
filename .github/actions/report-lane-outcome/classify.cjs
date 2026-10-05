@@ -1,8 +1,8 @@
 // Project the last claude-code-action SDK result message into safe, structured
 // metadata and classify a genuine infrastructure failure into exactly one coarse
-// class: auth | rate-limit | overloaded | other. Reads the action's
-// execution_file output (which may be unset, missing, or unparsable) and returns
-// the review detail plus failure class.
+// class: auth | rate-limit | overloaded | max-turns | timeout | other. Reads
+// the action's execution_file output (which may be unset, missing, or
+// unparsable) and returns the review detail plus failure class.
 //
 // This runs on a PUBLIC repo. The result message's `result` field is
 // model-authored free text and its `errors[]` entries are raw error stacks; both
@@ -11,13 +11,17 @@
 // either field, and never emit the result message wholesale.
 //
 // Classification order:
+//   0. `timedOut` — the caller saw the step run its whole timeout-minutes
+//      budget. A killed step leaves no result message, so wall time decides.
 //   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.
-//   2. an allowlisted substring over `errors[]`, matching the serialized
+//   2. subtype `error_max_turns` -> max-turns: the run used every turn
+//      --max-turns allows.
+//   3. an allowlisted substring over `errors[]`, matching the serialized
 //      Anthropic error body (`{"type":"error","error":{"type":"<type>",...}}`)
 //      that the API SDK folds into an APIError's message, and so into its stack.
-//   3. other.
+//   4. other.
 //
 // The allowlist mirrors the status mapping type-for-type, so a payload that
 // recovers no numeric status still lands in the same class the status would
@@ -80,11 +84,12 @@ function toStringLikeJq(value) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function classifyExecutionFile(executionFilePath) {
+function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
+  const fallbackClass = timedOut ? "timeout" : "other";
   if (!executionFilePath || !fs.existsSync(executionFilePath)) {
     return {
       reviewDetail: "(no execution file was produced)",
-      failureClass: "other",
+      failureClass: fallbackClass,
     };
   }
 
@@ -98,7 +103,7 @@ function classifyExecutionFile(executionFilePath) {
   if (last === undefined || last === null) {
     return {
       reviewDetail: "(execution file present but unparsable)",
-      failureClass: "other",
+      failureClass: fallbackClass,
     };
   }
 
@@ -107,8 +112,12 @@ function classifyExecutionFile(executionFilePath) {
   // error_type is set only on the substring path: numeric-status classification
   // already has api_error_status as its discriminator.
   let errorType = null;
-  if (typeof status === "number") {
+  if (timedOut) {
+    failureClass = "timeout";
+  } else if (typeof status === "number") {
     failureClass = classFromStatus(status);
+  } else if (last.subtype === "error_max_turns") {
+    failureClass = "max-turns";
   } else {
     const text = (Array.isArray(last.errors) ? last.errors : [])
       .map(toStringLikeJq)

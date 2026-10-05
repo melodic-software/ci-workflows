@@ -108,7 +108,7 @@ on:
         value: ${{ jobs.claude.outputs.triage-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | other on a failure;
+          auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.claude.outputs.failure-class }}
     secrets:
@@ -123,6 +123,8 @@ jobs:
   claude:
     name: claude-intake-triage-status
     runs-on: ${{ inputs.runner }}
+    # The CLI install (3 minutes) and triage (8 minutes) steps leave a minute
+    # for checkout and the github-script steps.
     timeout-minutes: 12
     if: ${{ !endsWith(github.actor, '[bot]') }}
     permissions:
@@ -148,6 +150,7 @@ jobs:
 
       - name: Install the Claude Code CLI
         id: cli
+        timeout-minutes: 3
         env:
           REQUESTED: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
         run: |
@@ -228,9 +231,12 @@ jobs:
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("allowed-list", allowed.map((l) => `- ${l}`).join("\n"));
             core.setOutput("args", args);
+            // Lets the outcome step tell a step timeout from other failures.
+            core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
 
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome and apply steps run; the last step carries the red.
+      # The outcome step's step-timeout-minutes repeats timeout-minutes.
       - name: Claude intake triage
         id: claude
         continue-on-error: true
@@ -276,6 +282,8 @@ jobs:
           outcome: ${{ steps.claude.outcome }}
           execution-file: ${{ steps.claude.outputs.execution_file }}
           lane: Claude intake triage
+          step-started-at: ${{ steps.compose.outputs.started-at }}
+          step-timeout-minutes: 8
 
       # No model runs here. Every value reaches the script through env.
       - name: Apply the triage
@@ -316,9 +324,10 @@ jobs:
             }
             if (!Array.isArray(output?.labels) || typeof output?.needs_human !== "boolean") output = null;
 
-            // A run that finished is acted on; one that left no result is an
-            // infrastructure failure, which the status step reports.
-            const ran = Boolean(result.subtype);
+            // A run that finished is acted on, and max turns escalates. One
+            // that left no result, or an error result, is an infrastructure
+            // failure, which the status step reports.
+            const ran = Boolean(result.subtype) && (!result.is_error || result.subtype === "error_max_turns");
             if (ran && !output) escalate.push("the run returned no usable structured output");
             if (output?.needs_human) escalate.push(`the model asked for a person: ${output.reason ?? ""}`);
 

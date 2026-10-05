@@ -37,6 +37,17 @@ inputs:
       Human-readable lane name used in the annotation text, e.g.
       "Claude review" or "Claude security review".
     required: true
+  step-started-at:
+    description: >-
+      Unix epoch seconds taken just before the Claude action step started.
+      With step-timeout-minutes, a failed step that ran its whole budget
+      classifies as `timeout`. Empty never classifies as timeout.
+    required: false
+    default: ""
+  step-timeout-minutes:
+    description: The Claude action step's timeout-minutes.
+    required: false
+    default: ""
 
 outputs:
   review-failed:
@@ -54,8 +65,8 @@ outputs:
     value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
     description: >-
-      auth | rate-limit | overloaded | other (empty on a genuine success;
-      skipped-validation when the action skipped itself).
+      auth | rate-limit | overloaded | max-turns | timeout | other (empty on
+      a genuine success; skipped-validation when the action skipped itself).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -73,6 +84,8 @@ runs:
         LANE_OUTCOME: ${{ inputs.outcome }}
         EXECUTION_FILE: ${{ inputs.execution-file }}
         LANE_NAME: ${{ inputs.lane }}
+        STEP_STARTED_AT: ${{ inputs.step-started-at }}
+        STEP_TIMEOUT_MINUTES: ${{ inputs.step-timeout-minutes }}
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
@@ -100,9 +113,10 @@ runs:
             // does the PR first adding it). Nothing was reviewed, so this must
             // not read as a review: the class token below makes the shape
             // machine-visible on the check run, where a skip would otherwise
-            // leave no `class=` annotation at all. A warning, not an
-            // error: the skip is expected and self-correcting on the PRs that
-            // edit the caller, and this lane's checks stay green by contract.
+            // leave no `class=` annotation at all. A warning, and
+            // review_failed stays false: the skip is expected and
+            // self-correcting on the PRs that edit the caller. The lanes'
+            // status steps still go red on this class, since nothing ran.
             core.warning(
               `${lane} concluded: ${outcome} class=skipped-validation with no ` +
                 "execution evidence — the action skipped itself before running " +
@@ -116,7 +130,12 @@ runs:
             return;
           }
 
-          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile);
+          // A step killed at its timeout-minutes ran its whole budget. An
+          // empty input is NaN, and a NaN comparison is never true.
+          const startedAt = Number(process.env.STEP_STARTED_AT || Number.NaN);
+          const budgetMinutes = Number(process.env.STEP_TIMEOUT_MINUTES || Number.NaN);
+          const timedOut = Date.now() / 1000 - startedAt >= budgetMinutes * 60;
+          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, { timedOut });
 
           // `class=<token>` is a machine-readable term, not prose: this
           // annotation is the detection surface a receiver polls through the
