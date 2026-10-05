@@ -39,6 +39,7 @@ printf '%s\n' "$*" >>"$GH_LOG"
 method=GET
 path=""
 input=""
+slurp=false
 seen_api=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +54,10 @@ while [[ $# -gt 0 ]]; do
     --input)
       input="$2"
       shift 2
+      ;;
+    --slurp)
+      slurp=true
+      shift
       ;;
     --paginate | --silent)
       shift
@@ -94,12 +99,27 @@ if [[ -f "$GH_FIXTURES/${key}.err" ]]; then
   exit 1
 fi
 
-if [[ -f "$GH_FIXTURES/${key}.json" ]]; then
-  cat "$GH_FIXTURES/${key}.json"
+# Pagination as `gh` does it: `<key>.pages.json` holds an array of pages, which
+# `--slurp` prints as one array and a bare `--paginate` prints one page after
+# another. A one-page fixture is wrapped the same way under `--slurp`.
+if [[ -f "$GH_FIXTURES/${key}.pages.json" ]]; then
+  if [[ "$slurp" == true ]]; then
+    cat "$GH_FIXTURES/${key}.pages.json"
+  else
+    jq -c '.[]' "$GH_FIXTURES/${key}.pages.json"
+  fi
   exit 0
 fi
 
-echo '{}'
+body='{}'
+if [[ -f "$GH_FIXTURES/${key}.json" ]]; then
+  body="$(cat "$GH_FIXTURES/${key}.json")"
+fi
+if [[ "$slurp" == true ]]; then
+  printf '[%s]\n' "$body"
+else
+  printf '%s\n' "$body"
+fi
 SHIM
 chmod +x "$shim_directory/gh"
 
@@ -602,6 +622,17 @@ set_comments "[$(bot_comment 900 '<!-- pr-contract:linkage -->\nold'),$(user_com
 set_pull 'feat: add pr-contract' 'nothing here' someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1200"
+
+# Without `--slurp` jq runs once per page and prints one id per page, so the
+# PATCH path carries both ids and the newest comment is not the one edited.
+echo 'case: the newest bot marker comment is selected across pages'
+rm -f -- "$fixtures/GET_${comments_key}.json"
+printf '[[%s],[%s]]' "$(bot_comment 900 '<!-- pr-contract:linkage -->\nold')" "$(bot_comment 1200 '<!-- pr-contract:linkage -->\nnewer')" \
+  >"$fixtures/GET_${comments_key}.pages.json"
+run_case 0
+expect_gh_call "PATCH repos/${repository}/issues/comments/1200 "
+expect_no_gh_call 'comments/900'
+rm -f -- "$fixtures/GET_${comments_key}.pages.json"
 
 # --- annotation escaping ---------------------------------------------------
 
