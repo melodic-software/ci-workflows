@@ -44,6 +44,7 @@ const composites = joined.filter((step) => step.uses !== undefined);
 // Every joined step's outcome reaches the join under the env name the join
 // reads, and the join reports it under that step's own (kebab-case) name.
 const environment = Object.fromEntries([
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
   ["DETECT", "${{ steps.detect.outcome }}"],
   ...joined.map((step) => [
     step.id.toUpperCase(),
@@ -215,6 +216,7 @@ test("an enabled toggle with no configuration fails, it does not skip quietly", 
 });
 
 test("a failed change-detection step fails the job", () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
   assert.equal(joinStep.env.DETECT, "${{ steps.detect.outcome }}");
   const result = runJoin({ DETECT: "failure" });
   assert.equal(result.status, 1, result.stdout);
