@@ -120,9 +120,9 @@ inputs:
       written and finish red after the listing, so the full run first waits
       up to 90 seconds, re-listing every 10, for every in-flight sibling not
       known to be a full run (two or more jobs are running or ran) to
-      complete, then re-runs. A wait above `0` without yield needs no such wait: that sibling polls
-      and reads the success itself. A
-      carry-forward red then says the full run will re-run it instead of
+      complete, then re-runs. A wait above `0` without yield needs no such
+      wait: that sibling polls and reads the success itself. A carry-forward
+      red then says the full run will re-run it instead of
       telling the reader to. The calling job needs `actions: write`; a
       refusal warns and never changes this run's verdict. Off by default.
     default: 'false'
