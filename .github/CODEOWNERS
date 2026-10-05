@@ -8,3 +8,4 @@
 # by github-iac, not by anything in this repository.
 
 .github/scripts/** @kyle-sexton
+.github/actions/**/*.test.* @kyle-sexton
