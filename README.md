@@ -356,8 +356,8 @@ consumer to audit it.
     progress can be re-run, so the full run first waits up to 90 seconds,
     re-listing every 10, until no sibling that is not known to be a full run
     (two or more jobs are running or ran) is in flight, then issues every
-    re-run. A polling contract-only run (a wait above `0` without yield) reads the success
-    itself, so nothing waits for it.
+    re-run. A polling contract-only run (a wait above `0` without yield)
+    reads the success itself, so nothing waits for it.
 
   A red contract-only check does not hold a merge in the meantime: GitHub's
   docs do not say how several same-name check runs on one SHA are judged, and
