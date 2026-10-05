@@ -128,6 +128,25 @@ run_action 0 PATHS=empty
 grep -F 'No shell scripts to check.' <<<"$ACTION_OUTPUT" >/dev/null
 printf 'PASS: empty discovery exits cleanly\n'
 
+# A discovery command that fails must fail the step, never read as an empty set.
+failing_git_bin="$temporary_directory/failing-git"
+mkdir -p -- "$failing_git_bin"
+printf '#!/usr/bin/env bash\nexit 128\n' >"$failing_git_bin/git"
+chmod +x "$failing_git_bin/git"
+run_action 2 PATH="$failing_git_bin:$fake_bin:$PATH"
+grep -F 'Git-tracked file discovery failed' <<<"$ACTION_OUTPUT" >/dev/null
+if grep -F 'No shell scripts to check.' <<<"$ACTION_OUTPUT" >/dev/null; then
+  printf 'FAIL: failed git discovery reported an empty set\n' >&2
+  exit 1
+fi
+[[ ! -e "$captures/1.args" ]]
+printf 'PASS: failing git discovery exits non-zero\n'
+
+run_action 2 PATHS=does-not-exist
+grep -F 'path discovery failed' <<<"$ACTION_OUTPUT" >/dev/null
+[[ ! -e "$captures/1.args" ]]
+printf 'PASS: failing path discovery exits non-zero\n'
+
 run_action 0 PATHS=raw
 load_args 1
 assert_contains 'explicit roots see untracked files' raw/untracked.sh "${captured_args[@]}"

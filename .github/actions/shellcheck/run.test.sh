@@ -384,6 +384,12 @@ grep -F "EXTRA_EXCLUDE_CODES: \${{ inputs.extra-exclude-codes }}" "$action_direc
 grep -F "run: bash \"\$GITHUB_ACTION_PATH/run.sh\"" "$action_directory/action.yml" >/dev/null
 printf 'PASS: action metadata forwards the new inputs to the tested runner\n'
 
+# A failing root walk must fail the step, never read as an empty set.
+run_action 2 PATHS=does-not-exist
+grep -F 'path discovery failed' <<<"$ACTION_OUTPUT" >/dev/null
+[[ ! -e "$captures/1.args" ]]
+printf 'PASS: failing path discovery exits non-zero\n'
+
 # Literals, not mere presence: a placeholder pointing at an input would let the
 # caller env steer the fan-out again.
 grep -F "SHELLCHECK_BATCH_SIZE: '40'" "$action_directory/action.yml" >/dev/null
