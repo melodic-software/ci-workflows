@@ -458,14 +458,26 @@ jobs:
                 `query($owner: String!, $repo: String!, $headRefName: String!) {
                   repository(owner: $owner, name: $repo) {
                     pullRequests(headRefName: $headRefName, states: [OPEN], first: 10) {
-                      nodes { number isInMergeQueue headRepositoryOwner { login } }
+                      nodes {
+                        number
+                        isInMergeQueue
+                        headRepositoryOwner { login }
+                        timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+                          nodes { __typename }
+                        }
+                      }
                     }
                   }
                 }`,
                 { owner, repo, headRefName },
               );
+              // The token holds no merge-queues permission, so the latest
+              // queue event backs up isInMergeQueue; pull-requests read covers it.
+              const queued = (pull) =>
+                pull.isInMergeQueue ||
+                pull.timelineItems?.nodes?.at(-1)?.__typename === 'AddedToMergeQueueEvent';
               return (repository?.pullRequests?.nodes ?? [])
-                .filter((pull) => pull.isInMergeQueue && pull.headRepositoryOwner?.login === owner)
+                .filter((pull) => queued(pull) && pull.headRepositoryOwner?.login === owner)
                 .map((pull) => `#${pull.number}`);
             };
 

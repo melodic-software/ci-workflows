@@ -136,8 +136,45 @@ async function runWait({ responses, maxPolls = "3", pollSeconds = "30" }) {
 }
 
 const sameRepo = { headRepositoryOwner: { login: "melodic-software" } };
+const queueEvents = (...types) => ({
+  timelineItems: { nodes: types.map((__typename) => ({ __typename })) },
+});
 const queued = [{ number: 6383, isInMergeQueue: true, ...sameRepo }];
 const open = [{ number: 6383, isInMergeQueue: false, ...sameRepo }];
+
+test("the query reads the latest queue event, which pull-requests read access covers", () => {
+  assert.match(
+    waitScript,
+    /timelineItems\(last: 1, itemTypes: \[ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT\]\)/u,
+  );
+});
+
+test("a queued PR is detected from its queue event when isInMergeQueue reads false", async () => {
+  const enqueued = [
+    {
+      number: 6383,
+      isInMergeQueue: false,
+      ...sameRepo,
+      ...queueEvents("AddedToMergeQueueEvent"),
+    },
+  ];
+  const { queries, failures } = await runWait({ responses: [enqueued, []] });
+  assert.equal(queries.length, 2);
+  assert.equal(failures.length, 0);
+});
+
+test("a PR whose latest queue event is a removal proceeds at once", async () => {
+  const dequeued = [
+    {
+      number: 6383,
+      isInMergeQueue: false,
+      ...sameRepo,
+      ...queueEvents("RemovedFromMergeQueueEvent"),
+    },
+  ];
+  const { queries } = await runWait({ responses: [dequeued] });
+  assert.equal(queries.length, 1);
+});
 
 test("no open sync PR proceeds after one query", async () => {
   const { queries, failures } = await runWait({ responses: [[]] });
