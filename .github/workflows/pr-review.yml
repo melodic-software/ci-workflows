@@ -128,7 +128,7 @@ on:
         value: ${{ jobs.claude.outputs.review-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | other on a failure;
+          auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.claude.outputs.failure-class }}
     secrets:
@@ -360,7 +360,8 @@ jobs:
 
       # The inline-comment and plugin-command Skill grants go after the caller's
       # args so replacing claude-args cannot drop them; heredoc output as
-      # claude-args may be multiline.
+      # claude-args may be multiline. started-at lets the outcome step tell a
+      # step timeout from other failures.
       - name: Compose Claude CLI arguments
         id: compose-args
         if: steps.scope.outputs.review != 'false'
@@ -376,10 +377,12 @@ jobs:
             echo "args<<$delimiter"
             printf '%s\n' "$args"
             echo "$delimiter"
+            echo "started-at=$(date +%s)"
           } >> "$GITHUB_OUTPUT"
 
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.
+      # The outcome step's step-timeout-minutes repeats timeout-minutes.
       - name: Claude review
         id: claude-review
         if: steps.scope.outputs.review != 'false'
@@ -423,6 +426,8 @@ jobs:
           outcome: ${{ steps.claude-review.outcome }}
           execution-file: ${{ steps.claude-review.outputs.execution_file }}
           lane: Claude review
+          step-started-at: ${{ steps.compose-args.outputs.started-at }}
+          step-timeout-minutes: 11
 
       # Only a completed review, or a review that was not needed, moves the
       # recorded head forward. A failure here costs the next push a whole
@@ -483,6 +488,8 @@ jobs:
             auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
             rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
+            max-turns) why="the review used every turn --max-turns allows before finishing; raise it in claude-args" ;;
+            timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;

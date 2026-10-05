@@ -50,8 +50,21 @@ function writeExecutionFile(contents) {
   return file;
 }
 
-async function runOutcome({ outcome, executionFile, lane = "Claude review" }) {
-  const keys = ["LANE_OUTCOME", "EXECUTION_FILE", "LANE_NAME", "ACTION_PATH"];
+async function runOutcome({
+  outcome,
+  executionFile,
+  lane = "Claude review",
+  startedAt = "",
+  timeoutMinutes = "",
+}) {
+  const keys = [
+    "LANE_OUTCOME",
+    "EXECUTION_FILE",
+    "LANE_NAME",
+    "STEP_STARTED_AT",
+    "STEP_TIMEOUT_MINUTES",
+    "ACTION_PATH",
+  ];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
@@ -59,6 +72,8 @@ async function runOutcome({ outcome, executionFile, lane = "Claude review" }) {
     LANE_OUTCOME: outcome,
     EXECUTION_FILE: executionFile,
     LANE_NAME: lane,
+    STEP_STARTED_AT: startedAt,
+    STEP_TIMEOUT_MINUTES: timeoutMinutes,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -161,4 +176,38 @@ test("a failure with no execution file keeps the fail-path class, not the skip c
   assert.equal(outputs.review_failed, "true");
   assert.equal(outputs.review_ran, "false");
   assert.equal(outputs.failure_class, "other");
+});
+
+test("a failed step that ran its whole timeout-minutes is a timeout", async () => {
+  // 11 minutes is 660 s; the step started 700 s ago, so it ran past its budget.
+  const startedAt = String(Math.floor(Date.now() / 1000) - 700);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: "",
+    startedAt,
+    timeoutMinutes: "11",
+  });
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(outputs.failure_class, "timeout");
+  assert.match(errors[0], /\bclass=timeout\b/u);
+});
+
+test("a failed step that stopped inside its budget, or reported no start, is not a timeout", async () => {
+  // 600 s of an 11-minute (660 s) budget, then the two inputs left empty.
+  for (const [startedAt, timeoutMinutes] of [
+    [String(Math.floor(Date.now() / 1000) - 600), "11"],
+    ["", ""],
+  ]) {
+    const { outputs } = await runOutcome({
+      outcome: "failure",
+      executionFile: "",
+      startedAt,
+      timeoutMinutes,
+    });
+    assert.equal(
+      outputs.failure_class,
+      "other",
+      `${startedAt}/${timeoutMinutes}`,
+    );
+  }
 });

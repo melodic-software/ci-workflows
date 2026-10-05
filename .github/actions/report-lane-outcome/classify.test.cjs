@@ -69,7 +69,11 @@ function run(contents) {
 
 function assertClass(label, expectedClass, contents) {
   const { reviewDetail, failureClass } = run(contents);
-  assert.equal(failureClass, expectedClass, `${label}: class (detail: ${reviewDetail})`);
+  assert.equal(
+    failureClass,
+    expectedClass,
+    `${label}: class (detail: ${reviewDetail})`,
+  );
   assert.ok(
     !`${reviewDetail}${failureClass}`.includes(CANARY),
     `${label}: free-text field reached an output surface`,
@@ -100,7 +104,9 @@ test("a status present but null is treated as absent, so the substring pass runs
   assertClass(
     "null status with auth text",
     "auth",
-    resultMessage(null, { errors: [DIAGNOSTIC, apiErrorBody("authentication_error")] }),
+    resultMessage(null, {
+      errors: [DIAGNOSTIC, apiErrorBody("authentication_error")],
+    }),
   );
 });
 
@@ -110,7 +116,11 @@ test("the error-variant substring pass, one case per allowlisted token", () => {
     "auth",
     errorMessage([DIAGNOSTIC, apiErrorBody("authentication_error")]),
   );
-  assertClass("billing_error", "auth", errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]));
+  assertClass(
+    "billing_error",
+    "auth",
+    errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]),
+  );
   assertClass(
     "permission_error",
     "auth",
@@ -131,7 +141,11 @@ test("the error-variant substring pass, one case per allowlisted token", () => {
     "overloaded",
     errorMessage([DIAGNOSTIC, apiErrorBody("timeout_error")]),
   );
-  assertClass("api_error", "overloaded", errorMessage([DIAGNOSTIC, apiErrorBody("api_error")]));
+  assertClass(
+    "api_error",
+    "overloaded",
+    errorMessage([DIAGNOSTIC, apiErrorBody("api_error")]),
+  );
 });
 
 test("the client-error types stay `other` on the substring path", () => {
@@ -174,6 +188,34 @@ test("the class token joins the safe projection alongside the numeric status", (
     !("result" in projection) && !("errors" in projection),
     `projection leaked a free-text field (${reviewDetail})`,
   );
+});
+
+test("a run that used every turn classifies as max-turns", () => {
+  assertClass("error_max_turns", "max-turns", [
+    {
+      type: "result",
+      subtype: "error_max_turns",
+      is_error: true,
+      num_turns: 76,
+      duration_ms: 600000,
+      total_cost_usd: 1.5,
+      errors: [DIAGNOSTIC],
+    },
+  ]);
+});
+
+test("a step that ran its whole budget classifies as timeout, file or not", () => {
+  const missing = classifyExecutionFile(
+    path.join(temporaryDirectory, "never-written.json"),
+    { timedOut: true },
+  );
+  assert.equal(missing.failureClass, "timeout");
+  assert.equal(missing.reviewDetail, "(no execution file was produced)");
+
+  fs.writeFileSync(executionFile, JSON.stringify(resultMessage(429)));
+  const projected = classifyExecutionFile(executionFile, { timedOut: true });
+  assert.equal(projected.failureClass, "timeout");
+  assert.equal(JSON.parse(projected.reviewDetail).class, "timeout");
 });
 
 test("an unparsable execution file degrades to `other` and says so", () => {

@@ -80,7 +80,29 @@ for (const lane of lanes) {
         job.outputs[name],
         `\${{ steps.review-outcome.outputs.${name} }}`,
       );
+      assert.equal(
+        workflow.on.workflow_call.outputs?.[name]?.value,
+        `\${{ jobs.${lane.job}.outputs.${name} }}`,
+        `${name} must reach the caller through workflow_call`,
+      );
     }
+  });
+
+  test(`${lane.file}: the outcome step times the review against the step's own budget`, () => {
+    const claudeStep = job.steps.find((candidate) =>
+      String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
+    );
+    const outcome = job.steps.find(
+      (candidate) => candidate.id === "review-outcome",
+    );
+    assert.equal(
+      String(outcome.with["step-timeout-minutes"]),
+      String(claudeStep["timeout-minutes"]),
+    );
+    assert.equal(
+      outcome.with["step-started-at"],
+      `\${{ steps.compose-args.outputs.started-at }}`,
+    );
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
@@ -121,6 +143,8 @@ for (const lane of lanes) {
       ["true", "auth", "auth"],
       ["true", "rate-limit", "rate-limit"],
       ["true", "overloaded", "overloaded"],
+      ["true", "max-turns", "max-turns"],
+      ["true", "timeout", "timeout"],
       ["true", "other", "other"],
       ["true", "", "unknown"],
       // The action skipped itself: green step, nothing reviewed.
