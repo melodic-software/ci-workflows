@@ -91,7 +91,9 @@ inputs:
       `0` reads the status once and never waits.
       `yield-to-full-run` replaces the wait instead and is the recommended
       setting, with `record-pending`, `rerun-contract-only-siblings` and a
-      calling-job `timeout-minutes` of 3: no run then waits for another.
+      calling-job `timeout-minutes` of 3: no contract-only run then waits for
+      another, and only a full run that records `success` while a
+      contract-only sibling is in flight waits, up to `rerun-wait-seconds`.
       A wait above `0` needs `actions: read` on the calling job: under an
       explicit `permissions:` block the default is none, and a 403 warns
       naming the scope and degrades to the status read alone.
@@ -118,7 +120,8 @@ inputs:
       `yield-to-full-run`, or a carry-forward wait of `0`, a contract-only
       sibling still in flight could have read the status before it was
       written and finish red after the listing, so the full run first waits
-      up to 90 seconds, re-listing every 10, for every in-flight sibling not
+      up to `rerun-wait-seconds`, re-listing every 10, for every in-flight
+      sibling not
       known to be a full run (two or more jobs are running or ran) to
       complete, then re-runs. A wait above `0` without yield needs no such
       wait: that sibling polls and reads the success itself. A carry-forward
@@ -126,6 +129,19 @@ inputs:
       telling the reader to. The calling job needs `actions: write`; a
       refusal warns and never changes this run's verdict. Off by default.
     default: 'false'
+  rerun-wait-seconds:
+    description: >-
+      Ceiling, in seconds, on the full run's wait for in-flight contract-only
+      siblings before it re-runs the failed ones (see
+      `rerun-contract-only-siblings`). Applies only with
+      `rerun-contract-only-siblings` and either `yield-to-full-run` or a
+      carry-forward wait of `0`. The wait holds the full run's own
+      `ci-status` check open, so keep it under the calling job's
+      `timeout-minutes` with room for the rest of the job; the default fits
+      the recommended 3. Raise it where contract-only gate jobs queue longer
+      for a runner. A sibling still in flight at the ceiling is not re-run.
+      `0` never waits.
+    default: '90'
   record-pending:
     description: >-
       `true` to mark `status-context` `pending` on `sha` and stop, with no
@@ -186,6 +202,7 @@ runs:
         STATUS_CONTEXT: ${{ inputs.status-context }}
         CARRY_FORWARD_WAIT_SECONDS: ${{ inputs.carry-forward-wait-seconds }}
         RERUN_CONTRACT_ONLY_SIBLINGS: ${{ inputs.rerun-contract-only-siblings }}
+        RERUN_WAIT_SECONDS: ${{ inputs.rerun-wait-seconds }}
         RECORD_PENDING: ${{ inputs.record-pending }}
         YIELD_TO_FULL_RUN: ${{ inputs.yield-to-full-run }}
         GH_TOKEN: ${{ inputs.token }}

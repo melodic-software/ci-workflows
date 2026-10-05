@@ -116,12 +116,13 @@ CARRY_FORWARD_WAIT_SECONDS="${CARRY_FORWARD_WAIT_SECONDS:-240}"
 # Poll interval, deliberately not a caller input: it is an implementation detail
 # of the wait, and the only knob a consumer should reason about is the ceiling.
 CARRY_FORWARD_POLL_SECONDS=15
-# How long a full run that records `success` waits for in-flight contract-only
-# siblings to finish before re-running the failed ones, and how often it
-# re-lists them; see `rerun_failed_contract_only_siblings`. Fixed, like the poll
-# above, and sized to fit inside the 3-minute `timeout-minutes` the README
-# recommends for the ci-status job.
-RERUN_WAIT_SECONDS=90
+# Ceiling, in seconds, on how long a full run that records `success` waits for
+# in-flight contract-only siblings to finish before re-running the failed ones;
+# see `rerun_failed_contract_only_siblings`. `0` disables the wait. The default
+# fits inside the 3-minute `timeout-minutes` the README recommends for the
+# ci-status job. Validated below. The re-list interval is fixed, like the poll
+# above.
+RERUN_WAIT_SECONDS="${RERUN_WAIT_SECONDS:-90}"
 RERUN_WAIT_POLL_SECONDS=10
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
@@ -232,6 +233,7 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # value would otherwise make the comparison an error under `set -e` or the sleep
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 
 # POST one `status-context` entry on `sha` naming this run, retrying after 1s,
 # 2s and 4s. Every write is load-bearing, not best-effort: the carry-forward
@@ -916,7 +918,7 @@ fi
 # the status before this run wrote it (or while this step, its writer, was
 # still running) and will finish red. It cannot be re-run while in flight, so
 # under `yield-to-full-run`, or a carry-forward wait of `0`, where such a run
-# reads the status once and never polls, this waits up to RERUN_WAIT_SECONDS
+# reads the status once and never polls, this waits up to `rerun-wait-seconds`
 # for it to complete, re-listing every RERUN_WAIT_POLL_SECONDS. A run that
 # polls (a wait above `0` without yield) reads this success itself once this
 # step finishes, so nothing waits for it: it would be waiting on this run.
@@ -937,7 +939,7 @@ rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
   local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining sleep_for ran
   local wait_for_in_flight=false
-  if [[ "$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0 ]]; then
+  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
     wait_for_in_flight=true
   fi
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; a refusal only skips the re-run.

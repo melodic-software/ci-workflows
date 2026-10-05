@@ -1781,17 +1781,44 @@ if [[ "$(cat "$rerun_runs_count")" -ne 10 ]]; then
   failures=$((failures + 1))
 fi
 
+# Without reading the input, a consumer whose gate jobs queue longer could not
+# move the ceiling without forking the action.
+echo 'case: rerun-wait-seconds sets the ceiling of the in-flight wait'
+reset_yield_fixtures
+workflow_runs "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+jobs_raw 5300 "$inflight_contract_only_jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true RERUN_WAIT_SECONDS=30
+expect_log "::warning::contract-only run(s) 5300 still in flight on ${sha} after 30s; not waiting longer to re-run them."
+if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]]; then
+  echo "FAIL: expected the wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the zero check, `0` would still list and read every in-flight
+# sibling's jobs and log a ceiling warning.
+echo 'case: rerun-wait-seconds 0 never waits'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true RERUN_WAIT_SECONDS=0
+expect_no_sleep
+expect_no_gh_call 'actions/runs/5300/jobs'
+
+# Without validation a non-numeric value makes the arithmetic an error, which
+# the `|| true` around the re-run would swallow silently.
+echo 'case: a non-numeric rerun-wait-seconds is rejected'
+run_case 1 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_WAIT_SECONDS=soon
+expect_log '::error::rerun-wait-seconds must be a non-negative integer number of seconds, got: soon'
+expect_no_gh_calls_at_all
+
 reset_yield_fixtures
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings record-pending yield-to-full-run token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds record-pending yield-to-full-run token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
@@ -1814,6 +1841,15 @@ done
 # above, which sets the value explicitly.
 if ! grep -qF "    default: '240'" "$action_metadata"; then
   echo "FAIL: action.yml does not default carry-forward-wait-seconds to 240"
+  failures=$((failures + 1))
+fi
+
+# The rerun wait holds the full run's ci-status open, so its default must stay
+# inside the 3-minute ci-status job the README recommends. Every case above
+# runs on run.sh's own fallback, which this does not see.
+rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
+if [[ "$rerun_wait_default" != "    default: '90'" ]]; then
+  echo "FAIL: action.yml does not default rerun-wait-seconds to '90' (got: ${rerun_wait_default})"
   failures=$((failures + 1))
 fi
 
