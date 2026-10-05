@@ -5,7 +5,7 @@ name: maintenance-sync-standards
 # GitHub orchestration only: resolve one immutable source SHA, mint a narrowly
 # scoped App token, materialize each target, open a reviewed signed PR, and
 # (unless the manifest opts a target out via `automerge: false`) arm auto-merge
-# on any sync PR auto-merge has never been armed on.
+# on a sync PR that was never armed or whose head this run just changed.
 on:
   workflow_call:
     inputs:
@@ -41,9 +41,10 @@ permissions:
   contents: read
 
 # One fixed PR branch is updated per target. Queue invocations so two source
-# revisions cannot race while refreshing those branches.
+# revisions cannot race while refreshing those branches. Dry runs touch no
+# branch, so they queue separately and never hold up or wait on a real sync.
 concurrency:
-  group: standards-sync
+  group: standards-sync-${{ inputs.dry-run && 'dry-run' || 'apply' }}
   cancel-in-progress: false
 
 jobs:
@@ -493,12 +494,15 @@ jobs:
           body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync
 
-      # Key on "never armed", not "just created": a PR opened while opted out still
-      # gets armed later, and a reviewer's disarm (the enabled event survives it) holds.
+      # Arm when the PR was never armed (a PR opened while opted out still gets armed
+      # later) or this run pushed a new head, which expectedHeadOid checks at arm
+      # time. On an unchanged head a reviewer's disarm holds.
       - name: Arm auto-merge on the sync PR
         if: steps.cpr.outputs.pull-request-number != '' && matrix.automerge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          HEAD_SHA: ${{ steps.cpr.outputs.pull-request-head-sha }}
+          OPERATION: ${{ steps.cpr.outputs.pull-request-operation }}
           OWNER: ${{ matrix.repo_owner }}
           PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
           REPO: ${{ matrix.repo_name }}
@@ -508,6 +512,8 @@ jobs:
             const owner = process.env.OWNER;
             const repo = process.env.REPO;
             const pull_number = Number(process.env.PR_NUMBER);
+            const headChanged = ["created", "updated"].includes(process.env.OPERATION);
+            const expectedHeadOid = process.env.HEAD_SHA;
 
             const { repository } = await github.graphql(
               `query($owner: String!, $repo: String!, $number: Int!) {
@@ -530,27 +536,54 @@ jobs:
             }
             // Read `nodes`, never `totalCount` (it ignores itemTypes). SQUASH arming
             // records AutoSquashEnabledEvent, so all three event types are listed.
-            if (pull.autoMergeRequest || pull.timelineItems.nodes.length > 0) {
-              core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number}; leaving its current state alone.`);
+            const everArmed = pull.autoMergeRequest || pull.timelineItems.nodes.length > 0;
+            if (everArmed && !headChanged) {
+              core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number} and its head is unchanged; leaving its current state alone.`);
+              return;
+            }
+            if (!expectedHeadOid) {
+              core.warning(`No head SHA for ${owner}/${repo}#${pull_number}; not arming auto-merge without a head check.`);
               return;
             }
 
+            let disarmed = false;
             try {
+              // Drop an arm made on an earlier head before arming at this run's
+              // head; if re-arming then fails, the PR is left disarmed.
+              if (pull.autoMergeRequest) {
+                await github.graphql(
+                  `mutation($pullRequestId: ID!) {
+                    disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
+                      pullRequest { id }
+                    }
+                  }`,
+                  { pullRequestId: pull.id },
+                );
+                disarmed = true;
+              }
               await github.graphql(
-                `mutation($pullRequestId: ID!) {
+                `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
                   enablePullRequestAutoMerge(input: {
                     pullRequestId: $pullRequestId
                     mergeMethod: SQUASH
+                    expectedHeadOid: $expectedHeadOid
                   }) {
                     pullRequest { autoMergeRequest { enabledAt } }
                   }
                 }`,
-                { pullRequestId: pull.id },
+                { pullRequestId: pull.id, expectedHeadOid },
               );
-              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number}.`);
+              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number} at ${expectedHeadOid}.`);
             } catch (error) {
+              // This run disarmed the PR, so a failed re-arm must be visible.
+              if (disarmed) {
+                core.setFailed(
+                  `Disarmed auto-merge on ${owner}/${repo}#${pull_number} but could not re-arm it: ${error.message}`,
+                );
+                return;
+              }
               // An already-mergeable PR (mergeStateStatus CLEAN) makes the mutation
-              // error instead of no-op; never fail the sync over arming.
+              // error instead of no-op; never fail the sync over a first arm.
               core.warning(
                 `Could not arm auto-merge on ${owner}/${repo}#${pull_number}: ${error.message}`,
               );
