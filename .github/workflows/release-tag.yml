@@ -40,6 +40,11 @@ on:
 permissions:
   contents: read
 
+# Two runs would read the same latest Release and race to create one tag.
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
 jobs:
   tag:
     runs-on: ubuntu-24.04

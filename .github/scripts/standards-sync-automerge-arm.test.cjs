@@ -50,7 +50,7 @@ test("the arming step runs for any existing sync PR, gated on matrix.automerge",
 
 test("the arming step uses the target-scoped App token, not the caller's default token", () => {
   const block = workflowLines
-    .slice(armingStepIndex, armingStepIndex + 10)
+    .slice(armingStepIndex, armingStepIndex + 12)
     .join("\n");
   assert.match(
     block,
@@ -98,11 +98,13 @@ async function runArming({
   repo = "dotfiles",
   prNumber = 42,
   nodeId = "PR_kwFoo",
+  operation = "none",
+  headSha = "1111111111111111111111111111111111111111",
   pullRequest = {},
   missingPullRequest = false,
   graphqlError,
 } = {}) {
-  const keys = ["OWNER", "REPO", "PR_NUMBER"];
+  const keys = ["OWNER", "REPO", "PR_NUMBER", "OPERATION", "HEAD_SHA"];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
@@ -110,6 +112,8 @@ async function runArming({
     OWNER: owner,
     REPO: repo,
     PR_NUMBER: String(prNumber),
+    OPERATION: operation,
+    HEAD_SHA: headSha,
   });
   const graphqlCalls = [];
   const warnings = [];
@@ -120,6 +124,9 @@ async function runArming({
         graphqlCalls.push({ query, variables });
         // The step reads the PR's id and arming history in one query, then
         // mutates; the mock discriminates on which shape it was handed.
+        if (/disablePullRequestAutoMerge/u.test(query)) {
+          return { disablePullRequestAutoMerge: { pullRequest: { id: nodeId } } };
+        }
         if (/enablePullRequestAutoMerge/u.test(query)) {
           if (graphqlError) throw graphqlError;
           return {
@@ -183,24 +190,96 @@ test("arms auto-merge with the target PR's node id and squash merge method", asy
   assert.ok(infos.some((message) => message.includes("Armed auto-merge")));
 });
 
-test("a PR that is currently armed is left alone", async () => {
+function disarmCalls(graphqlCalls) {
+  return graphqlCalls.filter((call) =>
+    /disablePullRequestAutoMerge/u.test(call.query),
+  );
+}
+
+const newHead = "2222222222222222222222222222222222222222";
+
+test("the workflow hands the arming step the PR operation and head sha", () => {
+  const block = workflowLines
+    .slice(armingStepIndex, armingStepIndex + 12)
+    .join("\n");
+  assert.match(
+    block,
+    /OPERATION: \$\{\{ steps\.cpr\.outputs\.pull-request-operation \}\}/u,
+  );
+  assert.match(
+    block,
+    /HEAD_SHA: \$\{\{ steps\.cpr\.outputs\.pull-request-head-sha \}\}/u,
+  );
+});
+
+test("a newly created PR is armed at the head the sync pushed", async () => {
+  const { graphqlCalls } = await runArming({
+    operation: "created",
+    headSha: newHead,
+  });
+  assert.equal(disarmCalls(graphqlCalls).length, 0);
+  const [mutation] = mutationCalls(graphqlCalls);
+  assert.equal(mutation.variables.expectedHeadOid, newHead);
+});
+
+test("a currently armed PR with an unchanged head is left alone", async () => {
   const { graphqlCalls, infos, warnings } = await runArming({
     pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
   });
   assert.equal(mutationCalls(graphqlCalls).length, 0);
+  assert.equal(disarmCalls(graphqlCalls).length, 0);
   assert.equal(warnings.length, 0);
   assert.ok(infos.some((message) => message.includes("already armed")));
 });
 
-test("a PR that was armed and then disarmed is never re-armed", async () => {
-  // The whole reason arming keys on history rather than current state: a
-  // reviewer who disarms a sync PR to hold it back must not be overridden on
-  // the next sync, and GitHub's own auto-disable must not be fought either.
+test("a disarmed PR with an unchanged head is not re-armed", async () => {
+  // A reviewer who disarms a sync PR to hold it back is not overridden by a
+  // sync that brings no new content.
   const { graphqlCalls, warnings } = await runArming({
     pullRequest: { wasEverArmed: true },
   });
   assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(warnings.length, 0);
+});
+
+test("an armed PR whose head the sync replaced is disarmed, then re-armed at the new head", async () => {
+  const { graphqlCalls, warnings } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    pullRequest: {
+      autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" },
+      wasEverArmed: true,
+    },
+  });
+  assert.equal(warnings.length, 0);
+  const disarmIndex = graphqlCalls.findIndex((call) =>
+    /disablePullRequestAutoMerge/u.test(call.query),
+  );
+  const armIndex = graphqlCalls.findIndex((call) =>
+    /enablePullRequestAutoMerge/u.test(call.query),
+  );
+  assert.notEqual(disarmIndex, -1, "the stale arm must be dropped");
+  assert.ok(disarmIndex < armIndex, "disarm must precede the re-arm");
+  assert.equal(graphqlCalls[armIndex].variables.expectedHeadOid, newHead);
+});
+
+test("a disarmed PR whose head the sync replaced is re-armed at the new head", async () => {
+  const { graphqlCalls } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    pullRequest: { wasEverArmed: true },
+  });
+  assert.equal(disarmCalls(graphqlCalls).length, 0);
+  const [mutation] = mutationCalls(graphqlCalls);
+  assert.equal(mutation.variables.expectedHeadOid, newHead);
+});
+
+test("dry runs and real syncs never share a concurrency slot", () => {
+  const block = /^concurrency:\n {2}group: (?<group>.+)\n {2}cancel-in-progress: false$/mu.exec(
+    workflow,
+  );
+  assert.ok(block, "top-level concurrency with cancel-in-progress: false must exist");
+  assert.match(block.groups.group, /inputs\.dry-run/u);
 });
 
 test("an unreadable pull request warns and does not attempt the mutation", async () => {
