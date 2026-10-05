@@ -123,9 +123,9 @@ jobs:
   claude:
     name: claude-intake-triage-status
     runs-on: ${{ inputs.runner }}
-    # The CLI install (3 minutes) and triage (8 minutes) steps leave a minute
-    # for checkout and the github-script steps.
-    timeout-minutes: 12
+    # The CLI install (3 minutes) and triage (8 minutes) steps leave two
+    # minutes for checkout and the github-script steps.
+    timeout-minutes: 13
     if: ${{ !endsWith(github.actor, '[bot]') }}
     permissions:
       contents: read
@@ -324,10 +324,10 @@ jobs:
             }
             if (!Array.isArray(output?.labels) || typeof output?.needs_human !== "boolean") output = null;
 
-            // A run that finished is acted on, and max turns escalates. One
-            // that left no result, or an error result, is an infrastructure
-            // failure, which the status step reports.
-            const ran = Boolean(result.subtype) && (!result.is_error || result.subtype === "error_max_turns");
+            // A run that left no result, or an API error (subtype success with
+            // is_error), is an infrastructure failure the status step reports.
+            // Any other error subtype escalates: issue text can force one.
+            const ran = Boolean(result.subtype) && !(result.subtype === "success" && result.is_error);
             if (ran && !output) escalate.push("the run returned no usable structured output");
             if (output?.needs_human) escalate.push(`the model asked for a person: ${output.reason ?? ""}`);
 

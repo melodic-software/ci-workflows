@@ -1,9 +1,9 @@
 "use strict";
 
 // The intake lane's apply step decides what reaches the issue. These tests
-// run the step's own script against a mock GitHub client: an error result is
-// an infrastructure failure the status step reports, so nothing is applied,
-// while a run stopped at max turns finished and escalates to a person.
+// run the step's own script against a mock GitHub client: an API error is an
+// infrastructure failure the status step reports, so nothing is applied,
+// while any other error subtype escalates to a person.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -82,7 +82,7 @@ async function apply(resultMessage) {
   }
 }
 
-test("an error result is an infrastructure failure, not an escalation", async () => {
+test("an API error is an infrastructure failure, not an escalation", async () => {
   const { labels, comments, failed } = await apply({
     type: "result",
     subtype: "success",
@@ -95,14 +95,17 @@ test("an error result is an infrastructure failure, not an escalation", async ()
   assert.deepEqual(failed, []);
 });
 
-test("a run stopped at max turns still escalates to a person", async () => {
-  const { labels, comments } = await apply({
-    type: "result",
-    subtype: "error_max_turns",
-    is_error: true,
-    num_turns: 16,
-  });
-  assert.deepEqual(labels, [ESCALATION_LABEL]);
-  assert.equal(comments.length, 1);
-  assert.match(comments[0], /handed this issue to a maintainer/u);
+test("an execution error or max turns escalates to a person", async () => {
+  // Issue text can force either, so neither may leave the issue unlabeled.
+  for (const subtype of ["error_during_execution", "error_max_turns"]) {
+    const { labels, comments } = await apply({
+      type: "result",
+      subtype,
+      is_error: true,
+      num_turns: 16,
+    });
+    assert.deepEqual(labels, [ESCALATION_LABEL], subtype);
+    assert.equal(comments.length, 1, subtype);
+    assert.match(comments[0], /handed this issue to a maintainer/u, subtype);
+  }
 });
