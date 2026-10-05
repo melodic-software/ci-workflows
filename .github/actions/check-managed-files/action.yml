@@ -8,7 +8,10 @@ inputs:
   standards-ref:
     description: >-
       Git ref of melodic-software/standards to resolve the sync-manifest from.
-      Pin to a full SHA in callers once soak completes.
+      Defaults to `main` because the guard must read the manifest that is
+      live for this repository: a fixed SHA stops tracking target and
+      component changes as soon as standards moves. A caller may pin a full
+      SHA to freeze the managed-file list.
     default: main
   repository:
     description: Target repository identity OWNER/REPO (defaults to this repo).
@@ -32,12 +35,14 @@ runs:
       run: |
         set -euo pipefail
         skip=false
-        if [[ ",${PR_LABELS}," == *",standards-sync,"* ]]; then
+        # Anyone who can label a PR can add `standards-sync`, so the label
+        # exempts only a PR the sync App itself opened.
+        if [[ "$PR_ACTOR" == 'melodic-standards-sync[bot]' &&
+          ",${PR_LABELS}," == *",standards-sync,"* ]]; then
           skip=true
         fi
         case "$PR_ACTOR" in
-          'melodic-standards-sync[bot]'|melodic-standards-sync) skip=true ;;
-          'dependabot[bot]'|dependabot) skip=true ;;
+          'dependabot[bot]') skip=true ;;
         esac
         echo "skip=$skip" >>"$GITHUB_OUTPUT"
         if [[ "$skip" == true ]]; then
