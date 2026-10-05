@@ -350,6 +350,14 @@ consumer to audit it.
     re-run. A re-run attempt keeps its original event, so it is contract-only
     again, reads the new `success`, replaces the red check run, and never
     re-runs anything itself. A refusal warns and does not change the verdict.
+    With `yield-to-full-run` (or a carry-forward wait of `0`), a contract-only
+    run still in flight at that point may have read the status before it was
+    written and will finish red. GitHub's REST docs do not say a run in
+    progress can be re-run, so the full run first waits up to 90 seconds,
+    re-listing every 10, until no sibling that is not known to be a full run
+    (two or more jobs ran) is in flight, then issues every re-run. A polling
+    contract-only run (a wait above `0` without yield) reads the success
+    itself, so nothing waits for it.
 
   A red contract-only check does not hold a merge in the meantime: GitHub's
   docs do not say how several same-name check runs on one SHA are judged, and
@@ -357,9 +365,8 @@ consumer to audit it.
   measured, so the full run's later `ci-status` supersedes the red. Only
   `success`, `skipped` and `neutral` satisfy a required check, so the red never
   passes on its own. The remaining gap: a contract-only run still in flight
-  when the full run lists its siblings read the status before it was written,
-  finishes red, and is not re-run; its message ends by saying to re-run it if
-  it stays red.
+  when the full run's 90-second wait for it ends is not re-run; its message
+  ends by saying to re-run it if it stays red.
 
   Permissions: the first job needs `statuses: write`; the `ci-status` job needs
   `statuses: write` and `actions: write` (which covers the `actions: read`
