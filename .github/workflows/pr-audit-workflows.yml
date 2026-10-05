@@ -15,10 +15,11 @@ name: pr-audit-workflows
 # via github/codeql-action/upload-sarif for durable code-scanning alerts.
 # SARIF mode always exits 0 for findings (see exit-codes docs cited below),
 # so it is visibility-only and composes with (does not replace)
-# fail-on-severity gating. Callers that enable upload-sarif must grant
-# security-events: write on the calling job — reusable workflows cannot
-# elevate caller permissions. The job-level security-events: write below
-# only takes effect when the caller already granted it. The ci-status
+# fail-on-severity gating. The job requests security-events: write
+# unconditionally (job permissions cannot be expressions), so every caller
+# must grant it on the calling job whether or not it sets upload-sarif;
+# reusable workflows cannot elevate caller permissions. The upload step's
+# input gate keeps annotations-only callers off the code-scanning API. The ci-status
 # gateway stays consumer-local — this is a lane, not the gateway.
 on:
   workflow_call:
@@ -30,9 +31,10 @@ on:
       paths:
         description: >-
           Whitespace-separated paths to audit. zizmor discovers workflow and
-          composite-action definitions under them.
+          composite-action definitions under them. A .github/actions entry
+          that does not exist in the checkout is skipped.
         type: string
-        default: .github/workflows
+        default: .github/workflows .github/actions
       version:
         description: >-
           Exact zizmor CLI version, 1.6.0 or newer (this workflow's
@@ -42,13 +44,13 @@ on:
         type: string
         # Keep in step with the fleet pin in melodic-software/dotfiles
         # (.chezmoidata/uv-tools.yaml), or local and lane findings diverge.
-        default: v1.29.0
+        default: v1.30.0
       sha256:
         description: >-
           SHA-256 of the x86_64-unknown-linux-gnu release archive. Change
           together with version.
         type: string
-        default: dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839
+        default: ec8c95cd800845abb9bbc5f377ec7c57d2eb8e2386a00a201d3a74ee4092e5ed
       online-audits:
         description: Run online audits (uses the workflow token).
         type: boolean
@@ -119,7 +121,7 @@ jobs:
           FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
           UPLOAD_SARIF: ${{ inputs.upload-sarif }}
           ZIZMOR_TOKEN: ${{ github.token }}
-          PINNED_VERSION: 1.29.0
+          PINNED_VERSION: 1.30.0
           ASSET_NAME: zizmor-x86_64-unknown-linux-gnu.tar.gz
         run: |
           set -euo pipefail
@@ -196,7 +198,13 @@ jobs:
 
           normalized_paths=${PATHS//$'\n'/ }
           targets=()
-          read -r -a targets <<< "$normalized_paths"
+          read -r -a raw_targets <<< "$normalized_paths"
+          for target in "${raw_targets[@]}"; do
+            if [[ "$target" == .github/actions && ! -d "$target" ]]; then
+              continue
+            fi
+            targets+=("$target")
+          done
           if [[ ${#targets[@]} -eq 0 ]]; then
             echo '::error::zizmor paths must contain at least one input.'
             exit 2

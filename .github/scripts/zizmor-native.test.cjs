@@ -12,9 +12,9 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
-const pinnedVersion = "1.29.0";
+const pinnedVersion = "1.30.0";
 const pinnedSha256 =
-  "dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839";
+  "ec8c95cd800845abb9bbc5f377ec7c57d2eb8e2386a00a201d3a74ee4092e5ed";
 const assetName = "zizmor-x86_64-unknown-linux-gnu.tar.gz";
 
 function inputDefault(inputName) {
@@ -43,7 +43,7 @@ function runStep() {
 
 test("native zizmor preserves the reusable interface and read-only default", () => {
   assert.equal(inputDefault("runner"), "ubuntu-24.04");
-  assert.equal(inputDefault("paths"), ".github/workflows");
+  assert.equal(inputDefault("paths"), ".github/workflows .github/actions");
   assert.equal(inputDefault("version"), `v${pinnedVersion}`);
   assert.equal(inputDefault("sha256"), pinnedSha256);
   assert.equal(inputDefault("online-audits"), "true");
@@ -84,6 +84,19 @@ test("native zizmor preserves the reusable interface and read-only default", () 
     /uses: actions\/checkout@[0-9a-f]{40} # v\d+\.\d+\.\d+/u,
   );
   assert.match(workflow, /persist-credentials: false/u);
+});
+
+test("default paths audit local composite actions and skip an absent .github/actions", () => {
+  const step = runStep();
+  assert.match(
+    step,
+    /if \[\[ "\$target" == \.github\/actions && ! -d "\$target" \]\]; then\s*\n\s*continue/u,
+  );
+  assert.match(step, /targets\+=\("\$target"\)/u);
+  assert.ok(
+    step.indexOf('targets+=("$target")') <
+      step.indexOf('GH_TOKEN="$token" "$binary" "${args[@]}"'),
+  );
 });
 
 test("native zizmor verifies the exact release before executing it", () => {
