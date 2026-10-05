@@ -930,8 +930,8 @@ before the review reported (`no-outcome`). A review that was not needed
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
 required check); do not make either check required.
-`pr-review.yml` also exposes `review-failed` and `failure-class` as
-workflow outputs.
+Both lanes also expose `review-failed` and `failure-class` as workflow
+outputs.
 
 **Adoption.** Callers are distributed through the org's sync-managed
 components in
