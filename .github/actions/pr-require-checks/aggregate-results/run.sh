@@ -346,7 +346,7 @@ read_carried_state() {
   entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
     --arg runs_prefix "${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/" \
     '[ .[][] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id) // {})
-     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("^[0-9]+$")) then ltrimstr($runs_prefix) else "" end)] | join("|")' \
+     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("\\A[0-9]+\\z")) then ltrimstr($runs_prefix) else "" end)] | join("|")' \
     <"$gh_stdout")" || return 1
   IFS='|' read -r carried_state carried_created_at carried_writer_run_id <<<"$entry"
   if [[ "$carried_state" == success ]]; then
@@ -361,12 +361,12 @@ read_carried_state() {
 # Every workflow in the repository posts as the Actions bot, so the creator
 # check alone lets ANY workflow write the `success` that turns the required
 # check green. Only `success` is verified, as the only state that passes: the
-# run its `target_url` names must be a run of this same workflow. A `success`
-# naming no run, or a run of another workflow, is discarded and the read goes
+# run its `target_url` names must be a run of this same workflow on this same
+# SHA. A `success` naming no run, or any other run, is discarded and the read goes
 # on as if no status were recorded. A failed lookup returns 1, a failed read,
 # which every caller turns red: an unverifiable writer never passes.
 verify_carried_writer() {
-  local writer_workflow_id
+  local writer writer_workflow_id writer_head_sha
   local unverified='Cannot verify which workflow wrote the carried status, so this run fails closed.'
   if [[ -z "$carried_writer_run_id" ]]; then
     echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names no run of ${REPOSITORY} in its target_url; ignoring it."
@@ -384,9 +384,14 @@ verify_carried_writer() {
     warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}" 'actions: read' "$unverified"
     return 1
   fi
-  writer_workflow_id="$(jq -r '.workflow_id // "" | tostring' <"$gh_stdout")" || return 1
+  writer="$(jq -r '"\(.workflow_id // "")|\(.head_sha // "")"' <"$gh_stdout")" || return 1
+  IFS='|' read -r writer_workflow_id writer_head_sha <<<"$writer"
   if [[ "$writer_workflow_id" != "$workflow_id" ]]; then
     echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} was written by run ${carried_writer_run_id} of workflow ${writer_workflow_id:-unknown}, not this workflow (${workflow_id}); ignoring it."
+    carried_state=""
+  elif [[ "$writer_head_sha" != "$SHA" ]]; then
+    # A real run of this workflow on another commit is no verdict for this one.
+    echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, which ran on ${writer_head_sha:-an unknown commit}; ignoring it."
     carried_state=""
   fi
 }

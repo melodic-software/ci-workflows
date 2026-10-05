@@ -357,10 +357,11 @@ full_run_success() {
   writer_status "$1" success 2026-09-05T12:00:05Z 4100
 }
 
-# run_of_workflow <run-id> <workflow-id>
-# The run object a carried success's writer is verified against.
+# run_of_workflow <run-id> <workflow-id> [head-sha]
+# The run object a carried success's writer is verified against; it ran on the
+# SHA under test unless a head SHA is given.
 run_of_workflow() {
-  printf '{"id":%s,"workflow_id":%s}' "$1" "$2" \
+  printf '{"id":%s,"workflow_id":%s,"head_sha":"%s"}' "$1" "$2" "${3:-$sha}" \
     >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${1}.json"
 }
 run_of_workflow 4100 777
@@ -687,6 +688,23 @@ echo 'case: a bot success whose target_url names another repository is rejected'
 status_list '[{"id":100,"context":"ci-lanes","state":"success","target_url":"https://github.com/someone/else/actions/runs/4100","creator":{"login":"github-actions[bot]","type":"Bot"}}]'
 run_case 1 'skipped skipped' pass true
 expect_log "::warning::the newest ci-lanes success on ${sha} names no run of ${repository} in its target_url; ignoring it."
+expect_no_gh_call 'actions/runs/4100'
+
+# Without the head_sha check, a real run of this workflow on another commit
+# vouches for this one.
+echo 'case: a success naming a run of this workflow on another SHA is rejected'
+run_of_workflow 5100 777 cafebabecafebabecafebabecafebabecafebabe
+status_list "[$(writer_status 100 success 2026-09-05T12:00:05Z 5100)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} names run 5100, which ran on cafebabecafebabecafebabecafebabecafebabe; ignoring it."
+expect_log "${fail_prefix}${absent_remedy}"
+
+# Without the `\z` anchor a run id followed by a newline still parses as the
+# writer and is looked up.
+echo 'case: a target_url with text after the run id on a new line is rejected'
+status_list "[{\"id\":100,\"context\":\"ci-lanes\",\"state\":\"success\",\"target_url\":\"https://github.com/${repository}/actions/runs/4100\\n\",\"creator\":{\"login\":\"github-actions[bot]\",\"type\":\"Bot\"}}]"
+run_case 1 'skipped skipped' pass true
+expect_log 'names no run of'
 expect_no_gh_call 'actions/runs/4100'
 
 echo 'case: a bot success with no target_url is rejected'
