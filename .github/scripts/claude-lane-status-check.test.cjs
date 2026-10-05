@@ -92,7 +92,9 @@ for (const lane of lanes) {
     const claudeStep = job.steps.find((candidate) =>
       String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
     );
-    const outcome = job.steps.find((candidate) => candidate.id === "review-outcome");
+    const outcome = job.steps.find(
+      (candidate) => candidate.id === "review-outcome",
+    );
     assert.equal(
       String(outcome.with["step-timeout-minutes"]),
       String(claudeStep["timeout-minutes"]),

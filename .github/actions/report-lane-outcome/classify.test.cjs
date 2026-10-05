@@ -69,7 +69,11 @@ function run(contents) {
 
 function assertClass(label, expectedClass, contents) {
   const { reviewDetail, failureClass } = run(contents);
-  assert.equal(failureClass, expectedClass, `${label}: class (detail: ${reviewDetail})`);
+  assert.equal(
+    failureClass,
+    expectedClass,
+    `${label}: class (detail: ${reviewDetail})`,
+  );
   assert.ok(
     !`${reviewDetail}${failureClass}`.includes(CANARY),
     `${label}: free-text field reached an output surface`,
@@ -100,7 +104,9 @@ test("a status present but null is treated as absent, so the substring pass runs
   assertClass(
     "null status with auth text",
     "auth",
-    resultMessage(null, { errors: [DIAGNOSTIC, apiErrorBody("authentication_error")] }),
+    resultMessage(null, {
+      errors: [DIAGNOSTIC, apiErrorBody("authentication_error")],
+    }),
   );
 });
 
@@ -110,7 +116,11 @@ test("the error-variant substring pass, one case per allowlisted token", () => {
     "auth",
     errorMessage([DIAGNOSTIC, apiErrorBody("authentication_error")]),
   );
-  assertClass("billing_error", "auth", errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]));
+  assertClass(
+    "billing_error",
+    "auth",
+    errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]),
+  );
   assertClass(
     "permission_error",
     "auth",
@@ -131,7 +141,11 @@ test("the error-variant substring pass, one case per allowlisted token", () => {
     "overloaded",
     errorMessage([DIAGNOSTIC, apiErrorBody("timeout_error")]),
   );
-  assertClass("api_error", "overloaded", errorMessage([DIAGNOSTIC, apiErrorBody("api_error")]));
+  assertClass(
+    "api_error",
+    "overloaded",
+    errorMessage([DIAGNOSTIC, apiErrorBody("api_error")]),
+  );
 });
 
 test("the client-error types stay `other` on the substring path", () => {

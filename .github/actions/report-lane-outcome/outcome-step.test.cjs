@@ -204,6 +204,10 @@ test("a failed step that stopped inside its budget, or reported no start, is not
       startedAt,
       timeoutMinutes,
     });
-    assert.equal(outputs.failure_class, "other", `${startedAt}/${timeoutMinutes}`);
+    assert.equal(
+      outputs.failure_class,
+      "other",
+      `${startedAt}/${timeoutMinutes}`,
+    );
   }
 });
