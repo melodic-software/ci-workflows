@@ -393,7 +393,73 @@ verify_carried_writer() {
     # A real run of this workflow on another commit is no verdict for this one.
     echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, which ran on ${writer_head_sha:-an unknown commit}; ignoring it."
     carried_state=""
+  else
+    # shellcheck disable=SC2310 # verify_writer_step warns itself; the caller fails closed.
+    if ! verify_writer_step; then
+      return 1
+    fi
   fi
+}
+
+# This run's gate job and the step running this action, found by name: in a
+# contract-only run the gate is the one job not skipped, and this step is the
+# one step of it in progress. The full run's gate is the same job of the same
+# workflow, so the writer step carries the same two names. Cached across polls.
+own_gate_job=""
+own_gate_step=""
+resolve_own_step() {
+  local jobs="$scratch/own-jobs.json"
+  if [[ -n "$own_gate_job" && -n "$own_gate_step" ]]; then
+    return 0
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller fails closed.
+  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100"; then
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 'actions: read' "$1"
+    return 1
+  fi
+  cp -- "$gh_stdout" "$jobs"
+  own_gate_job="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") ] | if length == 1 then .[0].name // "" else "" end' <"$jobs")" || return 1
+  own_gate_step="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") ] | if length == 1 then [ .[0].steps[]? | select(.status == "in_progress") | .name ] | if length == 1 then .[0] // "" else "" end else "" end' <"$jobs")" || return 1
+  if [[ -z "$own_gate_job" || -z "$own_gate_step" ]]; then
+    echo "::warning::could not identify this run's gate job and running step in repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs. $1"
+    return 1
+  fi
+}
+
+# A status is free text any workflow can post with any `target_url`, so a run
+# of this workflow on this SHA proves nothing until the step that writes the
+# verdict, the same-named step of the same-named job, is read back as
+# `success`. The step, not the job: a full run whose contract check failed still
+# records a true lanes `success`, and the contract-only run that fixes the title
+# must carry it. While that step is still running the status reads `pending`,
+# which the wait polls on and fails closed at its end. A completed step that did
+# not succeed discards the status.
+verify_writer_step() {
+  local outcome unverified='Cannot verify the step that wrote the carried status, so this run fails closed.'
+  # shellcheck disable=SC2310 # resolve_own_step warns itself; the caller fails closed.
+  if ! resolve_own_step "$unverified"; then
+    return 1
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}/jobs?filter=latest&per_page=100"; then
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}/jobs" 'actions: read' "$unverified"
+    return 1
+  fi
+  outcome="$(jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" \
+    '[ .jobs[]? | select(.name == $job) | .steps[]? | select(.name == $step) ]
+     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end) elif length == 0 then "running" else "ambiguous" end' \
+    <"$gh_stdout")" || return 1
+  case "$outcome" in
+  success) ;;
+  running)
+    echo "Run ${carried_writer_run_id} has not finished step '${own_gate_step}' of job '${own_gate_job}'; its ${STATUS_CONTEXT} success is not carried yet."
+    carried_state=pending
+    ;;
+  *)
+    echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, whose step '${own_gate_step}' of job '${own_gate_job}' did not succeed (${outcome:-no conclusion}); ignoring it."
+    carried_state=""
+    ;;
+  esac
 }
 
 # The Actions calls need a scope an explicit `permissions:` block does not grant

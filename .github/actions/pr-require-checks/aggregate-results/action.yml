@@ -50,7 +50,9 @@ inputs:
       purpose: a check run cannot say which event produced it, so only a status
       only full runs write can stop a chain of contract-only runs from
       self-certifying. A carried `success` passes only when the run its
-      `target_url` names is a run of this same workflow, so any carry-forward
+      `target_url` names is a run of this same workflow on this SHA whose
+      same-named step of the same-named job concluded `success` (a step still
+      running is waited for like an in-flight run), so any carry-forward
       needs `actions: read` on the calling job; a writer that cannot be read
       fails the run.
     default: ci-lanes

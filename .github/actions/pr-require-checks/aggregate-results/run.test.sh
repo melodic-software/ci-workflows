@@ -367,6 +367,32 @@ run_of_workflow() {
 run_of_workflow 4100 777
 run_of_workflow 4000 777
 
+# The gate job as the jobs API lists it: this run's, with this action's step
+# running after the contract step; and a full run's, whose aggregate step ended
+# with the given conclusion (`running` for a step still in progress).
+own_gate_job='{"name":"ci-status","status":"in_progress","conclusion":null,"steps":[{"name":"Check the pull-request contract","status":"completed","conclusion":"success"},{"name":"Aggregate lane results","status":"in_progress","conclusion":null}]}'
+# writer_gate_job <aggregate-step-conclusion|running> [job-conclusion]
+writer_gate_job() {
+  if [[ "$1" == running ]]; then
+    printf '{"name":"ci-status","status":"in_progress","conclusion":null,"steps":[{"name":"Aggregate lane results","status":"in_progress","conclusion":null}]}'
+  else
+    printf '{"name":"ci-status","status":"completed","conclusion":"%s","steps":[{"name":"Check the pull-request contract","status":"completed","conclusion":"%s"},{"name":"Aggregate lane results","status":"completed","conclusion":"%s"}]}' \
+      "${2:-$1}" "${2:-success}" "$1"
+  fi
+}
+# writer_jobs <run-id> <aggregate-step-conclusion|running> [job-conclusion]
+writer_jobs() {
+  printf '{"jobs":[{"name":"lint","status":"completed","conclusion":"success","steps":[]},%s]}' "$(writer_gate_job "$2" "${3:-}")" \
+    >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${1}_jobs.json"
+}
+install_step_fixtures() {
+  printf '{"jobs":[{"name":"lint","conclusion":"skipped"},%s]}' "$own_gate_job" \
+    >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.json"
+  writer_jobs 4100 success
+  writer_jobs 4000 success
+}
+install_step_fixtures
+
 # --- carry-forward wait fixtures -------------------------------------------
 
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
@@ -706,6 +732,47 @@ status_list "[{\"id\":100,\"context\":\"ci-lanes\",\"state\":\"success\",\"targe
 run_case 1 'skipped skipped' pass true
 expect_log 'names no run of'
 expect_no_gh_call 'actions/runs/4100'
+
+# Without the writer-step check, any real run of this workflow on this SHA
+# vouches for a forged success, whatever its aggregate step concluded.
+echo 'case: a success whose writer aggregate step failed is rejected'
+status_list "[$(full_run_success 100)]"
+writer_jobs 4100 failure
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} names run 4100, whose step 'Aggregate lane results' of job 'ci-status' did not succeed (failure); ignoring it."
+expect_log "${fail_prefix}${absent_remedy}"
+
+# Without checking the step rather than the job, a full run whose job failed
+# only on the contract check would never carry its lanes success to the
+# contract-only run that fixes the title.
+echo 'case: a success whose writer step passed while its job failed the contract check is carried'
+writer_jobs 4100 success failure
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the running state, a success whose writer step is still running would
+# be carried before that step finished, or never waited for.
+echo 'case: a success whose writer step is still running is waited for, then fails closed'
+clear_run_fixtures
+current_run
+workflow_runs "[$(run_entry 4100 in_progress 2026-09-05T12:00:00Z)]"
+writer_jobs 4100 running
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log "Run 4100 has not finished step 'Aggregate lane results' of job 'ci-status'"
+expect_log "(waited 30s of 30s on in-flight run(s): 4100)"
+expect_no_log 'Carried forward'
+
+echo 'case: a success whose writer step finishes during the wait is carried'
+writer_jobs 4100 running
+cp -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100_jobs.json" \
+  "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100_jobs.1.json"
+writer_jobs 4100 success
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_log 'Waiting 15s for in-flight run(s) 4100'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100_jobs.1.json"
+clear_run_fixtures
+current_run
 
 echo 'case: a bot success with no target_url is rejected'
 status_list "[$(bot_status 100 success)]"
@@ -1425,7 +1492,7 @@ reset_yield_fixtures() {
   clear_run_fixtures
   clear_rerun_fixtures
   current_run
-  jobs_raw 4242 "$contract_only_jobs"
+  install_step_fixtures
 }
 
 # Without the listing, an older `success` is carried across a full run that is
@@ -1513,7 +1580,7 @@ echo 'case: yield counts every sibling as a full run when its own jobs cannot be
 reset_yield_fixtures
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.json"
 printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.err"
-status_list "[$(full_run_success 100)]"
+status_list '[]'
 workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
 jobs_raw 4300 "$contract_only_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
@@ -1537,7 +1604,7 @@ echo 'case: yield ignores the in-flight full run whose attempt wrote the success
 reset_yield_fixtures
 status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
 workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
-jobs_raw 4000 "$full_run_jobs"
+writer_jobs 4000 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
