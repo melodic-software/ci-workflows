@@ -560,10 +560,15 @@ fail_carry_forward() {
 # let this run carry an older `success` forward across it.
 #
 # An in-flight sibling is contract-only, and not waited for, when its latest
-# attempt has more than one job and every job but one is skipped: the shape
+# attempt has more than one job and every job but one is skipped, and that one
+# job carries this run's gate name: the shape
 # `rerun_failed_contract_only_siblings` recognizes, read before the gate
-# finishes. Every other sibling is a full run, including one whose jobs are
-# not listed yet or cannot be read, so a misread fails closed. The one full run
+# finishes. The name check stops a full run whose first job has finished and
+# whose lanes were skipped, before its gate job exists, from passing for one.
+# The gate name is this run's own one non-skipped job; when that cannot be
+# read, every sibling is a full run. Every other sibling is a full run,
+# including one whose jobs are not listed yet or cannot be read, so a misread
+# fails closed. The one full run
 # excluded is the writer of a `success` already on the SHA, when the attempt in
 # flight is the one that wrote it: its verdict is written, and it is in flight
 # only to finish, or to re-run this very run. A later attempt of that run (a
@@ -575,7 +580,7 @@ fail_carry_forward() {
 yield_full_runs=""
 list_in_flight_full_runs() {
   local closed='Cannot tell whether a full run is in flight on this SHA, so this run fails closed; re-run it.'
-  local attempt ids id shape
+  local attempt ids id shape gate=""
   yield_full_runs=""
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
   if ! resolve_workflow_id 'actions: read' "$closed"; then
@@ -596,11 +601,20 @@ list_in_flight_full_runs() {
     '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
     <"$gh_stdout")" || return 1
   cp -- "$gh_stdout" "$scratch/runs.json"
+  if [[ -z "$ids" ]]; then
+    return 0
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; no gate name counts every sibling as a full run.
+  if gh_api GET "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100"; then
+    gate="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") | .name ] | if length == 1 then .[0] else "" end' <"$gh_stdout")" || gate=""
+  else
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 'actions: read' 'Counting every run in flight as a full run.'
+  fi
   for id in $ids; do
     shape=false
     # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
     if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-      shape="$(jq -r '[ .jobs[]? | .conclusion ] | length > 1 and (map(select(. != "skipped")) | length) <= 1' <"$gh_stdout")" || shape=false
+      shape="$(jq -r --arg gate "$gate" '[ .jobs[]? ] | length > 1 and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
     else
       warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
     fi

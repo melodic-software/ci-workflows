@@ -1298,6 +1298,7 @@ reset_yield_fixtures() {
   clear_run_fixtures
   clear_rerun_fixtures
   current_run
+  jobs_raw 4242 "$contract_only_jobs"
 }
 
 # Without the listing, an older `success` is carried across a full run that is
@@ -1357,6 +1358,30 @@ jobs_raw 4300 "$contract_only_jobs"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_sleep
+
+# Without the gate-name check, a full run whose first job has finished and whose
+# lanes were skipped, before its gate job exists, has the contract-only shape
+# and the older success would carry across it.
+echo 'case: yield is superseded by a full run whose lanes skipped before its gate exists'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+jobs_raw 4000 '[{"name":"changes","conclusion":"success"},{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"}]'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+
+# Without failing closed on this run's own unreadable jobs, there is no gate
+# name to match and a sibling's shape could not be told apart.
+echo 'case: yield counts every sibling as a full run when its own jobs cannot be read'
+reset_yield_fixtures
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.json"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.err"
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+jobs_raw 4300 "$contract_only_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.err"
 
 echo 'case: yield with only a contract-only sibling in flight fails on an absent status without waiting'
 reset_yield_fixtures

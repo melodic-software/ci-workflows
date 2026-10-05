@@ -321,7 +321,9 @@ consumer to audit it.
     because that run's own `ci-status` check run is newer and decides the merge
     gate. With nothing in flight it is green on a recorded `success` and red
     otherwise. An in-flight sibling whose latest attempt skipped every job but
-    one is contract-only and ignored; any other sibling, including one whose
+    one, and that one has this run's gate name, is contract-only and ignored;
+    a full run whose lanes skipped before its gate job exists is not. Any
+    other sibling, including one whose
     jobs are not listed yet or cannot be read, counts as a full run, so a
     misread goes red, never green. The writer of a `success` already on the SHA
     is ignored while the attempt that wrote it finishes, which is what lets the
