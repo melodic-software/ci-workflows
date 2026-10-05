@@ -96,6 +96,7 @@ CONTRACT_ONLY="${CONTRACT_ONLY:-}"
 SAME_REPO="${SAME_REPO:-}"
 RERUN_CONTRACT_ONLY_SIBLINGS="${RERUN_CONTRACT_ONLY_SIBLINGS:-}"
 RECORD_PENDING="${RECORD_PENDING:-}"
+YIELD_TO_FULL_RUN="${YIELD_TO_FULL_RUN:-}"
 STATUS_CONTEXT="${STATUS_CONTEXT:-ci-lanes}"
 REPOSITORY="${REPOSITORY:-}"
 SHA="${SHA:-}"
@@ -183,6 +184,10 @@ if ! rerun_contract_only_siblings="$(read_boolean rerun-contract-only-siblings "
 fi
 # shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
 if ! record_pending="$(read_boolean record-pending "$RECORD_PENDING" false)"; then
+  exit 1
+fi
+# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
+if ! yield_to_full_run="$(read_boolean yield-to-full-run "$YIELD_TO_FULL_RUN" false)"; then
   exit 1
 fi
 
@@ -540,6 +545,133 @@ fail_carry_forward() {
   echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; ${remedy}${carry_forward_wait_note}. ${closing}"
   exit 1
 }
+
+# Yield mode (`yield-to-full-run` true): a contract-only run never waits. It
+# lists this workflow's in-flight runs on the SHA once, then reads the status
+# once, in that order for the reason the wait gives. A full run in flight
+# supersedes this run: it fails at once naming that run, whose own ci-status
+# check run is newer than this one's and is the one the merge gate reads. With
+# `rerun-contract-only-siblings`, that run re-runs this one once it records
+# `success`. A red is never a false green, so failing here is always safe; the
+# cost is a red check run that the full run's newer one supersedes.
+#
+# This closes the gap `record-pending` alone leaves: a full run that is queued,
+# or whose first job has not yet written its `pending` marker, would otherwise
+# let this run carry an older `success` forward across it.
+#
+# An in-flight sibling is contract-only, and not waited for, when its latest
+# attempt has more than one job and every job but one is skipped, and that one
+# job carries this run's gate name: the shape
+# `rerun_failed_contract_only_siblings` recognizes, read before the gate
+# finishes. The name check stops a full run whose first job has finished and
+# whose lanes were skipped, before its gate job exists, from passing for one.
+# The gate name is this run's own one non-skipped job; when that cannot be
+# read, every sibling is a full run, as is one with more jobs than the one page
+# of 100 lists. Every other sibling is a full run,
+# including one whose jobs are not listed yet or cannot be read, so a misread
+# fails closed. The one full run
+# excluded is the writer of a `success` already on the SHA, when the attempt in
+# flight is the one that wrote it: its verdict is written, and it is in flight
+# only to finish, or to re-run this very run. A later attempt of that run (a
+# re-run) has not written its verdict yet, so it still supersedes this run.
+#
+# Sets `yield_full_runs` to the full runs that supersede this run. Returns 1
+# when the runs cannot be listed, which the caller fails closed on: without the
+# listing an older `success` could be carried across a full run in flight.
+yield_full_runs=""
+list_in_flight_full_runs() {
+  local closed='Cannot tell whether a full run is in flight on this SHA, so this run fails closed; re-run it.'
+  local attempt ids id shape gate=""
+  yield_full_runs=""
+  # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
+  if ! resolve_workflow_id 'actions: read' "$closed"; then
+    return 1
+  fi
+  for attempt in 1 2 3; do
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
+    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      break
+    fi
+    if [[ "$attempt" -eq 3 ]]; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$closed"
+      return 1
+    fi
+    sleep "$((STATUS_RETRY_BASE_DELAY * attempt))"
+  done
+  ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
+    '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
+    <"$gh_stdout")" || return 1
+  cp -- "$gh_stdout" "$scratch/runs.json"
+  if [[ -z "$ids" ]]; then
+    return 0
+  fi
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; no gate name counts every sibling as a full run.
+  if gh_api GET "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100"; then
+    gate="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") | .name ] | if length == 1 then .[0] else "" end' <"$gh_stdout")" || gate=""
+  else
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 'actions: read' 'Counting every run in flight as a full run.'
+  fi
+  for id in $ids; do
+    shape=false
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
+    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+      shape="$(jq -r --arg gate "$gate" '(.total_count // 0) as $total | [ .jobs[]? ] | length > 1 and length >= $total and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
+    else
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+    fi
+    if [[ "$shape" != true ]]; then
+      yield_full_runs="${yield_full_runs}${yield_full_runs:+ }${id}"
+    fi
+  done
+}
+
+# The yield red: a full run in flight decides the merge gate, so this run says
+# which one and who replaces this red.
+fail_superseded() {
+  local runs="" id closing
+  for id in $1; do
+    runs="${runs}${runs:+, }${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${id}"
+  done
+  if [[ "$rerun_contract_only_siblings" == true ]]; then
+    closing="It re-runs this run once it records ${STATUS_CONTEXT}=success; re-run this run yourself only if it stays red after that."
+  else
+    closing="Once ${STATUS_CONTEXT} on ${SHA} is success, re-run this run."
+  fi
+  echo "::error::superseded by full run ${runs} in flight on ${SHA}: its own ci-status check run is newer than this one and decides the merge gate. ${closing}"
+  exit 1
+}
+
+if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
+  echo "Contract-only event: yielding to any full run in flight on ${SHA}, else reading the ${STATUS_CONTEXT} status once."
+  # shellcheck disable=SC2310 # list_in_flight_full_runs warns itself; the caller fails closed.
+  if ! list_in_flight_full_runs; then
+    echo "::error::could not list this workflow's runs on ${SHA}, so a full run in flight cannot be ruled out; re-run this run."
+    exit 1
+  fi
+  # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
+  if ! read_carried_state; then
+    cat "$gh_stderr" >&2
+    fail_carry_forward
+  fi
+  superseding=""
+  for id in $yield_full_runs; do
+    if [[ "$carried_state" == success && "$id" == "$carried_writer_run_id" && -n "$carried_created_at" ]] &&
+      [[ "$(jq -r --arg id "$id" --arg since "$carried_created_at" \
+        '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_started_at // "") != "" and .run_started_at <= $since) ] | length > 0' \
+        <"$scratch/runs.json")" == true ]]; then
+      continue
+    fi
+    superseding="${superseding}${superseding:+ }${id}"
+  done
+  if [[ -n "$superseding" ]]; then
+    fail_superseded "$superseding"
+  fi
+  if [[ "$carried_state" == success ]]; then
+    echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
+    exit 0
+  fi
+  fail_carry_forward
+fi
 
 if [[ "$contract_only" == true ]]; then
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."

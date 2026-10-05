@@ -188,6 +188,7 @@ run_case() {
     CARRY_FORWARD_WAIT_SECONDS=0 \
     RERUN_CONTRACT_ONLY_SIBLINGS=false \
     RECORD_PENDING=false \
+    YIELD_TO_FULL_RUN=false \
     REPOSITORY="$repository" \
     SHA="$sha" \
     STATUS_RETRY_BASE_DELAY=0 \
@@ -1275,15 +1276,220 @@ expect_status_payload '"context": "CI Lanes"'
 
 # --- metadata contract -----------------------------------------------------
 
+# --- carry-forward: yield to a full run in flight ----------------------------
+
+# jobs_raw <id> <json-array-of-job-objects>
+# The latest attempt's jobs of an in-flight run, where a running job's
+# conclusion is null.
+jobs_raw() {
+  printf '{"jobs":%s}' "$2" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${1}_jobs.json"
+}
+
+# A full run's first job running; a contract-only run's lanes skipped and its
+# gate running.
+full_run_jobs='[{"name":"changes","conclusion":null}]'
+contract_only_jobs='[{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"},{"name":"ci-status","conclusion":null}]'
+superseded_prefix="::error::superseded by full run https://github.com/${repository}/actions/runs/4000 in flight on ${sha}: its own ci-status check run is newer than this one and decides the merge gate. "
+superseded_manual="Once ci-lanes on ${sha} is success, re-run this run."
+superseded_automatic='It re-runs this run once it records ci-lanes=success; re-run this run yourself only if it stays red after that.'
+
+reset_yield_fixtures() {
+  clear_status_fixtures
+  clear_run_fixtures
+  clear_rerun_fixtures
+  current_run
+  jobs_raw 4242 "$contract_only_jobs"
+}
+
+# Without the listing, an older `success` is carried across a full run that is
+# queued or has not yet written its `pending` marker: the false green this mode
+# exists to close.
+echo 'case: yield fails at once, superseded, when a full run is in flight over an older success'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+expect_no_log 'Carried forward'
+expect_gh_call_before 'actions/workflows/777/runs' "commits/${sha}/statuses"
+expect_status_reads 1
+expect_no_sleep
+
+# Without `queued` in the in-flight set, a full run waiting for a runner would
+# read as nothing in flight and the older success would carry across it.
+echo 'case: yield is superseded by a queued full run over an older success'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[$(run_entry 4000 queued 2026-09-05T12:00:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+
+# Without counting an unlisted run as full, a full run created a moment ago,
+# whose jobs the API does not list yet, would read as nothing in flight.
+echo 'case: yield counts an in-flight run with no jobs listed yet as a full run'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+
+# Without failing closed on an unreadable jobs list, a read error would drop
+# the sibling and let the older success through.
+echo 'case: yield counts an in-flight run whose jobs cannot be read as a full run'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.err"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.err"
+
+# Without the contract-only shape check, two contract-only runs on a green SHA
+# would each fail on the other.
+echo 'case: yield ignores an in-flight contract-only sibling and carries a recorded success'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+# This run (4242) is listed too: without excluding itself it would count as a
+# full run in flight and always fail.
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
+jobs_raw 4300 "$contract_only_jobs"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_sleep
+
+# Without the gate-name check, a full run whose first job has finished and whose
+# lanes were skipped, before its gate job exists, has the contract-only shape
+# and the older success would carry across it.
+echo 'case: yield is superseded by a full run whose lanes skipped before its gate exists'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[${earlier_full_run}]"
+jobs_raw 4000 '[{"name":"changes","conclusion":"success"},{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"}]'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+
+# Without failing closed on this run's own unreadable jobs, there is no gate
+# name to match and a sibling's shape could not be told apart.
+# Without the total_count check, a first page of 100 jobs in contract-only shape
+# would hide a full-run job on a later page.
+echo 'case: yield counts a sibling with more jobs than one page lists as a full run'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+printf '{"total_count":150,"jobs":%s}' "$contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4300_jobs.json"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
+
+echo 'case: yield counts every sibling as a full run when its own jobs cannot be read'
+reset_yield_fixtures
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.json"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.err"
+status_list "[$(bot_status 100 success)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+jobs_raw 4300 "$contract_only_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs.err"
+
+echo 'case: yield with only a contract-only sibling in flight fails on an absent status without waiting'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+jobs_raw 4300 "$contract_only_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "${fail_prefix}${absent_remedy}"
+expect_no_log 'superseded'
+expect_no_sleep
+
+# Without the writer exclusion, the re-run a full run starts from its own gate
+# job (which is still in flight) would read that run as superseding it and go
+# red again.
+echo 'case: yield ignores the in-flight full run whose attempt wrote the success'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the start-time test, a re-run of the writer would be ignored and this
+# run would carry the success the re-run is about to replace.
+echo 'case: yield is superseded by a re-run of the writer that started after its success'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 2 2026-09-05T12:10:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${superseded_prefix}${superseded_manual}"
+
+# Without restricting the exclusion to `success`, the writer of a `pending`
+# marker would be ignored and the red would name no superseding run.
+echo 'case: yield is superseded by the in-flight writer of a pending marker'
+reset_yield_fixtures
+status_list "[$(writer_status 100 pending 2026-09-05T12:00:10Z 4000)]"
+workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "${superseded_prefix}${superseded_automatic}"
+
+# Without yield overriding the wait, a 60-second ceiling would still poll.
+echo 'case: yield with nothing in flight reads the status once and never waits'
+reset_yield_fixtures
+status_list "[$(bot_status 100 failure)]"
+workflow_runs '[]'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "${fail_prefix}${failure_remedy}. ${manual_closing}"
+expect_status_reads 1
+expect_no_sleep
+
+# Without failing closed, a refused listing would degrade to the bare status
+# read and carry the older success across any full run in flight.
+echo 'case: yield fails closed when the runs cannot be listed'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${workflow_runs_key}.err"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "needs 'actions: read'"
+expect_log "::error::could not list this workflow's runs on ${sha}, so a full run in flight cannot be ruled out; re-run this run."
+expect_status_reads 0
+rm -f -- "$fixtures/${workflow_runs_key}.err"
+
+# Without the retry, one transient 5xx on the listing turns the sole required
+# check red.
+echo 'case: yield retries a transient listing failure'
+reset_yield_fixtures
+status_list "[$(bot_status 100 success)]"
+workflow_runs '[]'
+printf '2\n' >"$fixtures/${workflow_runs_key}.fail-times"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures/${workflow_runs_key}.fail-times"
+
+echo 'case: an invalid yield-to-full-run value is rejected'
+reset_yield_fixtures
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=yes
+expect_log "::error::yield-to-full-run must be 'true' or 'false', got: yes"
+expect_no_gh_calls_at_all
+
+# Without the contract-only guard, a full run would list its siblings instead
+# of aggregating its own lanes.
+echo 'case: yield-to-full-run does not change full mode'
+reset_yield_fixtures
+run_case 0 'success success' pass false true YIELD_TO_FULL_RUN=true
+expect_log 'All lanes passed or were skipped.'
+expect_no_gh_call 'actions/'
+
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings record-pending token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings record-pending yield-to-full-run token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RECORD_PENDING GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
@@ -1292,7 +1498,7 @@ done
 
 # Both A+ inputs are opt-in: a consumer that passes nothing keeps today's
 # behavior and needs no new permission.
-for input_name in rerun-contract-only-siblings record-pending; do
+for input_name in rerun-contract-only-siblings record-pending yield-to-full-run; do
   input_default="$(awk -v key="  ${input_name}:" '$0 == key { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
   if [[ "$input_default" != "    default: 'false'" ]]; then
     echo "FAIL: action.yml does not default ${input_name} to 'false' (got: ${input_default})"
