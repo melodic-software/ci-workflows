@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -86,17 +87,96 @@ test("native zizmor preserves the reusable interface and read-only default", () 
   assert.match(workflow, /persist-credentials: false/u);
 });
 
-test("default paths audit local composite actions and skip an absent .github/actions", () => {
-  const step = runStep();
-  assert.match(
-    step,
-    /if \[\[ "\$target" == \.github\/actions && ! -d "\$target" \]\]; then\s*\n\s*continue/u,
-  );
-  assert.match(step, /targets\+=\("\$target"\)/u);
-  assert.ok(
-    step.indexOf('targets+=("$target")') <
-      step.indexOf('GH_TOKEN="$token" "$binary" "${args[@]}"'),
-  );
+// Runs the real run-step script with fake curl, sha256sum and tar so the
+// download path succeeds, and a fake zizmor that records its arguments.
+function runLane({ dirs, paths }) {
+  const { parseWorkflow } = require("./workflow-yaml.cjs");
+  const { spawnSync } = require("node:child_process");
+  const parsed = parseWorkflow(workflow);
+  const step = parsed.jobs.zizmor.steps.find((entry) => entry?.id === "zizmor");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zizmor-lane-"));
+  try {
+    const bin = path.join(root, "bin");
+    const workspace = path.join(root, "ws");
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(root, "tmp"));
+    for (const dir of dirs) {
+      fs.mkdirSync(path.join(workspace, dir), { recursive: true });
+    }
+    fs.mkdirSync(workspace, { recursive: true });
+    const argsFile = path.join(root, "zizmor-args");
+    const script = (name, body) => {
+      fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`, {
+        mode: 0o755,
+      });
+    };
+    script(
+      "curl",
+      'while (($#)); do if [[ $1 == --output ]]; then : >"$2"; fi; shift; done',
+    );
+    script("sha256sum", "cat >/dev/null");
+    script(
+      "tar",
+      [
+        "while (($#)); do case $1 in --directory=*) d=$(cut -d= -f2 <<<$1) ;; esac; shift; done",
+        'printf \'#!/usr/bin/env bash\\nif [[ $1 == --version ]]; then echo "zizmor 1.30.0"; exit 0; fi\\nprintf "%%s\\\\n" "$@" >"$ARGS_FILE"\\n\' >"$d/zizmor"',
+        'chmod +x "$d/zizmor"',
+      ].join("\n"),
+    );
+    const result = spawnSync("bash", ["-c", step.run], {
+      cwd: workspace,
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        ARGS_FILE: argsFile,
+        RUNNER_OS: "Linux",
+        RUNNER_ARCH: "X64",
+        RUNNER_TEMP: path.join(root, "tmp"),
+        GITHUB_WORKSPACE: workspace,
+        GITHUB_OUTPUT: path.join(root, "github-output"),
+        PATHS: paths,
+        REQUESTED_VERSION: "v1.30.0",
+        EXPECTED_SHA256: "0".repeat(64),
+        ONLINE_AUDITS: "true",
+        PERSONA: "regular",
+        FAIL_ON_FINDINGS: "false",
+        FAIL_ON_SEVERITY: "never",
+        UPLOAD_SARIF: "false",
+        ZIZMOR_TOKEN: "token",
+        PINNED_VERSION: "1.30.0",
+        ASSET_NAME: "zizmor-x86_64-unknown-linux-gnu.tar.gz",
+      },
+    });
+    const targets = fs.existsSync(argsFile)
+      ? fs.readFileSync(argsFile, "utf8").trim().split("\n")
+      : null;
+    return { status: result.status, targets };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("default paths skip an absent .github/actions and pass it when present", () => {
+  const defaultPaths = inputDefault("paths");
+
+  const absent = runLane({ dirs: [".github/workflows"], paths: defaultPaths });
+  assert.equal(absent.status, 0);
+  assert.ok(absent.targets.includes(".github/workflows"));
+  assert.ok(!absent.targets.includes(".github/actions"));
+
+  const present = runLane({
+    dirs: [".github/workflows", ".github/actions"],
+    paths: defaultPaths,
+  });
+  assert.equal(present.status, 0);
+  assert.ok(present.targets.includes(".github/workflows"));
+  assert.ok(present.targets.includes(".github/actions"));
+});
+
+test("a caller-supplied path that does not exist still reaches zizmor", () => {
+  // zizmor itself rejects a missing path, so the lane must not filter it out.
+  const result = runLane({ dirs: [".github/workflows"], paths: "missing-dir" });
+  assert.deepEqual(result.targets.slice(-1), ["missing-dir"]);
 });
 
 test("native zizmor verifies the exact release before executing it", () => {
