@@ -294,11 +294,13 @@ consumer to audit it.
   <sha> is success, re-run this run instead.`, which replaces its check run
   where a new commit would re-run every lane.
 
-  **A wait above `0` needs `actions: read`.** Under an explicit `permissions:`
-  block the default for every scope is none, so both Actions calls 403 without
-  it. A 403 prints a `::warning::` naming the missing scope and then degrades to
-  a single status read, which is the pre-6b contract: loud, and never a pass on
-  an absent status. Any other read failure warns the same way.
+  **Carrying a `success` forward needs `actions: read`, whatever the wait.** The
+  run its `target_url` names must be read back and belong to this same workflow,
+  and an unreadable writer fails the run. Under an explicit `permissions:`
+  block the default for every scope is none, so the Actions calls 403 without
+  it. In the wait, a 403 prints a `::warning::` naming the missing scope and then
+  degrades to a single status read: loud, and never a pass on an absent or
+  unverified status. Any other read failure warns the same way.
 
   **The trade this makes.** Ending the wait on a settled `success` is what
   releases the mutual wait on a green SHA, and it gives up v0.22.1's guard against carrying an older

@@ -311,6 +311,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         env:
+          DETECT: ${{ steps.detect.outcome }}
           CONFIGURATION: ${{ steps.configuration.outcome }}
           TYPOS: ${{ steps.typos.outcome }}
           GITLEAKS: ${{ steps.gitleaks.outcome }}
@@ -341,6 +342,7 @@ jobs:
               echo "$name: $result"
             fi
           }
+          report change-detection "$DETECT"
           report configuration "$CONFIGURATION"
           report typos "$TYPOS"
           report gitleaks "$GITLEAKS"

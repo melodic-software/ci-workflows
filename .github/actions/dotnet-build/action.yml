@@ -21,7 +21,7 @@ inputs:
       Left empty (the default), `actions/setup-dotnet` falls back to reading
       the caller's own global.json, so the installed SDK always matches what
       the caller's repo declares instead of a version hardcoded here. Pass an
-      explicit value to override that.
+      explicit value to override that. With neither, the action fails.
     default: ''
   locked-mode:
     description: >-
@@ -45,13 +45,14 @@ runs:
       with:
         dotnet-version: ${{ inputs.dotnet-version }}
 
-    - name: Set up .NET (fallback — no version or global.json found)
+    - name: Require a .NET SDK version
       # setup-dotnet installs nothing and exits 0 when given no version and no
-      # global.json; fall back to this repository's own global.json.
+      # global.json; fail rather than build on whatever SDK the runner ships.
       if: steps.setup-dotnet.outputs.dotnet-version == ''
-      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-      with:
-        global-json-file: ${{ github.action_path }}/../../../global.json
+      shell: bash
+      run: |
+        echo '::error::dotnet-build: no .NET SDK version; set dotnet-version or commit a global.json at the repository root.'
+        exit 1
 
     - name: Build
       shell: bash

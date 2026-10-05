@@ -13,16 +13,29 @@ if [[ ! "$batch_size" =~ ^[1-9][0-9]*$ || ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+discovered="$(mktemp)"
+# Discovery writes to a file so a failing git or find fails the step instead of
+# reading as an empty set.
 if [[ -z "${paths// /}" ]]; then
   # Tracked files only, so ignored or generated scripts are never gated.
-  mapfile -d '' -t files < <(git ls-files -z -- '*.sh' '*.bash')
+  git ls-files -z -- '*.sh' '*.bash' >"$discovered" || {
+    rm -f -- "$discovered"
+    echo '::error::shfmt: Git-tracked file discovery failed.'
+    exit 2
+  }
 else
   # An array keeps each root one find operand, never pathname-expanded. read
   # hits EOF without the '' delimiter, hence `|| true`.
   path_roots=()
   read -r -d '' -a path_roots <<<"$paths" || true
-  mapfile -t files < <(find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' | sort)
+  find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) -not -path '*/.git/*' -print0 | sort -z >"$discovered" || {
+    rm -f -- "$discovered"
+    echo '::error::shfmt: path discovery failed.'
+    exit 2
+  }
 fi
+mapfile -d '' -t files <"$discovered"
+rm -f -- "$discovered"
 
 # Sparse checkouts can leave tracked, skip-worktree entries absent on disk.
 kept=()

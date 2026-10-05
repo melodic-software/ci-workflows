@@ -93,10 +93,15 @@ else
   # Space-separated roots preserve the existing input contract. Explicit roots
   # opt into a raw filesystem walk that does not consult .gitignore.
   read -r -a path_roots <<<"$paths"
-  mapfile -d '' -t normal_files < <(
-    find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) \
-      -not -path '*/.git/*' -print0 | sort -z
-  )
+  walked="$(mktemp)"
+  if ! find "${path_roots[@]}" -type f \( -name '*.sh' -o -name '*.bash' \) \
+    -not -path '*/.git/*' -print0 | sort -z >"$walked"; then
+    rm -f -- "$walked"
+    echo '::error::shellcheck: path discovery failed.'
+    exit 2
+  fi
+  mapfile -d '' -t normal_files <"$walked"
+  rm -f -- "$walked"
 fi
 
 extra_files=()

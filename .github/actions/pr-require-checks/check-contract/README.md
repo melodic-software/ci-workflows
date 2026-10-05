@@ -97,6 +97,9 @@ Both steps go in the `ci-status` job, in this order:
       contents: read
       pull-requests: write
       statuses: write
+      # The carry-forward wait lists this workflow's runs, and a carried
+      # success is accepted only once its writer run is read back.
+      actions: read
     runs-on: ubuntu-24.04
     steps:
       - uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@<sha> # vX.Y.Z
