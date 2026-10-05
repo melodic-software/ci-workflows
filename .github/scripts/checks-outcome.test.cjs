@@ -43,12 +43,13 @@ const composites = joined.filter((step) => step.uses !== undefined);
 
 // Every joined step's outcome reaches the join under the env name the join
 // reads, and the join reports it under that step's own (kebab-case) name.
-const environment = Object.fromEntries(
-  joined.map((step) => [
+const environment = Object.fromEntries([
+  ["DETECT", "${{ steps.detect.outcome }}"],
+  ...joined.map((step) => [
     step.id.toUpperCase(),
     `\${{ steps.${step.id}.outcome }}`,
   ]),
-);
+]);
 
 function runJoin(outcomes) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "checks-outcome-"));
@@ -211,6 +212,14 @@ test("an enabled toggle with no configuration fails, it does not skip quietly", 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.output, /^outcome=failure$/mu);
   assert.match(result.stdout, /^::error::checks failed: configuration\.$/mu);
+});
+
+test("a failed change-detection step fails the job", () => {
+  assert.equal(joinStep.env.DETECT, "${{ steps.detect.outcome }}");
+  const result = runJoin({ DETECT: "failure" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.output, /^outcome=failure$/mu);
+  assert.match(result.stdout, /^::error::checks failed: change-detection\.$/mu);
 });
 
 test("a composite that never ran is reported, not treated as a failure", () => {
