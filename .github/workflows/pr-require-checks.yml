@@ -536,6 +536,18 @@ jobs:
       issues: write
     uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@fb56986808750d6856c27de78df15e150027b8dc # v0.36.0
 
+  # Arms auto-merge on this repo's own vendor Dependabot bumps; the reusable's
+  # gates skip every other pull request. Never in `ci-status`: the arm waits on
+  # it, so a dependency would deadlock.
+  pr-automerge-dependabot:
+    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
+    permissions:
+      contents: write # enablePullRequestAutoMerge
+      pull-requests: write # Arm or disarm auto-merge; list the PR's commits.
+    uses: ./.github/workflows/pr-automerge-dependabot.yml
+    with:
+      runner: ubuntu-24.04
+
   ci-status:
     if: ${{ github.event_name != 'issues' && always() }}
     # `changes` is aggregated so a failed detection fails ci-status even though
