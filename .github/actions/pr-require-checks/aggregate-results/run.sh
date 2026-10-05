@@ -924,9 +924,11 @@ fi
 # An in-flight sibling is waited for unless it is known to be a full run: two
 # or more of its latest attempt's jobs are running or ran (any conclusion but
 # `skipped`). A contract-only run only ever runs its gate. A sibling whose jobs
-# cannot be read is waited for. Every re-run is issued after the wait, so this
-# step finishes moments after the last one and the re-run reads its success as
-# settled. A sibling still in flight at the ceiling is not re-run, and its
+# cannot be read is waited for, and so is a full run whose lanes are still
+# queued, for at most the ceiling. Re-runs are issued last, so this step
+# usually finishes before a re-run's runner starts; a re-run that reads the
+# status while this step is still running reads `pending` and goes red, as it
+# could before. A sibling still in flight at the ceiling is not re-run, and its
 # message still ends by telling the reader to re-run it if it stays red.
 #
 # Nothing here changes this run's verdict: the success is already recorded, so
