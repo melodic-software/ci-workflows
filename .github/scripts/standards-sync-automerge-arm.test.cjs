@@ -125,7 +125,9 @@ async function runArming({
         // The step reads the PR's id and arming history in one query, then
         // mutates; the mock discriminates on which shape it was handed.
         if (/disablePullRequestAutoMerge/u.test(query)) {
-          return { disablePullRequestAutoMerge: { pullRequest: { id: nodeId } } };
+          return {
+            disablePullRequestAutoMerge: { pullRequest: { id: nodeId } },
+          };
         }
         if (/enablePullRequestAutoMerge/u.test(query)) {
           if (graphqlError) throw graphqlError;
@@ -287,10 +289,14 @@ test("an empty head sha warns and never arms or disarms", async () => {
 });
 
 test("dry runs and real syncs never share a concurrency slot", () => {
-  const block = /^concurrency:\n {2}group: (?<group>.+)\n {2}cancel-in-progress: false$/mu.exec(
-    workflow,
+  const block =
+    /^concurrency:\n {2}group: (?<group>.+)\n {2}cancel-in-progress: false$/mu.exec(
+      workflow,
+    );
+  assert.ok(
+    block,
+    "top-level concurrency with cancel-in-progress: false must exist",
   );
-  assert.ok(block, "top-level concurrency with cancel-in-progress: false must exist");
   assert.match(block.groups.group, /inputs\.dry-run/u);
 });
 
