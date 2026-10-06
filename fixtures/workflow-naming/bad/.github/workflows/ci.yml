@@ -1,0 +1,15 @@
+name: ci
+
+# Contract fixture for check-workflow-naming: `ci` has no stage, so
+# workflow-filename blocks in enforcing mode and warns in advisory mode. It
+# lives outside this repository's own .github/workflows, so it never runs.
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  check-links:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "fixture"

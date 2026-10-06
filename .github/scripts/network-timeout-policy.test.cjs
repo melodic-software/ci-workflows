@@ -66,6 +66,11 @@ test("immutable release assets have a bounded exponential retry budget", () => {
       read(".github/actions/check-managed-files/action.yml"),
       1,
     ],
+    [
+      "check-workflow-naming npm",
+      read(".github/actions/check-workflow-naming/action.yml"),
+      1,
+    ],
   ]) {
     assert.equal(
       occurrences(content, /--fetch-retries=8 --fetch-retry-mintimeout=1000/gu),

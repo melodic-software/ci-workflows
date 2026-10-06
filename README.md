@@ -498,6 +498,19 @@ consumer to audit it.
   (standards ADR-0004 / ci-workflows#190). Composite actions remain the CI wrappers.
 - `.github/actions/check-line-endings` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
+- `.github/actions/check-workflow-naming` — runs the standards
+  [`github-actions-conventions`][gh-actions-conventions] naming-lint over
+  workflow file names, workflow `name:` values, job ids and composite action
+  directories. Like `check-managed-files`, it checks out
+  `melodic-software/standards` at `standards-ref` (default `main`; pin a full
+  SHA to freeze the vocabulary), installs the component's locked dependencies
+  with the Node version standards pins, and runs the analyzer from that
+  checkout, so the vocabulary and analyzer stay authored in standards. `mode`
+  defaults to `enforcing`, which fails the step on any blocking finding;
+  `advisory` reports every finding as a warning and passes. `root` selects the
+  tree to check and `repository` the identity used for repository-scoped
+  exemptions. Findings go to the log and the step summary rather than
+  annotations, because GitHub shows only ten annotations per step.
 - `.github/actions/ruff` — Ruff lint + format-check over the repo's Python
   (via `uvx`; emits `--output-format=github` annotations).
 - `.github/actions/pyright` — Pyright strict, warnings-as-errors type-check over
@@ -985,6 +998,7 @@ for repositories with a genuinely different policy. The small configs under
 `fixtures/` exist only to exercise action and CI-check contracts; they are not
 mirrors of the standards catalog.
 
+[gh-actions-conventions]: https://github.com/melodic-software/standards/blob/main/components/github-actions-conventions/README.md
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1
