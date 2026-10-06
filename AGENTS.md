@@ -1,7 +1,6 @@
 ## Code Review Rules
 
-Each line names a rule CI does not enforce. A line with a link points at the file that states the
-rule in full; a line without one states the whole rule itself.
+Each line names a rule CI does not enforce; the linked file states it in full.
 
 - Org-wide criteria: [`REVIEW.md`](REVIEW.md), synced from `melodic-software/standards`.
 - Claude lane security model (`SECURITY MODEL` headers):
@@ -11,5 +10,7 @@ rule in full; a line without one states the whole rule itself.
 - Configurable, not forkable: [rule](README.md#contract).
 - Policy is authored in standards; `fixtures/` configs only exercise contracts:
   [rule](README.md#policy-ownership-and-action-inputs).
-- Local-lane guard wrappers keep parity with the standards component.
-- Lanes consolidate as composite actions; `ci-status` stays the single required check.
+- Local-lane guard wrappers keep parity with the standards component:
+  [rule](README.md#actions).
+- Lanes consolidate as composite actions; `ci-status` stays the single required check:
+  [rule](README.md#contract).
