@@ -1,0 +1,20 @@
+name: pr-require-checks
+
+# Contract fixture for check-workflow-naming: a conforming gate workflow. It
+# lives outside this repository's own .github/workflows, so it never runs.
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  check-links:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "fixture"
+
+  ci-status:
+    needs: [check-links]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "fixture"

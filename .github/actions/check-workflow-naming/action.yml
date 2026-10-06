@@ -1,0 +1,77 @@
+name: check-workflow-naming
+description: >-
+  Check workflow file names, workflow `name:` values, job ids and composite
+  action directories against melodic-software/standards'
+  github-actions-conventions vocabulary, by running that component's
+  naming-lint analyzer. Enforcing by default: a blocking finding fails the
+  step. Read-only over the checked-out repository.
+
+inputs:
+  mode:
+    description: >-
+      `enforcing` (default) keeps errors as errors and fails the step when any
+      remains; `advisory` reports every finding as a warning and passes. Any
+      other value fails the step.
+    default: enforcing
+  root:
+    description: >-
+      Repository root to check, relative to the workspace. naming-lint reads
+      `<root>/.github/workflows/*.yml|*.yaml` and every action directory under
+      `<root>/.github/actions/`.
+    default: .
+  repository:
+    description: >-
+      Repository identity OWNER/REPO, used to apply the vocabulary's
+      repository-scoped exemptions (defaults to this repo).
+    default: ${{ github.repository }}
+  standards-ref:
+    description: >-
+      Git ref of melodic-software/standards to run naming-lint and its
+      vocabulary from. Defaults to `main` so a function word added to the
+      vocabulary reaches every consumer without a repin. A caller may pin a
+      full SHA to freeze the vocabulary and the analyzer.
+    default: main
+
+runs:
+  using: composite
+  steps:
+    - name: Check out the naming conventions source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: melodic-software/standards
+        ref: ${{ inputs.standards-ref }}
+        path: .check-workflow-naming-standards
+        persist-credentials: false
+
+    # Self-hosted fleet runners ship no Node, so install the runtime the
+    # standards tree pins instead of relying on the runner image.
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version-file: .check-workflow-naming-standards/.node-version
+        package-manager-cache: false
+
+    - name: Install analyzer dependencies
+      shell: bash
+      env:
+        STANDARDS_ROOT: ${{ github.workspace }}/.check-workflow-naming-standards
+      run: |
+        set -euo pipefail
+        component="$STANDARDS_ROOT/components/github-actions-conventions"
+        if [[ ! -f "$component/naming-lint.mjs" ]]; then
+          echo "::error::naming-lint.mjs is missing from melodic-software/standards at the pinned ref; pin a ref that ships components/github-actions-conventions."
+          exit 1
+        fi
+        npm ci --prefix "$component" \
+          --omit=dev --ignore-scripts --no-audit --no-fund \
+          --fetch-retries=8 --fetch-retry-mintimeout=1000 \
+          --fetch-retry-maxtimeout=60000
+
+    - name: Check workflow and action naming
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        ROOT: ${{ inputs.root }}
+        REPOSITORY: ${{ inputs.repository }}
+        STANDARDS_ROOT: ${{ github.workspace }}/.check-workflow-naming-standards
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

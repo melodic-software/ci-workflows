@@ -1,0 +1,7 @@
+name: check-example
+description: Contract fixture for check-workflow-naming; a verb-first action directory.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "fixture"

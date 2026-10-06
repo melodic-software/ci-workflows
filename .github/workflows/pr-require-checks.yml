@@ -118,6 +118,9 @@ jobs:
             actionlint:
               .github/**
               fixtures/composite-action/**
+            workflow-naming:
+              .github/**
+              fixtures/workflow-naming/**
             jsonschema:
               .github/**
             selector-contract:
@@ -365,6 +368,45 @@ jobs:
       - name: Reject action.yaml metadata (action.yml is enforced exclusively)
         uses: ./.github/actions/check-action-filename
 
+  # Enforcing on this repository's own workflows and actions, against the
+  # standards naming conventions at a pinned SHA (standards#672).
+  check-workflow-naming:
+    needs: detect-changes
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['workflow-naming'] != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check workflow and action naming
+        uses: ./.github/actions/check-workflow-naming
+        with:
+          standards-ref: d4ce69bef0c6140d761a4d9f2986e15906b5cedb
+      - name: Run a misnamed workflow fixture in enforcing mode
+        id: bad-enforcing
+        continue-on-error: true
+        uses: ./.github/actions/check-workflow-naming
+        with:
+          root: fixtures/workflow-naming/bad
+          standards-ref: d4ce69bef0c6140d761a4d9f2986e15906b5cedb
+      - name: Prove the misnamed workflow fixture failed
+        env:
+          OUTCOME: ${{ steps.bad-enforcing.outcome }}
+        run: |
+          if [[ "$OUTCOME" != failure ]]; then
+            echo "::error::The misnamed workflow fixture passed enforcing mode (outcome: $OUTCOME)."
+            exit 1
+          fi
+      - name: Test the runner against the real analyzer
+        # The action above left the pinned standards checkout, its installed
+        # dependencies and Node in place; the runner test reuses them for the
+        # good-fixture and advisory cases.
+        env:
+          REAL_STANDARDS_ROOT: ${{ github.workspace }}/.check-workflow-naming-standards
+        run: bash .github/actions/check-workflow-naming/run.test.sh
+
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
   # ci-status yet: promote after a clean soak.
   check-managed-files:
@@ -414,7 +456,7 @@ jobs:
         # boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/shfmt
+          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 
@@ -455,6 +497,8 @@ jobs:
         run: bash .github/actions/check-machine-paths/check-machine-specific-paths.test.sh
       - name: Test comment-hygiene scan-tree collection contracts
         run: bash .github/actions/check-comment-markers/scan-tree.test.sh
+      - name: Test the workflow-naming runner
+        run: bash .github/actions/check-workflow-naming/run.test.sh
       - name: Test the pull-request contract runner
         run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
@@ -554,7 +598,7 @@ jobs:
     if: ${{ github.event_name != 'issues' && always() }}
     # `changes` is aggregated so a failed detection fails ci-status even though
     # every gated lane fails open and runs.
-    needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
+    needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, check-workflow-naming, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
     runs-on: ubuntu-24.04
     # No run waits for another: with `yield-to-full-run` a contract-only run
     # lists in-flight runs once and reads the status once, and a full run's
@@ -595,4 +639,4 @@ jobs:
           yield-to-full-run: 'true'
           rerun-contract-only-siblings: 'true'
           carry-forward-wait-seconds: '0'
-          results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
+          results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.check-workflow-naming.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
