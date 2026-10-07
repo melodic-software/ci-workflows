@@ -10,10 +10,10 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -110,7 +110,7 @@ async function runScope(
   lane,
   { env, prFiles, compares = {}, fail = false, comments = [] },
 ) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scope-"));
+  const directory = makeTemporaryDirectory("scope-");
   const diffFile = path.join(directory, "state", "incremental.diff");
   let listedComments = 0;
   const github = {

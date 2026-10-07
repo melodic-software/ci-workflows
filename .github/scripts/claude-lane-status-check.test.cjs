@@ -10,10 +10,10 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const workflowsRoot = path.join(__dirname, "..", "workflows");
@@ -32,10 +32,7 @@ function load(file) {
 }
 
 function runStep(step, env) {
-  const summary = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), "status-")),
-    "summary",
-  );
+  const summary = path.join(makeTemporaryDirectory("status-"), "summary");
   fs.writeFileSync(summary, "");
   const result = spawnSync("bash", ["-e", "-c", step.run], {
     // step.env holds unexpanded expressions; only the literal LANE is real.
