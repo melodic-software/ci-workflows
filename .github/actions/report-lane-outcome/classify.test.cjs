@@ -6,10 +6,12 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const {
+  makeTemporaryDirectory,
+} = require("../../scripts/temporary-directories.cjs");
 const { classifyExecutionFile } = require("./classify.cjs");
 
 // A distinctive string standing in for the model-authored `result` text and the
@@ -22,7 +24,7 @@ const CANARY = "canary-never-publish-this";
 const DIAGNOSTIC =
   "[ede_diagnostic] result_type=api_error last_content_type=text stop_reason=null"; // spellchecker:disable-line
 
-const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "classify-"));
+const temporaryDirectory = makeTemporaryDirectory("classify-");
 const executionFile = path.join(temporaryDirectory, "execution.json");
 
 function resultMessage(apiErrorStatus, extra = {}) {
