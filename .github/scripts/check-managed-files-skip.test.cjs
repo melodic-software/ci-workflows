@@ -26,7 +26,6 @@ const modeScript = (() => {
 })();
 
 const SYNC_PR = {
-  PR_ACTOR: "melodic-standards-sync[bot]",
   PR_AUTHOR: "melodic-standards-sync[bot]",
   PR_HEAD_REF: "chore/standards-sync",
   PR_HEAD_REPO: "melodic-software/claude-code-plugins",
@@ -67,23 +66,19 @@ test("a missing head repository never counts as same-repo", () => {
 });
 
 test("the sync branch opened by anyone else gets the hand-edit check", () => {
-  assert.equal(
-    mode({ PR_ACTOR: "some-contributor", PR_AUTHOR: "some-contributor" }),
-    "mode=hand-edit",
-  );
+  assert.equal(mode({ PR_AUTHOR: "some-contributor" }), "mode=hand-edit");
 });
 
 test("a user login matching the App name without [bot] is not sync", () => {
   assert.equal(
     mode({
-      PR_ACTOR: "melodic-standards-sync",
       PR_AUTHOR: "melodic-standards-sync",
     }),
     "mode=hand-edit",
   );
 });
 
-test("a non-PR run whose actor is the sync App is not sync", () => {
+test("a non-PR run is not sync", () => {
   assert.equal(
     mode({
       PR_AUTHOR: "",
@@ -95,18 +90,32 @@ test("a non-PR run whose actor is the sync App is not sync", () => {
   );
 });
 
-test("dependabot PRs stay exempt", () => {
+const DEPENDABOT_PR = {
+  PR_AUTHOR: "dependabot[bot]",
+  PR_AUTHOR_ID: "49699333",
+  PR_HEAD_REF: "dependabot/github_actions/actions/checkout-7.0.2",
+};
+
+test("a Dependabot PR is a candidate for its commit check, never skipped outright", () => {
+  assert.equal(mode(DEPENDABOT_PR), "mode=dependabot");
+});
+
+test("the dependabot[bot] login under another account id is not a candidate", () => {
   assert.equal(
-    mode({ PR_ACTOR: "dependabot[bot]", PR_AUTHOR: "dependabot[bot]" }),
-    "mode=skip",
+    mode({ ...DEPENDABOT_PR, PR_AUTHOR_ID: "12345" }),
+    "mode=hand-edit",
   );
 });
 
-test("a user login named dependabot without [bot] is not exempt", () => {
+test("a user login named dependabot without [bot] is not a candidate", () => {
   assert.equal(
-    mode({ PR_ACTOR: "dependabot", PR_AUTHOR: "dependabot" }),
+    mode({ ...DEPENDABOT_PR, PR_AUTHOR: "dependabot" }),
     "mode=hand-edit",
   );
+});
+
+test("the mode step never selects skip itself", () => {
+  assert.doesNotMatch(modeScript, /mode=skip/u);
 });
 
 test("verification steps run only in sync mode and no step skips it", () => {
@@ -122,7 +131,20 @@ test("verification steps run only in sync mode and no step skips it", () => {
     "steps.mode.outputs.mode == 'sync'",
   );
   assert.equal(
-    gate("Reject hand-edits of managed files"),
-    "steps.mode.outputs.mode == 'hand-edit'",
+    gate("Verify Dependabot PR commits"),
+    "steps.mode.outputs.mode == 'dependabot'",
   );
+  assert.equal(
+    gate("Reject hand-edits of managed files"),
+    "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) == 'hand-edit'",
+  );
+  for (const name of [
+    "Check out standards manifest source",
+    "Detect the engine flavor",
+  ]) {
+    assert.equal(
+      gate(name),
+      "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'",
+    );
+  }
 });
