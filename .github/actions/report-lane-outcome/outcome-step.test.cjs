@@ -9,9 +9,12 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const { after, test } = require("node:test");
+const test = require("node:test");
+
+const {
+  makeTemporaryDirectory,
+} = require("../../scripts/temporary-directories.cjs");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
@@ -42,11 +45,7 @@ function stepScript() {
     .join("\n");
 }
 
-const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "outcome-"));
-
-after(() => {
-  fs.rmSync(temporaryDirectory, { recursive: true, force: true });
-});
+const temporaryDirectory = makeTemporaryDirectory("outcome-");
 
 function writeExecutionFile(contents) {
   const file = path.join(temporaryDirectory, "execution.json");

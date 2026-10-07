@@ -4,26 +4,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { after, test } = require("node:test");
+const test = require("node:test");
 
 const {
   ResolveError,
   resolveNpmToolVersion,
 } = require("./resolve-npm-tool-version.cjs");
-
-const temporaryDirectories = [];
-
-after(() => {
-  for (const directory of temporaryDirectories) {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-function makeTemporaryDirectory() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "resolve-npm-"));
-  temporaryDirectories.push(directory);
-  return directory;
-}
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
 function writePackage(dir, manifest) {
   const file = path.join(dir, "package.json");
@@ -32,7 +19,7 @@ function writePackage(dir, manifest) {
 }
 
 test("explicit exact input wins over package.json and fallback", () => {
-  const dir = makeTemporaryDirectory();
+  const dir = makeTemporaryDirectory("resolve-npm-");
   const packageJsonPath = writePackage(dir, {
     devDependencies: { "@biomejs/biome": "2.5.6" },
   });
@@ -48,7 +35,7 @@ test("explicit exact input wins over package.json and fallback", () => {
 });
 
 test("exact package.json pin wins over fallback", () => {
-  const dir = makeTemporaryDirectory();
+  const dir = makeTemporaryDirectory("resolve-npm-");
   const packageJsonPath = writePackage(dir, {
     dependencies: { "@biomejs/biome": "2.5.6" },
   });
@@ -79,7 +66,7 @@ test("absent package.json uses fallback", () => {
 });
 
 test("absent package entry uses fallback", () => {
-  const dir = makeTemporaryDirectory();
+  const dir = makeTemporaryDirectory("resolve-npm-");
   const packageJsonPath = writePackage(dir, {
     devDependencies: { typescript: "5.9.3" },
   });
@@ -95,7 +82,7 @@ test("absent package entry uses fallback", () => {
 });
 
 test("ranged package.json pin fails closed", () => {
-  const dir = makeTemporaryDirectory();
+  const dir = makeTemporaryDirectory("resolve-npm-");
   const packageJsonPath = writePackage(dir, {
     devDependencies: { "@biomejs/biome": "^2.5.6" },
   });
@@ -114,7 +101,7 @@ test("ranged package.json pin fails closed", () => {
 });
 
 test("conflicting dependency section pins fail closed", () => {
-  const dir = makeTemporaryDirectory();
+  const dir = makeTemporaryDirectory("resolve-npm-");
   const packageJsonPath = writePackage(dir, {
     dependencies: { "@biomejs/biome": "2.5.4" },
     devDependencies: { "@biomejs/biome": "2.5.6" },

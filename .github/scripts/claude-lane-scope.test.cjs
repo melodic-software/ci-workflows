@@ -10,25 +10,11 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const { after, test } = require("node:test");
+const test = require("node:test");
 
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
-
-const temporaryDirectories = [];
-
-after(() => {
-  for (const directory of temporaryDirectories) {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-function makeTemporaryDirectory(prefix) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  temporaryDirectories.push(directory);
-  return directory;
-}
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const workflowsDir = path.join(__dirname, "..", "workflows");
