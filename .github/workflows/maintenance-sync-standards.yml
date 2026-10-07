@@ -29,6 +29,14 @@ on:
         description: Comma-separated exact target allowlist; empty selects all manifest targets.
         type: string
         default: ''
+      environment:
+        description: >-
+          Caller-repository environment that holds the App secrets. Restrict its
+          deployments to the default branch. The jobs that use the App set
+          `deployment: false`, so the environment must not use custom protection
+          rules. A job naming a nonexistent environment creates it, unprotected.
+        type: string
+        default: standards-sync
     secrets:
       app-client-id:
         description: GitHub App client ID for cross-repository sync.
@@ -138,6 +146,9 @@ jobs:
   attest:
     needs: plan
     if: ${{ !inputs.dry-run }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
@@ -363,6 +374,9 @@ jobs:
   sync:
     needs: [plan, attest]
     if: ${{ !inputs.dry-run }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ${{ inputs.runner }}
     # Covers the merge-queue wait (MAX_POLLS x POLL_SECONDS = 30 minutes) plus the sync itself.
     timeout-minutes: 45
