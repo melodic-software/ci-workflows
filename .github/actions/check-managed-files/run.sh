@@ -72,7 +72,8 @@ fi
 {
   echo "::error::This PR edits sync-manifest-managed files. Change them in"
   echo "::error::melodic-software/standards and let standards-sync land the"
-  echo "::error::update, or label the PR standards-sync if this IS that sync."
+  echo "::error::update. Standards-sync PRs are opened by the sync workflow and"
+  echo "::error::verified automatically; no label or exemption applies."
   printf '::error::Managed paths touched:\n'
   for path in "${hits[@]}"; do
     printf '::error::  - %s\n' "$path"

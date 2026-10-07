@@ -1,8 +1,10 @@
 name: managed-files-guard
 description: >-
   Fail when a PR hand-edits files managed by melodic-software/standards'
-  sync-manifest (ci-workflows#208). Advisory-first: wire into ci-status only
-  after a clean soak.
+  sync-manifest (ci-workflows#208). A standards-sync PR is instead verified to
+  hold exactly what sync-manifest apply produces at standards main HEAD, as
+  resolved when the check runs. Callers must pin this action by SHA; see
+  README.md. Advisory-first: wire into ci-status only after a clean soak.
 
 inputs:
   standards-ref:
@@ -11,7 +13,8 @@ inputs:
       Defaults to `main` because the guard must read the manifest that is
       live for this repository: a fixed SHA stops tracking target and
       component changes as soon as standards moves. A caller may pin a full
-      SHA to freeze the managed-file list.
+      SHA to freeze the managed-file list. Sync mode ignores it and always
+      verifies against standards main.
     default: main
   repository:
     description: Target repository identity OWNER/REPO (defaults to this repo).
@@ -22,45 +25,78 @@ inputs:
   head-ref:
     description: Git ref of the PR head (or current SHA for non-PR runs).
     default: ${{ github.event.pull_request.head.sha || github.sha }}
+  github-token:
+    description: >-
+      Token that lists the PR's commits in sync mode. The job needs
+      `pull-requests: read`.
+    default: ${{ github.token }}
 
 runs:
   using: composite
   steps:
-    - name: Skip standards-sync PRs
-      id: skip
+    # Sync mode needs all three: the sync App opened the PR, from its fixed
+    # branch, in this repository. Anything less falls through to the
+    # hand-edit check, so a lookalike PR is held to the stricter rule.
+    - name: Select the guard mode
+      id: mode
       shell: bash
       env:
-        PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         PR_ACTOR: ${{ github.event.pull_request.user.login || github.actor }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
       run: |
         set -euo pipefail
-        skip=false
-        # Anyone who can label a PR can add `standards-sync`, so the label
-        # exempts only a PR the sync App itself opened.
-        if [[ "$PR_ACTOR" == 'melodic-standards-sync[bot]' &&
-          ",${PR_LABELS}," == *",standards-sync,"* ]]; then
-          skip=true
+        mode=hand-edit
+        if [[ "$PR_AUTHOR" == 'melodic-standards-sync[bot]' &&
+          "$PR_HEAD_REF" == 'chore/standards-sync' &&
+          -n "$PR_HEAD_REPO" && "$PR_HEAD_REPO" == "$PR_BASE_REPO" ]]; then
+          mode=sync
         fi
         case "$PR_ACTOR" in
-          'dependabot[bot]') skip=true ;;
+          'dependabot[bot]') mode=skip ;;
         esac
-        echo "skip=$skip" >>"$GITHUB_OUTPUT"
-        if [[ "$skip" == true ]]; then
-          echo "Exempt sync PR/actor — managed-files-guard no-ops."
-        fi
+        echo "mode=$mode" >>"$GITHUB_OUTPUT"
+        echo "managed-files-guard mode: $mode"
 
+    # actions/github-script rather than `gh api`: a self-hosted runner image
+    # is not guaranteed to ship the gh CLI.
+    - name: Verify sync PR commits
+      if: steps.mode.outputs.mode == 'sync'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        HEAD_SHA: ${{ inputs.head-ref }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const verify = require(`${process.env.ACTION_PATH}/sync-commits.cjs`);
+          await verify({
+            github,
+            core,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pullNumber: context.payload.pull_request.number,
+            headSha: process.env.HEAD_SHA,
+          });
+
+    # Sync mode verifies against standards main HEAD, never a SHA the PR names,
+    # so a sync PR cannot roll managed files back to older reviewed content.
+    # If main moves mid-sync the check fails closed; the sync workflow runs on
+    # every standards main push, updates the PR, and CI re-runs.
     - name: Check out standards manifest source
-      if: steps.skip.outputs.skip != 'true'
+      if: steps.mode.outputs.mode != 'skip'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: melodic-software/standards
-        ref: ${{ inputs.standards-ref }}
+        ref: ${{ steps.mode.outputs.mode == 'sync' && 'main' || inputs.standards-ref }}
         path: .managed-files-guard-standards
         persist-credentials: false
 
     - name: Detect the engine flavor
       id: engine
-      if: steps.skip.outputs.skip != 'true'
+      if: steps.mode.outputs.mode != 'skip'
       shell: bash
       env:
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
@@ -95,7 +131,7 @@ runs:
           --fetch-retry-maxtimeout=60000
 
     - name: Reject hand-edits of managed files
-      if: steps.skip.outputs.skip != 'true'
+      if: steps.mode.outputs.mode == 'hand-edit'
       shell: bash
       env:
         REPOSITORY: ${{ inputs.repository }}
@@ -103,3 +139,13 @@ runs:
         HEAD_REF: ${{ inputs.head-ref }}
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
       run: bash "$GITHUB_ACTION_PATH/run.sh"
+
+    - name: Verify sync PR content against standards
+      if: steps.mode.outputs.mode == 'sync'
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+      run: bash "$GITHUB_ACTION_PATH/verify-sync.sh"
