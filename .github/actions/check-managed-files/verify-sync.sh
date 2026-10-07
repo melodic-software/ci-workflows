@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Sync mode: prove the PR holds exactly what `sync-manifest.sh apply` at the
-# synced standards SHA produces. Changed paths must be managed destinations,
-# added or modified only, and applying the SHA onto the PR head must leave no
-# byte or mode difference.
+# checked-out standards main HEAD produces. Changed paths must be managed
+# destinations, added or modified only, and applying standards onto the PR
+# head must leave no byte, mode, untracked or ignored-file difference.
 set -euo pipefail
 
 : "${REPOSITORY:?REPOSITORY is required}"
 : "${BASE_REF:?BASE_REF is required}"
 : "${HEAD_REF:?HEAD_REF is required}"
 : "${STANDARDS_ROOT:?STANDARDS_ROOT is required}"
-SYNC_SHA="${SYNC_SHA:-}"
+STANDARDS_SHA="$(git -C "$STANDARDS_ROOT" rev-parse HEAD 2>/dev/null)" || STANDARDS_SHA=""
 
 # Workflow commands read `%`, CR and LF, so escape them in PR-controlled text.
 escape() {
@@ -20,7 +20,7 @@ escape() {
 
 fail() {
   {
-    echo "::error::Standards-sync PR does not match standards@${SYNC_SHA:-unknown}."
+    echo "::error::Standards-sync PR does not match standards main, resolved to ${STANDARDS_SHA:-unknown}."
     for line in "$@"; do
       echo "::error::  - $(escape "$line")"
     done
@@ -29,15 +29,11 @@ fail() {
   exit 1
 }
 
-[[ "$SYNC_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "no verified 40-hex standards SHA was resolved"
-
-if ! checked_out="$(git -C "$STANDARDS_ROOT" rev-parse HEAD)" ||
-  [[ "$checked_out" != "$SYNC_SHA" ]]; then
-  fail "standards checkout is at '${checked_out:-unreadable}', not $SYNC_SHA"
-fi
+[[ "$STANDARDS_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+  fail "could not resolve the standards checkout at $STANDARDS_ROOT to a commit"
 
 [[ -f "$STANDARDS_ROOT/distribution/sync-manifest.mjs" ]] ||
-  fail "standards@$SYNC_SHA predates the Node sync engine (distribution/sync-manifest.mjs)"
+  fail "standards@$STANDARDS_SHA has no distribution/sync-manifest.mjs"
 engine="$STANDARDS_ROOT/distribution/sync-manifest.sh"
 
 if ! dest_paths="$(
@@ -91,20 +87,20 @@ git worktree add --quiet --detach "$worktree" "$HEAD_REF" ||
 
 if ! bash "$engine" apply --source-root "$STANDARDS_ROOT" \
   --target "$REPOSITORY" --target-root "$worktree" >/dev/null; then
-  problems+=("sync-manifest apply at $SYNC_SHA failed on the PR head")
+  problems+=("sync-manifest apply at $STANDARDS_SHA failed on the PR head")
 elif ! git -C "$worktree" -c core.fileMode=true status --porcelain -z \
-  --untracked-files=all >"$scratch/status"; then
+  --untracked-files=all --ignored=matching >"$scratch/status"; then
   problems+=("could not read the scratch worktree status")
 else
   mapfile -d '' -t status_fields <"$scratch/status"
   i=0
   while ((i < ${#status_fields[@]})); do
     entry="${status_fields[i]}"
-    problems+=("${entry:3}: bytes or mode differ from apply at $SYNC_SHA (${entry:0:2})")
+    problems+=("${entry:3}: differs from apply at $STANDARDS_SHA (${entry:0:2})")
     # A staged rename or copy carries its source path as the next field.
     case "$entry" in R* | C*) ((i += 2)) ;; *) ((i += 1)) ;; esac
   done
 fi
 
 ((${#problems[@]} == 0)) || fail "${problems[@]}"
-echo "Sync PR matches standards@$SYNC_SHA exactly."
+echo "Sync PR matches standards main@$STANDARDS_SHA exactly."

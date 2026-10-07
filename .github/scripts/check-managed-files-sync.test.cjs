@@ -10,35 +10,39 @@ const test = require("node:test");
 const actionDir = path.join(__dirname, "..", "actions", "check-managed-files");
 const verifySyncCommits = require(path.join(actionDir, "sync-commits.cjs"));
 
+// Identity fields of a real sync commit (ci-workflows#701).
 const BOT = "melodic-standards-sync[bot]";
-const STANDARDS_SHA = "0123456789abcdef0123456789abcdef01234567";
+const BOT_EMAIL =
+  "300666570+melodic-standards-sync[bot]@users.noreply.github.com";
 const HEAD_SHA = "fedcba9876543210fedcba9876543210fedcba98";
-const SUBJECT = `chore: sync standards components (${STANDARDS_SHA})`;
 
 // --- commit checks ---------------------------------------------------------
 
-function commit(sha, { login = BOT, verified = true, message = SUBJECT } = {}) {
+function commit(
+  sha,
+  {
+    login = BOT,
+    email = BOT_EMAIL,
+    committer = "web-flow",
+    verified = true,
+    reason = "valid",
+  } = {},
+) {
   return {
     sha,
     author: login === null ? null : { login },
-    commit: { message, verification: { verified } },
+    committer: committer === null ? null : { login: committer },
+    commit: {
+      message: "chore: sync standards components",
+      author: { email },
+      verification: { verified, reason },
+    },
   };
 }
 
-// The fake compare answers only for the basehead it is given, so a request
-// for the wrong range fails like an unknown ref would.
-function fakeGithub({ commits, compares = {}, listError } = {}) {
+function fakeGithub({ commits, listError } = {}) {
   return {
-    rest: {
-      pulls: { listCommits: "pulls.listCommits" },
-      repos: {
-        compareCommitsWithBasehead: async ({ owner, repo, basehead }) => {
-          const data = compares[`${owner}/${repo}:${basehead}`];
-          if (!data) throw new Error("Not Found");
-          return { data };
-        },
-      },
-    },
+    rest: { pulls: { listCommits: "pulls.listCommits" } },
     paginate: async (method, params) => {
       assert.equal(method, "pulls.listCommits");
       assert.equal(params.pull_number, 7);
@@ -48,29 +52,18 @@ function fakeGithub({ commits, compares = {}, listError } = {}) {
   };
 }
 
-const REACHABLE = {
-  [`melodic-software/standards:${STANDARDS_SHA}...main`]: {
-    status: "ahead",
-    merge_base_commit: { sha: STANDARDS_SHA },
-  },
-};
-
 async function runCommits(github) {
   const core = {
     errors: [],
     failed: undefined,
-    outputs: {},
     error(message) {
       this.errors.push(message);
     },
     setFailed(message) {
       this.failed = message;
     },
-    setOutput(name, value) {
-      this.outputs[name] = value;
-    },
   };
-  await verifySyncCommits({
+  const passed = await verifySyncCommits({
     github,
     core,
     owner: "melodic-software",
@@ -78,129 +71,93 @@ async function runCommits(github) {
     pullNumber: 7,
     headSha: HEAD_SHA,
   });
-  return core;
+  return { core, passed };
 }
 
-test("a faithful sync's commits pass and output the synced SHA", async () => {
-  const core = await runCommits(
-    fakeGithub({ commits: [commit(HEAD_SHA)], compares: REACHABLE }),
-  );
-  assert.equal(core.failed, undefined);
-  assert.deepEqual(core.errors, []);
-  assert.deepEqual(core.outputs, { sha: STANDARDS_SHA });
-});
-
-test("a SHA identical to standards main passes", async () => {
-  const core = await runCommits(
-    fakeGithub({
-      commits: [commit(HEAD_SHA)],
-      compares: {
-        [`melodic-software/standards:${STANDARDS_SHA}...main`]: {
-          status: "identical",
-          merge_base_commit: { sha: STANDARDS_SHA },
-        },
-      },
-    }),
-  );
-  assert.deepEqual(core.outputs, { sha: STANDARDS_SHA });
-});
-
-function assertFailed(core, ...fragments) {
-  assert.deepEqual(core.outputs, {});
+function assertFailed({ core, passed }, ...fragments) {
+  assert.equal(passed, false);
   assert.match(core.failed, /Re-run the standards sync/u);
   assert.match(core.failed, /do not hand-edit/u);
   const all = core.errors.join("\n");
   for (const fragment of fragments) assert.ok(all.includes(fragment), all);
 }
 
+test("a sync commit matching the live identity passes", async () => {
+  const { core, passed } = await runCommits(
+    fakeGithub({ commits: [commit(HEAD_SHA)] }),
+  );
+  assert.equal(passed, true);
+  assert.equal(core.failed, undefined);
+  assert.deepEqual(core.errors, []);
+});
+
 test("a commit authored by anyone but the sync App fails, named", async () => {
   const other = "1111111111111111111111111111111111111111";
-  const core = await runCommits(
+  const result = await runCommits(
     fakeGithub({
-      commits: [
-        commit(other, { login: "some-contributor", message: "tweak" }),
-        commit(HEAD_SHA),
-      ],
-      compares: REACHABLE,
+      commits: [commit(other, { login: "some-contributor" }), commit(HEAD_SHA)],
     }),
   );
-  assertFailed(core, `commit ${other}: author some-contributor`);
-  assert.match(core.failed, new RegExp(`standards@${STANDARDS_SHA}`, "u"));
+  assertFailed(result, `commit ${other}: author some-contributor`);
 });
 
 test("a commit with no linked GitHub account fails", async () => {
-  const core = await runCommits(
-    fakeGithub({
-      commits: [commit(HEAD_SHA, { login: null })],
-      compares: REACHABLE,
-    }),
-  );
-  assertFailed(core, `commit ${HEAD_SHA}: author (no GitHub account)`);
-});
-
-test("an unverified sync-App commit fails, named", async () => {
-  const core = await runCommits(
-    fakeGithub({
-      commits: [commit(HEAD_SHA, { verified: false })],
-      compares: REACHABLE,
-    }),
-  );
-  assertFailed(core, `commit ${HEAD_SHA}: author ${BOT}, signature unverified`);
-});
-
-test("a head subject without a 40-hex SHA fails", async () => {
-  const core = await runCommits(
-    fakeGithub({
-      commits: [
-        commit(HEAD_SHA, {
-          message: `chore: sync standards components (${STANDARDS_SHA.slice(0, 39)})`,
-        }),
-      ],
-      compares: REACHABLE,
-    }),
-  );
   assertFailed(
-    core,
-    `head commit ${HEAD_SHA} subject names no 40-hex standards SHA`,
+    await runCommits(
+      fakeGithub({ commits: [commit(HEAD_SHA, { login: null })] }),
+    ),
+    `commit ${HEAD_SHA}: author (no GitHub account)`,
   );
 });
 
-test("a SHA that diverged from standards main fails", async () => {
-  const core = await runCommits(
-    fakeGithub({
-      commits: [commit(HEAD_SHA)],
-      compares: {
-        [`melodic-software/standards:${STANDARDS_SHA}...main`]: {
-          status: "diverged",
-          merge_base_commit: {
-            sha: "2222222222222222222222222222222222222222",
-          },
-        },
-      },
-    }),
-  );
+test("the bot login with another author email fails", async () => {
   assertFailed(
-    core,
-    `standards@${STANDARDS_SHA} is not reachable from standards main`,
+    await runCommits(
+      fakeGithub({
+        commits: [commit(HEAD_SHA, { email: "someone@example.com" })],
+      }),
+    ),
+    `commit ${HEAD_SHA}: author email someone@example.com`,
   );
 });
 
-test("a SHA standards does not know fails", async () => {
-  const core = await runCommits(fakeGithub({ commits: [commit(HEAD_SHA)] }));
+// A user who pushes their own signed commit under the bot's author fields
+// is the committer GitHub verified, so the committer must be web-flow.
+test("a verified commit with a committer other than web-flow fails", async () => {
   assertFailed(
-    core,
-    `could not compare standards@${STANDARDS_SHA}`,
-    "Not Found",
+    await runCommits(
+      fakeGithub({
+        commits: [commit(HEAD_SHA, { committer: "some-contributor" })],
+      }),
+    ),
+    `commit ${HEAD_SHA}: committer some-contributor, not web-flow`,
+  );
+});
+
+test("an unverified commit fails, named", async () => {
+  assertFailed(
+    await runCommits(
+      fakeGithub({
+        commits: [commit(HEAD_SHA, { verified: false, reason: "unsigned" })],
+      }),
+    ),
+    `commit ${HEAD_SHA}: signature verified=false, reason unsigned`,
+  );
+});
+
+test("a verified commit whose reason is not valid fails", async () => {
+  assertFailed(
+    await runCommits(
+      fakeGithub({ commits: [commit(HEAD_SHA, { reason: "unknown_key" })] }),
+    ),
+    `commit ${HEAD_SHA}: signature verified=true, reason unknown_key`,
   );
 });
 
 test("a listed head other than the checked head fails", async () => {
   const moved = "3333333333333333333333333333333333333333";
-  const core = await runCommits(
-    fakeGithub({ commits: [commit(moved)], compares: REACHABLE }),
-  );
   assertFailed(
-    core,
+    await runCommits(fakeGithub({ commits: [commit(moved)] })),
     `the last listed commit ${moved} is not the checked head ${HEAD_SHA}`,
   );
 });
@@ -214,19 +171,16 @@ test("an empty or capped commit list fails", async () => {
     commit(i.toString(16).padStart(40, "0")),
   );
   assertFailed(
-    await runCommits(
-      fakeGithub({ commits: [...many, commit(HEAD_SHA)], compares: REACHABLE }),
-    ),
+    await runCommits(fakeGithub({ commits: [...many, commit(HEAD_SHA)] })),
     "the PR lists 250 commits",
   );
 });
 
 test("an unreadable commit list fails", async () => {
-  const core = await runCommits(
-    fakeGithub({ listError: new Error("Resource not accessible") }),
-  );
   assertFailed(
-    core,
+    await runCommits(
+      fakeGithub({ listError: new Error("Resource not accessible") }),
+    ),
     "could not list the PR's commits: Resource not accessible",
   );
 });
@@ -293,9 +247,15 @@ function write(root, file, content, mode = 0o644) {
   fs.chmodSync(full, mode);
 }
 
-// Standards holds two managed sources for TARGET; the target's base has older
-// copies, and its head is the faithful sync unless `mutateHead` changes it.
-function fixture({ mutateHead = () => {}, mutateStandards = () => {} } = {}) {
+// Standards main holds the managed sources for TARGET at its first commit;
+// `mutateStandards` runs in a second commit, so main HEAD moves past the
+// commit the head was synced from. The target's base has older copies, and
+// its head is the faithful sync unless `mutateHead` changes it.
+function fixture({
+  mutateHead = () => {},
+  mutateBase = () => {},
+  mutateStandards,
+} = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "managed-files-sync-"));
   const standards = path.join(dir, "standards");
   const target = path.join(dir, "target");
@@ -312,14 +272,19 @@ function fixture({ mutateHead = () => {}, mutateStandards = () => {} } = {}) {
   );
   write(standards, "src/config.txt", "config v2\n");
   write(standards, "src/tool.sh", "#!/bin/sh\necho v2\n", 0o755);
-  mutateStandards(standards);
   git(standards, "add", "--all");
   git(standards, "commit", "--quiet", "--message", "standards");
+  if (mutateStandards) {
+    mutateStandards(standards);
+    git(standards, "add", "--all");
+    git(standards, "commit", "--quiet", "--message", "standards moved");
+  }
 
   git(target, "init", "--quiet", "--initial-branch=main");
   write(target, "README.md", "target\n");
   write(target, "managed/config.txt", "config v1\n");
   write(target, "managed/tool.sh", "#!/bin/sh\necho v1\n", 0o755);
+  mutateBase(target);
   git(target, "add", "--all");
   git(target, "commit", "--quiet", "--message", "base");
   const base = git(target, "rev-parse", "HEAD");
@@ -327,7 +292,7 @@ function fixture({ mutateHead = () => {}, mutateStandards = () => {} } = {}) {
   write(target, "managed/tool.sh", "#!/bin/sh\necho v2\n", 0o755);
   mutateHead(target);
   git(target, "add", "--all");
-  git(target, "commit", "--quiet", "--allow-empty", "--message", SUBJECT);
+  git(target, "commit", "--quiet", "--allow-empty", "--message", "sync");
 
   return {
     dir,
@@ -339,9 +304,9 @@ function fixture({ mutateHead = () => {}, mutateStandards = () => {} } = {}) {
   };
 }
 
-function verify(fx, overrides = {}) {
+function runScript(script, fx, overrides = {}) {
   try {
-    const result = spawnSync("bash", [path.join(actionDir, "verify-sync.sh")], {
+    const result = spawnSync("bash", [path.join(actionDir, script)], {
       cwd: fx.target,
       env: {
         ...gitEnv,
@@ -349,7 +314,6 @@ function verify(fx, overrides = {}) {
         BASE_REF: fx.base,
         HEAD_REF: fx.head,
         STANDARDS_ROOT: fx.standards,
-        SYNC_SHA: fx.sha,
         ...overrides,
       },
       encoding: "utf8",
@@ -360,20 +324,34 @@ function verify(fx, overrides = {}) {
   }
 }
 
-function assertRejected(result, sha, ...paths) {
+const verify = (fx, overrides) => runScript("verify-sync.sh", fx, overrides);
+
+function assertRejected(result, sha, ...fragments) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.ok(result.stderr.includes(`standards@${sha}`), result.stderr);
+  assert.ok(result.stderr.includes(sha), result.stderr);
   assert.match(result.stderr, /Re-run the standards sync/u);
   assert.match(result.stderr, /do not hand-edit/u);
-  for (const p of paths) assert.ok(result.stderr.includes(p), result.stderr);
+  for (const f of fragments)
+    assert.ok(result.stderr.includes(f), result.stderr);
 }
 
 test("a faithful sync's content passes and leaves no scratch worktree", () => {
   const fx = fixture();
   const result = verify(fx);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, new RegExp(`matches standards@${fx.sha}`, "u"));
+  assert.match(result.stdout, new RegExp(`main@${fx.sha} exactly`, "u"));
   assert.equal(result.worktrees.split("\n").length, 1, result.worktrees);
+});
+
+test("a sync PR replaying older standards content than main fails", () => {
+  const fx = fixture({
+    mutateStandards: (s) => write(s, "src/config.txt", "config v3\n"),
+  });
+  assertRejected(
+    verify(fx),
+    fx.sha,
+    `managed/config.txt: differs from apply at ${fx.sha}`,
+  );
 });
 
 test("a changed path outside the managed destinations fails, named", () => {
@@ -417,7 +395,7 @@ test("managed bytes that differ from apply fail, named", () => {
   assertRejected(
     verify(fx),
     fx.sha,
-    `managed/config.txt: bytes or mode differ from apply at ${fx.sha}`,
+    `managed/config.txt: differs from apply at ${fx.sha}`,
   );
 });
 
@@ -428,38 +406,68 @@ test("a managed mode that differs from apply fails, named", () => {
   assertRejected(
     verify(fx),
     fx.sha,
-    `managed/tool.sh: bytes or mode differ from apply at ${fx.sha}`,
+    `managed/tool.sh: differs from apply at ${fx.sha}`,
   );
 });
 
-test("a standards SHA without the Node engine fails", () => {
+test("a managed file the head omits under a gitignore rule fails", () => {
+  const fx = fixture({
+    mutateBase: (t) => write(t, ".gitignore", "managed/new.txt\n"),
+    mutateStandards: (s) => {
+      write(s, "src/new.txt", "new\n");
+      fs.appendFileSync(
+        path.join(s, "fixture-map.tsv"),
+        `${TARGET}\tsrc/new.txt\tmanaged/new.txt\n`,
+      );
+    },
+  });
+  assertRejected(
+    verify(fx),
+    fx.sha,
+    `managed/new.txt: differs from apply at ${fx.sha} (!!)`,
+  );
+});
+
+test("standards main without sync-manifest.mjs fails", () => {
   const fx = fixture({
     mutateStandards: (s) =>
       fs.rmSync(path.join(s, "distribution/sync-manifest.mjs")),
   });
-  assertRejected(verify(fx), fx.sha, "predates the Node sync engine");
-});
-
-test("a standards checkout at another commit than the synced SHA fails", () => {
-  const fx = fixture();
-  const other = "4444444444444444444444444444444444444444";
-  assertRejected(verify(fx, { SYNC_SHA: other }), other, `not ${other}`);
-});
-
-test("a missing synced SHA fails", () => {
-  const fx = fixture();
   assertRejected(
-    verify(fx, { SYNC_SHA: "" }),
-    "unknown",
-    "no verified 40-hex standards SHA",
+    verify(fx),
+    fx.sha,
+    `standards@${fx.sha} has no distribution/sync-manifest.mjs`,
   );
 });
 
-test("a target the manifest does not manage at the SHA fails", () => {
+test("a standards root that is not a Git checkout fails", () => {
+  const fx = fixture();
+  const empty = path.join(fx.dir, "empty");
+  fs.mkdirSync(empty);
+  assertRejected(
+    verify(fx, { STANDARDS_ROOT: empty }),
+    "resolved to unknown",
+    `could not resolve the standards checkout at ${empty}`,
+  );
+});
+
+test("a target the manifest does not manage fails", () => {
   const fx = fixture();
   assertRejected(
     verify(fx, { REPOSITORY: "melodic-software/other" }),
     fx.sha,
     "melodic-software/other is not a sync-manifest target at this SHA",
   );
+});
+
+// --- hand-edit check -------------------------------------------------------
+
+test("a hand-edit points at the sync workflow, not a label", () => {
+  const fx = fixture();
+  const result = runScript("run.sh", fx);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /managed\/config\.txt/u);
+  assert.match(result.stderr, /opened by the sync workflow/u);
+  assert.match(result.stderr, /verified automatically/u);
+  assert.doesNotMatch(result.stderr, /label the PR/u);
 });

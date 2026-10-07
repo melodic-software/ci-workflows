@@ -2,8 +2,9 @@ name: managed-files-guard
 description: >-
   Fail when a PR hand-edits files managed by melodic-software/standards'
   sync-manifest (ci-workflows#208). A standards-sync PR is instead verified to
-  hold exactly what sync-manifest apply produces at the standards SHA its head
-  commit names. Advisory-first: wire into ci-status only after a clean soak.
+  hold exactly what sync-manifest apply produces at standards main HEAD, as
+  resolved when the check runs. Callers must pin this action by SHA; see
+  README.md. Advisory-first: wire into ci-status only after a clean soak.
 
 inputs:
   standards-ref:
@@ -12,8 +13,8 @@ inputs:
       Defaults to `main` because the guard must read the manifest that is
       live for this repository: a fixed SHA stops tracking target and
       component changes as soon as standards moves. A caller may pin a full
-      SHA to freeze the managed-file list. Sync mode ignores it and checks
-      out the SHA the sync PR names.
+      SHA to freeze the managed-file list. Sync mode ignores it and always
+      verifies against standards main.
     default: main
   repository:
     description: Target repository identity OWNER/REPO (defaults to this repo).
@@ -26,8 +27,8 @@ inputs:
     default: ${{ github.event.pull_request.head.sha || github.sha }}
   github-token:
     description: >-
-      Token that lists the PR's commits and compares standards commits in sync
-      mode. Read access is enough.
+      Token that lists the PR's commits in sync mode. The job needs
+      `pull-requests: read`.
     default: ${{ github.token }}
 
 runs:
@@ -62,7 +63,6 @@ runs:
     # actions/github-script rather than `gh api`: a self-hosted runner image
     # is not guaranteed to ship the gh CLI.
     - name: Verify sync PR commits
-      id: commits
       if: steps.mode.outputs.mode == 'sync'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
@@ -81,12 +81,16 @@ runs:
             headSha: process.env.HEAD_SHA,
           });
 
+    # Sync mode verifies against standards main HEAD, never a SHA the PR names,
+    # so a sync PR cannot roll managed files back to older reviewed content.
+    # If main moves mid-sync the check fails closed; the sync workflow runs on
+    # every standards main push, updates the PR, and CI re-runs.
     - name: Check out standards manifest source
       if: steps.mode.outputs.mode != 'skip'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: melodic-software/standards
-        ref: ${{ steps.mode.outputs.mode == 'sync' && steps.commits.outputs.sha || inputs.standards-ref }}
+        ref: ${{ steps.mode.outputs.mode == 'sync' && 'main' || inputs.standards-ref }}
         path: .managed-files-guard-standards
         persist-credentials: false
 
@@ -144,5 +148,4 @@ runs:
         BASE_REF: ${{ inputs.base-ref }}
         HEAD_REF: ${{ inputs.head-ref }}
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
-        SYNC_SHA: ${{ steps.commits.outputs.sha }}
       run: bash "$GITHUB_ACTION_PATH/verify-sync.sh"
