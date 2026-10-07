@@ -31,17 +31,20 @@ on:
         default: ''
       environment:
         description: >-
-          Caller-repository environment that holds the App secrets. Restrict its
+          Caller-repository environment that holds the App secrets under the
+          names STANDARDS_SYNC_APP_CLIENT_ID and STANDARDS_SYNC_APP_PRIVATE_KEY;
+          an environment secret overrides the passed secret of the same name.
+          Environment secret names cannot contain hyphens. Restrict its
           deployments to the default branch. The jobs that use the App set
           `deployment: false`, so the environment must not use custom protection
           rules. A job naming a nonexistent environment creates it, unprotected.
         type: string
         default: standards-sync
     secrets:
-      app-client-id:
+      STANDARDS_SYNC_APP_CLIENT_ID:
         description: GitHub App client ID for cross-repository sync.
         required: false
-      app-private-key:
+      STANDARDS_SYNC_APP_PRIVATE_KEY:
         description: GitHub App private key for cross-repository sync.
         required: false
 
@@ -156,11 +159,11 @@ jobs:
     steps:
       - name: Require App credentials
         env:
-          APP_CLIENT_ID: ${{ secrets.app-client-id }}
-          APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
         run: |
           if [[ -z "$APP_CLIENT_ID" || -z "$APP_PRIVATE_KEY" ]]; then
-            echo "::error::app-client-id and app-private-key are required when dry-run is false"
+            echo "::error::STANDARDS_SYNC_APP_CLIENT_ID and STANDARDS_SYNC_APP_PRIVATE_KEY are required when dry-run is false"
             exit 1
           fi
 
@@ -168,16 +171,16 @@ jobs:
         id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ secrets.app-client-id }}
-          private-key: ${{ secrets.app-private-key }}
+          client-id: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
           owner: melodic-software
           permission-metadata: read
 
       - name: Attest App identity and exact repository access
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          APP_CLIENT_ID: ${{ secrets.app-client-id }}
-          APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
           APP_SLUG: ${{ steps.token.outputs.app-slug }}
           EXPECTED_APP_SLUG: melodic-standards-sync
           EXPECTED_INSTALLATION_ID: '144867070'
@@ -388,11 +391,11 @@ jobs:
     steps:
       - name: Require App credentials
         env:
-          APP_CLIENT_ID: ${{ secrets.app-client-id }}
-          APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
         run: |
           if [[ -z "$APP_CLIENT_ID" || -z "$APP_PRIVATE_KEY" ]]; then
-            echo "::error::app-client-id and app-private-key are required when dry-run is false"
+            echo "::error::STANDARDS_SYNC_APP_CLIENT_ID and STANDARDS_SYNC_APP_PRIVATE_KEY are required when dry-run is false"
             exit 1
           fi
 
@@ -400,8 +403,8 @@ jobs:
         id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ secrets.app-client-id }}
-          private-key: ${{ secrets.app-private-key }}
+          client-id: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
           owner: ${{ matrix.repo_owner }}
           repositories: ${{ matrix.repo_name }}
           permission-contents: write
