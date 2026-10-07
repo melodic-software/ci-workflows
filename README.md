@@ -780,7 +780,16 @@ GitHub continues the normal weekly patching of each hosted image generation.
   merge queue, so before checking a target out the workflow waits up to 30
   minutes for the previous sync PR to merge or leave the queue; past that
   budget the target fails: re-run it, or the next push to standards main or the
-  weekly reconciliation carries it.
+  weekly reconciliation carries it. The two jobs that use the App secrets run
+  in the caller environment named by `environment` (default `standards-sync`)
+  with `deployment: false`, so an environment whose deployment-branch policy
+  allows only the default branch keeps the key out of other branches' runs.
+  The environment holds secrets named exactly `STANDARDS_SYNC_APP_CLIENT_ID`
+  and `STANDARDS_SYNC_APP_PRIVATE_KEY`: environment secret names allow only
+  `[A-Za-z0-9_]`, and a called job's environment secret replaces the passed
+  secret of the same name. Until the secrets move into the environment, the
+  caller passes them under those same names; existing callers must rename the
+  secrets they pass, since the earlier hyphenated names are no longer declared.
 - `.github/workflows/pr-audit-workflows.yml` — GitHub Actions security/static-analysis lint
   with zizmor (dangerous triggers, excessive permissions, template injection).
   **Advisory by default** (`fail-on-severity: never` surfaces PR annotations
