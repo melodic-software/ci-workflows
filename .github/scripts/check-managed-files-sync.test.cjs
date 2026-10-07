@@ -471,3 +471,98 @@ test("a hand-edit points at the sync workflow, not a label", () => {
   assert.match(result.stderr, /verified automatically/u);
   assert.doesNotMatch(result.stderr, /label the PR/u);
 });
+
+// --- Dependabot mode -------------------------------------------------------
+
+const { dependabotMode } = verifySyncCommits;
+const DEPENDABOT_ID = 49699333;
+const WEB_FLOW_ID = 19864447;
+
+function dependabotCommit(
+  sha,
+  {
+    author = DEPENDABOT_ID,
+    committer = WEB_FLOW_ID,
+    verified = true,
+    reason = "valid",
+  } = {},
+) {
+  return {
+    sha,
+    author: author === null ? null : { id: author, login: "dependabot[bot]" },
+    committer: { id: committer, login: "web-flow" },
+    commit: { verification: { verified, reason } },
+  };
+}
+
+async function runDependabot(commits, listError) {
+  const core = {
+    warnings: [],
+    info() {},
+    warning(message) {
+      this.warnings.push(message);
+    },
+  };
+  const selected = await dependabotMode({
+    github: fakeGithub({ commits, listError }),
+    core,
+    owner: "melodic-software",
+    repo: "claude-code-plugins",
+    pullNumber: 7,
+    headSha: HEAD_SHA,
+  });
+  return { selected, warnings: core.warnings.join("\n") };
+}
+
+test("a Dependabot PR whose every commit is Dependabot's, verified, is skipped", async () => {
+  const earlier = "1111111111111111111111111111111111111111";
+  const { selected, warnings } = await runDependabot([
+    dependabotCommit(earlier),
+    dependabotCommit(HEAD_SHA),
+  ]);
+  assert.equal(selected, "skip");
+  assert.equal(warnings, "");
+});
+
+test("a Dependabot PR with one foreign commit fails the hand-edit check on a managed edit", async () => {
+  const foreign = "2222222222222222222222222222222222222222";
+  const { selected, warnings } = await runDependabot([
+    dependabotCommit(foreign, { author: 12345 }),
+    dependabotCommit(HEAD_SHA),
+  ]);
+  assert.equal(selected, "hand-edit");
+  assert.ok(warnings.includes(`commit ${foreign}: author id 12345`), warnings);
+  const result = runScript("run.sh", fixture());
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /managed\/config\.txt/u);
+});
+
+test("an unverified Dependabot commit is not skipped", async () => {
+  const { selected, warnings } = await runDependabot([
+    dependabotCommit(HEAD_SHA, { verified: false, reason: "unsigned" }),
+  ]);
+  assert.equal(selected, "hand-edit");
+  assert.ok(warnings.includes("verified=false, reason unsigned"), warnings);
+});
+
+test("a Dependabot commit not committed by web-flow is not skipped", async () => {
+  const { selected } = await runDependabot([
+    dependabotCommit(HEAD_SHA, { committer: 12345 }),
+  ]);
+  assert.equal(selected, "hand-edit");
+});
+
+test("a Dependabot PR whose listed head is not the checked head is not skipped", async () => {
+  const moved = "3333333333333333333333333333333333333333";
+  const { selected, warnings } = await runDependabot([dependabotCommit(moved)]);
+  assert.equal(selected, "hand-edit");
+  assert.ok(warnings.includes(`last listed commit ${moved}`), warnings);
+});
+
+test("an empty or unreadable Dependabot commit list is not skipped", async () => {
+  assert.equal((await runDependabot([])).selected, "hand-edit");
+  assert.equal(
+    (await runDependabot([], new Error("Resource not accessible"))).selected,
+    "hand-edit",
+  );
+});

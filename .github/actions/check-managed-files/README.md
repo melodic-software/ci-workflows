@@ -14,6 +14,16 @@ verified instead of exempted:
 
 The content check is the gate; the commit identity check is a second layer.
 
+## Dependabot pull requests
+
+A pull request opened by `dependabot[bot]` (account id `49699333`) skips the
+guard only when every commit on it has author id `49699333`, committer
+`web-flow` (id `19864447`) and a signature verified with reason `valid`, and
+the last listed commit is the checked head. This is the identity rule
+`pr-automerge-dependabot` uses. A commit anyone else pushed to the
+`dependabot/*` branch, an unreadable commit list, or a moved head drops the
+pull request to the hand-edit check, which fails on any managed-file edit.
+
 ## Why standards `main`, not a SHA the PR names
 
 Sync mode checks out standards at `main` when the check runs and verifies
@@ -30,7 +40,7 @@ The action is a trust boundary only when the PR cannot change it:
   (`uses: melodic-software/ci-workflows/.github/actions/check-managed-files@<sha>`)
   from a workflow file that CODEOWNERS protects. With `uses: ./...`, as in
   ci-workflows' own dogfood job, the PR edits the code that grades it.
-- Grant the job `pull-requests: read` (sync mode lists the PR's commits) and
-  `contents: read`.
+- Grant the job `pull-requests: read` (sync and Dependabot modes list the PR's
+  commits) and `contents: read`.
 - Check out the PR with `fetch-depth: 0`, so the base and head commits are
   both present.

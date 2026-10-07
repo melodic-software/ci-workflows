@@ -27,7 +27,7 @@ inputs:
     default: ${{ github.event.pull_request.head.sha || github.sha }}
   github-token:
     description: >-
-      Token that lists the PR's commits in sync mode. The job needs
+      Token that lists the PR's commits in sync and Dependabot modes. The job needs
       `pull-requests: read`.
     default: ${{ github.token }}
 
@@ -36,13 +36,15 @@ runs:
   steps:
     # Sync mode needs all three: the sync App opened the PR, from its fixed
     # branch, in this repository. Anything less falls through to the
-    # hand-edit check, so a lookalike PR is held to the stricter rule.
+    # hand-edit check, so a lookalike PR is held to the stricter rule. A
+    # Dependabot-opened PR is only a candidate for skipping: the next step
+    # skips it only when every commit is a verified Dependabot commit.
     - name: Select the guard mode
       id: mode
       shell: bash
       env:
-        PR_ACTOR: ${{ github.event.pull_request.user.login || github.actor }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
         PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
@@ -54,11 +56,35 @@ runs:
           -n "$PR_HEAD_REPO" && "$PR_HEAD_REPO" == "$PR_BASE_REPO" ]]; then
           mode=sync
         fi
-        case "$PR_ACTOR" in
-          'dependabot[bot]') mode=skip ;;
-        esac
+        if [[ "$PR_AUTHOR" == 'dependabot[bot]' && "$PR_AUTHOR_ID" == '49699333' ]]; then
+          mode=dependabot
+        fi
         echo "mode=$mode" >>"$GITHUB_OUTPUT"
         echo "managed-files-guard mode: $mode"
+
+    # Resolves the dependabot candidate to skip or hand-edit. Later steps read
+    # this step's mode first and fall back to the mode step's.
+    - name: Verify Dependabot PR commits
+      id: dependabot
+      if: steps.mode.outputs.mode == 'dependabot'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        HEAD_SHA: ${{ inputs.head-ref }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { dependabotMode } = require(`${process.env.ACTION_PATH}/sync-commits.cjs`);
+          const mode = await dependabotMode({
+            github,
+            core,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pullNumber: context.payload.pull_request.number,
+            headSha: process.env.HEAD_SHA,
+          });
+          core.setOutput("mode", mode);
+          core.info(`managed-files-guard mode: ${mode}`);
 
     # actions/github-script rather than `gh api`: a self-hosted runner image
     # is not guaranteed to ship the gh CLI.
@@ -86,7 +112,7 @@ runs:
     # If main moves mid-sync the check fails closed; the sync workflow runs on
     # every standards main push, updates the PR, and CI re-runs.
     - name: Check out standards manifest source
-      if: steps.mode.outputs.mode != 'skip'
+      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: melodic-software/standards
@@ -96,7 +122,7 @@ runs:
 
     - name: Detect the engine flavor
       id: engine
-      if: steps.mode.outputs.mode != 'skip'
+      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
       shell: bash
       env:
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
@@ -131,7 +157,7 @@ runs:
           --fetch-retry-maxtimeout=60000
 
     - name: Reject hand-edits of managed files
-      if: steps.mode.outputs.mode == 'hand-edit'
+      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) == 'hand-edit'
       shell: bash
       env:
         REPOSITORY: ${{ inputs.repository }}
