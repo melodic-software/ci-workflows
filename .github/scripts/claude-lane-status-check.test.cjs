@@ -12,11 +12,25 @@ const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const test = require("node:test");
+const { after, test } = require("node:test");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const workflowsRoot = path.join(__dirname, "..", "workflows");
+
+const temporaryDirectories = [];
+
+after(() => {
+  for (const directory of temporaryDirectories) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function makeTemporaryDirectory(prefix) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
 
 const lanes = [
   { file: "pr-review.yml", job: "claude", name: "claude-review-status" },
@@ -32,10 +46,7 @@ function load(file) {
 }
 
 function runStep(step, env) {
-  const summary = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), "status-")),
-    "summary",
-  );
+  const summary = path.join(makeTemporaryDirectory("status-"), "summary");
   fs.writeFileSync(summary, "");
   const result = spawnSync("bash", ["-e", "-c", step.run], {
     // step.env holds unexpanded expressions; only the literal LANE is real.

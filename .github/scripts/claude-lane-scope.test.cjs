@@ -12,9 +12,23 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const test = require("node:test");
+const { after, test } = require("node:test");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
+
+const temporaryDirectories = [];
+
+after(() => {
+  for (const directory of temporaryDirectories) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function makeTemporaryDirectory(prefix) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const workflowsDir = path.join(__dirname, "..", "workflows");
@@ -110,7 +124,7 @@ async function runScope(
   lane,
   { env, prFiles, compares = {}, fail = false, comments = [] },
 ) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "scope-"));
+  const directory = makeTemporaryDirectory("scope-");
   const diffFile = path.join(directory, "state", "incremental.diff");
   let listedComments = 0;
   const github = {

@@ -11,7 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const test = require("node:test");
+const { after, test } = require("node:test");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
@@ -43,6 +43,10 @@ function stepScript() {
 }
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "outcome-"));
+
+after(() => {
+  fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+});
 
 function writeExecutionFile(contents) {
   const file = path.join(temporaryDirectory, "execution.json");
