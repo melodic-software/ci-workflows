@@ -147,9 +147,9 @@ fi
 # safe form; this guards the documented explicit-argument form.
 for file in "${files[@]}"; do
   case "$file" in
-  /* | [A-Za-z]:[/\\]*) reason='an absolute path' ;;
-  .. | ../* | */.. | */../*) reason='a path with a ".." component' ;;
-  *) continue ;;
+    /* | [A-Za-z]:[/\\]*) reason='an absolute path' ;;
+    .. | ../* | */.. | */../*) reason='a path with a ".." component' ;;
+    *) continue ;;
   esac
   echo "::error::composite-run-shellcheck: '$file' is $reason; each argument must be a repo-relative path — run from the repository root."
   exit 1
@@ -189,74 +189,74 @@ for file in "${files[@]}"; do
       continue
     fi
     case "$line" in
-    'EXPECTED '*)
-      expected="${line#EXPECTED }"
-      ;;
-    'STEP '*)
-      rest="${line#STEP }"
-      index="${rest%% *}"
-      rest="${rest#* }"
-      shell_b64="${rest%% *}"
-      run_b64="${rest#* }"
-      if [[ ! "$index" =~ ^[0-9]+$ ]]; then
-        # `.key` is a sequence index only while `runs.steps` is a sequence. A
-        # mapping makes it an arbitrary author-supplied string, and this runs
-        # against pull-request content, so reject the shape at the boundary
-        # rather than writing it into a path: $index reaches the destination
-        # below.
-        echo "::error file=$file::composite-run-shellcheck: runs.steps is not a sequence (key '$index')."
-        exit 1
-      fi
-      shell="$(printf '%s' "$shell_b64" | base64 -d)"
-      # DELIBERATELY exceeds actionlint's own dialect resolution
-      # (rule_shellcheck.go), which matches only a bare name or its literal
-      # leading word in GitHub's custom-shell form (`command [...options] {0}`).
-      # This resolves by the leading command's BASENAME instead, so a
-      # path-qualified custom shell (`shell: /usr/bin/bash --noprofile {0}`,
-      # which GitHub documents and runs as bash) is classified too, rather than
-      # silently skipped as it is upstream — narrower coverage would leave a
-      # block GitHub runs with bash/sh unchecked while the job stayed green, the
-      # coverage hole this check exists to close. Only the case sees the raw
-      # scalar; everything downstream uses the resolved dialect, so no option
-      # text reaches a filename. Parameter expansion (not `basename`) to avoid a
-      # subprocess per step.
-      if [[ -z "$shell" ]]; then
-        echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
-        exit 1
-      fi
-      leading="${shell%% *}"
-      leading="${leading##*/}"
-      case "$leading" in
-      bash) dialect='bash' ;;
-      sh) dialect='sh' ;;
-      *)
-        printf 'skip %s runs.steps[%s]: shell is %s, not bash/sh\n' "$file" "$index" "$shell"
-        continue
+      'EXPECTED '*)
+        expected="${line#EXPECTED }"
         ;;
-      esac
-      relative="$file.step-$index.$dialect"
-      destination="$workdir/$relative"
-      mkdir -p -- "$(dirname -- "$destination")"
-      # `shell_options` is the options GitHub itself runs the step's shell with,
-      # prepended as actionlint does. It occupies line 1, so ShellCheck's reported
-      # line N is line N-1 of the `run:` body. The dialect decides that line and
-      # which per-dialect batch the extracted script joins, so both follow from
-      # one branch rather than two that could drift apart.
-      if [[ "$dialect" == bash ]]; then
-        shell_options='set -eo pipefail'
-        bash_scripts+=("$relative")
-      else
-        shell_options='set -e'
-        sh_scripts+=("$relative")
-      fi
-      {
-        echo "$shell_options"
-        printf '%s' "$run_b64" | base64 -d | sanitize_expressions
-      } >"$destination"
-      produced=$((produced + 1))
-      printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$dialect"
-      ;;
-    *) ;;
+      'STEP '*)
+        rest="${line#STEP }"
+        index="${rest%% *}"
+        rest="${rest#* }"
+        shell_b64="${rest%% *}"
+        run_b64="${rest#* }"
+        if [[ ! "$index" =~ ^[0-9]+$ ]]; then
+          # `.key` is a sequence index only while `runs.steps` is a sequence. A
+          # mapping makes it an arbitrary author-supplied string, and this runs
+          # against pull-request content, so reject the shape at the boundary
+          # rather than writing it into a path: $index reaches the destination
+          # below.
+          echo "::error file=$file::composite-run-shellcheck: runs.steps is not a sequence (key '$index')."
+          exit 1
+        fi
+        shell="$(printf '%s' "$shell_b64" | base64 -d)"
+        # DELIBERATELY exceeds actionlint's own dialect resolution
+        # (rule_shellcheck.go), which matches only a bare name or its literal
+        # leading word in GitHub's custom-shell form (`command [...options] {0}`).
+        # This resolves by the leading command's BASENAME instead, so a
+        # path-qualified custom shell (`shell: /usr/bin/bash --noprofile {0}`,
+        # which GitHub documents and runs as bash) is classified too, rather than
+        # silently skipped as it is upstream — narrower coverage would leave a
+        # block GitHub runs with bash/sh unchecked while the job stayed green, the
+        # coverage hole this check exists to close. Only the case sees the raw
+        # scalar; everything downstream uses the resolved dialect, so no option
+        # text reaches a filename. Parameter expansion (not `basename`) to avoid a
+        # subprocess per step.
+        if [[ -z "$shell" ]]; then
+          echo "::error file=$file::composite-run-shellcheck: runs.steps[$index] has a run: block with no shell:; refusing to guess the dialect."
+          exit 1
+        fi
+        leading="${shell%% *}"
+        leading="${leading##*/}"
+        case "$leading" in
+          bash) dialect='bash' ;;
+          sh) dialect='sh' ;;
+          *)
+            printf 'skip %s runs.steps[%s]: shell is %s, not bash/sh\n' "$file" "$index" "$shell"
+            continue
+            ;;
+        esac
+        relative="$file.step-$index.$dialect"
+        destination="$workdir/$relative"
+        mkdir -p -- "$(dirname -- "$destination")"
+        # `shell_options` is the options GitHub itself runs the step's shell with,
+        # prepended as actionlint does. It occupies line 1, so ShellCheck's reported
+        # line N is line N-1 of the `run:` body. The dialect decides that line and
+        # which per-dialect batch the extracted script joins, so both follow from
+        # one branch rather than two that could drift apart.
+        if [[ "$dialect" == bash ]]; then
+          shell_options='set -eo pipefail'
+          bash_scripts+=("$relative")
+        else
+          shell_options='set -e'
+          sh_scripts+=("$relative")
+        fi
+        {
+          echo "$shell_options"
+          printf '%s' "$run_b64" | base64 -d | sanitize_expressions
+        } >"$destination"
+        produced=$((produced + 1))
+        printf 'check %s runs.steps[%s] (shell: %s)\n' "$file" "$index" "$dialect"
+        ;;
+      *) ;;
     esac
   done <<<"$dump"
 

@@ -42,47 +42,47 @@ write_finding() {
 
 write_results() {
   case "$1" in
-  clean) printf '{"version":"2.1.0","runs":[{"results":[]}]}\n' >"$results" ;;
-  string-results) printf '{"version":"2.1.0","runs":[{"results":"not an array"}]}\n' >"$results" ;;
-  missing-results) printf '{"version":"2.1.0","runs":[{}]}\n' >"$results" ;;
-  empty-runs) printf '{"version":"2.1.0","runs":[]}\n' >"$results" ;;
-  findings) write_finding 'src/a:b.js' ;;
-  encoded-file) write_finding "file://${workspace}/src/encoded%20space.lock" ;;
-  malformed-uri) write_finding 'src/uri-sentinel-malformed%2G.lock' ;;
-  nul-uri) write_finding 'src/uri-sentinel-nul%00.lock' ;;
-  encoded-control) write_finding 'src/uri-sentinel-control%1B.lock' ;;
-  encoded-del) write_finding 'src/uri-sentinel-del%7F.lock' ;;
-  raw-control) write_finding $'src/uri-sentinel-control\e.lock' ;;
-  raw-del) write_finding $'src/uri-sentinel-del\x7f.lock' ;;
-  raw-backslash) write_finding 'src\uri-sentinel-backslash.lock' ;;
-  query-uri) write_finding 'src/a:b.js?uri-sentinel-query' ;;
-  fragment-uri) write_finding 'src/a:b.js#uri-sentinel-fragment' ;;
-  traversal-uri) write_finding '../uri-sentinel-outside.lock' ;;
-  symlink-outside) write_finding 'src/uri-sentinel-outside-link.lock' ;;
-  outside-uri) write_finding "file://${temporary_directory}/uri-sentinel-outside.lock" ;;
-  foreign-scheme) write_finding 'https://example.invalid/uri-sentinel-foreign.lock' ;;
-  foreign-host) write_finding 'file://example.invalid/uri-sentinel-host.lock' ;;
-  unsafe-message) write_finding 'src/a:b.js' $'message-sentinel\evalue' ;;
-  locationless)
-    jq -n --arg message $'locationless%secret\n::error::injected' '
+    clean) printf '{"version":"2.1.0","runs":[{"results":[]}]}\n' >"$results" ;;
+    string-results) printf '{"version":"2.1.0","runs":[{"results":"not an array"}]}\n' >"$results" ;;
+    missing-results) printf '{"version":"2.1.0","runs":[{}]}\n' >"$results" ;;
+    empty-runs) printf '{"version":"2.1.0","runs":[]}\n' >"$results" ;;
+    findings) write_finding 'src/a:b.js' ;;
+    encoded-file) write_finding "file://${workspace}/src/encoded%20space.lock" ;;
+    malformed-uri) write_finding 'src/uri-sentinel-malformed%2G.lock' ;;
+    nul-uri) write_finding 'src/uri-sentinel-nul%00.lock' ;;
+    encoded-control) write_finding 'src/uri-sentinel-control%1B.lock' ;;
+    encoded-del) write_finding 'src/uri-sentinel-del%7F.lock' ;;
+    raw-control) write_finding $'src/uri-sentinel-control\e.lock' ;;
+    raw-del) write_finding $'src/uri-sentinel-del\x7f.lock' ;;
+    raw-backslash) write_finding 'src\uri-sentinel-backslash.lock' ;;
+    query-uri) write_finding 'src/a:b.js?uri-sentinel-query' ;;
+    fragment-uri) write_finding 'src/a:b.js#uri-sentinel-fragment' ;;
+    traversal-uri) write_finding '../uri-sentinel-outside.lock' ;;
+    symlink-outside) write_finding 'src/uri-sentinel-outside-link.lock' ;;
+    outside-uri) write_finding "file://${temporary_directory}/uri-sentinel-outside.lock" ;;
+    foreign-scheme) write_finding 'https://example.invalid/uri-sentinel-foreign.lock' ;;
+    foreign-host) write_finding 'file://example.invalid/uri-sentinel-host.lock' ;;
+    unsafe-message) write_finding 'src/a:b.js' $'message-sentinel\evalue' ;;
+    locationless)
+      jq -n --arg message $'locationless%secret\n::error::injected' '
       {version: "2.1.0", runs: [{results: [{message: {text: $message}}]}]}
     ' >"$results"
-    ;;
-  non-string-uri)
-    jq -n --arg message $'locationless%secret\n::error::injected' '
+      ;;
+    non-string-uri)
+      jq -n --arg message $'locationless%secret\n::error::injected' '
       {version: "2.1.0", runs: [{results: [{
         message: {text: $message},
         locations: [{physicalLocation: {artifactLocation: {uri: {secret: "uri-sentinel"}}}}]
       }]}]}
     ' >"$results"
-    ;;
-  invalid) printf '{not json}\n' >"$results" ;;
-  absent) rm -f -- "$results" ;;
-  symlink)
-    printf '{"version":"2.1.0","runs":[]}' >"$temporary_directory/target"
-    ln -s "$temporary_directory/target" "$results"
-    ;;
-  *) return 2 ;;
+      ;;
+    invalid) printf '{not json}\n' >"$results" ;;
+    absent) rm -f -- "$results" ;;
+    symlink)
+      printf '{"version":"2.1.0","runs":[]}' >"$temporary_directory/target"
+      ln -s "$temporary_directory/target" "$results"
+      ;;
+    *) return 2 ;;
   esac
 }
 
@@ -102,30 +102,30 @@ run_case() {
   fi
   if [[ "$scan_exit" == 1 ]]; then
     case "$shape" in
-    findings) grep -F '::warning file=src/a%3Ab.js,line=4::unsafe%25value' <<<"$output" >/dev/null ;;
-    encoded-file) grep -F '::warning file=src/encoded space.lock,line=4::unsafe%25value' <<<"$output" >/dev/null ;;
-    malformed-uri | nul-uri | encoded-control | encoded-del | raw-control | raw-del | raw-backslash | query-uri | fragment-uri | traversal-uri | symlink-outside | outside-uri | foreign-scheme | foreign-host)
-      grep -F '::warning::unsafe%25value' <<<"$output" >/dev/null
-      if grep -F 'file=' <<<"$output" >/dev/null || grep -F 'uri-sentinel' <<<"$output" >/dev/null; then
-        echo "$name: unsafe URI leaked into annotation output" >&2
-        return 1
-      fi
-      ;;
-    unsafe-message)
-      grep -F '::warning file=src/a%3Ab.js,line=4::OSV vulnerability finding' <<<"$output" >/dev/null
-      if grep -F 'message-sentinel' <<<"$output" >/dev/null; then
-        echo "$name: unsafe raw message leaked into annotation output" >&2
-        return 1
-      fi
-      ;;
-    locationless | non-string-uri)
-      grep -E '::warning::locationless%25secret(%0D)?%0A::error::injected' <<<"$output" >/dev/null
-      if grep -E '(^|[ ,])(file|line)=' <<<"$output" >/dev/null || grep -F 'locationless%secret' <<<"$output" >/dev/null || grep -F 'uri-sentinel' <<<"$output" >/dev/null || grep -Fx '::error::injected' <<<"$output" >/dev/null; then
-        echo "$name: empty or non-string location leaked or shifted framed fields" >&2
-        return 1
-      fi
-      ;;
-    *) return 2 ;;
+      findings) grep -F '::warning file=src/a%3Ab.js,line=4::unsafe%25value' <<<"$output" >/dev/null ;;
+      encoded-file) grep -F '::warning file=src/encoded space.lock,line=4::unsafe%25value' <<<"$output" >/dev/null ;;
+      malformed-uri | nul-uri | encoded-control | encoded-del | raw-control | raw-del | raw-backslash | query-uri | fragment-uri | traversal-uri | symlink-outside | outside-uri | foreign-scheme | foreign-host)
+        grep -F '::warning::unsafe%25value' <<<"$output" >/dev/null
+        if grep -F 'file=' <<<"$output" >/dev/null || grep -F 'uri-sentinel' <<<"$output" >/dev/null; then
+          echo "$name: unsafe URI leaked into annotation output" >&2
+          return 1
+        fi
+        ;;
+      unsafe-message)
+        grep -F '::warning file=src/a%3Ab.js,line=4::OSV vulnerability finding' <<<"$output" >/dev/null
+        if grep -F 'message-sentinel' <<<"$output" >/dev/null; then
+          echo "$name: unsafe raw message leaked into annotation output" >&2
+          return 1
+        fi
+        ;;
+      locationless | non-string-uri)
+        grep -E '::warning::locationless%25secret(%0D)?%0A::error::injected' <<<"$output" >/dev/null
+        if grep -E '(^|[ ,])(file|line)=' <<<"$output" >/dev/null || grep -F 'locationless%secret' <<<"$output" >/dev/null || grep -F 'uri-sentinel' <<<"$output" >/dev/null || grep -Fx '::error::injected' <<<"$output" >/dev/null; then
+          echo "$name: empty or non-string location leaked or shifted framed fields" >&2
+          return 1
+        fi
+        ;;
+      *) return 2 ;;
     esac
     if grep -F 'unsafe%value' <<<"$output" >/dev/null || grep -Fx '::error::raw-message' <<<"$output" >/dev/null; then
       echo "$name: raw message leaked into workflow commands" >&2

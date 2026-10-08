@@ -7,11 +7,11 @@ set -uo pipefail
 : "${STANDARDS_ROOT:?STANDARDS_ROOT is required}"
 
 case "$MODE" in
-advisory | enforcing) ;;
-*)
-  echo "::error::mode must be 'advisory' or 'enforcing', got '$MODE'."
-  exit 1
-  ;;
+  advisory | enforcing) ;;
+  *)
+    echo "::error::mode must be 'advisory' or 'enforcing', got '$MODE'."
+    exit 1
+    ;;
 esac
 
 if [[ ! -d "$ROOT" ]]; then

@@ -42,15 +42,15 @@ filter_machine_path_hits() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" ]] && continue
     case "$line" in
-    *:*:*)
-      rest="${line#*:}"
-      content="${rest#*:}"
-      [[ "$content" == *"$ALLOW_MARKER"* ]] && continue
-      ;;
-    *)
-      kept+=("$line")
-      continue
-      ;;
+      *:*:*)
+        rest="${line#*:}"
+        content="${rest#*:}"
+        [[ "$content" == *"$ALLOW_MARKER"* ]] && continue
+        ;;
+      *)
+        kept+=("$line")
+        continue
+        ;;
     esac
     # Exit 1 means the extractor found nothing. That still fails closed below.
     spans="$(printf '%s\n' "$content" | grep -oE -- "$pattern" || true)"

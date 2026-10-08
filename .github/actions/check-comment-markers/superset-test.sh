@@ -42,23 +42,23 @@ assert_clean() {
 
 # One representative violation per library rule, spread across the five comment
 # prefixes (//, #, /*, *, <!--) the policy recognizes.
-assert_caught 'TODO marker'              '# TODO refactor this'
-assert_caught 'FIXME marker'             '// FIXME later'
-assert_caught 'HACK marker'              '/* HACK around the bug */'
-assert_caught 'XXX marker'               '   * XXX revisit'
-assert_caught 'cc-issue marker'          '<!-- cc-issue pending -->'
-assert_caught 'closing keyword fixes'    '# fixes #12'
+assert_caught 'TODO marker' '# TODO refactor this'
+assert_caught 'FIXME marker' '// FIXME later'
+assert_caught 'HACK marker' '/* HACK around the bug */'
+assert_caught 'XXX marker' '   * XXX revisit'
+assert_caught 'cc-issue marker' '<!-- cc-issue pending -->'
+assert_caught 'closing keyword fixes' '# fixes #12'
 assert_caught 'closing keyword resolves' '// resolves #42'
-assert_caught 'closing keyword closed'   '# closed #7'
-assert_caught 'issue reference (no #)'   '# issue 5'
-assert_caught 'issues reference (#)'     '# issues: #3'
-assert_caught 'tracked reference'        '# tracked #7'
-assert_caught 'owner/repo#N reference'   '# org/app#123'
-assert_caught 'GH-N reference'           '# GH-42'
-assert_caught 'PR #N reference'          '# PR #9'
+assert_caught 'closing keyword closed' '# closed #7'
+assert_caught 'issue reference (no #)' '# issue 5'
+assert_caught 'issues reference (#)' '# issues: #3'
+assert_caught 'tracked reference' '# tracked #7'
+assert_caught 'owner/repo#N reference' '# org/app#123'
+assert_caught 'GH-N reference' '# GH-42'
+assert_caught 'PR #N reference' '# PR #9'
 
-assert_clean 'plain prose'               '# just a normal comment'
-assert_clean 'fix without an issue #'    '# fix the broken handle'
+assert_clean 'plain prose' '# just a normal comment'
+assert_clean 'fix without an issue #' '# fix the broken handle'
 
 if [[ "$failures" -gt 0 ]]; then
   printf '%d assertion(s) failed.\n' "$failures" >&2
