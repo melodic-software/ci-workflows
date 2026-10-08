@@ -63,12 +63,12 @@ while IFS= read -r -d '' path; do
   [[ -n "$path" ]] || continue
   mode="${mode_by_path[$path]-}"
   case "$mode" in
-  100644)
-    echo "::error file=$path::$path has a shebang but git index mode is 100644; run: git update-index --chmod=+x -- \"$path\""
-    failed=1
-    ;;
-  100755) ;;
-  *) ;;
+    100644)
+      echo "::error file=$path::$path has a shebang but git index mode is 100644; run: git update-index --chmod=+x -- \"$path\""
+      failed=1
+      ;;
+    100755) ;;
+    *) ;;
   esac
 done <"$line1"
 

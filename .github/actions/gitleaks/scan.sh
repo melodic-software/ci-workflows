@@ -42,11 +42,11 @@ if ! within_workspace "$resolved_scan"; then
 fi
 
 case "$SCAN_MODE" in
-dir | git) ;;
-*)
-  echo "::error::gitleaks: invalid scan-mode '$SCAN_MODE' (expected dir or git)"
-  exit 2
-  ;;
+  dir | git) ;;
+  *)
+    echo "::error::gitleaks: invalid scan-mode '$SCAN_MODE' (expected dir or git)"
+    exit 2
+    ;;
 esac
 
 if [[ "$SCAN_MODE" == git ]]; then
@@ -55,24 +55,24 @@ if [[ "$SCAN_MODE" == git ]]; then
     exit 2
   fi
   case "$shallow_repository" in
-  false) ;;
-  true)
-    echo '::error::gitleaks: git scan requires a non-shallow local repository; check out with fetch-depth: 0'
-    exit 2
-    ;;
-  *)
-    echo '::error::gitleaks: Git returned an unexpected shallow-repository result'
-    exit 2
-    ;;
+    false) ;;
+    true)
+      echo '::error::gitleaks: git scan requires a non-shallow local repository; check out with fetch-depth: 0'
+      exit 2
+      ;;
+    *)
+      echo '::error::gitleaks: Git returned an unexpected shallow-repository result'
+      exit 2
+      ;;
   esac
 fi
 
 case "$REDACT" in
-true | false) ;;
-*)
-  echo "::error::gitleaks: redact must resolve to true or false"
-  exit 2
-  ;;
+  true | false) ;;
+  *)
+    echo "::error::gitleaks: redact must resolve to true or false"
+    exit 2
+    ;;
 esac
 if [[ "$REDACT" == false ]]; then
   echo "::notice::gitleaks: redact=false is deprecated and ignored; secret values are always redacted."
@@ -84,11 +84,11 @@ if [[ -n "${REPORT_FORMAT// /}" || -n "${REPORT_PATH// /}" ]]; then
     exit 2
   fi
   case "$REPORT_FORMAT" in
-  json | csv | junit | sarif | template) ;;
-  *)
-    echo "::error::gitleaks: unsupported report-format '$REPORT_FORMAT'"
-    exit 2
-    ;;
+    json | csv | junit | sarif | template) ;;
+    *)
+      echo "::error::gitleaks: unsupported report-format '$REPORT_FORMAT'"
+      exit 2
+      ;;
   esac
   if [[ -e "$REPORT_PATH" || -L "$REPORT_PATH" ]]; then
     echo "::error::gitleaks: refusing to overwrite an existing report path: $REPORT_PATH"
@@ -115,20 +115,20 @@ if [[ "$SCAN_MODE" == git ]]; then
   # Always pass --log-opts: an empty value makes gitleaks fall back to --all.
   if [[ -z "${LOG_OPTS// /}" ]]; then
     case "$EVENT_NAME" in
-    pull_request | pull_request_target)
-      if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "::error::gitleaks: $EVENT_NAME event has no valid pull_request.base.sha to scope the scan"
-        exit 2
-      fi
-      LOG_OPTS="$BASE_SHA..HEAD"
-      # pull_request_target checks out the base by default, leaving an empty range.
-      if ! commit_count="$(git -C "$resolved_scan" rev-list --count "$LOG_OPTS")" || ((commit_count == 0)); then
-        echo "::error::gitleaks: $LOG_OPTS selects no commits; check out the pull request head"
-        exit 2
-      fi
-      ;;
-    schedule | workflow_dispatch) LOG_OPTS=--all ;;
-    *) LOG_OPTS=HEAD ;;
+      pull_request | pull_request_target)
+        if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::gitleaks: $EVENT_NAME event has no valid pull_request.base.sha to scope the scan"
+          exit 2
+        fi
+        LOG_OPTS="$BASE_SHA..HEAD"
+        # pull_request_target checks out the base by default, leaving an empty range.
+        if ! commit_count="$(git -C "$resolved_scan" rev-list --count "$LOG_OPTS")" || ((commit_count == 0)); then
+          echo "::error::gitleaks: $LOG_OPTS selects no commits; check out the pull request head"
+          exit 2
+        fi
+        ;;
+      schedule | workflow_dispatch) LOG_OPTS=--all ;;
+      *) LOG_OPTS=HEAD ;;
     esac
   fi
   args+=("--log-opts=$LOG_OPTS")
@@ -155,24 +155,24 @@ if [[ -n "${REPORT_PATH// /}" ]]; then
     exit 2
   fi
   case "$REPORT_FORMAT" in
-  json)
-    jq -e 'type == "array"' "$REPORT_PATH" >/dev/null 2>&1 || {
-      echo "::error::gitleaks produced invalid JSON results."
-      exit 2
-    }
-    ;;
-  sarif)
-    jq -e '
+    json)
+      jq -e 'type == "array"' "$REPORT_PATH" >/dev/null 2>&1 || {
+        echo "::error::gitleaks produced invalid JSON results."
+        exit 2
+      }
+      ;;
+    sarif)
+      jq -e '
       .version == "2.1.0"
       and ((.runs | type) == "array")
       and ((.runs | length) > 0)
       and all(.runs[]; (type == "object") and ((.results | type) == "array"))
     ' "$REPORT_PATH" >/dev/null 2>&1 || {
-      echo "::error::gitleaks produced invalid SARIF results."
-      exit 2
-    }
-    if ((status == 1)); then
-      jq -r '
+        echo "::error::gitleaks produced invalid SARIF results."
+        exit 2
+      }
+      if ((status == 1)); then
+        jq -r '
         def escape_property:
           tostring
           | gsub("%"; "%25")
@@ -188,14 +188,14 @@ if [[ -n "${REPORT_PATH// /}" ]]; then
         .runs[].results[]
         | "::error file=\((.locations[0].physicalLocation.artifactLocation.uri // "") | escape_property),line=\((.locations[0].physicalLocation.region.startLine // 1) | escape_property)::Secret detected by Gitleaks (rule: \((.ruleId // "unknown") | escape_data))."
       ' "$REPORT_PATH"
-    fi
-    ;;
-  *)
-    if [[ ! -s "$REPORT_PATH" ]]; then
-      echo "::error::gitleaks produced an empty $REPORT_FORMAT report."
-      exit 2
-    fi
-    ;;
+      fi
+      ;;
+    *)
+      if [[ ! -s "$REPORT_PATH" ]]; then
+        echo "::error::gitleaks produced an empty $REPORT_FORMAT report."
+        exit 2
+      fi
+      ;;
   esac
 fi
 

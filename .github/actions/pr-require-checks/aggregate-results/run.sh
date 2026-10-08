@@ -133,11 +133,11 @@ INCOMPLETE_RUN_STATUSES='["queued","in_progress","waiting","pending","requested"
 # `Fail` would otherwise resolve to the laxer branch and quietly weaken the gate
 # it was written to tighten.
 case "$TREAT_SKIPPED_AS" in
-pass | fail) ;;
-*)
-  echo "::error::treat-skipped-as must be 'pass' or 'fail', got: ${TREAT_SKIPPED_AS}"
-  exit 1
-  ;;
+  pass | fail) ;;
+  *)
+    echo "::error::treat-skipped-as must be 'pass' or 'fail', got: ${TREAT_SKIPPED_AS}"
+    exit 1
+    ;;
 esac
 
 scratch="$(mktemp -d)"
@@ -171,13 +171,13 @@ gh_api() {
 read_boolean() {
   local name="$1" value="$2" fallback="$3"
   case "$value" in
-  true) echo true ;;
-  false) echo false ;;
-  '') echo "$fallback" ;;
-  *)
-    echo "::error::${name} must be 'true' or 'false', got: ${value}" >&2
-    return 1
-    ;;
+    true) echo true ;;
+    false) echo false ;;
+    '') echo "$fallback" ;;
+    *)
+      echo "::error::${name} must be 'true' or 'false', got: ${value}" >&2
+      return 1
+      ;;
   esac
 }
 
@@ -282,11 +282,11 @@ if [[ "$record_pending" == true ]]; then
     exit 0
   fi
   case "${GITHUB_EVENT_NAME:-}" in
-  pull_request | pull_request_target) ;;
-  *)
-    echo "::notice::${GITHUB_EVENT_NAME:-unknown} event: ${STATUS_CONTEXT} is not marked pending; only a pull request has contract-only runs."
-    exit 0
-    ;;
+    pull_request | pull_request_target) ;;
+    *)
+      echo "::notice::${GITHUB_EVENT_NAME:-unknown} event: ${STATUS_CONTEXT} is not marked pending; only a pull request has contract-only runs."
+      exit 0
+      ;;
   esac
   # shellcheck disable=SC2310 # write_status prints its own error; the caller exits on it.
   if ! write_status pending 'Full run in flight; lanes not yet aggregated.'; then
@@ -459,15 +459,15 @@ verify_writer_step() {
      | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end) elif length == 0 then "running" else "ambiguous" end' \
     <"$gh_stdout")" || return 1
   case "$outcome" in
-  success) ;;
-  running)
-    echo "Run ${carried_writer_run_id} has not finished step '${own_gate_step}' of job '${own_gate_job}'; its ${STATUS_CONTEXT} success is not carried yet."
-    carried_state=pending
-    ;;
-  *)
-    echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, whose step '${own_gate_step}' of job '${own_gate_job}' did not succeed (${outcome:-no conclusion}); ignoring it."
-    carried_state=""
-    ;;
+    success) ;;
+    running)
+      echo "Run ${carried_writer_run_id} has not finished step '${own_gate_step}' of job '${own_gate_job}'; its ${STATUS_CONTEXT} success is not carried yet."
+      carried_state=pending
+      ;;
+    *)
+      echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, whose step '${own_gate_step}' of job '${own_gate_job}' did not succeed (${outcome:-no conclusion}); ignoring it."
+      carried_state=""
+      ;;
   esac
 }
 
@@ -654,15 +654,15 @@ fail_carry_forward() {
     writer="${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${carried_writer_run_id}"
   fi
   case "$carried_state" in
-  pending)
-    remedy="full run ${writer:-on this SHA} is still in flight, and its own ci-status check supersedes this one when it finishes. Re-run that run only if it was cancelled"
-    ;;
-  failure | error)
-    remedy="the lanes verdict is ${carried_state}${writer:+ (${writer})}; fix the failing lane, or re-run that run's failed jobs if the failure was transient"
-    ;;
-  *)
-    remedy="if a full run on this SHA is in flight, its ci-status check supersedes this one; otherwise re-run the full workflow"
-    ;;
+    pending)
+      remedy="full run ${writer:-on this SHA} is still in flight, and its own ci-status check supersedes this one when it finishes. Re-run that run only if it was cancelled"
+      ;;
+    failure | error)
+      remedy="the lanes verdict is ${carried_state}${writer:+ (${writer})}; fix the failing lane, or re-run that run's failed jobs if the failure was transient"
+      ;;
+    *)
+      remedy="if a full run on this SHA is in flight, its ci-status check supersedes this one; otherwise re-run the full workflow"
+      ;;
   esac
   if [[ "$rerun_contract_only_siblings" == true ]]; then
     closing="A full run that records ${STATUS_CONTEXT}=success on ${SHA} re-runs this run; re-run it yourself only if it stays red after that."
@@ -849,13 +849,13 @@ lane_number=0
 for r in "${results[@]}"; do
   lane_number=$((lane_number + 1))
   case "$r" in
-  success) ;;
-  skipped)
-    if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
-      lanes_state=failure
-    fi
-    ;;
-  *) lanes_state=failure ;;
+    success) ;;
+    skipped)
+      if [[ "$TREAT_SKIPPED_AS" == fail ]]; then
+        lanes_state=failure
+      fi
+      ;;
+    *) lanes_state=failure ;;
   esac
   if [[ "$lanes_state" == failure ]]; then
     echo "A lane did not pass (result: $r)."
