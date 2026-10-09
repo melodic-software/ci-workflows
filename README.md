@@ -151,12 +151,15 @@ consumer to audit it.
   [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
   then [exports stack state][pulumi-stack-export] without plaintext secrets and
   classifies reviewed operational
-  resource URNs as existing or first-apply. Both GitHub IaC repositories call
-  this one implementation after OIDC authentication and before minting their
-  broad GitHub governance token. Contract v2 uses GitHub immutable owner/repo
-  IDs and rejects Pulumi's `*`, `?`, and `.` pattern operators. Callers reserve
-  its exact workflow name uniquely and require paired live positive/near-match
-  negative token-exchange evidence before removing the legacy trust rules.
+  resource URNs as existing or first-apply. The organization's Pulumi IaC
+  repositories call this one implementation after OIDC authentication and
+  before minting a broad deployment credential, against the org-wide
+  `kyle-sexton` contract. Contract v2 uses GitHub immutable owner/repo IDs and
+  rejects Pulumi's `*`, `?`, and `.` pattern operators from every rule value,
+  except the `.` characters of a `sub` that exactly equals the composed
+  `:job_workflow_ref:<repository>/.github/workflows/<name>.yml@<ref>` form.
+  Callers require paired live positive/near-match negative token-exchange
+  evidence before removing the legacy trust rules.
 - `.github/actions/editorconfig-checker` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a

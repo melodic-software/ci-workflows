@@ -40,6 +40,54 @@ const contract = JSON.parse(
   ),
 );
 
+const orgContract = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      root,
+      ".github",
+      "actions",
+      "verify-pulumi-deploy-policy",
+      "contracts",
+      "kyle-sexton.json",
+    ),
+    "utf8",
+  ),
+);
+
+test("org-wide contract holds the unchanged github-iac policy and the azure-iac policy", () => {
+  assert.equal(orgContract.schemaVersion, 2);
+  assert.equal(orgContract.organization, contract.organization);
+  assert.equal(orgContract.issuerUrl, contract.issuerUrl);
+  const byRepository = Object.fromEntries(
+    orgContract.personalAllowPolicies.map((policy) => [
+      policy.rules.repository,
+      policy,
+    ]),
+  );
+  assert.deepEqual(Object.keys(byRepository).sort(), [
+    "melodic-software/azure-iac",
+    "melodic-software/github-iac",
+  ]);
+  assert.deepEqual(
+    byRepository["melodic-software/github-iac"],
+    contract.personalAllowPolicies[0],
+  );
+  const azure = byRepository["melodic-software/azure-iac"];
+  assert.deepEqual(azure.rules, {
+    ...contract.personalAllowPolicies[0].rules,
+    sub: "repo:melodic-software@58273638/azure-iac@1404939524:environment:azure-iac-production:job_workflow_ref:melodic-software/azure-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/main",
+    repository: "melodic-software/azure-iac",
+    repository_id: "1404939524",
+    repository_owner_id: "58273638",
+    environment: "azure-iac-production",
+    workflow: "azure-iac-production-deploy-v1",
+    actor_id: "153232337",
+  });
+  for (const [name, ruleValue] of Object.entries(azure.rules)) {
+    if (name !== "sub") assert.doesNotMatch(ruleValue, /[*?.]/u);
+  }
+});
+
 test("deployment guard exposes only reviewed state-adoption outputs", () => {
   for (const input of [
     "policy-contract",
