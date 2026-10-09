@@ -3,6 +3,7 @@ set -euo pipefail
 
 action_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 contract="$action_path/contracts/kyle-sexton-github-iac.json"
+org_contract="$action_path/contracts/kyle-sexton.json"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
@@ -80,7 +81,7 @@ run_guard() {
     MOCK_POLICY="$policy" \
     MOCK_STATE="$state" \
     OPERATIONAL_RESOURCE_URNS_JSON="$requested_urns" \
-    POLICY_CONTRACT='kyle-sexton-github-iac' \
+    POLICY_CONTRACT="${TEST_POLICY_CONTRACT:-kyle-sexton-github-iac}" \
     PULUMI_BIN="$mock_pulumi" \
     STACK_NAME="${TEST_STACK_NAME:-kyle-sexton/project/production}" \
     bash "$action_path/guard.sh" >"$stdout" 2>"$stderr"
@@ -234,5 +235,46 @@ reset_valid_fixtures
 requested_urns="$(jq -cn --arg one "$urn_one" --arg two "$urn_two" '[$one, $two]')"
 TEST_STACK_NAME='other/project/production' expect_failure 'contract and stack organizations must match'
 grep -F 'policy contract organization does not match stack organization' "$stderr" >/dev/null
+
+# Org-wide contract: both repositories' policies in one complete allow set.
+reset_org_fixtures() {
+  reset_valid_fixtures
+  jq -c '{version: 4, policies: .personalAllowPolicies}' "$org_contract" >"$policy"
+}
+
+reset_org_fixtures
+TEST_POLICY_CONTRACT='kyle-sexton' run_guard
+grep -Fx 'existing-count=1' "$output" >/dev/null
+printf 'PASS: two-policy org contract matches its exact allow set\n'
+
+reset_valid_fixtures
+TEST_POLICY_CONTRACT='kyle-sexton' \
+  expect_failure 'single github-iac policy does not match the two-policy org contract'
+grep -F 'do not exactly match' "$stderr" >/dev/null
+
+azure_sub_prefix='repo:melodic-software@58273638/azure-iac@1404939524:environment:azure-iac-production:job_workflow_ref:'
+
+# expect_invalid_org_contract <description> <jq filter applied to the azure-iac policy>
+expect_invalid_org_contract() {
+  jq "(.personalAllowPolicies[] | select(.rules.repository == \"melodic-software/azure-iac\")) |= ($2)" \
+    "$org_contract" >"$invalid_action_path/contracts/kyle-sexton.json"
+  reset_org_fixtures
+  TEST_ACTION_PATH="$invalid_action_path" TEST_POLICY_CONTRACT='kyle-sexton' \
+    expect_failure "$1"
+  grep -F 'bundled Pulumi OIDC policy contract is invalid' "$stderr" >/dev/null
+}
+
+expect_invalid_org_contract "a '.' in the job_workflow_ref file stem fails" \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/azure-iac.production-deploy.yml@refs/heads/main\""
+expect_invalid_org_contract "a '.' after the composed sub fails" '.rules.sub += "."'
+expect_invalid_org_contract "a '*' in the job_workflow_ref file stem fails" \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/*.yml@refs/heads/main\""
+expect_invalid_org_contract 'a job_workflow_ref naming another repository fails' \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/github-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/main\""
+expect_invalid_org_contract 'a job_workflow_ref at another ref fails' \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/dev\""
+expect_invalid_org_contract 'an environment other than <repository>-production fails' \
+  '.rules.environment = "azure-iac-staging" | .rules.sub |= sub(":environment:azure-iac-production"; ":environment:azure-iac-staging")'
+expect_invalid_org_contract 'a workflow name outside [a-z0-9-] fails' '.rules.workflow = "Azure-Deploy"'
 
 printf 'Pulumi deployment guard contract tests passed.\n'
