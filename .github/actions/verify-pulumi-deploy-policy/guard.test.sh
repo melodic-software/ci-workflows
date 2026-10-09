@@ -313,11 +313,33 @@ for bad_export in \
   '{"version":3,"deployment":"opaque"}' \
   '{"version":3,"checkpoint":{}}' \
   '{"version":3,"features":null}' \
-  '{"version":3,"features":false}'; do
+  '{"version":3,"features":false}' \
+  '{"version":1}' \
+  '{"version":1,"deployment":{}}' \
+  '{"version":1,"deployment":{"manifest":"opaque"}}' \
+  '{"version":1,"deployment":{"manifest":{},"pending_operations":[]}}' \
+  '{"version":1,"deployment":{"manifest":{},"resources":null}}' \
+  '{"version":1,"features":[],"deployment":{"manifest":{}}}'; do
   reset_valid_fixtures
   printf '%s' "$bad_export" >"$state"
   expect_failure "malformed export fails closed: $bad_export"
   grep -F 'invalid stack export' "$stderr" >/dev/null
 done
+
+# Pulumi Cloud's never-deployed export, observed for
+# kyle-sexton/melodic-software-azure-iac/production; magic and time are fake.
+reset_valid_fixtures
+printf '%s' '{"version":1,"deployment":{"manifest":{"magic":"00000000","time":"2026-01-01T00:00:00Z","version":""}}}' >"$state"
+run_guard
+grep -Fx 'existing-count=0' "$output" >/dev/null
+grep -Fx 'missing-count=2' "$output" >/dev/null
+printf 'PASS: Pulumi Cloud version-1 never-deployed export counts as zero resources\n'
+
+reset_valid_fixtures
+jq -cn --arg urn "$urn_one" '{version:1,deployment:{manifest:{magic:"00000000",time:"2026-01-01T00:00:00Z",version:""},resources:[{urn:$urn}]}}' >"$state"
+run_guard
+grep -Fx 'existing-count=1' "$output" >/dev/null
+grep -Fx 'missing-count=1' "$output" >/dev/null
+printf 'PASS: a version-1 export carrying resources is not treated as empty\n'
 
 printf 'Pulumi deployment guard contract tests passed.\n'
