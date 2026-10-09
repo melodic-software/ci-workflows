@@ -73,6 +73,22 @@ jq -e '
   all(.personalAllowPolicies[];
     . as $policy |
     ($policy.rules.repository | split("/")) as $repository_parts |
+    (
+      "repo:" + $repository_parts[0] + "@" + $policy.rules.repository_owner_id +
+      "/" + $repository_parts[1] + "@" + $policy.rules.repository_id +
+      ":environment:" + $policy.rules.environment
+    ) as $environment_sub |
+    (
+      $environment_sub + ":job_workflow_ref:" + $policy.rules.repository +
+      "/.github/workflows/"
+    ) as $job_workflow_prefix |
+    (".yml@" + $policy.rules.ref) as $job_workflow_suffix |
+    ($policy.rules.sub | type == "string" and
+      startswith($job_workflow_prefix) and
+      endswith($job_workflow_suffix) and
+      (.[($job_workflow_prefix | length):(length - ($job_workflow_suffix | length))] |
+        test("^[a-z0-9-]+$"))
+    ) as $job_workflow_sub |
     exact_keys(["authorizedPermissions", "decision", "rules", "tokenType", "userLogin"]) and
     .decision == "allow" and
     .tokenType == "personal" and
@@ -84,24 +100,20 @@ jq -e '
       "repository_id", "repository_owner_id", "repository_visibility", "run_attempt",
       "runner_environment", "sub", "workflow"
     ])) and
-    (.rules | all(.[];
-      type == "string" and length > 0 and (test("[*?.]") | not)
-    )) and
+    (.rules | all(.[]; type == "string" and length > 0)) and
+    (.rules | del(.sub) | all(.[]; test("[*?.]") | not)) and
+    ($job_workflow_sub or (.rules.sub | test("[*?.]") | not)) and
     ($repository_parts | length == 2) and
     (.rules.repository_id | test("^[0-9]+$")) and
     (.rules.repository_owner_id | test("^[0-9]+$")) and
     (.rules.actor_id | test("^[0-9]+$")) and
     .rules.aud == ("urn:pulumi:org:" + $org) and
-    .rules.sub == (
-      "repo:" + $repository_parts[0] + "@" + .rules.repository_owner_id +
-      "/" + $repository_parts[1] + "@" + .rules.repository_id +
-      ":environment:" + .rules.environment
-    ) and
+    (.rules.sub == $environment_sub or $job_workflow_sub) and
     .rules.ref == "refs/heads/main" and
     .rules.ref_type == "branch" and
-    .rules.environment == "github-iac-production" and
+    .rules.environment == ($repository_parts[1] + "-production") and
     .rules.event_name == "workflow_dispatch" and
-    .rules.workflow == "release-deploy" and
+    (.rules.workflow | test("^[a-z0-9-]+$")) and
     .rules.runner_environment == "self-hosted" and
     .rules.repository_visibility == "private" and
     .rules.run_attempt == "1"

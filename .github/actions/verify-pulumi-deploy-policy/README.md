@@ -1,9 +1,9 @@
 # Pulumi deployment guard
 
-This composite action is the single pre-apply implementation shared by both
-GitHub IaC repositories. Call only after: install exact Pulumi CLI, exchange
-protected GitHub OIDC token. Call before: mint broad GitHub governance App
-token.
+This composite action is the single pre-apply implementation shared by the
+organization's Pulumi IaC repositories. Call only after: install exact Pulumi
+CLI, exchange protected GitHub OIDC token. Call before: mint any broad
+deployment credential.
 
 Fails closed unless:
 
@@ -14,14 +14,28 @@ Fails closed unless:
   32 unique URNs from the named stack, and every requested URN appears zero or
   one time in a valid stack export.
 
+Because the guard compares Pulumi's complete personal allow set against one
+contract, every repository the organization trusts belongs in that one
+contract. `contracts/kyle-sexton.json` is the org-wide contract and holds the
+`github-iac` and `azure-iac` policies. `contracts/kyle-sexton-github-iac.json`
+remains for callers pinned to an earlier release; it holds only the
+`github-iac` policy, so it stops matching once Pulumi holds both.
+
 Contract v2 uses GitHub's immutable owner/repository-ID subject plus exact
-claims for: private repo, owner ID, actor ID, protected environment, main ref,
-manual event, first run attempt, self-hosted runner, reserved workflow name.
-Pulumi treats `*`, `?`, `.` as pattern operators — validator rejects all three
-from every rule value. The workflow claim is a GitHub workflow **name**, not a
-file identity; each caller must reserve `release-deploy`
-exclusively for `.github/workflows/release-deploy.yml`, enforce uniqueness in own repo
-tests.
+claims for: private repo, owner ID, actor ID, main ref, manual event, first run
+attempt, self-hosted runner, workflow name. Each policy's environment must be
+`<repository-name>-production`, and its workflow name must match
+`^[a-z0-9-]+$`. The `sub` claim takes one of two forms:
+
+- `repo:<owner>@<owner-id>/<name>@<repository-id>:environment:<environment>`
+- that form followed by
+  `:job_workflow_ref:<owner>/<name>/.github/workflows/<file>.yml@<ref>`, where
+  `<file>` matches `^[a-z0-9-]+$` and `<ref>` is the policy's `ref` claim.
+
+Pulumi treats `*`, `?`, `.` as pattern operators, so the validator rejects all
+three from every rule value. The one exception is a `sub` that exactly equals
+the second form: its `.` characters sit only in `.github/` and `.yml@`, where
+no other character yields a workflow path GitHub runs.
 
 Existing operational resources emit as newline-delimited refresh targets. Absent
 resources are the explicit first-apply path and must be created with their
@@ -42,7 +56,7 @@ above.
 Immutable-subject cutover deliberately two-sided, fail-closed:
 
 1. Add new v2 Pulumi allow policies while legacy policies still work.
-2. Opt both GitHub IaC repos into GitHub immutable subjects via official REST
+2. Opt every IaC repo into GitHub immutable subjects via official REST
    setting (current Pulumi GitHub provider can't express it).
 3. Prove a production-name token exchanges successfully and the hosted
    near-match canary token is rejected.
