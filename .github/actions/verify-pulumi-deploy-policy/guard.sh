@@ -186,8 +186,10 @@ timeout --signal=TERM --kill-after=5s 300s \
   "$pulumi_bin" stack export --non-interactive --stack "$STACK_NAME" --file "$state"
 # A never-deployed stack exports a schema version and either no deployment or a
 # deployment whose manifest is present and whose resources key is omitted
-# (apitype.DeploymentV3 tags resources omitempty). Only that shape counts as
-# zero resources; any other export without a resources array fails closed.
+# (apitype.DeploymentV3 tags resources omitempty). Pulumi Cloud exports a
+# never-deployed stack as version 1 with a deployment holding only a manifest.
+# Only those shapes count as zero resources; any other export without a
+# resources array fails closed.
 jq -e '
   type == "object" and (
     (
@@ -204,6 +206,11 @@ jq -e '
           (has("resources") | not) and
           (has("pending_operations") | not))
       )
+    ) or (
+      (keys == ["deployment", "version"]) and
+      .version == 1 and
+      (.deployment | type == "object" and keys == ["manifest"]) and
+      (.deployment.manifest | type == "object")
     )
   )
 ' "$state" >/dev/null || fail "Pulumi returned an invalid stack export"

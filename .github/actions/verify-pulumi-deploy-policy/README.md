@@ -44,9 +44,11 @@ or extra policies, unknown contracts, API failures, auth failures. Action never
 prints tokens, never requests plaintext stack secrets. Temporary state export
 deleted on exit.
 
-A valid export has a `deployment.resources` array. The one other accepted shape
-is a never-deployed stack's export, which counts as zero resources so every
-requested URN reports first-apply: only the keys `version` (3 or 4), optional
+A valid export has a `deployment.resources` array. The only other accepted
+shapes are the two forms of a never-deployed stack's export, which count as
+zero resources so every requested URN reports first-apply. Pulumi Cloud exports one as exactly
+the keys `version` (1) and `deployment`, with `deployment` holding only a
+`manifest` object. The CLI's own form has only the keys `version` (3 or 4), optional
 `features`, and optional `deployment`; when `deployment` is present it is an
 object with a `manifest` object and neither `resources` nor
 `pending_operations`. Pulumi omits an empty resources list because
