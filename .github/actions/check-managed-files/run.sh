@@ -32,8 +32,8 @@ for path in "${managed[@]}"; do
   managed_set["$path"]=1
 done
 
-# Triple-dot against the merge base so rename/copy detection matches PR
-# changed-file semantics.
+# Triple-dot against the merge base to match PR changed-file semantics.
+# Deletions count, and --no-renames lists both paths of a rename.
 if [[ -n "$BASE_REF" && "$BASE_REF" != "$HEAD_REF" ]]; then
   diff_range="$BASE_REF...$HEAD_REF"
 else
@@ -43,7 +43,7 @@ fi
 # Command substitution, not `mapfile < <(git …)`: process substitution drops
 # git's exit status, so a bad ref would pass as an empty diff.
 if ! changed_paths="$(
-  git diff --name-only --diff-filter=ACMRTUXB "$diff_range"
+  git diff --name-only --no-renames --diff-filter=ACDMRTUXB "$diff_range"
 )"; then
   echo "::error::failed to diff $diff_range — cannot verify managed-file edits"
   exit 1
