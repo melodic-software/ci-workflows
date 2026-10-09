@@ -957,6 +957,8 @@ skipping itself because the
 PR edits the caller workflow (`skipped-validation`), or a job that ended
 before the review reported (`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
+A `rate-limit` failure stays red but reads "AI review skipped: usage limit
+reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
 required check); do not make either check required.

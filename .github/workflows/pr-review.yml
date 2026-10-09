@@ -486,7 +486,7 @@ jobs:
           fi
           case "$FAILURE_CLASS" in
             auth) why="the Claude credential was rejected (401/402/403); check the OAuth token and the plan's usage" ;;
-            rate-limit) why="the usage limit was hit (429); re-run once it resets" ;;
+            rate-limit) why="AI review skipped: usage limit reached; re-run after it resets" ;;
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
             max-turns) why="the review used every turn --max-turns allows before finishing; raise it in claude-args" ;;
             timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
@@ -494,6 +494,16 @@ jobs:
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;
           esac
+          if [ "$FAILURE_CLASS" = rate-limit ]; then
+            # Still red; the wording says the review was skipped, not broken.
+            {
+              echo "### $why"
+              echo
+              echo "$LANE: \`failure-class=rate-limit\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=$LANE skipped::$why (failure-class=rate-limit)"
+            exit 1
+          fi
           {
             echo "### $LANE failed: \`${FAILURE_CLASS:-unknown}\`"
             echo
