@@ -311,7 +311,9 @@ for bad_export in \
   '{"version":3,"deployment":{"manifest":{},"resources":null}}' \
   '{"version":3,"deployment":{"manifest":{},"pending_operations":[{}]}}' \
   '{"version":3,"deployment":"opaque"}' \
-  '{"version":3,"checkpoint":{}}'; do
+  '{"version":3,"checkpoint":{}}' \
+  '{"version":3,"features":null}' \
+  '{"version":3,"features":false}'; do
   reset_valid_fixtures
   printf '%s' "$bad_export" >"$state"
   expect_failure "malformed export fails closed: $bad_export"

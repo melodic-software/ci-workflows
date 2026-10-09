@@ -196,7 +196,7 @@ jq -e '
     ) or (
       (keys - ["deployment", "features", "version"] | length == 0) and
       (.version == 3 or .version == 4) and
-      ((.features // []) | type == "array") and
+      ((has("features") | not) or (.features | type == "array")) and
       (
         (has("deployment") | not) or
         (.deployment | type == "object" and
