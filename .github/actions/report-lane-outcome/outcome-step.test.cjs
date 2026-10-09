@@ -168,6 +168,54 @@ test("a genuine failure still classifies and reports as failed", async () => {
   assert.match(errors[0], /\bclass=auth\b/u);
 });
 
+test("a usage limit reads as a skipped review and keeps the class token", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 429,
+    },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+  });
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(outputs.failure_class, "rate-limit");
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /^AI review skipped: usage limit reached; re-run after it resets/u,
+  );
+  assert.match(errors[0], /\bclass=rate-limit\b/u);
+});
+
+test("a usage limit on a lane that is not a review names the lane", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 429,
+    },
+  ]);
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude intake triage",
+  });
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /^Claude intake triage skipped: usage limit reached; re-run after it resets/u,
+  );
+  assert.doesNotMatch(errors[0], /AI review/u);
+  assert.match(errors[0], /\bclass=rate-limit\b/u);
+});
+
 test("a failure with no execution file keeps the fail-path class, not the skip class", async () => {
   // The skip shape is specifically SUCCESS with no evidence. A failed step
   // with no file is an infrastructure failure classify.cjs already owns —

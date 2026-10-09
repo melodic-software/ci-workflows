@@ -146,11 +146,19 @@ runs:
           // security signal, any other lane's is not a code-quality signal.
           // Derived from the lane name so callers need no extra wiring.
           const signal = /security/iu.test(lane) ? "security" : "code-quality";
+          // A usage limit stays an error (the check goes red) but reads as a
+          // skipped run; the `class=rate-limit` token is unchanged. A lane
+          // that is not a review (intake triage) names itself instead.
+          const skipped = /review/iu.test(lane) ? "AI review" : lane;
           core.error(
-            `${lane} exited with: ${outcome} class=${failureClass} ` +
-              `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
-              "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
-              `Last SDK result: ${reviewDetail}`,
+            failureClass === "rate-limit"
+              ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
+                  `(${lane} exited with: ${outcome} class=rate-limit). ` +
+                  `Last SDK result: ${reviewDetail}`
+              : `${lane} exited with: ${outcome} class=${failureClass} ` +
+                  `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
+                  "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
+                  `Last SDK result: ${reviewDetail}`,
           );
 
           core.setOutput("failure_class", failureClass);

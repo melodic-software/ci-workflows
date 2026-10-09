@@ -135,10 +135,25 @@ for (const lane of lanes) {
     assert.match(result.summary, /no review needed: every file in scope/u);
   });
 
-  test(`${lane.file}: every way no review happened goes red and is named`, () => {
+  test(`${lane.file}: a usage limit stays red but reads as a skipped review`, () => {
+    const result = runStep(step, {
+      REVIEW_FAILED: "true",
+      FAILURE_CLASS: "rate-limit",
+    });
+    const message =
+      "AI review skipped: usage limit reached; re-run after it resets";
+    assert.equal(result.status, 1);
+    assert.match(result.summary, new RegExp(`^### ${message}$`, "mu"));
+    assert.doesNotMatch(result.summary, /failed:/u);
+    assert.match(
+      result.stdout,
+      new RegExp(`^::error .*${message}.*failure-class=rate-limit`, "mu"),
+    );
+  });
+
+  test(`${lane.file}: every other way no review happened goes red and is named`, () => {
     for (const [failed, klass, named] of [
       ["true", "auth", "auth"],
-      ["true", "rate-limit", "rate-limit"],
       ["true", "overloaded", "overloaded"],
       ["true", "max-turns", "max-turns"],
       ["true", "timeout", "timeout"],
