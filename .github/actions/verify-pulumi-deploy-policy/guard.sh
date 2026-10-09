@@ -184,10 +184,28 @@ state="$temporary_directory/stack-state.json"
 # observe a different deployment and invalidate the proof's single-state view.
 timeout --signal=TERM --kill-after=5s 300s \
   "$pulumi_bin" stack export --non-interactive --stack "$STACK_NAME" --file "$state"
+# A never-deployed stack exports a schema version and either no deployment or a
+# deployment whose manifest is present and whose resources key is omitted
+# (apitype.DeploymentV3 tags resources omitempty). Only that shape counts as
+# zero resources; any other export without a resources array fails closed.
 jq -e '
-  type == "object" and
-  (.deployment | type == "object") and
-  (.deployment.resources | type == "array")
+  type == "object" and (
+    (
+      (.deployment | type == "object") and
+      (.deployment.resources | type == "array")
+    ) or (
+      (keys - ["deployment", "features", "version"] | length == 0) and
+      (.version == 3 or .version == 4) and
+      ((.features // []) | type == "array") and
+      (
+        (has("deployment") | not) or
+        (.deployment | type == "object" and
+          (.manifest | type == "object") and
+          (has("resources") | not) and
+          (has("pending_operations") | not))
+      )
+    )
+  )
 ' "$state" >/dev/null || fail "Pulumi returned an invalid stack export"
 
 counts="$temporary_directory/resource-counts.json"
@@ -195,7 +213,7 @@ jq -cn --slurpfile requested "$requested_urns" --slurpfile state "$state" '
   $requested[0] |
   map(. as $urn | {
     urn: $urn,
-    count: ([$state[0].deployment.resources[] | select(.urn == $urn)] | length)
+    count: ([($state[0].deployment.resources // [])[] | select(.urn == $urn)] | length)
   })
 ' >"$counts"
 jq -e 'all(.[]; .count == 0 or .count == 1)' "$counts" >/dev/null ||

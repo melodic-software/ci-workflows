@@ -44,6 +44,16 @@ or extra policies, unknown contracts, API failures, auth failures. Action never
 prints tokens, never requests plaintext stack secrets. Temporary state export
 deleted on exit.
 
+A valid export has a `deployment.resources` array. The one other accepted shape
+is a never-deployed stack's export, which counts as zero resources so every
+requested URN reports first-apply: only the keys `version` (3 or 4), optional
+`features`, and optional `deployment`; when `deployment` is present it is an
+object with a `manifest` object and neither `resources` nor
+`pending_operations`. Pulumi omits an empty resources list because
+[`DeploymentV3`](https://github.com/pulumi/pulumi/blob/master/sdk/go/common/apitype/core.go)
+tags it `omitempty`. Any other export, including truncated JSON, a
+non-array `resources`, or a deployment without a manifest, fails closed.
+
 An exactly empty JSON array (`[]`) is the explicit policy-only mode. The action
 still verifies the named stack and complete OIDC policy, exports the stack, and
 validates the export shape; it then emits deterministic zero counts, `[]` for

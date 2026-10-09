@@ -277,4 +277,45 @@ expect_invalid_org_contract 'an environment other than <repository>-production f
   '.rules.environment = "azure-iac-staging" | .rules.sub |= sub(":environment:azure-iac-production"; ":environment:azure-iac-staging")'
 expect_invalid_org_contract 'a workflow name outside [a-z0-9-] fails' '.rules.workflow = "Azure-Deploy"'
 
+# Never-deployed stack: the shape `pulumi stack export` (v3.263.0) printed for a
+# freshly initialized stack, resources key omitted.
+never_deployed_export='{"version":3,"deployment":{"manifest":{"time":"0001-01-01T00:00:00Z","magic":"","version":""},"secrets_providers":{"type":"service"},"metadata":{}}}'
+
+reset_valid_fixtures
+printf '%s' "$never_deployed_export" >"$state"
+run_guard
+grep -Fx 'existing-count=0' "$output" >/dev/null
+grep -Fx 'missing-count=2' "$output" >/dev/null
+printf 'PASS: never-deployed export reports every operational resource absent\n'
+
+reset_valid_fixtures
+requested_urns='[]'
+printf '%s' "$never_deployed_export" >"$state"
+run_guard
+grep -Fx 'existing-count=0' "$output" >/dev/null
+printf 'PASS: never-deployed export passes policy-only mode\n'
+
+reset_valid_fixtures
+printf '%s' '{"version":3}' >"$state"
+run_guard
+grep -Fx 'missing-count=2' "$output" >/dev/null
+printf 'PASS: export with a version and no deployment counts as zero resources\n'
+
+for bad_export in \
+  '{"version":3,"deployment":{"manifest":' \
+  'not json' \
+  '{}' \
+  '{"version":2}' \
+  '{"version":3,"deployment":{}}' \
+  '{"version":3,"deployment":{"manifest":{},"resources":{}}}' \
+  '{"version":3,"deployment":{"manifest":{},"resources":null}}' \
+  '{"version":3,"deployment":{"manifest":{},"pending_operations":[{}]}}' \
+  '{"version":3,"deployment":"opaque"}' \
+  '{"version":3,"checkpoint":{}}'; do
+  reset_valid_fixtures
+  printf '%s' "$bad_export" >"$state"
+  expect_failure "malformed export fails closed: $bad_export"
+  grep -F 'invalid stack export' "$stderr" >/dev/null
+done
+
 printf 'Pulumi deployment guard contract tests passed.\n'
