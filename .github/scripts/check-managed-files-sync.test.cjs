@@ -472,6 +472,37 @@ test("a hand-edit points at the sync workflow, not a label", () => {
   assert.doesNotMatch(result.stderr, /label the PR/u);
 });
 
+const keepToolAtBase = (target) =>
+  write(target, "managed/tool.sh", "#!/bin/sh\necho v1\n", 0o755);
+
+test("deleting only a managed file fails the hand-edit check", () => {
+  const fx = fixture({
+    mutateHead: (target) => {
+      keepToolAtBase(target);
+      fs.rmSync(path.join(target, "managed/config.txt"));
+    },
+  });
+  const result = runScript("run.sh", fx);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /- managed\/config\.txt/u);
+  assert.doesNotMatch(result.stderr, /managed\/tool\.sh/u);
+});
+
+test("renaming a managed file reports its old path", () => {
+  const body = "line of managed config\n".repeat(20);
+  const fx = fixture({
+    mutateBase: (target) => write(target, "managed/config.txt", body),
+    mutateHead: (target) => {
+      keepToolAtBase(target);
+      fs.rmSync(path.join(target, "managed/config.txt"));
+      write(target, "other/config.txt", body);
+    },
+  });
+  const result = runScript("run.sh", fx);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /- managed\/config\.txt/u);
+});
+
 // --- Dependabot mode -------------------------------------------------------
 
 const { dependabotMode } = verifySyncCommits;
