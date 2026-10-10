@@ -54,6 +54,12 @@ checkout of this repo. (Public is required because a public consumer such as
   failed or was cancelled. Whether a skipped lane passes is the consumer's
   policy via the `ci-status` action's `treat-skipped-as` input — see that
   action below for when a skip must block rather than pass.
+- **A cancelled `ci-status` run can block the merge.** A newer successful
+  `ci-status` normally supersedes an older red one (see `record-pending` and
+  `rerun-contract-only-siblings` below). A run cancelled by concurrency, in a
+  separate workflow run from the later successful one, was observed to leave a
+  failed same-named check that kept the merge blocked, and re-running did not
+  clear it. Pushing a new commit (an empty signed commit is enough) did.
 
 ## Versioning
 
