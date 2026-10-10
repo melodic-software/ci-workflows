@@ -1056,6 +1056,7 @@ rerun_failed_contract_only_siblings() {
   candidates="$(jq -r --argjson self "$GITHUB_RUN_ID" \
     '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "failure" and (.id // $self) != $self) | .id ] | sort | join(" ")' \
     <"$runs")"
+  echo "Failed run(s) of this workflow on ${SHA} to consider for a re-run: ${candidates:-none}."
   for id in $candidates; do
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
@@ -1064,6 +1065,7 @@ rerun_failed_contract_only_siblings() {
     fi
     contract_shaped="$(jq -r '[ .jobs[]? | .conclusion ] | ((map(select(. != "skipped")) == ["failure"]) and (length > 1))' <"$gh_stdout")"
     if [[ "$contract_shaped" != true ]]; then
+      echo "Not re-running failed run ${id} on ${SHA}: its latest attempt is not contract-only (more than its gate ran, or the gate did not fail)."
       continue
     fi
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.

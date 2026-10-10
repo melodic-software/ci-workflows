@@ -1795,6 +1795,18 @@ run_case 0 'success success' pass false true YIELD_TO_FULL_RUN=true
 expect_log 'All lanes passed or were skipped.'
 expect_no_gh_call 'actions/'
 
+# Without a line per failed run, a scan that re-runs nothing cannot show which
+# runs it saw and why it passed over each.
+echo 'case: a full-mode success logs each failed run it considered and why'
+reset_yield_fixtures
+workflow_runs "[$(completed_run 5000 failure),$(completed_run 5100 failure)]"
+jobs_for 5000 failure skipped
+jobs_for 5100 failure success
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_WAIT_SECONDS=0
+expect_log "Failed run(s) of this workflow on ${sha} to consider for a re-run: 5000 5100."
+expect_log "Re-running failed contract-only run 5000 on ${sha}."
+expect_log "Not re-running failed run 5100 on ${sha}: its latest attempt is not contract-only"
+
 # --- full mode: waiting for in-flight contract-only siblings -----------------
 
 rerun_runs_count="$calls/${workflow_runs_key}.count"
