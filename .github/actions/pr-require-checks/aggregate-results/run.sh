@@ -994,9 +994,11 @@ fi
 # `skipped`). A contract-only run only ever runs its gate. A sibling whose jobs
 # cannot be read is waited for, and so is a full run whose lanes are still
 # queued, for at most the ceiling. Re-runs are issued last, so this step
-# usually finishes before a re-run's runner starts; a re-run that reads the
-# status while this step is still running reads `pending` and goes red, as it
-# could before. A sibling still in flight at the ceiling is not re-run, and its
+# usually finishes before a re-run's runner starts. A re-run that reads the
+# status while this step is still running waits for it under yield, up to
+# YIELD_WRITER_WAIT_SECONDS, and passes once it succeeds; with a carry-forward
+# wait of `0` it reads `pending` and goes red, as it could before. A sibling
+# still in flight at the ceiling is not re-run, and its
 # message still ends by telling the reader to re-run it if it stays red.
 #
 # Nothing here changes this run's verdict: the success is already recorded, so

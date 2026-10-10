@@ -1705,7 +1705,7 @@ run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRAC
 expect_log "${fail_prefix}${absent_remedy}"
 expect_no_log 'Carried forward'
 
-# provisioning run 37254877117: full run 4000 recorded success and, still in
+# A contract-only run starts late: full run 4000 recorded success and, still in
 # its aggregate step, re-ran the failed contract-only run 4300, whose attempt 2
 # lists only its queued gate so far. Without classifying a re-run attempt by
 # its first attempt, 4300 counts as a full run and this run fails superseded by
