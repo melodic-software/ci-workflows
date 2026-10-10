@@ -1629,6 +1629,125 @@ jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
 expect_log "${superseded_prefix}${superseded_automatic}"
 
+# The late sibling: run 4000 recorded success and is still in its aggregate
+# step, past its last listing of siblings, so nothing would re-run a red here.
+# Without the wait this fails superseded by 4000; without re-reading after it,
+# the step's completion is never seen.
+writer_jobs_key='GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs'
+writer_running_then_success() {
+  writer_jobs 4000 running
+  mv -- "$fixtures/${writer_jobs_key}.json" "$fixtures/${writer_jobs_key}.1.json"
+  cp -- "$fixtures/${writer_jobs_key}.1.json" "$fixtures/${writer_jobs_key}.2.json"
+  writer_jobs 4000 success
+}
+late_writer_runs="[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+echo 'case: yield carries a success whose writer step is still finishing once that step succeeds'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "$late_writer_runs"
+writer_running_then_success
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Run 4000 recorded ci-lanes=success on ${sha} and its step is still finishing; waiting 5s (waited 0s of 30s)."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log 'superseded'
+expect_status_reads 2
+
+# Without the ceiling a writer step that never finishes (a cancelled run) would
+# hold this run to the job timeout; without failing at it, the unproven
+# success would pass.
+echo 'case: yield fails superseded when the writer step is still running at the ceiling'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "$late_writer_runs"
+writer_jobs 4000 running
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "::warning::the step of run 4000 that recorded ci-lanes=success on ${sha} was still running after 30s."
+expect_log "${superseded_prefix}${superseded_automatic}"
+expect_no_log 'Carried forward'
+if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]]; then
+  echo "FAIL: expected the writer wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without keying the wait on the writer's running step, a `pending` marker newer
+# than the success would be waited on as well; it means the lanes are running,
+# and the full run re-runs this run once they pass.
+echo 'case: yield fails at once on a pending marker newer than the success'
+reset_yield_fixtures
+status_list "[$(writer_status 101 pending 2026-09-05T12:06:00Z 4000),$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "$late_writer_runs"
+writer_jobs 4000 running
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "${superseded_prefix}${superseded_automatic}"
+expect_no_sleep
+expect_status_reads 1
+
+# Without failing closed on the re-read, a status read that fails during the
+# writer wait would leave the first read's state in place.
+echo 'case: yield fails closed when the status re-read fails during the writer wait'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "$late_writer_runs"
+writer_running_then_success
+printf '2\n' >"$fixtures/${statuses_key}.fail-on-call"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "${fail_prefix}${absent_remedy}"
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/${statuses_key}.fail-on-call"
+
+echo 'case: yield fails closed when the status re-read cannot be parsed during the writer wait'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+status_list_on_call 2 'not json'
+workflow_runs "$late_writer_runs"
+writer_running_then_success
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "${fail_prefix}${absent_remedy}"
+expect_no_log 'Carried forward'
+
+# A contract-only run starts late: full run 4000 recorded success and, still in
+# its aggregate step, re-ran the failed contract-only run 4300, whose attempt 2
+# lists only its queued gate so far. Without classifying a re-run attempt by
+# its first attempt, 4300 counts as a full run and this run fails superseded by
+# a run that never re-runs anything.
+attempt_one_jobs() {
+  printf '{"total_count":%s,"jobs":%s}' "$(jq length <<<"$2")" "$2" \
+    >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${1}_attempts_1_jobs.json"
+}
+rerun_sibling_jobs='[{"name":"ci-status","conclusion":null}]'
+echo 'case: yield ignores a re-run attempt of a contract-only sibling whose new jobs are not listed yet'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z),$(attempt_entry 4300 queued 2026-09-05T12:00:31Z 2 2026-09-05T12:05:02Z)]"
+writer_running_then_success
+jobs_raw 4300 "$rerun_sibling_jobs"
+attempt_one_jobs 4300 '[{"name":"ci-status","conclusion":"failure"},{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"}]'
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log 'superseded'
+
+# Without reading the first attempt's shape, rather than the attempt number
+# alone, a re-run of a full run would be ignored and an older success carried
+# across it.
+echo 'case: yield is superseded by a re-run attempt of a full run'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[$(attempt_entry 4300 queued 2026-09-05T12:00:31Z 2 2026-09-05T12:05:02Z)]"
+jobs_raw 4300 "$rerun_sibling_jobs"
+attempt_one_jobs 4300 '[{"name":"changes","conclusion":"success"},{"name":"lint","conclusion":"failure"},{"name":"ci-status","conclusion":"failure"}]'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
+
+echo 'case: yield counts a re-run attempt whose first attempt cannot be read as a full run'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[$(attempt_entry 4300 queued 2026-09-05T12:00:31Z 2 2026-09-05T12:05:02Z)]"
+jobs_raw 4300 "$rerun_sibling_jobs"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4300_attempts_1_jobs.err"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4300_attempts_1_jobs.err"
+
 # Without yield overriding the wait, a 60-second ceiling would still poll.
 echo 'case: yield with nothing in flight reads the status once and never waits'
 reset_yield_fixtures
@@ -1675,6 +1794,18 @@ reset_yield_fixtures
 run_case 0 'success success' pass false true YIELD_TO_FULL_RUN=true
 expect_log 'All lanes passed or were skipped.'
 expect_no_gh_call 'actions/'
+
+# Without a line per failed run, a scan that re-runs nothing cannot show which
+# runs it saw and why it passed over each.
+echo 'case: a full-mode success logs each failed run it considered and why'
+reset_yield_fixtures
+workflow_runs "[$(completed_run 5000 failure),$(completed_run 5100 failure)]"
+jobs_for 5000 failure skipped
+jobs_for 5100 failure success
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_WAIT_SECONDS=0
+expect_log "Failed run(s) of this workflow on ${sha} to consider for a re-run: 5000 5100."
+expect_log "Re-running failed contract-only run 5000 on ${sha}."
+expect_log "Not re-running failed run 5100 on ${sha}: its latest attempt is not contract-only"
 
 # --- full mode: waiting for in-flight contract-only siblings -----------------
 
