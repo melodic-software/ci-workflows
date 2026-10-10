@@ -124,6 +124,12 @@ CARRY_FORWARD_POLL_SECONDS=15
 # above.
 RERUN_WAIT_SECONDS="${RERUN_WAIT_SECONDS:-90}"
 RERUN_WAIT_POLL_SECONDS=10
+# Ceiling, in seconds, on a yielding run's wait for the step of the full run
+# that recorded `success` to finish; see the yield block. Below the default
+# `rerun-wait-seconds` on purpose: when that full run is waiting on this run,
+# this run gives up first, and the full run re-runs it. Fixed, like the polls.
+YIELD_WRITER_WAIT_SECONDS=30
+YIELD_WRITER_POLL_SECONDS=5
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
 # will.
@@ -315,6 +321,9 @@ carried_state=""
 # treats a run as the writer's re-run.
 carried_created_at=""
 carried_writer_run_id=""
+# True when `carried_state` is `pending` only because the step of this workflow's
+# run on this SHA that the `success` names is still running.
+carried_writer_running=false
 # Whether `carried_state` holds a completed read. The poll loop reads the status
 # itself, so the caller below must not read a second time and overwrite what the
 # loop decided on.
@@ -324,6 +333,7 @@ read_carried_state() {
   carried_state=""
   carried_created_at=""
   carried_writer_run_id=""
+  carried_writer_running=false
   carried_state_read=false
   # The LIST endpoint, not the combined one: `commits/<sha>/status` collapses to
   # one entry per context and exposes no author, so any collaborator with write
@@ -463,6 +473,7 @@ verify_writer_step() {
     running)
       echo "Run ${carried_writer_run_id} has not finished step '${own_gate_step}' of job '${own_gate_job}'; its ${STATUS_CONTEXT} success is not carried yet."
       carried_state=pending
+      carried_writer_running=true
       ;;
     *)
       echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, whose step '${own_gate_step}' of job '${own_gate_job}' did not succeed (${outcome:-no conclusion}); ignoring it."
@@ -673,14 +684,26 @@ fail_carry_forward() {
   exit 1
 }
 
-# Yield mode (`yield-to-full-run` true): a contract-only run never waits. It
-# lists this workflow's in-flight runs on the SHA once, then reads the status
-# once, in that order for the reason the wait gives. A full run in flight
-# supersedes this run: it fails at once naming that run, whose own ci-status
-# check run is newer than this one's and is the one the merge gate reads. With
-# `rerun-contract-only-siblings`, that run re-runs this one once it records
-# `success`. A red is never a false green, so failing here is always safe; the
-# cost is a red check run that the full run's newer one supersedes.
+# Yield mode (`yield-to-full-run` true): a contract-only run does not wait for
+# a full run's verdict. It lists this workflow's in-flight runs on the SHA,
+# then reads the status, in that order for the reason the wait gives. A full
+# run in flight supersedes this run: it fails at once naming that run, whose
+# own ci-status check run is newer than this one's and is the one the merge
+# gate reads. With `rerun-contract-only-siblings`, that run re-runs this one
+# once it records `success`. A red is never a false green, so failing here is
+# always safe; the cost is a red check run that the full run's newer one
+# supersedes.
+#
+# One state waits, briefly: the newest status is a `success` naming the one
+# full run in flight, written by its current attempt, whose aggregate step is
+# still running. That step has already recorded the verdict and is only
+# re-running failed siblings, after its last listing of them, so a red here
+# would never be re-run. The success cannot be carried yet, because a running
+# step cannot prove it wrote the status (see `verify_writer_step`), so this run
+# re-lists and re-reads every YIELD_WRITER_POLL_SECONDS until that step
+# finishes, up to YIELD_WRITER_WAIT_SECONDS, then decides as above. At the
+# ceiling it fails superseded: a full run still waiting on this run re-runs it
+# once it completes.
 #
 # This closes the gap `record-pending` alone leaves: a full run that is queued,
 # or whose first job has not yet written its `pending` marker, would otherwise
@@ -694,7 +717,11 @@ fail_carry_forward() {
 # whose lanes were skipped, before its gate job exists, from passing for one.
 # The gate name is this run's own one non-skipped job; when that cannot be
 # read, every sibling is a full run, as is one with more jobs than the one page
-# of 100 lists. Every other sibling is a full run,
+# of 100 lists. A re-run attempt (`run_attempt` above 1) not in that shape yet
+# is classified by its first attempt's jobs, since a re-run keeps its event: a
+# full run re-runs failed contract-only runs, and counting one whose new jobs
+# are not listed yet as a full run would fail this run with nothing left to
+# re-run it. Every other sibling is a full run,
 # including one whose jobs are not listed yet or cannot be read, so a misread
 # fails closed. The one full run
 # excluded is the writer of a `success` already on the SHA, when the attempt in
@@ -746,6 +773,18 @@ list_in_flight_full_runs() {
     else
       warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
     fi
+    # A re-run keeps its original event, so a re-run of a contract-only run is
+    # contract-only too, yet its new attempt's jobs may not be listed yet. Its
+    # first attempt has completed, so that attempt's jobs decide.
+    if [[ "$shape" != true ]] &&
+      [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
+      # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
+      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
+        shape="$(jq -r --arg gate "$gate" '(.total_count // 0) as $total | [ .jobs[]? ] | length > 1 and length >= $total and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
+      else
+        warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+      fi
+    fi
     if [[ "$shape" != true ]]; then
       yield_full_runs="${yield_full_runs}${yield_full_runs:+ }${id}"
     fi
@@ -768,31 +807,58 @@ fail_superseded() {
   exit 1
 }
 
+# True when run `$1` is the writer the carried status names and its attempt in
+# flight started at or before that status was created, so that attempt wrote
+# it. A listing jq cannot parse reads as false, which keeps the run superseding.
+writer_attempt_wrote() {
+  [[ "$1" == "$carried_writer_run_id" && -n "$carried_created_at" ]] &&
+    [[ "$(jq -r --arg id "$1" --arg since "$carried_created_at" \
+      '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_started_at // "") != "" and .run_started_at <= $since) ] | length > 0' \
+      <"$scratch/runs.json")" == true ]]
+}
+
 if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
-  echo "Contract-only event: yielding to any full run in flight on ${SHA}, else reading the ${STATUS_CONTEXT} status once."
-  # shellcheck disable=SC2310 # list_in_flight_full_runs warns itself; the caller fails closed.
-  if ! list_in_flight_full_runs; then
-    echo "::error::could not list this workflow's runs on ${SHA}, so a full run in flight cannot be ruled out; re-run this run."
-    exit 1
-  fi
-  # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
-  if ! read_carried_state; then
-    cat "$gh_stderr" >&2
-    fail_carry_forward
-  fi
-  superseding=""
-  for id in $yield_full_runs; do
-    if [[ "$carried_state" == success && "$id" == "$carried_writer_run_id" && -n "$carried_created_at" ]] &&
-      [[ "$(jq -r --arg id "$id" --arg since "$carried_created_at" \
-        '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_started_at // "") != "" and .run_started_at <= $since) ] | length > 0' \
-        <"$scratch/runs.json")" == true ]]; then
-      continue
+  echo "Contract-only event: yielding to any full run in flight on ${SHA}, else reading the ${STATUS_CONTEXT} status."
+  yield_started="$(date +%s)"
+  while :; do
+    # shellcheck disable=SC2310 # list_in_flight_full_runs warns itself; the caller fails closed.
+    if ! list_in_flight_full_runs; then
+      echo "::error::could not list this workflow's runs on ${SHA}, so a full run in flight cannot be ruled out; re-run this run."
+      exit 1
     fi
-    superseding="${superseding}${superseding:+ }${id}"
-  done
-  if [[ -n "$superseding" ]]; then
+    # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
+    if ! read_carried_state; then
+      cat "$gh_stderr" >&2
+      fail_carry_forward
+    fi
+    superseding=""
+    for id in $yield_full_runs; do
+      # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false keeps the run superseding.
+      if [[ "$carried_state" == success ]] && writer_attempt_wrote "$id"; then
+        continue
+      fi
+      superseding="${superseding}${superseding:+ }${id}"
+    done
+    if [[ -z "$superseding" ]]; then
+      break
+    fi
+    # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false fails superseded.
+    if [[ "$carried_writer_running" == true && "$superseding" == "$carried_writer_run_id" ]] && writer_attempt_wrote "$superseding"; then
+      yield_waited=$(($(date +%s) - yield_started))
+      yield_remaining=$((YIELD_WRITER_WAIT_SECONDS - yield_waited))
+      if [[ "$yield_remaining" -gt 0 ]]; then
+        yield_sleep="$YIELD_WRITER_POLL_SECONDS"
+        if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
+          yield_sleep="$yield_remaining"
+        fi
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WRITER_WAIT_SECONDS}s)."
+        sleep "$yield_sleep"
+        continue
+      fi
+      echo "::warning::the step of run ${superseding} that recorded ${STATUS_CONTEXT}=success on ${SHA} was still running after ${yield_waited}s."
+    fi
     fail_superseded "$superseding"
-  fi
+  done
   if [[ "$carried_state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
     exit 0

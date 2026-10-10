@@ -330,18 +330,31 @@ consumer to audit it.
 
   - `yield-to-full-run: 'true'` and `timeout-minutes: 3` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
-    SHA once, then reads the status once, and finishes in seconds. A full run
+    SHA, then reads the status, and finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
     because that run's own `ci-status` check run is newer and decides the merge
     gate. With nothing in flight it is green on a recorded `success` and red
     otherwise. An in-flight sibling whose latest attempt skipped every job but
-    one, and that one has this run's gate name, is contract-only and ignored;
-    a full run whose lanes skipped before its gate job exists is not. Any
+    one, and that one has this run's gate name, is contract-only and ignored,
+    and so is a re-run attempt whose first attempt had that shape (a re-run
+    keeps its event, and the full run's own re-runs of failed contract-only
+    runs are such attempts); a full run whose lanes skipped before its gate
+    job exists is not. Any
     other sibling, including one whose
     jobs are not listed yet or cannot be read, counts as a full run, so a
     misread goes red, never green. The writer of a `success` already on the SHA
     is ignored while the attempt that wrote it finishes, which is what lets the
-    re-run it starts pass. It overrides `carry-forward-wait-seconds`, needs
+    re-run it starts pass. One state waits: when the newest status is a
+    `success` written by the current attempt of the one full run in flight,
+    and that run's aggregate step is still running (re-running failed
+    siblings, after its last listing of them), the run re-lists and re-reads
+    every 5 seconds for up to 30 until that step finishes. It then carries the
+    `success` once the step reads back `success`, so a contract-only run that
+    starts after the full run's sibling scan goes green instead of red with
+    nothing left to re-run it. A running step cannot prove it wrote the
+    status, so the run never carries it sooner. At 30 seconds it fails
+    superseded; a full run still waiting on it re-runs it once it completes.
+    It overrides `carry-forward-wait-seconds`, needs
     `actions: read`, and fails the run when the listing fails three times.
     (`carry-forward-wait-seconds: '0'` alone reads the status once with no
     listing, so it can carry an older `success` across a full run that is
@@ -380,9 +393,10 @@ consumer to audit it.
   measured, so the full run's later `ci-status` supersedes the red. Only
   `success`, `skipped` and `neutral` satisfy a required check, so the red never
   passes on its own. The remaining gap: a contract-only run still in flight
-  when the full run's `rerun-wait-seconds` wait ends is not re-run, and a re-run
-  that reads the status before the full run's step finishes reads `pending`;
-  either one's message ends by saying to re-run it if it stays red.
+  when the full run's `rerun-wait-seconds` wait ends is not re-run, and without
+  `yield-to-full-run` a re-run that reads the status before the full run's step
+  finishes reads `pending`; either one's message ends by saying to re-run it if
+  it stays red.
 
   Permissions: the first job needs `statuses: write`; the `ci-status` job needs
   `statuses: write` and `actions: write` (which covers the `actions: read`

@@ -158,19 +158,27 @@ inputs:
     default: 'false'
   yield-to-full-run:
     description: >-
-      `true` to have a contract-only run never wait: it lists this workflow's
-      in-flight runs on the head SHA once, then reads the `status-context`
-      status once. A full run in flight supersedes it, so it fails at once
+      `true` to have a contract-only run not wait for a full run's verdict: it
+      lists this workflow's in-flight runs on the head SHA, then reads the
+      `status-context` status. A full run in flight supersedes it, so it fails at once
       with `superseded by full run <url>`: that run's own `ci-status` check run
       is newer and decides the merge gate, and with
       `rerun-contract-only-siblings` it re-runs this run once it records
       `success`. With no full run in flight it passes only on a recorded
       `success`. An in-flight sibling whose latest attempt skipped every job
       but one, and that one has this run's gate name, is contract-only and
-      ignored; any other sibling, including one whose jobs cannot be read yet,
+      ignored, and so is a re-run attempt whose first attempt had that shape
+      (a re-run keeps its event); any other sibling, including one whose jobs
+      cannot be read yet,
       counts as a full run, so a misread goes red, never green. The writer of
       a `success` already on the SHA is ignored while the attempt that wrote
-      it finishes. Overrides
+      it finishes. When the newest status is a `success` written by the
+      current attempt of the one full run in flight, and that run's step that
+      wrote it is still running (re-running failed siblings), it re-lists and
+      re-reads every 5 seconds for up to 30 until that step finishes, then
+      carries the `success` once the step reads back `success`; a step still
+      running at 30 seconds fails superseded, and a full run still waiting on
+      this run re-runs it. Overrides
       `carry-forward-wait-seconds`. Closes the gap `record-pending` alone
       leaves, a full run queued before its `pending` marker is written. The
       calling job needs `actions: read`; a listing that fails after three
