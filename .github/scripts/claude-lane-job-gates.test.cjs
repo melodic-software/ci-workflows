@@ -18,26 +18,46 @@ const workflowsDir = path.join(__dirname, "..", "workflows");
 // context paths (a missing property is null), string literals, ! && || == !=
 // and parentheses, and the case-insensitive contains/startsWith/endsWith plus
 // format.
-const str = (value) => (value === null || value === undefined ? "" : String(value));
+const str = (value) =>
+  value === null || value === undefined ? "" : String(value);
 const functions = {
-  contains: (haystack, needle) => str(haystack).toLowerCase().includes(str(needle).toLowerCase()),
-  startsWith: (text, prefix) => str(text).toLowerCase().startsWith(str(prefix).toLowerCase()),
-  endsWith: (text, suffix) => str(text).toLowerCase().endsWith(str(suffix).toLowerCase()),
-  format: (template, ...args) => template.replace(/\{(\d+)\}/gu, (_, i) => str(args[Number(i)])),
+  contains: (haystack, needle) =>
+    str(haystack).toLowerCase().includes(str(needle).toLowerCase()),
+  startsWith: (text, prefix) =>
+    str(text).toLowerCase().startsWith(str(prefix).toLowerCase()),
+  endsWith: (text, suffix) =>
+    str(text).toLowerCase().endsWith(str(suffix).toLowerCase()),
+  format: (template, ...args) =>
+    template.replace(/\{(\d+)\}/gu, (_, i) => str(args[Number(i)])),
 };
 const evaluate = (expression, contexts) => {
   const body = expression
     .trim()
     .replace(/^\$\{\{([\s\S]*)\}\}$/u, "$1")
-    .replace(/\b(github|inputs)((?:\.[A-Za-z_][\w-]*)+)/gu, (_, root, rest) =>
-      `${root}${rest.slice(1).split(".").map((key) => `?.[${JSON.stringify(key)}]`).join("")}`,
+    .replace(
+      /\b(github|inputs)((?:\.[A-Za-z_][\w-]*)+)/gu,
+      (_, root, rest) =>
+        `${root}${rest
+          .slice(1)
+          .split(".")
+          .map((key) => `?.[${JSON.stringify(key)}]`)
+          .join("")}`,
     );
-  const run = new Function(...Object.keys(functions), "github", "inputs", `return (${body}) ?? null;`);
+  const run = new Function(
+    ...Object.keys(functions),
+    "github",
+    "inputs",
+    `return (${body}) ?? null;`,
+  );
   return run(...Object.values(functions), contexts.github, contexts.inputs);
 };
 
 const LISTED_ID = 222;
-const pullRequestEvent = (actor, sender, { draft = false, fork = false } = {}) => ({
+const pullRequestEvent = (
+  actor,
+  sender,
+  { draft = false, fork = false } = {},
+) => ({
   actor,
   repository: "melodic-software/example",
   event_name: "pull_request",
@@ -45,7 +65,11 @@ const pullRequestEvent = (actor, sender, { draft = false, fork = false } = {}) =
     ...(sender && { sender }),
     pull_request: {
       draft,
-      head: { repo: { full_name: fork ? "someone/example" : "melodic-software/example" } },
+      head: {
+        repo: {
+          full_name: fork ? "someone/example" : "melodic-software/example",
+        },
+      },
     },
   },
 });
@@ -59,11 +83,22 @@ for (const { file, job } of [
     fs.readFileSync(path.join(workflowsDir, file), "utf8"),
   );
   const reviewJob = workflow.jobs[job];
-  const allowedBots = reviewJob.steps.find((step) => step.uses?.startsWith("anthropics/claude-code-action@"))
-    .with.allowed_bots;
+  const allowedBots = reviewJob.steps.find((step) =>
+    step.uses?.startsWith("anthropics/claude-code-action@"),
+  ).with.allowed_bots;
   // A job `if:` runs the job when its result is truthy.
-  const gate = (github, ids) => Boolean(evaluate(reviewJob.if, { github, inputs: { "allowed-bot-sender-ids": ids } }));
-  const bots = (github, ids) => evaluate(allowedBots, { github, inputs: { "allowed-bot-sender-ids": ids } });
+  const gate = (github, ids) =>
+    Boolean(
+      evaluate(reviewJob.if, {
+        github,
+        inputs: { "allowed-bot-sender-ids": ids },
+      }),
+    );
+  const bots = (github, ids) =>
+    evaluate(allowedBots, {
+      github,
+      inputs: { "allowed-bot-sender-ids": ids },
+    });
 
   test(`${file}: allowed-bot-sender-ids is an optional string defaulting to empty`, () => {
     const input = workflow.on.workflow_call.inputs["allowed-bot-sender-ids"];
@@ -73,7 +108,16 @@ for (const { file, job } of [
   });
 
   test(`${file}: ${job} skips every bot actor when no sender id is listed`, () => {
-    assert.equal(gate(pullRequestEvent("dependabot[bot]", { id: 49699333, login: "dependabot[bot]" }), ""), false);
+    assert.equal(
+      gate(
+        pullRequestEvent("dependabot[bot]", {
+          id: 49699333,
+          login: "dependabot[bot]",
+        }),
+        "",
+      ),
+      false,
+    );
     assert.equal(gate(pullRequestEvent("lanes-app[bot]", lanesApp), ""), false);
     assert.equal(bots(pullRequestEvent("lanes-app[bot]", lanesApp), ""), "");
     assert.doesNotMatch(reviewJob.if, /author_association|skip-actors/u);
@@ -83,7 +127,10 @@ for (const { file, job } of [
 
   test(`${file}: ${job} reviews a human actor whatever the list holds`, () => {
     for (const ids of ["", "111,222"]) {
-      const human = pullRequestEvent("octocat", { id: 583231, login: "octocat" });
+      const human = pullRequestEvent("octocat", {
+        id: 583231,
+        login: "octocat",
+      });
       assert.equal(gate(human, ids), true);
       assert.equal(bots(human, ids), "");
     }
@@ -96,7 +143,10 @@ for (const { file, job } of [
       assert.equal(bots(listed, ids), "lanes-app[bot]", ids);
     }
     // 22 and 2222 contain or are contained in 222 as text; only whole ids match.
-    for (const sender of [{ id: 22, login: "other[bot]" }, { id: 2222, login: "other[bot]" }]) {
+    for (const sender of [
+      { id: 22, login: "other[bot]" },
+      { id: 2222, login: "other[bot]" },
+    ]) {
       const unlisted = pullRequestEvent("other[bot]", sender);
       assert.equal(gate(unlisted, "111,222"), false, String(sender.id));
       assert.equal(bots(unlisted, "111,222"), "", String(sender.id));
@@ -120,8 +170,17 @@ for (const { file, job } of [
   });
 
   test(`${file}: ${job} still skips a listed bot's draft or fork PR`, () => {
-    assert.equal(gate(pullRequestEvent("lanes-app[bot]", lanesApp, { draft: true }), "222"), false);
-    assert.equal(gate(pullRequestEvent("lanes-app[bot]", lanesApp, { fork: true }), "222"), false);
+    assert.equal(
+      gate(
+        pullRequestEvent("lanes-app[bot]", lanesApp, { draft: true }),
+        "222",
+      ),
+      false,
+    );
+    assert.equal(
+      gate(pullRequestEvent("lanes-app[bot]", lanesApp, { fork: true }), "222"),
+      false,
+    );
   });
 
   test(`${file}: ${job} skips draft and fork PRs, scoped to pull_request`, () => {
