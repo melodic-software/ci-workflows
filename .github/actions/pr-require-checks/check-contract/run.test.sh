@@ -512,8 +512,8 @@ expect_output 'linkage=fail'
 set_pull 'feat: add pr-contract' "Closes ENG-123.${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
-# Without the custom-only guard the hyphen rule would change the default:
-# `Closes #12-followup` passed before this input existed and must still pass.
+# Without the custom-only guard the hyphen rule would change the default: a
+# `#N` closer followed by a hyphen passed before this input and must still.
 set_pull 'feat: add pr-contract' "Closes #12-followup${sections}" someone ''
 run_case 0
 expect_output 'linkage=pass'
