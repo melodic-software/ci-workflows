@@ -16,10 +16,12 @@ const workflowsDir = path.join(__dirname, "..", "workflows");
 
 // Evaluates the subset of the Actions expression language these gates use:
 // context paths (a missing property is null), string literals, ! && || == !=
-// and parentheses, and the case-insensitive contains/endsWith plus format.
+// and parentheses, and the case-insensitive contains/startsWith/endsWith plus
+// format.
 const str = (value) => (value === null || value === undefined ? "" : String(value));
 const functions = {
   contains: (haystack, needle) => str(haystack).toLowerCase().includes(str(needle).toLowerCase()),
+  startsWith: (text, prefix) => str(text).toLowerCase().startsWith(str(prefix).toLowerCase()),
   endsWith: (text, suffix) => str(text).toLowerCase().endsWith(str(suffix).toLowerCase()),
   format: (template, ...args) => template.replace(/\{(\d+)\}/gu, (_, i) => str(args[Number(i)])),
 };
@@ -59,7 +61,8 @@ for (const { file, job } of [
   const reviewJob = workflow.jobs[job];
   const allowedBots = reviewJob.steps.find((step) => step.uses?.startsWith("anthropics/claude-code-action@"))
     .with.allowed_bots;
-  const gate = (github, ids) => evaluate(reviewJob.if, { github, inputs: { "allowed-bot-sender-ids": ids } });
+  // A job `if:` runs the job when its result is truthy.
+  const gate = (github, ids) => Boolean(evaluate(reviewJob.if, { github, inputs: { "allowed-bot-sender-ids": ids } }));
   const bots = (github, ids) => evaluate(allowedBots, { github, inputs: { "allowed-bot-sender-ids": ids } });
 
   test(`${file}: allowed-bot-sender-ids is an optional string defaulting to empty`, () => {
@@ -102,8 +105,18 @@ for (const { file, job } of [
 
   test(`${file}: ${job} admits no bot on an event without a sender (R3-13)`, () => {
     const senderless = pullRequestEvent("lanes-app[bot]", undefined);
-    assert.equal(gate(senderless, ""), false);
-    assert.equal(bots(senderless, ""), "");
+    for (const ids of ["", "222", "222,", ",222", "111,,222"]) {
+      assert.equal(gate(senderless, ids), false, ids);
+      assert.equal(bots(senderless, ids), "", ids);
+    }
+  });
+
+  test(`${file}: ${job} admits no bot when the id list is malformed`, () => {
+    const listed = pullRequestEvent("lanes-app[bot]", lanesApp);
+    for (const ids of ["222,", ",222", "111,,222", ","]) {
+      assert.equal(gate(listed, ids), false, ids);
+      assert.equal(bots(listed, ids), "", ids);
+    }
   });
 
   test(`${file}: ${job} still skips a listed bot's draft or fork PR`, () => {
