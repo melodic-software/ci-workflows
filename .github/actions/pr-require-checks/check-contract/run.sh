@@ -18,7 +18,7 @@ LINKAGE_MODE="${LINKAGE_MODE:-advisory}"
 # GitHub's own grammar: `#N` with an optional `OWNER/REPO` prefix.
 DEFAULT_ISSUE_REF_PATTERN='([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+'
 ISSUE_REF_PATTERN="${ISSUE_REF_PATTERN:-$DEFAULT_ISSUE_REF_PATTERN}"
-export ISSUE_REF_PATTERN
+export ISSUE_REF_PATTERN DEFAULT_ISSUE_REF_PATTERN
 
 # Stable HTML marker on the advisory comment: the upsert finds its own previous
 # comment by this string, so a re-run edits rather than posting a second one.
@@ -375,7 +375,11 @@ BEGIN {
   # processing to it and it never becomes program text.
   ref = "(" tolower(ENVIRON["ISSUE_REF_PATTERN"]) ")"
   non_closing_regex = "^(refs|relates[ \t]+to):[ \t]*" ref "[ \t]*$"
-  closing_regex = "(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[ \t]*:?[ \t]*" ref
+  # A custom id can start with letters, so the keyword needs a real separator,
+  # or "fixture-1" would read as "fix" + "ture-1". `#N` cannot continue a word,
+  # so the default keeps the original optional separator exactly.
+  separator = (ENVIRON["ISSUE_REF_PATTERN"] == ENVIRON["DEFAULT_ISSUE_REF_PATTERN"]) ? "[ \t]*:?[ \t]*" : "([ \t]+|[ \t]*:[ \t]*)"
+  closing_regex = "(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)" separator ref
 }
 
 {
@@ -488,9 +492,15 @@ linkage_errors=()
 
 ref_hint='#N'
 pattern_note=''
+keyword_kind=native
+issue_kind='GitHub issue'
+negation_reason="GitHub's linkage parser ignores the surrounding words, so this still registers a closing reference and still auto-closes the issue when this PR merges."
 if [[ "$ISSUE_REF_PATTERN" != "$DEFAULT_ISSUE_REF_PATTERN" ]]; then
   ref_hint='<ref>'
   pattern_note=" Here <ref> must match this repository's issue-ref-pattern \`${ISSUE_REF_PATTERN}\`."
+  keyword_kind=recognized
+  issue_kind='tracked issue'
+  negation_reason='Keyword-based closing parsers ignore the surrounding words, so this still reads as a closing reference.'
 fi
 
 is_exempt_author=false
@@ -539,13 +549,13 @@ else
   done <"$analysis"
 
   if [[ -n "$negated_quoted" ]]; then
-    linkage_errors+=("Negated closing reference (${negated_quoted}). GitHub's linkage parser ignores the surrounding words, so this still registers a closing reference and still auto-closes the issue when this PR merges. Remove the closing keyword and use \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line instead.${pattern_note}")
+    linkage_errors+=("Negated closing reference (${negated_quoted}). ${negation_reason} Remove the closing keyword and use \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line instead.${pattern_note}")
   fi
 
   if ! grep -qx 'closing' "$analysis" &&
     ! grep -qx 'non-closing' "$analysis" &&
     ! grep -qx 'no-issue' "$analysis"; then
-    linkage_errors+=("Missing a native closing keyword (Closes/Fixes/Resolves ${ref_hint}). If this PR references an issue it must not close, put \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line. If it relates to no GitHub issue at all, state \"No linked issue\" (or \"No related issue:\") in the body instead.${pattern_note}")
+    linkage_errors+=("Missing a ${keyword_kind} closing keyword (Closes/Fixes/Resolves ${ref_hint}). If this PR references an issue it must not close, put \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line. If it relates to no ${issue_kind} at all, state \"No linked issue\" (or \"No related issue:\") in the body instead.${pattern_note}")
   fi
 
   if [[ ${#linkage_errors[@]} -gt 0 ]]; then

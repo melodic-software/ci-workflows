@@ -179,6 +179,7 @@ run_case() {
     EXEMPT_AUTHORS='' \
     LINKAGE_LABEL=needs-issue-linkage \
     LINKAGE_MODE=advisory \
+    ISSUE_REF_PATTERN='' \
     "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
@@ -477,8 +478,29 @@ echo 'case: a custom pattern replaces #N and names itself in the message'
 set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
-expect_log 'Missing a native closing keyword (Closes/Fixes/Resolves <ref>).'
+expect_log 'Missing a recognized closing keyword (Closes/Fixes/Resolves <ref>).'
 expect_log "issue-ref-pattern \`${tracker_pattern}\`"
+set_pull 'feat: add pr-contract' "Refs: #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+
+# Without a required separator after the keyword, "fixture-1" reads as
+# "fix" + "ture-1" and a custom pattern passes on an ordinary word.
+echo 'case: a custom pattern does not match inside a hyphenated word'
+set_pull 'feat: add pr-contract' "Uses fixture-1 and the resolver-3 module.${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+set_pull 'feat: add pr-contract' "Fixes: ENG-7${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
+# Without the default branch of the wording, the default negation message
+# would lose its GitHub reason and its `Refs: #N` advice.
+echo 'case: the default negation message is unchanged'
+set_pull 'feat: add pr-contract' "This does not close #12.${sections}"$'\nNo linked issue\n' someone ''
+run_case 0
+expect_log "GitHub's linkage parser ignores the surrounding words"
+expect_log 'use "Refs: #N" (or "Relates to: #N") on its own line instead.'
 
 # Without the negation window on the custom closer this disclaimer passes.
 echo 'case: negation handling applies to a custom pattern'
@@ -495,11 +517,19 @@ expect_output 'linkage=pass'
 
 # Without the compile check awk dies mid-analysis with an opaque error.
 echo 'case: an invalid or empty-matching pattern is rejected before any API call'
-for bad_pattern in '([a-z' 'a)|(b' '.*' '(#[0-9]+)?'; do
+for bad_pattern in '([a-z' 'a)|(b'; do
   run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
-  expect_log 'issue-ref-pattern'
+  expect_log 'issue-ref-pattern is not a valid extended regex'
   expect_no_gh_calls_at_all
 done
+for bad_pattern in '.*' '(#[0-9]+)?'; do
+  run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
+  expect_log 'issue-ref-pattern matches the empty string'
+  expect_no_gh_calls_at_all
+done
+run_case 1 ISSUE_REF_PATTERN=$'#[0-9]+\n.*'
+expect_log 'issue-ref-pattern must be a single line'
+expect_no_gh_calls_at_all
 
 # Without passing the pattern through ENVIRON, awk program text spliced from
 # the input would run this system() call.
