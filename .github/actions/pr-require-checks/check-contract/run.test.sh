@@ -445,6 +445,73 @@ run_case 0
 expect_output 'linkage=fail'
 expect_log 'trigger "doesn'"'"'t"'
 
+# --- linkage: issue-ref-pattern --------------------------------------------
+
+sections=$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
+tracker_pattern='[a-z][a-z0-9]*-[0-9]+'
+
+# Without the default grammar a tracker id would satisfy every caller that sets
+# nothing; an explicitly empty input must mean that same default.
+echo 'case: the default pattern rejects a tracker id and keeps the #N message'
+set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+run_case 0
+expect_output 'linkage=fail'
+expect_log 'Missing a native closing keyword (Closes/Fixes/Resolves #N).'
+run_case 0 ISSUE_REF_PATTERN=''
+expect_output 'linkage=fail'
+set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN=''
+expect_output 'linkage=pass'
+
+# Without the pattern reaching the closing and Refs regexes these fail.
+echo 'case: a custom pattern accepts its own ids as closers and Refs markers'
+set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+set_pull 'feat: add pr-contract' "Refs: SW2-1${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
+# Without replacing the GitHub grammar a custom pattern would only widen it.
+echo 'case: a custom pattern replaces #N and names itself in the message'
+set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+expect_log 'Missing a native closing keyword (Closes/Fixes/Resolves <ref>).'
+expect_log "issue-ref-pattern \`${tracker_pattern}\`"
+
+# Without the negation window on the custom closer this disclaimer passes.
+echo 'case: negation handling applies to a custom pattern'
+set_pull 'feat: add pr-contract' "This does not close ENG-123.${sections}"$'\nNo linked issue\n' someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+expect_log 'Negated closing reference ("close ENG-123" (trigger "not"))'
+
+# Without the opt-out check being pattern-independent this fails.
+echo 'case: the no-issue opt-out still passes with a custom pattern'
+set_pull 'feat: add pr-contract' "No related issue: tooling only${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
+# Without the compile check awk dies mid-analysis with an opaque error.
+echo 'case: an invalid or empty-matching pattern is rejected before any API call'
+for bad_pattern in '([a-z' 'a)|(b' '.*' '(#[0-9]+)?'; do
+  run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
+  expect_log 'issue-ref-pattern'
+  expect_no_gh_calls_at_all
+done
+
+# Without passing the pattern through ENVIRON, awk program text spliced from
+# the input would run this system() call.
+echo 'case: a pattern carrying awk code is data, not code'
+injected="$temporary_directory/injected"
+set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="x\" ~ system(\"touch ${injected}\") ~ \"x"
+if [[ -e "$injected" ]]; then
+  echo 'FAIL: the issue-ref-pattern input executed as awk code'
+  failures=$((failures + 1))
+fi
+
 # --- linkage: masking ------------------------------------------------------
 
 # Without HTML-comment masking a PR template's commented-out example satisfies
@@ -694,13 +761,13 @@ expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issu
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode; do
+for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode issue-ref-pattern; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE; do
+for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
@@ -712,6 +779,16 @@ for output_name in title do-not-merge linkage; do
     failures=$((failures + 1))
   fi
 done
+
+# Without this the action.yml default and the runner fallback could drift apart,
+# and a caller setting nothing would get a grammar the tests never exercised.
+echo 'case: the action.yml issue-ref-pattern default equals the runner default'
+metadata_default="$(sed -n '/^  issue-ref-pattern:/,/^  [a-z]/s/^    default: '"'"'\(.*\)'"'"'$/\1/p' "$action_metadata")"
+runner_default="$(sed -n "s/^DEFAULT_ISSUE_REF_PATTERN='\(.*\)'\$/\1/p" "$script_directory/run.sh")"
+if [[ -z "$metadata_default" || "$metadata_default" != "$runner_default" ]]; then
+  echo "FAIL: action.yml default '${metadata_default}' differs from run.sh default '${runner_default}'"
+  failures=$((failures + 1))
+fi
 
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."

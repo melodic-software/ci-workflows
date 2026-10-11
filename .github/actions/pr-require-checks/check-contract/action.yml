@@ -55,6 +55,16 @@ inputs:
       exits 0. `enforce` fails the step instead, so a repository can opt back in
       to a hard gate without a composite change.
     default: advisory
+  issue-ref-pattern:
+    description: >-
+      POSIX extended regex for the issue reference that follows a closing
+      keyword (`Closes <ref>`) or a `Refs:`/`Relates to:` marker. Matched
+      case-insensitively: the body and the pattern are both lowercased first.
+      The default is GitHub's grammar, `#N` with an optional `OWNER/REPO`
+      prefix. A repository whose work items live in another tracker sets its
+      own id grammar, e.g. `[a-z][a-z0-9]*-[0-9]+` for `Closes ENG-123`. Empty
+      means the default; a pattern that matches the empty string is rejected.
+    default: '([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+'
 
 outputs:
   title:
@@ -85,4 +95,5 @@ runs:
         EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
         LINKAGE_LABEL: ${{ inputs.linkage-label }}
         LINKAGE_MODE: ${{ inputs.linkage-mode }}
+        ISSUE_REF_PATTERN: ${{ inputs.issue-ref-pattern }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"

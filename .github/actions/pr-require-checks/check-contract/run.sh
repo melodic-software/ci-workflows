@@ -15,6 +15,10 @@ DO_NOT_MERGE_LABEL="${DO_NOT_MERGE_LABEL:-do-not-merge}"
 EXEMPT_AUTHORS="${EXEMPT_AUTHORS:-}"
 LINKAGE_LABEL="${LINKAGE_LABEL:-needs-issue-linkage}"
 LINKAGE_MODE="${LINKAGE_MODE:-advisory}"
+# GitHub's own grammar: `#N` with an optional `OWNER/REPO` prefix.
+DEFAULT_ISSUE_REF_PATTERN='([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+'
+ISSUE_REF_PATTERN="${ISSUE_REF_PATTERN:-$DEFAULT_ISSUE_REF_PATTERN}"
+export ISSUE_REF_PATTERN
 
 # Stable HTML marker on the advisory comment: the upsert finds its own previous
 # comment by this string, so a re-run edits rather than posting a second one.
@@ -77,6 +81,29 @@ case "$REQUIRE_SCOPE" in
     exit 1
     ;;
 esac
+
+# The pattern reaches awk only through ENVIRON, never the program text, so it
+# cannot inject awk code. It must compile both bare and as the parenthesized
+# group the analyzer splices it into (an unbalanced `)` would otherwise escape
+# the group), and must not match the empty string, which would make a bare
+# "Closes" count as a closing reference.
+if [[ "$ISSUE_REF_PATTERN" == *$'\n'* || "$ISSUE_REF_PATTERN" == *$'\r'* ]]; then
+  echo '::error::pr-contract: issue-ref-pattern must be a single line'
+  exit 1
+fi
+pattern_status=0
+awk 'BEGIN {
+  p = tolower(ENVIRON["ISSUE_REF_PATTERN"])
+  if ("" ~ p || "" ~ ("(" p ")")) exit 3
+}' </dev/null 2>/dev/null || pattern_status=$?
+if [[ "$pattern_status" -ne 0 ]]; then
+  if [[ "$pattern_status" -eq 3 ]]; then
+    echo "::error::pr-contract: issue-ref-pattern matches the empty string: $(escape_annotation "$ISSUE_REF_PATTERN")"
+  else
+    echo "::error::pr-contract: issue-ref-pattern is not a valid extended regex: $(escape_annotation "$ISSUE_REF_PATTERN")"
+  fi
+  exit 1
+fi
 
 # Step 0 — no pull request in this event. The composite is a pull-request gate;
 # a push, schedule or workflow_dispatch run must report skipped, not fail.
@@ -275,7 +302,7 @@ function scan_line(line,   indent, rest, lower, offset, chunk, start, len, befor
   while (substr(line, indent + 1, 1) == " ") indent++
   if (indent <= 3) {
     rest = tolower(substr(line, indent + 1))
-    if (rest ~ /^(refs|relates[ \t]+to):[ \t]*([a-z0-9_.-]+\/[a-z0-9_.-]+)?#[0-9]+[ \t]*$/) {
+    if (rest ~ non_closing_regex) {
       has_non_closing = 1
     }
   }
@@ -283,7 +310,7 @@ function scan_line(line,   indent, rest, lower, offset, chunk, start, len, befor
   offset = 0
   while (1) {
     chunk = substr(lower, offset + 1)
-    if (!match(chunk, /(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[ \t]*:?[ \t]*([a-z0-9_.-]+\/[a-z0-9_.-]+)?#[0-9]+/)) break
+    if (!match(chunk, closing_regex)) break
     start = offset + RSTART
     len = RLENGTH
     offset = start + len - 1
@@ -344,6 +371,11 @@ BEGIN {
   has_closing = 0
   has_non_closing = 0
   negated_count = 0
+  # The caller pattern arrives through ENVIRON, so awk applies no escape
+  # processing to it and it never becomes program text.
+  ref = "(" tolower(ENVIRON["ISSUE_REF_PATTERN"]) ")"
+  non_closing_regex = "^(refs|relates[ \t]+to):[ \t]*" ref "[ \t]*$"
+  closing_regex = "(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[ \t]*:?[ \t]*" ref
 }
 
 {
@@ -454,6 +486,13 @@ section_guidance() {
 linkage_result=pass
 linkage_errors=()
 
+ref_hint='#N'
+pattern_note=''
+if [[ "$ISSUE_REF_PATTERN" != "$DEFAULT_ISSUE_REF_PATTERN" ]]; then
+  ref_hint='<ref>'
+  pattern_note=" Here <ref> must match this repository's issue-ref-pattern \`${ISSUE_REF_PATTERN}\`."
+fi
+
 is_exempt_author=false
 if [[ -n "${EXEMPT_AUTHORS//[[:space:]]/}" && -n "$pr_author" ]]; then
   while IFS= read -r candidate; do
@@ -500,13 +539,13 @@ else
   done <"$analysis"
 
   if [[ -n "$negated_quoted" ]]; then
-    linkage_errors+=("Negated closing reference (${negated_quoted}). GitHub's linkage parser ignores the surrounding words, so this still registers a closing reference and still auto-closes the issue when this PR merges. Remove the closing keyword and use \"Refs: #N\" (or \"Relates to: #N\") on its own line instead.")
+    linkage_errors+=("Negated closing reference (${negated_quoted}). GitHub's linkage parser ignores the surrounding words, so this still registers a closing reference and still auto-closes the issue when this PR merges. Remove the closing keyword and use \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line instead.${pattern_note}")
   fi
 
   if ! grep -qx 'closing' "$analysis" &&
     ! grep -qx 'non-closing' "$analysis" &&
     ! grep -qx 'no-issue' "$analysis"; then
-    linkage_errors+=('Missing a native closing keyword (Closes/Fixes/Resolves #N). If this PR references an issue it must not close, put "Refs: #N" (or "Relates to: #N") on its own line. If it relates to no GitHub issue at all, state "No linked issue" (or "No related issue:") in the body instead.')
+    linkage_errors+=("Missing a native closing keyword (Closes/Fixes/Resolves ${ref_hint}). If this PR references an issue it must not close, put \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line. If it relates to no GitHub issue at all, state \"No linked issue\" (or \"No related issue:\") in the body instead.${pattern_note}")
   fi
 
   if [[ ${#linkage_errors[@]} -gt 0 ]]; then
