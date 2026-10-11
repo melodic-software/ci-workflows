@@ -494,6 +494,25 @@ set_pull 'feat: add pr-contract' "Fixes: ENG-7${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
 
+# Without folding the case classes, `[:upper:]` matches nothing in the
+# lowercased body.
+echo 'case: a POSIX case class in a custom pattern still matches'
+set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
+expect_output 'linkage=pass'
+set_pull 'feat: add pr-contract' "Refs: eng-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN='[[:lower:]]+-[0-9]+'
+expect_output 'linkage=pass'
+
+# Without the trailing-hyphen boundary a longer malformed id passes.
+echo 'case: a custom id followed by more hyphenated text is not a match'
+set_pull 'feat: add pr-contract' "Closes ENG-123-extra${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+set_pull 'feat: add pr-contract' "Closes ENG-123.${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
 # Without the default branch of the wording, the default negation message
 # would lose its GitHub reason and its `Refs: #N` advice.
 echo 'case: the default negation message is unchanged'
@@ -525,6 +544,12 @@ done
 for bad_pattern in '.*' '(#[0-9]+)?'; do
   run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
   expect_log 'issue-ref-pattern matches the empty string'
+  expect_no_gh_calls_at_all
+done
+# Without the anchor check these compile but can never match after a keyword.
+for bad_pattern in '^[a-z]+-[0-9]+' '[a-z]+-[0-9]+$'; do
+  run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
+  expect_log 'issue-ref-pattern must not be anchored'
   expect_no_gh_calls_at_all
 done
 run_case 1 ISSUE_REF_PATTERN=$'#[0-9]+\n.*'

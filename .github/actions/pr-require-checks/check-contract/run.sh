@@ -91,9 +91,21 @@ if [[ "$ISSUE_REF_PATTERN" == *$'\n'* || "$ISSUE_REF_PATTERN" == *$'\r'* ]]; the
   echo '::error::pr-contract: issue-ref-pattern must be a single line'
   exit 1
 fi
+# Spliced after a keyword, an anchor could never match mid-line.
+if [[ "$ISSUE_REF_PATTERN" == '^'* || ("$ISSUE_REF_PATTERN" == *'$' && "$ISSUE_REF_PATTERN" != *'\$') ]]; then
+  echo "::error::pr-contract: issue-ref-pattern must not be anchored with ^ or \$: $(escape_annotation "$ISSUE_REF_PATTERN")"
+  exit 1
+fi
+# Case-insensitive matching lowercases the body and the pattern. A case class
+# name is already lowercase, so `[:upper:]` would then match nothing; it and
+# `[:lower:]` become `[:alpha:]`, their case-folded equivalent.
+ISSUE_REF_FOLDED="${ISSUE_REF_PATTERN,,}"
+ISSUE_REF_FOLDED="${ISSUE_REF_FOLDED//'[:upper:]'/[:alpha:]}"
+ISSUE_REF_FOLDED="${ISSUE_REF_FOLDED//'[:lower:]'/[:alpha:]}"
+export ISSUE_REF_FOLDED
 pattern_status=0
 awk 'BEGIN {
-  p = tolower(ENVIRON["ISSUE_REF_PATTERN"])
+  p = ENVIRON["ISSUE_REF_FOLDED"]
   if ("" ~ p || "" ~ ("(" p ")")) exit 3
 }' </dev/null 2>/dev/null || pattern_status=$?
 if [[ "$pattern_status" -ne 0 ]]; then
@@ -319,6 +331,9 @@ function scan_line(line,   indent, rest, lower, offset, chunk, start, len, befor
     # Word-boundary equivalent of the upstream /\b...\b/ anchors.
     if (before ~ /[a-z0-9_]/) continue
     if (after ~ /[a-z0-9_]/) continue
+    # A custom id can contain hyphens, so "ENG-123-extra" is not a complete
+    # ENG-123; `#N` keeps the original boundary.
+    if (custom && after == "-") continue
     text = substr(line, start, len)
     trigger = negation_trigger(line, start)
     if (trigger != "") {
@@ -373,12 +388,13 @@ BEGIN {
   negated_count = 0
   # The caller pattern arrives through ENVIRON, so awk applies no escape
   # processing to it and it never becomes program text.
-  ref = "(" tolower(ENVIRON["ISSUE_REF_PATTERN"]) ")"
+  ref = "(" ENVIRON["ISSUE_REF_FOLDED"] ")"
+  custom = (ENVIRON["ISSUE_REF_PATTERN"] != ENVIRON["DEFAULT_ISSUE_REF_PATTERN"])
   non_closing_regex = "^(refs|relates[ \t]+to):[ \t]*" ref "[ \t]*$"
   # A custom id can start with letters, so the keyword needs a real separator,
   # or "fixture-1" would read as "fix" + "ture-1". `#N` cannot continue a word,
   # so the default keeps the original optional separator exactly.
-  separator = (ENVIRON["ISSUE_REF_PATTERN"] == ENVIRON["DEFAULT_ISSUE_REF_PATTERN"]) ? "[ \t]*:?[ \t]*" : "([ \t]+|[ \t]*:[ \t]*)"
+  separator = custom ? "([ \t]+|[ \t]*:[ \t]*)" : "[ \t]*:?[ \t]*"
   closing_regex = "(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)" separator ref
 }
 
