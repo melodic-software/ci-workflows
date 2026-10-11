@@ -31,8 +31,11 @@ name: pr-review-security
 #     triggers` step hard-fails both.
 #   - Fork PRs get no secrets and a read-only token, so the job skips them. A
 #     human must review fork changes to security-sensitive surfaces.
-#   - Bot actors are skipped: the action rejects any bot it was not told to
-#     allow, and this lane allows none.
+#   - Bot actors are skipped unless the caller lists the event sender's
+#     numeric user id in allowed-bot-sender-ids; the action's allowed_bots
+#     then gets that sender's login only, so it still rejects every other bot.
+#     Ids, not logins: a login can be renamed and then registered by another
+#     account.
 #   - Only the one named secret is accepted; the job token is least privilege.
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
@@ -124,6 +127,15 @@ on:
           docs/**/*.md
           **/README.md
           **/CHANGELOG.md
+      allowed-bot-sender-ids:
+        description: >-
+          Comma-separated numeric GitHub user ids, no spaces, of bot senders
+          this lane reviews. A bot whose event sender id is listed passes the
+          bot skip, and only that sender's login reaches the action's
+          allowed_bots. Empty, or a leading, trailing or doubled comma, skips
+          every bot.
+        type: string
+        default: ""
     outputs:
       review-failed:
         description: >-
@@ -154,9 +166,19 @@ jobs:
     # incremental scoping, not a longer step, shortens the reviews that reach it.
     timeout-minutes: 16
     # The draft and fork tests are scoped to pull_request so a privileged
-    # trigger still reaches the tripwire.
+    # trigger still reaches the tripwire. A bot passes only when the event
+    # sender's id is in allowed-bot-sender-ids. An empty or malformed list
+    # (leading, trailing or doubled comma) or a missing sender id never
+    # matches, so ',,' can never match an empty id.
     if: >-
-      ${{ !endsWith(github.actor, '[bot]')
+      ${{ (!endsWith(github.actor, '[bot]')
+           || (inputs.allowed-bot-sender-ids != ''
+               && !startsWith(inputs.allowed-bot-sender-ids, ',')
+               && !endsWith(inputs.allowed-bot-sender-ids, ',')
+               && !contains(inputs.allowed-bot-sender-ids, ',,')
+               && github.event.sender.id
+               && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                           format(',{0},', github.event.sender.id))))
           && (github.event_name != 'pull_request'
               || github.event.pull_request.draft == false)
           && (github.event_name != 'pull_request'
@@ -398,6 +420,16 @@ jobs:
           track_progress: true
           display_report: false
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          # The sender's login only when its id passed the job gate; else none.
+          allowed_bots: >-
+            ${{ inputs.allowed-bot-sender-ids != ''
+                && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                && !contains(inputs.allowed-bot-sender-ids, ',,')
+                && github.event.sender.id
+                && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                            format(',{0},', github.event.sender.id))
+                && github.event.sender.login || '' }}
           plugins: ${{ inputs.plugins }}
           plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
           claude_args: ${{ steps.compose-args.outputs.args }}
