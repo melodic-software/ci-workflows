@@ -96,16 +96,14 @@ if [[ "$ISSUE_REF_PATTERN" == '^'* || ("$ISSUE_REF_PATTERN" == *'$' && "$ISSUE_R
   echo "::error::pr-contract: issue-ref-pattern must not be anchored with ^ or \$: $(escape_annotation "$ISSUE_REF_PATTERN")"
   exit 1
 fi
-# Case-insensitive matching lowercases the body and the pattern. A case class
-# name is already lowercase, so `[:upper:]` would then match nothing; it and
-# `[:lower:]` become `[:alpha:]`, their case-folded equivalent.
-ISSUE_REF_FOLDED="${ISSUE_REF_PATTERN,,}"
-ISSUE_REF_FOLDED="${ISSUE_REF_FOLDED//'[:upper:]'/[:alpha:]}"
-ISSUE_REF_FOLDED="${ISSUE_REF_FOLDED//'[:lower:]'/[:alpha:]}"
-export ISSUE_REF_FOLDED
+# Case-insensitive matching lowercases the body and the pattern with the same
+# awk `tolower`. A case class name is already lowercase, so `[:upper:]` would
+# then match nothing; it becomes `[:alpha:]`, its case-folded equivalent. This
+# fold is repeated verbatim in analyze_body.
 pattern_status=0
 awk 'BEGIN {
-  p = ENVIRON["ISSUE_REF_FOLDED"]
+  p = tolower(ENVIRON["ISSUE_REF_PATTERN"])
+  gsub(/\[:upper:\]/, "[:alpha:]", p)
   if ("" ~ p || "" ~ ("(" p ")")) exit 3
 }' </dev/null 2>/dev/null || pattern_status=$?
 if [[ "$pattern_status" -ne 0 ]]; then
@@ -388,7 +386,9 @@ BEGIN {
   negated_count = 0
   # The caller pattern arrives through ENVIRON, so awk applies no escape
   # processing to it and it never becomes program text.
-  ref = "(" ENVIRON["ISSUE_REF_FOLDED"] ")"
+  ref = tolower(ENVIRON["ISSUE_REF_PATTERN"])
+  gsub(/\[:upper:\]/, "[:alpha:]", ref)
+  ref = "(" ref ")"
   custom = (ENVIRON["ISSUE_REF_PATTERN"] != ENVIRON["DEFAULT_ISSUE_REF_PATTERN"])
   non_closing_regex = "^(refs|relates[ \t]+to):[ \t]*" ref "[ \t]*$"
   # A custom id can start with letters, so the keyword needs a real separator,

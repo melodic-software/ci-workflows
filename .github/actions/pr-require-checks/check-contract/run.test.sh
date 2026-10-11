@@ -500,8 +500,8 @@ echo 'case: a POSIX case class in a custom pattern still matches'
 set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
 expect_output 'linkage=pass'
-set_pull 'feat: add pr-contract' "Refs: eng-123${sections}" someone ''
-run_case 0 ISSUE_REF_PATTERN='[[:lower:]]+-[0-9]+'
+set_pull 'feat: add pr-contract' "Refs: ENG-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
 expect_output 'linkage=pass'
 
 # Without the trailing-hyphen boundary a longer malformed id passes.
@@ -511,6 +511,11 @@ run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
 set_pull 'feat: add pr-contract' "Closes ENG-123.${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+# Without the custom-only guard the hyphen rule would change the default:
+# `Closes #12-followup` passed before this input existed and must still pass.
+set_pull 'feat: add pr-contract' "Closes #12-followup${sections}" someone ''
+run_case 0
 expect_output 'linkage=pass'
 
 # Without the default branch of the wording, the default negation message
