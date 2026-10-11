@@ -36,6 +36,17 @@ Every input's meaning and default is documented inline in
 - `exempt-authors` is exact-login equality, never a `*[bot]` pattern, so an
   unknown future bot is not silently skipped. The default empty string exempts
   no one.
+- `issue-ref-pattern` declares the id grammar after `Closes`/`Fixes`/`Resolves`
+  and `Refs:`/`Relates to:`. The default is GitHub's `#N` (optionally
+  `OWNER/REPO#N`); a repository bound to another tracker sets its own, e.g.
+  `[a-z][a-z0-9]*-[0-9]+` for `Closes ENG-123`. It replaces the GitHub grammar
+  rather than adding to it, matches case-insensitively (`[:upper:]` acts as
+  `[:alpha:]`), must not be anchored with `^` or `$`, and
+  keeps the no-issue opt-out. The negation check covers ids the pattern matches, so with a custom
+  pattern a negated `#N` is no longer flagged. It reaches the analyzer as data
+  (`ENVIRON`), and an invalid or empty-matching pattern fails the step before
+  any API call. Avoid nested quantifiers such as `([a-z]+-?)+`: the pattern runs
+  against the attacker-written body, and a backtracking awk can hang on it.
 
 ## Outputs
 

@@ -179,6 +179,7 @@ run_case() {
     EXEMPT_AUTHORS='' \
     LINKAGE_LABEL=needs-issue-linkage \
     LINKAGE_MODE=advisory \
+    ISSUE_REF_PATTERN='' \
     "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
@@ -445,6 +446,132 @@ run_case 0
 expect_output 'linkage=fail'
 expect_log 'trigger "doesn'"'"'t"'
 
+# --- linkage: issue-ref-pattern --------------------------------------------
+
+sections=$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
+tracker_pattern='[a-z][a-z0-9]*-[0-9]+'
+
+# Without the default grammar a tracker id would satisfy every caller that sets
+# nothing; an explicitly empty input must mean that same default.
+echo 'case: the default pattern rejects a tracker id and keeps the #N message'
+set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+run_case 0
+expect_output 'linkage=fail'
+expect_log 'Missing a native closing keyword (Closes/Fixes/Resolves #N).'
+run_case 0 ISSUE_REF_PATTERN=''
+expect_output 'linkage=fail'
+set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN=''
+expect_output 'linkage=pass'
+
+# Without the pattern reaching the closing and Refs regexes these fail.
+echo 'case: a custom pattern accepts its own ids as closers and Refs markers'
+set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+set_pull 'feat: add pr-contract' "Refs: SW2-1${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
+# Without replacing the GitHub grammar a custom pattern would only widen it.
+echo 'case: a custom pattern replaces #N and names itself in the message'
+set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+expect_log 'Missing a recognized closing keyword (Closes/Fixes/Resolves <ref>).'
+expect_log "issue-ref-pattern \`${tracker_pattern}\`"
+set_pull 'feat: add pr-contract' "Refs: #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+
+# Without a required separator after the keyword, "fixture-1" reads as
+# "fix" + "ture-1" and a custom pattern passes on an ordinary word.
+echo 'case: a custom pattern does not match inside a hyphenated word'
+set_pull 'feat: add pr-contract' "Uses fixture-1 and the resolver-3 module.${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+set_pull 'feat: add pr-contract' "Fixes: ENG-7${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
+# Without folding the case classes, `[:upper:]` matches nothing in the
+# lowercased body.
+echo 'case: a POSIX case class in a custom pattern still matches'
+set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
+expect_output 'linkage=pass'
+set_pull 'feat: add pr-contract' "Refs: ENG-123${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
+expect_output 'linkage=pass'
+
+# Without the trailing-hyphen boundary a longer malformed id passes.
+echo 'case: a custom id followed by more hyphenated text is not a match'
+set_pull 'feat: add pr-contract' "Closes ENG-123-extra${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+set_pull 'feat: add pr-contract' "Closes ENG-123.${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+# Without the custom-only guard the hyphen rule would change the default: a
+# `#N` closer followed by a hyphen passed before this input and must still.
+set_pull 'feat: add pr-contract' "Closes #12-followup${sections}" someone ''
+run_case 0
+expect_output 'linkage=pass'
+
+# Without the default branch of the wording, the default negation message
+# would lose its GitHub reason and its `Refs: #N` advice.
+echo 'case: the default negation message is unchanged'
+set_pull 'feat: add pr-contract' "This does not close #12.${sections}"$'\nNo linked issue\n' someone ''
+run_case 0
+expect_log "GitHub's linkage parser ignores the surrounding words"
+expect_log 'use "Refs: #N" (or "Relates to: #N") on its own line instead.'
+
+# Without the negation window on the custom closer this disclaimer passes.
+echo 'case: negation handling applies to a custom pattern'
+set_pull 'feat: add pr-contract' "This does not close ENG-123.${sections}"$'\nNo linked issue\n' someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=fail'
+expect_log 'Negated closing reference ("close ENG-123" (trigger "not"))'
+
+# Without the opt-out check being pattern-independent this fails.
+echo 'case: the no-issue opt-out still passes with a custom pattern'
+set_pull 'feat: add pr-contract' "No related issue: tooling only${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
+expect_output 'linkage=pass'
+
+# Without the compile check awk dies mid-analysis with an opaque error.
+echo 'case: an invalid or empty-matching pattern is rejected before any API call'
+for bad_pattern in '([a-z' 'a)|(b'; do
+  run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
+  expect_log 'issue-ref-pattern is not a valid extended regex'
+  expect_no_gh_calls_at_all
+done
+for bad_pattern in '.*' '(#[0-9]+)?'; do
+  run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
+  expect_log 'issue-ref-pattern matches the empty string'
+  expect_no_gh_calls_at_all
+done
+# Without the anchor check these compile but can never match after a keyword.
+for bad_pattern in '^[a-z]+-[0-9]+' '[a-z]+-[0-9]+$'; do
+  run_case 1 ISSUE_REF_PATTERN="$bad_pattern"
+  expect_log 'issue-ref-pattern must not be anchored'
+  expect_no_gh_calls_at_all
+done
+run_case 1 ISSUE_REF_PATTERN=$'#[0-9]+\n.*'
+expect_log 'issue-ref-pattern must be a single line'
+expect_no_gh_calls_at_all
+
+# Without passing the pattern through ENVIRON, awk program text spliced from
+# the input would run this system() call.
+echo 'case: a pattern carrying awk code is data, not code'
+injected="$temporary_directory/injected"
+set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+run_case 0 ISSUE_REF_PATTERN="x\" ~ system(\"touch ${injected}\") ~ \"x"
+if [[ -e "$injected" ]]; then
+  echo 'FAIL: the issue-ref-pattern input executed as awk code'
+  failures=$((failures + 1))
+fi
+
 # --- linkage: masking ------------------------------------------------------
 
 # Without HTML-comment masking a PR template's commented-out example satisfies
@@ -694,13 +821,13 @@ expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issu
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode; do
+for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode issue-ref-pattern; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE; do
+for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
@@ -712,6 +839,16 @@ for output_name in title do-not-merge linkage; do
     failures=$((failures + 1))
   fi
 done
+
+# Without this the action.yml default and the runner fallback could drift apart,
+# and a caller setting nothing would get a grammar the tests never exercised.
+echo 'case: the action.yml issue-ref-pattern default equals the runner default'
+metadata_default="$(sed -n '/^  issue-ref-pattern:/,/^  [a-z]/s/^    default: '"'"'\(.*\)'"'"'$/\1/p' "$action_metadata")"
+runner_default="$(sed -n "s/^DEFAULT_ISSUE_REF_PATTERN='\(.*\)'\$/\1/p" "$script_directory/run.sh")"
+if [[ -z "$metadata_default" || "$metadata_default" != "$runner_default" ]]; then
+  echo "FAIL: action.yml default '${metadata_default}' differs from run.sh default '${runner_default}'"
+  failures=$((failures + 1))
+fi
 
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
