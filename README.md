@@ -959,7 +959,8 @@ Calling either lane from `pull_request_target` or
 `workflow_run` fails the job.
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
-request. A later push reviews only the pull request's files that changed since
+request; the code-review lane writes its whole diff to `.claude-lane/pr.diff`.
+A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
 their diff to `.claude-lane/incremental.diff`. Each lane keeps the last head
 it reviewed in one pull request comment that the job writes with its own token
@@ -979,16 +980,53 @@ job is named `claude-review-status`, so its check is
 the cause, whenever no review happened: a failed attempt (`auth`,
 `rate-limit`, `overloaded`, `max-turns`, `timeout`, `other`), the action
 skipping itself because the
-PR edits the caller workflow (`skipped-validation`), or a job that ended
-before the review reported (`no-outcome`). A review that was not needed
+PR edits the caller workflow (`skipped-validation`), a review that did not
+complete (`incomplete`), or a job that ended before the review reported
+(`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
+
+**Completion.** A green Claude step is not taken as a review. The model
+returns its findings count as structured output (`--json-schema`, appended
+after the caller's `claude-args`), and the step "Verify the review completed"
+then requires a summary by the Claude App (`claude[bot]`), posted after the
+step started, carrying the plain-text line
+`claude-lane-summary: lane=<id> sha=<head> run=<github.run_id>` with this
+run's id (so a marker another workflow posts as the same App does not count),
+and a count no lower than the App's inline comments on the head in that
+window. Each inline comment ends with the plain-text footer
+`claude-lane: <id>`. Counting rule: a comment footed for the other lane
+counts only for that lane; a comment with no footer counts for both lanes, so
+a missing footer can fail a review but never complete one. Both markers are
+plain text because the action's comment tools delete HTML comments before
+posting. Anything less is `incomplete`: red, and the
+reviewed-head marker is not written. On a whole review the code-review lane
+reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
+the API returns only part of a large pull request's diff; when that diff
+cannot be written, the review is `incomplete`. The security lane reviews from
+the API diff.
+
+**Completion record.** The status step leaves one notice titled
+`claude-lane-review-complete` on the lane's check run, for a merge gate to
+read through the check-run annotations API:
+
+| Outcome | Notice message |
+|---|---|
+| Completed review | `claude-lane-review-complete lane=<id> sha=<head> findings=<N> inline=<K> scope=whole` |
+| Completed incremental review | `... findings=<N> inline=<K> scope=incremental since=<last reviewed head>` |
+| Nothing changed since the last review | `claude-lane-review-complete lane=<id> sha=<head> skip=no-change through=<last reviewed head>` |
+| Every file in scope is documentation | `claude-lane-review-complete lane=<id> sha=<head> skip=docs-only` |
+
+`<id>` is `claude-review` or `claude-security-review`. `N` is the model's own
+count, so text in the diff can talk it down; `N` below `K` is `incomplete`,
+which bounds that only when inline comments exist. A failed, skipped or
+incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
 reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
 required check); do not make either check required.
 Both lanes also expose `review-failed` and `failure-class` as workflow
-outputs.
+outputs; `incomplete` sets `review-failed` to `true`.
 
 **Adoption.** Callers are distributed through the org's sync-managed
 components in
