@@ -6,7 +6,10 @@ name: intake-label-needs-triage
 # `priority:` tier already on the issue means urgency was set, so the floor
 # is skipped. NON-GATING: this never fails a PR or blocks a
 # merge; it is a best-effort intake guarantee so a forgotten priority label
-# does not silently drop an issue out of the triage queue.
+# does not silently drop an issue out of the triage queue. It reads the
+# issue's live labels, not the event payload, and also skips an issue that
+# carries `human-label` (default `needs-human`), so a run that lands after the
+# intake-triage lane does not re-add the floor the lane removed.
 #
 # The caller owns the trigger and MUST use `on: issues: types: [opened,
 # reopened]` — `reopened` re-acquires the floor if the tier was cleared while
@@ -57,6 +60,13 @@ on:
           fire.
         type: string
         default: 'priority:'
+      human-label:
+        description: >-
+          Label that routes an issue to a person (the intake-triage lane's
+          escalation label). An issue that already carries it is routed, so
+          the floor is skipped. Empty turns this check off.
+        type: string
+        default: 'needs-human'
 
 permissions: {}
 
@@ -78,6 +88,7 @@ jobs:
         env:
           TARGET_LABEL: ${{ inputs.label }}
           LABEL_PREFIX: ${{ inputs.label-prefix }}
+          HUMAN_LABEL: ${{ inputs.human-label }}
         with:
           script: |
             const targetLabel = process.env.TARGET_LABEL || "";
@@ -95,12 +106,33 @@ jobs:
               return;
             }
 
-            const existingLabels = (context.payload.issue?.labels ?? []).map((l) => l.name);
+            // Read the live labels, not the event payload: the intake-triage
+            // lane may already have triaged the issue and removed the floor.
+            const humanLabel = process.env.HUMAN_LABEL || "";
+            // A failed read falls back to the payload, which can only re-add
+            // the floor, never drop it.
+            let existingLabels;
+            try {
+              existingLabels = (
+                await github.paginate(github.rest.issues.listLabelsOnIssue, {
+                  ...context.repo,
+                  issue_number: context.payload.issue.number,
+                  per_page: 100,
+                })
+              ).map((l) => l.name);
+            } catch (error) {
+              core.warning(`Live labels unreadable, using the event payload: ${error.message}`);
+              existingLabels = (context.payload.issue?.labels ?? []).map((l) => l.name);
+            }
             if (existingLabels.some((name) => name.startsWith(labelPrefix))) {
               core.info(
                 `Issue #${context.payload.issue.number} already carries a label matching ` +
                   `prefix '${labelPrefix}'; skipping.`
               );
+              return;
+            }
+            if (humanLabel && existingLabels.includes(humanLabel)) {
+              core.info(`Issue #${context.payload.issue.number} is routed to a person ('${humanLabel}'); skipping.`);
               return;
             }
 
