@@ -506,7 +506,7 @@ jobs:
 
             When you finish, whether or not you found anything:
             - End your summary comment with this line, exactly as written:
-              <!-- claude-lane-summary lane=claude-review sha=${{ github.event.pull_request.head.sha }} -->
+              <!-- claude-lane-summary lane=claude-review sha=${{ github.event.pull_request.head.sha }} run=${{ github.run_id }} -->
             - End the body of every inline comment with this line:
               <!-- claude-lane=claude-review -->
             - Return the number of findings you reported, inline comments
@@ -514,8 +514,8 @@ jobs:
 
       # A green Claude step proves the action ran, not that a review was
       # posted. This step looks for the review: the findings count from the
-      # step's structured output, a summary by the Claude App naming this lane
-      # and head, and a count no lower than the inline comments the App posted
+      # step's structured output, a summary by the Claude App naming this lane,
+      # head and run, and a count no lower than the inline comments the App posted
       # on the head since the step started (a comment tagged for the other
       # lane is not counted). Its verdict decides review-ran below, so a
       # review that did not complete writes no marker and goes red as class
@@ -531,6 +531,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
+          RUN_ID: ${{ github.run_id }}
           STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           REQUIRE_FULL_DIFF: "true"
@@ -572,9 +573,9 @@ jobs:
             const inWindow = (stamp) => Date.parse(stamp ?? "") >= start;
             const byClaude = (item) => item.user?.login === BOT;
 
-            const SUMMARY = /<!--\s*claude-lane-summary lane=([\w-]+) sha=([0-9a-f]{40})\s*-->/gu;
+            const SUMMARY = /<!--\s*claude-lane-summary lane=([\w-]+) sha=([0-9a-f]{40}) run=([0-9]+)\s*-->/gu;
             const namesThisReview = (body) =>
-              [...(body ?? "").matchAll(SUMMARY)].some(([, id, sha]) => id === lane && sha === head);
+              [...(body ?? "").matchAll(SUMMARY)].some(([, id, sha, run]) => id === lane && sha === head && run === env.RUN_ID);
             const summarized = [
               ...comments.filter((comment) => byClaude(comment) && inWindow(comment.updated_at)),
               ...reviews.filter((review) => byClaude(review) && inWindow(review.submitted_at)),
