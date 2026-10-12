@@ -505,10 +505,13 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
             When you finish, whether or not you found anything:
-            - End your summary comment with this line, exactly as written:
-              <!-- claude-lane-summary lane=claude-review sha=${{ github.event.pull_request.head.sha }} run=${{ github.run_id }} -->
-            - End the body of every inline comment with this line:
-              <!-- claude-lane=claude-review -->
+            - Never put the lines below in an HTML comment: the comment tools
+              delete HTML comments before posting.
+            - End your summary comment with this line, as plain text on a line
+              of its own, exactly as written:
+              claude-lane-summary: lane=claude-review sha=${{ github.event.pull_request.head.sha }} run=${{ github.run_id }}
+            - End the body of every inline comment with this plain-text line:
+              claude-lane: claude-review
             - Return the number of findings you reported, inline comments
               included (0 when none), as `findings` in your structured output.
 
@@ -573,7 +576,8 @@ jobs:
             const inWindow = (stamp) => Date.parse(stamp ?? "") >= start;
             const byClaude = (item) => item.user?.login === BOT;
 
-            const SUMMARY = /<!--\s*claude-lane-summary lane=([\w-]+) sha=([0-9a-f]{40}) run=([0-9]+)\s*-->/gu;
+            // Plain-text lines: the action's comment tools delete HTML comments.
+            const SUMMARY = /^\s*`?claude-lane-summary: lane=([\w-]+) sha=([0-9a-f]{40}) run=([0-9]+)`?\s*$/gmu;
             const namesThisReview = (body) =>
               [...(body ?? "").matchAll(SUMMARY)].some(([, id, sha, run]) => id === lane && sha === head && run === env.RUN_ID);
             const summarized = [
@@ -582,7 +586,9 @@ jobs:
             ].some((item) => namesThisReview(item.body));
             if (!summarized) return incomplete("no summary by the Claude App names this lane and head");
 
-            const TAG = /<!--\s*claude-lane=([\w-]+)\s*-->/u;
+            // A comment footed for another lane is that lane's; an untagged one
+            // counts for both lanes, so a missing footer can only fail a review.
+            const TAG = /^\s*`?claude-lane: ([\w-]+)`?\s*$/mu;
             const posted = inline.filter(
               (comment) =>
                 byClaude(comment) &&

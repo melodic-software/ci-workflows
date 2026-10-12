@@ -989,13 +989,16 @@ complete (`incomplete`), or a job that ended before the review reported
 returns its findings count as structured output (`--json-schema`, appended
 after the caller's `claude-args`), and the step "Verify the review completed"
 then requires a summary by the Claude App (`claude[bot]`), posted after the
-step started, carrying
-`<!-- claude-lane-summary lane=<id> sha=<head> run=<github.run_id> -->` with
-this run's id (so a marker another workflow posts as the same App does not
-count),
+step started, carrying the plain-text line
+`claude-lane-summary: lane=<id> sha=<head> run=<github.run_id>` with this
+run's id (so a marker another workflow posts as the same App does not count),
 and a count no lower than the App's inline comments on the head in that
-window (an inline comment tagged `<!-- claude-lane=<other id> -->` counts
-for the other lane only). Anything less is `incomplete`: red, and the
+window. Each inline comment ends with the plain-text footer
+`claude-lane: <id>`. Counting rule: a comment footed for the other lane
+counts only for that lane; a comment with no footer counts for both lanes, so
+a missing footer can fail a review but never complete one. Both markers are
+plain text because the action's comment tools delete HTML comments before
+posting. Anything less is `incomplete`: red, and the
 reviewed-head marker is not written. On a whole review the code-review lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
