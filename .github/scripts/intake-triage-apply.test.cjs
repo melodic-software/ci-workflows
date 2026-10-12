@@ -78,6 +78,7 @@ async function apply(
     escalationLabel = ESCALATION_LABEL,
     allowed = ["bug", "priority: high", "priority: low"],
     labelsFail = false,
+    typeFails = false,
   } = {},
 ) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-apply-"));
@@ -91,6 +92,7 @@ async function apply(
     paginate: async () => [],
     graphql: async (_query, variables) => {
       typeCalls.push(variables);
+      if (typeFails) throw new Error("type write failed");
       const name =
         keptType === undefined
           ? Object.keys(TYPES).find((key) => TYPES[key] === variables.type)
@@ -120,7 +122,10 @@ async function apply(
         EXECUTION_FILE: executionFile,
         ALLOWED: JSON.stringify(allowed),
         TYPES: JSON.stringify(TYPES),
-        CLASSES: JSON.stringify(["work-class: scoped", "work-class: structural"]),
+        CLASSES: JSON.stringify([
+          "work-class: scoped",
+          "work-class: structural",
+        ]),
         ESCALATION_LABEL: escalationLabel,
         FLOOR_LABEL: floorLabel,
         ISSUE_NUMBER: "7",
@@ -169,7 +174,7 @@ test("an execution error or max turns escalates to a person", async () => {
       is_error: true,
       num_turns: 16,
     });
-    assert.deepEqual(labels, [ESCALATION_LABEL], subtype);
+    assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL], subtype);
     assert.equal(comments.length, 1, subtype);
     assert.match(comments[0], /handed this issue to a maintainer/u, subtype);
     assert.deepEqual(removed, [], subtype);
@@ -190,7 +195,10 @@ test("a usable escalated triage sets the type, proposes the class and removes th
   // apply-outcome.md: the human-gated role label replaces the raw marker, and
   // a lane barred from stamping a class proposes it in the comment.
   const { labels, typeCalls, removed, comments } = await apply(SUCCESS, {
-    output: triaged({ needs_human: true, proposed_class: "work-class: scoped" }),
+    output: triaged({
+      needs_human: true,
+      proposed_class: "work-class: scoped",
+    }),
   });
   assert.deepEqual(labels, [ESCALATION_LABEL]);
   assert.deepEqual(typeCalls, [{ id: "I_node7", type: "IT_bug" }]);
@@ -201,9 +209,13 @@ test("a usable escalated triage sets the type, proposes the class and removes th
 
 test("an escalated triage with no type keeps the floor and proposes nothing", async () => {
   const { labels, typeCalls, removed, comments } = await apply(SUCCESS, {
-    output: triaged({ needs_human: true, type: "none", proposed_class: "work-class: scoped" }),
+    output: triaged({
+      needs_human: true,
+      type: "none",
+      proposed_class: "work-class: scoped",
+    }),
   });
-  assert.deepEqual(labels, [ESCALATION_LABEL]);
+  assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL]);
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
   assert.doesNotMatch(comments[0], /Proposed work class/u);
@@ -214,7 +226,7 @@ test("a permission denial keeps the floor even with a typed output", async () =>
     { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
     { output: triaged() },
   );
-  assert.deepEqual(labels, [ESCALATION_LABEL]);
+  assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL]);
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
 });
@@ -299,11 +311,29 @@ test("an errored run with structured output sets no type", async () => {
 });
 
 test("type none sets nothing and keeps the floor label", async () => {
-  const { typeCalls, removed } = await apply(SUCCESS, {
+  // The floor labeler skips an issue that already has a priority, so when it
+  // lands after the lane the lane must have put the floor on itself.
+  const { labels, typeCalls, removed } = await apply(SUCCESS, {
     output: triaged({ type: "none" }),
   });
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
+  assert.deepEqual(labels, ["priority: high", FLOOR_LABEL]);
+});
+
+test("a failed type write still adds the floor and fails the job", async () => {
+  // Two priorities is not routed, so a late floor labeler would skip it.
+  const { labels, failed } = await apply(SUCCESS, {
+    output: triaged({ labels: ["priority: high", "priority: low"] }),
+    typeFails: true,
+  });
+  assert.deepEqual(labels, ["priority: high", "priority: low", FLOOR_LABEL]);
+  assert.equal(failed.length, 1);
+});
+
+test("an infrastructure failure leaves the floor to the labeler", async () => {
+  const { labels } = await apply({ ...SUCCESS, is_error: true });
+  assert.deepEqual(labels, []);
 });
 
 test("an empty floor-label never removes a label", async () => {
@@ -330,6 +360,7 @@ async function compose(graphql, env = {}) {
         { name: ESCALATION_LABEL },
         { name: "work-class: scoped" },
         { name: "agent-ready" },
+        { name: FLOOR_LABEL },
       ],
       graphql,
       rest: { issues: { listLabelsForRepo: () => {} } },
@@ -355,9 +386,61 @@ test("compose offers the enabled Issue Types plus none", async () => {
   assert.ok(schema.required.includes("type"));
   assert.deepEqual(JSON.parse(outputs.types), TYPES);
   assert.match(outputs["type-instruction"], /one of Bug, Task/u);
-  assert.deepEqual(schema.properties.proposed_class.enum, ["work-class: scoped", "none"]);
+  assert.deepEqual(schema.properties.proposed_class.enum, [
+    "work-class: scoped",
+    "none",
+  ]);
   assert.deepEqual(JSON.parse(outputs.classes), ["work-class: scoped"]);
-  assert.match(outputs["type-instruction"], /proposed_class: .*one of work-class: scoped/u);
+  assert.match(
+    outputs["type-instruction"],
+    /proposed_class: .*one of work-class: scoped/u,
+  );
+});
+
+test("compose drops an Issue Type that collides with the none sentinel", async () => {
+  const { outputs, schema } = await compose(async () => ({
+    repository: {
+      issueTypes: {
+        nodes: [
+          { id: "IT_bug", name: "Bug", isEnabled: true },
+          { id: "IT_none", name: "None", isEnabled: true },
+          { id: "IT_none2", name: "none", isEnabled: true },
+        ],
+      },
+    },
+  }));
+  assert.deepEqual(schema.properties.type.enum, ["Bug", "none"]);
+  assert.deepEqual(JSON.parse(outputs.types), { Bug: "IT_bug" });
+});
+
+test("compose turns floor handling off for a floor label the repository lacks", async () => {
+  const graphql = async () => ({ repository: null });
+  const present = await compose(graphql, { FLOOR_LABEL });
+  assert.equal(present.outputs.floor, FLOOR_LABEL);
+  const absent = await compose(graphql, { FLOOR_LABEL: "triage-me" });
+  assert.equal(absent.outputs.floor, "");
+  assert.ok(absent.warnings.some((w) => /triage-me/u.test(w)));
+});
+
+test("compose rejects an admission label as the floor label", async () => {
+  for (const floor of ["agent-ready", "work-class: scoped"]) {
+    const { failed, outputs } = await runScript(
+      composeStep.with.script,
+      {
+        ALLOWED_LABELS: "",
+        ESCALATION_LABEL,
+        FLOOR_LABEL: floor,
+        BASE_ARGS: "",
+      },
+      {
+        paginate: async () => [{ name: ESCALATION_LABEL }, { name: floor }],
+        graphql: async () => ({ repository: null }),
+        rest: { issues: { listLabelsForRepo: () => {} } },
+      },
+    );
+    assert.equal(failed.length, 1, floor);
+    assert.equal(outputs.floor, undefined, floor);
+  }
 });
 
 test("compose never offers admission labels to the model", async () => {

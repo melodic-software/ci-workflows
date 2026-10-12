@@ -720,7 +720,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   silently drop out of the triage queue for lack of a label. The guard is a
   label-**set** membership check (any label starting with `label-prefix`), not
   a title/body content match, so an explicit priority label at creation always
-  wins. **Fail-closed on a missing label**: the raw add-labels endpoint
+  wins. It reads the issue's live labels, not the event payload, and also
+  skips an issue carrying `human-label` (default `needs-human`; set it to the
+  lane's `escalation-label`), so a run that lands after the intake-triage
+  lane does not re-add the floor it removed. A reopened issue that still
+  carries `human-label` stays without the floor.
+  **Fail-closed on a missing label**: the raw add-labels endpoint
   auto-creates an unknown label name instead of failing, so this workflow
   first calls `GET /repos/{owner}/{repo}/labels/{name}` and hard-fails the job
   if that 404s, rather than ever letting a bare, undefined label get created.
@@ -900,11 +905,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   run's own labels and text. A triage is usable when the run was clean, had
   no permission denial and named one of the repository's enabled Issue Types.
   The lane then sets that type and reads it back. When the type took, it
-  removes `floor-label` (default `needs-triage`; empty keeps it) if the run
+  removes `floor-label` (default `needs-triage`; empty or missing turns floor
+  handling off) if the run
   escalated or applied exactly one `priority:` label and no `status:` or
   `area: security` label. An escalated usable triage also posts the run's
   `Proposed work class:` in its note. The lane never applies a `work-class:`
-  label or `agent-ready`. Without a usable triage the floor stays. It installs the newest Claude Code CLI at run time (`cli-version`,
+  label or `agent-ready`. After any other run the lane adds the floor if it
+  is missing, so the result does not depend on whether
+  `intake-label-needs-triage` ran first. It installs the newest Claude Code CLI at run time (`cli-version`,
   else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
   the action's own). The caller grants `contents: read` and `issues: write`
   and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries
