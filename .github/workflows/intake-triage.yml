@@ -511,13 +511,25 @@ jobs:
                 if (typeSet && routed && !labels.has(env.FLOOR_LABEL)) {
                   try {
                     await github.rest.issues.removeLabel({ ...context.repo, issue_number, name: env.FLOOR_LABEL });
+                    floorCleared = true;
                   } catch (error) {
                     if (error.status !== 404) throw error;
                   }
-                  floorCleared = true;
                 } else if (!labels.has(env.FLOOR_LABEL)) {
-                  await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [env.FLOOR_LABEL] });
-                  floorAdded = true;
+                  // addLabels creates an unknown label, so recheck that the
+                  // floor label still exists right before the write.
+                  let exists = true;
+                  try {
+                    await github.rest.issues.getLabel({ ...context.repo, name: env.FLOOR_LABEL });
+                  } catch (error) {
+                    if (error.status !== 404) throw error;
+                    exists = false;
+                    core.warning(`Floor label '${env.FLOOR_LABEL}' no longer exists; not adding it.`);
+                  }
+                  if (exists) {
+                    await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [env.FLOOR_LABEL] });
+                    floorAdded = true;
+                  }
                 }
               } catch (error) {
                 failure = error;

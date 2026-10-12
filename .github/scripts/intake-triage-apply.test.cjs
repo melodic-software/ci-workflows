@@ -40,9 +40,15 @@ async function runScript(script, env, github) {
   const failed = [];
   const warnings = [];
   const outputs = {};
+  let summary = "";
   try {
     const core = {
-      summary: { addRaw: () => ({ write: async () => {} }) },
+      summary: {
+        addRaw: (text) => {
+          summary = text;
+          return { write: async () => {} };
+        },
+      },
       setFailed: (message) => failed.push(message),
       warning: (message) => warnings.push(message),
       setOutput: (key, value) => {
@@ -58,7 +64,7 @@ async function runScript(script, env, github) {
       "process",
       script,
     )(github, context, core, require, process);
-    return { failed, warnings, outputs };
+    return { failed, warnings, outputs, summary };
   } finally {
     for (const [key, value] of Object.entries(original)) {
       if (value === undefined) delete process.env[key];
@@ -79,6 +85,8 @@ async function apply(
     allowed = ["bug", "priority: high", "priority: low"],
     labelsFail = false,
     typeFails = false,
+    floorDeleted = false,
+    floorAbsent = false,
   } = {},
 ) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-apply-"));
@@ -110,12 +118,21 @@ async function apply(
           if (labelsFail) throw new Error("label write failed");
           labels.push(...request.labels);
         },
-        removeLabel: async ({ name }) => removed.push(name),
+        removeLabel: async ({ name }) => {
+          if (floorAbsent)
+            throw Object.assign(new Error("Not Found"), { status: 404 });
+          removed.push(name);
+        },
+        getLabel: async () => {
+          if (floorDeleted)
+            throw Object.assign(new Error("Not Found"), { status: 404 });
+          return {};
+        },
       },
     },
   };
   try {
-    const { failed, warnings } = await runScript(
+    const { failed, warnings, summary } = await runScript(
       applyStep.with.script,
       {
         STRUCTURED_OUTPUT: output ? JSON.stringify(output) : "",
@@ -135,7 +152,7 @@ async function apply(
       },
       github,
     );
-    return { labels, removed, typeCalls, comments, failed, warnings };
+    return { labels, removed, typeCalls, comments, failed, warnings, summary };
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -329,6 +346,28 @@ test("a failed type write still adds the floor and fails the job", async () => {
   });
   assert.deepEqual(labels, ["priority: high", "priority: low", FLOOR_LABEL]);
   assert.equal(failed.length, 1);
+});
+
+test("a floor label deleted since compose is not created", async () => {
+  const { labels, warnings, failed } = await apply(SUCCESS, {
+    output: triaged({ type: "none" }),
+    floorDeleted: true,
+  });
+  assert.deepEqual(labels, ["priority: high"]);
+  assert.ok(warnings.some((w) => /no longer exists/u.test(w)));
+  assert.deepEqual(failed, []);
+});
+
+test("a floor already gone is not reported as removed", async () => {
+  const removedRun = await apply(SUCCESS, { output: triaged() });
+  assert.match(removedRun.summary, /- Floor label: removed/u);
+  const goneRun = await apply(SUCCESS, {
+    output: triaged(),
+    floorAbsent: true,
+  });
+  assert.match(goneRun.summary, /- Floor label: unchanged/u);
+  assert.deepEqual(goneRun.labels, ["priority: high"]);
+  assert.deepEqual(goneRun.failed, []);
 });
 
 test("an infrastructure failure leaves the floor to the labeler", async () => {
