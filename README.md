@@ -897,11 +897,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   unusable output, a credential-like comment or a request for a person it
   applies only
   `escalation-label` (default `needs-human`) and a fixed note, dropping the
-  run's own labels and text. Otherwise it sets the Issue Type the run named
-  from the repository's enabled types, reads it back, and when the type took
-  and exactly one `priority:` label and no `status:` or `area: security`
-  label was applied it removes `floor-label`
-  (default `needs-triage`; empty keeps it). It installs the newest Claude Code CLI at run time (`cli-version`,
+  run's own labels and text. A triage is usable when the run was clean, had
+  no permission denial and named one of the repository's enabled Issue Types.
+  The lane then sets that type and reads it back. When the type took, it
+  removes `floor-label` (default `needs-triage`; empty keeps it) if the run
+  escalated or applied exactly one `priority:` label and no `status:` or
+  `area: security` label. An escalated usable triage also posts the run's
+  `Proposed work class:` in its note. The lane never applies a `work-class:`
+  label or `agent-ready`. Without a usable triage the floor stays. It installs the newest Claude Code CLI at run time (`cli-version`,
   else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
   the action's own). The caller grants `contents: read` and `issues: write`
   and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries

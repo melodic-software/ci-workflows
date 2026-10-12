@@ -36,15 +36,19 @@ name: intake-triage
 #     the caller's allowlist AND exist in the repository (addLabels would
 #     otherwise create an unknown label), breaks @mentions in the comment, and
 #     withholds a comment that looks like it carries a credential.
-#   - The model may name one of the repository's enabled Issue Types. The
-#     apply step sets it and reads it back. Only when the run is not
-#     escalated, the type took, exactly one `priority:` label and no
-#     `status:` or `area: security` label was applied does it remove
-#     `floor-label`, the one label it ever removes.
+#   - The model may name one of the repository's enabled Issue Types and
+#     propose one of its `work-class:` labels. The lane never applies a
+#     work class or `agent-ready`. A triage is usable when the run was clean,
+#     had no permission denial, and named a type; then the apply step sets
+#     the type and reads it back. When the type took, it removes
+#     `floor-label`, the one label it ever removes, if the run escalated or
+#     applied exactly one `priority:` label and no `status:` or
+#     `area: security` label.
 #   - Any permission denial, a max-turns stop, unusable output, a
 #     credential-like comment or `needs_human: true` escalates: the run's
 #     labels and text are dropped, and only the escalation label and a fixed
-#     note are applied. A rerun edits the lane's earlier comment.
+#     note are applied, plus a `Proposed work class:` line when the triage
+#     was usable. A rerun edits the lane's earlier comment.
 #   - Only the `issues` event is accepted, and bot actors are skipped (agent
 #     mode rejects bots it was not told to allow).
 #
@@ -88,9 +92,9 @@ on:
         default: needs-human
       floor-label:
         description: >-
-          Triage floor label the lane removes once a run that was not
-          escalated has set the Issue Type and exactly one `priority:` label.
-          Empty never removes a label.
+          Triage floor label the lane removes once a usable triage has set
+          the Issue Type and either escalated or applied exactly one
+          `priority:` label. Empty never removes a label.
         type: string
         default: needs-triage
       instructions:
@@ -209,7 +213,13 @@ jobs:
             const requested = [...new Set(env.ALLOWED_LABELS.split("\n").map((l) => l.trim()).filter(Boolean))];
             const missing = requested.filter((label) => !live.has(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
-            const allowed = requested.filter((label) => live.has(label) && !label.includes("'"));
+            // Admission labels are a person's call, whatever the caller lists.
+            const admission = (label) => label === "agent-ready" || label.startsWith("work-class:");
+            if (admission(env.ESCALATION_LABEL)) {
+              core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
+              return;
+            }
+            const allowed = requested.filter((label) => live.has(label) && !label.includes("'") && !admission(label));
 
             // The repository's enabled Issue Types. Unreadable or none leaves
             // the type out of the schema, so the floor label stays.
@@ -243,6 +253,12 @@ jobs:
               schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
               schema.required.push("type");
             }
+            // Work classes are only proposed to a maintainer, never applied.
+            const classes = [...live].filter((label) => label.startsWith("work-class:") && !label.includes("'"));
+            if (classes.length > 0) {
+              schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
+              schema.required.push("proposed_class");
+            }
             const tools = [
               "Bash(gh issue view *)",
               "Bash(gh issue list *)",
@@ -260,11 +276,19 @@ jobs:
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("allowed-list", allowed.map((l) => `- ${l}`).join("\n"));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
+            core.setOutput("classes", JSON.stringify(classes));
             core.setOutput(
               "type-instruction",
-              types.length > 0
-                ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
+              [
+                types.length > 0
+                  ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
+                  : "",
+                classes.length > 0
+                  ? `   - proposed_class: the work class you propose for a maintainer to confirm, one of ${classes.join(", ")}, as the repository's conventions define them; none when unsure.`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join("\n"),
             );
             core.setOutput("args", args);
             // Lets the outcome step tell a step timeout from other failures.
@@ -331,6 +355,7 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
+          CLASSES: ${{ steps.compose.outputs.classes }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -374,7 +399,7 @@ jobs:
             const labels = new Set();
             const rejected = [];
             for (const label of output?.labels ?? []) {
-              if (typeof label === "string" && allowed.has(label)) labels.add(label);
+              if (typeof label === "string" && allowed.has(label) && label !== "agent-ready" && !label.startsWith("work-class:")) labels.add(label);
               else rejected.push(String(label));
             }
 
@@ -383,13 +408,26 @@ jobs:
             if (CREDENTIAL.test(comment)) escalate.push("the comment looked like it carried a credential");
             comment = comment.replace(/@(?=[A-Za-z0-9])/gu, "@​");
 
-            // An escalated run is not trusted: none of its labels or text is
-            // applied, only the escalation label and a fixed note.
+            // A usable triage is a clean run with no permission denial whose
+            // output names one of the repository's Issue Types. Only the type
+            // and the proposed class, both checked against enums, survive an
+            // escalation.
+            const types = JSON.parse(env.TYPES || "{}");
+            const classes = new Set(JSON.parse(env.CLASSES || "[]"));
+            const wanted = typeof output?.type === "string" ? output.type : "";
+            const clean = result.subtype === "success" && !result.is_error;
+            const usable = clean && denials.length === 0 && Boolean(output) && Object.hasOwn(types, wanted);
+            const proposed = usable && classes.has(output.proposed_class) ? output.proposed_class : "";
+
+            // An escalated run is not trusted: none of its labels or free text
+            // is applied, only the escalation label and a fixed note. Its
+            // enum-checked type and proposed class survive when usable.
             const escalated = ran && escalate.length > 0;
             if (escalated) {
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
               comment = "Thanks for the report. Automated triage handed this issue to a maintainer.";
+              if (proposed) comment += `\n\nProposed work class: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`;
             }
             if (!ran) {
               labels.clear();
@@ -417,19 +455,19 @@ jobs:
               failure = error;
             }
 
-            // The type and the floor follow a clean write of a run that was
-            // not escalated. GitHub can drop a type change it does not allow
-            // without an error, so the result is read back.
-            const types = JSON.parse(env.TYPES || "{}");
-            const wanted = typeof output?.type === "string" ? output.type : "";
+            // The type and the floor follow a clean write of a usable triage.
+            // GitHub can drop a type change it does not allow without an
+            // error, so the result is read back.
             const priorities = [...labels].filter((label) => label.startsWith("priority:"));
-            // A status or security label means a person still has to act, so
-            // the floor stays whatever the model concluded.
+            // On a run that was not escalated, a status or security label
+            // means a person still has to act, so the floor stays. An
+            // escalated run is routed to a person by its escalation label,
+            // which replaces the floor.
             const personNeeded = [...labels].some((label) => label.startsWith("status:") || label === "area: security");
-            const clean = result.subtype === "success" && !result.is_error;
+            const routed = escalated || (priorities.length === 1 && !personNeeded);
             let typeSet = "";
             let floorCleared = false;
-            if (!failure && clean && !escalated && Object.hasOwn(types, wanted)) {
+            if (!failure && usable) {
               try {
                 const updated = await github.graphql(
                   "mutation($id: ID!, $type: ID!) { updateIssue(input: { id: $id, issueTypeId: $type }) { issue { issueType { name } } } }",
@@ -441,7 +479,9 @@ jobs:
                 failure = error;
               }
             }
-            if (!failure && typeSet && priorities.length === 1 && !personNeeded && env.FLOOR_LABEL) {
+            // A floor label the run itself applied (escalation-label equal to
+            // floor-label) is never removed, so the issue keeps a queue label.
+            if (!failure && typeSet && routed && env.FLOOR_LABEL && !labels.has(env.FLOOR_LABEL)) {
               try {
                 await github.rest.issues.removeLabel({ ...context.repo, issue_number, name: env.FLOOR_LABEL });
                 floorCleared = true;
@@ -459,6 +499,7 @@ jobs:
               `- Labels applied: ${[...labels].join(", ") || "none"}`,
               `- Labels rejected: ${rejected.join(", ") || "none"}`,
               `- Issue Type: ${typeSet || "not set"} (requested: ${Object.hasOwn(types, wanted) ? wanted : "none"})`,
+              `- Proposed work class: ${proposed || "none"}`,
               `- Floor label removed: ${floorCleared ? env.FLOOR_LABEL : "no"}`,
               `- Escalation: ${escalate.join("; ") || "none"}`,
               `- Comment posted: ${comment ? "yes" : "no"}`,

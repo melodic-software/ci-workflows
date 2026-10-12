@@ -75,7 +75,9 @@ async function apply(
     output,
     keptType,
     floorLabel = FLOOR_LABEL,
+    escalationLabel = ESCALATION_LABEL,
     allowed = ["bug", "priority: high", "priority: low"],
+    labelsFail = false,
   } = {},
 ) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-apply-"));
@@ -102,7 +104,10 @@ async function apply(
         listComments: () => {},
         createComment: async ({ body }) => comments.push(body),
         updateComment: async ({ body }) => comments.push(body),
-        addLabels: async (request) => labels.push(...request.labels),
+        addLabels: async (request) => {
+          if (labelsFail) throw new Error("label write failed");
+          labels.push(...request.labels);
+        },
         removeLabel: async ({ name }) => removed.push(name),
       },
     },
@@ -115,7 +120,8 @@ async function apply(
         EXECUTION_FILE: executionFile,
         ALLOWED: JSON.stringify(allowed),
         TYPES: JSON.stringify(TYPES),
-        ESCALATION_LABEL,
+        CLASSES: JSON.stringify(["work-class: scoped", "work-class: structural"]),
+        ESCALATION_LABEL: escalationLabel,
         FLOOR_LABEL: floorLabel,
         ISSUE_NUMBER: "7",
         ISSUE_NODE_ID: "I_node7",
@@ -180,13 +186,74 @@ test("a confident run sets the type and removes the floor label", async () => {
   assert.deepEqual(failed, []);
 });
 
-test("an escalated run sets no type and keeps the floor label", async () => {
-  const { labels, typeCalls, removed } = await apply(SUCCESS, {
-    output: triaged({ needs_human: true }),
+test("a usable escalated triage sets the type, proposes the class and removes the floor", async () => {
+  // apply-outcome.md: the human-gated role label replaces the raw marker, and
+  // a lane barred from stamping a class proposes it in the comment.
+  const { labels, typeCalls, removed, comments } = await apply(SUCCESS, {
+    output: triaged({ needs_human: true, proposed_class: "work-class: scoped" }),
+  });
+  assert.deepEqual(labels, [ESCALATION_LABEL]);
+  assert.deepEqual(typeCalls, [{ id: "I_node7", type: "IT_bug" }]);
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+  assert.match(comments[0], /\nProposed work class: work-class: scoped\n/u);
+  assert.doesNotMatch(comments[0], /Looks like a bug/u);
+});
+
+test("an escalated triage with no type keeps the floor and proposes nothing", async () => {
+  const { labels, typeCalls, removed, comments } = await apply(SUCCESS, {
+    output: triaged({ needs_human: true, type: "none", proposed_class: "work-class: scoped" }),
   });
   assert.deepEqual(labels, [ESCALATION_LABEL]);
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
+  assert.doesNotMatch(comments[0], /Proposed work class/u);
+});
+
+test("a permission denial keeps the floor even with a typed output", async () => {
+  const { labels, typeCalls, removed } = await apply(
+    { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
+    { output: triaged() },
+  );
+  assert.deepEqual(labels, [ESCALATION_LABEL]);
+  assert.deepEqual(typeCalls, []);
+  assert.deepEqual(removed, []);
+});
+
+test("a class outside the repository's work classes is not proposed", async () => {
+  const { comments } = await apply(SUCCESS, {
+    output: triaged({ needs_human: true, proposed_class: "agent-ready" }),
+  });
+  assert.doesNotMatch(comments[0], /Proposed work class/u);
+});
+
+test("a confident run never applies a work class or agent-ready, even when allowed", async () => {
+  const { labels } = await apply(SUCCESS, {
+    output: triaged({
+      labels: ["priority: high", "work-class: scoped", "agent-ready"],
+      proposed_class: "work-class: scoped",
+    }),
+    allowed: ["priority: high", "work-class: scoped", "agent-ready"],
+  });
+  assert.deepEqual(labels, ["priority: high"]);
+});
+
+test("a floor label the run applied as its escalation label stays", async () => {
+  const { labels, removed } = await apply(SUCCESS, {
+    output: triaged({ needs_human: true }),
+    escalationLabel: FLOOR_LABEL,
+  });
+  assert.deepEqual(labels, [FLOOR_LABEL]);
+  assert.deepEqual(removed, []);
+});
+
+test("a failed label write on an escalation sets no type and keeps the floor", async () => {
+  const { typeCalls, removed, failed } = await apply(SUCCESS, {
+    output: triaged({ needs_human: true }),
+    labelsFail: true,
+  });
+  assert.deepEqual(typeCalls, []);
+  assert.deepEqual(removed, []);
+  assert.equal(failed.length, 1);
 });
 
 test("a type GitHub dropped keeps the floor label and warns", async () => {
@@ -248,16 +315,22 @@ test("an empty floor-label never removes a label", async () => {
   assert.deepEqual(removed, []);
 });
 
-async function compose(graphql) {
+async function compose(graphql, env = {}) {
   const { outputs, warnings } = await runScript(
     composeStep.with.script,
     {
       ALLOWED_LABELS: "priority: high\n",
       ESCALATION_LABEL,
       BASE_ARGS: "--max-turns 15",
+      ...env,
     },
     {
-      paginate: async () => [{ name: "priority: high" }, { name: ESCALATION_LABEL }],
+      paginate: async () => [
+        { name: "priority: high" },
+        { name: ESCALATION_LABEL },
+        { name: "work-class: scoped" },
+        { name: "agent-ready" },
+      ],
       graphql,
       rest: { issues: { listLabelsForRepo: () => {} } },
     },
@@ -282,6 +355,16 @@ test("compose offers the enabled Issue Types plus none", async () => {
   assert.ok(schema.required.includes("type"));
   assert.deepEqual(JSON.parse(outputs.types), TYPES);
   assert.match(outputs["type-instruction"], /one of Bug, Task/u);
+  assert.deepEqual(schema.properties.proposed_class.enum, ["work-class: scoped", "none"]);
+  assert.deepEqual(JSON.parse(outputs.classes), ["work-class: scoped"]);
+  assert.match(outputs["type-instruction"], /proposed_class: .*one of work-class: scoped/u);
+});
+
+test("compose never offers admission labels to the model", async () => {
+  const { outputs } = await compose(async () => ({ repository: null }), {
+    ALLOWED_LABELS: "priority: high\nwork-class: scoped\nagent-ready\n",
+  });
+  assert.deepEqual(JSON.parse(outputs.allowed), ["priority: high"]);
 });
 
 test("compose leaves the type out when Issue Types are unreadable", async () => {
@@ -291,6 +374,6 @@ test("compose leaves the type out when Issue Types are unreadable", async () => 
   assert.equal(schema.properties.type, undefined);
   assert.ok(!schema.required.includes("type"));
   assert.equal(outputs.types, "{}");
-  assert.equal(outputs["type-instruction"], "");
+  assert.doesNotMatch(outputs["type-instruction"], /type: the issue's kind/u);
   assert.equal(warnings.length, 1);
 });
