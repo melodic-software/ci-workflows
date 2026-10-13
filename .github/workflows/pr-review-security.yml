@@ -475,8 +475,9 @@ jobs:
       # posted. This step looks for the review: the findings count from the
       # step's structured output, a summary by the Claude App naming this lane,
       # head and run, and a count no lower than the inline comments the App posted
-      # on the head since the step started (a comment tagged for the other
-      # lane is not counted). Its verdict decides review-ran below, so a
+      # on the head since the step started (a comment footed for the other
+      # lane is not counted, and one with no `claude-lane:` footer fails the
+      # step). Its verdict decides review-ran below, so a
       # review that did not complete writes no marker and goes red as class
       # `incomplete`. Every value reaches the script through env; the model's
       # output is parsed and never printed.
@@ -540,16 +541,22 @@ jobs:
             ].some((item) => namesThisReview(item.body));
             if (!summarized) return incomplete("no summary by the Claude App names this lane and head");
 
-            // A comment footed for another lane is that lane's; an untagged one
-            // counts for both lanes, so a missing footer can only fail a review.
-            const TAG = /^\s*`?claude-lane: ([\w-]+)`?\s*$/mu;
-            const posted = inline.filter(
-              (comment) =>
-                byClaude(comment) &&
-                comment.commit_id === head &&
-                inWindow(comment.created_at) &&
-                (TAG.exec(comment.body ?? "")?.[1] ?? lane) === lane,
-            ).length;
+            // The footer is the comment's last non-blank line, so a footer-shaped
+            // line quoted higher in the body does not count. A comment footed for
+            // another lane is that lane's. One with no footer cannot be attributed
+            // to either lane, so it fails the review.
+            const TAG = /^\s*`?claude-lane: ([\w-]+)`?\s*$/u;
+            const footer = (body) => TAG.exec((body ?? "").trimEnd().split("\n").at(-1))?.[1];
+            const onHead = inline.filter(
+              (comment) => byClaude(comment) && comment.commit_id === head && inWindow(comment.created_at),
+            );
+            const untagged = onHead.filter((comment) => footer(comment.body) === undefined).length;
+            if (untagged > 0) {
+              return incomplete(
+                `${untagged} inline comment(s) on this head carry no claude-lane footer (this lane's, the other lane's or another workflow's)`,
+              );
+            }
+            const posted = onHead.filter((comment) => footer(comment.body) === lane).length;
             if (findings < posted) {
               return incomplete(`the review counted ${findings} finding(s) but posted ${posted} inline comment(s) on this head`);
             }
