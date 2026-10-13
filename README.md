@@ -1010,8 +1010,8 @@ run's id (so a marker another workflow posts as the same App does not count),
 and a count no lower than the App's inline comments on the head in that
 window. Each inline comment ends with the plain-text footer
 `claude-lane: <id>`. Counting rule: a comment footed for the other lane
-counts only for that lane; a comment with no footer counts for both lanes, so
-a missing footer can fail a review but never complete one. Both markers are
+counts only for that lane; any App inline comment on the head in that window
+with no footer fails the review, since it belongs to neither lane. Both markers are
 plain text because the action's comment tools delete HTML comments before
 posting. Anything less is `incomplete`: red, and the
 reviewed-head marker is not written. On a whole review the code-review lane

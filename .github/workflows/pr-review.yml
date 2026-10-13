@@ -586,16 +586,17 @@ jobs:
             ].some((item) => namesThisReview(item.body));
             if (!summarized) return incomplete("no summary by the Claude App names this lane and head");
 
-            // A comment footed for another lane is that lane's; an untagged one
-            // counts for both lanes, so a missing footer can only fail a review.
+            // A comment footed for another lane is that lane's. An untagged one
+            // cannot be attributed to either lane, so it fails the review.
             const TAG = /^\s*`?claude-lane: ([\w-]+)`?\s*$/mu;
-            const posted = inline.filter(
-              (comment) =>
-                byClaude(comment) &&
-                comment.commit_id === head &&
-                inWindow(comment.created_at) &&
-                (TAG.exec(comment.body ?? "")?.[1] ?? lane) === lane,
-            ).length;
+            const onHead = inline.filter(
+              (comment) => byClaude(comment) && comment.commit_id === head && inWindow(comment.created_at),
+            );
+            const untagged = onHead.filter((comment) => !TAG.test(comment.body ?? "")).length;
+            if (untagged > 0) {
+              return incomplete(`${untagged} inline comment(s) on this head carry no claude-lane footer`);
+            }
+            const posted = onHead.filter((comment) => TAG.exec(comment.body)[1] === lane).length;
             if (findings < posted) {
               return incomplete(`the review counted ${findings} finding(s) but posted ${posted} inline comment(s) on this head`);
             }

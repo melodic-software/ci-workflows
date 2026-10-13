@@ -417,13 +417,11 @@ test("a success with no summary concludes incomplete, writes no marker and emits
 });
 
 test("a completed review emits the completion record with the hand-counted findings and inline count", async () => {
-  // Three of the seven review comments count: by the Claude App, on the
-  // head, inside the window, and not tagged for the other lane (one of the
-  // three is untagged, which counts for every lane).
+  // Two of the six review comments count: by the Claude App, on the head,
+  // inside the window, and footed for this lane.
   const reviewComments = [
     inline(),
     inline({ created: 40 }),
-    inline({ lane: null }),
     inline({ commit: OTHER }),
     inline({ created: -5 }),
     inline({ login: "someone" }),
@@ -436,7 +434,7 @@ test("a completed review emits the completion record with the hand-counted findi
   });
   assert.equal(outputs.verdict, "complete");
   assert.equal(outputs.findings, "4");
-  assert.equal(outputs.inline, "3");
+  assert.equal(outputs.inline, "2");
 
   const composite = await runComposite({
     REQUIRE_COMPLETION: "true",
@@ -455,7 +453,7 @@ test("a completed review emits the completion record with the hand-counted findi
   });
   assert.equal(whole.status, 0);
   assert.deepEqual(whole.records, [
-    `${RECORD} lane=claude-review sha=${HEAD} findings=4 inline=3 scope=whole`,
+    `${RECORD} lane=claude-review sha=${HEAD} findings=4 inline=2 scope=whole`,
   ]);
 
   const incremental = runStatus(securityLane, {
@@ -502,10 +500,10 @@ test("HTML-comment markers do not survive posting, so they never prove a review"
   });
   assert.notEqual(hidden.outputs.verdict, "complete");
 
-  // A tag hidden that way leaves the comment untagged, so it counts for this
-  // lane too: 0 findings against 1 untagged comment is incomplete.
+  // A tag hidden that way leaves the comment untagged, which fails the
+  // review even when the count covers it.
   const untagged = await verify(codeLane, {
-    structured: { findings: 0 },
+    structured: { findings: 1 },
     comments: [summary()],
     reviewComments: [
       inline({
@@ -513,8 +511,47 @@ test("HTML-comment markers do not survive posting, so they never prove a review"
       }),
     ],
   });
-  assert.notEqual(untagged.outputs.verdict, "complete");
+  assert.match(
+    untagged.outputs.verdict,
+    /1 inline comment\(s\) .*no claude-lane footer/u,
+  );
 });
+
+for (const lane of lanes) {
+  test(`${lane.file}: an untagged Claude inline comment on the head fails the review`, async () => {
+    // The count (5) covers every comment, so only the missing footer fails it.
+    const { outputs } = await verify(lane, {
+      structured: { findings: 5 },
+      comments: [summary({ lane: lane.lane })],
+      reviewComments: [
+        inline({ lane: lane.lane }),
+        inline({ lane: null, created: 21 }),
+      ],
+    });
+    assert.notEqual(outputs.verdict, "complete");
+    assert.match(
+      outputs.verdict,
+      /1 inline comment\(s\) .*no claude-lane footer/u,
+    );
+    assert.equal(outputs.findings, undefined);
+    assert.equal(outputs.inline, undefined);
+  });
+
+  test(`${lane.file}: an untagged comment off the head, outside the window or by another author is ignored`, async () => {
+    const { outputs } = await verify(lane, {
+      structured: { findings: 1 },
+      comments: [summary({ lane: lane.lane })],
+      reviewComments: [
+        inline({ lane: lane.lane }),
+        inline({ lane: null, commit: OTHER }),
+        inline({ lane: null, created: -5 }),
+        inline({ lane: null, login: "someone" }),
+      ],
+    });
+    assert.equal(outputs.verdict, "complete");
+    assert.equal(outputs.inline, "1");
+  });
+}
 
 test("a summary posted as a pull request review also counts", async () => {
   const { outputs } = await verify(securityLane, {
