@@ -551,6 +551,37 @@ for (const lane of lanes) {
     assert.equal(outputs.verdict, "complete");
     assert.equal(outputs.inline, "1");
   });
+
+  test(`${lane.file}: only the last non-blank line is the footer`, async () => {
+    const other =
+      lane.lane === "claude-review"
+        ? "claude-security-review"
+        : "claude-review";
+    const quoting = (footer) =>
+      `Change the prompt line:\n\n\`\`\`\nclaude-lane: ${other}\n\`\`\`${footer}`;
+
+    // A quoted footer line with nothing after it at the end is no footer.
+    const unfooted = await verify(lane, {
+      structured: { findings: 5 },
+      comments: [summary({ lane: lane.lane })],
+      reviewComments: [inline({ body: quoting("") })],
+    });
+    assert.match(
+      unfooted.outputs.verdict,
+      /1 inline comment\(s\) .*no claude-lane footer/u,
+    );
+
+    // The real footer below the quote decides the lane, not the quoted line.
+    const footed = await verify(lane, {
+      structured: { findings: 1 },
+      comments: [summary({ lane: lane.lane })],
+      reviewComments: [
+        inline({ body: quoting(`\n\nclaude-lane: ${lane.lane}\n`) }),
+      ],
+    });
+    assert.equal(footed.outputs.verdict, "complete");
+    assert.equal(footed.outputs.inline, "1");
+  });
 }
 
 test("a summary posted as a pull request review also counts", async () => {
