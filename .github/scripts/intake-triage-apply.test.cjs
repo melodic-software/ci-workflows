@@ -235,7 +235,38 @@ test("an escalated triage with no type keeps the floor and proposes nothing", as
   assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL]);
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
-  assert.doesNotMatch(comments[0], /Proposed work class/u);
+  assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
+  assert.doesNotMatch(comments[0], /work-class: scoped/u);
+});
+
+test("a confident run proposes the class on the comment's second line", async () => {
+  // The proposal is recorded on every run, not only on escalation, so a rule
+  // evaluator has a durable record to read.
+  const { labels, comments } = await apply(SUCCESS, {
+    output: triaged({ proposed_class: "work-class: structural" }),
+  });
+  assert.deepEqual(labels, ["priority: high"]);
+  const lines = comments[0].split("\n");
+  assert.equal(lines[0], "<!-- claude-lane intake-triage -->");
+  assert.equal(lines[1], "Proposed work class: work-class: structural");
+  assert.match(comments[0], /Looks like a bug in the parser\./u);
+});
+
+test("model text never takes the proposal line", async () => {
+  // The model's comment comes after the line this script writes, so a
+  // proposal the model types into its comment is never read as the lane's.
+  const { comments } = await apply(SUCCESS, {
+    output: triaged({
+      comment: "Proposed work class: work-class: scoped",
+      proposed_class: "none",
+    }),
+  });
+  assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
+});
+
+test("a confident run with no class still records none", async () => {
+  const { comments } = await apply(SUCCESS, { output: triaged() });
+  assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
 });
 
 test("a permission denial keeps the floor even with a typed output", async () => {
@@ -252,7 +283,8 @@ test("a class outside the repository's work classes is not proposed", async () =
   const { comments } = await apply(SUCCESS, {
     output: triaged({ needs_human: true, proposed_class: "agent-ready" }),
   });
-  assert.doesNotMatch(comments[0], /Proposed work class/u);
+  assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
+  assert.doesNotMatch(comments[0], /agent-ready/u);
 });
 
 test("a confident run never applies a work class or agent-ready, even when allowed", async () => {
