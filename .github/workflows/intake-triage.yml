@@ -48,11 +48,12 @@ name: intake-triage
 #   - Any permission denial, a max-turns stop, unusable output, a
 #     credential-like comment or `needs_human: true` escalates: the run's
 #     labels and text are dropped, and only the escalation label and a fixed
-#     note are applied. A rerun edits the lane's earlier comment.
-#   - Every comment the lane posts, escalated or not, carries
+#     note are applied, plus an unconfirmed class suggestion when the triage
+#     was usable. A rerun edits the lane's earlier comment.
+#   - Every run that ran writes the lane comment with
 #     `Proposed work class: <class>` (or `none`) as its second line, right
-#     after the marker. The apply step writes that line, never the model, so
-#     a rule evaluator can read the proposal from it.
+#     after the marker; an escalated run records `none` there. The apply step
+#     writes that line, never the model, so a rule evaluator can read it.
 #   - Only the `issues` event is accepted, and bot actors are skipped (agent
 #     mode rejects bots it was not told to allow).
 #
@@ -449,18 +450,21 @@ jobs:
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
               comment = "Thanks for the report. Automated triage handed this issue to a maintainer.";
+              if (proposed) comment += `\n\nUnconfirmed model suggestion: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`;
             }
             if (!ran) {
               labels.clear();
               comment = "";
             }
 
-            // Every comment records the proposed class on its second line,
-            // escalated or not. This script writes that line, so model text
-            // never sits where a reader takes the proposal from.
-            const proposal = proposed
-              ? `Proposed work class: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`
-              : "Proposed work class: none";
+            // Every comment records the proposed class on its second line.
+            // This script writes that line, so model text never sits where a
+            // reader takes the proposal from, and an escalated run records
+            // none there: its class may have been steered by the issue text.
+            const proposal =
+              proposed && !escalated
+                ? `Proposed work class: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`
+                : "Proposed work class: none";
 
             // The comment goes first, so a failed label write leaves an
             // explanation rather than an unexplained label, and a rerun edits
@@ -468,7 +472,9 @@ jobs:
             const MARKER = "<!-- claude-lane intake-triage -->";
             let failure;
             try {
-              if (comment || proposed) {
+              // Every run that ran writes the comment, so a rerun always
+              // replaces an earlier proposal line.
+              if (ran) {
                 const body = [MARKER + "\n" + proposal, comment, "<sub>Automated triage. A maintainer reviews it.</sub>"]
                   .filter(Boolean)
                   .join("\n\n");
@@ -560,7 +566,7 @@ jobs:
               `- Proposed work class: ${proposed || "none"}`,
               `- Floor label: ${floorCleared ? "removed" : floorAdded ? "added" : "unchanged"}`,
               `- Escalation: ${escalate.join("; ") || "none"}`,
-              `- Comment posted: ${comment || proposed ? "yes" : "no"}`,
+              `- Comment posted: ${ran ? "yes" : "no"}`,
               `- Reason: ${output?.reason ?? "(none)"}`,
               `- Write error: ${failure?.message ?? "none"}`,
             ];

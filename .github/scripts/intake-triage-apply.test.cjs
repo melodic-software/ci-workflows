@@ -220,7 +220,10 @@ test("a usable escalated triage sets the type, proposes the class and removes th
   assert.deepEqual(labels, [ESCALATION_LABEL]);
   assert.deepEqual(typeCalls, [{ id: "I_node7", type: "IT_bug" }]);
   assert.deepEqual(removed, [FLOOR_LABEL]);
-  assert.match(comments[0], /\nProposed work class: work-class: scoped\n/u);
+  // The class an escalated run chose may have been steered by the issue
+  // text, so the proposal line a rule evaluator reads records none.
+  assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
+  assert.match(comments[0], /\nUnconfirmed model suggestion: work-class: scoped\n/u);
   assert.doesNotMatch(comments[0], /Looks like a bug/u);
 });
 
@@ -261,6 +264,15 @@ test("model text never takes the proposal line", async () => {
       proposed_class: "none",
     }),
   });
+  assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
+});
+
+test("a run with no comment and no class still rewrites the proposal line", async () => {
+  // A rerun must replace an earlier run's proposal, even when it says nothing.
+  const { comments } = await apply(SUCCESS, {
+    output: triaged({ comment: "", proposed_class: "none" }),
+  });
+  assert.equal(comments.length, 1);
   assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
 });
 
