@@ -23,6 +23,16 @@ name: pr-automerge-dependabot
 #           contents: write        # enablePullRequestAutoMerge
 #           pull-requests: write   # enable/disable auto-merge on the PR
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+#         secrets:
+#           AUTOMERGE_APP_CLIENT_ID: ${{ secrets.AUTOMERGE_APP_CLIENT_ID }}
+#           AUTOMERGE_APP_PRIVATE_KEY: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+#
+# MERGE QUEUE: GITHUB_TOKEN cannot add a pull request to a merge queue, so on a
+# branch that uses one an arm made with it never enters the queue. With the App
+# secrets passed, the arm job mints a token scoped to this repository (contents
+# and pull-requests write) and arms with it; without them it arms with
+# GITHUB_TOKEN, which still works on a branch with no merge queue. A run that
+# Dependabot triggers sees only Dependabot secrets, so store both there.
 #
 # GATES (all must hold, or the pull request is left for a human):
 #   - the event is `pull_request` and the PR author's id is 49699333
@@ -48,8 +58,13 @@ name: pr-automerge-dependabot
 # verified head SHA as `expectedHeadOid`, so a push that lands between the
 # check and the arm makes the arm fail instead of covering the new commit.
 #
+# JOBS: `gate` reads the PR with a read-only token and holds no App secret; it
+# outputs `decision` (arm, disarm or none) and the verified head SHA. `arm`
+# runs only for arm or disarm, and is the only job that sees the App secrets
+# or a write token.
+#
 # TRUST: every PR-derived value (dependency names, versions, the metadata
-# JSON) is untrusted. Values reach the script through `env:` only, never a
+# JSON) is untrusted. Values reach the scripts through `env:` only, never a
 # `${{ }}` expansion inside script text. No checkout: nothing from the pull
 # request is executed.
 on:
@@ -59,20 +74,33 @@ on:
         description: Runner label selected by the caller.
         type: string
         default: ubuntu-24.04
+    secrets:
+      AUTOMERGE_APP_CLIENT_ID:
+        description: >-
+          GitHub App client ID used to arm auto-merge, required where the base
+          branch uses a merge queue. Store it as a Dependabot secret.
+        required: false
+      AUTOMERGE_APP_PRIVATE_KEY:
+        description: >-
+          GitHub App private key paired with AUTOMERGE_APP_CLIENT_ID. Without
+          it the arm uses GITHUB_TOKEN. Store it as a Dependabot secret.
+        required: false
 
 permissions: {}
 
 jobs:
-  enable-auto-merge:
-    name: Arm auto-merge for allowlisted Dependabot bumps
+  gate:
+    name: Gate auto-merge for allowlisted Dependabot bumps
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.id == 49699333 }}
     runs-on: ${{ inputs.runner }}
-    # One metadata fetch, one commit listing and one GraphQL mutation. Ten
-    # minutes bounds a hung API call without the six-hour default.
+    # One metadata fetch and one commit listing. Ten minutes bounds a hung API
+    # call without the six-hour default.
     timeout-minutes: 10
     permissions:
-      contents: write # enablePullRequestAutoMerge requires it.
-      pull-requests: write # Arm or disarm auto-merge; list the PR's commits.
+      pull-requests: read # List the PR's commits.
+    outputs:
+      decision: ${{ steps.gate.outputs.decision }}
+      head-sha: ${{ steps.gate.outputs.head-sha }}
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
@@ -85,7 +113,8 @@ jobs:
         continue-on-error: true
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
-      - name: Gate and arm auto-merge
+      - name: Gate auto-merge
+        id: gate
         if: ${{ !cancelled() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -151,19 +180,56 @@ jobs:
             }
 
             const reason = await gateFailure();
-            if (reason) {
-              core.notice(`Auto-merge not armed: ${reason}.`);
-              if (pr.auto_merge) {
-                await github.graphql(
-                  `mutation($id: ID!) {
-                    disablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId }
-                  }`,
-                  { id: pr.node_id },
-                );
-                core.notice("Disarmed the auto-merge armed on an earlier head.");
-              }
+            if (reason) core.notice(`Auto-merge not armed: ${reason}.`);
+            core.setOutput("decision", reason ? (pr.auto_merge ? "disarm" : "none") : "arm");
+            core.setOutput("head-sha", pr.head.sha);
+
+  arm:
+    name: Arm or disarm auto-merge
+    needs: gate
+    if: ${{ needs.gate.outputs.decision == 'arm' || needs.gate.outputs.decision == 'disarm' }}
+    runs-on: ${{ inputs.runner }}
+    # One token mint and one GraphQL mutation.
+    timeout-minutes: 10
+    permissions:
+      contents: write # enablePullRequestAutoMerge with GITHUB_TOKEN requires it.
+      pull-requests: write # Arm or disarm auto-merge with GITHUB_TOKEN.
+    env:
+      # `if:` cannot read a secret; this carries only whether the key is set.
+      HAS_AUTOMERGE_APP: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Mint App token
+        id: app
+        if: ${{ env.HAS_AUTOMERGE_APP == 'true' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Arm or disarm auto-merge
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DECISION: ${{ needs.gate.outputs.decision }}
+          HEAD_SHA: ${{ needs.gate.outputs.head-sha }}
+        with:
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            if (process.env.DECISION === "disarm") {
+              await github.graphql(
+                `mutation($id: ID!) {
+                  disablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId }
+                }`,
+                { id: pr.node_id },
+              );
+              core.notice("Disarmed the auto-merge armed on an earlier head.");
               return;
             }
+            if (process.env.DECISION !== "arm") return;
 
             await github.graphql(
               `mutation($id: ID!, $head: GitObjectID!) {
@@ -171,6 +237,6 @@ jobs:
                   clientMutationId
                 }
               }`,
-              { id: pr.node_id, head: pr.head.sha },
+              { id: pr.node_id, head: process.env.HEAD_SHA },
             );
-            core.info(`Armed squash auto-merge on #${pr.number} at ${pr.head.sha}.`);
+            core.info(`Armed squash auto-merge on #${pr.number} at ${process.env.HEAD_SHA}.`);

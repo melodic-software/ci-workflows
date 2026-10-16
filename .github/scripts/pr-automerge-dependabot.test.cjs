@@ -12,20 +12,22 @@ const workflowPath = path.join(
   "workflows",
   "pr-automerge-dependabot.yml",
 );
-const workflowLines = fs.readFileSync(workflowPath, "utf8").split(/\r?\n/u);
-const gateStepIndex = workflowLines.findIndex((line) =>
-  line.includes("- name: Gate and arm auto-merge"),
-);
+const workflowText = fs.readFileSync(workflowPath, "utf8");
+const workflowLines = workflowText.split(/\r?\n/u);
+const stepIndex = (name) =>
+  workflowLines.findIndex((line) => line.includes(`- name: ${name}`));
+const gateStepIndex = stepIndex("Gate auto-merge");
+const armStepIndex = stepIndex("Arm or disarm auto-merge");
 
 // Same inline-script extraction standards-sync-automerge-arm.test.cjs uses:
 // the reusable runs in the caller's repository with no checkout, so the gate
-// lives in the github-script body and the test runs that body directly.
-function extractGateScript() {
-  assert.notEqual(gateStepIndex, -1, "gate step must exist");
+// and the arm live in github-script bodies and the test runs them directly.
+function extractScript(startIndex) {
+  assert.notEqual(startIndex, -1, "step must exist");
   const scriptIndex = workflowLines.findIndex(
-    (line, index) => index > gateStepIndex && /^ {10}script: \|$/u.test(line),
+    (line, index) => index > startIndex && /^ {10}script: \|$/u.test(line),
   );
-  assert.notEqual(scriptIndex, -1, "gate script block must exist");
+  assert.notEqual(scriptIndex, -1, "script block must exist");
   const body = [];
   for (let index = scriptIndex + 1; index < workflowLines.length; index += 1) {
     const line = workflowLines[index];
@@ -35,11 +37,11 @@ function extractGateScript() {
   return body.join("\n");
 }
 
-function stepEnv(name) {
+function stepEnv(name, startIndex = gateStepIndex) {
   const line = workflowLines
-    .slice(gateStepIndex)
+    .slice(startIndex)
     .find((candidate) => candidate.trim().startsWith(`${name}:`));
-  assert.ok(line, `${name} must be set on the gate step`);
+  assert.ok(line, `${name} must be set on the step`);
   return line
     .trim()
     .slice(name.length + 1)
@@ -47,7 +49,18 @@ function stepEnv(name) {
     .replace(/^'(.*)'$/u, "$1");
 }
 
-const gateScript = extractGateScript();
+// The text of one top-level job, from its key to the next job key.
+function jobBlock(name) {
+  const start = workflowLines.indexOf(`  ${name}:`);
+  assert.notEqual(start, -1, `job ${name} must exist`);
+  const end = workflowLines.findIndex(
+    (line, index) => index > start && /^ {2}\S[^:]*:$/u.test(line),
+  );
+  return workflowLines.slice(start, end === -1 ? undefined : end).join("\n");
+}
+
+const gateScript = extractScript(gateStepIndex);
+const armScript = extractScript(armStepIndex);
 const DEPENDABOT_ID = 49699333;
 const HEAD = "a".repeat(40);
 
@@ -85,6 +98,7 @@ async function runGate({
 } = {}) {
   const graphqlCalls = [];
   const notices = [];
+  const outputs = {};
   const env = {
     UPDATED_DEPENDENCIES_JSON: metadataJson,
     PUBLISHER_ALLOWLIST: stepEnv("PUBLISHER_ALLOWLIST"),
@@ -92,6 +106,12 @@ async function runGate({
     METADATA_OUTCOME: metadataOutcome,
   };
   const original = { ...process.env };
+  const restore = (keys) => {
+    for (const key of keys) {
+      if (original[key] === undefined) delete process.env[key];
+      else process.env[key] = original[key];
+    }
+  };
   Object.assign(process.env, env);
   try {
     const github = {
@@ -121,17 +141,33 @@ async function runGate({
     const core = {
       notice: (message) => notices.push(message),
       info: () => {},
+      setOutput: (name, value) => {
+        outputs[name] = value;
+      },
     };
     await new AsyncFunction("github", "context", "core", gateScript)(
       github,
       context,
       core,
     );
-  } finally {
-    for (const key of Object.keys(env)) {
-      if (original[key] === undefined) delete process.env[key];
-      else process.env[key] = original[key];
+    restore(Object.keys(env));
+    // The arm job's `if:` runs it only for arm or disarm.
+    if (["arm", "disarm"].includes(outputs.decision)) {
+      const armEnv = {
+        DECISION: outputs.decision,
+        HEAD_SHA: outputs["head-sha"],
+      };
+      Object.assign(process.env, armEnv);
+      env.DECISION = armEnv.DECISION;
+      env.HEAD_SHA = armEnv.HEAD_SHA;
+      await new AsyncFunction("github", "context", "core", armScript)(
+        github,
+        context,
+        core,
+      );
     }
+  } finally {
+    restore(Object.keys(env));
   }
   const armCalls = graphqlCalls.filter((call) =>
     /enablePullRequestAutoMerge/u.test(call.query),
@@ -139,7 +175,7 @@ async function runGate({
   const disarmCalls = graphqlCalls.filter((call) =>
     /disablePullRequestAutoMerge/u.test(call.query),
   );
-  return { armCalls, disarmCalls, notices };
+  return { armCalls, disarmCalls, notices, outputs };
 }
 
 function assertSkipped(result, reason) {
@@ -157,7 +193,7 @@ test("the allowlist matches standards dependabot-policy autoMerge.publisherAllow
 });
 
 test("the job runs only on pull_request events authored by Dependabot's account id", () => {
-  const job = workflowLines.indexOf("  enable-auto-merge:");
+  const job = workflowLines.indexOf("  gate:");
   const ifLine = workflowLines
     .slice(job, job + 4)
     .find((line) => line.trim().startsWith("if:"));
@@ -170,8 +206,84 @@ test("the sender and metadata outcome come from the event and the metadata step"
   assert.equal(stepEnv("METADATA_OUTCOME"), `\${{ steps.metadata.outcome }}`);
 });
 
-test("PR-derived values reach the script through env, never an expression", () => {
+test("PR-derived values reach the scripts through env, never an expression", () => {
   assert.doesNotMatch(gateScript, /\$\{\{/u);
+  assert.doesNotMatch(armScript, /\$\{\{/u);
+});
+
+test("the workflow holds exactly one PUBLISHER_ALLOWLIST, the standards lockstep anchor", () => {
+  // standards components/dependabot-policy/automerge-lockstep.mjs fails
+  // unless exactly one step env across all jobs sets PUBLISHER_ALLOWLIST.
+  assert.equal(workflowText.match(/^ +PUBLISHER_ALLOWLIST:/gmu)?.length, 1);
+});
+
+test("the gate job reads with pull-requests read and never sees the App secrets", () => {
+  const gate = jobBlock("gate");
+  assert.match(
+    gate,
+    /^ {4}permissions:\n {6}pull-requests: read\b[^\n]*\n {4}outputs:/mu,
+  );
+  assert.doesNotMatch(gate, /secrets\./u);
+  assert.doesNotMatch(gate, /actions\/checkout/u);
+  assert.match(gate, /decision: \$\{\{ steps\.gate\.outputs\.decision \}\}/u);
+  assert.match(gate, /head-sha: \$\{\{ steps\.gate\.outputs\.head-sha \}\}/u);
+});
+
+test("the arm job runs only for arm or disarm, after the gate", () => {
+  const arm = jobBlock("arm");
+  assert.match(arm, /^ {4}needs: gate$/mu);
+  assert.match(
+    arm,
+    /^ {4}if: \$\{\{ needs\.gate\.outputs\.decision == 'arm' \|\| needs\.gate\.outputs\.decision == 'disarm' \}\}$/mu,
+  );
+  assert.doesNotMatch(arm, /actions\/checkout/u);
+});
+
+test("the App token is minted only when the key is set, scoped to this repository", () => {
+  const arm = jobBlock("arm");
+  assert.match(
+    arm,
+    /HAS_AUTOMERGE_APP: \$\{\{ secrets\.AUTOMERGE_APP_PRIVATE_KEY != '' \}\}/u,
+  );
+  assert.match(arm, /if: \$\{\{ env\.HAS_AUTOMERGE_APP == 'true' \}\}/u);
+  assert.match(
+    arm,
+    /repositories: \$\{\{ github\.event\.repository\.name \}\}/u,
+  );
+  assert.match(arm, /permission-contents: write/u);
+  assert.match(arm, /permission-pull-requests: write/u);
+  assert.match(
+    arm,
+    /github-token: \$\{\{ steps\.app\.outputs\.token \|\| github\.token \}\}/u,
+  );
+  // Same pin as the repository's other App-token mint.
+  const pin = /actions\/create-github-app-token@([0-9a-f]{40}) # (v\S+)/u;
+  const other = fs.readFileSync(
+    path.join(__dirname, "..", "workflows", "maintenance-sync-standards.yml"),
+    "utf8",
+  );
+  assert.deepEqual(pin.exec(arm)?.slice(1), pin.exec(other)?.slice(1));
+});
+
+test("the arm and disarm read the decision and head from the gate outputs", () => {
+  assert.equal(
+    stepEnv("DECISION", armStepIndex),
+    `\${{ needs.gate.outputs.decision }}`,
+  );
+  assert.equal(
+    stepEnv("HEAD_SHA", armStepIndex),
+    `\${{ needs.gate.outputs.head-sha }}`,
+  );
+});
+
+test("a passing gate outputs arm and the verified head", async () => {
+  const { outputs } = await runGate();
+  assert.deepEqual(outputs, { decision: "arm", "head-sha": HEAD });
+});
+
+test("a failing gate on an unarmed PR outputs none", async () => {
+  const { outputs } = await runGate({ authorId: 12345 });
+  assert.equal(outputs.decision, "none");
 });
 
 test("a vendor patch is armed for squash at the verified head", async () => {
@@ -347,7 +459,7 @@ test("the gate step runs after a failed metadata fetch", () => {
       .some((line) => line.trim() === "continue-on-error: true"),
   );
   assert.equal(
-    workflowLines[gateStepIndex + 1].trim(),
+    workflowLines[gateStepIndex + 2].trim(),
     `if: \${{ !cancelled() }}`,
   );
 });

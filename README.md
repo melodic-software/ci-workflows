@@ -767,8 +767,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   every commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. A repository that adopts it
-  records it as the merge authority for Dependabot PRs. The caller owns the
-  trigger and concurrency:
+  records it as the merge authority for Dependabot PRs. A `gate` job checks
+  all of this with a read-only token and no secret; an `arm` job then arms or
+  disarms. GitHub's docs say "If the target branch uses a merge queue, the
+  built-in `GITHUB_TOKEN` cannot add pull requests to the queue"
+  ([Automating Dependabot with GitHub Actions][dependabot-actions]). Where the
+  base branch uses a merge queue, pass the optional `AUTOMERGE_APP_CLIENT_ID`
+  and `AUTOMERGE_APP_PRIVATE_KEY` secrets: the `arm` job then mints an App
+  token scoped to the calling repository with `contents` and `pull-requests`
+  write and arms with it. Without them it arms with `GITHUB_TOKEN`. A run
+  Dependabot triggers reads only Dependabot secrets, so store both as
+  Dependabot secrets. The caller owns the trigger and concurrency:
 
   ```yaml
   on:
@@ -783,6 +792,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
         contents: write
         pull-requests: write
       uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+      secrets:
+        AUTOMERGE_APP_CLIENT_ID: ${{ secrets.AUTOMERGE_APP_CLIENT_ID }}
+        AUTOMERGE_APP_PRIVATE_KEY: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
   ```
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
@@ -1088,6 +1100,7 @@ for repositories with a genuinely different policy. The small configs under
 `fixtures/` exist only to exercise action and CI-check contracts; they are not
 mirrors of the standards catalog.
 
+[dependabot-actions]: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/automating-dependabot-with-github-actions
 [gh-actions-conventions]: https://github.com/melodic-software/standards/blob/main/components/github-actions-conventions/README.md
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
 [osv-installation]: https://google.github.io/osv-scanner/installation/
