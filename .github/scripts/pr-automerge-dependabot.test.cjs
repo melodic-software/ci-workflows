@@ -239,11 +239,11 @@ test("the arm job runs only for arm or disarm, after the gate", () => {
   assert.doesNotMatch(arm, /actions\/checkout/u);
 });
 
-test("the App token is minted only when the key is set, scoped to this repository", () => {
+test("the App token is minted only when both App secrets are set, scoped to this repository", () => {
   const arm = jobBlock("arm");
   assert.match(
     arm,
-    /HAS_AUTOMERGE_APP: \$\{\{ secrets\.AUTOMERGE_APP_PRIVATE_KEY != '' \}\}/u,
+    /HAS_AUTOMERGE_APP: \$\{\{ secrets\.AUTOMERGE_APP_CLIENT_ID != '' && secrets\.AUTOMERGE_APP_PRIVATE_KEY != '' \}\}/u,
   );
   assert.match(arm, /if: \$\{\{ env\.HAS_AUTOMERGE_APP == 'true' \}\}/u);
   assert.match(

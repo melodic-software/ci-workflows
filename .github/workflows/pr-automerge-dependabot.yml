@@ -195,8 +195,8 @@ jobs:
       contents: write # enablePullRequestAutoMerge with GITHUB_TOKEN requires it.
       pull-requests: write # Arm or disarm auto-merge with GITHUB_TOKEN.
     env:
-      # `if:` cannot read a secret; this carries only whether the key is set.
-      HAS_AUTOMERGE_APP: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY != '' }}
+      # `if:` cannot read a secret; this carries only whether both App secrets are set.
+      HAS_AUTOMERGE_APP: ${{ secrets.AUTOMERGE_APP_CLIENT_ID != '' && secrets.AUTOMERGE_APP_PRIVATE_KEY != '' }}
     steps:
       - name: Mint App token
         id: app
