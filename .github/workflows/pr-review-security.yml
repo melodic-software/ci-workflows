@@ -19,7 +19,7 @@ name: pr-review-security
 #       security-review:
 #         permissions:
 #           contents: read         # checkout + read the diff
-#           pull-requests: write   # post the review + tracking comment
+#           pull-requests: write   # inline comments + the lane's comment
 #           id-token: write        # OIDC for the Claude GitHub App token
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@<sha>
 #         secrets:
@@ -48,12 +48,14 @@ name: pr-review-security
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
 #   - The checkout must persist credentials until claude-code-action#1236
 #     ships; the last step strips them.
-#   - The last reviewed head is kept in a pull request comment this job writes
-#     with its own token, so its author is github-actions[bot]; the lane reads
-#     only that author's marker. Any workflow in the repository holding
-#     `pull-requests: write` could write one and narrow a later incremental
-#     review; same-repository writers already receive this lane's secret, so
-#     the lane trusts them.
+#   - The last reviewed head and the review summary are kept in one pull
+#     request comment this job writes with its own token, so its author is
+#     github-actions[bot]; the lane reads only that author's marker. The
+#     model has no comment tool but the inline one: track_progress is off,
+#     so the action runs in agent mode and posts no tracking comment. Any
+#     workflow in the repository holding `pull-requests: write` could write
+#     a marker and narrow a later incremental review; same-repository
+#     writers already receive this lane's secret, so the lane trusts them.
 #
 # REVIEW CADENCE: the same as pr-review.yml (see its header): drafts are
 # skipped, `opened`, `reopened` and `ready_for_review` review the whole pull
@@ -389,7 +391,8 @@ jobs:
             };
 
             // The newest marker comment this lane's job token wrote: the head it
-            // reviewed, and on its second line the base branch and merge base.
+            // reviewed, on its second line the base branch and merge base, then a
+            // status line and the review summary, which a skip carries forward.
             const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}) -->$/u;
             const readMarker = async () => {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -403,7 +406,10 @@ jobs:
                 .at(-1);
               if (!marker) return { sha: "", ref: "", mergeBase: "" };
               core.setOutput("marker-id", String(marker.id));
-              const base = BASE_LINE.exec(marker.body.split("\n")[1] ?? "");
+              const lines = marker.body.split("\n");
+              const base = BASE_LINE.exec(lines[1] ?? "");
+              const visible = lines.slice(base ? 2 : 1);
+              core.setOutput("last-summary", visible.slice(1).join("\n").trim());
               return {
                 sha: marker.body.slice(MARKER.length, MARKER.length + 40),
                 ref: base?.[1] ?? "",
@@ -413,6 +419,8 @@ jobs:
 
             const incremental = env.INCREMENTAL === "true";
             try {
+              // Read first, so a later failure still updates the one comment.
+              const recorded = await readMarker();
               const prFiles = await github.paginate(github.rest.pulls.listFiles, {
                 owner,
                 repo,
@@ -432,7 +440,6 @@ jobs:
                 now = (await compare(`${env.BASE_REF}...${head}`)).merge_base_commit.sha;
                 core.setOutput("merge-base", now);
               }
-              const recorded = incremental ? await readMarker() : { sha: "" };
               if (incremental && env.EVENT_ACTION === "synchronize" && current) {
                 const result = await sinceLastReview(prFiles, recorded, now);
                 if (result.full) {
@@ -478,13 +485,12 @@ jobs:
               core.setOutput("review", "true");
               core.setOutput("scope", "whole");
             }
-            if (incremental) core.setOutput("record", "true");
 
       # The model, effort, inline-comment and plugin-command Skill grants go
       # after the caller's args so replacing claude-args cannot drop them, and
-      # so does the findings schema, which makes the action return the
-      # findings count as structured output; heredoc output as claude-args may
-      # be multiline. started-at lets the outcome step tell a step timeout
+      # so does the schema, which makes the action return the findings count
+      # and the review summary as structured output; heredoc output as
+      # claude-args may be multiline. started-at lets the outcome step tell a step timeout
       # from other failures, and opens the window the verify step searches.
       # fallback says whether the caller passed a fallback token.
       - name: Compose Claude CLI arguments
@@ -510,7 +516,7 @@ jobs:
           esac
           skill="${PLUGIN_COMMAND#/}"
           skill="${skill%% *}"
-          schema='{"type":"object","properties":{"findings":{"type":"integer","minimum":0}},"required":["findings"],"additionalProperties":false}'
+          schema='{"type":"object","properties":{"findings":{"type":"integer","minimum":0},"summary":{"type":"string","minLength":1,"maxLength":20000}},"required":["findings","summary"],"additionalProperties":false}'
           args="$BASE_ARGS --model $MODEL --effort $EFFORT --json-schema '$schema' --allowedTools mcp__github_inline_comment__create_inline_comment --allowedTools \"Skill($skill)\""
           delimiter="gha_${RANDOM}${RANDOM}_EOF"
           {
@@ -547,7 +553,10 @@ jobs:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
+          # No track_progress: on a pull_request event with a prompt the action
+          # runs in agent mode, which posts no tracking comment and gives the
+          # model no comment tool (claude-code-action src/modes/detector.ts,
+          # src/modes/agent/index.ts, src/mcp/install-mcp-server.ts at this pin).
           display_report: false
           # Inline comments post as they are made, so a step timeout cannot
           # drop buffered findings (action.yml classify_inline_comments).
@@ -582,15 +591,13 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
             When you finish, whether or not you found anything:
-            - Never put the lines below in an HTML comment: the comment tools
-              delete HTML comments before posting.
-            - End your summary comment with this line, as plain text on a line
-              of its own, exactly as written:
-              claude-lane-summary: lane=claude-security-review sha=${{ github.event.pull_request.head.sha }} run=${{ github.run_id }}
-            - End the body of every inline comment with this plain-text line:
+            - End the body of every inline comment with this line, as plain
+              text (the comment tool deletes HTML comments before posting):
               claude-lane: claude-security-review
             - Return the number of findings you reported, inline comments
-              included (0 when none), as `findings` in your structured output.
+              included (0 when none), as `findings` in your structured
+              output, and your review summary in Markdown as `summary`. Do
+              not post the summary as a comment: the job posts it.
 
       # With a fallback token, a failed first attempt is checked for a usage
       # limit here, by the rule report-lane-outcome's classify.cjs uses for
@@ -699,7 +706,10 @@ jobs:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.fallback-claude-code-oauth-token }}
-          track_progress: true
+          # No track_progress: on a pull_request event with a prompt the action
+          # runs in agent mode, which posts no tracking comment and gives the
+          # model no comment tool (claude-code-action src/modes/detector.ts,
+          # src/modes/agent/index.ts, src/mcp/install-mcp-server.ts at this pin).
           display_report: false
           # Inline comments post as they are made, so a step timeout cannot
           # drop buffered findings (action.yml classify_inline_comments).
@@ -734,15 +744,13 @@ jobs:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
             When you finish, whether or not you found anything:
-            - Never put the lines below in an HTML comment: the comment tools
-              delete HTML comments before posting.
-            - End your summary comment with this line, as plain text on a line
-              of its own, exactly as written:
-              claude-lane-summary: lane=claude-security-review sha=${{ github.event.pull_request.head.sha }} run=${{ github.run_id }}
-            - End the body of every inline comment with this plain-text line:
+            - End the body of every inline comment with this line, as plain
+              text (the comment tool deletes HTML comments before posting):
               claude-lane: claude-security-review
             - Return the number of findings you reported, inline comments
-              included (0 when none), as `findings` in your structured output.
+              included (0 when none), as `findings` in your structured
+              output, and your review summary in Markdown as `summary`. Do
+              not post the summary as a comment: the job posts it.
 
       # The attempt that counts: the fallback when it ran, else the first.
       # Everything below reads the outcome, execution file, start time and
@@ -790,12 +798,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # A green Claude step proves the action ran, not that a review was
-      # posted. This step looks for the review: the findings count from the
-      # step's structured output, a summary by the Claude App naming this lane,
-      # head and run, and a count no lower than the inline comments the App posted
-      # on the head since the step started (a comment footed for the other
-      # lane is not counted, and one with no `claude-lane:` footer fails the
-      # step). Its verdict decides review-ran below, so a
+      # posted. This step looks for the review: the findings count and the
+      # summary from the step's structured output, and a count no lower than
+      # the inline comments the App posted on the head since the step
+      # started (a comment footed for the other lane is not counted, and one
+      # with no `claude-lane:` footer fails the step). Its verdict decides review-ran below, so a
       # review that did not complete writes no marker and goes red as class
       # `incomplete`. Every value reaches the script through env; the model's
       # output is parsed and never printed.
@@ -809,7 +816,6 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STARTED_AT: ${{ steps.attempt.outputs.started-at }}
-          RUN_ID: ${{ github.run_id }}
           STRUCTURED_OUTPUT: ${{ steps.attempt.outputs.structured-output }}
           SCOPE: ${{ steps.scope.outputs.scope }}
         with:
@@ -828,37 +834,35 @@ jobs:
             if (env.REQUIRE_FULL_DIFF === "true" && env.SCOPE !== "incremental" && env.FULL_DIFF !== "true") {
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
-            let findings;
+            let output;
             try {
-              findings = JSON.parse(env.STRUCTURED_OUTPUT || "null")?.findings;
+              output = JSON.parse(env.STRUCTURED_OUTPUT || "null");
             } catch {
-              findings = undefined;
+              output = undefined;
             }
+            const findings = output?.findings;
             if (!Number.isSafeInteger(findings) || findings < 0) {
               return incomplete("the review returned no findings count");
             }
+            // Checked as the record step will post it: without HTML comments.
+            const summary =
+              typeof output.summary === "string" ? output.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
+            if (!summary) return incomplete("the review returned no summary");
             if (!Number.isFinite(start)) return incomplete("the review step's start time is unknown");
 
             const since = new Date(start).toISOString();
             const number = Number(env.PR_NUMBER);
-            const [comments, reviews, inline] = await Promise.all([
-              github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: number, since, per_page: 100 }),
-              github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 }),
-              github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: number, since, per_page: 100 }),
-            ]);
+            const inline = await github.paginate(github.rest.pulls.listReviewComments, {
+              owner,
+              repo,
+              pull_number: number,
+              since,
+              per_page: 100,
+            });
             const inWindow = (stamp) => Date.parse(stamp ?? "") >= start;
             const byClaude = (item) => item.user?.login === BOT;
 
-            // Plain-text lines: the action's comment tools delete HTML comments.
-            const SUMMARY = /^\s*`?claude-lane-summary: lane=([\w-]+) sha=([0-9a-f]{40}) run=([0-9]+)`?\s*$/gmu;
-            const namesThisReview = (body) =>
-              [...(body ?? "").matchAll(SUMMARY)].some(([, id, sha, run]) => id === lane && sha === head && run === env.RUN_ID);
-            const summarized = [
-              ...comments.filter((comment) => byClaude(comment) && inWindow(comment.updated_at)),
-              ...reviews.filter((review) => byClaude(review) && inWindow(review.submitted_at)),
-            ].some((item) => namesThisReview(item.body));
-            if (!summarized) return incomplete("no summary by the Claude App names this lane and head");
-
+            // A plain-text line: the action's comment tool deletes HTML comments.
             // The footer is the comment's last non-blank line, so a footer-shaped
             // line quoted higher in the body does not count. A comment footed for
             // another lane is that lane's. One with no footer cannot be attributed
@@ -881,6 +885,7 @@ jobs:
             core.setOutput("verdict", "complete");
             core.setOutput("findings", String(findings));
             core.setOutput("inline", String(posted));
+            core.setOutput("summary", summary);
 
       - name: Report review outcome
         id: review-outcome
@@ -895,14 +900,15 @@ jobs:
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
 
-      # Only a completed review, or a review that was not needed, moves the
-      # recorded head forward. A failure here costs the next push a whole
-      # review, not this one its verdict.
+      # The lane's one comment: created once, then edited in place. Only a
+      # completed review, or a review that was not needed, moves the
+      # recorded head forward; its visible body is the head and the review
+      # summary (a skip keeps the last summary). A failure here costs the
+      # next push a whole review, not this one its verdict.
       - name: Record the reviewed head
         if: >-
-          steps.scope.outputs.record == 'true'
-          && (steps.scope.outputs.review == 'false'
-              || steps.review-outcome.outputs.review-ran == 'true')
+          steps.scope.outputs.review == 'false'
+          || steps.review-outcome.outputs.review-ran == 'true'
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -912,6 +918,11 @@ jobs:
           MARKER_ID: ${{ steps.scope.outputs.marker-id }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
+          SKIP_REASON: ${{ steps.scope.outputs.skip-reason }}
+          LAST_SUMMARY: ${{ steps.scope.outputs.last-summary }}
+          SUMMARY: ${{ steps.verify.outputs.summary }}
+          FINDINGS: ${{ steps.verify.outputs.findings }}
+          INLINE: ${{ steps.verify.outputs.inline }}
         with:
           script: |
             const env = process.env;
@@ -921,10 +932,20 @@ jobs:
             const base = /^[0-9a-f]{40}$/u.test(env.MERGE_BASE ?? "")
               ? [`<!-- claude-lane-reviewed-base ref=${env.BASE_REF} merge-base=${env.MERGE_BASE} -->`]
               : [];
+            const status = env.SKIP_REASON
+              ? `**${env.LANE}** needs no new review of \`${env.HEAD_SHA}\`: ${env.SKIP_REASON}.`
+              : `**${env.LANE}** reviewed \`${env.HEAD_SHA}\`: ${env.FINDINGS} finding(s), ${env.INLINE} as inline comments.`;
+            // The summary is model text: its HTML comments are dropped, so no
+            // hidden line can pose as a marker, and its length is capped.
+            const summary = ((env.SKIP_REASON ? env.LAST_SUMMARY : env.SUMMARY) ?? "")
+              .replace(/<!--[\s\S]*?-->/gu, "")
+              .trim()
+              .slice(0, 60000);
             const body = [
               `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=${env.HEAD_SHA} -->`,
               ...base,
-              `${env.LANE} has reviewed this pull request through ${env.HEAD_SHA}; a later push is reviewed from there.`,
+              status,
+              ...(summary ? ["", summary] : []),
             ].join("\n");
             if (env.MARKER_ID) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: Number(env.MARKER_ID), body });
@@ -993,7 +1014,7 @@ jobs:
             max-turns) why="the review used every turn --max-turns allows before finishing; raise it in claude-args" ;;
             timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
-            incomplete) why="no completed review was found on this head: no summary by the Claude App named it, its findings count was missing or below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
+            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;
           esac

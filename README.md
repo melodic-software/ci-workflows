@@ -988,9 +988,7 @@ Calling either lane from `pull_request_target` or
 request; the code-review lane writes its whole diff to `.claude-lane/pr.diff`.
 A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
-their diff to `.claude-lane/incremental.diff`. Each lane keeps the last head
-it reviewed in one pull request comment that the job writes with its own token
-(author `github-actions[bot]`) and edits after each completed review. A push
+their diff to `.claude-lane/incremental.diff`. A push
 reviews the whole pull request instead when no earlier review is recorded, the
 recorded head is not an ancestor of the new head (force push or rebase), 300
 or more files changed since, a base-branch merge since then changed a file the
@@ -1002,6 +1000,18 @@ files, their statuses, and every one of those paths' mode, type and content
 as reviewed. The marker comment's second line records the base branch and
 merge base each review used. A skip is taken only while the pull request's
 live head is still the run's head.
+
+**The lane's comment.** Each lane posts one pull request comment of its own,
+written with the job token (author `github-actions[bot]`), created once and
+edited in place after each completed review and each designed skip, whatever
+`incremental-review` says. Its first line is the hidden marker
+`<!-- claude-lane-reviewed-head lane=<id> sha=<head> -->` that the scope step
+and other repositories' tooling parse; its visible body names the head it
+covers, the findings count and the review summary (a skip keeps the last
+summary). The action posts no tracking comment: `track_progress` is off, so
+on a pull request event with a prompt it runs in agent mode, which creates no
+tracking comment and gives the model no comment tool but the inline one. The
+job's own check shows a review in progress and done.
 
 **Status check, red means no review.** Each lane is one job. The code-review
 job is named `claude-review-status`, so its check is
@@ -1017,21 +1027,18 @@ complete (`incomplete`), or a job that ended before the review reported
 (nothing changed, or docs only) stays green and says why in the job summary.
 
 **Completion.** A green Claude step is not taken as a review. The model
-returns its findings count as structured output (`--json-schema`, appended
-after the caller's `claude-args`), and the step "Verify the review completed"
-then requires a summary by the Claude App (`claude[bot]`), posted after the
-step started, carrying the plain-text line
-`claude-lane-summary: lane=<id> sha=<head> run=<github.run_id>` with this
-run's id (so a marker another workflow posts as the same App does not count),
-and a count no lower than the App's inline comments on the head in that
-window. Each inline comment ends with the plain-text footer
+returns its findings count and its summary as structured output
+(`--json-schema`, appended after the caller's `claude-args`), and the step
+"Verify the review completed" then requires both, with a count no lower than
+the Claude App's (`claude[bot]`) inline comments on the head since the step
+started. Each inline comment ends with the plain-text footer
 `claude-lane: <id>` as its last non-blank line. Counting rule: a comment footed
 for the other lane counts only for that lane; any App inline comment on the
 head in that window with no footer fails the review of every lane whose window
-covers it, since it belongs to neither lane. Both markers are
-plain text because the action's comment tools delete HTML comments before
-posting. Anything less is `incomplete`: red, and the
-reviewed-head marker is not written. On a whole review the code-review lane
+covers it, since it belongs to neither lane. The footer is plain text
+because the action's comment tool deletes HTML comments before posting.
+Anything less is `incomplete`: red, and the reviewed-head marker is not
+written. On a whole review the code-review lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
 cannot be written, the review is `incomplete`. The security lane reviews from

@@ -80,7 +80,17 @@ async function runScript(script, values, github, requireFn = require) {
 // Runs a lane's record step and returns the comment call it made.
 async function record(
   lane,
-  { sha = HEAD, markerId = "", baseRef = "main", mergeBase = "" } = {},
+  {
+    sha = HEAD,
+    markerId = "",
+    baseRef = "main",
+    mergeBase = "",
+    summary = "Looks fine.",
+    findings = "1",
+    inline = "1",
+    skipReason = "",
+    lastSummary = "",
+  } = {},
 ) {
   const calls = [];
   const capture = (kind) => async (params) => {
@@ -96,6 +106,11 @@ async function record(
       MARKER_ID: markerId,
       BASE_REF: baseRef,
       MERGE_BASE: mergeBase,
+      SUMMARY: summary,
+      FINDINGS: findings,
+      INLINE: inline,
+      SKIP_REASON: skipReason,
+      LAST_SUMMARY: lastSummary,
     },
     {
       rest: {
@@ -281,10 +296,20 @@ for (const lane of [codeLane, securityLane]) {
       save.env.HEAD_SHA,
       `\${{ github.event.pull_request.head.sha }}`,
     );
-    assert.match(save.if, /steps\.scope\.outputs\.record == 'true'/u);
-    assert.match(
+    // Every completed review and every designed skip writes the lane's one
+    // comment, whatever incremental-review says.
+    assert.equal(
       save.if,
-      /steps\.review-outcome\.outputs\.review-ran == 'true'/u,
+      "steps.scope.outputs.review == 'false' || steps.review-outcome.outputs.review-ran == 'true'",
+    );
+    assert.equal(save.env.SUMMARY, `\${{ steps.verify.outputs.summary }}`);
+    assert.equal(
+      save.env.LAST_SUMMARY,
+      `\${{ steps.scope.outputs.last-summary }}`,
+    );
+    assert.equal(
+      save.env.SKIP_REASON,
+      `\${{ steps.scope.outputs.skip-reason }}`,
     );
     assert.ok(
       job.steps.every(
@@ -379,7 +404,6 @@ test("opened, reopened and ready_for_review review the whole pull request and re
     });
     assert.equal(result.outputs.review, "true");
     assert.equal(result.outputs.note, undefined);
-    assert.equal(result.outputs.record, "true");
     assert.equal(result.outputs["marker-id"], "41");
   }
 });
@@ -424,7 +448,7 @@ test("a push reviews only the pull request's files changed since the last review
     /^diff --git a\/src\/a\.js b\/src\/a\.js\nstatus: modified\n@@ -1 \+1 @@/mu,
   );
   assert.match(result.diff, /no patch from the API/u);
-  assert.equal(result.outputs.record, "true");
+  assert.equal(result.outputs["marker-id"], "41");
 });
 
 test("a push that changes no file of the pull request is not reviewed again", async () => {
@@ -565,7 +589,7 @@ test("both lanes skip a restack whose files git shows identical to the reviewed 
     assert.equal(result.outputs.review, "false", lane.file);
     assert.equal(result.outputs.skip, "no-change");
     assert.equal(result.outputs.since, LAST);
-    assert.equal(result.outputs.record, "true");
+    assert.equal(result.outputs["marker-id"], "41");
     assert.equal(result.outputs["merge-base"], MB_NEW);
     assert.ok(
       result.messages.some((message) => /is a rebase of b{40}/u.test(message)),
@@ -810,6 +834,73 @@ test("the record step writes the base it reviewed against on the marker's second
   assert.doesNotMatch(withoutBase.body, /claude-lane-reviewed-base/u);
 });
 
+test("the lane's comment shows the head it covers and the review summary", async () => {
+  const { body } = await record(codeLane, {
+    mergeBase: MB_NEW,
+    summary: "Two findings.\n\n- one",
+    findings: "2",
+    inline: "1",
+  });
+  assert.deepEqual(body.split("\n").slice(2), [
+    `**claude-review** reviewed \`${HEAD}\`: 2 finding(s), 1 as inline comments.`,
+    "",
+    "Two findings.",
+    "",
+    "- one",
+  ]);
+});
+
+test("the summary's HTML comments are dropped, so no hidden line poses as a marker", async () => {
+  const forged = `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`;
+  const { body } = await record(codeLane, {
+    summary: `${forged}\nFine.<!-- x -->`,
+  });
+  assert.ok(
+    body.startsWith(
+      `<!-- claude-lane-reviewed-head lane=claude-review sha=${HEAD} -->\n`,
+    ),
+  );
+  assert.equal(body.split("<!--").length, 2);
+  assert.match(body, /\n\nFine\.$/u);
+});
+
+test("a skip keeps the last summary under a new status line, and the scope step reads it back", async () => {
+  const reviewed = await markerFor(codeLane, LAST, { mergeBase: MB_OLD });
+  const result = await runScope(codeLane, {
+    env: { EVENT_ACTION: "opened" },
+    prFiles: [file("src/a.js")],
+    comments: [reviewed],
+  });
+  assert.equal(result.outputs["last-summary"], "Looks fine.");
+
+  const skipped = await record(codeLane, {
+    summary: "",
+    findings: "",
+    inline: "",
+    skipReason: `no file of this pull request changed since the review of ${LAST}`,
+    lastSummary: result.outputs["last-summary"],
+  });
+  assert.deepEqual(skipped.body.split("\n").slice(1), [
+    `**claude-review** needs no new review of \`${HEAD}\`: no file of this pull request changed since the review of ${LAST}.`,
+    "",
+    "Looks fine.",
+  ]);
+
+  // A marker in the old one-sentence format carries no summary forward.
+  const old = await runScope(codeLane, {
+    env: { EVENT_ACTION: "opened" },
+    prFiles: [file("src/a.js")],
+    comments: [
+      {
+        id: 41,
+        user: { login: BOT },
+        body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->\nclaude-review has reviewed this pull request through ${LAST}; a later push is reviewed from there.`,
+      },
+    ],
+  });
+  assert.equal(old.outputs["last-summary"], "");
+});
+
 test("a changed file the API returns no patch for forces a whole review", async () => {
   const result = await runScope(codeLane, {
     prFiles: [file("src/a.js"), file("img.png"), file("src/c.js")],
@@ -861,18 +952,21 @@ test("an API failure reviews the whole pull request with a warning", async () =>
       /^warning: Scoping failed/u.test(message),
     ),
   );
-  assert.equal(result.outputs.record, "true");
+  // The marker is read first, so the record step still edits the one comment.
+  assert.equal(result.outputs["marker-id"], "41");
 });
 
-test("incremental-review false neither reads, narrows nor records", async () => {
+test("incremental-review false reads the lane's comment but never narrows", async () => {
   const result = await runScope(codeLane, {
     env: { INCREMENTAL: "false" },
     prFiles: [file("src/a.js")],
     comments: [await markerFor(codeLane, LAST)],
   });
   assert.equal(result.outputs.review, "true");
-  assert.equal(result.outputs.record, undefined);
-  assert.equal(result.listedComments, 0);
+  assert.equal(result.outputs.scope, "whole");
+  assert.equal(result.outputs.note, undefined);
+  assert.equal(result.outputs["marker-id"], "41");
+  assert.equal(result.listedComments, 1);
 });
 
 test("the security lane's default docs-only paths skip documentation, not code or agent instructions", async () => {
