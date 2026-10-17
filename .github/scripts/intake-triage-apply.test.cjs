@@ -488,6 +488,8 @@ test("compose reports the CLI's turn cap, the last --max-turns, for the run reco
     ["--model claude-sonnet-5 --max-turns 30", "30"],
     ["--max-turns=12 --model x", "12"],
     ["--max-turns 15 --max-turns 40", "40"],
+    ['--max-turns "30" --model x', "30"],
+    ["--max-turns='7'", "7"],
     ["--model claude-sonnet-5", ""],
     ["--max-turnsx 9", ""],
   ]) {

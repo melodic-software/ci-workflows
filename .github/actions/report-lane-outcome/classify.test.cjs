@@ -210,6 +210,27 @@ test("a run that used every turn classifies as max-turns", () => {
   ]);
 });
 
+test("an error result past the caller's cap keeps its errors[] class", () => {
+  fs.writeFileSync(
+    executionFile,
+    JSON.stringify([
+      {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 20,
+        errors: [
+          'APIError: {"type":"error","error":{"type":"authentication_error","message":"x"}}',
+        ],
+      },
+    ]),
+  );
+  assert.equal(
+    classifyExecutionFile(executionFile, { maxTurns: "15" }).failureClass,
+    "auth",
+  );
+});
+
 test("a success result past the caller's cap classifies as max-turns", () => {
   // The shape of claude-code-plugins run 39038437240: the action failed with
   // "Claude reported a successful result after 16 turns, exceeding the

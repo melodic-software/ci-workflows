@@ -17,8 +17,8 @@
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.
 //   2. max-turns: subtype `error_max_turns` (the run used every turn
-//      --max-turns allows), or `num_turns` above the caller's `maxTurns`. The
-//      second is claude-code-action failing a run that finished past the cap
+//      --max-turns allows), or a success-subtype result with `num_turns` above
+//      the caller's `maxTurns`. The second is claude-code-action failing a run that finished past the cap
 //      ("Claude reported a successful result after N turns, exceeding the
 //      configured maximum of M"), whose result message reads as a success.
 //   3. an allowlisted substring over `errors[]`, matching the serialized
@@ -130,7 +130,8 @@ function classifyExecutionFile(
     failureClass = classFromStatus(status);
   } else if (
     last.subtype === "error_max_turns" ||
-    (/^\d{1,6}$/u.test(maxTurns) &&
+    (last.subtype === "success" &&
+      /^\d{1,6}$/u.test(maxTurns) &&
       Number.isInteger(last.num_turns) &&
       last.num_turns > Number(maxTurns))
   ) {

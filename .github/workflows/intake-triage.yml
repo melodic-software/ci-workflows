@@ -348,8 +348,8 @@ jobs:
             core.setOutput("args", args);
             // The turn cap the CLI applies (the last --max-turns), for the
             // outcome step's run record. Empty when the caller set none.
-            const caps = [...(env.BASE_ARGS ?? "").matchAll(/(?:^|\s)--max-turns(?:=|\s+)(\d+)(?=\s|$)/gu)];
-            core.setOutput("max-turns", caps.at(-1)?.[1] ?? "");
+            const caps = [...(env.BASE_ARGS ?? "").matchAll(/(?:^|\s)--max-turns(?:=|\s+)(["']?)(\d+)\1(?=\s|$)/gu)];
+            core.setOutput("max-turns", caps.at(-1)?.[2] ?? "");
             // Lets the outcome step tell a step timeout from other failures.
             core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
 
