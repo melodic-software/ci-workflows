@@ -570,6 +570,30 @@ jobs:
             echo "fallback=$HAS_FALLBACK"
           } >> "$GITHUB_OUTPUT"
 
+      # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, Claude Code on Linux will not
+      # start without bubblewrap ("bubblewrap is required for subprocess env
+      # scrubbing and isolation", v2.1.300). claude-code-action installs it
+      # only for allowed_non_write_users (action.yml, "Install subprocess
+      # isolation dependencies"), so this step does the same for both review
+      # attempts and fails closed without bwrap.
+      - name: Install subprocess isolation
+        if: steps.scope.outputs.review != 'false'
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -qq &&
+              sudo apt-get install -y --no-install-recommends bubblewrap socat && break
+            echo "apt-get attempt $i failed, retrying..."
+            sleep 5
+          done
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if ! command -v bwrap >/dev/null; then
+            echo "::error::bubblewrap is not installed; Claude Code cannot scrub its subprocess environment"
+            exit 1
+          fi
+
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.
       # The pick step's first-attempt timeout repeats timeout-minutes. The
