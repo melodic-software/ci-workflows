@@ -537,8 +537,9 @@ jobs:
       # unprivileged user namespaces bubblewrap needs; the action's sysctl lifts
       # it, here only when bwrap cannot start, so a runner that works as it is
       # keeps its kernel setting. A failure here surfaces as the review step's
-      # install error, which the outcome step classifies. One minute keeps the
-      # step inside the job's allowance outside the review step.
+      # install error, which the outcome step classifies. The one-minute cap
+      # can push the job past its timeout only when the review step also runs
+      # to its own timeout, a run that fails either way.
       - name: Install subprocess isolation dependencies
         if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
         continue-on-error: true
@@ -548,7 +549,7 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 update -qq
             sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
           fi
-          if ! bwrap --ro-bind / / true 2>/dev/null &&
+          if command -v bwrap >/dev/null && ! bwrap --ro-bind / / true 2>/dev/null &&
             [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
