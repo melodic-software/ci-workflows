@@ -138,7 +138,7 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
     assert.doesNotMatch(check.with.script, /\$\{\{/u);
     assert.equal(
       byId("fallback").if,
-      "steps.first-outcome.outputs.rate-limit == 'true'",
+      "steps.first-outcome.outputs.retry == 'true'",
     );
     const order = [
       "claude-review",
@@ -224,6 +224,7 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
           String(expected),
           `${JSON.stringify(payload)} timedOut=${timedOut}`,
         );
+        assert.equal(outputs.retry, String(expected));
         assert.equal(warnings.length, expected ? 1 : 0);
         for (const warning of warnings) assert.doesNotMatch(warning, /class=/u);
       }
@@ -234,6 +235,33 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
       BUDGET_MINUTES: String(budget),
     });
     assert.equal(missing.outputs["rate-limit"], "false");
+  });
+
+  test(`${file}: a usage limit after an inline comment is not retried, so no finding posts twice`, async () => {
+    const directory = makeTemporaryDirectory("first-attempt-posted-");
+    const toolUse = (name) => ({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name, input: {} }] },
+    });
+    const limit = { api_error_status: 429, is_error: true };
+    const run = async (messages) => {
+      const executionFile = path.join(directory, "run.json");
+      fs.writeFileSync(executionFile, JSON.stringify(messages));
+      return runCheck(byId("first-outcome").with.script, {
+        EXECUTION_FILE: executionFile,
+        STARTED_AT: String(Math.floor(Date.now() / 1000) - 5),
+        BUDGET_MINUTES: String(budget),
+      });
+    };
+    const posted = await run([
+      toolUse("mcp__github_inline_comment__create_inline_comment"),
+      limit,
+    ]);
+    assert.equal(posted.outputs["rate-limit"], "true");
+    assert.equal(posted.outputs.retry, "false");
+    assert.match(posted.warnings[0], /no fallback attempt/u);
+    const readOnly = await run([toolUse("Read"), limit]);
+    assert.equal(readOnly.outputs.retry, "true");
   });
 
   test(`${file}: the fallback attempt gets what is left of the review budget, and none under 2 minutes`, () => {

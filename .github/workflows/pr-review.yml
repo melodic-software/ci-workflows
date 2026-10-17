@@ -648,6 +648,8 @@ jobs:
       # class rate-limit (a test holds the two equal). It leaves a warning with
       # no `class=` token: only the final report names the run's class, so a
       # fallback that then fails another way is never read as rate-limited.
+      # A first attempt that already called the inline-comment tool is not
+      # retried, so no finding posts twice.
       - name: Check the first attempt for a usage limit
         id: first-outcome
         if: >-
@@ -665,9 +667,19 @@ jobs:
             const env = process.env;
             const timedOut = Date.now() / 1000 - Number(env.STARTED_AT || Number.NaN) >= Number(env.BUDGET_MINUTES) * 60;
             let last;
+            let posted = false;
             try {
               const parsed = JSON.parse(fs.readFileSync(env.EXECUTION_FILE ?? "", "utf8"));
               last = Array.isArray(parsed) ? parsed.at(-1) : undefined;
+              posted =
+                Array.isArray(parsed) &&
+                parsed.some(
+                  (message) =>
+                    Array.isArray(message?.message?.content) &&
+                    message.message.content.some(
+                      (part) => part?.type === "tool_use" && part.name === "mcp__github_inline_comment__create_inline_comment",
+                    ),
+                );
             } catch {
               last = undefined;
             }
@@ -686,16 +698,21 @@ jobs:
                   ) &&
                   text.includes('"type":"rate_limit_error"'));
             if (limited) {
-              core.warning("The first account hit its usage limit.");
+              core.warning(
+                posted
+                  ? "The first account hit its usage limit after posting inline comments; no fallback attempt."
+                  : "The first account hit its usage limit.",
+              );
             }
             core.setOutput("rate-limit", String(limited));
+            core.setOutput("retry", String(limited && !posted));
 
       # The fallback attempt gets what is left of the review step's budget, so
       # both attempts fit inside the job's timeout. Under 2 minutes left, it
       # does not start, and the first attempt's usage limit stands.
       - name: Prepare the fallback attempt
         id: fallback
-        if: steps.first-outcome.outputs.rate-limit == 'true'
+        if: steps.first-outcome.outputs.retry == 'true'
         env:
           STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
           BUDGET_MINUTES: "11"
