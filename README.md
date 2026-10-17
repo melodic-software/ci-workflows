@@ -916,8 +916,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
   the action's own). The caller grants `contents: read` and `issues: write`
   and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries
-  the canonical caller and the security model. Runs for any issue author,
-  including people without write access.
+  the canonical caller and the security model. Runs only for issues whose
+  author is an `OWNER` or `MEMBER`, or a bot whose sender id is in
+  `allowed-bot-sender-ids`; other issues wait for a person.
 
 ## Claude lanes — shared consumption contract
 
@@ -1038,6 +1039,13 @@ which bounds that only when inline comments exist. A failed, skipped or
 incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
 reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
+Every outcome annotation, and a notice on a run that completed, also carries
+the run record as bare tokens, each omitted when unknown: `turns=<n>`,
+`max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
+`credential` input), `models=<modelUsage keys>` and, on `class=rate-limit`,
+`resets=<ISO 8601 UTC>` and `resets-window=<rateLimitType>` from the run's
+newest `rejected` `rate_limit_event` (none without one), the time also
+exposed as the composite's `resets-at` output.
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
 required check); do not make either check required.

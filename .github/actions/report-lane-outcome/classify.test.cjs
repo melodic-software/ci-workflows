@@ -12,7 +12,11 @@ const test = require("node:test");
 const {
   makeTemporaryDirectory,
 } = require("../../scripts/temporary-directories.cjs");
-const { classifyExecutionFile } = require("./classify.cjs");
+const {
+  classifyExecutionFile,
+  readRunRecord,
+  recordTokens,
+} = require("./classify.cjs");
 
 // A distinctive string standing in for the model-authored `result` text and the
 // raw error stacks: it must never reach an output, because those two fields are
@@ -206,6 +210,61 @@ test("a run that used every turn classifies as max-turns", () => {
   ]);
 });
 
+test("an error result past the caller's cap keeps its errors[] class", () => {
+  fs.writeFileSync(
+    executionFile,
+    JSON.stringify([
+      {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 20,
+        errors: [
+          'APIError: {"type":"error","error":{"type":"authentication_error","message":"x"}}',
+        ],
+      },
+    ]),
+  );
+  assert.equal(
+    classifyExecutionFile(executionFile, { maxTurns: "15" }).failureClass,
+    "auth",
+  );
+});
+
+test("a success result past the caller's cap classifies as max-turns", () => {
+  // The shape of claude-code-plugins run 39038437240: the action failed with
+  // "Claude reported a successful result after 16 turns, exceeding the
+  // configured maximum of 15" over a result message that reads as a success.
+  const pastCap = [
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 16,
+      duration_ms: 65265,
+    },
+  ];
+  fs.writeFileSync(executionFile, JSON.stringify(pastCap));
+  const classify = (maxTurns) =>
+    classifyExecutionFile(executionFile, { maxTurns }).failureClass;
+  assert.equal(classify("15"), "max-turns");
+  // At the cap, or with no cap known, nothing shows the cap was crossed.
+  assert.equal(classify("16"), "other");
+  assert.equal(classify(""), "other");
+  assert.equal(classify("fifteen"), "other");
+  // A timeout and an API status still decide first.
+  assert.equal(
+    classifyExecutionFile(executionFile, { maxTurns: "15", timedOut: true })
+      .failureClass,
+    "timeout",
+  );
+  assertClass(
+    "429 past the cap",
+    "rate-limit",
+    resultMessage(429, { num_turns: 16 }),
+  );
+});
+
 test("a step that ran its whole budget classifies as timeout, file or not", () => {
   const missing = classifyExecutionFile(
     path.join(temporaryDirectory, "never-written.json"),
@@ -260,4 +319,133 @@ test("error_type carries the matched allowlist token on the substring path only"
   const unmatchedProjection = JSON.parse(unmatched.reviewDetail);
   assert.equal(unmatched.failureClass, "other");
   assert.equal(unmatchedProjection.error_type, null);
+});
+
+// Run record. Message shapes follow the Agent SDK types: SDKRateLimitEvent
+// `{type: "rate_limit_event", rate_limit_info: {status, resetsAt?}}` and the
+// result message's `num_turns` and `modelUsage` map. 1767225600 is
+// 2026-01-01T00:00:00Z in epoch seconds.
+const NEW_YEAR = 1767225600;
+const rateLimitEvent = (status, resetsAt, rateLimitType = "five_hour") => ({
+  type: "rate_limit_event",
+  rate_limit_info: { status, resetsAt, rateLimitType },
+  uuid: "u",
+  session_id: "s",
+});
+
+function record(contents) {
+  fs.writeFileSync(executionFile, JSON.stringify(contents));
+  return readRunRecord(executionFile);
+}
+
+test("the run record reads turns and modelUsage keys from the result message", () => {
+  const { turns, models, resetsAt } = record([
+    { type: "system", subtype: "init" },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 11,
+      modelUsage: { "claude-sonnet-5": {}, "claude-haiku-5": {} },
+      result: CANARY,
+    },
+  ]);
+  assert.equal(turns, 11);
+  assert.deepEqual(models, ["claude-sonnet-5", "claude-haiku-5"]);
+  assert.equal(resetsAt, null);
+});
+
+test("a modelUsage key outside the model-id character set is dropped", () => {
+  const { models } = record([
+    {
+      type: "result",
+      num_turns: 1,
+      modelUsage: { "claude-opus-5-5[1m]": {}, "evil key\n::error::x": {} },
+    },
+  ]);
+  assert.deepEqual(models, ["claude-opus-5-5[1m]"]);
+});
+
+test("resets and its window come from the newest rejected rate_limit_event, in seconds or milliseconds", () => {
+  // The seven-day window stopped the run; a later five-hour warning must not
+  // move the reset an hour forward.
+  const stopped = record([
+    rateLimitEvent("rejected", NEW_YEAR, "seven_day"),
+    rateLimitEvent("allowed_warning", NEW_YEAR + 3600),
+    { type: "result", num_turns: 1, api_error_status: 429 },
+  ]);
+  assert.equal(stopped.resetsAt, "2026-01-01T00:00:00Z");
+  assert.equal(stopped.resetsWindow, "seven_day");
+  assert.equal(
+    record([rateLimitEvent("rejected", NEW_YEAR * 1000)]).resetsAt,
+    "2026-01-01T00:00:00Z",
+  );
+});
+
+test("with no rejected event there is no reset, so the caller's fallback applies", () => {
+  const unstopped = record([
+    rateLimitEvent("allowed", NEW_YEAR),
+    rateLimitEvent("allowed_warning", NEW_YEAR + 3600),
+    { type: "result", num_turns: 1, api_error_status: 429 },
+  ]);
+  assert.equal(unstopped.resetsAt, null);
+  assert.equal(unstopped.resetsWindow, null);
+});
+
+test("a window name outside the token character set is dropped, the reset kept", () => {
+  const odd = record([rateLimitEvent("rejected", NEW_YEAR, "five hour\n")]);
+  assert.equal(odd.resetsAt, "2026-01-01T00:00:00Z");
+  assert.equal(odd.resetsWindow, null);
+});
+
+test("no rate_limit_event, a missing file or an unparsable one leaves the record empty", () => {
+  const empty = {
+    turns: null,
+    models: [],
+    resetsAt: null,
+    resetsWindow: null,
+  };
+  assert.deepEqual(record([{ type: "result", subtype: "success" }]), empty);
+  fs.writeFileSync(executionFile, "not json");
+  assert.deepEqual(readRunRecord(executionFile), empty);
+  assert.deepEqual(readRunRecord(""), empty);
+});
+
+test("record tokens: resets only on a limit stop, unknown and malformed values omitted", () => {
+  const run = {
+    turns: 16,
+    models: ["claude-sonnet-5"],
+    resetsAt: "2026-01-01T00:00:00Z",
+    resetsWindow: "seven_day",
+  };
+  assert.equal(
+    recordTokens(run, {
+      failureClass: "rate-limit",
+      maxTurns: "15",
+      credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    }),
+    "resets=2026-01-01T00:00:00Z resets-window=seven_day " +
+      "credential=CLAUDE_CODE_OAUTH_TOKEN " +
+      "turns=16 max-turns=15 models=claude-sonnet-5",
+  );
+  assert.equal(
+    recordTokens(run, { failureClass: "auth", maxTurns: "15" }),
+    "turns=16 max-turns=15 models=claude-sonnet-5",
+  );
+  // A value that is not a secret name, a lower-case name or a non-number
+  // never prints.
+  assert.equal(
+    recordTokens(
+      { turns: null, models: [], resetsAt: null },
+      { maxTurns: "15; x", credential: "value-not-a-name" },
+    ),
+    "",
+  );
+  assert.equal(
+    recordTokens(
+      { turns: 0, models: [], resetsAt: null },
+      { credential: "lower_case" },
+    ),
+    "turns=0",
+  );
 });

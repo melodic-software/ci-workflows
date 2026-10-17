@@ -16,8 +16,11 @@
 //   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.
-//   2. subtype `error_max_turns` -> max-turns: the run used every turn
-//      --max-turns allows.
+//   2. max-turns: subtype `error_max_turns` (the run used every turn
+//      --max-turns allows), or a success-subtype result with `num_turns` above
+//      the caller's `maxTurns`. The second is claude-code-action failing a run that finished past the cap
+//      ("Claude reported a successful result after N turns, exceeding the
+//      configured maximum of M"), whose result message reads as a success.
 //   3. an allowlisted substring over `errors[]`, matching the serialized
 //      Anthropic error body (`{"type":"error","error":{"type":"<type>",...}}`)
 //      that the API SDK folds into an APIError's message, and so into its stack.
@@ -84,7 +87,22 @@ function toStringLikeJq(value) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
+// The execution file's messages, or null when it is unset, missing or not a
+// JSON array.
+function readMessages(executionFilePath) {
+  if (!executionFilePath || !fs.existsSync(executionFilePath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(executionFilePath, "utf8"));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function classifyExecutionFile(
+  executionFilePath,
+  { timedOut = false, maxTurns = "" } = {},
+) {
   const fallbackClass = timedOut ? "timeout" : "other";
   if (!executionFilePath || !fs.existsSync(executionFilePath)) {
     return {
@@ -93,13 +111,7 @@ function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
     };
   }
 
-  let last;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(executionFilePath, "utf8"));
-    last = Array.isArray(parsed) ? parsed.at(-1) : undefined;
-  } catch {
-    last = undefined;
-  }
+  const last = readMessages(executionFilePath)?.at(-1);
   if (last === undefined || last === null) {
     return {
       reviewDetail: "(execution file present but unparsable)",
@@ -116,7 +128,13 @@ function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
     failureClass = "timeout";
   } else if (typeof status === "number") {
     failureClass = classFromStatus(status);
-  } else if (last.subtype === "error_max_turns") {
+  } else if (
+    last.subtype === "error_max_turns" ||
+    (last.subtype === "success" &&
+      /^\d{1,6}$/u.test(maxTurns) &&
+      Number.isInteger(last.num_turns) &&
+      last.num_turns > Number(maxTurns))
+  ) {
     failureClass = "max-turns";
   } else {
     const text = (Array.isArray(last.errors) ? last.errors : [])
@@ -141,4 +159,83 @@ function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
   return { reviewDetail: JSON.stringify(projection), failureClass };
 }
 
-module.exports = { classifyExecutionFile };
+// The run record: structured facts about a run, each printed as a bare
+// `key=value` token on the lane's annotation line so a brief can read limit
+// stops, the credential behind them, turn headroom and the models used.
+// Values come only from typed SDK fields and caller inputs, each checked
+// against a closed pattern, never from free text.
+const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
+const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
+const COUNT_PATTERN = /^\d{1,6}$/u;
+const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
+
+// SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
+function isoFromEpoch(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const date = new Date(value < 1e12 ? value * 1000 : value);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString().replace(/\.000Z$/u, "Z");
+}
+
+// The limit that stopped the run: the newest `rate_limit_event` whose status
+// is `rejected`. Only a rejected event names the window that stopped the run;
+// an allowed or warning event's reset is another window's and would bring the
+// restart too early, so with none the caller's fallback delay applies.
+function limitStopFrom(messages) {
+  const info = messages.findLast(
+    (message) =>
+      message?.type === "rate_limit_event" &&
+      message.rate_limit_info?.status === "rejected" &&
+      isoFromEpoch(message.rate_limit_info.resetsAt) !== null,
+  )?.rate_limit_info;
+  if (!info) return { resetsAt: null, resetsWindow: null };
+  return {
+    resetsAt: isoFromEpoch(info.resetsAt),
+    resetsWindow: WINDOW_PATTERN.test(info.rateLimitType ?? "")
+      ? info.rateLimitType
+      : null,
+  };
+}
+
+function readRunRecord(executionFilePath) {
+  const messages = readMessages(executionFilePath) ?? [];
+  const result = messages.findLast((message) => message?.type === "result");
+  const turns = result?.num_turns;
+  const usage = result?.modelUsage;
+  return {
+    turns: Number.isInteger(turns) && turns >= 0 ? turns : null,
+    models:
+      usage && typeof usage === "object" && !Array.isArray(usage)
+        ? Object.keys(usage).filter((key) => MODEL_PATTERN.test(key))
+        : [],
+    ...limitStopFrom(messages),
+  };
+}
+
+// The record tokens for one annotation line, unknown values omitted.
+// `resets=` and `resets-window=` are printed only on a limit stop: that
+// stop's reset time and the window (rateLimitType) that stopped it.
+function recordTokens(
+  { turns = null, models = [], resetsAt = null, resetsWindow = null },
+  { failureClass = "", maxTurns = "", credential = "" } = {},
+) {
+  const tokens = [];
+  if (failureClass === "rate-limit" && resetsAt) {
+    tokens.push(`resets=${resetsAt}`);
+    if (resetsWindow) tokens.push(`resets-window=${resetsWindow}`);
+  }
+  if (CREDENTIAL_PATTERN.test(credential)) {
+    tokens.push(`credential=${credential}`);
+  }
+  if (turns !== null) tokens.push(`turns=${turns}`);
+  if (COUNT_PATTERN.test(maxTurns)) {
+    tokens.push(`max-turns=${Number(maxTurns)}`);
+  }
+  if (models.length > 0) tokens.push(`models=${models.join(",")}`);
+  return tokens.join(" ");
+}
+
+module.exports = { classifyExecutionFile, readRunRecord, recordTokens };

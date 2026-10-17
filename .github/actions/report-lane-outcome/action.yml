@@ -18,7 +18,12 @@ description: >-
   sole reader of the file's free-text fields; see its header for the
   projection and classification contract), emits the machine-readable
   `class=<token>` ::error annotation, and
-  records the failure class and detail. Runs
+  records the failure class and detail. Every annotation it writes,
+  a success notice included, carries the run record as bare tokens:
+  `turns=`, `max-turns=`, `credential=`, `models=` (the result message's
+  modelUsage keys) and, on class rate-limit, `resets=<ISO>` and
+  `resets-window=<rateLimitType>` from the newest rejected
+  rate_limit_event; an unknown value is omitted. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
   tool dependency.
 
@@ -65,6 +70,22 @@ inputs:
       model text; it is printed in the annotation.
     required: false
     default: ""
+  credential:
+    description: >-
+      Name (never the value) of the secret the run authenticated with, e.g.
+      CLAUDE_CODE_OAUTH_TOKEN. Printed as `credential=<name>` on the lane's
+      annotation line; empty, or anything but an upper-case secret name, is
+      omitted.
+    required: false
+    default: ""
+  max-turns:
+    description: >-
+      The run's --max-turns cap, printed as `max-turns=<n>` beside
+      `turns=<n>` so turn headroom shows per run. A failed run whose result
+      reports more turns than this cap classifies as `max-turns`. Empty or
+      non-numeric is omitted.
+    required: false
+    default: ""
 
 outputs:
   review-failed:
@@ -93,6 +114,11 @@ outputs:
       Compact JSON projection of the last SDK result message (safe fields
       only), or a parenthesized placeholder string (empty on success).
     value: ${{ steps.outcome.outputs.review_detail }}
+  resets-at:
+    description: >-
+      On class rate-limit, the ISO 8601 UTC time the limit resets, from the
+      run's newest rejected rate_limit_event; empty when it carried none.
+    value: ${{ steps.outcome.outputs.resets_at }}
 
 runs:
   using: composite
@@ -108,18 +134,31 @@ runs:
         STEP_TIMEOUT_MINUTES: ${{ inputs.step-timeout-minutes }}
         REQUIRE_COMPLETION: ${{ inputs.require-completion }}
         COMPLETION: ${{ inputs.completion }}
+        CREDENTIAL: ${{ inputs.credential }}
+        MAX_TURNS: ${{ inputs.max-turns }}
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
           const fs = require("node:fs");
           const path = require("node:path");
-          const { classifyExecutionFile } = require(
+          const { classifyExecutionFile, readRunRecord, recordTokens } = require(
             path.join(process.env.ACTION_PATH, "classify.cjs"),
           );
 
           const outcome = process.env.LANE_OUTCOME ?? "";
           const lane = process.env.LANE_NAME ?? "Claude review";
           const executionFile = process.env.EXECUTION_FILE ?? "";
+          // The run record (turns, max-turns, credential, models, and on a
+          // limit stop resets) rides on the same annotation line as class=.
+          const runRecord = readRunRecord(executionFile);
+          const record = (failureClass = "") => {
+            const tokens = recordTokens(runRecord, {
+              failureClass,
+              maxTurns: process.env.MAX_TURNS ?? "",
+              credential: process.env.CREDENTIAL ?? "",
+            });
+            return tokens === "" ? "" : ` ${tokens}`;
+          };
 
           if (outcome === "success") {
             if (executionFile !== "" && fs.existsSync(executionFile)) {
@@ -130,7 +169,7 @@ runs:
               const completion = process.env.COMPLETION ?? "";
               if (process.env.REQUIRE_COMPLETION === "true" && completion !== "complete") {
                 core.error(
-                  `${lane} concluded: ${outcome} class=incomplete — no completed ` +
+                  `${lane} concluded: ${outcome} class=incomplete${record()} — no completed ` +
                     `review was found: ${completion || "the completion check reported nothing"}.`,
                 );
                 core.setOutput("failure_class", "incomplete");
@@ -139,7 +178,11 @@ runs:
                 core.setOutput("review_ran", "false");
                 return;
               }
-              core.info(`${lane} completed. Findings (if any) are in the PR comments.`);
+              // A notice, so the record reaches the check run on a success too.
+              core.notice(
+                `${lane} completed:${record() || " (no run record)"}. ` +
+                  "Findings (if any) are in the PR comments.",
+              );
               core.setOutput("review_failed", "false");
               core.setOutput("review_ran", "true");
               return;
@@ -156,7 +199,7 @@ runs:
             // self-correcting on the PRs that edit the caller. The lanes'
             // status steps still go red on this class, since nothing ran.
             core.warning(
-              `${lane} concluded: ${outcome} class=skipped-validation with no ` +
+              `${lane} concluded: ${outcome} class=skipped-validation${record()} with no ` +
                 "execution evidence — the action skipped itself before running " +
                 "(workflow-validation skip: the caller's workflow file must " +
                 "match the default branch's copy). Nothing was reviewed.",
@@ -173,7 +216,10 @@ runs:
           const startedAt = Number(process.env.STEP_STARTED_AT || Number.NaN);
           const budgetMinutes = Number(process.env.STEP_TIMEOUT_MINUTES || Number.NaN);
           const timedOut = Date.now() / 1000 - startedAt >= budgetMinutes * 60;
-          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, { timedOut });
+          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, {
+            timedOut,
+            maxTurns: process.env.MAX_TURNS ?? "",
+          });
 
           // `class=<token>` is a machine-readable term, not prose: this
           // annotation is the detection surface a receiver polls through the
@@ -191,9 +237,9 @@ runs:
           core.error(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
-                  `(${lane} exited with: ${outcome} class=rate-limit). ` +
+                  `(${lane} exited with: ${outcome} class=rate-limit${record(failureClass)}). ` +
                   `Last SDK result: ${reviewDetail}`
-              : `${lane} exited with: ${outcome} class=${failureClass} ` +
+              : `${lane} exited with: ${outcome} class=${failureClass}${record(failureClass)} ` +
                   `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
                   "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
                   `Last SDK result: ${reviewDetail}`,
@@ -201,5 +247,8 @@ runs:
 
           core.setOutput("failure_class", failureClass);
           core.setOutput("review_detail", reviewDetail);
+          if (failureClass === "rate-limit" && runRecord.resetsAt) {
+            core.setOutput("resets_at", runRecord.resetsAt);
+          }
           core.setOutput("review_failed", "true");
           core.setOutput("review_ran", "false");
