@@ -1,0 +1,39 @@
+name: probe-issues-read
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Query closing issues with a token that has no issues scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          query='query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                number title
+                closingIssuesReferences(first: 10) {
+                  nodes {
+                    number title body
+                    repository { nameWithOwner }
+                    comments(first: 50) {
+                      nodes { body authorAssociation author { login } }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+          gh api graphql -F owner=melodic-software -F name=ci-workflows -F number=728 -f query="$query" | tee out.json | jq '{errors, issue: (.data.repository.pullRequest.closingIssuesReferences.nodes | map({number, title, bodyLength: (.body|length), comments: (.comments.nodes|map({authorAssociation, len: (.body|length)}))}))}'
+          echo "--- scopes header:"
+          gh api -i repos/melodic-software/ci-workflows/issues/726 | grep -i "^x-accepted-github-permissions\|^HTTP"
