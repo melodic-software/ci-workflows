@@ -16,8 +16,11 @@
 //   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.
-//   2. subtype `error_max_turns` -> max-turns: the run used every turn
-//      --max-turns allows.
+//   2. max-turns: subtype `error_max_turns` (the run used every turn
+//      --max-turns allows), or `num_turns` above the caller's `maxTurns`. The
+//      second is claude-code-action failing a run that finished past the cap
+//      ("Claude reported a successful result after N turns, exceeding the
+//      configured maximum of M"), whose result message reads as a success.
 //   3. an allowlisted substring over `errors[]`, matching the serialized
 //      Anthropic error body (`{"type":"error","error":{"type":"<type>",...}}`)
 //      that the API SDK folds into an APIError's message, and so into its stack.
@@ -96,7 +99,10 @@ function readMessages(executionFilePath) {
   }
 }
 
-function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
+function classifyExecutionFile(
+  executionFilePath,
+  { timedOut = false, maxTurns = "" } = {},
+) {
   const fallbackClass = timedOut ? "timeout" : "other";
   if (!executionFilePath || !fs.existsSync(executionFilePath)) {
     return {
@@ -122,7 +128,12 @@ function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
     failureClass = "timeout";
   } else if (typeof status === "number") {
     failureClass = classFromStatus(status);
-  } else if (last.subtype === "error_max_turns") {
+  } else if (
+    last.subtype === "error_max_turns" ||
+    (/^\d{1,6}$/u.test(maxTurns) &&
+      Number.isInteger(last.num_turns) &&
+      last.num_turns > Number(maxTurns))
+  ) {
     failureClass = "max-turns";
   } else {
     const text = (Array.isArray(last.errors) ? last.errors : [])

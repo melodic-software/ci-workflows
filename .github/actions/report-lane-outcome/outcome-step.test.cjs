@@ -352,3 +352,20 @@ test("a success writes a notice with turn headroom and models, and no class", as
   );
   assert.doesNotMatch(notices[0], /class=/u);
 });
+
+test("a run that finished past its turn cap reads as max-turns with its turns and cap", async () => {
+  // claude-code-plugins run 39038437240: 16 turns against a cap of 15.
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 16 },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude intake triage",
+    maxTurns: "15",
+  });
+  assert.equal(outputs.failure_class, "max-turns");
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /\bclass=max-turns turns=16 max-turns=15\b/u);
+});

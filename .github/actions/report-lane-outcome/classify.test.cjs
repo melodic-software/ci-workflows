@@ -210,6 +210,40 @@ test("a run that used every turn classifies as max-turns", () => {
   ]);
 });
 
+test("a success result past the caller's cap classifies as max-turns", () => {
+  // The shape of claude-code-plugins run 39038437240: the action failed with
+  // "Claude reported a successful result after 16 turns, exceeding the
+  // configured maximum of 15" over a result message that reads as a success.
+  const pastCap = [
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 16,
+      duration_ms: 65265,
+    },
+  ];
+  fs.writeFileSync(executionFile, JSON.stringify(pastCap));
+  const classify = (maxTurns) =>
+    classifyExecutionFile(executionFile, { maxTurns }).failureClass;
+  assert.equal(classify("15"), "max-turns");
+  // At the cap, or with no cap known, nothing shows the cap was crossed.
+  assert.equal(classify("16"), "other");
+  assert.equal(classify(""), "other");
+  assert.equal(classify("fifteen"), "other");
+  // A timeout and an API status still decide first.
+  assert.equal(
+    classifyExecutionFile(executionFile, { maxTurns: "15", timedOut: true })
+      .failureClass,
+    "timeout",
+  );
+  assertClass(
+    "429 past the cap",
+    "rate-limit",
+    resultMessage(429, { num_turns: 16 }),
+  );
+});
+
 test("a step that ran its whole budget classifies as timeout, file or not", () => {
   const missing = classifyExecutionFile(
     path.join(temporaryDirectory, "never-written.json"),

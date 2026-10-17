@@ -80,8 +80,9 @@ inputs:
   max-turns:
     description: >-
       The run's --max-turns cap, printed as `max-turns=<n>` beside
-      `turns=<n>` so turn headroom shows per run. Empty or non-numeric is
-      omitted.
+      `turns=<n>` so turn headroom shows per run. A failed run whose result
+      reports more turns than this cap classifies as `max-turns`. Empty or
+      non-numeric is omitted.
     required: false
     default: ""
 
@@ -214,7 +215,10 @@ runs:
           const startedAt = Number(process.env.STEP_STARTED_AT || Number.NaN);
           const budgetMinutes = Number(process.env.STEP_TIMEOUT_MINUTES || Number.NaN);
           const timedOut = Date.now() / 1000 - startedAt >= budgetMinutes * 60;
-          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, { timedOut });
+          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, {
+            timedOut,
+            maxTurns: process.env.MAX_TURNS ?? "",
+          });
 
           // `class=<token>` is a machine-readable term, not prose: this
           // annotation is the detection surface a receiver polls through the
