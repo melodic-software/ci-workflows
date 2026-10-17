@@ -498,6 +498,23 @@ test("compose reports the CLI's turn cap, the last --max-turns, for the run reco
   }
 });
 
+test("the default runs Sonnet at medium effort for 30 turns, and a caller's claude-args replaces it", async () => {
+  const graphql = async () => ({ repository: null });
+  const fallback = workflow.on.workflow_call.inputs["claude-args"].default;
+  assert.equal(fallback, "--model sonnet --effort medium --max-turns 30");
+  for (const [baseArgs, cap] of [
+    [fallback, "30"],
+    ["--model opus --max-turns 12 --effort high", "12"],
+  ]) {
+    const { outputs } = await compose(graphql, { BASE_ARGS: baseArgs });
+    assert.ok(
+      outputs.args.startsWith(`${baseArgs} --permission-mode dontAsk `),
+      outputs.args,
+    );
+    assert.equal(outputs["max-turns"], cap, baseArgs);
+  }
+});
+
 test("compose never offers admission labels to the model", async () => {
   const { outputs } = await compose(async () => ({ repository: null }), {
     ALLOWED_LABELS: "priority: high\nwork-class: scoped\nagent-ready\n",

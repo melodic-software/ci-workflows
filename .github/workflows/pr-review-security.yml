@@ -114,6 +114,19 @@ on:
           after claude-args, so it wins over an --effort there.
         type: string
         default: high
+      model-args:
+        description: >-
+          Resolved model arguments from the caller's resolve-config, in the
+          form [--model <alias>] --max-turns <n> [--effort <level>]. When set,
+          appended after claude-args in place of the --model and --effort the
+          model and effort inputs supply; any other value fails the job. Only
+          the flags it carries are appended, so a --model or --effort in
+          claude-args is used when model-args leaves that flag out. Claude
+          args only: a profile's subagent-model (resolve-config's
+          settings-json) is not supported, so routes feeding this input keep
+          subagent-model at inherit.
+        type: string
+        default: ""
       claude-args:
         description: >-
           Passed through to the Claude CLI (turn budget, allowed tools). A
@@ -487,8 +500,9 @@ jobs:
               core.setOutput("scope", "whole");
             }
 
-      # The model, effort, inline-comment and plugin-command Skill grants go
-      # after the caller's args so replacing claude-args cannot drop them, and
+      # The model and effort (or model-args), inline-comment and
+      # plugin-command Skill grants go after the caller's args so replacing
+      # claude-args cannot drop them, and
       # so does the schema, which makes the action return the findings count
       # and the review summary as structured output; heredoc output as
       # claude-args may be multiline. started-at lets the outcome step tell a step timeout
@@ -501,6 +515,7 @@ jobs:
           BASE_ARGS: ${{ inputs.claude-args }}
           MODEL: ${{ inputs.model }}
           EFFORT: ${{ inputs.effort }}
+          MODEL_ARGS: ${{ inputs.model-args }}
           PLUGIN_COMMAND: ${{ inputs.plugin-command }}
           HAS_FALLBACK: ${{ secrets.fallback-claude-code-oauth-token != '' }}
         run: |
@@ -515,10 +530,21 @@ jobs:
               exit 1
               ;;
           esac
+          model_args="--model $MODEL --effort $EFFORT"
+          if [ -n "$MODEL_ARGS" ]; then
+            # resolve-config's claude-args shape (claude-code-plugins
+            # .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
+            pattern='^(--model [a-z]+ )?--max-turns [1-9][0-9]*( --effort [a-z]+)?$'
+            if ! [[ "$MODEL_ARGS" =~ $pattern ]]; then
+              echo "::error::The model-args input must be [--model <alias>] --max-turns <n> [--effort <level>]."
+              exit 1
+            fi
+            model_args="$MODEL_ARGS"
+          fi
           skill="${PLUGIN_COMMAND#/}"
           skill="${skill%% *}"
           schema='{"type":"object","properties":{"findings":{"type":"integer","minimum":0},"summary":{"type":"string","minLength":1,"maxLength":20000}},"required":["findings","summary"],"additionalProperties":false}'
-          args="$BASE_ARGS --model $MODEL --effort $EFFORT --json-schema '$schema' --allowedTools mcp__github_inline_comment__create_inline_comment --allowedTools \"Skill($skill)\""
+          args="$BASE_ARGS $model_args --json-schema '$schema' --allowedTools mcp__github_inline_comment__create_inline_comment --allowedTools \"Skill($skill)\""
           delimiter="gha_${RANDOM}${RANDOM}_EOF"
           {
             echo "args<<$delimiter"

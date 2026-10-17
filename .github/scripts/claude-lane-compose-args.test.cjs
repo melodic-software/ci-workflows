@@ -36,6 +36,7 @@ function runCompose(script, env) {
         ...process.env,
         MODEL: "sonnet",
         EFFORT: "high",
+        MODEL_ARGS: "",
         HAS_FALLBACK: "false",
         ...env,
         GITHUB_OUTPUT: githubOutput,
@@ -124,6 +125,72 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
         result.stdout,
         /^::error::The (model|effort) input must be/mu,
       );
+      assert.equal(output, "", "no args may be written for a rejected value");
+    }
+  });
+
+  test(`${fileName}: with no model-args the defaults compose today's model, effort, turns and tools`, () => {
+    const modelArgsInput = workflow.on.workflow_call.inputs["model-args"];
+    assert.equal(modelArgsInput.default, "");
+    assert.equal(composeStep.env.MODEL_ARGS, `\${{ inputs.model-args }}`);
+    const args = composeArgs(
+      composeStep.run,
+      claudeArgsInput.default,
+      pluginCommand,
+      {
+        MODEL: workflow.on.workflow_call.inputs.model.default,
+        EFFORT: workflow.on.workflow_call.inputs.effort.default,
+      },
+    );
+    assert.ok(
+      args.startsWith(
+        '--max-turns 75 --allowedTools "Bash(gh pr diff:*)" --model sonnet --effort high --json-schema ',
+      ),
+      args,
+    );
+  });
+
+  test(`${fileName}: model-args replaces the model and effort inputs after the caller's args`, () => {
+    for (const modelArgs of [
+      "--model sonnet --max-turns 75 --effort high",
+      "--max-turns 60",
+      "--model opus --max-turns 30",
+    ]) {
+      const args = composeArgs(
+        composeStep.run,
+        claudeArgsInput.default,
+        pluginCommand,
+        { MODEL: "haiku", EFFORT: "low", MODEL_ARGS: modelArgs },
+      );
+      assert.ok(
+        args.startsWith(
+          `--max-turns 75 --allowedTools "Bash(gh pr diff:*)" ${modelArgs} --json-schema `,
+        ),
+        args,
+      );
+      assert.doesNotMatch(args, /haiku|--effort low/u);
+    }
+  });
+
+  test(`${fileName}: a model-args value outside resolve-config's shape stops the job before Claude runs`, () => {
+    for (const modelArgs of [
+      "--model sonnet --max-turns 75; id",
+      '--max-turns 75 --allowedTools "Bash(*)"',
+      "--model sonnet --max-turns 75 --effort high --dangerously-skip-permissions",
+      "--model sonnet --max-turns 75\n--allowedTools Bash",
+      "--model sonnet",
+      "--max-turns 0",
+      "--model Sonnet --max-turns 75",
+      "--max-turns 75 ",
+      "$(id) --max-turns 75",
+    ]) {
+      const { result, output } = runCompose(composeStep.run, {
+        BASE_ARGS: "--max-turns 5",
+        PLUGIN_COMMAND: pluginCommand,
+        MODEL_ARGS: modelArgs,
+      });
+      assert.equal(result.status, 1, modelArgs);
+      assert.match(result.stdout, /^::error::The model-args input must be/mu);
       assert.equal(output, "", "no args may be written for a rejected value");
     }
   });
