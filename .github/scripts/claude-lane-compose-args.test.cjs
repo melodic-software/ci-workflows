@@ -72,12 +72,6 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
   const composeStep = steps.find((step) => step?.id === "compose-args");
   const pluginCommand =
     workflow.on.workflow_call.inputs["plugin-command"].default;
-  // The review lane also reads the PR body and its closing issue; the
-  // security lane stays on the diff alone.
-  const defaultBaseArgs =
-    fileName === "pr-review.yml"
-      ? '--max-turns 75 --allowedTools "Bash(gh pr diff:*)" "Bash(gh pr view:*)" "Bash(gh issue view:*)"'
-      : '--max-turns 75 --allowedTools "Bash(gh pr diff:*)"';
 
   test(`${fileName}: both Claude attempts consume the composed args`, () => {
     const invocations = steps.filter((step) =>
@@ -150,7 +144,7 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
     );
     assert.ok(
       args.startsWith(
-        `${defaultBaseArgs} --model sonnet --effort high --json-schema `,
+        '--max-turns 75 --allowedTools "Bash(gh pr diff:*)" --model sonnet --effort high --json-schema ',
       ),
       args,
     );
@@ -170,7 +164,7 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
       );
       assert.ok(
         args.startsWith(
-          `${defaultBaseArgs} ${modelArgs} --json-schema `,
+          `--max-turns 75 --allowedTools "Bash(gh pr diff:*)" ${modelArgs} --json-schema `,
         ),
         args,
       );
@@ -223,6 +217,12 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
     assert.match(claudeArgsInput.default, /Bash\(gh pr diff:\*\)/u);
   });
 
+  test(`${fileName}: the default grants no gh read that returns comments`, () => {
+    // `gh pr view --comments` would bypass exclude-comments-by-actor, so the
+    // description reaches the model as a file the job writes instead.
+    assert.doesNotMatch(claudeArgsInput.default, /gh (?:pr|issue) view/u);
+  });
+
   test(`${fileName}: the compose step appends both grants to any caller value`, () => {
     assert.ok(composeStep, "compose-args step not found");
     assert.doesNotMatch(
@@ -269,3 +269,23 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
     }
   });
 }
+
+test("pr-review.yml: both Claude attempts name the description file the job writes", () => {
+  const workflow = parseWorkflow(
+    fs.readFileSync(path.join(workflowsDirectory, "pr-review.yml"), "utf8"),
+  );
+  const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+  const writer = steps.find((step) => step?.id === "pr-context");
+  assert.ok(writer, "pr-context step not found");
+  assert.equal(writer.env.CONTEXT_FILE, ".claude-lane/pr-context.md");
+  const attempts = steps.filter((step) =>
+    step?.uses?.startsWith("anthropics/claude-code-action@"),
+  );
+  assert.equal(attempts.length, 2);
+  for (const attempt of attempts) {
+    assert.match(
+      attempt.with.prompt,
+      /^\$\{\{ steps\.pr-context\.outputs\.note \}\}$/mu,
+    );
+  }
+});
