@@ -59,6 +59,8 @@ async function runOutcome({
   lane = "Claude review",
   startedAt = "",
   timeoutMinutes = "",
+  credential = "",
+  maxTurns = "",
 }) {
   const keys = [
     "LANE_OUTCOME",
@@ -66,6 +68,8 @@ async function runOutcome({
     "LANE_NAME",
     "STEP_STARTED_AT",
     "STEP_TIMEOUT_MINUTES",
+    "CREDENTIAL",
+    "MAX_TURNS",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -77,6 +81,8 @@ async function runOutcome({
     LANE_NAME: lane,
     STEP_STARTED_AT: startedAt,
     STEP_TIMEOUT_MINUTES: timeoutMinutes,
+    CREDENTIAL: credential,
+    MAX_TURNS: maxTurns,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -84,12 +90,14 @@ async function runOutcome({
   const warnings = [];
   const failed = [];
   const infos = [];
+  const notices = [];
   try {
     const core = {
       setOutput: (key, value) => (outputs[key] = value),
       error: (message) => errors.push(message),
       warning: (message) => warnings.push(message),
       info: (message) => infos.push(message),
+      notice: (message) => notices.push(message),
       setFailed: (message) => failed.push(message),
     };
     const execute = new AsyncFunction(
@@ -99,7 +107,7 @@ async function runOutcome({
       stepScript(),
     );
     await execute(core, require, process);
-    return { outputs, errors, warnings, failed, infos };
+    return { outputs, errors, warnings, failed, infos, notices };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -261,4 +269,83 @@ test("a failed step that stopped inside its budget, or reported no start, is not
       `${startedAt}/${timeoutMinutes}`,
     );
   }
+});
+
+// 1767225600 is 2026-01-01T00:00:00Z in epoch seconds.
+test("a limit stop puts resets, credential, turns, max-turns and models on the class line", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1767225600 },
+    },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 3,
+      api_error_status: 429,
+      modelUsage: { "claude-sonnet-5": {} },
+    },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    maxTurns: "30",
+  });
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /\bclass=rate-limit resets=2026-01-01T00:00:00Z credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 max-turns=30 models=claude-sonnet-5\b/u,
+  );
+  assert.equal(outputs.resets_at, "2026-01-01T00:00:00Z");
+});
+
+test("a non-limit failure carries the record but no resets", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed", resetsAt: 1767225600 },
+    },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 401,
+    },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.match(errors[0], /\bclass=auth credential=CLAUDE_CODE_OAUTH_TOKEN turns=1 /u);
+  assert.doesNotMatch(errors[0], /resets=/u);
+  assert.equal(outputs.resets_at, undefined);
+});
+
+test("a success writes a notice with turn headroom and models, and no class", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 11,
+      modelUsage: { "claude-sonnet-5": {}, "claude-haiku-5": {} },
+    },
+  ]);
+  const { outputs, errors, notices } = await runOutcome({
+    outcome: "success",
+    executionFile: file,
+    maxTurns: "30",
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(outputs.review_ran, "true");
+  assert.equal(notices.length, 1);
+  assert.match(
+    notices[0],
+    /\bturns=11 max-turns=30 models=claude-sonnet-5,claude-haiku-5\b/u,
+  );
+  assert.doesNotMatch(notices[0], /class=/u);
 });

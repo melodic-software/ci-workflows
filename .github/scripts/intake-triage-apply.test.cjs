@@ -482,6 +482,20 @@ test("compose rejects an admission label as the floor label", async () => {
   }
 });
 
+test("compose reports the CLI's turn cap, the last --max-turns, for the run record", async () => {
+  const graphql = async () => ({ repository: null });
+  for (const [baseArgs, cap] of [
+    ["--model claude-sonnet-5 --max-turns 30", "30"],
+    ["--max-turns=12 --model x", "12"],
+    ["--max-turns 15 --max-turns 40", "40"],
+    ["--model claude-sonnet-5", ""],
+    ["--max-turnsx 9", ""],
+  ]) {
+    const { outputs } = await compose(graphql, { BASE_ARGS: baseArgs });
+    assert.equal(outputs["max-turns"], cap, baseArgs);
+  }
+});
+
 test("compose never offers admission labels to the model", async () => {
   const { outputs } = await compose(async () => ({ repository: null }), {
     ALLOWED_LABELS: "priority: high\nwork-class: scoped\nagent-ready\n",

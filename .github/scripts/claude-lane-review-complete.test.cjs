@@ -236,6 +236,7 @@ async function runComposite(env) {
       error: (message) => errors.push(message),
       warning: (message) => warnings.push(message),
       info: () => {},
+      notice: () => {},
       setFailed: (message) => errors.push(message),
     };
     await new AsyncFunction("core", "require", "process", compositeScript())(

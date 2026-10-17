@@ -84,6 +84,18 @@ function toStringLikeJq(value) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+// The execution file's messages, or null when it is unset, missing or not a
+// JSON array.
+function readMessages(executionFilePath) {
+  if (!executionFilePath || !fs.existsSync(executionFilePath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(executionFilePath, "utf8"));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
   const fallbackClass = timedOut ? "timeout" : "other";
   if (!executionFilePath || !fs.existsSync(executionFilePath)) {
@@ -93,13 +105,7 @@ function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
     };
   }
 
-  let last;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(executionFilePath, "utf8"));
-    last = Array.isArray(parsed) ? parsed.at(-1) : undefined;
-  } catch {
-    last = undefined;
-  }
+  const last = readMessages(executionFilePath)?.at(-1);
   if (last === undefined || last === null) {
     return {
       reviewDetail: "(execution file present but unparsable)",
@@ -141,4 +147,76 @@ function classifyExecutionFile(executionFilePath, { timedOut = false } = {}) {
   return { reviewDetail: JSON.stringify(projection), failureClass };
 }
 
-module.exports = { classifyExecutionFile };
+// The run record: structured facts about a run, each printed as a bare
+// `key=value` token on the lane's annotation line so a brief can read limit
+// stops, the credential behind them, turn headroom and the models used.
+// Values come only from typed SDK fields and caller inputs, each checked
+// against a closed pattern, never from free text.
+const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
+const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
+const COUNT_PATTERN = /^\d{1,6}$/u;
+
+// SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
+function isoFromEpoch(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const date = new Date(value < 1e12 ? value * 1000 : value);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString().replace(/\.000Z$/u, "Z");
+}
+
+// The reset time of the limit that stopped the run: the newest
+// `rate_limit_event` whose status is `rejected`, else the newest one that
+// carries a reset time at all.
+function resetsAtFrom(messages) {
+  const events = messages.filter(
+    (message) =>
+      message?.type === "rate_limit_event" &&
+      isoFromEpoch(message.rate_limit_info?.resetsAt) !== null,
+  );
+  const rejected = events.filter(
+    (event) => event.rate_limit_info.status === "rejected",
+  );
+  const chosen = (rejected.length > 0 ? rejected : events).at(-1);
+  return chosen ? isoFromEpoch(chosen.rate_limit_info.resetsAt) : null;
+}
+
+function readRunRecord(executionFilePath) {
+  const messages = readMessages(executionFilePath) ?? [];
+  const result = messages.findLast((message) => message?.type === "result");
+  const turns = result?.num_turns;
+  const usage = result?.modelUsage;
+  return {
+    turns: Number.isInteger(turns) && turns >= 0 ? turns : null,
+    models:
+      usage && typeof usage === "object" && !Array.isArray(usage)
+        ? Object.keys(usage).filter((key) => MODEL_PATTERN.test(key))
+        : [],
+    resetsAt: resetsAtFrom(messages),
+  };
+}
+
+// The record tokens for one annotation line, unknown values omitted.
+// `resets=` is printed only on a limit stop: it is that stop's reset time.
+function recordTokens(
+  { turns = null, models = [], resetsAt = null },
+  { failureClass = "", maxTurns = "", credential = "" } = {},
+) {
+  const tokens = [];
+  if (failureClass === "rate-limit" && resetsAt) {
+    tokens.push(`resets=${resetsAt}`);
+  }
+  if (CREDENTIAL_PATTERN.test(credential)) {
+    tokens.push(`credential=${credential}`);
+  }
+  if (turns !== null) tokens.push(`turns=${turns}`);
+  if (COUNT_PATTERN.test(maxTurns)) {
+    tokens.push(`max-turns=${Number(maxTurns)}`);
+  }
+  if (models.length > 0) tokens.push(`models=${models.join(",")}`);
+  return tokens.join(" ");
+}
+
+module.exports = { classifyExecutionFile, readRunRecord, recordTokens };

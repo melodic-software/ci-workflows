@@ -50,8 +50,10 @@ name: intake-triage
 #     labels and text are dropped, and only the escalation label and a fixed
 #     note are applied, plus a `Proposed work class:` line when the triage
 #     was usable. A rerun edits the lane's earlier comment.
-#   - Only the `issues` event is accepted, and bot actors are skipped (agent
-#     mode rejects bots it was not told to allow).
+#   - Only the `issues` event is accepted. A run starts only for an issue
+#     authored by an OWNER or MEMBER, or by a bot whose sender id is in
+#     allowed-bot-sender-ids; only that bot's login reaches allowed_bots
+#     (agent mode rejects bots it was not told to allow).
 #
 # CLI VERSION: the lane installs the Claude Code CLI itself and passes it
 # through `path_to_claude_code_executable`, so it runs the newest release
@@ -117,7 +119,19 @@ on:
           permission profile and output schema are appended after it, so a
           caller cannot loosen them.
         type: string
-        default: --model claude-sonnet-5 --max-turns 15
+        # 30 turns: the last 50 claude-code-plugins runs used a median of 11
+        # and at most 18; every failure among them was a run that finished
+        # past the old cap of 15.
+        default: --model claude-sonnet-5 --max-turns 30
+      allowed-bot-sender-ids:
+        description: >-
+          Comma-separated numeric GitHub user ids, no spaces, of bots whose
+          issues this lane triages. A bot whose event sender id is listed
+          passes the author gate, and only that sender's login reaches the
+          action's allowed_bots. Empty, or a leading, trailing or doubled
+          comma, skips every bot.
+        type: string
+        default: ""
     outputs:
       triage-failed:
         description: >-
@@ -144,7 +158,24 @@ jobs:
     # The CLI install (3 minutes) and triage (8 minutes) steps leave two
     # minutes for checkout and the github-script steps.
     timeout-minutes: 13
-    if: ${{ !endsWith(github.actor, '[bot]') }}
+    # Author gate: a run spends the subscription, so it starts only for an
+    # issue whose author is an OWNER or MEMBER, or a bot whose event sender
+    # id is in allowed-bot-sender-ids (the review lanes' rule). Other issues
+    # wait for a person. A non-issues event passes so the first step can
+    # reject it loudly.
+    if: >-
+      ${{ github.event_name != 'issues'
+          || (!endsWith(github.actor, '[bot]')
+              && (github.event.issue.author_association == 'OWNER'
+                  || github.event.issue.author_association == 'MEMBER'))
+          || (endsWith(github.actor, '[bot]')
+              && inputs.allowed-bot-sender-ids != ''
+              && !startsWith(inputs.allowed-bot-sender-ids, ',')
+              && !endsWith(inputs.allowed-bot-sender-ids, ',')
+              && !contains(inputs.allowed-bot-sender-ids, ',,')
+              && github.event.sender.id
+              && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                          format(',{0},', github.event.sender.id))) }}
     permissions:
       contents: read
       issues: write
@@ -310,6 +341,10 @@ jobs:
                 .join("\n"),
             );
             core.setOutput("args", args);
+            // The turn cap the CLI applies (the last --max-turns), for the
+            // outcome step's run record. Empty when the caller set none.
+            const caps = [...(env.BASE_ARGS ?? "").matchAll(/(?:^|\s)--max-turns(?:=|\s+)(\d+)(?=\s|$)/gu)];
+            core.setOutput("max-turns", caps.at(-1)?.[1] ?? "");
             // Lets the outcome step tell a step timeout from other failures.
             core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
 
@@ -325,6 +360,15 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           allowed_non_write_users: "*"
+          allowed_bots: >-
+            ${{ inputs.allowed-bot-sender-ids != ''
+                && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                && !contains(inputs.allowed-bot-sender-ids, ',,')
+                && github.event.sender.id
+                && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                            format(',{0},', github.event.sender.id))
+                && github.event.sender.login || '' }}
           display_report: false
           path_to_claude_code_executable: ${{ steps.cli.outputs.path }}
           claude_args: ${{ steps.compose.outputs.args }}
@@ -364,6 +408,8 @@ jobs:
           lane: Claude intake triage
           step-started-at: ${{ steps.compose.outputs.started-at }}
           step-timeout-minutes: 8
+          credential: CLAUDE_CODE_OAUTH_TOKEN
+          max-turns: ${{ steps.compose.outputs.max-turns }}
 
       # No model runs here. Every value reaches the script through env.
       - name: Apply the triage
