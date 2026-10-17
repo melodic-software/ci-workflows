@@ -307,8 +307,8 @@ for (const lane of lanes) {
       `\${{ steps.attempt.outputs.started-at }}`,
     );
     assert.equal(
-      step.env.STRUCTURED_OUTPUT.replace(/\s+/gu, " "),
-      "${{ steps.attempt.outputs.account == 'fallback' && steps.claude-review-fallback.outputs.structured_output || steps.claude-review.outputs.structured_output }}",
+      step.env.STRUCTURED_OUTPUT,
+      `\${{ steps.attempt.outputs.structured-output }}`,
     );
     assert.equal(step.env.SCOPE, `\${{ steps.scope.outputs.scope }}`);
     assert.doesNotMatch(step.with.script, /\$\{\{/u);
@@ -822,11 +822,18 @@ async function scope({
       {
         rest: {
           issues: { listComments: async () => ({ data: comments }) },
-          pulls: { listFiles: async () => ({ data: prFiles }) },
+          pulls: {
+            listFiles: async () => ({ data: prFiles }),
+            get: async () => ({ data: { head: { sha: HEAD } } }),
+          },
           repos: {
             compareCommitsWithBasehead: async ({ basehead }) => {
-              assert.ok(basehead in compares, basehead);
-              return { data: compares[basehead] };
+              const all = {
+                [`main...${HEAD}`]: { merge_base_commit: { sha: OTHER } },
+                ...compares,
+              };
+              assert.ok(basehead in all, basehead);
+              return { data: all[basehead] };
             },
           },
         },

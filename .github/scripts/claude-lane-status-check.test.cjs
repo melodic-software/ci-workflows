@@ -109,11 +109,11 @@ for (const lane of lanes) {
       `\${{ steps.compose-args.outputs.started-at }}`,
     );
     for (const id of ["first-outcome", "fallback"]) {
-      const budget =
-        id === "fallback"
-          ? byId(id).env.BUDGET_MINUTES
-          : byId(id).with["step-timeout-minutes"];
-      assert.equal(String(budget), String(claudeStep["timeout-minutes"]), id);
+      assert.equal(
+        byId(id).env.BUDGET_MINUTES,
+        String(claudeStep["timeout-minutes"]),
+        id,
+      );
     }
   });
 

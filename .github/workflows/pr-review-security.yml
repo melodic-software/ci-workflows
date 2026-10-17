@@ -59,8 +59,8 @@ name: pr-review-security
 # skipped, `opened`, `reopened` and `ready_for_review` review the whole pull
 # request, and a later push reviews only the files changed since this lane's
 # last completed review; 300 or more files changed since forces a whole review.
-# A rebase or restack that leaves the pull request's change as reviewed is not
-# reviewed again. When every file in scope matches `docs-only-paths` (by default top-level
+# A rebase or restack onto the same base branch that leaves the pull request's
+# change as reviewed is not reviewed again. When every file in scope matches `docs-only-paths` (by default top-level
 # `docs/` markdown, READMEs and changelogs), no security review runs.
 #
 # One job reviews and reports. It is named `security-review`, so with the
@@ -298,12 +298,16 @@ jobs:
             const compare = async (basehead) =>
               (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
 
+            const git = (args) =>
+              require("node:child_process").execFileSync("git", args, {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+
             // Why a base-branch change since the last review needs a whole review, or "".
-            const baseMoved = async (prFiles, last) => {
+            const baseMoved = async (prFiles, last, now) => {
               const prNames = new Set(prFiles.flatMap(names));
-              const [before, now] = await Promise.all(
-                [last, head].map(async (ref) => (await compare(`${env.BASE_REF}...${ref}`)).merge_base_commit.sha),
-              );
+              const before = (await compare(`${env.BASE_REF}...${last}`)).merge_base_commit.sha;
               if (before === now) return "";
               const moved = (await compare(`${before}...${now}`)).files ?? [];
               if (moved.length >= FILE_CAP) {
@@ -316,42 +320,47 @@ jobs:
             };
 
             // A rebase or restack that left the pull request's own change as it was
-            // reviewed: every file, with the same status, name and patch, against the
-            // base the last reviewed head was compared with. A file with no patch
-            // cannot be shown equal, so it never passes.
-            const sameChange = async (prFiles, last) => {
-              if (prFiles.length >= FILE_CAP || prFiles.some((file) => file.patch === undefined)) return false;
-              const reviewed = (await compare(`${env.BASE_REF}...${last}`)).files ?? [];
-              if (reviewed.length !== prFiles.length) return false;
-              const byName = new Map(reviewed.map((file) => [file.filename, file]));
-              return prFiles.every((file) => {
-                const was = byName.get(file.filename);
-                return (
-                  was !== undefined &&
-                  was.status === file.status &&
-                  was.previous_filename === file.previous_filename &&
-                  was.patch === file.patch
-                );
-              });
+            // reviewed. The marker names the base branch and merge base the review
+            // used: the base branch must be the same, the change reviewed then (from
+            // that merge base) must touch the same files the same way as the change
+            // now, and git must show every one of those paths identical (mode, type
+            // and blob) between the reviewed head and this one.
+            const sameChange = async (prFiles, recorded) => {
+              if (recorded.ref !== env.BASE_REF || !recorded.mergeBase || prFiles.length >= FILE_CAP) return false;
+              const reviewed = (await compare(`${recorded.mergeBase}...${recorded.sha}`)).files ?? [];
+              const shape = (files) =>
+                files
+                  .map((file) => `${file.status} ${file.previous_filename ?? ""} ${file.filename}`)
+                  .sort()
+                  .join("\n");
+              if (reviewed.length >= FILE_CAP || shape(reviewed) !== shape(prFiles)) return false;
+              const paths = [...new Set([...reviewed, ...prFiles].flatMap(names))];
+              try {
+                git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", recorded.sha]);
+                const raw = git(["--literal-pathspecs", "diff", "--raw", "--no-renames", recorded.sha, head, "--", ...paths]);
+                return raw === "";
+              } catch (error) {
+                core.info(`Could not compare ${recorded.sha} with ${head}: ${error.message}`);
+                return false;
+              }
             };
 
             // Returns { files, patches } for an incremental review, or { full: reason }.
-            const sinceLastReview = async (prFiles, last) => {
+            const sinceLastReview = async (prFiles, recorded, now) => {
+              const last = recorded.sha;
               if (!/^[0-9a-f]{40}$/u.test(last)) return { full: "no earlier review is recorded" };
               if (last === head) return { files: [], patches: new Map() };
               const since = await compare(`${last}...${head}`);
               if (since.status !== "ahead") {
-                if (!(await sameChange(prFiles, last))) {
+                if (!(await sameChange(prFiles, recorded))) {
                   return { full: `the last reviewed head ${last} is not an ancestor of ${head}` };
                 }
-                const moved = await baseMoved(prFiles, last);
-                if (moved) return { full: moved };
                 core.info(`${head} is a rebase of ${last} that left this pull request's change as reviewed.`);
                 return { files: [], patches: new Map() };
               }
               const changed = since.files ?? [];
               if (changed.length >= FILE_CAP) return { full: `${FILE_CAP} or more files changed since ${last}` };
-              const moved = await baseMoved(prFiles, last);
+              const moved = await baseMoved(prFiles, last, now);
               if (moved) return { full: moved };
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
@@ -379,7 +388,9 @@ jobs:
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
             };
 
-            // The newest marker comment this lane's job token wrote.
+            // The newest marker comment this lane's job token wrote: the head it
+            // reviewed, and on its second line the base branch and merge base.
+            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}) -->$/u;
             const readMarker = async () => {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
@@ -390,9 +401,14 @@ jobs:
               const marker = comments
                 .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER))
                 .at(-1);
-              if (!marker) return "";
+              if (!marker) return { sha: "", ref: "", mergeBase: "" };
               core.setOutput("marker-id", String(marker.id));
-              return marker.body.slice(MARKER.length, MARKER.length + 40);
+              const base = BASE_LINE.exec(marker.body.split("\n")[1] ?? "");
+              return {
+                sha: marker.body.slice(MARKER.length, MARKER.length + 40),
+                ref: base?.[1] ?? "",
+                mergeBase: base?.[2] ?? "",
+              };
             };
 
             const incremental = env.INCREMENTAL === "true";
@@ -403,15 +419,26 @@ jobs:
                 pull_number: Number(env.PR_NUMBER),
                 per_page: 100,
               });
+              // The file list is the live pull request's; a skip trusts it only
+              // while the live head is still the head this run was started for.
+              const live = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) })).data.head
+                .sha;
+              const current = live === head;
+              if (!current) core.info(`The pull request's head moved to ${live}; this run skips nothing.`);
               let scope = prFiles;
               let last = "";
-              const recorded = incremental ? await readMarker() : "";
-              if (incremental && env.EVENT_ACTION === "synchronize") {
-                const result = await sinceLastReview(prFiles, recorded);
+              let now = "";
+              if (incremental) {
+                now = (await compare(`${env.BASE_REF}...${head}`)).merge_base_commit.sha;
+                core.setOutput("merge-base", now);
+              }
+              const recorded = incremental ? await readMarker() : { sha: "" };
+              if (incremental && env.EVENT_ACTION === "synchronize" && current) {
+                const result = await sinceLastReview(prFiles, recorded, now);
                 if (result.full) {
                   core.info(`Reviewing the whole pull request: ${result.full}.`);
                 } else {
-                  last = recorded;
+                  last = recorded.sha;
                   scope = result.files;
                   if (scope.length > 0) writeDiff(scope, result.patches);
                 }
@@ -422,7 +449,7 @@ jobs:
                 core.setOutput("skip", "no-change");
                 core.setOutput("since", last);
                 core.setOutput("skip-reason", `no file of this pull request changed since the review of ${last}`);
-              } else if (docsOnly.length > 0 && scope.length > 0 && scope.every(isDocs)) {
+              } else if (current && docsOnly.length > 0 && scope.length > 0 && scope.every(isDocs)) {
                 core.setOutput("review", "false");
                 core.setOutput("skip", "docs-only");
                 core.setOutput("skip-reason", "every file in scope matches docs-only-paths");
@@ -565,29 +592,59 @@ jobs:
             - Return the number of findings you reported, inline comments
               included (0 when none), as `findings` in your structured output.
 
-      # With a fallback token, a failed first attempt is classified here. Its
-      # annotation names the first account; a usage limit (class rate-limit)
-      # then gets one more attempt on the fallback account below.
-      - name: Classify the first attempt
+      # With a fallback token, a failed first attempt is checked for a usage
+      # limit here, by the rule report-lane-outcome's classify.cjs uses for
+      # class rate-limit (a test holds the two equal). It leaves a warning with
+      # no `class=` token: only the final report names the run's class, so a
+      # fallback that then fails another way is never read as rate-limited.
+      - name: Check the first attempt for a usage limit
         id: first-outcome
         if: >-
           steps.scope.outputs.review != 'false'
           && steps.compose-args.outputs.fallback == 'true'
           && steps.claude-review.outcome == 'failure'
-        uses: $/.github/actions/report-lane-outcome
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
+          BUDGET_MINUTES: "14"
         with:
-          outcome: ${{ steps.claude-review.outcome }}
-          execution-file: ${{ steps.claude-review.outputs.execution_file }}
-          lane: Claude security review (first account)
-          step-started-at: ${{ steps.compose-args.outputs.started-at }}
-          step-timeout-minutes: 14
+          script: |
+            const fs = require("node:fs");
+            const env = process.env;
+            const timedOut = Date.now() / 1000 - Number(env.STARTED_AT || Number.NaN) >= Number(env.BUDGET_MINUTES) * 60;
+            let last;
+            try {
+              const parsed = JSON.parse(fs.readFileSync(env.EXECUTION_FILE ?? "", "utf8"));
+              last = Array.isArray(parsed) ? parsed.at(-1) : undefined;
+            } catch {
+              last = undefined;
+            }
+            const text = (Array.isArray(last?.errors) ? last.errors : [])
+              .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+              .join("\n");
+            const limited =
+              !timedOut &&
+              last !== undefined &&
+              last !== null &&
+              (typeof last.api_error_status === "number"
+                ? last.api_error_status === 429
+                : last.subtype !== "error_max_turns" &&
+                  !["authentication_error", "billing_error", "permission_error"].some((type) =>
+                    text.includes(`"type":"${type}"`),
+                  ) &&
+                  text.includes('"type":"rate_limit_error"'));
+            if (limited) {
+              core.warning("The first account hit its usage limit.");
+            }
+            core.setOutput("rate-limit", String(limited));
 
       # The fallback attempt gets what is left of the review step's budget, so
       # both attempts fit inside the job's timeout. Under 2 minutes left, it
       # does not start, and the first attempt's usage limit stands.
       - name: Prepare the fallback attempt
         id: fallback
-        if: steps.first-outcome.outputs.failure-class == 'rate-limit'
+        if: steps.first-outcome.outputs.rate-limit == 'true'
         env:
           STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
           BUDGET_MINUTES: "14"
@@ -681,29 +738,39 @@ jobs:
           FIRST_EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
           FIRST_STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
           FIRST_TIMEOUT_MINUTES: "14"
+          FIRST_STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
           FALLBACK_RAN: ${{ steps.fallback.outputs.run }}
           FALLBACK_OUTCOME: ${{ steps.claude-review-fallback.outcome }}
           FALLBACK_EXECUTION_FILE: ${{ steps.claude-review-fallback.outputs.execution_file }}
           FALLBACK_STARTED_AT: ${{ steps.fallback.outputs.started-at }}
           FALLBACK_TIMEOUT_MINUTES: ${{ steps.fallback.outputs.timeout-minutes }}
+          FALLBACK_STRUCTURED_OUTPUT: ${{ steps.claude-review-fallback.outputs.structured_output }}
         run: |
           if [ "$FALLBACK_RAN" = true ]; then
-            {
-              echo "account=fallback"
-              echo "outcome=$FALLBACK_OUTCOME"
-              echo "execution-file=$FALLBACK_EXECUTION_FILE"
-              echo "started-at=$FALLBACK_STARTED_AT"
-              echo "timeout-minutes=$FALLBACK_TIMEOUT_MINUTES"
-            } >> "$GITHUB_OUTPUT"
+            account=fallback outcome="$FALLBACK_OUTCOME" execution_file="$FALLBACK_EXECUTION_FILE"
+            started_at="$FALLBACK_STARTED_AT" timeout_minutes="$FALLBACK_TIMEOUT_MINUTES"
+            structured="$FALLBACK_STRUCTURED_OUTPUT"
           else
-            {
-              echo "account=primary"
-              echo "outcome=$FIRST_OUTCOME"
-              echo "execution-file=$FIRST_EXECUTION_FILE"
-              echo "started-at=$FIRST_STARTED_AT"
-              echo "timeout-minutes=$FIRST_TIMEOUT_MINUTES"
-            } >> "$GITHUB_OUTPUT"
+            account=primary outcome="$FIRST_OUTCOME" execution_file="$FIRST_EXECUTION_FILE"
+            started_at="$FIRST_STARTED_AT" timeout_minutes="$FIRST_TIMEOUT_MINUTES"
+            structured="$FIRST_STRUCTURED_OUTPUT"
           fi
+          # The structured output is model text: a 128-bit random delimiter it
+          # cannot know, and a refusal if it holds that delimiter anyway.
+          delimiter="gha_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          case "$structured" in
+            *"$delimiter"*) structured="" ;;
+          esac
+          {
+            echo "account=$account"
+            echo "outcome=$outcome"
+            echo "execution-file=$execution_file"
+            echo "started-at=$started_at"
+            echo "timeout-minutes=$timeout_minutes"
+            echo "structured-output<<$delimiter"
+            printf '%s\n' "$structured"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
 
       # A green Claude step proves the action ran, not that a review was
       # posted. This step looks for the review: the findings count from the
@@ -726,10 +793,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STARTED_AT: ${{ steps.attempt.outputs.started-at }}
           RUN_ID: ${{ github.run_id }}
-          STRUCTURED_OUTPUT: >-
-            ${{ steps.attempt.outputs.account == 'fallback'
-                && steps.claude-review-fallback.outputs.structured_output
-                || steps.claude-review.outputs.structured_output }}
+          STRUCTURED_OUTPUT: ${{ steps.attempt.outputs.structured-output }}
           SCOPE: ${{ steps.scope.outputs.scope }}
         with:
           script: |
@@ -829,12 +893,20 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MARKER_ID: ${{ steps.scope.outputs.marker-id }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
         with:
           script: |
             const env = process.env;
             const { owner, repo } = context.repo;
+            // The second line names the base the review used; a rebase is
+            // skipped only against the same base branch.
+            const base = /^[0-9a-f]{40}$/u.test(env.MERGE_BASE ?? "")
+              ? [`<!-- claude-lane-reviewed-base ref=${env.BASE_REF} merge-base=${env.MERGE_BASE} -->`]
+              : [];
             const body = [
               `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=${env.HEAD_SHA} -->`,
+              ...base,
               `${env.LANE} has reviewed this pull request through ${env.HEAD_SHA}; a later push is reviewed from there.`,
             ].join("\n");
             if (env.MARKER_ID) {

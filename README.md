@@ -957,9 +957,9 @@ parent secret.
 `fallback-claude-code-oauth-token`. When the first attempt stops on a usage
 limit (`class=rate-limit`), the job retries the review once on that token, in
 the same job and inside the review step's budget, before the report steps; the
-completion record then ends with the field `account=fallback`. The first attempt's
-`class=rate-limit` annotation stays on the check run, named
-`(first account)`. Without the secret the job makes one attempt.
+completion record then ends with the field `account=fallback`. The first attempt's limit leaves only a warning with no
+`class=` token, so the final report alone names the run's class. Without the
+secret the job makes one attempt.
 
 **Inputs** (both lanes, all optional):
 
@@ -996,8 +996,11 @@ or more files changed since, a base-branch merge since then changed a file the
 pull request also changes (or 300 or more files, too many to check), or the
 API returns no patch for a changed text file (too large to show). A push that
 changes no file of the pull request is not reviewed again, and neither is a
-rebase or restack that leaves every file's status and patch as reviewed while
-the base changed none of the pull request's files.
+rebase or restack onto the same base branch that leaves the pull request's
+files, their statuses, and every one of those paths' mode, type and content
+as reviewed. The marker comment's second line records the base branch and
+merge base each review used. A skip is taken only while the pull request's
+live head is still the run's head.
 
 **Status check, red means no review.** Each lane is one job. The code-review
 job is named `claude-review-status`, so its check is
