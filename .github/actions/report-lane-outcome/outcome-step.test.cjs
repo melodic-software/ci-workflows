@@ -320,7 +320,10 @@ test("a non-limit failure carries the record but no resets", async () => {
     executionFile: file,
     credential: "CLAUDE_CODE_OAUTH_TOKEN",
   });
-  assert.match(errors[0], /\bclass=auth credential=CLAUDE_CODE_OAUTH_TOKEN turns=1 /u);
+  assert.match(
+    errors[0],
+    /\bclass=auth credential=CLAUDE_CODE_OAUTH_TOKEN turns=1 /u,
+  );
   assert.doesNotMatch(errors[0], /resets=/u);
   assert.equal(outputs.resets_at, undefined);
 });

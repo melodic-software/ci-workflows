@@ -88,7 +88,10 @@ test("a bot starts a run only when its sender id is listed, and only its login i
   }
   // 22 and 2222 contain or are contained in 222 as text; only whole ids match.
   for (const id of [22, 2222]) {
-    const unlisted = issueEvent("other[bot]", "NONE", { id, login: "other[bot]" });
+    const unlisted = issueEvent("other[bot]", "NONE", {
+      id,
+      login: "other[bot]",
+    });
     assert.equal(gate(unlisted, "111,222"), false, String(id));
     assert.equal(bots(unlisted, "111,222"), "", String(id));
   }
