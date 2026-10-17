@@ -119,7 +119,12 @@ on:
           Resolved model arguments from the caller's resolve-config, in the
           form [--model <alias>] --max-turns <n> [--effort <level>]. When set,
           appended after claude-args in place of the --model and --effort the
-          model and effort inputs supply; any other value fails the job.
+          model and effort inputs supply; any other value fails the job. Only
+          the flags it carries are appended, so a --model or --effort in
+          claude-args is used when model-args leaves that flag out. Claude
+          args only: a profile's subagent-model (resolve-config's
+          settings-json) is not supported, so routes feeding this input keep
+          subagent-model at inherit.
         type: string
         default: ""
       claude-args:
