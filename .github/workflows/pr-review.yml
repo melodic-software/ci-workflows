@@ -533,20 +533,23 @@ jobs:
       # Linux unless bubblewrap is installed. The action installs it only when
       # allowed_non_write_users is set (claude-code-action@a26b07d action.yml
       # "Install subprocess isolation dependencies"), which these lanes never
-      # set, so this repeats that step. Ubuntu 24.04's AppArmor blocks the
-      # unprivileged user namespaces bubblewrap needs; the same sysctl lifts it.
-      # A failure here surfaces as the review step's install error, which the
-      # outcome step classifies.
+      # set, so this repeats that step. Ubuntu 24.04's AppArmor can block the
+      # unprivileged user namespaces bubblewrap needs; the action's sysctl lifts
+      # it, here only when bwrap cannot start, so a runner that works as it is
+      # keeps its kernel setting. A failure here surfaces as the review step's
+      # install error, which the outcome step classifies. One minute keeps the
+      # step inside the job's allowance outside the review step.
       - name: Install subprocess isolation dependencies
         if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 1
         run: |
           if ! command -v bwrap >/dev/null; then
             sudo apt-get -o Acquire::Retries=3 update -qq
             sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
           fi
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          if ! bwrap --ro-bind / / true 2>/dev/null &&
+            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
