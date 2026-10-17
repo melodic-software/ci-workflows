@@ -972,6 +972,7 @@ secret the job makes one attempt.
 | `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
 | `model` | `sonnet` | Model alias or ID, appended as `--model` after `claude-args`, so it wins over a `--model` there |
 | `effort` | `high` | `low`, `medium`, `high`, `xhigh` or `max`, appended as `--effort` after `claude-args` |
+| `model-args` | empty | resolve-config's `claude-args` (`[--model <alias>] --max-turns <n> [--effort <level>]`); when set, appended after `claude-args` in place of `model` and `effort`, and any other value fails the job |
 | `claude-args` | `--max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the model, effort, inline-comment grant and a `Skill(<plugin-command>)` grant are always appended |
 | `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
 | `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |

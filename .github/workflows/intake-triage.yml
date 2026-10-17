@@ -116,14 +116,15 @@ on:
         default: ""
       claude-args:
         description: >-
-          Passed through to the Claude CLI (model, turn budget). The lane's
+          Passed through to the Claude CLI (model, effort, turn budget); a
+          caller's value replaces this default wholesale. The lane's
           permission profile and output schema are appended after it, so a
           caller cannot loosen them.
         type: string
         # 30 turns: the last 50 claude-code-plugins runs used a median of 11
         # and at most 18; every failure among them was a run that finished
         # past the old cap of 15.
-        default: --model claude-sonnet-5 --max-turns 30
+        default: --model sonnet --effort medium --max-turns 30
       allowed-bot-sender-ids:
         description: >-
           Comma-separated numeric GitHub user ids, no spaces, of bots whose
