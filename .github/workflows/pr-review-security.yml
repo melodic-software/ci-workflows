@@ -844,7 +844,9 @@ jobs:
             if (!Number.isSafeInteger(findings) || findings < 0) {
               return incomplete("the review returned no findings count");
             }
-            const summary = typeof output.summary === "string" ? output.summary.trim() : "";
+            // Checked as the record step will post it: without HTML comments.
+            const summary =
+              typeof output.summary === "string" ? output.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
             if (!summary) return incomplete("the review returned no summary");
             if (!Number.isFinite(start)) return incomplete("the review step's start time is unknown");
 

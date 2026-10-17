@@ -571,7 +571,15 @@ test("a completed review hands its trimmed summary to the record step", async ()
 });
 
 test("a missing, blank or non-string summary concludes incomplete", async () => {
-  for (const summary of [undefined, "", "   ", 3, ["x"], null]) {
+  for (const summary of [
+    undefined,
+    "",
+    "   ",
+    3,
+    ["x"],
+    null,
+    "<!-- no findings -->\n",
+  ]) {
     const { outputs } = await verify(codeLane, {
       structured: { findings: 0, summary },
     });
