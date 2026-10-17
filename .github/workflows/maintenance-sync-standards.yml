@@ -173,7 +173,7 @@ jobs:
         with:
           client-id: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
-          owner: melodic-software
+          owner: melodic-software # zizmor: ignore[github-app] attesting the App identity and exact repository access needs an org-wide metadata read
           permission-metadata: read
 
       - name: Attest App identity and exact repository access
