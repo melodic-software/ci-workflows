@@ -25,7 +25,7 @@ const workflowsDirectory = path.join(__dirname, "..", "workflows");
 // The compose run block is expression-free shell (env carries the ${{ }}
 // values), so the append contract is executed here rather than
 // pattern-matched.
-function composeArgs(script, baseArgs, pluginCommand) {
+function runCompose(script, env) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "compose-args-"));
   try {
     const githubOutput = path.join(directory, "github-output");
@@ -34,22 +34,32 @@ function composeArgs(script, baseArgs, pluginCommand) {
       encoding: "utf8",
       env: {
         ...process.env,
-        BASE_ARGS: baseArgs,
-        PLUGIN_COMMAND: pluginCommand,
+        MODEL: "sonnet",
+        EFFORT: "high",
+        HAS_FALLBACK: "false",
+        ...env,
         GITHUB_OUTPUT: githubOutput,
       },
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const output = fs.readFileSync(githubOutput, "utf8");
-    const match =
-      /^args<<(?<delimiter>\S+)\n(?<value>[\s\S]*?)\n\k<delimiter>\n/mu.exec(
-        output,
-      );
-    assert.ok(match, `no heredoc args output in: ${output}`);
-    return match.groups.value;
+    return { result, output: fs.readFileSync(githubOutput, "utf8") };
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function composeArgs(script, baseArgs, pluginCommand, env = {}) {
+  const { result, output } = runCompose(script, {
+    BASE_ARGS: baseArgs,
+    PLUGIN_COMMAND: pluginCommand,
+    ...env,
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const match =
+    /^args<<(?<delimiter>\S+)\n(?<value>[\s\S]*?)\n\k<delimiter>\n/mu.exec(
+      output,
+    );
+  assert.ok(match, `no heredoc args output in: ${output}`);
+  return match.groups.value;
 }
 
 for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
@@ -62,16 +72,75 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
   const pluginCommand =
     workflow.on.workflow_call.inputs["plugin-command"].default;
 
-  test(`${fileName}: the one Claude invocation consumes the composed args`, () => {
+  test(`${fileName}: both Claude attempts consume the composed args`, () => {
     const invocations = steps.filter((step) =>
       String(step?.uses ?? "").startsWith("anthropics/claude-code-action@"),
     );
-    assert.equal(invocations.length, 1);
-    assert.equal(
-      invocations[0].with.claude_args,
-      COMPOSED_ARGS,
-      "claude_args must come from the compose step, or the appended inline-comment grant never reaches the action",
+    assert.deepEqual(
+      invocations.map((step) => step.id),
+      ["claude-review", "claude-review-fallback"],
     );
+    for (const invocation of invocations) {
+      assert.equal(
+        invocation.with.claude_args,
+        COMPOSED_ARGS,
+        "claude_args must come from the compose step, or the appended inline-comment grant never reaches the action",
+      );
+    }
+  });
+
+  test(`${fileName}: the model and effort inputs follow the caller's args, so they win over a --model there`, () => {
+    assert.equal(composeStep.env.MODEL, `\${{ inputs.model }}`);
+    assert.equal(composeStep.env.EFFORT, `\${{ inputs.effort }}`);
+    const args = composeArgs(
+      composeStep.run,
+      "--model claude-opus-5 --max-turns 5",
+      pluginCommand,
+      { MODEL: "claude-sonnet-5-5[1m]", EFFORT: "xhigh" },
+    );
+    assert.ok(
+      args.startsWith(
+        "--model claude-opus-5 --max-turns 5 --model claude-sonnet-5-5[1m] --effort xhigh --json-schema ",
+      ),
+      args,
+    );
+  });
+
+  test(`${fileName}: a model or effort that is not a plain value stops the job before Claude runs`, () => {
+    for (const env of [
+      { MODEL: "sonnet --dangerously-skip-permissions" },
+      { MODEL: "" },
+      { MODEL: "sonnet;id" },
+      { EFFORT: "extreme" },
+      { EFFORT: "" },
+    ]) {
+      const { result, output } = runCompose(composeStep.run, {
+        BASE_ARGS: "--max-turns 5",
+        PLUGIN_COMMAND: pluginCommand,
+        ...env,
+      });
+      assert.equal(result.status, 1, JSON.stringify(env));
+      assert.match(
+        result.stdout,
+        /^::error::The (model|effort) input must be/mu,
+      );
+      assert.equal(output, "", "no args may be written for a rejected value");
+    }
+  });
+
+  test(`${fileName}: the compose step reports whether the caller passed a fallback token`, () => {
+    assert.equal(
+      composeStep.env.HAS_FALLBACK,
+      `\${{ secrets.fallback-claude-code-oauth-token != '' }}`,
+    );
+    for (const value of ["true", "false"]) {
+      const { output } = runCompose(composeStep.run, {
+        BASE_ARGS: "--max-turns 5",
+        PLUGIN_COMMAND: pluginCommand,
+        HAS_FALLBACK: value,
+      });
+      assert.match(output, new RegExp(`^fallback=${value}$`, "mu"));
+    }
   });
 
   test(`${fileName}: the caller-replaceable default carries no inline-comment grant`, () => {

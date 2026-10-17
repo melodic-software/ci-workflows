@@ -492,6 +492,104 @@ test("a rewritten history or 300 or more changed files forces a whole review", a
   }
 });
 
+// A restack: the base gained a commit and the layer was rebased onto it, so
+// the last reviewed head is no ancestor of the new one (claude-code-plugins#7669).
+const PATCH_A = "@@ -1 +1 @@\n-a\n+A";
+const PATCH_B = "@@ -3,2 +3,3 @@\n b\n+B\n c";
+const restack = ({ reviewed, moved = [file("base-only.js")] }) => ({
+  [`${LAST}...${HEAD}`]: { status: "diverged", files: [] },
+  [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD }, files: reviewed },
+  [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+  [`${MB_OLD}...${MB_NEW}`]: { files: moved },
+});
+
+test("both lanes skip a restack that left the pull request's change as reviewed", async () => {
+  for (const lane of [codeLane, securityLane]) {
+    const prFiles = [
+      file("src/a.js", { patch: PATCH_A }),
+      file("src/c.js", {
+        status: "renamed",
+        previous_filename: "src/b.js",
+        patch: PATCH_B,
+      }),
+    ];
+    const result = await runScope(lane, {
+      prFiles,
+      compares: restack({ reviewed: prFiles.map((entry) => ({ ...entry })) }),
+      comments: [await markerFor(lane, LAST)],
+    });
+    assert.equal(result.outputs.review, "false", lane.file);
+    assert.equal(result.outputs.skip, "no-change");
+    assert.equal(result.outputs.since, LAST);
+    assert.equal(result.outputs.record, "true");
+    assert.ok(
+      result.messages.some((message) => /is a rebase of b{40}/u.test(message)),
+    );
+  }
+});
+
+test("a restack that changed the pull request's change, or the base under it, reviews the whole pull request", async () => {
+  const prFiles = [file("src/a.js", { patch: PATCH_A })];
+  for (const [compares, reason] of [
+    // A patch differs.
+    [
+      restack({
+        reviewed: [file("src/a.js", { patch: "@@ -1 +1 @@\n-a\n+a2" })],
+      }),
+      /is not an ancestor/u,
+    ],
+    // A file was added to or dropped from the change.
+    [
+      restack({
+        reviewed: [
+          file("src/a.js", { patch: PATCH_A }),
+          file("src/b.js", { patch: PATCH_B }),
+        ],
+      }),
+      /is not an ancestor/u,
+    ],
+    // Same name and patch, different status.
+    [
+      restack({
+        reviewed: [file("src/a.js", { status: "added", patch: PATCH_A })],
+      }),
+      /is not an ancestor/u,
+    ],
+    // The change is the same, but the base moved a file the pull request changes.
+    [
+      restack({
+        reviewed: [file("src/a.js", { patch: PATCH_A })],
+        moved: [file("src/a.js")],
+      }),
+      /base-branch merge .* changed a file this pull request changes/u,
+    ],
+  ]) {
+    const result = await runScope(securityLane, {
+      prFiles,
+      compares,
+      comments: [await markerFor(securityLane, LAST)],
+    });
+    assert.equal(result.outputs.review, "true");
+    assert.equal(result.outputs.scope, "whole");
+    assert.ok(
+      result.messages.some((message) => reason.test(message)),
+      result.messages.join("\n"),
+    );
+  }
+});
+
+test("a restack over a file the API shows no patch for reviews the whole pull request", async () => {
+  const result = await runScope(securityLane, {
+    prFiles: [file("src/a.js", { patch: PATCH_A }), file("img.png")],
+    compares: { [`${LAST}...${HEAD}`]: { status: "diverged", files: [] } },
+    comments: [await markerFor(securityLane, LAST)],
+  });
+  assert.equal(result.outputs.review, "true");
+  assert.ok(
+    result.messages.some((message) => /is not an ancestor/u.test(message)),
+  );
+});
+
 test("a changed file the API returns no patch for forces a whole review", async () => {
   const result = await runScope(codeLane, {
     prFiles: [file("src/a.js"), file("img.png"), file("src/c.js")],

@@ -24,6 +24,8 @@ name: pr-review-security
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@<sha>
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#           # Optional: retried once after a usage limit.
+#           fallback-claude-code-oauth-token: ${{ secrets.<FALLBACK_SECRET> }}
 #
 # SECURITY MODEL:
 #   - Call it from `pull_request` only. pull_request_target and workflow_run
@@ -36,7 +38,11 @@ name: pr-review-security
 #     then gets that sender's login only, so it still rejects every other bot.
 #     Ids, not logins: a login can be renamed and then registered by another
 #     account.
-#   - Only the one named secret is accepted; the job token is least privilege.
+#   - Only the named secrets are accepted: the token, and an optional
+#     fallback token used once, only after the first attempt stops on a usage
+#     limit. The job token is least privilege.
+#   - Bash subprocesses run with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, so the
+#     OAuth token is stripped from their environment (GitHub tokens stay).
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
@@ -53,7 +59,8 @@ name: pr-review-security
 # skipped, `opened`, `reopened` and `ready_for_review` review the whole pull
 # request, and a later push reviews only the files changed since this lane's
 # last completed review; 300 or more files changed since forces a whole review.
-# When every file in scope matches `docs-only-paths` (by default top-level
+# A rebase or restack that leaves the pull request's change as reviewed is not
+# reviewed again. When every file in scope matches `docs-only-paths` (by default top-level
 # `docs/` markdown, READMEs and changelogs), no security review runs.
 #
 # One job reviews and reports. It is named `security-review`, so with the
@@ -62,6 +69,8 @@ name: pr-review-security
 # stays green. Completion and its `claude-lane-review-complete` notice work as
 # in pr-review.yml (see its header), with lane id `claude-security-review`;
 # this lane reviews from the API diff and writes no full diff of its own. The
+# usage-limit fallback works as in pr-review.yml, with lane name `Claude
+# security review` and the 14-minute step budget. The
 # check is advisory (github-iac ADR 0011 keeps agentic review
 # advisory, and `ci-status` is the only required check); do not make it
 # required.
@@ -91,15 +100,27 @@ on:
         description: Slash command the review runs.
         type: string
         default: /review:security-review
+      model:
+        description: >-
+          Claude model alias or ID, passed as --model after claude-args, so it
+          wins over a --model there.
+        type: string
+        default: sonnet
+      effort:
+        description: >-
+          Effort level (low, medium, high, xhigh or max), passed as --effort
+          after claude-args, so it wins over an --effort there.
+        type: string
+        default: high
       claude-args:
         description: >-
-          Passed through to the Claude CLI (model, turn budget, allowed tools).
-          A caller's value replaces this default. The inline-comment and
-          plugin-command Skill grants are appended after it, so a caller
-          cannot drop them.
+          Passed through to the Claude CLI (turn budget, allowed tools). A
+          caller's value replaces this default. The model, effort,
+          inline-comment and plugin-command Skill grants are appended after
+          it, so a caller cannot drop them.
         type: string
         default: >-
-          --model claude-sonnet-5 --max-turns 75
+          --max-turns 75
           --allowedTools "Bash(gh pr diff:*)"
       exclude-comments-by-actor:
         description: >-
@@ -155,6 +176,12 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token (from `claude setup-token`).
         required: true
+      fallback-claude-code-oauth-token:
+        description: >-
+          Optional second Claude Code OAuth token. When the first attempt
+          stops on a usage limit (class rate-limit), the job retries the
+          review once with it. Unset keeps a single attempt.
+        required: false
 
 permissions:
   contents: read
@@ -271,29 +298,61 @@ jobs:
             const compare = async (basehead) =>
               (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
 
+            // Why a base-branch change since the last review needs a whole review, or "".
+            const baseMoved = async (prFiles, last) => {
+              const prNames = new Set(prFiles.flatMap(names));
+              const [before, now] = await Promise.all(
+                [last, head].map(async (ref) => (await compare(`${env.BASE_REF}...${ref}`)).merge_base_commit.sha),
+              );
+              if (before === now) return "";
+              const moved = (await compare(`${before}...${now}`)).files ?? [];
+              if (moved.length >= FILE_CAP) {
+                return `a base-branch merge since the last review changed ${FILE_CAP} or more files`;
+              }
+              if (moved.some((file) => names(file).some((name) => prNames.has(name)))) {
+                return "a base-branch merge since the last review changed a file this pull request changes";
+              }
+              return "";
+            };
+
+            // A rebase or restack that left the pull request's own change as it was
+            // reviewed: every file, with the same status, name and patch, against the
+            // base the last reviewed head was compared with. A file with no patch
+            // cannot be shown equal, so it never passes.
+            const sameChange = async (prFiles, last) => {
+              if (prFiles.length >= FILE_CAP || prFiles.some((file) => file.patch === undefined)) return false;
+              const reviewed = (await compare(`${env.BASE_REF}...${last}`)).files ?? [];
+              if (reviewed.length !== prFiles.length) return false;
+              const byName = new Map(reviewed.map((file) => [file.filename, file]));
+              return prFiles.every((file) => {
+                const was = byName.get(file.filename);
+                return (
+                  was !== undefined &&
+                  was.status === file.status &&
+                  was.previous_filename === file.previous_filename &&
+                  was.patch === file.patch
+                );
+              });
+            };
+
             // Returns { files, patches } for an incremental review, or { full: reason }.
             const sinceLastReview = async (prFiles, last) => {
               if (!/^[0-9a-f]{40}$/u.test(last)) return { full: "no earlier review is recorded" };
               if (last === head) return { files: [], patches: new Map() };
               const since = await compare(`${last}...${head}`);
               if (since.status !== "ahead") {
-                return { full: `the last reviewed head ${last} is not an ancestor of ${head}` };
+                if (!(await sameChange(prFiles, last))) {
+                  return { full: `the last reviewed head ${last} is not an ancestor of ${head}` };
+                }
+                const moved = await baseMoved(prFiles, last);
+                if (moved) return { full: moved };
+                core.info(`${head} is a rebase of ${last} that left this pull request's change as reviewed.`);
+                return { files: [], patches: new Map() };
               }
               const changed = since.files ?? [];
               if (changed.length >= FILE_CAP) return { full: `${FILE_CAP} or more files changed since ${last}` };
-              const prNames = new Set(prFiles.flatMap(names));
-              const [before, now] = await Promise.all(
-                [last, head].map(async (ref) => (await compare(`${env.BASE_REF}...${ref}`)).merge_base_commit.sha),
-              );
-              if (before !== now) {
-                const moved = (await compare(`${before}...${now}`)).files ?? [];
-                if (moved.length >= FILE_CAP) {
-                  return { full: `a base-branch merge since the last review changed ${FILE_CAP} or more files` };
-                }
-                if (moved.some((file) => names(file).some((name) => prNames.has(name)))) {
-                  return { full: "a base-branch merge since the last review changed a file this pull request changes" };
-                }
-              }
+              const moved = await baseMoved(prFiles, last);
+              if (moved) return { full: moved };
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
               const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
@@ -394,34 +453,52 @@ jobs:
             }
             if (incremental) core.setOutput("record", "true");
 
-      # The inline-comment and plugin-command Skill grants go after the caller's
-      # args so replacing claude-args cannot drop them, and so does the
-      # findings schema, which makes the action return the findings count as
-      # structured output; heredoc output as claude-args may be multiline.
-      # started-at lets the outcome step tell a step timeout from other
-      # failures, and opens the window the verify step searches.
+      # The model, effort, inline-comment and plugin-command Skill grants go
+      # after the caller's args so replacing claude-args cannot drop them, and
+      # so does the findings schema, which makes the action return the
+      # findings count as structured output; heredoc output as claude-args may
+      # be multiline. started-at lets the outcome step tell a step timeout
+      # from other failures, and opens the window the verify step searches.
+      # fallback says whether the caller passed a fallback token.
       - name: Compose Claude CLI arguments
         id: compose-args
         if: steps.scope.outputs.review != 'false'
         env:
           BASE_ARGS: ${{ inputs.claude-args }}
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
           PLUGIN_COMMAND: ${{ inputs.plugin-command }}
+          HAS_FALLBACK: ${{ secrets.fallback-claude-code-oauth-token != '' }}
         run: |
+          if ! [[ "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$ ]]; then
+            echo "::error::The model input must be a model alias or ID."
+            exit 1
+          fi
+          case "$EFFORT" in
+            low | medium | high | xhigh | max) ;;
+            *)
+              echo "::error::The effort input must be low, medium, high, xhigh or max."
+              exit 1
+              ;;
+          esac
           skill="${PLUGIN_COMMAND#/}"
           skill="${skill%% *}"
           schema='{"type":"object","properties":{"findings":{"type":"integer","minimum":0}},"required":["findings"],"additionalProperties":false}'
-          args="$BASE_ARGS --json-schema '$schema' --allowedTools mcp__github_inline_comment__create_inline_comment --allowedTools \"Skill($skill)\""
+          args="$BASE_ARGS --model $MODEL --effort $EFFORT --json-schema '$schema' --allowedTools mcp__github_inline_comment__create_inline_comment --allowedTools \"Skill($skill)\""
           delimiter="gha_${RANDOM}${RANDOM}_EOF"
           {
             echo "args<<$delimiter"
             printf '%s\n' "$args"
             echo "$delimiter"
             echo "started-at=$(date +%s)"
+            echo "fallback=$HAS_FALLBACK"
           } >> "$GITHUB_OUTPUT"
 
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.
-      # The outcome step's step-timeout-minutes repeats timeout-minutes.
+      # The pick step's first-attempt timeout repeats timeout-minutes. The
+      # fallback step below repeats this step except for its token; a test
+      # holds them equal.
       - name: Claude security review
         id: claude-review
         if: steps.scope.outputs.review != 'false'
@@ -437,10 +514,18 @@ jobs:
           # row, as of 2026-10-16; recheck on a claude-code-action bump that
           # drops that break, or when the row stops naming run_in_background).
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+          # Strips credentials other than GitHub tokens from Bash subprocesses
+          # (code.claude.com/docs/en/env-vars, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+          # row, as of 2026-10-17; recheck when the row changes what it keeps).
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
           display_report: false
+          # Inline comments post as they are made, so a step timeout cannot
+          # drop buffered findings (action.yml classify_inline_comments).
+          classify_inline_comments: false
+          include_fix_links: false
           exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
           # The sender's login only when its id passed the job gate; else none.
           allowed_bots: >-
@@ -480,6 +565,146 @@ jobs:
             - Return the number of findings you reported, inline comments
               included (0 when none), as `findings` in your structured output.
 
+      # With a fallback token, a failed first attempt is classified here. Its
+      # annotation names the first account; a usage limit (class rate-limit)
+      # then gets one more attempt on the fallback account below.
+      - name: Classify the first attempt
+        id: first-outcome
+        if: >-
+          steps.scope.outputs.review != 'false'
+          && steps.compose-args.outputs.fallback == 'true'
+          && steps.claude-review.outcome == 'failure'
+        uses: $/.github/actions/report-lane-outcome
+        with:
+          outcome: ${{ steps.claude-review.outcome }}
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          lane: Claude security review (first account)
+          step-started-at: ${{ steps.compose-args.outputs.started-at }}
+          step-timeout-minutes: 14
+
+      # The fallback attempt gets what is left of the review step's budget, so
+      # both attempts fit inside the job's timeout. Under 2 minutes left, it
+      # does not start, and the first attempt's usage limit stands.
+      - name: Prepare the fallback attempt
+        id: fallback
+        if: steps.first-outcome.outputs.failure-class == 'rate-limit'
+        env:
+          STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
+          BUDGET_MINUTES: "14"
+        run: |
+          now="$(date +%s)"
+          left=$(((BUDGET_MINUTES * 60 - (now - STARTED_AT)) / 60))
+          if [ "$left" -lt 2 ]; then
+            echo "::warning::Usage limit with under 2 minutes of the review budget left; no fallback attempt."
+            exit 0
+          fi
+          {
+            echo "run=true"
+            echo "started-at=$now"
+            echo "timeout-minutes=$left"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Claude security review on the fallback account
+        id: claude-review-fallback
+        if: steps.fallback.outputs.run == 'true'
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(steps.fallback.outputs.timeout-minutes || '14') }}
+        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
+        env:
+          # The action stops reading at Claude's first result message
+          # (base-action/src/run-claude-sdk.ts:198-209), so background work
+          # that reports in a later turn is lost. This runs every subagent in
+          # the foreground and turns off run_in_background
+          # (code.claude.com/docs/en/env-vars, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+          # row, as of 2026-10-16; recheck on a claude-code-action bump that
+          # drops that break, or when the row stops naming run_in_background).
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+          # Strips credentials other than GitHub tokens from Bash subprocesses
+          # (code.claude.com/docs/en/env-vars, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+          # row, as of 2026-10-17; recheck when the row changes what it keeps).
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+        with:
+          claude_code_oauth_token: ${{ secrets.fallback-claude-code-oauth-token }}
+          track_progress: true
+          display_report: false
+          # Inline comments post as they are made, so a step timeout cannot
+          # drop buffered findings (action.yml classify_inline_comments).
+          classify_inline_comments: false
+          include_fix_links: false
+          exclude_comments_by_actor: ${{ inputs.exclude-comments-by-actor }}
+          # The sender's login only when its id passed the job gate; else none.
+          allowed_bots: >-
+            ${{ inputs.allowed-bot-sender-ids != ''
+                && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                && !contains(inputs.allowed-bot-sender-ids, ',,')
+                && github.event.sender.id
+                && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                            format(',{0},', github.event.sender.id))
+                && github.event.sender.login || '' }}
+          plugins: ${{ inputs.plugins }}
+          plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
+          claude_args: ${{ steps.compose-args.outputs.args }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+            ${{ steps.scope.outputs.note }}
+
+            Invoke ${{ inputs.plugin-command }} now and follow its instructions exactly for this pull request.
+            The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.
+            Do not substitute a different review procedure.
+
+            When referencing specific code locations in findings, link to the
+            commit blob (not the PR) using a permalink with line numbers:
+            https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+            When you finish, whether or not you found anything:
+            - Never put the lines below in an HTML comment: the comment tools
+              delete HTML comments before posting.
+            - End your summary comment with this line, as plain text on a line
+              of its own, exactly as written:
+              claude-lane-summary: lane=claude-security-review sha=${{ github.event.pull_request.head.sha }} run=${{ github.run_id }}
+            - End the body of every inline comment with this plain-text line:
+              claude-lane: claude-security-review
+            - Return the number of findings you reported, inline comments
+              included (0 when none), as `findings` in your structured output.
+
+      # The attempt that counts: the fallback when it ran, else the first.
+      # Everything below reads the outcome, execution file, start time and
+      # budget from here.
+      - name: Pick the attempt that counts
+        id: attempt
+        if: steps.scope.outputs.review != 'false'
+        env:
+          FIRST_OUTCOME: ${{ steps.claude-review.outcome }}
+          FIRST_EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          FIRST_STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
+          FIRST_TIMEOUT_MINUTES: "14"
+          FALLBACK_RAN: ${{ steps.fallback.outputs.run }}
+          FALLBACK_OUTCOME: ${{ steps.claude-review-fallback.outcome }}
+          FALLBACK_EXECUTION_FILE: ${{ steps.claude-review-fallback.outputs.execution_file }}
+          FALLBACK_STARTED_AT: ${{ steps.fallback.outputs.started-at }}
+          FALLBACK_TIMEOUT_MINUTES: ${{ steps.fallback.outputs.timeout-minutes }}
+        run: |
+          if [ "$FALLBACK_RAN" = true ]; then
+            {
+              echo "account=fallback"
+              echo "outcome=$FALLBACK_OUTCOME"
+              echo "execution-file=$FALLBACK_EXECUTION_FILE"
+              echo "started-at=$FALLBACK_STARTED_AT"
+              echo "timeout-minutes=$FALLBACK_TIMEOUT_MINUTES"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "account=primary"
+              echo "outcome=$FIRST_OUTCOME"
+              echo "execution-file=$FIRST_EXECUTION_FILE"
+              echo "started-at=$FIRST_STARTED_AT"
+              echo "timeout-minutes=$FIRST_TIMEOUT_MINUTES"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       # A green Claude step proves the action ran, not that a review was
       # posted. This step looks for the review: the findings count from the
       # step's structured output, a summary by the Claude App naming this lane,
@@ -492,16 +717,19 @@ jobs:
       # output is parsed and never printed.
       - name: Verify the review completed
         id: verify
-        if: steps.claude-review.outcome == 'success'
+        if: steps.attempt.outputs.outcome == 'success'
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           LANE: claude-security-review
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STARTED_AT: ${{ steps.compose-args.outputs.started-at }}
+          STARTED_AT: ${{ steps.attempt.outputs.started-at }}
           RUN_ID: ${{ github.run_id }}
-          STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+          STRUCTURED_OUTPUT: >-
+            ${{ steps.attempt.outputs.account == 'fallback'
+                && steps.claude-review-fallback.outputs.structured_output
+                || steps.claude-review.outputs.structured_output }}
           SCOPE: ${{ steps.scope.outputs.scope }}
         with:
           script: |
@@ -578,11 +806,11 @@ jobs:
         if: steps.scope.outputs.review != 'false'
         uses: $/.github/actions/report-lane-outcome
         with:
-          outcome: ${{ steps.claude-review.outcome }}
-          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          outcome: ${{ steps.attempt.outputs.outcome }}
+          execution-file: ${{ steps.attempt.outputs.execution-file }}
           lane: Claude security review
-          step-started-at: ${{ steps.compose-args.outputs.started-at }}
-          step-timeout-minutes: 14
+          step-started-at: ${{ steps.attempt.outputs.started-at }}
+          step-timeout-minutes: ${{ steps.attempt.outputs.timeout-minutes }}
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
 
@@ -640,8 +868,14 @@ jobs:
           SCOPE: ${{ steps.scope.outputs.scope }}
           FINDINGS: ${{ steps.verify.outputs.findings }}
           INLINE: ${{ steps.verify.outputs.inline }}
+          ACCOUNT: ${{ steps.attempt.outputs.account }}
         run: |
           record="claude-lane-review-complete lane=$LANE sha=$HEAD_SHA"
+          account=""
+          if [ "$ACCOUNT" = fallback ]; then
+            account=" account=fallback"
+            echo "$LANE: the first account hit its usage limit, so the attempt below ran on the fallback account." >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -n "$SKIP_REASON" ]; then
             echo "$LANE: no review needed: $SKIP_REASON." >> "$GITHUB_STEP_SUMMARY"
             case "$SKIP_KIND" in
@@ -659,7 +893,7 @@ jobs:
               if [ "$SCOPE" = incremental ]; then
                 scope="scope=incremental since=$SINCE"
               fi
-              echo "::notice title=claude-lane-review-complete::$record findings=$FINDINGS inline=$INLINE $scope"
+              echo "::notice title=claude-lane-review-complete::$record findings=$FINDINGS inline=$INLINE $scope$account"
             fi
             exit 0
           fi

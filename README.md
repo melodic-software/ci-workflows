@@ -953,6 +953,14 @@ visibility "all repositories", so every org repo receives it. Pass that one
 named secret explicitly rather than `secrets: inherit`, which forwards every
 parent secret.
 
+**Usage-limit fallback.** Both lanes accept an optional second secret,
+`fallback-claude-code-oauth-token`. When the first attempt stops on a usage
+limit (`class=rate-limit`), the job retries the review once on that token, in
+the same job and inside the review step's budget, before the report steps; the
+completion record then ends with the field `account=fallback`. The first attempt's
+`class=rate-limit` annotation stays on the check run, named
+`(first account)`. Without the secret the job makes one attempt.
+
 **Inputs** (both lanes, all optional):
 
 | Input | Default | Purpose |
@@ -961,7 +969,9 @@ parent secret.
 | `plugins` | `review@melodic-software` | Plugins the action installs |
 | `plugin-marketplaces` | the org marketplace URL | Marketplaces for `plugins` |
 | `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
-| `claude-args` | `--model claude-sonnet-5 --max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the inline-comment grant and a `Skill(<plugin-command>)` grant are always appended |
+| `model` | `sonnet` | Model alias or ID, appended as `--model` after `claude-args`, so it wins over a `--model` there |
+| `effort` | `high` | `low`, `medium`, `high`, `xhigh` or `max`, appended as `--effort` after `claude-args` |
+| `claude-args` | `--max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the model, effort, inline-comment grant and a `Skill(<plugin-command>)` grant are always appended |
 | `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
 | `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |
 | `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
@@ -985,7 +995,9 @@ recorded head is not an ancestor of the new head (force push or rebase), 300
 or more files changed since, a base-branch merge since then changed a file the
 pull request also changes (or 300 or more files, too many to check), or the
 API returns no patch for a changed text file (too large to show). A push that
-changes no file of the pull request is not reviewed again.
+changes no file of the pull request is not reviewed again, and neither is a
+rebase or restack that leaves every file's status and patch as reviewed while
+the base changed none of the pull request's files.
 
 **Status check, red means no review.** Each lane is one job. The code-review
 job is named `claude-review-status`, so its check is
@@ -1029,6 +1041,7 @@ read through the check-run annotations API:
 |---|---|
 | Completed review | `claude-lane-review-complete lane=<id> sha=<head> findings=<N> inline=<K> scope=whole` |
 | Completed incremental review | `... findings=<N> inline=<K> scope=incremental since=<last reviewed head>` |
+| Either, reviewed on the fallback token | the same message with a last field `account=fallback` |
 | Nothing changed since the last review | `claude-lane-review-complete lane=<id> sha=<head> skip=no-change through=<last reviewed head>` |
 | Every file in scope is documentation | `claude-lane-review-complete lane=<id> sha=<head> skip=docs-only` |
 
