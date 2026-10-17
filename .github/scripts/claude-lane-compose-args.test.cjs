@@ -72,6 +72,12 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
   const composeStep = steps.find((step) => step?.id === "compose-args");
   const pluginCommand =
     workflow.on.workflow_call.inputs["plugin-command"].default;
+  // The review lane also reads the PR body and its closing issue; the
+  // security lane stays on the diff alone.
+  const defaultBaseArgs =
+    fileName === "pr-review.yml"
+      ? '--max-turns 75 --allowedTools "Bash(gh pr diff:*)" "Bash(gh pr view:*)" "Bash(gh issue view:*)"'
+      : '--max-turns 75 --allowedTools "Bash(gh pr diff:*)"';
 
   test(`${fileName}: both Claude attempts consume the composed args`, () => {
     const invocations = steps.filter((step) =>
@@ -144,7 +150,7 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
     );
     assert.ok(
       args.startsWith(
-        '--max-turns 75 --allowedTools "Bash(gh pr diff:*)" --model sonnet --effort high --json-schema ',
+        `${defaultBaseArgs} --model sonnet --effort high --json-schema `,
       ),
       args,
     );
@@ -164,7 +170,7 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
       );
       assert.ok(
         args.startsWith(
-          `--max-turns 75 --allowedTools "Bash(gh pr diff:*)" ${modelArgs} --json-schema `,
+          `${defaultBaseArgs} ${modelArgs} --json-schema `,
         ),
         args,
       );

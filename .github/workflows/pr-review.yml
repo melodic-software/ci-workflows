@@ -146,7 +146,7 @@ on:
         type: string
         default: >-
           --max-turns 75
-          --allowedTools "Bash(gh pr diff:*)"
+          --allowedTools "Bash(gh pr diff:*)" "Bash(gh pr view:*)" "Bash(gh issue view:*)"
       exclude-comments-by-actor:
         description: >-
           Comma-separated actors whose comments are withheld from Claude's
