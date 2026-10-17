@@ -85,21 +85,71 @@ for (const lane of lanes) {
     }
   });
 
-  test(`${lane.file}: the outcome step times the review against the step's own budget`, () => {
+  test(`${lane.file}: the outcome step times the attempt that counts against that attempt's own budget`, () => {
     const claudeStep = job.steps.find((candidate) =>
       String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
     );
-    const outcome = job.steps.find(
-      (candidate) => candidate.id === "review-outcome",
-    );
+    const byId = (id) => job.steps.find((candidate) => candidate.id === id);
+    const outcome = byId("review-outcome");
     assert.equal(
-      String(outcome.with["step-timeout-minutes"]),
-      String(claudeStep["timeout-minutes"]),
+      outcome.with["step-timeout-minutes"],
+      `\${{ steps.attempt.outputs.timeout-minutes }}`,
     );
     assert.equal(
       outcome.with["step-started-at"],
+      `\${{ steps.attempt.outputs.started-at }}`,
+    );
+    const attempt = byId("attempt");
+    assert.equal(
+      attempt.env.FIRST_TIMEOUT_MINUTES,
+      String(claudeStep["timeout-minutes"]),
+    );
+    assert.equal(
+      attempt.env.FIRST_STARTED_AT,
       `\${{ steps.compose-args.outputs.started-at }}`,
     );
+    for (const id of ["first-outcome", "fallback"]) {
+      assert.equal(
+        byId(id).env.BUDGET_MINUTES,
+        String(claudeStep["timeout-minutes"]),
+        id,
+      );
+    }
+  });
+
+  test(`${lane.file}: a review on the fallback account says so on its record`, () => {
+    const ran = (account) =>
+      runStep(step, {
+        REVIEW_FAILED: "false",
+        FAILURE_CLASS: "",
+        HEAD_SHA: "a".repeat(40),
+        FINDINGS: "2",
+        INLINE: "1",
+        SCOPE: "whole",
+        ACCOUNT: account,
+      });
+    const record = `claude-lane-review-complete lane=${step.env.LANE} sha=${"a".repeat(40)} findings=2 inline=1 scope=whole`;
+    const fallback = ran("fallback");
+    assert.equal(fallback.status, 0);
+    assert.match(
+      fallback.stdout,
+      new RegExp(
+        `^::notice title=claude-lane-review-complete::${record} account=fallback$`,
+        "mu",
+      ),
+    );
+    assert.match(fallback.summary, /fallback account/u);
+    for (const account of ["primary", ""]) {
+      const first = ran(account);
+      assert.match(
+        first.stdout,
+        new RegExp(
+          `^::notice title=claude-lane-review-complete::${record}$`,
+          "mu",
+        ),
+      );
+      assert.doesNotMatch(first.summary, /fallback/u);
+    }
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {

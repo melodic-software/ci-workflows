@@ -44,7 +44,7 @@ const file = (filename, extra = {}) => ({
   ...extra,
 });
 
-async function runScript(script, values, github) {
+async function runScript(script, values, github, requireFn = require) {
   const outputs = {};
   const messages = [];
   const core = {
@@ -60,7 +60,7 @@ async function runScript(script, values, github) {
   Object.assign(process.env, values);
   try {
     await new AsyncFunction("require", "github", "context", "core", script)(
-      require,
+      requireFn,
       {
         paginate: async (method, params) => (await method(params)).data,
         ...github,
@@ -78,7 +78,10 @@ async function runScript(script, values, github) {
 }
 
 // Runs a lane's record step and returns the comment call it made.
-async function record(lane, { sha = HEAD, markerId = "" } = {}) {
+async function record(
+  lane,
+  { sha = HEAD, markerId = "", baseRef = "main", mergeBase = "" } = {},
+) {
   const calls = [];
   const capture = (kind) => async (params) => {
     calls.push({ kind, ...params });
@@ -86,7 +89,14 @@ async function record(lane, { sha = HEAD, markerId = "" } = {}) {
   };
   await runScript(
     lane.recordScript,
-    { LANE: lane.lane, PR_NUMBER: "7", HEAD_SHA: sha, MARKER_ID: markerId },
+    {
+      LANE: lane.lane,
+      PR_NUMBER: "7",
+      HEAD_SHA: sha,
+      MARKER_ID: markerId,
+      BASE_REF: baseRef,
+      MERGE_BASE: mergeBase,
+    },
     {
       rest: {
         issues: {
@@ -101,18 +111,47 @@ async function record(lane, { sha = HEAD, markerId = "" } = {}) {
 }
 
 // The marker comment the lane's own record step writes for `sha`.
-async function markerFor(lane, sha, { id = 41, login = BOT } = {}) {
-  const { body } = await record(lane, { sha });
+async function markerFor(
+  lane,
+  sha,
+  { id = 41, login = BOT, baseRef, mergeBase } = {},
+) {
+  const { body } = await record(lane, { sha, baseRef, mergeBase });
   return { id, user: { login }, body };
 }
 
 async function runScope(
   lane,
-  { env, prFiles, compares = {}, fail = false, comments = [] },
+  {
+    env,
+    prFiles,
+    compares = {},
+    fail = false,
+    comments = [],
+    liveHead = HEAD,
+    git = () => {
+      throw new Error("git was not expected");
+    },
+  },
 ) {
   const directory = makeTemporaryDirectory("scope-");
   const diffFile = path.join(directory, "state", "incremental.diff");
   let listedComments = 0;
+  const gitCalls = [];
+  const requireFn = (name) =>
+    name === "node:child_process"
+      ? {
+          execFileSync: (command, args) => {
+            assert.equal(command, "git");
+            gitCalls.push(args);
+            return git(args);
+          },
+        }
+      : require(name);
+  const allCompares = {
+    [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } },
+    ...compares,
+  };
   const github = {
     rest: {
       issues: {
@@ -127,11 +166,15 @@ async function runScope(
           if (fail) throw new Error("listFiles failed");
           return { data: prFiles };
         },
+        get: async ({ pull_number }) => {
+          assert.equal(pull_number, 7);
+          return { data: { head: { sha: liveHead } } };
+        },
       },
       repos: {
         compareCommitsWithBasehead: async ({ basehead }) => {
-          assert.ok(basehead in compares, `unexpected compare ${basehead}`);
-          return { data: compares[basehead] };
+          assert.ok(basehead in allCompares, `unexpected compare ${basehead}`);
+          return { data: allCompares[basehead] };
         },
       },
     },
@@ -150,11 +193,12 @@ async function runScope(
       ...env,
     },
     github,
+    requireFn,
   );
   const diff = fs.existsSync(diffFile)
     ? fs.readFileSync(diffFile, "utf8")
     : undefined;
-  return { outputs, messages, diff, listedComments };
+  return { outputs, messages, diff, listedComments, gitCalls };
 }
 
 // The base did not move between the last review and the head.
@@ -490,6 +534,280 @@ test("a rewritten history or 300 or more changed files forces a whole review", a
     assert.equal(result.outputs.note, undefined);
     assert.ok(result.messages.some((message) => reason.test(message)));
   }
+});
+
+// A restack: the base gained a commit and the layer was rebased onto it, so
+// the last reviewed head is no ancestor of the new one (claude-code-plugins#7669).
+// The marker records the base branch and the merge base the review used.
+const restack = (reviewed) => ({
+  [`${LAST}...${HEAD}`]: { status: "diverged", files: [] },
+  [`${MB_OLD}...${LAST}`]: { files: reviewed },
+  [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+});
+const restackMarker = (lane, baseRef = "main") =>
+  markerFor(lane, LAST, { baseRef, mergeBase: MB_OLD });
+// git that fetches and then prints `raw` for the diff.
+const gitShowing = (raw) => (args) => (args[0] === "fetch" ? "" : raw);
+const RENAMED = file("src/c.js", {
+  status: "renamed",
+  previous_filename: "src/b.js",
+});
+
+test("both lanes skip a restack whose files git shows identical to the reviewed head", async () => {
+  for (const lane of [codeLane, securityLane]) {
+    const prFiles = [file("src/a.js"), RENAMED];
+    const result = await runScope(lane, {
+      prFiles,
+      compares: restack(prFiles.map((entry) => ({ ...entry }))),
+      comments: [await restackMarker(lane)],
+      git: gitShowing(""),
+    });
+    assert.equal(result.outputs.review, "false", lane.file);
+    assert.equal(result.outputs.skip, "no-change");
+    assert.equal(result.outputs.since, LAST);
+    assert.equal(result.outputs.record, "true");
+    assert.equal(result.outputs["merge-base"], MB_NEW);
+    assert.ok(
+      result.messages.some((message) => /is a rebase of b{40}/u.test(message)),
+    );
+    const [fetch, diff] = result.gitCalls;
+    assert.deepEqual(fetch, [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--depth=1",
+      "--filter=blob:none",
+      "origin",
+      LAST,
+    ]);
+    assert.deepEqual(diff.slice(0, 7), [
+      "--literal-pathspecs",
+      "diff",
+      "--raw",
+      "--no-renames",
+      LAST,
+      HEAD,
+      "--",
+    ]);
+    assert.deepEqual(diff.slice(7).sort(), [
+      "src/a.js",
+      "src/b.js",
+      "src/c.js",
+    ]);
+  }
+});
+
+test("a restack whose paths git shows changed in mode, type or content reviews the whole pull request", async () => {
+  for (const raw of [
+    // 644 -> 755, same blob.
+    ":100644 100755 1111111 1111111 M\tsrc/a.js\n",
+    // file -> symlink, same blob.
+    ":100644 120000 1111111 1111111 T\tsrc/a.js\n",
+    // content.
+    ":100644 100644 1111111 2222222 M\tsrc/a.js\n",
+  ]) {
+    const prFiles = [file("src/a.js")];
+    const result = await runScope(securityLane, {
+      prFiles,
+      compares: restack([file("src/a.js")]),
+      comments: [await restackMarker(securityLane)],
+      git: gitShowing(raw),
+    });
+    assert.equal(result.outputs.review, "true", raw);
+    assert.equal(result.outputs.scope, "whole");
+    assert.ok(
+      result.messages.some((message) => /is not an ancestor/u.test(message)),
+    );
+  }
+});
+
+test("a restack whose change touches other files or touches them differently reviews the whole pull request, without git", async () => {
+  for (const reviewed of [
+    [file("src/a.js"), file("src/b.js")],
+    [file("src/a.js", { status: "added" })],
+    [file("src/a.js", { previous_filename: "src/old.js" })],
+  ]) {
+    const result = await runScope(securityLane, {
+      prFiles: [file("src/a.js")],
+      compares: restack(reviewed),
+      comments: [await restackMarker(securityLane)],
+    });
+    assert.equal(result.outputs.review, "true");
+    assert.equal(result.gitCalls.length, 0);
+  }
+});
+
+test("a restack onto another base branch, or under a marker with no base, reviews the whole pull request", async () => {
+  for (const comments of [
+    // The pull request was retargeted from release to main.
+    [await restackMarker(securityLane, "release")],
+    // A marker written before the base was recorded.
+    [await markerFor(securityLane, LAST)],
+  ]) {
+    const result = await runScope(securityLane, {
+      prFiles: [file("src/a.js")],
+      compares: restack([file("src/a.js")]),
+      comments,
+      git: gitShowing(""),
+    });
+    assert.equal(result.outputs.review, "true");
+    assert.equal(result.outputs.scope, "whole");
+    assert.equal(result.gitCalls.length, 0);
+  }
+});
+
+test("a restack git cannot fetch reviews the whole pull request and says why", async () => {
+  const result = await runScope(securityLane, {
+    prFiles: [file("src/a.js")],
+    compares: restack([file("src/a.js")]),
+    comments: [await restackMarker(securityLane)],
+    git: () => {
+      throw new Error("not our ref");
+    },
+  });
+  assert.equal(result.outputs.review, "true");
+  assert.ok(
+    result.messages.some((message) =>
+      /Could not compare .*not our ref/u.test(message),
+    ),
+  );
+});
+
+test("no skip is taken once the pull request's live head has moved past this run's head", async () => {
+  for (const [options, label] of [
+    [
+      {
+        prFiles: [file("src/a.js")],
+        compares: restack([file("src/a.js")]),
+        comments: [await restackMarker(codeLane)],
+        git: gitShowing(""),
+      },
+      "restack",
+    ],
+    [
+      {
+        prFiles: [file("src/a.js")],
+        compares: unmovedBase([file("elsewhere.js")]),
+        comments: [await markerFor(codeLane, LAST)],
+      },
+      "no-change",
+    ],
+    [
+      {
+        prFiles: [file("docs/a.md")],
+        env: { DOCS_ONLY_PATHS: "docs/**" },
+        compares: unmovedBase([file("docs/a.md")]),
+        comments: [await markerFor(codeLane, LAST)],
+      },
+      "docs-only",
+    ],
+  ]) {
+    const moved = await runScope(codeLane, {
+      ...options,
+      liveHead: "e".repeat(40),
+    });
+    assert.equal(moved.outputs.review, "true", label);
+    assert.equal(moved.outputs.skip, undefined, label);
+    const still = await runScope(codeLane, options);
+    assert.equal(still.outputs.review, "false", label);
+  }
+});
+
+test("the restack check's git commands see mode and type changes in a blob-less shallow clone", async () => {
+  // A real repository: the reviewed head, then three rebases of it onto a
+  // base commit that changed only base.txt. One keeps the pull request's
+  // file as it was; one makes it executable; one makes it a symlink.
+  const { execFileSync } = require("node:child_process");
+  const root = makeTemporaryDirectory("restack-git-");
+  const origin = path.join(root, "origin");
+  const git = (cwd, ...args) =>
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  fs.mkdirSync(origin);
+  git(origin, "init", "-q", "-b", "main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  git(origin, "config", "uploadpack.allowFilter", "true");
+  git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+  const write = (name, text) => fs.writeFileSync(path.join(origin, name), text);
+  write("base.txt", "base\n");
+  git(origin, "add", ".");
+  git(origin, "commit", "-q", "-m", "base");
+  git(origin, "checkout", "-q", "-b", "layer");
+  write(":odd.js", "a\n");
+  git(origin, "add", ".");
+  git(origin, "commit", "-q", "-m", "reviewed");
+  const reviewed = git(origin, "rev-parse", "HEAD");
+  const rebased = (name, change) => {
+    git(origin, "checkout", "-q", "-B", name, "main");
+    write("base.txt", `base ${name}\n`);
+    git(origin, "commit", "-q", "-am", "base moved");
+    write(":odd.js", "a\n");
+    change();
+    git(origin, "add", "-A");
+    git(origin, "commit", "-q", "-m", "layer");
+    return git(origin, "rev-parse", "HEAD");
+  };
+  const heads = {
+    same: rebased("same", () => {}),
+    mode: rebased("mode", () =>
+      fs.chmodSync(path.join(origin, ":odd.js"), 0o755),
+    ),
+    type: rebased("type", () => {
+      fs.rmSync(path.join(origin, ":odd.js"));
+      fs.symlinkSync("a\n", path.join(origin, ":odd.js"));
+    }),
+  };
+  for (const [name, sha] of Object.entries(heads)) {
+    const work = path.join(root, `work-${name}`);
+    execFileSync("git", [
+      "clone",
+      "-q",
+      "--depth=1",
+      "--filter=blob:none",
+      "--branch",
+      name,
+      `file://${origin}`,
+      work,
+    ]);
+    const result = await runScope(securityLane, {
+      env: { HEAD_SHA: sha },
+      liveHead: sha,
+      prFiles: [file(":odd.js", { status: "added" })],
+      compares: {
+        [`${reviewed}...${sha}`]: { status: "diverged", files: [] },
+        [`${MB_OLD}...${reviewed}`]: {
+          files: [file(":odd.js", { status: "added" })],
+        },
+        [`main...${sha}`]: { merge_base_commit: { sha: MB_NEW } },
+      },
+      comments: [
+        await markerFor(securityLane, reviewed, {
+          baseRef: "main",
+          mergeBase: MB_OLD,
+        }),
+      ],
+      git: (args) =>
+        execFileSync("git", ["-C", work, ...args], { encoding: "utf8" }),
+    });
+    assert.equal(
+      result.outputs.review,
+      name === "same" ? "false" : "true",
+      name,
+    );
+  }
+});
+
+test("the record step writes the base it reviewed against on the marker's second line", async () => {
+  const withBase = await record(codeLane, {
+    baseRef: "main",
+    mergeBase: MB_NEW,
+  });
+  assert.deepEqual(withBase.body.split("\n").slice(0, 2), [
+    `<!-- claude-lane-reviewed-head lane=claude-review sha=${HEAD} -->`,
+    `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_NEW} -->`,
+  ]);
+  const withoutBase = await record(codeLane, { mergeBase: "" });
+  assert.doesNotMatch(withoutBase.body, /claude-lane-reviewed-base/u);
 });
 
 test("a changed file the API returns no patch for forces a whole review", async () => {

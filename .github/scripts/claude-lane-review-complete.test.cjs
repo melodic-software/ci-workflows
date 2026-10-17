@@ -293,7 +293,7 @@ for (const lane of lanes) {
     assert.ok(verifyIndex < names.indexOf("Report review outcome"));
     const step = job.steps[verifyIndex];
     assert.equal(step.id, "verify");
-    assert.equal(step.if, "steps.claude-review.outcome == 'success'");
+    assert.equal(step.if, "steps.attempt.outputs.outcome == 'success'");
     assert.equal(step["continue-on-error"], true);
     assert.match(step.uses, /^actions\/github-script@[0-9a-f]{40}$/u);
     assert.equal(step.env.LANE, lane.lane);
@@ -301,13 +301,15 @@ for (const lane of lanes) {
       step.env.HEAD_SHA,
       `\${{ github.event.pull_request.head.sha }}`,
     );
+    // The window opens when the attempt that counts started, so a first
+    // attempt's comments never count for the fallback's review.
     assert.equal(
       step.env.STARTED_AT,
-      `\${{ steps.compose-args.outputs.started-at }}`,
+      `\${{ steps.attempt.outputs.started-at }}`,
     );
     assert.equal(
       step.env.STRUCTURED_OUTPUT,
-      `\${{ steps.claude-review.outputs.structured_output }}`,
+      `\${{ steps.attempt.outputs.structured-output }}`,
     );
     assert.equal(step.env.SCOPE, `\${{ steps.scope.outputs.scope }}`);
     assert.doesNotMatch(step.with.script, /\$\{\{/u);
@@ -334,6 +336,8 @@ for (const lane of lanes) {
       env: {
         PATH: process.env.PATH,
         BASE_ARGS: "--max-turns 5",
+        MODEL: "sonnet",
+        EFFORT: "high",
         PLUGIN_COMMAND: "/review:code-review",
         GITHUB_OUTPUT: githubOutput,
       },
@@ -819,11 +823,18 @@ async function scope({
       {
         rest: {
           issues: { listComments: async () => ({ data: comments }) },
-          pulls: { listFiles: async () => ({ data: prFiles }) },
+          pulls: {
+            listFiles: async () => ({ data: prFiles }),
+            get: async () => ({ data: { head: { sha: HEAD } } }),
+          },
           repos: {
             compareCommitsWithBasehead: async ({ basehead }) => {
-              assert.ok(basehead in compares, basehead);
-              return { data: compares[basehead] };
+              const all = {
+                [`main...${HEAD}`]: { merge_base_commit: { sha: OTHER } },
+                ...compares,
+              };
+              assert.ok(basehead in all, basehead);
+              return { data: all[basehead] };
             },
           },
         },
