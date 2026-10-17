@@ -1043,7 +1043,8 @@ Every outcome annotation, and a notice on a run that completed, also carries
 the run record as bare tokens, each omitted when unknown: `turns=<n>`,
 `max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
 `credential` input), `models=<modelUsage keys>` and, on `class=rate-limit`,
-`resets=<ISO 8601 UTC>` from the run's `rate_limit_event` messages, also
+`resets=<ISO 8601 UTC>` and `resets-window=<rateLimitType>` from the run's
+newest `rejected` `rate_limit_event` (none without one), the time also
 exposed as the composite's `resets-at` output.
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only

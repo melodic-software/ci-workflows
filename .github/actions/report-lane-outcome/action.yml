@@ -21,8 +21,9 @@ description: >-
   records the failure class and detail. Every annotation it writes,
   a success notice included, carries the run record as bare tokens:
   `turns=`, `max-turns=`, `credential=`, `models=` (the result message's
-  modelUsage keys) and, on class rate-limit, `resets=<ISO>`; an unknown
-  value is omitted. Runs
+  modelUsage keys) and, on class rate-limit, `resets=<ISO>` and
+  `resets-window=<rateLimitType>` from the newest rejected
+  rate_limit_event; an unknown value is omitted. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
   tool dependency.
 
@@ -116,7 +117,7 @@ outputs:
   resets-at:
     description: >-
       On class rate-limit, the ISO 8601 UTC time the limit resets, from the
-      run's rate_limit_event messages; empty when the run carried none.
+      run's newest rejected rate_limit_event; empty when it carried none.
     value: ${{ steps.outcome.outputs.resets_at }}
 
 runs:

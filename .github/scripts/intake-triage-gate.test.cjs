@@ -32,11 +32,21 @@ const bots = (github, ids = "") =>
   evaluate(allowedBots, { github, inputs: { "allowed-bot-sender-ids": ids } });
 
 // GitHub's author_association values, from the REST and webhook payloads.
-const issueEvent = (actor, authorAssociation, sender) => ({
+// By default the sender opened the issue, so the sender is its author.
+const issueEvent = (
+  actor,
+  authorAssociation,
+  sender,
+  { action = "opened", author = sender } = {},
+) => ({
   actor,
   event_name: "issues",
   event: {
-    issue: { author_association: authorAssociation, user: { login: actor } },
+    action,
+    issue: {
+      author_association: authorAssociation,
+      user: { login: author?.login ?? actor, id: author?.id },
+    },
     ...(sender && { sender }),
   },
 });
@@ -95,6 +105,31 @@ test("a bot starts a run only when its sender id is listed, and only its login i
     assert.equal(gate(unlisted, "111,222"), false, String(id));
     assert.equal(bots(unlisted, "111,222"), "", String(id));
   }
+});
+
+test("only the opened action starts a run, for a member or a listed bot", () => {
+  const member = { id: 583231, login: "octocat" };
+  for (const action of ["edited", "reopened", "labeled", "transferred"]) {
+    assert.equal(
+      gate(issueEvent("octocat", "MEMBER", member, { action })),
+      false,
+      action,
+    );
+    assert.equal(
+      gate(issueEvent("lanes-app[bot]", "NONE", lanesApp, { action }), "222"),
+      false,
+      action,
+    );
+  }
+});
+
+test("a listed bot acting on an issue someone else wrote starts nothing", () => {
+  const stranger = { id: 9, login: "stranger" };
+  const onStrangersIssue = issueEvent("lanes-app[bot]", "NONE", lanesApp, {
+    author: stranger,
+  });
+  assert.equal(gate(onStrangersIssue, "222"), false);
+  assert.equal(bots(onStrangersIssue, "222"), "");
 });
 
 test("a bot's MEMBER association does not stand in for the id list", () => {

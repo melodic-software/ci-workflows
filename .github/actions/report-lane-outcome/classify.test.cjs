@@ -345,34 +345,45 @@ test("a modelUsage key outside the model-id character set is dropped", () => {
   assert.deepEqual(models, ["claude-opus-5-5[1m]"]);
 });
 
-test("resets comes from the newest rejected rate_limit_event, in seconds or milliseconds", () => {
-  assert.equal(
-    record([
-      rateLimitEvent("rejected", NEW_YEAR, "seven_day"),
-      rateLimitEvent("allowed_warning", NEW_YEAR + 3600),
-      { type: "result", num_turns: 1, api_error_status: 429 },
-    ]).resetsAt,
-    "2026-01-01T00:00:00Z",
-  );
+test("resets and its window come from the newest rejected rate_limit_event, in seconds or milliseconds", () => {
+  // The seven-day window stopped the run; a later five-hour warning must not
+  // move the reset an hour forward.
+  const stopped = record([
+    rateLimitEvent("rejected", NEW_YEAR, "seven_day"),
+    rateLimitEvent("allowed_warning", NEW_YEAR + 3600),
+    { type: "result", num_turns: 1, api_error_status: 429 },
+  ]);
+  assert.equal(stopped.resetsAt, "2026-01-01T00:00:00Z");
+  assert.equal(stopped.resetsWindow, "seven_day");
   assert.equal(
     record([rateLimitEvent("rejected", NEW_YEAR * 1000)]).resetsAt,
     "2026-01-01T00:00:00Z",
   );
 });
 
-test("with no rejected event, the newest event carrying a reset time decides", () => {
-  assert.equal(
-    record([
-      rateLimitEvent("allowed", NEW_YEAR),
-      rateLimitEvent("allowed_warning", NEW_YEAR + 3600),
-      rateLimitEvent("allowed", undefined),
-    ]).resetsAt,
-    "2026-01-01T01:00:00Z",
-  );
+test("with no rejected event there is no reset, so the caller's fallback applies", () => {
+  const unstopped = record([
+    rateLimitEvent("allowed", NEW_YEAR),
+    rateLimitEvent("allowed_warning", NEW_YEAR + 3600),
+    { type: "result", num_turns: 1, api_error_status: 429 },
+  ]);
+  assert.equal(unstopped.resetsAt, null);
+  assert.equal(unstopped.resetsWindow, null);
+});
+
+test("a window name outside the token character set is dropped, the reset kept", () => {
+  const odd = record([rateLimitEvent("rejected", NEW_YEAR, "five hour\n")]);
+  assert.equal(odd.resetsAt, "2026-01-01T00:00:00Z");
+  assert.equal(odd.resetsWindow, null);
 });
 
 test("no rate_limit_event, a missing file or an unparsable one leaves the record empty", () => {
-  const empty = { turns: null, models: [], resetsAt: null };
+  const empty = {
+    turns: null,
+    models: [],
+    resetsAt: null,
+    resetsWindow: null,
+  };
   assert.deepEqual(record([{ type: "result", subtype: "success" }]), empty);
   fs.writeFileSync(executionFile, "not json");
   assert.deepEqual(readRunRecord(executionFile), empty);
@@ -384,6 +395,7 @@ test("record tokens: resets only on a limit stop, unknown and malformed values o
     turns: 16,
     models: ["claude-sonnet-5"],
     resetsAt: "2026-01-01T00:00:00Z",
+    resetsWindow: "seven_day",
   };
   assert.equal(
     recordTokens(run, {
@@ -391,7 +403,8 @@ test("record tokens: resets only on a limit stop, unknown and malformed values o
       maxTurns: "15",
       credential: "CLAUDE_CODE_OAUTH_TOKEN",
     }),
-    "resets=2026-01-01T00:00:00Z credential=CLAUDE_CODE_OAUTH_TOKEN " +
+    "resets=2026-01-01T00:00:00Z resets-window=seven_day " +
+      "credential=CLAUDE_CODE_OAUTH_TOKEN " +
       "turns=16 max-turns=15 models=claude-sonnet-5",
   );
   assert.equal(

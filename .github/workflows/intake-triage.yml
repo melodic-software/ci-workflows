@@ -50,9 +50,10 @@ name: intake-triage
 #     labels and text are dropped, and only the escalation label and a fixed
 #     note are applied, plus a `Proposed work class:` line when the triage
 #     was usable. A rerun edits the lane's earlier comment.
-#   - Only the `issues` event is accepted. A run starts only for an issue
-#     authored by an OWNER or MEMBER, or by a bot whose sender id is in
-#     allowed-bot-sender-ids; only that bot's login reaches allowed_bots
+#   - Only the `issues` event is accepted, and only its `opened` action
+#     starts a run: for an issue authored by an OWNER or MEMBER, or opened by
+#     a bot whose sender id is in allowed-bot-sender-ids and that is the
+#     issue's author; only that bot's login reaches allowed_bots
 #     (agent mode rejects bots it was not told to allow).
 #
 # CLI VERSION: the lane installs the Claude Code CLI itself and passes it
@@ -158,24 +159,28 @@ jobs:
     # The CLI install (3 minutes) and triage (8 minutes) steps leave two
     # minutes for checkout and the github-script steps.
     timeout-minutes: 13
-    # Author gate: a run spends the subscription, so it starts only for an
-    # issue whose author is an OWNER or MEMBER, or a bot whose event sender
-    # id is in allowed-bot-sender-ids (the review lanes' rule). Other issues
-    # wait for a person. A non-issues event passes so the first step can
-    # reject it loudly.
+    # Author gate: a run spends the subscription, so it starts only when an
+    # issue is opened by an OWNER or MEMBER, or by a bot whose event sender
+    # id is in allowed-bot-sender-ids (the review lanes' rule) and who is the
+    # issue's author. Any other action (edited, labeled, reopened) never
+    # starts a run, so a listed bot acting on someone else's issue cannot.
+    # Other issues wait for a person. A non-issues event passes so the first
+    # step can reject it loudly.
     if: >-
       ${{ github.event_name != 'issues'
-          || (!endsWith(github.actor, '[bot]')
-              && (github.event.issue.author_association == 'OWNER'
-                  || github.event.issue.author_association == 'MEMBER'))
-          || (endsWith(github.actor, '[bot]')
-              && inputs.allowed-bot-sender-ids != ''
-              && !startsWith(inputs.allowed-bot-sender-ids, ',')
-              && !endsWith(inputs.allowed-bot-sender-ids, ',')
-              && !contains(inputs.allowed-bot-sender-ids, ',,')
-              && github.event.sender.id
-              && contains(format(',{0},', inputs.allowed-bot-sender-ids),
-                          format(',{0},', github.event.sender.id))) }}
+          || (github.event.action == 'opened'
+              && ((!endsWith(github.actor, '[bot]')
+                   && (github.event.issue.author_association == 'OWNER'
+                       || github.event.issue.author_association == 'MEMBER'))
+                  || (endsWith(github.actor, '[bot]')
+                      && inputs.allowed-bot-sender-ids != ''
+                      && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                      && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                      && !contains(inputs.allowed-bot-sender-ids, ',,')
+                      && github.event.sender.id
+                      && github.event.issue.user.id == github.event.sender.id
+                      && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                                  format(',{0},', github.event.sender.id))))) }}
     permissions:
       contents: read
       issues: write
@@ -366,6 +371,7 @@ jobs:
                 && !endsWith(inputs.allowed-bot-sender-ids, ',')
                 && !contains(inputs.allowed-bot-sender-ids, ',,')
                 && github.event.sender.id
+                && github.event.issue.user.id == github.event.sender.id
                 && contains(format(',{0},', inputs.allowed-bot-sender-ids),
                             format(',{0},', github.event.sender.id))
                 && github.event.sender.login || '' }}

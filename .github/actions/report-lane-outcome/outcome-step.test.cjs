@@ -276,7 +276,11 @@ test("a limit stop puts resets, credential, turns, max-turns and models on the c
   const file = writeExecutionFile([
     {
       type: "rate_limit_event",
-      rate_limit_info: { status: "rejected", resetsAt: 1767225600 },
+      rate_limit_info: {
+        status: "rejected",
+        resetsAt: 1767225600,
+        rateLimitType: "five_hour",
+      },
     },
     {
       type: "result",
@@ -296,7 +300,7 @@ test("a limit stop puts resets, credential, turns, max-turns and models on the c
   assert.equal(errors.length, 1);
   assert.match(
     errors[0],
-    /\bclass=rate-limit resets=2026-01-01T00:00:00Z credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 max-turns=30 models=claude-sonnet-5\b/u,
+    /\bclass=rate-limit resets=2026-01-01T00:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 max-turns=30 models=claude-sonnet-5\b/u,
   );
   assert.equal(outputs.resets_at, "2026-01-01T00:00:00Z");
 });

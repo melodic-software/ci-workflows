@@ -166,6 +166,7 @@ function classifyExecutionFile(
 const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
 const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
+const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
 
 // SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
 function isoFromEpoch(value) {
@@ -178,20 +179,24 @@ function isoFromEpoch(value) {
     : date.toISOString().replace(/\.000Z$/u, "Z");
 }
 
-// The reset time of the limit that stopped the run: the newest
-// `rate_limit_event` whose status is `rejected`, else the newest one that
-// carries a reset time at all.
-function resetsAtFrom(messages) {
-  const events = messages.filter(
+// The limit that stopped the run: the newest `rate_limit_event` whose status
+// is `rejected`. Only a rejected event names the window that stopped the run;
+// an allowed or warning event's reset is another window's and would bring the
+// restart too early, so with none the caller's fallback delay applies.
+function limitStopFrom(messages) {
+  const info = messages.findLast(
     (message) =>
       message?.type === "rate_limit_event" &&
-      isoFromEpoch(message.rate_limit_info?.resetsAt) !== null,
-  );
-  const rejected = events.filter(
-    (event) => event.rate_limit_info.status === "rejected",
-  );
-  const chosen = (rejected.length > 0 ? rejected : events).at(-1);
-  return chosen ? isoFromEpoch(chosen.rate_limit_info.resetsAt) : null;
+      message.rate_limit_info?.status === "rejected" &&
+      isoFromEpoch(message.rate_limit_info.resetsAt) !== null,
+  )?.rate_limit_info;
+  if (!info) return { resetsAt: null, resetsWindow: null };
+  return {
+    resetsAt: isoFromEpoch(info.resetsAt),
+    resetsWindow: WINDOW_PATTERN.test(info.rateLimitType ?? "")
+      ? info.rateLimitType
+      : null,
+  };
 }
 
 function readRunRecord(executionFilePath) {
@@ -205,19 +210,21 @@ function readRunRecord(executionFilePath) {
       usage && typeof usage === "object" && !Array.isArray(usage)
         ? Object.keys(usage).filter((key) => MODEL_PATTERN.test(key))
         : [],
-    resetsAt: resetsAtFrom(messages),
+    ...limitStopFrom(messages),
   };
 }
 
 // The record tokens for one annotation line, unknown values omitted.
-// `resets=` is printed only on a limit stop: it is that stop's reset time.
+// `resets=` and `resets-window=` are printed only on a limit stop: that
+// stop's reset time and the window (rateLimitType) that stopped it.
 function recordTokens(
-  { turns = null, models = [], resetsAt = null },
+  { turns = null, models = [], resetsAt = null, resetsWindow = null },
   { failureClass = "", maxTurns = "", credential = "" } = {},
 ) {
   const tokens = [];
   if (failureClass === "rate-limit" && resetsAt) {
     tokens.push(`resets=${resetsAt}`);
+    if (resetsWindow) tokens.push(`resets-window=${resetsWindow}`);
   }
   if (CREDENTIAL_PATTERN.test(credential)) {
     tokens.push(`credential=${credential}`);
