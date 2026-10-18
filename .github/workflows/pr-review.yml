@@ -1077,6 +1077,23 @@ jobs:
             core.setOutput("inline", String(posted));
             core.setOutput("summary", summary);
 
+      # claude-code-action exposes no output for its own Bun install, but its
+      # first step, setup-bun, adds ~/.bun/bin to PATH for later steps before
+      # it downloads (setup-bun src/action.ts addPath), so no bun on PATH
+      # after the action ran means that install failed (seen as an HTTP 429
+      # on the GitHub release download). The outcome step reads it only when
+      # the review failed with no execution file.
+      - name: Check the action installed Bun
+        id: bun-check
+        if: steps.scope.outputs.review != 'false'
+        shell: bash
+        run: |
+          if command -v bun >/dev/null; then
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Report review outcome
         id: review-outcome
         if: steps.scope.outputs.review != 'false'
@@ -1087,6 +1104,7 @@ jobs:
           lane: Claude review
           step-started-at: ${{ steps.attempt.outputs.started-at }}
           step-timeout-minutes: ${{ steps.attempt.outputs.timeout-minutes }}
+          install-outcome: ${{ steps.bun-check.outputs.outcome }}
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
 
