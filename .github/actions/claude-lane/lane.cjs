@@ -78,13 +78,22 @@ function required(env, name, pattern, label) {
 // The run's settings from the action's environment, each checked against a
 // closed pattern, so nothing unchecked reaches the CLI's argv or the log.
 function readConfig(env) {
+  const role = required(env, "LANE_ROLE", KEBAB_PATTERN, "role");
   const legs = [];
-  for (const [leg, valueVar, nameVar] of [
-    ["api-key", "LANE_API_KEY", "LANE_API_KEY_NAME"],
-    ["subscription", "LANE_SUBSCRIPTION_TOKEN", "LANE_SUBSCRIPTION_TOKEN_NAME"],
+  for (const [leg, valueVar, nameVar, suffix] of [
+    ["api-key", "LANE_API_KEY", "LANE_API_KEY_NAME", "CLAUDE_API_KEY"],
+    [
+      "subscription",
+      "LANE_SUBSCRIPTION_TOKEN",
+      "LANE_SUBSCRIPTION_TOKEN_NAME",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+    ],
   ]) {
     const value = env[valueVar] ?? "";
-    const name = (env[nameVar] ?? "").trim();
+    // An empty name is the role's: `<ROLE>_<suffix>`, role upper-snake.
+    const name =
+      (env[nameVar] ?? "").trim() ||
+      `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
     if (value === "") {
       legs.push({ leg, name, value: "", skipped: true });
       continue;
@@ -141,7 +150,7 @@ function readConfig(env) {
   return {
     legs,
     lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
-    role: required(env, "LANE_ROLE", KEBAB_PATTERN, "role"),
+    role,
     model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
     effort: required(env, "LANE_EFFORT", EFFORT_PATTERN, "effort"),
     maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),

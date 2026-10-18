@@ -564,7 +564,9 @@ consumer to audit it.
   three is missing. Its outputs match report-check-run's `lane-*` inputs, plus
   `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
   written only after a credential scan; every log line records the `lane` and
-  the funding `role` whose secrets the caller passed. `tools`, `allowed-tools`,
+  the funding `role` whose secrets the caller passed. The secret names default
+  to the role's, `<ROLE>_CLAUDE_API_KEY` and `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN`
+  with the role upper-snake; explicit `*-name` inputs win. `tools`, `allowed-tools`,
   `disallowed-tools` and `json-schema-file` pass through to the CLI flags of
   the same names. Uploading the log is the
   caller's.

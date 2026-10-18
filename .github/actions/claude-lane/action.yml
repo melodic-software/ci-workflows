@@ -21,7 +21,8 @@ inputs:
   role:
     description: >-
       The funding role whose two secrets the caller passes, lower-case kebab
-      (for example `automations`); recorded in the log.
+      (for example `automations`); recorded in the log, and names the secrets
+      when api-key-name or subscription-token-name is empty.
     required: true
   prompt-file:
     description: Path to the prompt file. Never inline head text.
@@ -40,7 +41,10 @@ inputs:
     required: false
     default: ""
   api-key-name:
-    description: The secret NAME behind api-key (for example `FIXCI_CLAUDE_API_KEY`); required when api-key is set.
+    description: >-
+      The secret NAME behind api-key. Empty means the role's,
+      `<ROLE>_CLAUDE_API_KEY` with the role upper-snake (`issue-lane` gives
+      `ISSUE_LANE_CLAUDE_API_KEY`).
     required: false
     default: ""
   subscription-token:
@@ -48,7 +52,9 @@ inputs:
     required: false
     default: ""
   subscription-token-name:
-    description: The secret NAME behind subscription-token; required when it is set.
+    description: >-
+      The secret NAME behind subscription-token. Empty means the role's,
+      `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN`.
     required: false
     default: ""
   model:

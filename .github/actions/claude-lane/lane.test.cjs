@@ -520,14 +520,29 @@ function configEnv(overrides = {}) {
   };
 }
 
-test("readConfig refuses bypass, nameless secrets, no credential and bad values", () => {
+test("readConfig names an unnamed secret after the role; an explicit name wins", () => {
+  const derived = readConfig(
+    configEnv({
+      LANE_ROLE: "issue-lane",
+      LANE_API_KEY_NAME: "",
+      LANE_SUBSCRIPTION_TOKEN: TOKEN,
+    }),
+  );
+  assert.deepEqual(
+    derived.legs.map((leg) => leg.name),
+    ["ISSUE_LANE_CLAUDE_API_KEY", "ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN"],
+  );
+  assert.equal(readConfig(configEnv()).legs[0].name, KEY_NAME);
+});
+
+test("readConfig refuses bypass, badly named secrets, no credential and bad values", () => {
   assert.equal(readConfig(configEnv()).legs[1].skipped, true);
   assert.throws(
     () => readConfig(configEnv({ LANE_PERMISSION_MODE: "bypassPermissions" })),
     /permission-mode/u,
   );
   assert.throws(
-    () => readConfig(configEnv({ LANE_API_KEY_NAME: "" })),
+    () => readConfig(configEnv({ LANE_API_KEY_NAME: "fixci_key" })),
     /secret name/u,
   );
   assert.throws(
