@@ -1,7 +1,7 @@
 name: intake-triage
 
 # Reusable workflow: the intake-triage lane. A read-only Claude run reads one
-# newly opened issue and returns labels and a comment as structured output; a
+# newly opened (or dispatched) issue and returns labels and a comment as structured output; a
 # step with no model in it validates that output and applies it.
 #
 # Canonical caller (the caller owns the trigger, concurrency and the
@@ -10,8 +10,13 @@ name: intake-triage
 #     on:
 #       issues:
 #         types: [opened]
+#       workflow_dispatch:   # for issues a GITHUB_TOKEN created, which start no issues run
+#         inputs:
+#           issue-number:
+#             type: string
+#             required: true
 #     concurrency:
-#       group: claude-intake-triage-${{ github.event.issue.number }}
+#       group: claude-intake-triage-${{ github.event.issue.number || inputs.issue-number }}
 #       cancel-in-progress: false
 #     jobs:
 #       intake-triage:
@@ -19,6 +24,9 @@ name: intake-triage
 #           contents: read   # check out the default branch for AGENTS.md
 #           issues: write    # apply labels and post the triage comment
 #         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@<sha>
+#         with:
+#           issue-number: ${{ inputs.issue-number }}
+#           allowed-author-ids: <comma-separated user ids>
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -57,7 +65,14 @@ name: intake-triage
 #     (agent mode rejects bots it was not told to allow). The gate reads ids,
 #     not author_association: a webhook computes that with no viewer, so a
 #     member whose org membership is private reads CONTRIBUTOR.
-#   - An opened issue the gate turns away is not a silent green run: the
+#   - A workflow_dispatch run triages the issue named by issue-number. It
+#     starts only when the dispatching actor's id (github.actor_id) is in
+#     allowed-author-ids (a person) or allowed-bot-sender-ids (a bot, such
+#     as github-actions[bot] for a dispatch sent with a GITHUB_TOKEN).
+#     Dispatching already needs write access. The lane reads the issue's
+#     number and node id from the API, never from other dispatch text, and
+#     refuses a pull request or a malformed number.
+#   - An opened issue or a dispatch the gate turns away is not a silent green run: the
 #     claude-intake-triage-skipped job names the reason in the run summary
 #     and a notice, and applies skipped-label when the caller sets one.
 #
@@ -132,6 +147,12 @@ on:
         # and at most 18; every failure among them was a run that finished
         # past the old cap of 15.
         default: --model sonnet --effort medium --max-turns 30
+      issue-number:
+        description: >-
+          The issue to triage on a workflow_dispatch run, as decimal digits.
+          Ignored on an issues run, which triages the event's issue.
+        type: string
+        default: ""
       allowed-author-ids:
         description: >-
           Comma-separated numeric GitHub user ids, no spaces, of people whose
@@ -187,11 +208,30 @@ jobs:
     # allowed-bot-sender-ids (the review lanes' rule). Any other action
     # (edited, labeled, reopened) never starts a run, so a listed actor
     # acting on someone else's issue cannot. Other issues wait for a person,
-    # and the skipped job below says so. A non-issues event passes so the
+    # and the skipped job below says so. A workflow_dispatch run starts when
+    # its actor's id is listed the same way. Any other event passes so the
     # first step can reject it loudly.
     if: >-
-      ${{ github.event_name != 'issues'
-          || (github.event.action == 'opened'
+      ${{ (github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
+          || (github.event_name == 'workflow_dispatch'
+              && inputs.issue-number != ''
+              && github.actor_id
+              && ((!endsWith(github.actor, '[bot]')
+                   && inputs.allowed-author-ids != ''
+                   && !startsWith(inputs.allowed-author-ids, ',')
+                   && !endsWith(inputs.allowed-author-ids, ',')
+                   && !contains(inputs.allowed-author-ids, ',,')
+                   && contains(format(',{0},', inputs.allowed-author-ids),
+                               format(',{0},', github.actor_id)))
+                  || (endsWith(github.actor, '[bot]')
+                      && inputs.allowed-bot-sender-ids != ''
+                      && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                      && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                      && !contains(inputs.allowed-bot-sender-ids, ',,')
+                      && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                                  format(',{0},', github.actor_id)))))
+          || (github.event_name == 'issues'
+              && github.event.action == 'opened'
               && github.event.sender.id
               && github.event.issue.user.id == github.event.sender.id
               && ((!endsWith(github.actor, '[bot]')
@@ -215,13 +255,35 @@ jobs:
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.review-outcome.outputs.failure-class }}
     steps:
-      - name: Reject events other than issues
-        if: github.event_name != 'issues'
+      - name: Reject events other than issues and workflow_dispatch
+        if: github.event_name != 'issues' && github.event_name != 'workflow_dispatch'
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          echo "::error::claude-intake-triage must be called from an 'issues' workflow, not '$EVENT_NAME'."
+          echo "::error::claude-intake-triage must be called from an 'issues' or 'workflow_dispatch' workflow, not '$EVENT_NAME'."
           exit 1
+
+      # The issue's number and node id come from the API, so a dispatch
+      # supplies nothing but a number.
+      - name: Resolve the issue
+        id: issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
+        with:
+          script: |
+            const requested = process.env.REQUESTED;
+            if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
+              core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
+              return;
+            }
+            const { data: issue } = await github.rest.issues.get({ ...context.repo, issue_number: Number(requested) });
+            if (issue.pull_request) {
+              core.setFailed(`#${requested} is a pull request, not an issue.`);
+              return;
+            }
+            core.setOutput("number", String(issue.number));
+            core.setOutput("node-id", issue.node_id);
 
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -393,21 +455,33 @@ jobs:
           github_token: ${{ github.token }}
           allowed_non_write_users: "*"
           allowed_bots: >-
-            ${{ inputs.allowed-bot-sender-ids != ''
-                && !startsWith(inputs.allowed-bot-sender-ids, ',')
-                && !endsWith(inputs.allowed-bot-sender-ids, ',')
-                && !contains(inputs.allowed-bot-sender-ids, ',,')
-                && github.event.sender.id
-                && github.event.issue.user.id == github.event.sender.id
-                && contains(format(',{0},', inputs.allowed-bot-sender-ids),
-                            format(',{0},', github.event.sender.id))
-                && github.event.sender.login || '' }}
+            ${{ (github.event_name == 'issues'
+                 && inputs.allowed-bot-sender-ids != ''
+                 && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                 && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                 && !contains(inputs.allowed-bot-sender-ids, ',,')
+                 && github.event.sender.id
+                 && github.event.issue.user.id == github.event.sender.id
+                 && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                             format(',{0},', github.event.sender.id))
+                 && github.event.sender.login)
+                || (github.event_name == 'workflow_dispatch'
+                    && endsWith(github.actor, '[bot]')
+                    && inputs.allowed-bot-sender-ids != ''
+                    && !startsWith(inputs.allowed-bot-sender-ids, ',')
+                    && !endsWith(inputs.allowed-bot-sender-ids, ',')
+                    && !contains(inputs.allowed-bot-sender-ids, ',,')
+                    && github.actor_id
+                    && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                                format(',{0},', github.actor_id))
+                    && github.actor)
+                || '' }}
           display_report: false
           path_to_claude_code_executable: ${{ steps.cli.outputs.path }}
           claude_args: ${{ steps.compose.outputs.args }}
           prompt: |
             REPO: ${{ github.repository }}
-            ISSUE NUMBER: ${{ github.event.issue.number }}
+            ISSUE NUMBER: ${{ steps.issue.outputs.number }}
 
             You are the intake-triage lane for this repository. Triage that one issue.
 
@@ -456,8 +530,8 @@ jobs:
           CLASSES: ${{ steps.compose.outputs.classes }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ steps.compose.outputs.floor }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          ISSUE_NODE_ID: ${{ steps.issue.outputs.node-id }}
           CLI_VERSION: ${{ steps.cli.outputs.version }}
           CLI_PUBLISHED: ${{ steps.cli.outputs.published }}
         with:
@@ -648,23 +722,27 @@ jobs:
           echo "::error title=claude-intake-triage failed::failure-class=${FAILURE_CLASS:-no-outcome} job=$JOB_STATUS; read the job log."
           exit 1
 
-  # The claude job's if is the author gate, so on an opened issue it is
-  # skipped exactly when the gate turned the issue away.
+  # The claude job's if is the author gate, so on an opened issue or a
+  # dispatch it is skipped exactly when the gate turned the run away.
   skipped:
     name: claude-intake-triage-skipped
     needs: claude
     if: >-
       ${{ always() && needs.claude.result == 'skipped'
-          && github.event_name == 'issues' && github.event.action == 'opened' }}
+          && ((github.event_name == 'issues' && github.event.action == 'opened')
+              || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions:
-      issues: write # apply skipped-label
+      issues: write # apply skipped-label to a skipped opened issue
     steps:
       - name: Report the skip
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          DISPATCH_ISSUE: ${{ inputs.issue-number }}
           AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
           AUTHOR_ID: ${{ github.event.issue.user.id }}
           SENDER_ID: ${{ github.event.sender.id }}
@@ -678,6 +756,14 @@ jobs:
             const bot = env.ACTOR.endsWith("[bot]");
             const [input, list] = bot ? ["allowed-bot-sender-ids", env.BOT_IDS] : ["allowed-author-ids", env.AUTHOR_IDS];
             let reason;
+            if (env.DISPATCH === "true") {
+              const message = env.DISPATCH_ISSUE
+                ? `Intake triage skipped a dispatch for issue ${env.DISPATCH_ISSUE}: ${env.ACTOR} (id ${env.ACTOR_ID}) is not in ${input}, or it is malformed.`
+                : "Intake triage skipped a dispatch with no issue-number.";
+              core.notice(message);
+              await core.summary.addRaw(["### claude-intake-triage skipped", "", `- ${message}`].join("\n")).write();
+              return;
+            }
             if (env.AUTHOR_ID !== env.SENDER_ID) reason = `${env.ACTOR} opened it for ${env.AUTHOR_LOGIN}, so the sender is not the author`;
             // The gate's own malformed rule: empty, or a leading, trailing or doubled comma.
             else if (!/^[^,]+(,[^,]+)*$/u.test(list)) reason = `${input} is empty or malformed`;

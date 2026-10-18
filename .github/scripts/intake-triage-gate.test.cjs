@@ -25,19 +25,29 @@ const allowedBots = job.steps.find((step) =>
   step.uses?.startsWith("anthropics/claude-code-action@"),
 ).with.allowed_bots;
 
-const gate = (github, ids = "", authorIds = "") =>
+const gate = (github, ids = "", authorIds = "", issueNumber = "") =>
   Boolean(
     evaluate(job.if, {
       github,
       inputs: {
         "allowed-bot-sender-ids": ids,
         "allowed-author-ids": authorIds,
+        "issue-number": issueNumber,
       },
     }),
   );
 const kyle = { id: 153232337, login: "kyle-sexton" };
 const bots = (github, ids = "") =>
   evaluate(allowedBots, { github, inputs: { "allowed-bot-sender-ids": ids } });
+
+// A workflow_dispatch run: the actor is whoever sent the dispatch.
+const dispatch = (actor, actorId) => ({
+  actor,
+  actor_id: actorId === undefined ? undefined : String(actorId),
+  event_name: "workflow_dispatch",
+  event: { inputs: {}, sender: { login: actor, id: actorId } },
+});
+const actionsBot = 41898282;
 
 // GitHub's author_association values, from the REST and webhook payloads.
 // By default the sender opened the issue, so the sender is its author.
@@ -187,12 +197,76 @@ test("a malformed id list or a missing sender admits no bot", () => {
   assert.equal(gate(senderless, "222"), false);
 });
 
-test("a non-issues event still reaches the reject step", () => {
+test("an event other than issues or workflow_dispatch still reaches the reject step", () => {
   const push = { actor: "stranger", event_name: "push", event: {} };
   assert.equal(gate(push), true);
   const [reject] = job.steps;
-  assert.equal(reject.name, "Reject events other than issues");
-  assert.equal(reject.if, "github.event_name != 'issues'");
+  assert.equal(
+    reject.name,
+    "Reject events other than issues and workflow_dispatch",
+  );
+  assert.equal(
+    reject.if,
+    "github.event_name != 'issues' && github.event_name != 'workflow_dispatch'",
+  );
+});
+
+test("a dispatch starts a run when its actor's id is listed", () => {
+  assert.equal(
+    gate(dispatch("kyle-sexton", kyle.id), "", "153232337", "12"),
+    true,
+  );
+  assert.equal(bots(dispatch("kyle-sexton", kyle.id), "153232337"), "");
+  const sweep = dispatch("github-actions[bot]", actionsBot);
+  assert.equal(gate(sweep, "41898282", "", "12"), true);
+  assert.equal(bots(sweep, "41898282"), "github-actions[bot]");
+});
+
+test("a dispatch by an unlisted actor, or with no issue number, starts nothing", () => {
+  assert.equal(
+    gate(dispatch("stranger", 9), "41898282", "153232337", "12"),
+    false,
+  );
+  assert.equal(bots(dispatch("stranger[bot]", 9), "41898282"), "");
+  // A person's id in the bot list, or a bot's id in the person list, does not admit.
+  assert.equal(
+    gate(dispatch("kyle-sexton", kyle.id), "153232337", "", "12"),
+    false,
+  );
+  assert.equal(
+    gate(dispatch("github-actions[bot]", actionsBot), "", "41898282", "12"),
+    false,
+  );
+  assert.equal(
+    gate(dispatch("kyle-sexton", kyle.id), "", "153232337", ""),
+    false,
+  );
+  assert.equal(
+    gate(dispatch("kyle-sexton", undefined), "", "153232337", "12"),
+    false,
+  );
+  for (const ids of ["153232337,", ",153232337", "1,,153232337"]) {
+    assert.equal(
+      gate(dispatch("kyle-sexton", kyle.id), "", ids, "12"),
+      false,
+      ids,
+    );
+  }
+});
+
+test("the issue comes from the API by a validated number", () => {
+  const resolve = job.steps.find((step) => step.id === "issue");
+  assert.equal(
+    resolve.env.REQUESTED,
+    `\${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}`,
+  );
+  assert.match(resolve.with.script, /\^\[1-9\]\[0-9\]\{0,9\}\$/u);
+  assert.match(resolve.with.script, /issue\.pull_request/u);
+  const text = JSON.stringify(job.steps);
+  assert.doesNotMatch(
+    text,
+    /github\.event\.issue\.(number|node_id)\b(?! \|\| inputs)/u,
+  );
 });
 
 test("a gated-out opened issue runs the skipped job, which may apply a label", () => {
@@ -205,6 +279,7 @@ test("a gated-out opened issue runs the skipped job, which may apply a label", (
     skipped.if,
     /github\.event_name == 'issues' && github\.event\.action == 'opened'/u,
   );
+  assert.match(skipped.if, /\|\| github\.event_name == 'workflow_dispatch'/u);
   assert.deepEqual(skipped.permissions, { issues: "write" });
   const env = skipped.steps[0].env;
   assert.match(env.SKIPPED_LABEL, /^\$\{\{ inputs\.skipped-label \}\}$/u);
