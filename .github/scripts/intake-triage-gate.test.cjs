@@ -258,7 +258,7 @@ test("the issue comes from the API by a validated number", () => {
   const resolve = job.steps.find((step) => step.id === "issue");
   assert.equal(
     resolve.env.REQUESTED,
-    "${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}",
+    `\${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}`,
   );
   assert.match(resolve.with.script, /\^\[1-9\]\[0-9\]\{0,9\}\$/u);
   assert.match(resolve.with.script, /issue\.pull_request/u);
