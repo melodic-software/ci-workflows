@@ -78,6 +78,13 @@ inputs:
       omitted.
     required: false
     default: ""
+  install-outcome:
+    description: >-
+      The lane's Bun install step's `outcome`. "failure" with no execution
+      file classifies as `install-failed`: the install and the action's own
+      fallback install both failed, so Claude never started.
+    required: false
+    default: ""
   max-turns:
     description: >-
       The run's --max-turns cap, printed as `max-turns=<n>` beside
@@ -105,7 +112,8 @@ outputs:
     value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
     description: >-
-      auth | rate-limit | overloaded | max-turns | timeout | other (empty on
+      auth | rate-limit | overloaded | max-turns | timeout |
+      install-failed | other (empty on
       a genuine success; skipped-validation when the action skipped itself;
       incomplete when require-completion found no completed review).
     value: ${{ steps.outcome.outputs.failure_class }}
@@ -136,6 +144,7 @@ runs:
         COMPLETION: ${{ inputs.completion }}
         CREDENTIAL: ${{ inputs.credential }}
         MAX_TURNS: ${{ inputs.max-turns }}
+        INSTALL_OUTCOME: ${{ inputs.install-outcome }}
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
@@ -219,6 +228,7 @@ runs:
           const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, {
             timedOut,
             maxTurns: process.env.MAX_TURNS ?? "",
+            installFailed: process.env.INSTALL_OUTCOME === "failure",
           });
 
           // `class=<token>` is a machine-readable term, not prose: this

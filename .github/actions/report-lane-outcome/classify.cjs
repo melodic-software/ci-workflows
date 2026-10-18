@@ -1,6 +1,7 @@
 // Project the last claude-code-action SDK result message into safe, structured
 // metadata and classify a genuine infrastructure failure into exactly one coarse
-// class: auth | rate-limit | overloaded | max-turns | timeout | other. Reads
+// class: auth | rate-limit | overloaded | max-turns | timeout |
+// install-failed | other. Reads
 // the action's execution_file output (which may be unset, missing, or
 // unparsable) and returns the review detail plus failure class.
 //
@@ -13,6 +14,9 @@
 // Classification order:
 //   0. `timedOut` — the caller saw the step run its whole timeout-minutes
 //      budget. A killed step leaves no result message, so wall time decides.
+//      Then `installFailed` with no execution file: the lane's own Bun
+//      install failed (seen as an HTTP 429 on the GitHub release download)
+//      and so did the action's fallback install, so Claude never started.
 //   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.
@@ -101,13 +105,14 @@ function readMessages(executionFilePath) {
 
 function classifyExecutionFile(
   executionFilePath,
-  { timedOut = false, maxTurns = "" } = {},
+  { timedOut = false, maxTurns = "", installFailed = false } = {},
 ) {
   const fallbackClass = timedOut ? "timeout" : "other";
   if (!executionFilePath || !fs.existsSync(executionFilePath)) {
     return {
       reviewDetail: "(no execution file was produced)",
-      failureClass: fallbackClass,
+      failureClass:
+        installFailed && !timedOut ? "install-failed" : fallbackClass,
     };
   }
 

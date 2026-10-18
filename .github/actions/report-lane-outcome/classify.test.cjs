@@ -302,6 +302,29 @@ test("no execution file at all (the action failed before producing one)", () => 
   assert.equal(result.reviewDetail, "(no execution file was produced)");
 });
 
+// claude-code-plugins run 39101440826: the Bun release download answered
+// "Unexpected HTTP response: 429" and the action failed before Claude started,
+// leaving no execution file.
+test("a failed Bun install with no execution file classifies as install-failed", () => {
+  fs.rmSync(executionFile, { force: true });
+  const result = classifyExecutionFile(executionFile, { installFailed: true });
+  assert.equal(result.failureClass, "install-failed");
+  assert.equal(result.reviewDetail, "(no execution file was produced)");
+
+  assert.equal(
+    classifyExecutionFile("", { installFailed: true, timedOut: true })
+      .failureClass,
+    "timeout",
+  );
+
+  // The action's own install recovered and Claude ran: the run decides.
+  fs.writeFileSync(executionFile, JSON.stringify(resultMessage(429)));
+  assert.equal(
+    classifyExecutionFile(executionFile, { installFailed: true }).failureClass,
+    "rate-limit",
+  );
+});
+
 test("error_type carries the matched allowlist token on the substring path only", () => {
   const substring = run(
     errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]),
