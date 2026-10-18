@@ -80,9 +80,9 @@ inputs:
     default: ""
   install-outcome:
     description: >-
-      The lane's Bun install step's `outcome`. "failure" with no execution
-      file classifies as `install-failed`: the install and the action's own
-      fallback install both failed, so Claude never started.
+      "failure" when the Claude action's Bun install did not put bun on PATH.
+      With a failed outcome and no execution file it classifies as
+      `install-failed`: Claude never started.
     required: false
     default: ""
   max-turns:

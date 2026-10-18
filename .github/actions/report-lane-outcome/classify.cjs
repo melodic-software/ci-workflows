@@ -14,9 +14,9 @@
 // Classification order:
 //   0. `timedOut` — the caller saw the step run its whole timeout-minutes
 //      budget. A killed step leaves no result message, so wall time decides.
-//      Then `installFailed` with no execution file: the lane's own Bun
-//      install failed (seen as an HTTP 429 on the GitHub release download)
-//      and so did the action's fallback install, so Claude never started.
+//      Then `installFailed` with no execution file: the action's Bun install
+//      failed (seen as an HTTP 429 on the GitHub release download), so Claude
+//      never started.
 //   1. `api_error_status` — the Anthropic-API HTTP status the SDK records when
 //      the last assistant turn was an API error: 401/402/403 auth, 429
 //      rate-limit, 5xx overloaded, every other status other.

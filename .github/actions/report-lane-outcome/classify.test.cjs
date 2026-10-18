@@ -317,7 +317,7 @@ test("a failed Bun install with no execution file classifies as install-failed",
     "timeout",
   );
 
-  // The action's own install recovered and Claude ran: the run decides.
+  // An execution file means Claude ran: the run decides.
   fs.writeFileSync(executionFile, JSON.stringify(resultMessage(429)));
   assert.equal(
     classifyExecutionFile(executionFile, { installFailed: true }).failureClass,

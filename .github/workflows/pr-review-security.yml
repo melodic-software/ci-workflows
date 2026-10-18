@@ -44,9 +44,6 @@ name: pr-review-security
 #   - Bash subprocesses run with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, so the
 #     OAuth token is stripped from their environment (GitHub tokens stay).
 #   - display_report stays off (public-repo log-leak risk).
-#   - The Bun cache a run saves is scoped to the pull request's merge ref,
-#     so only re-runs of that pull request restore it (GitHub docs,
-#     dependency-caching, "Restrictions for accessing a cache").
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
 #   - The checkout must persist credentials until claude-code-action#1236
@@ -590,25 +587,6 @@ jobs:
             exit 1
           fi
 
-      # claude-code-action installs Bun with setup-bun's cache off
-      # (action.yml "Install Bun", no-cache: true at this pin), so every run
-      # downloads it from GitHub releases, and a 429 there ends the run before
-      # Claude starts. This installs the same version with the cache on and
-      # hands it over through path_to_bun_executable, which skips the
-      # action's install. A cache hit saves nothing (setup-bun
-      # src/cache-save.ts), and a failed install leaves bun-path empty, so the
-      # action falls back to its own; the outcome step reads this step's
-      # outcome to name that failure. Keep bun-version and the pin equal to
-      # the action's on every claude-code-action bump.
-      - name: Install Bun
-        id: setup-bun
-        if: steps.scope.outputs.review != 'false'
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.
       # The pick step's first-attempt timeout repeats timeout-minutes. The
@@ -640,8 +618,6 @@ jobs:
           # model no comment tool (claude-code-action src/modes/detector.ts,
           # src/modes/agent/index.ts, src/mcp/install-mcp-server.ts at this pin).
           display_report: false
-          # Empty when the Install Bun step failed: the action installs its own.
-          path_to_bun_executable: ${{ steps.setup-bun.outputs.bun-path }}
           # Inline comments post as they are made, so a step timeout cannot
           # drop buffered findings (action.yml classify_inline_comments).
           classify_inline_comments: false
@@ -795,8 +771,6 @@ jobs:
           # model no comment tool (claude-code-action src/modes/detector.ts,
           # src/modes/agent/index.ts, src/mcp/install-mcp-server.ts at this pin).
           display_report: false
-          # Empty when the Install Bun step failed: the action installs its own.
-          path_to_bun_executable: ${{ steps.setup-bun.outputs.bun-path }}
           # Inline comments post as they are made, so a step timeout cannot
           # drop buffered findings (action.yml classify_inline_comments).
           classify_inline_comments: false
@@ -973,6 +947,22 @@ jobs:
             core.setOutput("inline", String(posted));
             core.setOutput("summary", summary);
 
+      # claude-code-action exposes no output for its own Bun install, but its
+      # first step, setup-bun, adds ~/.bun/bin to PATH for later steps before
+      # it downloads (setup-bun src/action.ts addPath), so no bun on PATH
+      # after the action ran means that install failed (seen as an HTTP 429
+      # on the GitHub release download). The outcome step reads it only when
+      # the review failed with no execution file.
+      - name: Check the action installed Bun
+        id: bun-check
+        if: steps.scope.outputs.review != 'false'
+        run: |
+          if command -v bun >/dev/null; then
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Report review outcome
         id: review-outcome
         if: steps.scope.outputs.review != 'false'
@@ -983,7 +973,7 @@ jobs:
           lane: Claude security review
           step-started-at: ${{ steps.attempt.outputs.started-at }}
           step-timeout-minutes: ${{ steps.attempt.outputs.timeout-minutes }}
-          install-outcome: ${{ steps.setup-bun.outcome }}
+          install-outcome: ${{ steps.bun-check.outputs.outcome }}
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
 
