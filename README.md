@@ -772,7 +772,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. A repository that adopts it
   records it as the merge authority for Dependabot PRs. A repository where a
-  merge can lead to a deploy passes `package-auto-merge: false`. The caller
+  merge can lead to a deploy passes `package-auto-merge: false`. Package
+  updates have no publisher allowlist. The guard against a malicious patch or
+  minor release is the standards `dependabot-policy` cooldown, which holds
+  each new release for days before Dependabot opens it. A caller whose package
+  runs with credentials lists that package in `review-only-dependencies`. The caller
   owns the trigger and concurrency:
 
   ```yaml
