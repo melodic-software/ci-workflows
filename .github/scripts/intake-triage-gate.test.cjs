@@ -207,5 +207,5 @@ test("a gated-out opened issue runs the skipped job, which may apply a label", (
   );
   assert.deepEqual(skipped.permissions, { issues: "write" });
   const env = skipped.steps[0].env;
-  assert.equal(env.SKIPPED_LABEL, "${{ inputs.skipped-label }}");
+  assert.match(env.SKIPPED_LABEL, /^\$\{\{ inputs\.skipped-label \}\}$/u);
 });
