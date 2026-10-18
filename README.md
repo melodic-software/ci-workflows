@@ -563,7 +563,9 @@ consumer to audit it.
   installed), then the head checkout; the action fails closed when any of the
   three is missing. Its outputs match report-check-run's `lane-*` inputs, plus
   `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
-  written only after a credential scan. Uploading the log is the caller's.
+  written only after a credential scan; every log line records the `lane` and
+  the funding `role` whose secrets the caller passed. Uploading the log is the
+  caller's.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.

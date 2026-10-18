@@ -219,7 +219,8 @@ function runCase({
         skipped: !sub,
       },
     ],
-    role: "fix-ci",
+    lane: "fix-ci",
+    role: "automations",
     model: "claude-sonnet-5",
     effort: "high",
     maxTurns: "8",
@@ -412,6 +413,7 @@ test("the log has one object per leg with the documented fields and no credentia
   assert.equal(records.length, 2);
   assert.deepEqual(Object.keys(records[0]), [
     "run_id",
+    "lane",
     "role",
     "leg",
     "credential",
@@ -489,7 +491,8 @@ function configEnv(overrides = {}) {
   const prompt = path.join(root, "config-prompt.md");
   fs.writeFileSync(prompt, "Do the task.\n");
   return {
-    LANE_ROLE: "intake",
+    LANE_NAME: "intake",
+    LANE_ROLE: "automations",
     LANE_PROMPT_FILE: prompt,
     LANE_API_KEY: KEY,
     LANE_API_KEY_NAME: KEY_NAME,
@@ -526,6 +529,11 @@ test("readConfig refuses bypass, nameless secrets, no credential and bad values"
     /max-turns/u,
   );
   assert.throws(() => readConfig(configEnv({ LANE_MODEL: "a b" })), /model/u);
+  assert.throws(() => readConfig(configEnv({ LANE_NAME: "" })), /lane/u);
+  assert.throws(
+    () => readConfig(configEnv({ LANE_ROLE: "Reviews" })),
+    /role/u,
+  );
   assert.throws(
     () =>
       readConfig(

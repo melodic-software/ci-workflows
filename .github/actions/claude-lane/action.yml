@@ -15,8 +15,13 @@ description: >-
   outputs, whenever lane-class is not empty.
 
 inputs:
+  lane:
+    description: The lane, lower-case kebab (for example `intake` or `fix-ci`); recorded in the log.
+    required: true
   role:
-    description: Lane role, lower-case kebab (for example `fix-ci`); recorded in the log.
+    description: >-
+      The funding role whose two secrets the caller passes, lower-case kebab
+      (for example `automations`); recorded in the log.
     required: true
   prompt-file:
     description: Path to the prompt file. Never inline head text.
@@ -136,6 +141,7 @@ runs:
       id: run
       shell: bash
       env:
+        LANE_NAME: ${{ inputs.lane }}
         LANE_ROLE: ${{ inputs.role }}
         LANE_PROMPT_FILE: ${{ inputs.prompt-file }}
         LANE_PREAMBLE: ${{ inputs.preamble }}

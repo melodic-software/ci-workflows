@@ -34,7 +34,7 @@ const {
 
 const CLI_PACKAGE = "@anthropic-ai/claude-code";
 const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
-const ROLE_PATTERN = /^[a-z][a-z0-9-]{0,39}$/u;
+const KEBAB_PATTERN = /^[a-z][a-z0-9-]{0,39}$/u;
 const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const EFFORT_PATTERN = /^[a-z]{1,20}$/u;
 const TOOL_NAME_PATTERN = /^[\w.:-]{1,100}$/u;
@@ -128,7 +128,8 @@ function readConfig(env) {
   }
   return {
     legs,
-    role: required(env, "LANE_ROLE", ROLE_PATTERN, "role"),
+    lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
+    role: required(env, "LANE_ROLE", KEBAB_PATTERN, "role"),
     model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
     effort: required(env, "LANE_EFFORT", EFFORT_PATTERN, "effort"),
     maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),
@@ -285,6 +286,7 @@ function legRecord({
       : {};
   return {
     run_id: config.runId,
+    lane: config.lane,
     role: config.role,
     leg: index + 1,
     credential: leg.leg,
@@ -579,7 +581,7 @@ function run(env) {
   if (env.GITHUB_STEP_SUMMARY && clean) {
     fs.appendFileSync(
       env.GITHUB_STEP_SUMMARY,
-      `### claude-lane: ${config.role}\n\n${summaryTable(outcome.records)}\n`,
+      `### claude-lane: ${config.lane} (${config.role})\n\n${summaryTable(outcome.records)}\n`,
     );
   }
   if (!clean) {
@@ -590,7 +592,7 @@ function run(env) {
   const laneClass = outcome.outputs["lane-class"];
   if (laneClass !== "") {
     throw new LaneError(
-      `${config.role} ended class=${laneClass} on ${outcome.outputs.credential}`,
+      `${config.lane} ended class=${laneClass} on ${outcome.outputs.credential}`,
     );
   }
 }
