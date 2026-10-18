@@ -916,9 +916,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
   the action's own). The caller grants `contents: read` and `issues: write`
   and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries
-  the canonical caller and the security model. Runs only for issues whose
-  author is an `OWNER` or `MEMBER`, or a bot whose sender id is in
-  `allowed-bot-sender-ids`; other issues wait for a person.
+  the canonical caller and the security model. Runs only for issues opened by
+  their author when that author's user id is in `allowed-author-ids` (a
+  person) or `allowed-bot-sender-ids` (a bot); other issues wait for a
+  person, and the `claude-intake-triage-skipped` job names the reason and
+  applies `skipped-label` when set.
 
 ## Claude lanes — shared consumption contract
 
