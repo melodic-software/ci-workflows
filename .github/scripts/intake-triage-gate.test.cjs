@@ -1,9 +1,10 @@
 "use strict";
 
-// The intake lane's author gate: a run starts only for an issue whose author
-// is an OWNER or MEMBER, or a bot whose event sender id is listed in
-// allowed-bot-sender-ids. Everyone else's issue waits for a person, so a
-// stranger opening an issue spends nothing.
+// The intake lane's author gate: a run starts only for an issue its sender
+// opened and wrote, when that sender's id is in allowed-author-ids (a person)
+// or allowed-bot-sender-ids (a bot). Everyone else's issue waits for a
+// person, so a stranger opening an issue spends nothing, and the skipped job
+// reports why.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -24,10 +25,17 @@ const allowedBots = job.steps.find((step) =>
   step.uses?.startsWith("anthropics/claude-code-action@"),
 ).with.allowed_bots;
 
-const gate = (github, ids = "") =>
+const gate = (github, ids = "", authorIds = "") =>
   Boolean(
-    evaluate(job.if, { github, inputs: { "allowed-bot-sender-ids": ids } }),
+    evaluate(job.if, {
+      github,
+      inputs: {
+        "allowed-bot-sender-ids": ids,
+        "allowed-author-ids": authorIds,
+      },
+    }),
   );
+const kyle = { id: 153232337, login: "kyle-sexton" };
 const bots = (github, ids = "") =>
   evaluate(allowedBots, { github, inputs: { "allowed-bot-sender-ids": ids } });
 
@@ -52,27 +60,34 @@ const issueEvent = (
 });
 const lanesApp = { id: 222, login: "lanes-app[bot]" };
 
-test("allowed-bot-sender-ids is an optional string defaulting to empty", () => {
-  const input = workflow.on.workflow_call.inputs["allowed-bot-sender-ids"];
-  assert.equal(input.type, "string");
-  assert.equal(input.default, "");
-  assert.equal(input.required, undefined);
+test("the id-list and skipped-label inputs are optional strings defaulting to empty", () => {
+  for (const name of [
+    "allowed-bot-sender-ids",
+    "allowed-author-ids",
+    "skipped-label",
+  ]) {
+    const input = workflow.on.workflow_call.inputs[name];
+    assert.equal(input.type, "string", name);
+    assert.equal(input.default, "", name);
+    assert.equal(input.required, undefined, name);
+  }
 });
 
-test("an OWNER or MEMBER author starts a run, and no bot is allowed", () => {
-  for (const association of ["OWNER", "MEMBER"]) {
-    const event = issueEvent("octocat", association, {
-      id: 583231,
-      login: "octocat",
-    });
-    assert.equal(gate(event), true, association);
-    assert.equal(gate(event, "222"), true, association);
+test("a listed author starts a run whatever author_association the payload reports", () => {
+  // A private org member reads CONTRIBUTOR in a webhook payload.
+  for (const association of ["CONTRIBUTOR", "MEMBER", "OWNER", "NONE"]) {
+    const event = issueEvent("kyle-sexton", association, kyle);
+    for (const ids of ["153232337", "1,153232337", "153232337,2"]) {
+      assert.equal(gate(event, "", ids), true, `${association} ${ids}`);
+    }
     assert.equal(bots(event), "", association);
   }
 });
 
-test("any other author waits for a person", () => {
+test("an unlisted author waits for a person, OWNER and MEMBER included", () => {
   for (const association of [
+    "OWNER",
+    "MEMBER",
     "COLLABORATOR",
     "CONTRIBUTOR",
     "FIRST_TIMER",
@@ -85,8 +100,30 @@ test("any other author waits for a person", () => {
       login: "stranger",
     });
     assert.equal(gate(event), false, association);
-    assert.equal(gate(event, "9"), false, association);
+    assert.equal(gate(event, "9", "153232337"), false, association);
   }
+  // 15323233 is a prefix of a listed id; only whole ids match.
+  const prefix = issueEvent("near", "NONE", { id: 15323233, login: "near" });
+  assert.equal(gate(prefix, "", "153232337"), false);
+});
+
+test("a malformed author list admits no one", () => {
+  const event = issueEvent("kyle-sexton", "CONTRIBUTOR", kyle);
+  for (const ids of ["153232337,", ",153232337", "1,,153232337", ","]) {
+    assert.equal(gate(event, "", ids), false, ids);
+  }
+});
+
+test("a listed person acting on an issue someone else wrote starts nothing", () => {
+  const event = issueEvent("kyle-sexton", "CONTRIBUTOR", kyle, {
+    author: { id: 9, login: "stranger" },
+  });
+  assert.equal(gate(event, "", "153232337"), false);
+});
+
+test("a person's id in the bot list does not admit them", () => {
+  const event = issueEvent("kyle-sexton", "MEMBER", kyle);
+  assert.equal(gate(event, "153232337", ""), false);
 });
 
 test("a bot starts a run only when its sender id is listed, and only its login is allowed", () => {
@@ -107,11 +144,14 @@ test("a bot starts a run only when its sender id is listed, and only its login i
   }
 });
 
-test("only the opened action starts a run, for a member or a listed bot", () => {
-  const member = { id: 583231, login: "octocat" };
+test("only the opened action starts a run, for a listed person or bot", () => {
   for (const action of ["edited", "reopened", "labeled", "transferred"]) {
     assert.equal(
-      gate(issueEvent("octocat", "MEMBER", member, { action })),
+      gate(
+        issueEvent("kyle-sexton", "MEMBER", kyle, { action }),
+        "",
+        "153232337",
+      ),
       false,
       action,
     );
@@ -153,4 +193,19 @@ test("a non-issues event still reaches the reject step", () => {
   const [reject] = job.steps;
   assert.equal(reject.name, "Reject events other than issues");
   assert.equal(reject.if, "github.event_name != 'issues'");
+});
+
+test("a gated-out opened issue runs the skipped job, which may apply a label", () => {
+  const skipped = workflow.jobs.skipped;
+  assert.equal(skipped.name, "claude-intake-triage-skipped");
+  assert.equal(skipped.needs, "claude");
+  // Only the claude job's own if can skip it, so skipped means gated out.
+  assert.match(skipped.if, /always\(\) && needs\.claude\.result == 'skipped'/u);
+  assert.match(
+    skipped.if,
+    /github\.event_name == 'issues' && github\.event\.action == 'opened'/u,
+  );
+  assert.deepEqual(skipped.permissions, { issues: "write" });
+  const env = skipped.steps[0].env;
+  assert.equal(env.SKIPPED_LABEL, "${{ inputs.skipped-label }}");
 });
