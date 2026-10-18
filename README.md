@@ -920,7 +920,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   their author when that author's user id is in `allowed-author-ids` (a
   person) or `allowed-bot-sender-ids` (a bot); other issues wait for a
   person, and the `claude-intake-triage-skipped` job names the reason and
-  applies `skipped-label` when set.
+  applies `skipped-label` when set. A caller can also run it on
+  `workflow_dispatch` with `issue-number`, for issues a `GITHUB_TOKEN`
+  created (those start no `issues` run); the dispatching actor's id must be
+  in the same lists, and the lane reads the issue from the API.
 
 ## Claude lanes — shared consumption contract
 
