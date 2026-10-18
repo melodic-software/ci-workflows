@@ -956,6 +956,7 @@ jobs:
       - name: Check the action installed Bun
         id: bun-check
         if: steps.scope.outputs.review != 'false'
+        shell: bash
         run: |
           if command -v bun >/dev/null; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
