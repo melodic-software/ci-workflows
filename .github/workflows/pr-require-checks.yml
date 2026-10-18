@@ -253,13 +253,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Lint and format-check JS/TS
-        # Biome has no CLI exclude, so scope at the conforming fixture and the
-        # selector's tested CommonJS source/generator/tests.
+      - name: Lint and format-check JS/TS fixture
+        # Biome has no CLI exclude, so scope at the conforming fixture.
         uses: ./.github/actions/biome
         with:
-          paths: fixtures/typescript/good .github/scripts
+          paths: fixtures/typescript/good
           config: fixtures/typescript/good/biome.json
+      - name: Lint and format-check repo scripts
+        # The repo-root biome.json scopes itself to .github/scripts, so authors
+        # reproduce this step with `npx @biomejs/biome ci .github/scripts`.
+        uses: ./.github/actions/biome
+        with:
+          paths: .github/scripts
 
   dotnet-build:
     needs: detect-changes
