@@ -552,6 +552,18 @@ consumer to audit it.
   using-directive organization via `dotnet format style --diagnostics IDE0055
   --verify-no-changes` (the build-time analyzers own code-style and code-quality,
   so none of the three lanes double-report).
+- `.github/actions/claude-lane` — runs one prompt with headless `claude -p` for
+  an agent-mode lane on a Linux runner, installing the newest Claude Code CLI
+  unless `cli-version` pins one. The API key leg runs first; the subscription
+  token leg runs in the same job only when the key leg ends in a credit stop
+  (report-lane-outcome's opt-in `credit-stop` class), so a broken key stays
+  visible instead of spending the subscription. Only one credential is in the
+  CLI environment at a time. Callers run `claude-lane/managed-settings` while
+  sudo still works, then runner isolation (sudo and docker removed, bubblewrap
+  installed), then the head checkout; the action fails closed when any of the
+  three is missing. Its outputs match report-check-run's `lane-*` inputs, plus
+  `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
+  written only after a credential scan. Uploading the log is the caller's.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.

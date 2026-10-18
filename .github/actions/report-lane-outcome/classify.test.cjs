@@ -472,3 +472,159 @@ test("record tokens: resets only on a limit stop, unknown and malformed values o
     "turns=0",
   );
 });
+
+// credit-stop. The stop texts come from the published pages:
+// "Credit balance is too low" (code.claude.com/docs/en/errors), the self-set
+// spend limit "You have reached your specified API usage limits" (400) and the
+// tier spend cap body with `enforced_spend_limit_reached` (429)
+// (platform.claude.com/docs/en/api/rate-limits). The message shapes follow the
+// Agent SDK reference: `api_error_status` on the result, `error` on a
+// synthesized assistant message. Which of those fields a real credit stop
+// fills is not yet observed.
+const { creditStopResetsAt, isCreditStop } = require("./classify.cjs");
+
+const TIER_CAP_TEXT =
+  'API Error: 429 {"type":"error","error":{"type":"rate_limit_error",' +
+  '"message":"You have reached your API usage limits: your organization has ' +
+  "crossed its monthly API usage threshold, set based on your organization's " +
+  'API tier. You will regain access on 2026-09-01 at 00:00 UTC.",' +
+  '"details":{"error_code":"enforced_spend_limit_reached"}}}';
+
+function stopMessages({
+  status = 400,
+  error = "invalid_request",
+  text = "Credit balance is too low",
+  outputTokens = 0,
+  toolUse = false,
+  extraAssistant = null,
+} = {}) {
+  const content = [{ type: "text", text }];
+  if (toolUse) content.push({ type: "tool_use", id: "t1", name: "Bash" });
+  const assistants = [{ type: "assistant", error, message: { content } }];
+  if (extraAssistant) assistants.push(extraAssistant);
+  return [
+    { type: "system", subtype: "init" },
+    ...assistants,
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 0,
+      result: text,
+      api_error_status: status,
+      usage: { input_tokens: 0, output_tokens: outputTokens },
+    },
+  ];
+}
+
+function classifyStop(messages, options) {
+  fs.writeFileSync(executionFile, JSON.stringify(messages));
+  return classifyExecutionFile(executionFile, options).failureClass;
+}
+
+test("credit-stop: an exhausted Console credit balance (400) with opt-in", () => {
+  assert.equal(
+    classifyStop(stopMessages(), { detectCreditStop: true, exitCode: 1 }),
+    "credit-stop",
+  );
+});
+
+test("credit-stop: callers that do not opt in keep the existing class", () => {
+  assert.equal(classifyStop(stopMessages(), {}), "other");
+  assert.equal(
+    classifyStop(stopMessages({ status: 402, error: "billing_error" }), {}),
+    "auth",
+  );
+  assert.equal(
+    classifyStop(
+      stopMessages({ status: 429, error: "rate_limit", text: TIER_CAP_TEXT }),
+      {},
+    ),
+    "rate-limit",
+  );
+});
+
+test("credit-stop: self-set spend limit, tier spend cap and 402 billing", () => {
+  const options = { detectCreditStop: true, exitCode: 1 };
+  assert.equal(
+    classifyStop(
+      stopMessages({
+        text: "You have reached your specified workspace API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.",
+      }),
+      options,
+    ),
+    "credit-stop",
+  );
+  assert.equal(
+    classifyStop(
+      stopMessages({ status: 429, error: "rate_limit", text: TIER_CAP_TEXT }),
+      options,
+    ),
+    "credit-stop",
+  );
+  assert.equal(
+    classifyStop(
+      stopMessages({ status: null, error: "billing_error" }),
+      options,
+    ),
+    "credit-stop",
+  );
+});
+
+test("credit-stop: the tier spend cap's documented regain time is its reset", () => {
+  assert.equal(
+    creditStopResetsAt(
+      stopMessages({ status: 429, error: "rate_limit", text: TIER_CAP_TEXT }),
+    ),
+    "2026-09-01T00:00:00Z",
+  );
+  assert.equal(creditStopResetsAt(stopMessages()), null);
+});
+
+test("credit-stop: never on a throttle 429, an auth failure or exit 0", () => {
+  assert.equal(
+    isCreditStop(
+      stopMessages({
+        status: 429,
+        error: "rate_limit",
+        text: "API Error: 429 Number of request tokens has exceeded your per-minute rate limit",
+      }),
+      { exitCode: 1 },
+    ),
+    false,
+  );
+  assert.equal(
+    isCreditStop(
+      stopMessages({ status: 401, error: "authentication_failed" }),
+      { exitCode: 1 },
+    ),
+    false,
+  );
+  assert.equal(isCreditStop(stopMessages(), { exitCode: 0 }), false);
+});
+
+test("credit-stop: never when the model could have written the text", () => {
+  const options = { exitCode: 1 };
+  // A tool ran: head code could have printed the phrase.
+  assert.equal(isCreditStop(stopMessages({ toolUse: true }), options), false);
+  // The model produced output tokens.
+  assert.equal(
+    isCreditStop(stopMessages({ outputTokens: 12 }), options),
+    false,
+  );
+  // A model-authored assistant message (no SDK `error`) sits beside the stop.
+  assert.equal(
+    isCreditStop(
+      stopMessages({
+        extraAssistant: {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Credit balance is too low" }],
+          },
+        },
+      }),
+      options,
+    ),
+    false,
+  );
+});

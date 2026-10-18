@@ -1,0 +1,43 @@
+name: claude-lane managed settings
+description: >-
+  Write a root-owned /etc/claude-code/managed-settings.json that pins `env`
+  and `apiKeyHelper`, so head code writing ~/.claude/settings.json cannot
+  repoint the lane's credential (for example through ANTHROPIC_BASE_URL or a
+  helper that outranks CLAUDE_CODE_OAUTH_TOKEN). Needs sudo: run it before
+  runner isolation removes sudo and before any head checkout. claude-lane
+  refuses to run without the file.
+
+inputs:
+  settings:
+    description: >-
+      The managed settings JSON. It must be an object that sets
+      `apiKeyHelper` and an `env` object.
+    required: false
+    default: >-
+      {"apiKeyHelper": "", "allowManagedHooksOnly": true,
+      "env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}}
+
+runs:
+  using: composite
+  steps:
+    - name: Write the managed settings
+      shell: bash
+      env:
+        SETTINGS: ${{ inputs.settings }}
+      run: |
+        node -e '
+          const s = JSON.parse(process.env.SETTINGS);
+          if (typeof s !== "object" || s === null || Array.isArray(s) ||
+              !Object.hasOwn(s, "apiKeyHelper") ||
+              typeof s.env !== "object" || s.env === null) {
+            throw new Error("settings must set apiKeyHelper and an env object");
+          }
+        '
+        if ! sudo -n true 2>/dev/null; then
+          echo "::error title=claude-lane::sudo is unavailable: run managed-settings before runner isolation"
+          exit 1
+        fi
+        sudo install -d -o root -g root -m 755 /etc/claude-code
+        printf '%s\n' "$SETTINGS" | sudo tee /etc/claude-code/managed-settings.json >/dev/null
+        sudo chown root:root /etc/claude-code/managed-settings.json
+        sudo chmod 644 /etc/claude-code/managed-settings.json

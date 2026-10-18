@@ -1,0 +1,616 @@
+// claude-lane: run one prompt with headless `claude -p`, API key first, then
+// the lane's subscription token in the same run only after a credit stop.
+//
+// Subcommands (argv[2]):
+//   verify-isolation  fail closed unless managed settings are root-owned,
+//                     sudo is gone and bubblewrap is installed
+//   install           resolve the CLI version and install it
+//   run               run the legs and write the action's outputs
+//
+// Security contract:
+//   - One credential in the CLI environment per leg (legEnv).
+//   - The subscription leg runs only when the key leg is a credit stop
+//     (classify.cjs isCreditStop), judged from structured fields.
+//   - The CLI's output goes to a file; nothing from it reaches the job log
+//     except closed-pattern tokens and a CLI-authored error line, all inside
+//     ::stop-commands::.
+//   - The log file is written only after a scan finds no credential in it.
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+const {
+  classifyExecutionFile,
+  creditStopResetsAt,
+  readMessages,
+  readRunRecord,
+} = require("../report-lane-outcome/classify.cjs");
+const {
+  resolveNpmToolVersion,
+} = require("../../scripts/resolve-npm-tool-version.cjs");
+
+const CLI_PACKAGE = "@anthropic-ai/claude-code";
+const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
+const ROLE_PATTERN = /^[a-z][a-z0-9-]{0,39}$/u;
+const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
+const EFFORT_PATTERN = /^[a-z]{1,20}$/u;
+const TOOL_NAME_PATTERN = /^[\w.:-]{1,100}$/u;
+const PERMISSION_MODES = new Set([
+  "default",
+  "acceptEdits",
+  "plan",
+  "auto",
+  "dontAsk",
+]);
+// Every variable that selects or carries a credential. legEnv removes all of
+// them, then sets exactly one.
+const CREDENTIAL_VARIABLES = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "LANE_API_KEY",
+  "LANE_SUBSCRIPTION_TOKEN",
+];
+const KEY_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}/u;
+
+class LaneError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LaneError";
+  }
+}
+
+function required(env, name, pattern, label) {
+  const value = (env[name] ?? "").trim();
+  if (!pattern.test(value)) {
+    throw new LaneError(`${label} ${JSON.stringify(value)} is not valid`);
+  }
+  return value;
+}
+
+// The run's settings from the action's environment, each checked against a
+// closed pattern, so nothing unchecked reaches the CLI's argv or the log.
+function readConfig(env) {
+  const legs = [];
+  for (const [leg, valueVar, nameVar] of [
+    ["api-key", "LANE_API_KEY", "LANE_API_KEY_NAME"],
+    ["subscription", "LANE_SUBSCRIPTION_TOKEN", "LANE_SUBSCRIPTION_TOKEN_NAME"],
+  ]) {
+    const value = env[valueVar] ?? "";
+    const name = (env[nameVar] ?? "").trim();
+    if (value === "") {
+      legs.push({ leg, name, value: "", skipped: true });
+      continue;
+    }
+    if (!NAME_PATTERN.test(name)) {
+      throw new LaneError(
+        `${leg} is set but its secret name ${JSON.stringify(name)} is not an upper-case secret name`,
+      );
+    }
+    legs.push({ leg, name, value, skipped: false });
+  }
+  if (legs.every((leg) => leg.skipped)) {
+    throw new LaneError(
+      "no credential: api-key and subscription-token are both empty",
+    );
+  }
+  const permissionMode = (env.LANE_PERMISSION_MODE ?? "").trim();
+  if (!PERMISSION_MODES.has(permissionMode)) {
+    throw new LaneError(
+      `permission-mode ${JSON.stringify(permissionMode)} is not one of ${[...PERMISSION_MODES].join(", ")}`,
+    );
+  }
+  const legTimeout = (env.LANE_LEG_TIMEOUT_MINUTES ?? "").trim();
+  if (legTimeout !== "" && !/^[1-9]\d{0,3}$/u.test(legTimeout)) {
+    throw new LaneError(
+      `leg-timeout-minutes ${JSON.stringify(legTimeout)} is not valid`,
+    );
+  }
+  const promptFile = (env.LANE_PROMPT_FILE ?? "").trim();
+  if (promptFile === "" || !fs.existsSync(promptFile)) {
+    throw new LaneError(
+      `prompt-file ${JSON.stringify(promptFile)} does not exist`,
+    );
+  }
+  const allowedTools = (env.LANE_ALLOWED_TOOLS ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (allowedTools.some((rule) => rule.startsWith("-"))) {
+    throw new LaneError("allowed-tools entries may not start with '-'");
+  }
+  return {
+    legs,
+    role: required(env, "LANE_ROLE", ROLE_PATTERN, "role"),
+    model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
+    effort: required(env, "LANE_EFFORT", EFFORT_PATTERN, "effort"),
+    maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),
+    permissionMode,
+    watchdogMaxWaitMs: required(
+      env,
+      "LANE_WATCHDOG_MAX_WAIT_MS",
+      /^[1-9]\d{0,9}$/u,
+      "watchdog-max-wait-ms",
+    ),
+    legTimeoutMs: legTimeout === "" ? 0 : Number(legTimeout) * 60_000,
+    cliVersion: required(
+      env,
+      "LANE_CLI_VERSION",
+      /^\d+\.\d+\.\d+$/u,
+      "cli-version",
+    ),
+    cliPath: required(env, "LANE_CLI_PATH", /^\/.+/u, "cli path"),
+    promptFile,
+    preamble: env.LANE_PREAMBLE ?? "",
+    allowedTools,
+    workDir: required(env, "LANE_WORK_DIR", /^\/.+/u, "work dir"),
+    runId: (env.GITHUB_RUN_ID ?? "").trim(),
+  };
+}
+
+// `latest` (the default) asks the registry for the newest release; anything
+// else must be an exact version. Either way the value passes the shared
+// exact-version check before it is installed.
+function resolveCliVersion(input, npmView) {
+  const wanted = (input ?? "").trim() || "latest";
+  const candidate =
+    wanted === "latest" ? String(npmView() ?? "").trim() : wanted;
+  // An empty candidate would take the resolver's fallback; there is none here.
+  const { version, source } = resolveNpmToolVersion({
+    versionInput: candidate,
+    fallbackVersion: "0.0.0",
+    packageName: CLI_PACKAGE,
+    packageJsonPath: "/nonexistent/package.json",
+  });
+  if (source !== "input") {
+    throw new LaneError(
+      `cli-version must resolve to an exact major.minor.patch, got ${JSON.stringify(candidate)}`,
+    );
+  }
+  return version;
+}
+
+// The CLI environment for one leg: every credential variable removed, then
+// only this leg's credential set.
+function legEnv(baseEnv, leg, config) {
+  const env = { ...baseEnv };
+  for (const name of CREDENTIAL_VARIABLES) delete env[name];
+  if (leg.leg === "api-key") env.ANTHROPIC_API_KEY = leg.value;
+  else env.CLAUDE_CODE_OAUTH_TOKEN = leg.value;
+  env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1";
+  env.CLAUDE_CODE_RETRY_WATCHDOG = "1";
+  env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS = config.watchdogMaxWaitMs;
+  return env;
+}
+
+function cliArgs(config) {
+  const args = [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    config.model,
+    "--effort",
+    config.effort,
+    "--max-turns",
+    config.maxTurns,
+    "--permission-mode",
+    config.permissionMode,
+    "--permission-prompts",
+    "none",
+    "--setting-sources",
+    "user",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+  ];
+  if (config.allowedTools.length > 0) {
+    args.push("--allowedTools", ...config.allowedTools);
+  }
+  return args;
+}
+
+function promptText(config) {
+  const prompt = fs.readFileSync(config.promptFile, "utf8");
+  if (prompt.trim() === "") throw new LaneError("prompt-file is empty");
+  const preamble = config.preamble.trim();
+  return preamble === "" ? prompt : `${preamble}\n\n${prompt}`;
+}
+
+// Stream JSON lines into the JSON array claude-code-action's execution_file
+// holds, so classify.cjs reads both the same way. Unparsable lines drop.
+function linesToMessages(text) {
+  const messages = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      // A non-JSON line (a stray warning) carries no structured fact.
+    }
+  }
+  return messages;
+}
+
+// The CLI's first error line, only when classify proved it is the CLI's own
+// text (a credit stop or a limit stop with no model output). Workflow
+// commands are neutralized and the line is cut short.
+function cliMessage(messages, failureClass) {
+  if (failureClass !== "credit-stop" && failureClass !== "rate-limit")
+    return null;
+  const result = messages.findLast((message) => message?.type === "result");
+  const assistants = messages.filter((m) => m?.type === "assistant");
+  const modelWrote =
+    assistants.some((m) => typeof m.error !== "string") ||
+    (result?.usage?.output_tokens ?? 0) !== 0;
+  if (modelWrote || typeof result?.result !== "string") return null;
+  const line = result.result.split("\n")[0].replaceAll("::", ": :").trim();
+  return line === "" ? null : line.slice(0, 200);
+}
+
+function legRecord({
+  config,
+  leg,
+  index,
+  startedAt,
+  endedAt,
+  exitCode,
+  messages,
+  failureClass,
+  resets,
+  next,
+}) {
+  const result =
+    messages.findLast((message) => message?.type === "result") ?? {};
+  const denials = Array.isArray(result.permission_denials)
+    ? result.permission_denials
+    : [];
+  const usage = result.usage ?? {};
+  const count = (value) =>
+    Number.isInteger(value) && value >= 0 ? value : null;
+  return {
+    run_id: config.runId,
+    role: config.role,
+    leg: index + 1,
+    credential: leg.leg,
+    secret: leg.name,
+    cli_version: config.cliVersion,
+    model: config.model,
+    permission_mode: config.permissionMode,
+    started_at: startedAt,
+    ended_at: endedAt,
+    exit_code: exitCode,
+    num_turns: count(result.num_turns),
+    is_error: typeof result.is_error === "boolean" ? result.is_error : null,
+    class: failureClass,
+    message: cliMessage(messages, failureClass),
+    resets,
+    usage: {
+      input_tokens: count(usage.input_tokens),
+      output_tokens: count(usage.output_tokens),
+      cache_read_input_tokens: count(usage.cache_read_input_tokens),
+      cache_creation_input_tokens: count(usage.cache_creation_input_tokens),
+    },
+    denials: {
+      count: denials.length,
+      tools: [
+        ...new Set(
+          denials
+            .map((d) => d?.tool_name)
+            .filter((name) => TOOL_NAME_PATTERN.test(name ?? "")),
+        ),
+      ],
+    },
+    next,
+  };
+}
+
+// True when the text holds any credential value or anything shaped like an
+// Anthropic key.
+function holdsCredential(text, secretValues) {
+  if (KEY_SHAPE.test(text)) return true;
+  return secretValues.some(
+    (value) => value.length >= 8 && text.includes(value),
+  );
+}
+
+// What one finished leg means for the run: success, stop with a class, or go
+// on to the subscription leg. Only a credit stop on the key leg goes on.
+function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
+  const messages = readMessages(executionFile) ?? [];
+  const result = messages.findLast((message) => message?.type === "result");
+  if (!timedOut && exitCode === 0 && result && result.is_error === false) {
+    return { failureClass: "", resets: null, messages };
+  }
+  const { failureClass } = classifyExecutionFile(executionFile, {
+    timedOut,
+    maxTurns,
+    detectCreditStop: leg.leg === "api-key",
+    exitCode,
+  });
+  let resets = null;
+  if (failureClass === "credit-stop") resets = creditStopResetsAt(messages);
+  if (failureClass === "rate-limit")
+    resets = readRunRecord(executionFile).resetsAt;
+  return { failureClass, resets, messages };
+}
+
+function runLegs(
+  config,
+  {
+    baseEnv = process.env,
+    spawn = spawnSync,
+    now = () => new Date(),
+    log = (line) => process.stdout.write(`${line}\n`),
+  } = {},
+) {
+  const prompt = promptText(config);
+  const active = config.legs.filter((leg) => !leg.skipped);
+  for (const leg of config.legs.filter((l) => l.skipped)) {
+    log(
+      `::warning::claude-lane: skipped=${leg.name || leg.leg} (empty secret)`,
+    );
+  }
+  const records = [];
+  let final = null;
+  for (const [position, leg] of active.entries()) {
+    const index = config.legs.indexOf(leg);
+    const streamFile = path.join(config.workDir, `leg-${index + 1}.jsonl`);
+    const executionFile = path.join(
+      config.workDir,
+      `leg-${index + 1}-execution.json`,
+    );
+    const startedAt = now().toISOString();
+    const out = fs.openSync(streamFile, "w");
+    let child;
+    try {
+      child = spawn(config.cliPath, cliArgs(config), {
+        env: legEnv(baseEnv, leg, config),
+        input: prompt,
+        stdio: ["pipe", out, "inherit"],
+        timeout: config.legTimeoutMs || undefined,
+        killSignal: "SIGINT",
+      });
+    } finally {
+      fs.closeSync(out);
+    }
+    const endedAt = now().toISOString();
+    const timedOut = child.error?.code === "ETIMEDOUT";
+    const exitCode = typeof child.status === "number" ? child.status : null;
+    fs.writeFileSync(
+      executionFile,
+      JSON.stringify(linesToMessages(fs.readFileSync(streamFile, "utf8"))),
+    );
+    const judged = judgeLeg({
+      leg,
+      executionFile,
+      exitCode,
+      timedOut,
+      maxTurns: config.maxTurns,
+    });
+    const goesOn =
+      judged.failureClass === "credit-stop" && position < active.length - 1;
+    records.push(
+      legRecord({
+        config,
+        leg,
+        index,
+        startedAt,
+        endedAt,
+        exitCode,
+        messages: judged.messages,
+        failureClass: judged.failureClass,
+        resets: judged.resets,
+        next: goesOn ? active[position + 1].leg : null,
+      }),
+    );
+    final = { leg, executionFile, ...judged };
+    if (!goesOn) break;
+  }
+  const record = readRunRecord(final.executionFile);
+  // A credit stop with no leg left is a limit stop for the reporters, which
+  // know rate-limit and not credit-stop.
+  const laneClass =
+    final.failureClass === "credit-stop" ? "rate-limit" : final.failureClass;
+  return {
+    records,
+    outputs: {
+      "lane-class": laneClass,
+      "lane-resets": final.resets ?? "",
+      "lane-turns": record.turns === null ? "" : String(record.turns),
+      "lane-models": record.models.join(","),
+      credential: final.leg.name,
+      "execution-file": final.executionFile,
+    },
+  };
+}
+
+function summaryTable(records) {
+  const cell = (value) =>
+    String(value ?? "")
+      .replaceAll("|", "\\|")
+      .replaceAll("`", "'");
+  const rows = records.map(
+    (r) =>
+      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(r.message)} |`,
+  );
+  return [
+    "| Leg | Secret | Class | Turns | Denials | Resets | Next | Message |",
+    "|---|---|---|---|---|---|---|---|",
+    ...rows,
+  ].join("\n");
+}
+
+function writeOutputs(outputPath, outputs) {
+  const lines = Object.entries(outputs).map(([key, value]) => {
+    if (String(value).includes("\n"))
+      throw new LaneError(`output ${key} holds a newline`);
+    return `${key}=${value}`;
+  });
+  fs.appendFileSync(outputPath, `${lines.join("\n")}\n`);
+}
+
+// Root-owned, not writable by group or others, and pinning both `env` and
+// `apiKeyHelper`, so head code cannot repoint the credential through user
+// settings.
+function verifyManagedSettings(
+  file,
+  { stat = fs.statSync, read = fs.readFileSync } = {},
+) {
+  let info;
+  try {
+    info = stat(file);
+  } catch {
+    throw new LaneError(
+      `${file} is missing: run the claude-lane managed-settings action before runner isolation`,
+    );
+  }
+  if (info.uid !== 0) throw new LaneError(`${file} is not owned by root`);
+  if ((info.mode & 0o022) !== 0)
+    throw new LaneError(`${file} is writable by group or others`);
+  let settings;
+  try {
+    settings = JSON.parse(read(file, "utf8"));
+  } catch {
+    throw new LaneError(`${file} is not JSON`);
+  }
+  if (
+    !Object.hasOwn(settings, "apiKeyHelper") ||
+    typeof settings.env !== "object" ||
+    settings.env === null
+  ) {
+    throw new LaneError(`${file} does not pin both env and apiKeyHelper`);
+  }
+}
+
+function verifyIsolation({ managedSettings, spawn = spawnSync, ...io }) {
+  verifyManagedSettings(managedSettings, io);
+  if (spawn("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0) {
+    throw new LaneError(
+      "sudo still works: run runner isolation before claude-lane",
+    );
+  }
+  if (spawn("bwrap", ["--version"], { stdio: "ignore" }).status !== 0) {
+    throw new LaneError(
+      "bubblewrap is missing: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it",
+    );
+  }
+}
+
+function install(env) {
+  const version = resolveCliVersion(env.LANE_CLI_VERSION_INPUT, () => {
+    const view = spawnSync("npm", ["view", CLI_PACKAGE, "version"], {
+      encoding: "utf8",
+    });
+    if (view.status !== 0)
+      throw new LaneError(`npm view ${CLI_PACKAGE} version failed`);
+    return view.stdout;
+  });
+  const prefix = path.join(env.LANE_WORK_DIR, "cli");
+  const installed = spawnSync(
+    "npm",
+    [
+      "install",
+      "--no-save",
+      "--no-audit",
+      "--no-fund",
+      "--prefix",
+      prefix,
+      `${CLI_PACKAGE}@${version}`,
+    ],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  );
+  if (installed.status !== 0)
+    throw new LaneError(`npm install ${CLI_PACKAGE}@${version} failed`);
+  process.stdout.write(`claude-lane: Claude Code CLI ${version}\n`);
+  writeOutputs(env.GITHUB_OUTPUT, {
+    "cli-version": version,
+    "cli-path": path.join(prefix, "node_modules", ".bin", "claude"),
+  });
+}
+
+function run(env) {
+  const config = readConfig(env);
+  const token = crypto.randomBytes(16).toString("hex");
+  process.stdout.write(`::stop-commands::${token}\n`);
+  let outcome;
+  try {
+    outcome = runLegs(config, { baseEnv: env });
+  } finally {
+    process.stdout.write(`::${token}::\n`);
+  }
+  const logFile = path.join(config.workDir, "claude-lane-log.jsonl");
+  const logText = `${outcome.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
+  const secretValues = config.legs.map((leg) => leg.value).filter(Boolean);
+  const clean = !holdsCredential(logText, secretValues);
+  if (clean) fs.writeFileSync(logFile, logText);
+  writeOutputs(env.GITHUB_OUTPUT, {
+    ...outcome.outputs,
+    "log-file": clean ? logFile : "",
+  });
+  if (env.GITHUB_STEP_SUMMARY && clean) {
+    fs.appendFileSync(
+      env.GITHUB_STEP_SUMMARY,
+      `### claude-lane: ${config.role}\n\n${summaryTable(outcome.records)}\n`,
+    );
+  }
+  if (!clean) {
+    throw new LaneError(
+      "the execution log held a credential and was not written",
+    );
+  }
+  const laneClass = outcome.outputs["lane-class"];
+  if (laneClass !== "") {
+    throw new LaneError(
+      `${config.role} ended class=${laneClass} on ${outcome.outputs.credential}`,
+    );
+  }
+}
+
+if (require.main === module) {
+  try {
+    const command = process.argv[2];
+    if (command === "verify-isolation") {
+      verifyIsolation({ managedSettings: process.env.LANE_MANAGED_SETTINGS });
+    } else if (command === "install") {
+      install(process.env);
+    } else if (command === "run") {
+      run(process.env);
+    } else {
+      throw new LaneError(`unknown command ${JSON.stringify(command)}`);
+    }
+  } catch (error) {
+    const message =
+      error instanceof LaneError
+        ? error.message
+        : "unexpected failure (see the step log)";
+    if (!(error instanceof LaneError)) console.error(error);
+    process.stdout.write(`::error title=claude-lane::${message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = {
+  CREDENTIAL_VARIABLES,
+  LaneError,
+  cliArgs,
+  holdsCredential,
+  judgeLeg,
+  legEnv,
+  legRecord,
+  linesToMessages,
+  readConfig,
+  resolveCliVersion,
+  run,
+  runLegs,
+  summaryTable,
+  verifyIsolation,
+  verifyManagedSettings,
+};
