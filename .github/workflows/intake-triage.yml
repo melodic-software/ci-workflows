@@ -679,7 +679,8 @@ jobs:
             const [input, list] = bot ? ["allowed-bot-sender-ids", env.BOT_IDS] : ["allowed-author-ids", env.AUTHOR_IDS];
             let reason;
             if (env.AUTHOR_ID !== env.SENDER_ID) reason = `${env.ACTOR} opened it for ${env.AUTHOR_LOGIN}, so the sender is not the author`;
-            else if (!/^[0-9]+(,[0-9]+)*$/u.test(list)) reason = `${input} is empty or malformed`;
+            // The gate's own malformed rule: empty, or a leading, trailing or doubled comma.
+            else if (!/^[^,]+(,[^,]+)*$/u.test(list)) reason = `${input} is empty or malformed`;
             else reason = `${env.AUTHOR_LOGIN} (id ${env.AUTHOR_ID}) is not in ${input}`;
             const message = `Intake triage skipped issue #${env.ISSUE_NUMBER}: ${reason}.`;
             core.notice(message);
