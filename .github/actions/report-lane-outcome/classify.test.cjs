@@ -570,6 +570,41 @@ test("credit-stop: the observed workspace spend-limit result (CLI 2.1.302)", () 
   );
 });
 
+// Observed: a disabled and a deleted Console key return the same result
+// (pr-pipeline-sandbox runs 39169782027 and 39170251719). It is auth, never a
+// credit stop, so the launcher does not fall back on it.
+test("auth: the observed rejected-key result (CLI 2.1.302) is never credit-stop", () => {
+  const text = "Invalid API key · Fix external API key";
+  const rejected = [
+    {
+      type: "assistant",
+      error: "authentication_failed",
+      is_api_error_message: true,
+      api_error_status: 401,
+      message: {
+        model: "<synthetic>",
+        content: [{ type: "text", text }],
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      total_cost_usd: 0,
+      api_error_status: 401,
+      terminal_reason: "api_error",
+      result: text,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  ];
+  assert.equal(
+    classifyStop(rejected, { detectCreditStop: true, exitCode: 1 }),
+    "auth",
+  );
+});
+
 test("credit-stop: callers that do not opt in keep the existing class", () => {
   assert.equal(classifyStop(stopMessages(), {}), "other");
   assert.equal(
