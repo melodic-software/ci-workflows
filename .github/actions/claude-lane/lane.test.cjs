@@ -232,6 +232,9 @@ function runCase({
     promptFile: prompt,
     preamble: "You run unattended.",
     allowedTools: ["Read", "Bash(git status:*)"],
+    disallowedTools: ["WebFetch"],
+    tools: ["Read", "Bash"],
+    jsonSchema: '{"type":"object"}',
     workDir: dir,
     runId: "123",
   };
@@ -365,7 +368,14 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
   }
   assert.equal(call.args[call.args.indexOf("--setting-sources") + 1], "user");
   assert.equal(call.args[call.args.indexOf("--permission-mode") + 1], "auto");
-  assert.deepEqual(call.args.slice(-3), [
+  assert.equal(call.args[call.args.indexOf("--tools") + 1], "Read,Bash");
+  assert.equal(
+    call.args[call.args.indexOf("--json-schema") + 1],
+    '{"type":"object"}',
+  );
+  assert.deepEqual(call.args.slice(-5), [
+    "--disallowedTools",
+    "WebFetch",
     "--allowedTools",
     "Read",
     "Bash(git status:*)",
@@ -542,6 +552,14 @@ test("readConfig refuses bypass, nameless secrets, no credential and bad values"
         }),
       ),
     /allowed-tools/u,
+  );
+  assert.throws(
+    () => readConfig(configEnv({ LANE_DISALLOWED_TOOLS: "-x" })),
+    /disallowed-tools/u,
+  );
+  assert.throws(
+    () => readConfig(configEnv({ LANE_JSON_SCHEMA_FILE: "/nonexistent.json" })),
+    /json-schema-file/u,
   );
 });
 

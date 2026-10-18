@@ -119,12 +119,24 @@ function readConfig(env) {
       `prompt-file ${JSON.stringify(promptFile)} does not exist`,
     );
   }
-  const allowedTools = (env.LANE_ALLOWED_TOOLS ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (allowedTools.some((rule) => rule.startsWith("-"))) {
-    throw new LaneError("allowed-tools entries may not start with '-'");
+  const allowedTools = toolLines(env.LANE_ALLOWED_TOOLS, "allowed-tools");
+  const disallowedTools = toolLines(
+    env.LANE_DISALLOWED_TOOLS,
+    "disallowed-tools",
+  );
+  const tools = toolLines(env.LANE_TOOLS, "tools");
+  const schemaFile = (env.LANE_JSON_SCHEMA_FILE ?? "").trim();
+  let jsonSchema = "";
+  if (schemaFile !== "") {
+    try {
+      jsonSchema = JSON.stringify(
+        JSON.parse(fs.readFileSync(schemaFile, "utf8")),
+      );
+    } catch {
+      throw new LaneError(
+        `json-schema-file ${JSON.stringify(schemaFile)} is not a readable JSON file`,
+      );
+    }
   }
   return {
     legs,
@@ -151,6 +163,9 @@ function readConfig(env) {
     promptFile,
     preamble: env.LANE_PREAMBLE ?? "",
     allowedTools,
+    disallowedTools,
+    tools,
+    jsonSchema,
     workDir: required(env, "LANE_WORK_DIR", /^\/.+/u, "work dir"),
     runId: (env.GITHUB_RUN_ID ?? "").trim(),
   };
@@ -212,10 +227,26 @@ function cliArgs(config) {
     "--strict-mcp-config",
     "--no-session-persistence",
   ];
+  if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
+  if (config.jsonSchema !== "") args.push("--json-schema", config.jsonSchema);
+  if (config.disallowedTools.length > 0) {
+    args.push("--disallowedTools", ...config.disallowedTools);
+  }
   if (config.allowedTools.length > 0) {
     args.push("--allowedTools", ...config.allowedTools);
   }
   return args;
+}
+
+function toolLines(text, label) {
+  const rules = (text ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (rules.some((rule) => rule.startsWith("-"))) {
+    throw new LaneError(`${label} entries may not start with '-'`);
+  }
+  return rules;
 }
 
 function promptText(config) {

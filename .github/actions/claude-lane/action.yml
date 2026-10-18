@@ -69,6 +69,22 @@ inputs:
     description: Permission rules passed to `--allowedTools`, one per line. Empty passes none.
     required: false
     default: ""
+  disallowed-tools:
+    description: Permission rules passed to `--disallowedTools`, one per line. Empty passes none.
+    required: false
+    default: ""
+  tools:
+    description: >-
+      Built-in tools the model may use, one per line, passed to `--tools`.
+      Empty leaves the CLI's default set.
+    required: false
+    default: ""
+  json-schema-file:
+    description: >-
+      Path to a JSON Schema the final result must match (`--json-schema`); the
+      result's `structured_output` is in execution-file. Empty passes none.
+    required: false
+    default: ""
   cli-version:
     description: >-
       `latest` resolves the newest @anthropic-ai/claude-code release with
@@ -154,6 +170,9 @@ runs:
         LANE_MAX_TURNS: ${{ inputs.max-turns }}
         LANE_PERMISSION_MODE: ${{ inputs.permission-mode }}
         LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
+        LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
+        LANE_TOOLS: ${{ inputs.tools }}
+        LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}
         LANE_WATCHDOG_MAX_WAIT_MS: ${{ inputs.watchdog-max-wait-ms }}
         LANE_LEG_TIMEOUT_MINUTES: ${{ inputs.leg-timeout-minutes }}
         LANE_CLI_VERSION: ${{ steps.install.outputs.cli-version }}
