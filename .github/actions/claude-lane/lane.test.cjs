@@ -402,6 +402,11 @@ test("the log has one object per leg with the documented fields and no credentia
       { tool_name: "Bash", tool_use_id: "b", tool_input: {} },
       { tool_name: "WebFetch", tool_use_id: "c", tool_input: {} },
     ],
+    duration_ms: 1200,
+    total_cost_usd: 0.0033,
+    modelUsage: {
+      "claude-haiku-5-5": { costUSD: 0.0033, inputTokens: 2, outputTokens: 4 },
+    },
   });
   const { records } = runCase({ key: CREDIT_STOP, sub: [denied] });
   assert.equal(records.length, 2);
@@ -416,7 +421,10 @@ test("the log has one object per leg with the documented fields and no credentia
     "permission_mode",
     "started_at",
     "ended_at",
+    "duration_ms",
     "exit_code",
+    "total_cost_usd",
+    "models_used",
     "num_turns",
     "is_error",
     "class",
@@ -430,6 +438,11 @@ test("the log has one object per leg with the documented fields and no credentia
   assert.equal(records[0].exit_code, 1);
   assert.equal(records[0].num_turns, 0);
   assert.equal(records[1].message, null);
+  assert.equal(records[1].duration_ms, 1200);
+  assert.equal(records[1].total_cost_usd, 0.0033);
+  assert.deepEqual(records[1].models_used, {
+    "claude-haiku-5-5": { cost_usd: 0.0033, input_tokens: 2, output_tokens: 4 },
+  });
   assert.deepEqual(records[1].denials, {
     count: 3,
     tools: ["Bash", "WebFetch"],

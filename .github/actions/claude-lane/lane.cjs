@@ -275,6 +275,14 @@ function legRecord({
   const usage = result.usage ?? {};
   const count = (value) =>
     Number.isInteger(value) && value >= 0 ? value : null;
+  const amount = (value) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : null;
+  const modelUsage =
+    result.modelUsage && typeof result.modelUsage === "object"
+      ? result.modelUsage
+      : {};
   return {
     run_id: config.runId,
     role: config.role,
@@ -286,7 +294,20 @@ function legRecord({
     permission_mode: config.permissionMode,
     started_at: startedAt,
     ended_at: endedAt,
+    duration_ms: count(result.duration_ms),
     exit_code: exitCode,
+    // The CLI's own list-price estimate; for attribution and trends, not billing.
+    total_cost_usd: amount(result.total_cost_usd),
+    models_used: Object.fromEntries(
+      Object.entries(modelUsage).map(([name, u]) => [
+        name,
+        {
+          cost_usd: amount(u?.costUSD),
+          input_tokens: count(u?.inputTokens),
+          output_tokens: count(u?.outputTokens),
+        },
+      ]),
+    ),
     num_turns: count(result.num_turns),
     is_error: typeof result.is_error === "boolean" ? result.is_error : null,
     class: failureClass,
