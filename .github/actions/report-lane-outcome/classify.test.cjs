@@ -529,6 +529,47 @@ test("credit-stop: an exhausted Console credit balance (400) with opt-in", () =>
   );
 });
 
+// Observed, not modeled: Claude Code 2.1.302's `claude -p --output-format
+// stream-json` at a workspace spend limit (pr-pipeline-sandbox run 39168823785),
+// trimmed to the fields the classifier reads. Unlike the modeled shape above it
+// reports `num_turns: 1`, `subtype: "success"` and the SDK error `unknown`.
+const OBSERVED_SPEND_LIMIT_TEXT =
+  "API Error: 400 You have reached your specified workspace API usage limits. " +
+  "You will regain access on 2026-11-01 at 00:00 UTC.";
+const OBSERVED_SPEND_LIMIT = [
+  {
+    type: "assistant",
+    error: "unknown",
+    is_api_error_message: true,
+    api_error_status: 400,
+    message: {
+      model: "<synthetic>",
+      content: [{ type: "text", text: OBSERVED_SPEND_LIMIT_TEXT }],
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  },
+  {
+    type: "result",
+    subtype: "success",
+    is_error: true,
+    num_turns: 1,
+    total_cost_usd: 0,
+    api_error_status: 400,
+    terminal_reason: "api_error",
+    result: OBSERVED_SPEND_LIMIT_TEXT,
+    usage: { input_tokens: 0, output_tokens: 0 },
+  },
+];
+
+test("credit-stop: the observed workspace spend-limit result (CLI 2.1.302)", () => {
+  const options = { detectCreditStop: true, exitCode: 1 };
+  assert.equal(classifyStop(OBSERVED_SPEND_LIMIT, options), "credit-stop");
+  assert.equal(
+    creditStopResetsAt(OBSERVED_SPEND_LIMIT),
+    "2026-11-01T00:00:00Z",
+  );
+});
+
 test("credit-stop: callers that do not opt in keep the existing class", () => {
   assert.equal(classifyStop(stopMessages(), {}), "other");
   assert.equal(

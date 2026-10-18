@@ -114,8 +114,9 @@ function readMessages(executionFilePath) {
 // message), and the result reports 0 output tokens. Then a credit-stop
 // status (400 spend limit, 402 billing, 429 tier spend cap) or SDK error
 // category must be present, the exit code non-zero, and the text must match
-// one documented credit-stop phrase. Which fields the CLI fills on a real
-// credit stop is not yet observed; this function is the one place to change.
+// one documented credit-stop phrase. A real workspace spend-limit stop matches
+// (the observed test in classify.test.cjs); a zero-balance stop is not yet
+// observed. This function is the one place to change.
 const CREDIT_STOP_STATUSES = new Set([400, 402, 429]);
 const CREDIT_STOP_ERRORS = new Set([
   "billing_error",
