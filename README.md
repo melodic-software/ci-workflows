@@ -559,12 +559,13 @@ consumer to audit it.
   (report-lane-outcome's opt-in `credit-stop` class), so a broken key stays
   visible instead of spending the subscription. Each leg's CLI environment
   has every credential and workflow file-command variable removed and one
-  credential set, and anything a leg appends to the step's `GITHUB_ENV` or
-  `GITHUB_PATH` file is cut off after the last leg. That is the whole
-  guarantee: code a leg runs as the runner user can still reach the other
-  file-command files under `RUNNER_TEMP`, the step's `GITHUB_OUTPUT` and
-  `GITHUB_STEP_SUMMARY`, `_work/_actions` and `~/.npmrc`. So a lane that
-  gives the model unrestricted Bash, or any code-running tool beyond fixed
+  credential set. Anything a leg appends to the step's `GITHUB_ENV`,
+  `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` or `GITHUB_STATE`
+  file is cut off after the last leg, before the action writes its own
+  outputs, and the installed CLI tree and `_work/_actions` have their write
+  bits removed while the legs run. Code a leg runs still runs as the runner
+  user, so a lane that gives the model unrestricted Bash, or any
+  code-running tool beyond fixed
   read-only command rules, runs the action in a job that holds no other
   secret or write token and does its reporting and uploads in a downstream
   job that validates its inputs; a lane whose Bash is limited to fixed
@@ -589,7 +590,11 @@ consumer to audit it.
   shows only closed tokens; the CLI's own error line stays in the log. Each
   leg stops after `leg-timeout-minutes`, 30 by default. `tools`,
   `allowed-tools`, `disallowed-tools` and `json-schema-file` pass through to
-  the CLI flags of the same names. Uploading the log is the caller's.
+  the CLI flags of the same names. `plugin-dirs` passes each directory to
+  `--plugin-dir` and `--add-dir`, so a plugin's skills can read their own
+  files under `--restricted`; `add-dirs` passes more `--add-dir` directories.
+  Each entry must resolve, with no `..` part, to an existing directory inside
+  `GITHUB_WORKSPACE`. Uploading the log is the caller's.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL` and disables bypassPermissions mode, so head code
