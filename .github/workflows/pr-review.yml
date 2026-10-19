@@ -43,7 +43,7 @@ name: pr-review
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
 #   - The checkout must persist credentials until claude-code-action#1236
-#     ships; the last step strips them.
+#     ships: later steps fetch with them. Fork pull requests never run this job.
 #   - The last reviewed head and the review summary are kept in one pull
 #     request comment this job writes with its own token, so its author is
 #     github-actions[bot]; the lane reads only that author's marker. The
@@ -256,9 +256,9 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
-      # persist-credentials stays default until claude-code-action#1236 ships
-      # (the action fetches before configuring git auth); the last step strips it.
-      - name: Check out
+      # persist-credentials stays default: later steps fetch with the persisted
+      # credential until claude-code-action#1236 ships. Fork PRs never reach this job.
+      - name: Check out # zizmor: ignore[artipacked] later fetches need the credential; see above
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}

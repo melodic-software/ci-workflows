@@ -524,13 +524,14 @@ jobs:
     permissions:
       contents: read
       # pr-audit-workflows.yml always declares this and a called workflow cannot elevate,
-      # so grant it although the dogfood stays annotations-only.
+      # so grant it although the dogfood uploads no SARIF.
       security-events: write
-    # Audit this repo's own workflows AND composite actions (paths: .) — strong
-    # dogfood. Advisory: findings annotate without blocking ci-status.
+    # Audit this repo's own workflows AND composite actions (paths: .). Gates:
+    # any finding fails the lane and so ci-status.
     uses: ./.github/workflows/pr-audit-workflows.yml
     with:
       paths: .
+      fail-on-severity: low
 
   pr-scan-dependencies:
     # Not change-gated: a filter enumerating every lockfile format OSV

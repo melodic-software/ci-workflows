@@ -1,0 +1,10 @@
+# The org Dependabot cooldown floor is 3 days (standards dependabot-policy).
+rules:
+  dependabot-cooldown:
+    config:
+      days: 3
+  # `./` keeps actionlint's input validation on these calls; drop this ignore
+  # once rhysd/actionlint#732 ships and the pinned actionlint is bumped.
+  self-repository:
+    ignore:
+      - pr-require-checks.yml
