@@ -22,6 +22,7 @@ const {
   LaneError,
   MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
+  cliArgs,
   holdsCredential,
   install,
   legEnv,
@@ -662,6 +663,18 @@ test("readConfig refuses bypass, no credential and bad values", () => {
   assert.throws(
     () => readConfig(configEnv({ LANE_JSON_SCHEMA_FILE: "/nonexistent.json" })),
     /json-schema-file/u,
+  );
+});
+
+test("an empty effort leaves --effort out; an invalid one still fails", () => {
+  const config = readConfig(configEnv({ LANE_EFFORT: "" }));
+  assert.equal(config.effort, "");
+  assert.equal(cliArgs(config).includes("--effort"), false);
+  const set = cliArgs(readConfig(configEnv()));
+  assert.equal(set[set.indexOf("--effort") + 1], "medium");
+  assert.throws(
+    () => readConfig(configEnv({ LANE_EFFORT: "High" })),
+    /effort/u,
   );
 });
 
