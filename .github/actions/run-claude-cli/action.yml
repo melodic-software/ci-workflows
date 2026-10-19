@@ -6,11 +6,12 @@ description: >-
   isCreditStop), and any other key-leg failure ends the run with its class.
   Each leg's CLI environment has every credential and file-command variable
   removed and exactly one credential set, and the CLI runs with `--restricted`
-  and `--strict-mcp-config`; whatever a leg appends to the step's GITHUB_ENV
-  or GITHUB_PATH file is cut off after the last leg. That is all it removes:
-  code a leg runs as the runner user can still reach the other file-command
-  files under RUNNER_TEMP, this step's GITHUB_OUTPUT and GITHUB_STEP_SUMMARY,
-  `_work/_actions` and `~/.npmrc`. So a lane that gives the model unrestricted
+  and `--strict-mcp-config`; whatever a leg appends to the step's GITHUB_ENV,
+  GITHUB_PATH, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE file is
+  cut off after the last leg, before the action writes its own outputs, and
+  the installed CLI tree and `_work/_actions` have their write bits removed
+  while the legs run. Code a leg runs still runs as the runner user, so a
+  lane that gives the model unrestricted
   Bash, or any code-running tool beyond fixed read-only command rules, must
   run this action in a job that holds no other secret or write token and do
   its reporting and uploads in a downstream job that validates its inputs; a
@@ -90,6 +91,21 @@ inputs:
       which removes Bash, PowerShell, the other code-running tools and
       WebFetch unless this input names them: list Bash here for the model to
       run commands.
+    required: false
+    default: ""
+  plugin-dirs:
+    description: >-
+      Plugin directories, one per line, each passed to `--plugin-dir` and
+      also to `--add-dir`, so under `--restricted` a plugin's skills can read
+      their own files. Each entry is relative to GITHUB_WORKSPACE (or absolute
+      inside it), has no `..` part, and must resolve to an existing directory
+      inside the workspace. Empty passes none.
+    required: false
+    default: ""
+  add-dirs:
+    description: >-
+      Extra working directories, one per line, passed to `--add-dir`, checked
+      the same way as plugin-dirs. Empty passes none.
     required: false
     default: ""
   json-schema-file:
@@ -197,6 +213,8 @@ runs:
         LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
         LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
         LANE_TOOLS: ${{ inputs.tools }}
+        LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
+        LANE_ADD_DIRS: ${{ inputs.add-dirs }}
         LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}
         LANE_WATCHDOG_MAX_WAIT_MS: ${{ inputs.watchdog-max-wait-ms }}
         LANE_LEG_TIMEOUT_MINUTES: ${{ inputs.leg-timeout-minutes }}

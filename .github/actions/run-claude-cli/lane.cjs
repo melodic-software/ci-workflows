@@ -13,13 +13,13 @@
 // Security contract:
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets this leg's one credential. That is a
-//     denylist, not a sandbox: RUNNER_TEMP stays set, and code running as the
-//     runner user (a Bash tool call, a hook) can still reach the file-command
-//     files under RUNNER_TEMP, this step's GITHUB_OUTPUT and
-//     GITHUB_STEP_SUMMARY files, _work/_actions and ~/.npmrc.
-//   - Of those files, only GITHUB_ENV and GITHUB_PATH are cut back to their
-//     size before the first leg once the last leg ends, so what a leg appends
-//     there never reaches a later step.
+//     denylist, not a sandbox: code a leg runs (a Bash tool call, a hook)
+//     runs as the runner user.
+//   - Every file-command file the step was given is cut back to its size
+//     before the first leg once the last leg ends, and run writes the
+//     action's own outputs and summary after that.
+//   - The CLI install tree and _work/_actions have their write bits removed
+//     before the first leg and restored after the last.
 //   - Caller rule: a lane that gives the model unrestricted Bash, or any
 //     code-running tool beyond fixed read-only command rules, runs this
 //     action in a job that holds no other secret or write token, and does
@@ -194,6 +194,12 @@ function readConfig(env) {
     "disallowed-tools",
   );
   const tools = toolLines(env.LANE_TOOLS, "tools");
+  const pluginDirs = dirLines(
+    env.LANE_PLUGIN_DIRS,
+    "plugin-dirs",
+    env.GITHUB_WORKSPACE,
+  );
+  const addDirs = dirLines(env.LANE_ADD_DIRS, "add-dirs", env.GITHUB_WORKSPACE);
   const schemaFile = (env.LANE_JSON_SCHEMA_FILE ?? "").trim();
   let jsonSchema = "";
   if (schemaFile !== "") {
@@ -238,6 +244,8 @@ function readConfig(env) {
     allowedTools,
     disallowedTools,
     tools,
+    pluginDirs,
+    addDirs,
     jsonSchema,
     workDir: required(env, "LANE_WORK_DIR", /^\/.+/u, "work dir"),
     runId: (env.GITHUB_RUN_ID ?? "").trim(),
@@ -305,6 +313,13 @@ function cliArgs(config) {
     "--strict-mcp-config",
     "--no-session-persistence",
   ];
+  // Under --restricted a plugin's own files are readable only inside a
+  // working directory, so each plugin directory is added as one too.
+  const pluginDirs = config.pluginDirs ?? [];
+  for (const dir of pluginDirs) args.push("--plugin-dir", dir);
+  for (const dir of new Set([...pluginDirs, ...(config.addDirs ?? [])])) {
+    args.push("--add-dir", dir);
+  }
   if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
   if (config.jsonSchema !== "") args.push("--json-schema", config.jsonSchema);
   if (config.disallowedTools.length > 0) {
@@ -325,6 +340,45 @@ function toolLines(text, label) {
     throw new LaneError(`${label} entries may not start with '-'`);
   }
   return rules;
+}
+
+// Directory lines, one per line, each resolved against GITHUB_WORKSPACE (an
+// absolute one as written) and kept only when it has no `..` part and its
+// real path is an existing directory inside the workspace's real path.
+function dirLines(text, label, workspace) {
+  const entries = (text ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (entries.length === 0) return [];
+  if ((workspace ?? "").trim() === "") {
+    throw new LaneError(`${label} needs GITHUB_WORKSPACE to resolve against`);
+  }
+  const root = fs.realpathSync(workspace.trim());
+  return entries.map((entry) => {
+    if (entry.split(/[\\/]/u).includes("..")) {
+      throw new LaneError(
+        `${label} entry ${JSON.stringify(entry)} has a '..' part`,
+      );
+    }
+    let resolved;
+    try {
+      resolved = fs.realpathSync(path.resolve(root, entry));
+    } catch {
+      resolved = "";
+    }
+    if (resolved === "" || !fs.statSync(resolved).isDirectory()) {
+      throw new LaneError(
+        `${label} entry ${JSON.stringify(entry)} is not an existing directory`,
+      );
+    }
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+      throw new LaneError(
+        `${label} entry ${JSON.stringify(entry)} must resolve inside GITHUB_WORKSPACE`,
+      );
+    }
+    return resolved;
+  });
 }
 
 function promptText(config) {
@@ -488,10 +542,11 @@ function skipWarnings(config) {
 }
 
 // The byte size of each file-command file the step was given, so restoreFiles
-// can cut off whatever a leg appends.
+// can cut off whatever a leg appends. run writes the action's own outputs and
+// summary after the reset.
 function fileSizes(baseEnv) {
   const sizes = [];
-  for (const name of ["GITHUB_ENV", "GITHUB_PATH"]) {
+  for (const name of FILE_COMMAND_VARIABLES) {
     const file = (baseEnv[name] ?? "").trim();
     if (file === "" || !fs.existsSync(file)) continue;
     sizes.push({ file, size: fs.statSync(file).size });
@@ -503,6 +558,44 @@ function restoreFiles(sizes) {
   for (const { file, size } of sizes) {
     if (fs.existsSync(file) && fs.statSync(file).size !== size) {
       fs.truncateSync(file, size);
+    }
+  }
+}
+
+// The trees no leg may write: the CLI install under the work directory and
+// the runner's action checkouts, `_work/_actions` beside RUNNER_WORKSPACE.
+function readOnlyPaths(config, baseEnv) {
+  const runnerWorkspace = (baseEnv.RUNNER_WORKSPACE ?? "").trim();
+  return [
+    path.join(config.workDir, "cli"),
+    runnerWorkspace === ""
+      ? ""
+      : path.join(path.dirname(runnerWorkspace), "_actions"),
+  ].filter((dir) => dir !== "" && fs.existsSync(dir));
+}
+
+// Removes every write bit under each tree, recording each mode it changes in
+// `modes` first, so restoreModes can put them back even after a partial lock.
+// Symbolic links are left alone.
+function lockTrees(dirs, modes) {
+  const walk = (entry) => {
+    const info = fs.lstatSync(entry);
+    if (info.isSymbolicLink()) return;
+    modes.push({ entry, mode: info.mode & 0o7777 });
+    fs.chmodSync(entry, info.mode & 0o7555);
+    if (info.isDirectory()) {
+      for (const name of fs.readdirSync(entry)) walk(path.join(entry, name));
+    }
+  };
+  for (const dir of dirs) walk(dir);
+}
+
+function restoreModes(modes) {
+  for (const { entry, mode } of modes.toReversed()) {
+    try {
+      fs.chmodSync(entry, mode);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
     }
   }
 }
@@ -520,7 +613,9 @@ function runLegs(
   const records = [];
   let final = null;
   const sizes = fileSizes(baseEnv);
+  const modes = [];
   try {
+    lockTrees(readOnlyPaths(config, baseEnv), modes);
     for (const [position, leg] of active.entries()) {
       const index = config.legs.indexOf(leg);
       const streamFile = path.join(config.workDir, `leg-${index + 1}.jsonl`);
@@ -587,7 +682,11 @@ function runLegs(
       if (!goesOn) break;
     }
   } finally {
-    restoreFiles(sizes);
+    try {
+      restoreModes(modes);
+    } finally {
+      restoreFiles(sizes);
+    }
   }
   const record = readRunRecord(final.executionFile);
   // A credit stop with no leg left is a limit stop for the reporters, which

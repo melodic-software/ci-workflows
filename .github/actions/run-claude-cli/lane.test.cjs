@@ -54,7 +54,15 @@ const fileCommands = ${JSON.stringify(FILE_COMMAND_VARIABLES)}.filter((n) => n i
 for (const file of (process.env.FAKE_APPEND ?? "").split(":").filter(Boolean)) {
   fs.appendFileSync(file, "PLANTED=1\\n");
 }
-fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileCommands,
+const writes = (process.env.FAKE_WRITE ?? "").split(":").filter(Boolean).map((file) => {
+  try {
+    fs.appendFileSync(file, "PLANTED=1\\n");
+    return "written";
+  } catch (error) {
+    return error.code;
+  }
+});
+fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileCommands, writes,
   scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
   watchdog: process.env.CLAUDE_CODE_RETRY_WATCHDOG,
   wait: process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS,
@@ -192,6 +200,7 @@ function runCase({
   keySleep = false,
   legTimeoutMs = 0,
   extraEnv = {},
+  prepare = () => ({}),
   spawn,
 }) {
   caseNumber += 1;
@@ -207,6 +216,7 @@ function runCase({
     LANE_API_KEY: KEY,
     LANE_SUBSCRIPTION_TOKEN: TOKEN,
     ...extraEnv,
+    ...prepare(dir),
   };
   for (const [leg, messages, exit] of [
     ["KEY", key, keyExit],
@@ -459,6 +469,142 @@ test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHU
   assert.equal(fs.readFileSync(pathFile, "utf8"), "");
 });
 
+test("what a leg appends to GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE is cut off", () => {
+  const dir = path.join(root, "step-files");
+  fs.mkdirSync(dir);
+  const files = {
+    GITHUB_OUTPUT: path.join(dir, "output"),
+    GITHUB_STEP_SUMMARY: path.join(dir, "summary"),
+    GITHUB_STATE: path.join(dir, "state"),
+  };
+  fs.writeFileSync(files.GITHUB_OUTPUT, "cli-version=2.1.302\n");
+  fs.writeFileSync(files.GITHUB_STEP_SUMMARY, "### earlier step\n");
+  fs.writeFileSync(files.GITHUB_STATE, "");
+  runCase({
+    key: CREDIT_STOP,
+    sub: SUCCESS,
+    extraEnv: { ...files, FAKE_APPEND: Object.values(files).join(":") },
+  });
+  assert.equal(
+    fs.readFileSync(files.GITHUB_OUTPUT, "utf8"),
+    "cli-version=2.1.302\n",
+  );
+  assert.equal(
+    fs.readFileSync(files.GITHUB_STEP_SUMMARY, "utf8"),
+    "### earlier step\n",
+  );
+  assert.equal(fs.readFileSync(files.GITHUB_STATE, "utf8"), "");
+});
+
+// Write bits stop the runner user only when it is not root.
+const asNonRoot = { skip: process.getuid?.() === 0 && "runs as root" };
+
+function writableTree(dir) {
+  const file = path.join(dir, "node_modules", "pkg", "cli.js");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "original\n");
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+test("every leg finds the CLI install tree read-only, and its modes come back after", asNonRoot, () => {
+  let installed;
+  let added;
+  const { calls } = runCase({
+    key: CREDIT_STOP,
+    sub: SUCCESS,
+    prepare: (dir) => {
+      installed = writableTree(path.join(dir, "cli"));
+      added = path.join(dir, "cli", "node_modules", "pkg", "added.js");
+      return { FAKE_WRITE: `${installed}:${added}` };
+    },
+  });
+  assert.deepEqual(
+    calls.map((c) => c.writes),
+    [
+      ["EACCES", "EACCES"],
+      ["EACCES", "EACCES"],
+    ],
+  );
+  assert.equal(fs.readFileSync(installed, "utf8"), "original\n");
+  assert.equal(fs.existsSync(added), false);
+  assert.equal(fs.statSync(installed).mode & 0o777, 0o755);
+  assert.equal(fs.statSync(path.dirname(installed)).mode & 0o200, 0o200);
+});
+
+test("_work/_actions beside RUNNER_WORKSPACE is read-only during the legs and writable after", asNonRoot, () => {
+  let action;
+  const { calls } = runCase({
+    key: SUCCESS,
+    sub: null,
+    prepare: (dir) => {
+      const work = path.join(dir, "_work");
+      fs.mkdirSync(path.join(work, "repo"), { recursive: true });
+      action = writableTree(path.join(work, "_actions", "owner", "action"));
+      return { RUNNER_WORKSPACE: path.join(work, "repo"), FAKE_WRITE: action };
+    },
+  });
+  assert.deepEqual(calls[0].writes, ["EACCES"]);
+  assert.equal(fs.readFileSync(action, "utf8"), "original\n");
+  fs.appendFileSync(action, "after\n");
+});
+
+test("the install tree is writable again when a leg throws", asNonRoot, () => {
+  let installed;
+  assert.throws(() =>
+    runCase({
+      key: SUCCESS,
+      sub: null,
+      prepare: (dir) => {
+        installed = writableTree(path.join(dir, "cli"));
+        return {};
+      },
+      spawn: () => {
+        throw new Error("spawn failed");
+      },
+    }),
+  /spawn failed/u);
+  assert.equal(fs.statSync(installed).mode & 0o777, 0o755);
+});
+
+test("a failed mode restore still cuts off what a leg appended to the step files", () => {
+  const chmodSync = fs.chmodSync;
+  let cli;
+  let output;
+  try {
+    assert.throws(() =>
+      runCase({
+        key: SUCCESS,
+        sub: null,
+        prepare: (dir) => {
+          cli = path.join(dir, "cli");
+          writableTree(cli);
+          output = path.join(dir, "output");
+          fs.writeFileSync(output, "cli-version=2.1.302\n");
+          return { GITHUB_OUTPUT: output };
+        },
+        spawn: () => {
+          fs.appendFileSync(output, "PLANTED=1\n");
+          fs.chmodSync = () => {
+            throw Object.assign(new Error("EIO: i/o error, chmod"), { code: "EIO" });
+          };
+          return {
+            status: 0,
+            signal: null,
+            stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
+          };
+        },
+      }),
+    /EIO/u);
+  } finally {
+    fs.chmodSync = chmodSync;
+  }
+  assert.equal(fs.readFileSync(output, "utf8"), "cli-version=2.1.302\n");
+  for (const entry of ["", "node_modules", path.join("node_modules", "pkg")]) {
+    fs.chmodSync(path.join(cli, entry), 0o755);
+  }
+});
+
 test("stdout is captured in memory and a maxBuffer overflow is class other", () => {
   const seen = [];
   const spawn = (command, args, options) => {
@@ -675,6 +821,67 @@ test("an empty effort leaves --effort out; an invalid one still fails", () => {
   assert.throws(
     () => readConfig(configEnv({ LANE_EFFORT: "High" })),
     /effort/u,
+  );
+});
+
+test("plugin-dirs pass as --plugin-dir and --add-dir, add-dirs as --add-dir, resolved in the workspace", () => {
+  const workspace = path.join(root, "workspace");
+  for (const dir of ["plugins/review", "plugins/tidy", "docs"]) {
+    fs.mkdirSync(path.join(workspace, dir), { recursive: true });
+  }
+  const config = readConfig(
+    configEnv({
+      GITHUB_WORKSPACE: workspace,
+      LANE_PLUGIN_DIRS: "plugins/review\n\n  ./plugins/tidy  \n",
+      LANE_ADD_DIRS: `${workspace}/docs`,
+    }),
+  );
+  const review = path.join(workspace, "plugins", "review");
+  const tidy = path.join(workspace, "plugins", "tidy");
+  const docs = path.join(workspace, "docs");
+  assert.deepEqual(config.pluginDirs, [review, tidy]);
+  assert.deepEqual(config.addDirs, [docs]);
+  const args = cliArgs(config);
+  assert.ok(args.includes("--restricted"));
+  const pairs = (flag) =>
+    args.flatMap((arg, i) => (arg === flag ? [args[i + 1]] : []));
+  assert.deepEqual(pairs("--plugin-dir"), [review, tidy]);
+  assert.deepEqual(pairs("--add-dir"), [review, tidy, docs]);
+  const none = cliArgs(readConfig(configEnv()));
+  assert.equal(none.includes("--plugin-dir"), false);
+  assert.equal(none.includes("--add-dir"), false);
+});
+
+test("plugin-dirs and add-dirs refuse paths outside the workspace", () => {
+  const workspace = path.join(root, "workspace-refusals");
+  fs.mkdirSync(path.join(workspace, "plugin"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "file.md"), "");
+  fs.symlinkSync(root, path.join(workspace, "escape"));
+  const outside = path.join(root, "outside");
+  fs.mkdirSync(outside);
+  for (const [input, entry, refusal] of [
+    ["LANE_PLUGIN_DIRS", "plugin/../plugin", /'\.\.'/u],
+    ["LANE_ADD_DIRS", "../outside", /'\.\.'/u],
+    ["LANE_ADD_DIRS", outside, /inside GITHUB_WORKSPACE/u],
+    ["LANE_PLUGIN_DIRS", "escape", /inside GITHUB_WORKSPACE/u],
+    ["LANE_ADD_DIRS", "absent", /existing directory/u],
+    ["LANE_PLUGIN_DIRS", "file.md", /existing directory/u],
+  ]) {
+    assert.throws(
+      () =>
+        readConfig(configEnv({ GITHUB_WORKSPACE: workspace, [input]: entry })),
+      (error) =>
+        error instanceof LaneError &&
+        error.message.startsWith(
+          input === "LANE_PLUGIN_DIRS" ? "plugin-dirs" : "add-dirs",
+        ) &&
+        refusal.test(error.message),
+      `${input}=${entry}`,
+    );
+  }
+  assert.throws(
+    () => readConfig(configEnv({ LANE_PLUGIN_DIRS: "plugin" })),
+    /plugin-dirs.*GITHUB_WORKSPACE/u,
   );
 });
 
