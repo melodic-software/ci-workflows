@@ -77,12 +77,6 @@ fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileComman
   wait: process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS,
   args: process.argv.slice(2),
   stdin: fs.readFileSync(0, "utf8") }) + "\\n");
-if (process.env.FAKE_DETACHED) {
-  require("node:child_process").spawn(process.execPath, ["-e",
-    'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);' +
-    'require("node:fs").writeFileSync(process.env.FAKE_DETACHED, "");'],
-    { detached: true, stdio: "ignore" }).unref();
-}
 if (process.env["FAKE_" + leg + "_SLEEP"]) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
   if (process.env.FAKE_SURVIVED) fs.writeFileSync(process.env.FAKE_SURVIVED, "");
@@ -104,7 +98,7 @@ function withoutBwrap(command, args, options) {
 }
 
 const bwrapWorks =
-  spawnSync("bwrap", ["--unshare-pid", "--dev-bind", "/", "/", "--", "true"], {
+  spawnSync("bwrap", ["--dev-bind", "/", "/", "--", "true"], {
     stdio: "ignore",
   }).status === 0;
 const withBwrap = { skip: !bwrapWorks && "bwrap cannot run here" };
@@ -612,7 +606,6 @@ test("with the install and action trees present, each leg runs the CLI under bwr
   assert.equal(command, "bwrap");
   assert.deepEqual(args.slice(0, args.indexOf("--") + 2), [
     "--die-with-parent",
-    "--unshare-pid",
     "--dev-bind",
     "/",
     "/",
@@ -678,9 +671,8 @@ test("under bwrap a leg cannot put the write bits back on _work/_actions", withB
   assert.equal(fs.statSync(action).mode & 0o777, 0o755);
 });
 
-test("neither the CLI under bwrap nor a process it detaches outlives a timed-out leg", withBwrap, () => {
+test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
   let survived;
-  let detached;
   const { outputs } = runCase({
     key: SUCCESS,
     sub: null,
@@ -689,16 +681,14 @@ test("neither the CLI under bwrap nor a process it detaches outlives a timed-out
     prepare: (dir) => {
       writableTree(path.join(dir, "cli"));
       survived = path.join(dir, "survived");
-      detached = path.join(dir, "detached");
-      return { FAKE_SURVIVED: survived, FAKE_DETACHED: detached };
+      return { FAKE_SURVIVED: survived };
     },
     spawn: spawnSync,
   });
   assert.equal(outputs["lane-class"], "timeout");
-  // The fake CLI writes its marker after 5 seconds, the detached process after 3.
+  // The fake CLI sleeps 5 seconds before it writes the marker.
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000);
   assert.equal(fs.existsSync(survived), false);
-  assert.equal(fs.existsSync(detached), false);
 });
 
 test("the install tree is writable again when a leg throws", asNonRoot, () => {

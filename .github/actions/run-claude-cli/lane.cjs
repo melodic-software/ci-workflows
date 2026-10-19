@@ -592,17 +592,14 @@ function lockTrees(dirs, modes) {
 
 // The command one leg runs. With trees to protect, bwrap binds each one
 // read-only over a view of the whole filesystem, so the leg cannot restore the
-// write bits lockTrees removed. bwrap forwards no signal, so when a timeout or
-// an overflow kills it, --die-with-parent kills the namespace's init and
-// --unshare-pid takes every process the leg started down with it, including
-// one it detached.
+// write bits lockTrees removed. --die-with-parent kills the CLI when a timeout
+// or an overflow kills bwrap, which forwards no signal.
 function legCommand(config, readOnly) {
   if (readOnly.length === 0) return [config.cliPath, cliArgs(config)];
   return [
     "bwrap",
     [
       "--die-with-parent",
-      "--unshare-pid",
       "--dev-bind",
       "/",
       "/",
