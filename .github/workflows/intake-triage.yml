@@ -275,7 +275,7 @@ jobs:
       issues: write
     outputs:
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
-      failure-class: ${{ steps.review-outcome.outputs.failure-class }}
+      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
     steps:
       - name: Reject events other than issues and workflow_dispatch
         if: github.event_name != 'issues' && github.event_name != 'workflow_dispatch'
@@ -791,7 +791,7 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           TRIAGE_FAILED: ${{ steps.review-outcome.outputs.review-failed }}
-          FAILURE_CLASS: ${{ steps.review-outcome.outputs.failure-class }}
+          FAILURE_CLASS: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
         run: |
           if [ "$JOB_STATUS" = success ] && [ "$TRIAGE_FAILED" = false ] && [ "$FAILURE_CLASS" != skipped-validation ]; then
             exit 0
