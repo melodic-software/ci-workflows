@@ -248,7 +248,7 @@ jobs:
 
       # persist-credentials stays default until claude-code-action#1236 ships
       # (the action fetches before configuring git auth); the last step strips it.
-      - name: Check out
+      - name: Check out # zizmor: ignore[artipacked] later fetches need the credential, see above
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}

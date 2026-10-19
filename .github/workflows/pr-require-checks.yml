@@ -43,7 +43,8 @@ concurrency:
   cancel-in-progress: true
 
 # Dogfood: this repo is the first consumer of its own composite actions. Local
-# (./) action refs work here because the checkout IS this repo.
+# refs use `$/`, which resolves to this repository at the run's commit, not to
+# whatever the workspace holds.
 #
 # File-type-scoped lanes gate on `changes` at JOB level, never workflow-level
 # `paths:`, which would wedge the required check Pending. Each gate reads
@@ -67,7 +68,7 @@ jobs:
           persist-credentials: false
       - name: Detect relevant lanes
         id: detect
-        uses: ./.github/actions/detect-changes
+        uses: $/.github/actions/detect-changes
         with:
           # Every group includes `.github/**`, so any workflow, action, or
           # bundled script change re-runs every scoped lane.
@@ -149,7 +150,7 @@ jobs:
       # change-detection lists the pull request's files. A called workflow
       # cannot elevate, so the grant has to be here as well as in pr-run-checks.yml.
       pull-requests: read
-    uses: ./.github/workflows/pr-run-checks.yml
+    uses: ./.github/workflows/pr-run-checks.yml # zizmor: ignore[self-repository] a job-level call already resolves to this commit; actionlint rejects $/ here and would stop checking inputs
     with:
       # This public repository's hosted lane is free; private consumers pass
       # their hardcoded fleet label instead.
@@ -187,7 +188,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Analyze PowerShell
-        uses: ./.github/actions/psscriptanalyzer
+        uses: $/.github/actions/psscriptanalyzer
       - name: Analyze composite action PowerShell
         # pwsh embedded in composite metadata is invisible to the lane action
         # and to actionlint; the lane action installed the pinned analyzer.
@@ -208,7 +209,7 @@ jobs:
       - name: Resolve heading citations
         # Scope to the fixture corpus: the repo's own docs use no `file.md`
         # "Anchor" prose-cite convention, so the fixture is what exercises it.
-        uses: ./.github/actions/check-markdown-references
+        uses: $/.github/actions/check-markdown-references
         with:
           globs: fixtures/reference-integrity/*.md
 
@@ -223,7 +224,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint and format-check Python
-        uses: ./.github/actions/ruff
+        uses: $/.github/actions/ruff
         with:
           paths: fixtures/python/good
           config: fixtures/python/good/ruff.toml
@@ -239,7 +240,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Type-check Python
-        uses: ./.github/actions/pyright
+        uses: $/.github/actions/pyright
         with:
           config: fixtures/python/good/pyrightconfig.json
 
@@ -255,14 +256,14 @@ jobs:
           persist-credentials: false
       - name: Lint and format-check JS/TS fixture
         # Biome has no CLI exclude, so scope at the conforming fixture.
-        uses: ./.github/actions/biome
+        uses: $/.github/actions/biome
         with:
           paths: fixtures/typescript/good
           config: fixtures/typescript/good/biome.json
       - name: Lint and format-check repo scripts
         # The repo-root biome.json scopes itself to .github/scripts, so authors
         # reproduce this step with `npx @biomejs/biome ci .github/scripts`.
-        uses: ./.github/actions/biome
+        uses: $/.github/actions/biome
         with:
           paths: .github/scripts
 
@@ -279,7 +280,7 @@ jobs:
       - name: Build .NET contract fixture
         # Scope at a self-contained fixture project; this lane verifies the
         # action contract without mirroring the standards catalog.
-        uses: ./.github/actions/dotnet-build
+        uses: $/.github/actions/dotnet-build
         with:
           project: fixtures/dotnet/good/good.csproj
 
@@ -294,7 +295,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify .NET whitespace
-        uses: ./.github/actions/dotnet-format
+        uses: $/.github/actions/dotnet-format
         with:
           project: fixtures/dotnet/good/good.csproj
 
@@ -309,7 +310,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: ./.github/actions/actionlint
+        uses: $/.github/actions/actionlint
       - name: Prove embedded scripts are checked by ShellCheck
         run: |
           set -euo pipefail
@@ -351,12 +352,12 @@ jobs:
       # dependabot.yml is validated by the `checks` lane: one check-jsonschema
       # call carries one schema family.
       - name: Validate workflows
-        uses: ./.github/actions/check-jsonschema
+        uses: $/.github/actions/check-jsonschema
         with:
           builtin-schema: vendor.github-workflows
           files: .github/workflows/*.yml
       - name: Validate composite actions
-        uses: ./.github/actions/check-jsonschema
+        uses: $/.github/actions/check-jsonschema
         with:
           builtin-schema: vendor.github-actions
           files: .github/actions/*/action.yml .github/actions/*/*/action.yml
@@ -371,7 +372,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Reject action.yaml metadata (action.yml is enforced exclusively)
-        uses: ./.github/actions/check-action-filename
+        uses: $/.github/actions/check-action-filename
 
   # Enforcing on this repository's own workflows and actions, against the
   # standards naming conventions at a pinned SHA (standards#672).
@@ -386,13 +387,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Check workflow and action naming
-        uses: ./.github/actions/check-workflow-naming
+        uses: $/.github/actions/check-workflow-naming
         with:
           standards-ref: d4ce69bef0c6140d761a4d9f2986e15906b5cedb
       - name: Run a misnamed workflow fixture in enforcing mode
         id: bad-enforcing
         continue-on-error: true
-        uses: ./.github/actions/check-workflow-naming
+        uses: $/.github/actions/check-workflow-naming
         with:
           root: fixtures/workflow-naming/bad
           standards-ref: d4ce69bef0c6140d761a4d9f2986e15906b5cedb
@@ -428,7 +429,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Guard managed files
-        uses: ./.github/actions/check-managed-files
+        uses: $/.github/actions/check-managed-files
         with:
           standards-ref: c4d865bb123f476cf1cb36d8f8a1ffb588204f00
 
@@ -443,7 +444,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell scripts
-        uses: ./.github/actions/shellcheck
+        uses: $/.github/actions/shellcheck
       - name: Test ShellCheck discovery and scoped exclusions
         run: bash .github/actions/shellcheck/run.test.sh
       - name: Test exec-bit shebang mode scan
@@ -462,7 +463,7 @@ jobs:
       - name: Check shell formatting
         # Includes the selector/OSV shell sources so their generated security
         # boundary cannot bypass the required formatter.
-        uses: ./.github/actions/shfmt
+        uses: $/.github/actions/shfmt
         with:
           paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
@@ -524,13 +525,14 @@ jobs:
     permissions:
       contents: read
       # pr-audit-workflows.yml always declares this and a called workflow cannot elevate,
-      # so grant it although the dogfood stays annotations-only.
+      # so grant it although the dogfood uploads no SARIF.
       security-events: write
-    # Audit this repo's own workflows AND composite actions (paths: .) — strong
-    # dogfood. Advisory: findings annotate without blocking ci-status.
-    uses: ./.github/workflows/pr-audit-workflows.yml
+    # Audit this repo's own workflows AND composite actions (paths: .). Gates:
+    # any finding fails the lane and so ci-status.
+    uses: ./.github/workflows/pr-audit-workflows.yml # zizmor: ignore[self-repository] a job-level call already resolves to this commit; actionlint rejects $/ here and would stop checking inputs
     with:
       paths: .
+      fail-on-severity: low
 
   pr-scan-dependencies:
     # Not change-gated: a filter enumerating every lockfile format OSV
@@ -538,7 +540,7 @@ jobs:
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
-    uses: ./.github/workflows/pr-scan-dependencies.yml
+    uses: ./.github/workflows/pr-scan-dependencies.yml # zizmor: ignore[self-repository] a job-level call already resolves to this commit; actionlint rejects $/ here and would stop checking inputs
     with:
       # This public repository's hosted lane is free; private consumers must pass
       # their strict selector output instead.
@@ -554,14 +556,14 @@ jobs:
       contents: read
     # The fixture asserts on Windows that the test binary was built with the
     # race detector: behavioral evidence, not a source-text contract alone.
-    uses: ./.github/workflows/pr-run-checks-go.yml
+    uses: ./.github/workflows/pr-run-checks-go.yml # zizmor: ignore[self-repository] a job-level call already resolves to this commit; actionlint rejects $/ here and would stop checking inputs
     with:
       config: .golangci.yml
       working-directory: fixtures/go/windows-race
       go-version-file: fixtures/go/windows-race/go.mod
 
   # Dogfood of the Claude lanes and the issue labeler, pinned to a merged SHA
-  # rather than `./` so a pull request cannot redefine the reusable that
+  # rather than `$/` so a pull request cannot redefine the reusable that
   # reviews it. Advisory: none of the three is in `ci-status`. Each passes only
   # the one named secret its reusable declares.
   pr-review:
@@ -631,7 +633,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check the pull-request contract
-        uses: ./.github/actions/pr-require-checks/check-contract
+        uses: $/.github/actions/pr-require-checks/check-contract
         with:
           # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
@@ -639,7 +641,7 @@ jobs:
         # `!cancelled()` so a failing pr-contract step does not skip the
         # `ci-lanes` status write the next contract-only run needs.
         if: ${{ !cancelled() }}
-        uses: ./.github/actions/pr-require-checks/aggregate-results
+        uses: $/.github/actions/pr-require-checks/aggregate-results
         with:
           # A contract-only run never waits: while a full run on the SHA is in
           # flight it fails with "superseded by full run <url>", and that run's

@@ -238,10 +238,10 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   // covers the read, and without the scope the Actions calls 403.
   assert.match(ciStatusJob, /^ {6}actions: write$/mu);
   const contractStep = ciStatusJob.indexOf(
-    "./.github/actions/pr-require-checks/check-contract",
+    "$/.github/actions/pr-require-checks/check-contract",
   );
   const aggregateStep = ciStatusJob.indexOf(
-    "./.github/actions/pr-require-checks/aggregate-results",
+    "$/.github/actions/pr-require-checks/aggregate-results",
   );
   assert.ok(contractStep !== -1 && aggregateStep !== -1);
   assert.ok(contractStep < aggregateStep);
@@ -288,7 +288,7 @@ test("pr-require-checks.yml consolidates the hygiene composites into the checks 
   assert.match(ciWorkflow, /^ {2}pr-run-checks:$/mu);
   assert.match(
     ciWorkflow,
-    /^ {4}uses: \.\/\.github\/workflows\/pr-run-checks\.yml$/mu,
+    /^ {4}uses: \.\/\.github\/workflows\/pr-run-checks\.yml(?: # zizmor: ignore\[self-repository\] .+)?$/mu,
   );
 
   // change-detection reads the PR file listing, and a called workflow cannot
