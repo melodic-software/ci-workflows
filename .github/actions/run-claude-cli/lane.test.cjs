@@ -18,12 +18,19 @@ const {
 } = require("../../scripts/temporary-directories.cjs");
 const {
   CREDENTIAL_VARIABLES,
+  FILE_COMMAND_VARIABLES,
+  LaneError,
+  MAX_LEG_STDOUT_BYTES,
+  NPM_REGISTRY,
   holdsCredential,
+  install,
   legEnv,
   readConfig,
   resolveCliVersion,
   run,
   runLegs,
+  skipWarnings,
+  verifyIsolation,
   verifyManagedSettings,
 } = require("./lane.cjs");
 
@@ -40,7 +47,11 @@ fs.writeFileSync(
 const fs = require("node:fs");
 const leg = process.env.ANTHROPIC_API_KEY ? "KEY" : "SUB";
 const seen = ${JSON.stringify(CREDENTIAL_VARIABLES)}.filter((n) => n in process.env);
-fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen,
+const fileCommands = ${JSON.stringify(FILE_COMMAND_VARIABLES)}.filter((n) => n in process.env);
+for (const file of (process.env.FAKE_APPEND ?? "").split(":").filter(Boolean)) {
+  fs.appendFileSync(file, "PLANTED=1\\n");
+}
+fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileCommands,
   scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
   watchdog: process.env.CLAUDE_CODE_RETRY_WATCHDOG,
   wait: process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS,
@@ -177,6 +188,8 @@ function runCase({
   subExit = 1,
   keySleep = false,
   legTimeoutMs = 0,
+  extraEnv = {},
+  spawn,
 }) {
   caseNumber += 1;
   const dir = path.join(root, `case-${caseNumber}`);
@@ -190,6 +203,7 @@ function runCase({
     CLAUDE_CODE_ENTRYPOINT: "inherited-entrypoint",
     LANE_API_KEY: KEY,
     LANE_SUBSCRIPTION_TOKEN: TOKEN,
+    ...extraEnv,
   };
   for (const [leg, messages, exit] of [
     ["KEY", key, keyExit],
@@ -238,15 +252,11 @@ function runCase({
     workDir: dir,
     runId: "123",
   };
-  const logged = [];
-  const outcome = runLegs(config, {
-    baseEnv,
-    log: (line) => logged.push(line),
-  });
+  const outcome = runLegs(config, { baseEnv, ...(spawn ? { spawn } : {}) });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
-  return { ...outcome, calls: callLines.map((l) => JSON.parse(l)), logged };
+  return { ...outcome, calls: callLines.map((l) => JSON.parse(l)), config };
 }
 
 test("a key-leg credit stop runs the subscription leg, one credential each", () => {
@@ -342,12 +352,12 @@ test("a credit stop with no subscription is a limit stop for the reporters", () 
 });
 
 test("an empty api-key skips the key leg with a visible warning", () => {
-  const { calls, logged, outputs } = runCase({ key: null, sub: SUCCESS });
+  const { calls, config, outputs } = runCase({ key: null, sub: SUCCESS });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["SUB"],
   );
-  assert.deepEqual(logged, [
+  assert.deepEqual(skipWarnings(config), [
     "::warning::run-claude-cli: skipped=api-key (empty secret)",
   ]);
   assert.equal(outputs.credential, TOKEN_NAME);
@@ -360,13 +370,13 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
   assert.equal(call.watchdog, "1");
   assert.equal(call.wait, "1800000");
   for (const flag of [
-    "--setting-sources",
+    "--restricted",
     "--strict-mcp-config",
     "--permission-prompts",
   ]) {
     assert.ok(call.args.includes(flag), flag);
   }
-  assert.equal(call.args[call.args.indexOf("--setting-sources") + 1], "user");
+  assert.equal(call.args.includes("--setting-sources"), false);
   assert.equal(call.args[call.args.indexOf("--permission-mode") + 1], "auto");
   assert.equal(call.args[call.args.indexOf("--tools") + 1], "Read,Bash");
   assert.equal(
@@ -403,6 +413,79 @@ test("legEnv removes every inherited credential and sets exactly one", () => {
   assert.equal(
     "CLAUDE_CODE_ENTRYPOINT" in key || "CLAUDE_CODE_ENTRYPOINT" in sub,
     false,
+  );
+});
+
+test("legEnv removes every workflow file-command variable", () => {
+  const base = Object.fromEntries(
+    FILE_COMMAND_VARIABLES.map((n) => [n, `/runner/${n}`]),
+  );
+  const env = legEnv(base, { leg: "api-key", value: KEY }, {
+    watchdogMaxWaitMs: "60000",
+  });
+  assert.deepEqual(
+    FILE_COMMAND_VARIABLES.filter((n) => n in env),
+    [],
+  );
+});
+
+test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHUB_PATH is cut off", () => {
+  const dir = path.join(root, "file-commands");
+  fs.mkdirSync(dir);
+  const envFile = path.join(dir, "env");
+  const pathFile = path.join(dir, "path");
+  fs.writeFileSync(envFile, "EARLIER=1\n");
+  fs.writeFileSync(pathFile, "");
+  const { calls } = runCase({
+    key: CREDIT_STOP,
+    sub: SUCCESS,
+    extraEnv: {
+      GITHUB_ENV: envFile,
+      GITHUB_PATH: pathFile,
+      GITHUB_OUTPUT: path.join(dir, "output"),
+      GITHUB_STATE: path.join(dir, "state"),
+      GITHUB_STEP_SUMMARY: path.join(dir, "summary"),
+      FAKE_APPEND: `${envFile}:${pathFile}`,
+    },
+  });
+  assert.deepEqual(
+    calls.map((c) => c.fileCommands),
+    [[], []],
+  );
+  assert.equal(fs.readFileSync(envFile, "utf8"), "EARLIER=1\n");
+  assert.equal(fs.readFileSync(pathFile, "utf8"), "");
+});
+
+test("stdout is captured in memory and a maxBuffer overflow is class other", () => {
+  const seen = [];
+  const spawn = (command, args, options) => {
+    seen.push(options);
+    const overflow = new Error("spawnSync ENOBUFS");
+    overflow.code = "ENOBUFS";
+    return {
+      status: null,
+      signal: "SIGINT",
+      error: overflow,
+      stdout: Buffer.from(`${JSON.stringify({ type: "system" })}\n`),
+    };
+  };
+  const { records, outputs, calls } = runCase({
+    key: CREDIT_STOP,
+    sub: SUCCESS,
+    spawn,
+  });
+  assert.equal(calls.length, 0);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].stdio, ["pipe", "pipe", "inherit"]);
+  assert.equal(seen[0].maxBuffer, MAX_LEG_STDOUT_BYTES);
+  assert.equal(seen[0].killSignal, "SIGINT");
+  assert.equal(outputs["lane-class"], "other");
+  assert.equal(records[0].class, "other");
+  assert.equal(records[0].next, null);
+  assert.match(records[0].message, /stdout passed \d+ bytes/u);
+  assert.equal(
+    fs.readFileSync(outputs["execution-file"], "utf8"),
+    '[{"type":"system"}]',
   );
 });
 
@@ -485,7 +568,9 @@ test("cli-version latest resolves from npm view; exact versions pass; others fai
   );
   assert.throws(
     () => resolveCliVersion("2.1", () => ""),
-    /exact major\.minor\.patch/u,
+    (error) =>
+      error instanceof LaneError &&
+      /exact major\.minor\.patch/u.test(error.message),
   );
   assert.throws(
     () => resolveCliVersion("latest", () => "next"),
@@ -630,9 +715,15 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
   );
 });
 
+const PINNED = {
+  apiKeyHelper: "",
+  env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+  permissions: { disableBypassPermissionsMode: "disable" },
+};
+
 test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () => {
   const file = path.join(root, "managed-settings.json");
-  fs.writeFileSync(file, JSON.stringify({ apiKeyHelper: "", env: {} }));
+  fs.writeFileSync(file, JSON.stringify(PINNED));
   const asRoot = (mode) => () => ({ uid: 0, mode });
   // The test runs as a normal user, so the real file is not root's.
   assert.throws(() => verifyManagedSettings(file), /not owned by root/u);
@@ -647,9 +738,77 @@ test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () =
     () => verifyManagedSettings(path.join(root, "absent.json")),
     /missing/u,
   );
-  fs.writeFileSync(file, JSON.stringify({ env: {} }));
+  for (const [settings, refusal] of [
+    [{ ...PINNED, apiKeyHelper: undefined }, /does not pin apiKeyHelper/u],
+    [{ ...PINNED, env: {} }, /env\.ANTHROPIC_BASE_URL/u],
+    [
+      { ...PINNED, env: { ANTHROPIC_BASE_URL: "https://proxy.example" } },
+      /env\.ANTHROPIC_BASE_URL/u,
+    ],
+    [{ ...PINNED, permissions: undefined }, /disableBypassPermissionsMode/u],
+    [
+      { ...PINNED, permissions: { disableBypassPermissionsMode: "enable" } },
+      /disableBypassPermissionsMode/u,
+    ],
+  ]) {
+    fs.writeFileSync(file, JSON.stringify(settings));
+    assert.throws(
+      () => verifyManagedSettings(file, { stat: asRoot(0o100644) }),
+      refusal,
+    );
+  }
+});
+
+test("verifyIsolation refuses a writable docker socket", () => {
+  const file = path.join(root, "isolation-settings.json");
+  fs.writeFileSync(file, JSON.stringify(PINNED));
+  // sudo fails, bubblewrap answers.
+  const spawn = (command) => ({ status: command === "sudo" ? 1 : 0 });
+  const io = { stat: () => ({ uid: 0, mode: 0o100644 }), spawn };
+  const socket = path.join(root, "docker.sock");
+  fs.writeFileSync(socket, "");
   assert.throws(
-    () => verifyManagedSettings(file, { stat: asRoot(0o100644) }),
-    /pin both/u,
+    () =>
+      verifyIsolation({ managedSettings: file, dockerSocket: socket, ...io }),
+    /docker\.sock is writable/u,
   );
+  fs.chmodSync(socket, 0o444);
+  assert.doesNotThrow(() =>
+    verifyIsolation({ managedSettings: file, dockerSocket: socket, ...io }),
+  );
+  assert.doesNotThrow(() =>
+    verifyIsolation({
+      managedSettings: file,
+      dockerSocket: path.join(root, "absent.sock"),
+      ...io,
+    }),
+  );
+});
+
+test("install runs both npm calls in the work directory against the public registry", () => {
+  const dir = path.join(root, "install");
+  fs.mkdirSync(dir);
+  const output = path.join(dir, "output");
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, cwd: options.cwd });
+    return { status: 0, stdout: "2.1.400\n" };
+  };
+  install(
+    { LANE_CLI_VERSION_INPUT: "latest", LANE_WORK_DIR: dir, GITHUB_OUTPUT: output },
+    { spawn },
+  );
+  assert.deepEqual(
+    calls.map((c) => [c.command, c.args[0]]),
+    [
+      ["npm", "view"],
+      ["npm", "install"],
+    ],
+  );
+  for (const call of calls) {
+    assert.equal(call.cwd, dir);
+    assert.ok(call.args.includes(`--registry=${NPM_REGISTRY}`), call.args[0]);
+  }
+  assert.equal(NPM_REGISTRY, "https://registry.npmjs.org/");
+  assert.match(fs.readFileSync(output, "utf8"), /^cli-version=2\.1\.400$/mu);
 });

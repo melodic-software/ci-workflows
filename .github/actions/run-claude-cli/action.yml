@@ -4,11 +4,13 @@ description: >-
   Linux runner. The API key leg runs first; the subscription leg runs in the
   same job only when the key leg ends in a credit stop (classify.cjs
   isCreditStop), and any other key-leg failure ends the run with its class.
-  Only one credential is in the CLI environment at a time. Input contract,
+  Only one credential is in the CLI environment at a time, and the CLI runs
+  with `--restricted` and `--strict-mcp-config`. Input contract,
   in this order, before any head checkout: the caller runs
   `apply-claude-managed-settings` while sudo still works, then removes sudo and
   docker access and installs bubblewrap (runner isolation); this action fails
-  closed when any of the three is missing. It writes the outputs
+  closed when the settings are missing or unpinned, sudo works, the docker
+  socket is writable, or bubblewrap is missing. It writes the outputs
   report-check-run reads, a JSONL execution log (one object per leg) written
   only after a scan finds no credential in it, and a job summary table.
   Uploading the log is the caller's choice. The step fails, after writing its
@@ -82,7 +84,10 @@ inputs:
   tools:
     description: >-
       Built-in tools the model may use, one per line, passed to `--tools`.
-      Empty leaves the CLI's default set.
+      Empty leaves the CLI's default set. The CLI runs with `--restricted`,
+      which removes Bash, PowerShell, the other code-running tools and
+      WebFetch unless this input names them: list Bash here for the model to
+      run commands.
     required: false
     default: ""
   json-schema-file:
@@ -111,8 +116,16 @@ outputs:
   lane-class:
     description: >-
       report-lane-outcome's failure class of the leg that ended the run; empty
-      on success. A credit stop with no leg left reports `rate-limit`.
-    value: ${{ steps.run.outputs.lane-class }}
+      on success. A credit stop with no leg left reports `rate-limit`; a
+      failed install reports `install-failed`, and any other failure before
+      a leg ran, or a leg whose stdout passes 256 MiB, reports `other`.
+      Report this class; do not reclassify
+      execution-file, which cannot see the credit-stop or leg-timeout rules.
+    value: >-
+      ${{ steps.run.outputs.lane-class
+      || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
+      || (steps.run.outcome != 'success' && 'other')
+      || '' }}
   lane-resets:
     description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.
     value: ${{ steps.run.outputs.lane-resets }}
@@ -126,7 +139,10 @@ outputs:
     description: Secret NAME of the leg that produced the result, never its value.
     value: ${{ steps.run.outputs.credential }}
   execution-file:
-    description: The final leg's CLI messages as a JSON array (the execution_file shape claude-code-action writes).
+    description: >-
+      The final leg's CLI messages as a JSON array (the execution_file shape
+      claude-code-action writes). It holds every tool result and model reply
+      and is never scanned for credentials, so do not upload it.
     value: ${{ steps.run.outputs.execution-file }}
   log-file:
     description: JSONL execution log, one object per leg; empty when the credential scan failed.
@@ -139,6 +155,7 @@ runs:
   using: composite
   steps:
     - name: Verify the isolation contract
+      id: isolation
       shell: bash
       env:
         LANE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json
