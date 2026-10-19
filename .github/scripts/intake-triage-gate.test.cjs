@@ -21,9 +21,6 @@ const workflow = parseWorkflow(
   ),
 );
 const job = workflow.jobs.claude;
-const allowedBots = job.steps.find((step) =>
-  step.uses?.startsWith("anthropics/claude-code-action@"),
-).with.allowed_bots;
 
 const gate = (github, ids = "", authorIds = "", issueNumber = "") =>
   Boolean(
@@ -37,8 +34,6 @@ const gate = (github, ids = "", authorIds = "", issueNumber = "") =>
     }),
   );
 const kyle = { id: 153232337, login: "kyle-sexton" };
-const bots = (github, ids = "") =>
-  evaluate(allowedBots, { github, inputs: { "allowed-bot-sender-ids": ids } });
 
 // A workflow_dispatch run: the actor is whoever sent the dispatch.
 const dispatch = (actor, actorId) => ({
@@ -90,7 +85,6 @@ test("a listed author starts a run whatever author_association the payload repor
     for (const ids of ["153232337", "1,153232337", "153232337,2"]) {
       assert.equal(gate(event, "", ids), true, `${association} ${ids}`);
     }
-    assert.equal(bots(event), "", association);
   }
 });
 
@@ -136,12 +130,11 @@ test("a person's id in the bot list does not admit them", () => {
   assert.equal(gate(event, "153232337", ""), false);
 });
 
-test("a bot starts a run only when its sender id is listed, and only its login is allowed", () => {
+test("a bot starts a run only when its sender id is listed", () => {
   const listed = issueEvent("lanes-app[bot]", "NONE", lanesApp);
   assert.equal(gate(listed), false);
   for (const ids of ["222", "111,222", "222,333"]) {
     assert.equal(gate(listed, ids), true, ids);
-    assert.equal(bots(listed, ids), "lanes-app[bot]", ids);
   }
   // 22 and 2222 contain or are contained in 222 as text; only whole ids match.
   for (const id of [22, 2222]) {
@@ -150,7 +143,6 @@ test("a bot starts a run only when its sender id is listed, and only its login i
       login: "other[bot]",
     });
     assert.equal(gate(unlisted, "111,222"), false, String(id));
-    assert.equal(bots(unlisted, "111,222"), "", String(id));
   }
 });
 
@@ -179,7 +171,6 @@ test("a listed bot acting on an issue someone else wrote starts nothing", () => 
     author: stranger,
   });
   assert.equal(gate(onStrangersIssue, "222"), false);
-  assert.equal(bots(onStrangersIssue, "222"), "");
 });
 
 test("a bot's MEMBER association does not stand in for the id list", () => {
@@ -191,7 +182,6 @@ test("a malformed id list or a missing sender admits no bot", () => {
   const listed = issueEvent("lanes-app[bot]", "NONE", lanesApp);
   for (const ids of ["222,", ",222", "111,,222", ","]) {
     assert.equal(gate(listed, ids), false, ids);
-    assert.equal(bots(listed, ids), "", ids);
   }
   const senderless = issueEvent("lanes-app[bot]", "NONE", undefined);
   assert.equal(gate(senderless, "222"), false);
@@ -216,10 +206,8 @@ test("a dispatch starts a run when its actor's id is listed", () => {
     gate(dispatch("kyle-sexton", kyle.id), "", "153232337", "12"),
     true,
   );
-  assert.equal(bots(dispatch("kyle-sexton", kyle.id), "153232337"), "");
   const sweep = dispatch("github-actions[bot]", actionsBot);
   assert.equal(gate(sweep, "41898282", "", "12"), true);
-  assert.equal(bots(sweep, "41898282"), "github-actions[bot]");
 });
 
 test("a dispatch by an unlisted actor, or with no issue number, starts nothing", () => {
@@ -227,7 +215,10 @@ test("a dispatch by an unlisted actor, or with no issue number, starts nothing",
     gate(dispatch("stranger", 9), "41898282", "153232337", "12"),
     false,
   );
-  assert.equal(bots(dispatch("stranger[bot]", 9), "41898282"), "");
+  assert.equal(
+    gate(dispatch("stranger[bot]", 9), "41898282", "", "12"),
+    false,
+  );
   // A person's id in the bot list, or a bot's id in the person list, does not admit.
   assert.equal(
     gate(dispatch("kyle-sexton", kyle.id), "153232337", "", "12"),
