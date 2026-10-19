@@ -42,8 +42,10 @@ name: intake-triage
 #   - The API key leg runs first; the subscription leg runs only when the key
 #     leg ends in a credit stop. Either secret may be empty, not both.
 #   - The model has no write path: `--permission-mode dontAsk` denies every
-#     tool call not pre-approved, the tool set is Read, Grep, Glob and Bash,
-#     and Bash is approved only for read-only `gh` issue and label queries.
+#     tool call not pre-approved, the tool set is Read, Grep, Glob and Bash
+#     (run-claude-cli runs the CLI with --restricted, which drops Bash unless
+#     `tools` names it), and Bash is approved only for read-only `gh` issue
+#     and label queries.
 #     dontAsk also denies reads outside the checkout (verified on CLI 2.1.288),
 #     which keeps /proc and RUNNER_TEMP out of reach.
 #   - The model returns JSON only. The apply step keeps labels that are in
