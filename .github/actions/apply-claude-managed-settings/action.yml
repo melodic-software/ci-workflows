@@ -4,7 +4,7 @@ description: >-
   and `apiKeyHelper`, so head code writing ~/.claude/settings.json cannot
   repoint the lane's credential (for example through ANTHROPIC_BASE_URL or a
   helper that outranks CLAUDE_CODE_OAUTH_TOKEN). Needs sudo: run it before
-  runner isolation removes sudo and before any head checkout. claude-lane
+  runner isolation removes sudo and before any head checkout. run-claude-cli
   refuses to run without the file.
 
 inputs:
