@@ -11,6 +11,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const {
@@ -54,6 +55,14 @@ const fileCommands = ${JSON.stringify(FILE_COMMAND_VARIABLES)}.filter((n) => n i
 for (const file of (process.env.FAKE_APPEND ?? "").split(":").filter(Boolean)) {
   fs.appendFileSync(file, "PLANTED=1\\n");
 }
+const chmods = (process.env.FAKE_CHMOD ?? "").split(":").filter(Boolean).map((file) => {
+  try {
+    fs.chmodSync(file, 0o644);
+    return "changed";
+  } catch (error) {
+    return error.code;
+  }
+});
 const writes = (process.env.FAKE_WRITE ?? "").split(":").filter(Boolean).map((file) => {
   try {
     fs.appendFileSync(file, "PLANTED=1\\n");
@@ -62,7 +71,7 @@ const writes = (process.env.FAKE_WRITE ?? "").split(":").filter(Boolean).map((fi
     return error.code;
   }
 });
-fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileCommands, writes,
+fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileCommands, chmods, writes,
   scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
   watchdog: process.env.CLAUDE_CODE_RETRY_WATCHDOG,
   wait: process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS,
@@ -70,6 +79,7 @@ fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileComman
   stdin: fs.readFileSync(0, "utf8") }) + "\\n");
 if (process.env["FAKE_" + leg + "_SLEEP"]) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+  if (process.env.FAKE_SURVIVED) fs.writeFileSync(process.env.FAKE_SURVIVED, "");
 }
 process.stdout.write(fs.readFileSync(process.env["FAKE_" + leg], "utf8"));
 process.exit(Number(process.env["FAKE_" + leg + "_EXIT"] ?? 0));
@@ -78,6 +88,20 @@ process.exit(Number(process.env["FAKE_" + leg + "_EXIT"] ?? 0));
 fs.chmodSync(fakeCli, 0o755);
 
 let caseNumber = 0;
+
+// Runs what follows `--` when the legs ask for bwrap, so cases with a tree to
+// protect test the mode lock on hosts without bubblewrap.
+function withoutBwrap(command, args, options) {
+  if (command !== "bwrap") return spawnSync(command, args, options);
+  const rest = args.slice(args.indexOf("--") + 1);
+  return spawnSync(rest[0], rest.slice(1), options);
+}
+
+const bwrapWorks =
+  spawnSync("bwrap", ["--dev-bind", "/", "/", "--", "true"], {
+    stdio: "ignore",
+  }).status === 0;
+const withBwrap = { skip: !bwrapWorks && "bwrap cannot run here" };
 
 function result(fields) {
   return {
@@ -201,7 +225,7 @@ function runCase({
   legTimeoutMs = 0,
   extraEnv = {},
   prepare = () => ({}),
-  spawn,
+  spawn = withoutBwrap,
 }) {
   caseNumber += 1;
   const dir = path.join(root, `case-${caseNumber}`);
@@ -265,7 +289,7 @@ function runCase({
     workDir: dir,
     runId: "123",
   };
-  const outcome = runLegs(config, { baseEnv, ...(spawn ? { spawn } : {}) });
+  const outcome = runLegs(config, { baseEnv, spawn });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
@@ -547,6 +571,124 @@ test("_work/_actions beside RUNNER_WORKSPACE is read-only during the legs and wr
   assert.deepEqual(calls[0].writes, ["EACCES"]);
   assert.equal(fs.readFileSync(action, "utf8"), "original\n");
   fs.appendFileSync(action, "after\n");
+});
+
+function recordingSpawn(spawned) {
+  return (command, args) => {
+    spawned.push([command, args]);
+    return {
+      status: 0,
+      signal: null,
+      stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
+    };
+  };
+}
+
+test("with the install and action trees present, each leg runs the CLI under bwrap that binds both read-only after the root", () => {
+  let cli;
+  let actions;
+  const spawned = [];
+  const { config } = runCase({
+    key: CREDIT_STOP,
+    sub: SUCCESS,
+    prepare: (dir) => {
+      cli = path.join(dir, "cli");
+      writableTree(cli);
+      actions = path.join(dir, "_work", "_actions");
+      fs.mkdirSync(actions, { recursive: true });
+      fs.mkdirSync(path.join(dir, "_work", "repo"));
+      return { RUNNER_WORKSPACE: path.join(dir, "_work", "repo") };
+    },
+    spawn: recordingSpawn(spawned),
+  });
+  assert.equal(spawned.length, 1);
+  const [command, args] = spawned[0];
+  assert.equal(command, "bwrap");
+  assert.deepEqual(args.slice(0, args.indexOf("--") + 2), [
+    "--die-with-parent",
+    "--dev-bind",
+    "/",
+    "/",
+    "--ro-bind",
+    cli,
+    cli,
+    "--ro-bind",
+    actions,
+    actions,
+    "--",
+    fakeCli,
+  ]);
+  assert.deepEqual(args.slice(args.indexOf("--") + 2), cliArgs(config));
+});
+
+test("with neither tree present, the leg runs the CLI directly", () => {
+  const spawned = [];
+  const { config } = runCase({
+    key: SUCCESS,
+    sub: null,
+    spawn: recordingSpawn(spawned),
+  });
+  assert.deepEqual(spawned, [[fakeCli, cliArgs(config)]]);
+});
+
+test("under bwrap a leg cannot put the write bits back on the install tree", withBwrap, () => {
+  let installed;
+  const { calls } = runCase({
+    key: SUCCESS,
+    sub: null,
+    prepare: (dir) => {
+      installed = writableTree(path.join(dir, "cli"));
+      return { FAKE_CHMOD: installed, FAKE_WRITE: installed };
+    },
+    spawn: spawnSync,
+  });
+  assert.deepEqual(calls[0].chmods, ["EROFS"]);
+  assert.notEqual(calls[0].writes[0], "written");
+  assert.equal(fs.readFileSync(installed, "utf8"), "original\n");
+  assert.equal(fs.statSync(installed).mode & 0o777, 0o755);
+});
+
+test("under bwrap a leg cannot put the write bits back on _work/_actions", withBwrap, () => {
+  let action;
+  const { calls } = runCase({
+    key: SUCCESS,
+    sub: null,
+    prepare: (dir) => {
+      const work = path.join(dir, "_work");
+      fs.mkdirSync(path.join(work, "repo"), { recursive: true });
+      action = writableTree(path.join(work, "_actions", "owner", "action"));
+      return {
+        RUNNER_WORKSPACE: path.join(work, "repo"),
+        FAKE_CHMOD: action,
+        FAKE_WRITE: action,
+      };
+    },
+    spawn: spawnSync,
+  });
+  assert.deepEqual(calls[0].chmods, ["EROFS"]);
+  assert.notEqual(calls[0].writes[0], "written");
+  assert.equal(fs.readFileSync(action, "utf8"), "original\n");
+  assert.equal(fs.statSync(action).mode & 0o777, 0o755);
+});
+
+test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
+  let survived;
+  const { outputs } = runCase({
+    key: SUCCESS,
+    sub: null,
+    keySleep: true,
+    legTimeoutMs: 300,
+    prepare: (dir) => {
+      writableTree(path.join(dir, "cli"));
+      survived = path.join(dir, "survived");
+      return { FAKE_SURVIVED: survived };
+    },
+    spawn: spawnSync,
+  });
+  assert.equal(outputs["lane-class"], "timeout");
+  // The fake CLI sleeps 5 seconds before it writes the marker.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000);
+  assert.equal(fs.existsSync(survived), false);
 });
 
 test("the install tree is writable again when a leg throws", asNonRoot, () => {

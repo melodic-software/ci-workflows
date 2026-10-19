@@ -590,6 +590,27 @@ function lockTrees(dirs, modes) {
   for (const dir of dirs) walk(dir);
 }
 
+// The command one leg runs. With trees to protect, bwrap binds each one
+// read-only over a view of the whole filesystem, so the leg cannot restore the
+// write bits lockTrees removed. --die-with-parent kills the CLI when a timeout
+// or an overflow kills bwrap, which forwards no signal.
+function legCommand(config, readOnly) {
+  if (readOnly.length === 0) return [config.cliPath, cliArgs(config)];
+  return [
+    "bwrap",
+    [
+      "--die-with-parent",
+      "--dev-bind",
+      "/",
+      "/",
+      ...readOnly.flatMap((dir) => ["--ro-bind", dir, dir]),
+      "--",
+      config.cliPath,
+      ...cliArgs(config),
+    ],
+  ];
+}
+
 function restoreModes(modes) {
   for (const { entry, mode } of modes.toReversed()) {
     try {
@@ -615,7 +636,8 @@ function runLegs(
   const sizes = fileSizes(baseEnv);
   const modes = [];
   try {
-    lockTrees(readOnlyPaths(config, baseEnv), modes);
+    const readOnly = readOnlyPaths(config, baseEnv);
+    lockTrees(readOnly, modes);
     for (const [position, leg] of active.entries()) {
       const index = config.legs.indexOf(leg);
       const streamFile = path.join(config.workDir, `leg-${index + 1}.jsonl`);
@@ -624,7 +646,7 @@ function runLegs(
         `leg-${index + 1}-execution.json`,
       );
       const startedAt = now().toISOString();
-      const child = spawn(config.cliPath, cliArgs(config), {
+      const child = spawn(...legCommand(config, readOnly), {
         env: legEnv(baseEnv, leg, config),
         input: prompt,
         stdio: ["pipe", "pipe", "inherit"],
