@@ -708,7 +708,7 @@ jobs:
         if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/probe-subprocess-sandbox
+        uses: $/.github/actions/check-subprocess-sandbox
 
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.

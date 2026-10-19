@@ -1,6 +1,6 @@
 "use strict";
 
-// The review lanes run probe-subprocess-sandbox before the model. These tests
+// The review lanes run check-subprocess-sandbox before the model. These tests
 // run the composite's own script against a stand-in bwrap on PATH: one that
 // creates the namespace, and one that fails the way a runner with
 // unprivileged user namespaces off does (ci-workflows#795).
@@ -20,7 +20,7 @@ const action = parseWorkflow(
       __dirname,
       "..",
       "actions",
-      "probe-subprocess-sandbox",
+      "check-subprocess-sandbox",
       "action.yml",
     ),
     "utf8",

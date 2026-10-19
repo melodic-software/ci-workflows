@@ -205,7 +205,7 @@ for (const lane of lanes) {
     const at = (predicate) => job.steps.findIndex(predicate);
     const probeAt = at((candidate) => candidate.id === "sandbox");
     const probe = job.steps[probeAt];
-    assert.equal(probe.uses, "$/.github/actions/probe-subprocess-sandbox");
+    assert.equal(probe.uses, "$/.github/actions/check-subprocess-sandbox");
     assert.equal(probe["continue-on-error"], true);
     assert.match(probe.if, /runner\.os == 'Linux'/u);
     // After bwrap is installed, before the model runs.

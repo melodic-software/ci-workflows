@@ -1,4 +1,4 @@
-name: probe-subprocess-sandbox
+name: check-subprocess-sandbox
 description: >-
   Pre-flight for a Claude lane that runs with
   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 on Linux: runs
