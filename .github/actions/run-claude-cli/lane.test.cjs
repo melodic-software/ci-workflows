@@ -1,4 +1,4 @@
-// claude-lane leg logic. A fake `claude` stands in for the CLI: it records
+// run-claude-cli leg logic. A fake `claude` stands in for the CLI: it records
 // the credential variables it was started with and prints the stream-json
 // lines the test gives it. The canned messages follow the Agent SDK
 // reference's SDKResultMessage, SDKAssistantMessage and rate_limit_event
@@ -32,7 +32,7 @@ const TOKEN = "oauth-value-for-tests-5678";
 const KEY_NAME = "FIXCI_CLAUDE_API_KEY";
 const TOKEN_NAME = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
 
-const root = makeTemporaryDirectory("claude-lane-");
+const root = makeTemporaryDirectory("run-claude-cli-");
 const fakeCli = path.join(root, "claude");
 fs.writeFileSync(
   fakeCli,
@@ -348,7 +348,7 @@ test("an empty api-key skips the key leg with a visible warning", () => {
     ["SUB"],
   );
   assert.deepEqual(logged, [
-    "::warning::claude-lane: skipped=api-key (empty secret)",
+    "::warning::run-claude-cli: skipped=api-key (empty secret)",
   ]);
   assert.equal(outputs.credential, TOKEN_NAME);
 });

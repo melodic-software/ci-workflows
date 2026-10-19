@@ -1,4 +1,4 @@
-name: claude-lane
+name: run-claude-cli
 description: >-
   Run one prompt with headless `claude -p` for an agent-mode CI lane, on a
   Linux runner. The API key leg runs first; the subscription leg runs in the
@@ -6,7 +6,7 @@ description: >-
   isCreditStop), and any other key-leg failure ends the run with its class.
   Only one credential is in the CLI environment at a time. Input contract,
   in this order, before any head checkout: the caller runs
-  `claude-lane/managed-settings` while sudo still works, then removes sudo and
+  `apply-claude-managed-settings` while sudo still works, then removes sudo and
   docker access and installs bubblewrap (runner isolation); this action fails
   closed when any of the three is missing. It writes the outputs
   report-check-run reads, a JSONL execution log (one object per leg) written
@@ -148,7 +148,7 @@ runs:
       id: workdir
       shell: bash
       run: |
-        dir="$(mktemp -d "$RUNNER_TEMP/claude-lane-XXXXXX")"
+        dir="$(mktemp -d "$RUNNER_TEMP/run-claude-cli-XXXXXX")"
         echo "path=$dir" >>"$GITHUB_OUTPUT"
 
     - name: Install the Claude Code CLI

@@ -552,13 +552,13 @@ consumer to audit it.
   using-directive organization via `dotnet format style --diagnostics IDE0055
   --verify-no-changes` (the build-time analyzers own code-style and code-quality,
   so none of the three lanes double-report).
-- `.github/actions/claude-lane` — runs one prompt with headless `claude -p` for
+- `.github/actions/run-claude-cli` — runs one prompt with headless `claude -p` for
   an agent-mode lane on a Linux runner, installing the newest Claude Code CLI
   unless `cli-version` pins one. The API key leg runs first; the subscription
   token leg runs in the same job only when the key leg ends in a credit stop
   (report-lane-outcome's opt-in `credit-stop` class), so a broken key stays
   visible instead of spending the subscription. Only one credential is in the
-  CLI environment at a time. Callers run `claude-lane/managed-settings` while
+  CLI environment at a time. Callers run `apply-claude-managed-settings` while
   sudo still works, then runner isolation (sudo and docker removed, bubblewrap
   installed), then the head checkout; the action fails closed when any of the
   three is missing. Its outputs match report-check-run's `lane-*` inputs, plus
@@ -570,6 +570,10 @@ consumer to audit it.
   `disallowed-tools` and `json-schema-file` pass through to the CLI flags of
   the same names. Uploading the log is the
   caller's.
+- `.github/actions/apply-claude-managed-settings` — writes the root-owned
+  `/etc/claude-code/managed-settings.json` that pins `env` and `apiKeyHelper`,
+  so head code cannot repoint the lane's credential. Needs sudo, so it runs
+  before runner isolation; run-claude-cli refuses to run without the file.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
