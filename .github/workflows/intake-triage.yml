@@ -554,6 +554,7 @@ jobs:
       # step's step-timeout-minutes repeats timeout-minutes. GH_TOKEN is the
       # job token for the model's read-only gh queries; the scrub leaves
       # GitHub tokens in place.
+      # One job is allowed: Bash is limited to fixed read-only rules (gh issue view/list, gh search issues, gh label list) under dontAsk.
       - name: Claude intake triage
         id: claude
         continue-on-error: true
