@@ -803,15 +803,26 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Dependabot pull request, so GitHub merges it once `ci-status` and every other
   required check pass. It never merges directly. All gates must hold: the PR
   author and the event sender are account id `49699333` (dependabot[bot]);
-  fetch-metadata succeeded; every update is
-  `github_actions`; every dependency name matches the publisher allowlist
-  (`actions/*`, `github/*`, `anthropics/*`, mirroring standards
-  `dependabot-policy` `autoMerge`); every update is semver patch or minor; and
-  every commit, head included, has author `49699333`, committer web-flow
+  fetch-metadata succeeded; every update is `github_actions` or, unless the
+  caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`
+  (docker, uv, dotnet-sdk and other ecosystems stay manual); every GitHub
+  Actions dependency name matches the publisher allowlist (`actions/*`,
+  `github/*`, `anthropics/*`, mirroring standards `dependabot-policy`
+  `autoMerge`); no package name is in the caller's `review-only-dependencies`
+  JSON array (its `autoMerge.reviewOnly` entries); every update is semver patch
+  or minor, and a version below 1.0 keeps its minor component; and every
+  commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. A repository that adopts it
-  records it as the merge authority for Dependabot PRs. The caller owns the
-  trigger and concurrency:
+  records it as the merge authority for Dependabot PRs. A repository where a
+  merge can lead to a deploy passes `package-auto-merge: false`. Package
+  updates have no publisher allowlist, and this workflow does not check a
+  cooldown. The delay against a malicious patch or minor release lives in each
+  caller's `.github/dependabot.yml` `cooldown`, and the standards
+  `dependabot-policy` lint (`cooldownMinimumDays`) requires it. A caller whose
+  package runs with credentials lists that package in
+  `review-only-dependencies`. The caller
+  owns the trigger and concurrency:
 
   ```yaml
   on:
