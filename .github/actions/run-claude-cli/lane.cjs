@@ -212,7 +212,11 @@ function readConfig(env) {
     lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
     role,
     model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
-    effort: required(env, "LANE_EFFORT", EFFORT_PATTERN, "effort"),
+    // Empty keeps the model's default effort.
+    effort:
+      (env.LANE_EFFORT ?? "").trim() === ""
+        ? ""
+        : required(env, "LANE_EFFORT", EFFORT_PATTERN, "effort"),
     maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),
     permissionMode,
     watchdogMaxWaitMs: required(
@@ -290,8 +294,7 @@ function cliArgs(config) {
     "--verbose",
     "--model",
     config.model,
-    "--effort",
-    config.effort,
+    ...(config.effort === "" ? [] : ["--effort", config.effort]),
     "--max-turns",
     config.maxTurns,
     "--permission-mode",

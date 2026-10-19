@@ -64,8 +64,9 @@ inputs:
     description: Model alias or full name passed to `--model`.
     required: true
   effort:
-    description: Effort level passed to `--effort`.
-    required: true
+    description: Effort level passed to `--effort`. Empty passes none, so the model's default applies.
+    required: false
+    default: ""
   max-turns:
     description: Positive whole number passed to `--max-turns`.
     required: true
