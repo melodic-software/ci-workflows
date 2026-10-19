@@ -11,8 +11,8 @@
 //   - One credential in the CLI environment per leg (legEnv).
 //   - The subscription leg runs only when the key leg is a credit stop
 //     (classify.cjs isCreditStop), judged from structured fields.
-//   - The CLI's output goes to a file; nothing from it reaches the job log
-//     except closed-pattern tokens and a CLI-authored error line, all inside
+//   - The CLI's stdout goes to a file. Its stderr, closed-pattern tokens and
+//     a CLI-authored error line reach the job log, all inside
 //     ::stop-commands::.
 //   - The log file is written only after a scan finds no credential in it.
 "use strict";
@@ -188,12 +188,18 @@ function resolveCliVersion(input, npmView) {
   const candidate =
     wanted === "latest" ? String(npmView() ?? "").trim() : wanted;
   // An empty candidate would take the resolver's fallback; there is none here.
-  const { version, source } = resolveNpmToolVersion({
-    versionInput: candidate,
-    fallbackVersion: "0.0.0",
-    packageName: CLI_PACKAGE,
-    packageJsonPath: "/nonexistent/package.json",
-  });
+  let resolved;
+  try {
+    resolved = resolveNpmToolVersion({
+      versionInput: candidate,
+      fallbackVersion: "0.0.0",
+      packageName: CLI_PACKAGE,
+      packageJsonPath: "/nonexistent/package.json",
+    });
+  } catch (error) {
+    throw new LaneError(`cli-version: ${error.message}`);
+  }
+  const { version, source } = resolved;
   if (source !== "input") {
     throw new LaneError(
       `cli-version must resolve to an exact major.minor.patch, got ${JSON.stringify(candidate)}`,
@@ -405,22 +411,27 @@ function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   return { failureClass, resets, messages };
 }
 
+// One warning per skipped leg, printed before ::stop-commands:: so the runner
+// shows it as an annotation.
+function skipWarnings(config) {
+  return config.legs
+    .filter((leg) => leg.skipped)
+    .map(
+      (leg) =>
+        `::warning::run-claude-cli: skipped=${leg.name || leg.leg} (empty secret)`,
+    );
+}
+
 function runLegs(
   config,
   {
     baseEnv = process.env,
     spawn = spawnSync,
     now = () => new Date(),
-    log = (line) => process.stdout.write(`${line}\n`),
   } = {},
 ) {
   const prompt = promptText(config);
   const active = config.legs.filter((leg) => !leg.skipped);
-  for (const leg of config.legs.filter((l) => l.skipped)) {
-    log(
-      `::warning::run-claude-cli: skipped=${leg.name || leg.leg} (empty secret)`,
-    );
-  }
   const records = [];
   let final = null;
   for (const [position, leg] of active.entries()) {
@@ -601,6 +612,7 @@ function install(env) {
 
 function run(env) {
   const config = readConfig(env);
+  for (const line of skipWarnings(config)) process.stdout.write(`${line}\n`);
   const token = crypto.randomBytes(16).toString("hex");
   process.stdout.write(`::stop-commands::${token}\n`);
   let outcome;
@@ -673,6 +685,7 @@ module.exports = {
   resolveCliVersion,
   run,
   runLegs,
+  skipWarnings,
   summaryTable,
   verifyIsolation,
   verifyManagedSettings,

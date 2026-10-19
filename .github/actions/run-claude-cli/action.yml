@@ -111,8 +111,15 @@ outputs:
   lane-class:
     description: >-
       report-lane-outcome's failure class of the leg that ended the run; empty
-      on success. A credit stop with no leg left reports `rate-limit`.
-    value: ${{ steps.run.outputs.lane-class }}
+      on success. A credit stop with no leg left reports `rate-limit`; a
+      failed install reports `install-failed`, and any other failure before
+      a leg ran reports `other`. Report this class; do not reclassify
+      execution-file, which cannot see the credit-stop or leg-timeout rules.
+    value: >-
+      ${{ steps.run.outputs.lane-class
+      || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
+      || (steps.run.outcome != 'success' && 'other')
+      || '' }}
   lane-resets:
     description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.
     value: ${{ steps.run.outputs.lane-resets }}
@@ -126,7 +133,10 @@ outputs:
     description: Secret NAME of the leg that produced the result, never its value.
     value: ${{ steps.run.outputs.credential }}
   execution-file:
-    description: The final leg's CLI messages as a JSON array (the execution_file shape claude-code-action writes).
+    description: >-
+      The final leg's CLI messages as a JSON array (the execution_file shape
+      claude-code-action writes). It holds every tool result and model reply
+      and is never scanned for credentials, so do not upload it.
     value: ${{ steps.run.outputs.execution-file }}
   log-file:
     description: JSONL execution log, one object per leg; empty when the credential scan failed.
@@ -139,6 +149,7 @@ runs:
   using: composite
   steps:
     - name: Verify the isolation contract
+      id: isolation
       shell: bash
       env:
         LANE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json

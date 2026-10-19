@@ -18,12 +18,14 @@ const {
 } = require("../../scripts/temporary-directories.cjs");
 const {
   CREDENTIAL_VARIABLES,
+  LaneError,
   holdsCredential,
   legEnv,
   readConfig,
   resolveCliVersion,
   run,
   runLegs,
+  skipWarnings,
   verifyManagedSettings,
 } = require("./lane.cjs");
 
@@ -238,15 +240,11 @@ function runCase({
     workDir: dir,
     runId: "123",
   };
-  const logged = [];
-  const outcome = runLegs(config, {
-    baseEnv,
-    log: (line) => logged.push(line),
-  });
+  const outcome = runLegs(config, { baseEnv });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
-  return { ...outcome, calls: callLines.map((l) => JSON.parse(l)), logged };
+  return { ...outcome, calls: callLines.map((l) => JSON.parse(l)), config };
 }
 
 test("a key-leg credit stop runs the subscription leg, one credential each", () => {
@@ -342,12 +340,12 @@ test("a credit stop with no subscription is a limit stop for the reporters", () 
 });
 
 test("an empty api-key skips the key leg with a visible warning", () => {
-  const { calls, logged, outputs } = runCase({ key: null, sub: SUCCESS });
+  const { calls, config, outputs } = runCase({ key: null, sub: SUCCESS });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["SUB"],
   );
-  assert.deepEqual(logged, [
+  assert.deepEqual(skipWarnings(config), [
     "::warning::run-claude-cli: skipped=api-key (empty secret)",
   ]);
   assert.equal(outputs.credential, TOKEN_NAME);
@@ -485,7 +483,9 @@ test("cli-version latest resolves from npm view; exact versions pass; others fai
   );
   assert.throws(
     () => resolveCliVersion("2.1", () => ""),
-    /exact major\.minor\.patch/u,
+    (error) =>
+      error instanceof LaneError &&
+      /exact major\.minor\.patch/u.test(error.message),
   );
   assert.throws(
     () => resolveCliVersion("latest", () => "next"),
