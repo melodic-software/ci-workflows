@@ -557,25 +557,39 @@ consumer to audit it.
   unless `cli-version` pins one. The API key leg runs first; the subscription
   token leg runs in the same job only when the key leg ends in a credit stop
   (report-lane-outcome's opt-in `credit-stop` class), so a broken key stays
-  visible instead of spending the subscription. Only one credential is in the
-  CLI environment at a time, with no workflow file-command variable; anything
-  a leg appends to the step's `GITHUB_ENV` or `GITHUB_PATH` file is cut off
-  after the last leg. The CLI runs with `--restricted`, so Bash and the other
-  code-running tools are available only when `tools` names them. Callers run
-  `apply-claude-managed-settings` while sudo still works, then runner
-  isolation (sudo and docker removed, bubblewrap installed), then the head
-  checkout; the action fails closed when the settings are missing or
-  unpinned, sudo works, the docker socket is writable, or bubblewrap is
-  missing. The CLI installs from the public npm registry, outside any
+  visible instead of spending the subscription. Each leg's CLI environment
+  has every credential and workflow file-command variable removed and one
+  credential set, and anything a leg appends to the step's `GITHUB_ENV` or
+  `GITHUB_PATH` file is cut off after the last leg. That is the whole
+  guarantee: code a leg runs as the runner user can still reach the other
+  file-command files under `RUNNER_TEMP`, the step's `GITHUB_OUTPUT` and
+  `GITHUB_STEP_SUMMARY`, `_work/_actions` and `~/.npmrc`. So a lane that
+  gives the model unrestricted Bash, or any code-running tool beyond fixed
+  read-only command rules, runs the action in a job that holds no other
+  secret or write token and does its reporting and uploads in a downstream
+  job that validates its inputs; a lane whose Bash is limited to fixed
+  read-only rules may stay in one job. The CLI runs with
+  `--restricted`, so Bash and the other code-running tools are available
+  only when `tools` names them. Callers run `apply-claude-managed-settings`
+  while sudo still works, then runner isolation (sudo and docker removed,
+  bubblewrap installed, and on Ubuntu 24.04
+  `kernel.apparmor_restrict_unprivileged_userns=0`), then the head checkout,
+  and run no head code before the action. It fails closed when the settings
+  are missing or unpinned, sudo works, the docker socket is writable,
+  `bwrap --unshare-pid` fails, or the step environment sets `NODE_OPTIONS`,
+  `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `NODE_EXTRA_CA_CERTS`,
+  `NODE_TLS_REJECT_UNAUTHORIZED` or a `*_PROXY` variable other than
+  `NO_PROXY`. The CLI installs from the public npm registry, outside any
   checkout's `.npmrc`. Its outputs match report-check-run's `lane-*` inputs, plus
   `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
   written only after a credential scan; every log line records the `lane` and
-  the funding `role` whose secrets the caller passed. The secret names default
-  to the role's, `<ROLE>_CLAUDE_API_KEY` and `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN`
-  with the role upper-snake; explicit `*-name` inputs win. `tools`, `allowed-tools`,
-  `disallowed-tools` and `json-schema-file` pass through to the CLI flags of
-  the same names. Uploading the log is the
-  caller's.
+  the funding `role` whose secrets the caller passed. The secret names are
+  always the role's, `<ROLE>_CLAUDE_API_KEY` and
+  `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake. The job summary
+  shows only closed tokens; the CLI's own error line stays in the log. Each
+  leg stops after `leg-timeout-minutes`, 30 by default. `tools`,
+  `allowed-tools`, `disallowed-tools` and `json-schema-file` pass through to
+  the CLI flags of the same names. Uploading the log is the caller's.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL` and disables bypassPermissions mode, so head code

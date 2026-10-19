@@ -4,17 +4,30 @@ description: >-
   Linux runner. The API key leg runs first; the subscription leg runs in the
   same job only when the key leg ends in a credit stop (classify.cjs
   isCreditStop), and any other key-leg failure ends the run with its class.
-  Only one credential is in the CLI environment at a time, and the CLI runs
-  with `--restricted` and `--strict-mcp-config`. Input contract,
-  in this order, before any head checkout: the caller runs
+  Each leg's CLI environment has every credential and file-command variable
+  removed and exactly one credential set, and the CLI runs with `--restricted`
+  and `--strict-mcp-config`; whatever a leg appends to the step's GITHUB_ENV
+  or GITHUB_PATH file is cut off after the last leg. That is all it removes:
+  code a leg runs as the runner user can still reach the other file-command
+  files under RUNNER_TEMP, this step's GITHUB_OUTPUT and GITHUB_STEP_SUMMARY,
+  `_work/_actions` and `~/.npmrc`. So a lane that gives the model unrestricted
+  Bash, or any code-running tool beyond fixed read-only command rules, must
+  run this action in a job that holds no other secret or write token and do
+  its reporting and uploads in a downstream job that validates its inputs; a
+  lane whose Bash is limited to fixed read-only rules may stay in one job.
+  Input contract, in this order: the caller runs
   `apply-claude-managed-settings` while sudo still works, then removes sudo and
-  docker access and installs bubblewrap (runner isolation); this action fails
-  closed when the settings are missing or unpinned, sudo works, the docker
-  socket is writable, or bubblewrap is missing. It writes the outputs
-  report-check-run reads, a JSONL execution log (one object per leg) written
-  only after a scan finds no credential in it, and a job summary table.
-  Uploading the log is the caller's choice. The step fails, after writing its
-  outputs, whenever lane-class is not empty.
+  docker access, installs bubblewrap and lets it create user namespaces
+  (runner isolation), and runs no head code in the job before this action.
+  This action fails closed when the settings are missing or unpinned, sudo
+  works, the docker socket is writable, `bwrap --unshare-pid` fails, or the
+  step environment sets NODE_OPTIONS, LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV,
+  NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED or a `*_PROXY` variable
+  other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
+  execution log (one object per leg) written only after a scan finds no
+  credential in it, and a job summary table of closed tokens. Uploading the
+  log is the caller's choice. The step fails, after writing its outputs,
+  whenever lane-class is not empty.
 
 inputs:
   lane:
@@ -23,8 +36,9 @@ inputs:
   role:
     description: >-
       The funding role whose two secrets the caller passes, lower-case kebab
-      (for example `automations`); recorded in the log, and names the secrets
-      when api-key-name or subscription-token-name is empty.
+      (for example `automations`); recorded in the log. It names the secrets,
+      `<ROLE>_CLAUDE_API_KEY` and `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the
+      role upper-snake (`issue-lane` gives `ISSUE_LANE_CLAUDE_API_KEY`).
     required: true
   prompt-file:
     description: Path to the prompt file. Never inline head text.
@@ -42,21 +56,8 @@ inputs:
     description: The role's Console API key secret. Empty skips the key leg with a `skipped=` warning.
     required: false
     default: ""
-  api-key-name:
-    description: >-
-      The secret NAME behind api-key. Empty means the role's,
-      `<ROLE>_CLAUDE_API_KEY` with the role upper-snake (`issue-lane` gives
-      `ISSUE_LANE_CLAUDE_API_KEY`).
-    required: false
-    default: ""
   subscription-token:
     description: The role's subscription OAuth token secret. Empty skips the subscription leg.
-    required: false
-    default: ""
-  subscription-token-name:
-    description: >-
-      The secret NAME behind subscription-token. Empty means the role's,
-      `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN`.
     required: false
     default: ""
   model:
@@ -108,9 +109,11 @@ inputs:
     required: false
     default: "1800000"
   leg-timeout-minutes:
-    description: Wall-clock cap per leg; a leg that reaches it ends with class `timeout`. Empty means none.
+    description: >-
+      Wall-clock cap per leg, in whole minutes (30 by default); a leg that
+      reaches it ends with class `timeout`. Empty means none.
     required: false
-    default: ""
+    default: "30"
 
 outputs:
   lane-class:
@@ -185,9 +188,7 @@ runs:
         LANE_PROMPT_FILE: ${{ inputs.prompt-file }}
         LANE_PREAMBLE: ${{ inputs.preamble }}
         LANE_API_KEY: ${{ inputs.api-key }}
-        LANE_API_KEY_NAME: ${{ inputs.api-key-name }}
         LANE_SUBSCRIPTION_TOKEN: ${{ inputs.subscription-token }}
-        LANE_SUBSCRIPTION_TOKEN_NAME: ${{ inputs.subscription-token-name }}
         LANE_MODEL: ${{ inputs.model }}
         LANE_EFFORT: ${{ inputs.effort }}
         LANE_MAX_TURNS: ${{ inputs.max-turns }}
