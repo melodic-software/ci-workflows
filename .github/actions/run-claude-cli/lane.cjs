@@ -3,26 +3,46 @@
 //
 // Subcommands (argv[2]):
 //   verify-isolation  fail closed unless managed settings are root-owned and
-//                     pinned, sudo and docker are gone and bubblewrap is
-//                     installed
+//                     pinned, sudo and docker are gone, bubblewrap can create
+//                     a PID namespace and no loader, TLS or proxy variable is
+//                     set
 //   install           resolve the CLI version and install it from the public
 //                     registry, outside any checkout's .npmrc
 //   run               run the legs and write the action's outputs
 //
 // Security contract:
-//   - One credential in the CLI environment per leg (legEnv), and no
-//     workflow file-command path.
+//   - legEnv copies the step environment and removes every credential and
+//     file-command VARIABLE, then sets this leg's one credential. That is a
+//     denylist, not a sandbox: RUNNER_TEMP stays set, and code running as the
+//     runner user (a Bash tool call, a hook) can still reach the file-command
+//     files under RUNNER_TEMP, this step's GITHUB_OUTPUT and
+//     GITHUB_STEP_SUMMARY files, _work/_actions and ~/.npmrc.
+//   - Of those files, only GITHUB_ENV and GITHUB_PATH are cut back to their
+//     size before the first leg once the last leg ends, so what a leg appends
+//     there never reaches a later step.
+//   - Caller rule: a lane that gives the model unrestricted Bash, or any
+//     code-running tool beyond fixed read-only command rules, runs this
+//     action in a job that holds no other secret or write token, and does
+//     its reporting and uploads in a downstream job that validates its
+//     inputs. A lane whose Bash is limited to fixed read-only rules may stay
+//     in one job.
+//   - Input contract: no head code runs in the job before this action, and
+//     the step environment holds no NODE_OPTIONS, LD_PRELOAD,
+//     LD_LIBRARY_PATH, BASH_ENV, NODE_EXTRA_CA_CERTS,
+//     NODE_TLS_REJECT_UNAUTHORIZED or *_PROXY other than NO_PROXY
+//     (verifyEnvironment, checked before the install and again before the
+//     first leg).
 //   - The CLI runs in --restricted mode: code-running tools only when the
 //     tools input names them, no user, project or local settings, file tools
 //     confined to the working directories, no bypassPermissions.
 //   - The subscription leg runs only when the key leg is a credit stop
 //     (classify.cjs isCreditStop), judged from structured fields.
+//   - Secret names are derived from the role and never taken from input.
 //   - The CLI's stdout is captured in memory and written to files only after
-//     the leg exits. Its stderr, closed-pattern tokens and a CLI-authored
-//     error line reach the job log, all inside ::stop-commands::.
-//   - Whatever a leg appends to the step's GITHUB_ENV or GITHUB_PATH file is
-//     cut off after the last leg, so it never reaches a later step.
+//     the leg exits. Its stderr and closed-pattern tokens reach the job log,
+//     inside ::stop-commands::; the job summary shows only closed tokens.
 //   - The log file is written only after a scan finds no credential in it.
+//     It alone keeps a CLI-authored error line.
 "use strict";
 
 const crypto = require("node:crypto");
@@ -82,6 +102,32 @@ const MAX_LEG_STDOUT_BYTES = 256 * 1024 * 1024;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const PINNED_BASE_URL = "https://api.anthropic.com";
 const DOCKER_SOCKET = "/var/run/docker.sock";
+const BWRAP_PROBE = ["--unshare-pid", "--dev-bind", "/", "/", "true"];
+// Variables that load code into node or bash, or redirect or weaken TLS, so
+// head code that set them could read a leg's credential. Any name ending in
+// _PROXY counts too, NO_PROXY excepted. The ubuntu-24.04 image sets none of
+// them (images/ubuntu in actions/runner-images at ee1ff45: its environment
+// tables and build scripts name no such variable), so any one set is the
+// caller's.
+const UNSAFE_VARIABLES = new Set([
+  "NODE_OPTIONS",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "BASH_ENV",
+  "NODE_EXTRA_CA_CERTS",
+  "NODE_TLS_REJECT_UNAUTHORIZED",
+]);
+// The job summary's closed token per class: the named stop and its recovery.
+const SUMMARY_NOTES = {
+  "": "",
+  "credit-stop": "credit stop: add Console credit or raise the spend limit",
+  "rate-limit": "limit stop: rerun after the reset",
+  auth: "credential unusable: replace the secret",
+  overloaded: "API overloaded: rerun later",
+  "max-turns": "turn cap: raise max-turns or narrow the task",
+  timeout: "leg timeout: raise leg-timeout-minutes or narrow the task",
+  other: "see the step log",
+};
 
 class LaneError extends Error {
   constructor(message) {
@@ -103,30 +149,21 @@ function required(env, name, pattern, label) {
 function readConfig(env) {
   const role = required(env, "LANE_ROLE", KEBAB_PATTERN, "role");
   const legs = [];
-  for (const [leg, valueVar, nameVar, suffix] of [
-    ["api-key", "LANE_API_KEY", "LANE_API_KEY_NAME", "CLAUDE_API_KEY"],
-    [
-      "subscription",
-      "LANE_SUBSCRIPTION_TOKEN",
-      "LANE_SUBSCRIPTION_TOKEN_NAME",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-    ],
+  for (const [leg, valueVar, suffix] of [
+    ["api-key", "LANE_API_KEY", "CLAUDE_API_KEY"],
+    ["subscription", "LANE_SUBSCRIPTION_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
   ]) {
     const value = env[valueVar] ?? "";
-    // An empty name is the role's: `<ROLE>_<suffix>`, role upper-snake.
-    const name =
-      (env[nameVar] ?? "").trim() ||
-      `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
-    if (value === "") {
-      legs.push({ leg, name, value: "", skipped: true });
-      continue;
-    }
+    // The role's name, `<ROLE>_<suffix>` with the role upper-snake, is the
+    // only one. It is checked even for an empty secret, because skipWarnings
+    // prints it into a workflow command.
+    const name = `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
     if (!NAME_PATTERN.test(name)) {
       throw new LaneError(
-        `${leg} is set but its secret name ${JSON.stringify(name)} is not an upper-case secret name`,
+        `${leg} secret name ${JSON.stringify(name)} is not an upper-case secret name`,
       );
     }
-    legs.push({ leg, name, value, skipped: false });
+    legs.push({ leg, name, value, skipped: value === "" });
   }
   if (legs.every((leg) => leg.skipped)) {
     throw new LaneError(
@@ -311,7 +348,8 @@ function linesToMessages(text) {
 
 // The CLI's first error line, only when classify proved it is the CLI's own
 // text (a credit stop or a limit stop with no model output). Workflow
-// commands are neutralized and the line is cut short.
+// commands are neutralized and the line is cut short. It goes to the scanned
+// log only, never the job summary.
 function cliMessage(messages, failureClass) {
   if (failureClass !== "credit-stop" && failureClass !== "rate-limit")
     return null;
@@ -442,7 +480,7 @@ function skipWarnings(config) {
     .filter((leg) => leg.skipped)
     .map(
       (leg) =>
-        `::warning::run-claude-cli: skipped=${leg.name || leg.leg} (empty secret)`,
+        `::warning::run-claude-cli: skipped=${leg.name} (empty secret)`,
     );
 }
 
@@ -566,17 +604,20 @@ function runLegs(
   };
 }
 
+// Every cell is a closed token or a value lane.cjs checked; no CLI text.
 function summaryTable(records) {
   const cell = (value) =>
     String(value ?? "")
       .replaceAll("|", "\\|")
       .replaceAll("`", "'");
+  const note = (failureClass) =>
+    SUMMARY_NOTES[failureClass] ?? SUMMARY_NOTES.other;
   const rows = records.map(
     (r) =>
-      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(r.message)} |`,
+      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(note(r.class))} |`,
   );
   return [
-    "| Leg | Secret | Class | Turns | Denials | Resets | Next | Message |",
+    "| Leg | Secret | Class | Turns | Denials | Resets | Next | Stop |",
     "|---|---|---|---|---|---|---|---|",
     ...rows,
   ].join("\n");
@@ -646,12 +687,34 @@ function dockerReachable(socket, access = fs.accessSync) {
   }
 }
 
+// Fail closed when the step environment sets a loader, TLS or proxy
+// variable (UNSAFE_VARIABLES) to anything non-empty.
+function verifyEnvironment(env) {
+  const unsafe = Object.keys(env)
+    .filter((name) => {
+      const upper = name.toUpperCase();
+      return (
+        UNSAFE_VARIABLES.has(upper) ||
+        (upper.endsWith("_PROXY") && upper !== "NO_PROXY")
+      );
+    })
+    .filter((name) => (env[name] ?? "") !== "")
+    .sort();
+  if (unsafe.length > 0) {
+    throw new LaneError(
+      `the step environment sets ${unsafe.join(", ")}: no head code may run before run-claude-cli, and none of these may reach the CLI`,
+    );
+  }
+}
+
 function verifyIsolation({
   managedSettings,
+  env = process.env,
   spawn = spawnSync,
   dockerSocket = DOCKER_SOCKET,
   ...io
 }) {
+  verifyEnvironment(env);
   verifyManagedSettings(managedSettings, io);
   if (spawn("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0) {
     throw new LaneError(
@@ -663,9 +726,16 @@ function verifyIsolation({
       `${dockerSocket} is writable: runner isolation must remove docker access`,
     );
   }
-  if (spawn("bwrap", ["--version"], { stdio: "ignore" }).status !== 0) {
+  // The scrub needs bubblewrap to create namespaces, not merely be installed.
+  const probe = spawn("bwrap", BWRAP_PROBE, { stdio: "ignore" });
+  if (probe.error?.code === "ENOENT") {
     throw new LaneError(
       "bubblewrap is missing: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs it",
+    );
+  }
+  if (probe.status !== 0) {
+    throw new LaneError(
+      `bwrap ${BWRAP_PROBE.join(" ")} failed: bubblewrap cannot create a PID namespace. On Ubuntu 24.04 run \`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\` in runner isolation, before sudo is removed (see pr-review.yml, "Install subprocess isolation")`,
     );
   }
 }
@@ -708,6 +778,7 @@ function install(env, { spawn = spawnSync } = {}) {
 }
 
 function run(env) {
+  verifyEnvironment(env);
   const config = readConfig(env);
   for (const line of skipWarnings(config)) process.stdout.write(`${line}\n`);
   const token = crypto.randomBytes(16).toString("hex");
@@ -788,6 +859,7 @@ module.exports = {
   runLegs,
   skipWarnings,
   summaryTable,
+  verifyEnvironment,
   verifyIsolation,
   verifyManagedSettings,
 };

@@ -30,13 +30,15 @@ const {
   run,
   runLegs,
   skipWarnings,
+  summaryTable,
+  verifyEnvironment,
   verifyIsolation,
   verifyManagedSettings,
 } = require("./lane.cjs");
 
 const KEY = "key-value-for-tests-1234";
 const TOKEN = "oauth-value-for-tests-5678";
-const KEY_NAME = "FIXCI_CLAUDE_API_KEY";
+const KEY_NAME = "AUTOMATIONS_CLAUDE_API_KEY";
 const TOKEN_NAME = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
 
 const root = makeTemporaryDirectory("run-claude-cli-");
@@ -222,13 +224,13 @@ function runCase({
     legs: [
       {
         leg: "api-key",
-        name: key ? KEY_NAME : "",
+        name: KEY_NAME,
         value: key ? KEY : "",
         skipped: !key,
       },
       {
         leg: "subscription",
-        name: sub ? TOKEN_NAME : "",
+        name: TOKEN_NAME,
         value: sub ? TOKEN : "",
         skipped: !sub,
       },
@@ -358,7 +360,7 @@ test("an empty api-key skips the key leg with a visible warning", () => {
     ["SUB"],
   );
   assert.deepEqual(skipWarnings(config), [
-    "::warning::run-claude-cli: skipped=api-key (empty secret)",
+    "::warning::run-claude-cli: skipped=AUTOMATIONS_CLAUDE_API_KEY (empty secret)",
   ]);
   assert.equal(outputs.credential, TOKEN_NAME);
 });
@@ -590,9 +592,7 @@ function configEnv(overrides = {}) {
     LANE_ROLE: "automations",
     LANE_PROMPT_FILE: prompt,
     LANE_API_KEY: KEY,
-    LANE_API_KEY_NAME: KEY_NAME,
     LANE_SUBSCRIPTION_TOKEN: "",
-    LANE_SUBSCRIPTION_TOKEN_NAME: "",
     LANE_MODEL: "sonnet",
     LANE_EFFORT: "medium",
     LANE_MAX_TURNS: "10",
@@ -605,30 +605,32 @@ function configEnv(overrides = {}) {
   };
 }
 
-test("readConfig names an unnamed secret after the role; an explicit name wins", () => {
+test("readConfig names every secret after the role, an empty one too, and takes no name from input", () => {
   const derived = readConfig(
     configEnv({
       LANE_ROLE: "issue-lane",
-      LANE_API_KEY_NAME: "",
       LANE_SUBSCRIPTION_TOKEN: TOKEN,
+      LANE_API_KEY_NAME: "OTHER_SECRET",
+      LANE_SUBSCRIPTION_TOKEN_NAME: "OTHER_TOKEN",
     }),
   );
   assert.deepEqual(
     derived.legs.map((leg) => leg.name),
     ["ISSUE_LANE_CLAUDE_API_KEY", "ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN"],
   );
-  assert.equal(readConfig(configEnv()).legs[0].name, KEY_NAME);
+  const skipped = readConfig(configEnv()).legs[1];
+  assert.equal(skipped.skipped, true);
+  assert.equal(skipped.name, "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN");
+  assert.deepEqual(skipWarnings(readConfig(configEnv())), [
+    "::warning::run-claude-cli: skipped=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN (empty secret)",
+  ]);
 });
 
-test("readConfig refuses bypass, badly named secrets, no credential and bad values", () => {
+test("readConfig refuses bypass, no credential and bad values", () => {
   assert.equal(readConfig(configEnv()).legs[1].skipped, true);
   assert.throws(
     () => readConfig(configEnv({ LANE_PERMISSION_MODE: "bypassPermissions" })),
     /permission-mode/u,
-  );
-  assert.throws(
-    () => readConfig(configEnv({ LANE_API_KEY_NAME: "fixci_key" })),
-    /secret name/u,
   );
   assert.throws(
     () => readConfig(configEnv({ LANE_API_KEY: "" })),
@@ -675,7 +677,6 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
   const env = {
     ...configEnv({
       LANE_SUBSCRIPTION_TOKEN: TOKEN,
-      LANE_SUBSCRIPTION_TOKEN_NAME: TOKEN_NAME,
       LANE_WORK_DIR: dir,
     }),
     PATH: process.env.PATH,
@@ -709,10 +710,57 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
     log.map((r) => r.class),
     ["credit-stop", "rate-limit"],
   );
+  assert.equal(log[1].message, "You've hit your session limit · resets 3:45pm");
+  const summaryText = fs.readFileSync(summary, "utf8");
   assert.match(
-    fs.readFileSync(summary, "utf8"),
-    /\| 2 \| AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN \| rate-limit \|/u,
+    summaryText,
+    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| credit-stop \| .* \| credit stop: add Console credit or raise the spend limit \|/u,
   );
+  assert.match(
+    summaryText,
+    /\| 2 \| AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN \| rate-limit \| .* \| limit stop: rerun after the reset \|/u,
+  );
+  assert.equal(summaryText.includes("Credit balance"), false);
+  assert.equal(summaryText.includes("session limit"), false);
+});
+
+test("the summary shows a closed token per class and never a record's message", () => {
+  const record = (failureClass) => ({
+    leg: 1,
+    secret: KEY_NAME,
+    class: failureClass,
+    num_turns: 0,
+    denials: { count: 0 },
+    resets: null,
+    next: null,
+    message: "::error::planted CLI text",
+  });
+  const table = summaryTable(
+    ["", "auth", "timeout", "max-turns", "overloaded", "other", "unknown"].map(
+      record,
+    ),
+  );
+  assert.equal(table.includes("planted"), false);
+  assert.match(table, /\| success \| 0 \| 0 \|  \|  \|  \|$/mu);
+  assert.match(table, /\| auth \| .* \| credential unusable: replace the secret \|/u);
+  assert.match(table, /\| unknown \| .* \| see the step log \|/u);
+});
+
+test("run refuses a loader, TLS or proxy variable before any leg", () => {
+  const dir = path.join(root, "run-unsafe");
+  fs.mkdirSync(dir);
+  const calls = path.join(dir, "calls.jsonl");
+  assert.throws(
+    () =>
+      run({
+        ...configEnv({ LANE_WORK_DIR: dir }),
+        PATH: process.env.PATH,
+        FAKE_CALLS: calls,
+        NODE_OPTIONS: "--require /tmp/planted.js",
+      }),
+    /sets NODE_OPTIONS/u,
+  );
+  assert.equal(fs.existsSync(calls), false);
 });
 
 const PINNED = {
@@ -759,12 +807,107 @@ test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () =
   }
 });
 
+test("verifyEnvironment refuses loader, TLS and proxy variables, NO_PROXY and empty values aside", () => {
+  for (const name of [
+    "NODE_OPTIONS",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "BASH_ENV",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "FTP_PROXY",
+  ]) {
+    assert.throws(
+      () => verifyEnvironment({ PATH: "/usr/bin", [name]: "x" }),
+      (error) => error instanceof LaneError && error.message.includes(name),
+      name,
+    );
+  }
+  assert.doesNotThrow(() =>
+    verifyEnvironment({
+      PATH: "/usr/bin",
+      NO_PROXY: "localhost",
+      no_proxy: "localhost",
+      NODE_OPTIONS: "",
+      HTTPS_PROXY: "",
+      PROXY_HOST: "x",
+    }),
+  );
+});
+
+test("verifyIsolation probes a PID namespace and refuses an unsafe environment", () => {
+  const file = path.join(root, "probe-settings.json");
+  fs.writeFileSync(file, JSON.stringify(PINNED));
+  const stat = () => ({ uid: 0, mode: 0o100644 });
+  const dockerSocket = path.join(root, "absent-probe.sock");
+  const probes = [];
+  const answer = (bwrap) => (command, args) => {
+    if (command === "sudo") return { status: 1 };
+    probes.push(args);
+    return bwrap;
+  };
+  assert.doesNotThrow(() =>
+    verifyIsolation({
+      managedSettings: file,
+      env: {},
+      dockerSocket,
+      stat,
+      spawn: answer({ status: 0 }),
+    }),
+  );
+  assert.deepEqual(probes, [
+    ["--unshare-pid", "--dev-bind", "/", "/", "true"],
+  ]);
+  assert.throws(
+    () =>
+      verifyIsolation({
+        managedSettings: file,
+        env: {},
+        dockerSocket,
+        stat,
+        spawn: answer({ status: 1 }),
+      }),
+    /cannot create a PID namespace.*apparmor_restrict_unprivileged_userns=0/u,
+  );
+  const missing = Object.assign(new Error("spawnSync bwrap ENOENT"), {
+    code: "ENOENT",
+  });
+  assert.throws(
+    () =>
+      verifyIsolation({
+        managedSettings: file,
+        env: {},
+        dockerSocket,
+        stat,
+        spawn: answer({ status: null, error: missing }),
+      }),
+    /bubblewrap is missing/u,
+  );
+  assert.throws(
+    () =>
+      verifyIsolation({
+        managedSettings: file,
+        env: { LD_PRELOAD: "/tmp/planted.so" },
+        dockerSocket,
+        stat,
+        spawn: answer({ status: 0 }),
+      }),
+    /sets LD_PRELOAD/u,
+  );
+});
+
 test("verifyIsolation refuses a writable docker socket", () => {
   const file = path.join(root, "isolation-settings.json");
   fs.writeFileSync(file, JSON.stringify(PINNED));
   // sudo fails, bubblewrap answers.
   const spawn = (command) => ({ status: command === "sudo" ? 1 : 0 });
-  const io = { stat: () => ({ uid: 0, mode: 0o100644 }), spawn };
+  const io = { stat: () => ({ uid: 0, mode: 0o100644 }), spawn, env: {} };
   const socket = path.join(root, "docker.sock");
   fs.writeFileSync(socket, "");
   assert.throws(
