@@ -600,6 +600,7 @@ jobs:
           step-timeout-minutes: 12
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
+          known-failure-class: ${{ steps.claude.outputs.lane-class }}
 
       # No model runs here. Every value reaches the script through env.
       - name: Apply the triage
