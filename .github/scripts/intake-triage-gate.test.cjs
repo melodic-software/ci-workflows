@@ -215,10 +215,7 @@ test("a dispatch by an unlisted actor, or with no issue number, starts nothing",
     gate(dispatch("stranger", 9), "41898282", "153232337", "12"),
     false,
   );
-  assert.equal(
-    gate(dispatch("stranger[bot]", 9), "41898282", "", "12"),
-    false,
-  );
+  assert.equal(gate(dispatch("stranger[bot]", 9), "41898282", "", "12"), false);
   // A person's id in the bot list, or a bot's id in the person list, does not admit.
   assert.equal(
     gate(dispatch("kyle-sexton", kyle.id), "153232337", "", "12"),

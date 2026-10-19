@@ -500,7 +500,12 @@ test("compose rejects an admission label as the floor label", async () => {
 test("compose reads the model, effort and turn cap from claude-args; the last of each wins", async () => {
   const graphql = async () => ({ repository: null });
   for (const [baseArgs, model, effort, cap] of [
-    ["--model claude-sonnet-5 --max-turns 30", "claude-sonnet-5", "medium", "30"],
+    [
+      "--model claude-sonnet-5 --max-turns 30",
+      "claude-sonnet-5",
+      "medium",
+      "30",
+    ],
     ["--max-turns=12 --model x", "x", "medium", "12"],
     ["--max-turns 15 --max-turns 40", "sonnet", "medium", "40"],
     ['--max-turns "30" --model x', "x", "medium", "30"],
