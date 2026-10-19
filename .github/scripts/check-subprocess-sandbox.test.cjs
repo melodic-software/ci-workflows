@@ -26,13 +26,11 @@ const action = parseWorkflow(
     "utf8",
   ),
 );
-const step = action.runs.steps.find((candidate) => candidate.id === "probe");
+const [step] = action.runs.steps;
 
 function probe({ status, stderr }) {
   const directory = makeTemporaryDirectory("probe-");
   const argsFile = path.join(directory, "args");
-  const outputFile = path.join(directory, "output");
-  fs.writeFileSync(outputFile, "");
   const bin = path.join(directory, "bin");
   fs.mkdirSync(bin);
   fs.writeFileSync(
@@ -43,7 +41,6 @@ function probe({ status, stderr }) {
   const result = spawnSync(step.shell, ["-e", "-c", step.run], {
     env: {
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      GITHUB_OUTPUT: outputFile,
     },
     encoding: "utf8",
   });
@@ -51,16 +48,8 @@ function probe({ status, stderr }) {
     status: result.status,
     stdout: result.stdout,
     args: fs.readFileSync(argsFile, "utf8").trim().split("\n"),
-    output: fs.readFileSync(outputFile, "utf8"),
   };
 }
-
-test("the action exposes the probe's class", () => {
-  assert.equal(
-    action.outputs["failure-class"].value,
-    `\${{ steps.probe.outputs.failure-class }}`,
-  );
-});
 
 test("the probe asks bwrap for a PID namespace over the whole filesystem", () => {
   const result = probe({ status: 0, stderr: "" });
@@ -73,10 +62,9 @@ test("the probe asks bwrap for a PID namespace over the whole filesystem", () =>
   ]);
 });
 
-test("a sandbox that starts passes and sets no class", () => {
+test("a sandbox that starts passes without an error", () => {
   const result = probe({ status: 0, stderr: "" });
   assert.equal(result.status, 0);
-  assert.equal(result.output, "");
   assert.doesNotMatch(result.stdout, /::error/u);
 });
 
@@ -87,7 +75,6 @@ test("a sandbox that cannot create a namespace fails as sandbox-unavailable with
       "bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces.\n100% denied",
   });
   assert.equal(result.status, 1);
-  assert.equal(result.output, "failure-class=sandbox-unavailable\n");
   // One annotation line: stderr's newline and percent sign are encoded.
   const errors = result.stdout
     .split("\n")

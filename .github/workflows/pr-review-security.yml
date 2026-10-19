@@ -990,7 +990,7 @@ jobs:
           install-outcome: ${{ steps.bun-check.outputs.outcome }}
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
-          known-failure-class: ${{ steps.sandbox.outputs.failure-class }}
+          known-failure-class: ${{ steps.sandbox.outcome == 'failure' && 'sandbox-unavailable' || '' }}
 
       # The lane's one comment: created once, then edited in place. Only a
       # completed review, or a review that was not needed, moves the

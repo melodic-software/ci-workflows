@@ -224,7 +224,7 @@ for (const lane of lanes) {
     );
     assert.equal(
       outcome.with["known-failure-class"],
-      `\${{ steps.sandbox.outputs.failure-class }}`,
+      `\${{ steps.sandbox.outcome == 'failure' && 'sandbox-unavailable' || '' }}`,
     );
   });
 
