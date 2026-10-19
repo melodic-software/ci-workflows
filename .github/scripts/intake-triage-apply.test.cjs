@@ -91,7 +91,12 @@ async function apply(
 ) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-apply-"));
   const executionFile = path.join(directory, "execution.json");
-  fs.writeFileSync(executionFile, JSON.stringify([resultMessage]));
+  fs.writeFileSync(
+    executionFile,
+    JSON.stringify([
+      output ? { ...resultMessage, structured_output: output } : resultMessage,
+    ]),
+  );
   const labels = [];
   const removed = [];
   const typeCalls = [];
@@ -135,7 +140,6 @@ async function apply(
     const { failed, warnings, summary } = await runScript(
       applyStep.with.script,
       {
-        STRUCTURED_OUTPUT: output ? JSON.stringify(output) : "",
         EXECUTION_FILE: executionFile,
         ALLOWED: JSON.stringify(allowed),
         TYPES: JSON.stringify(TYPES),
@@ -148,7 +152,6 @@ async function apply(
         ISSUE_NUMBER: "7",
         ISSUE_NODE_ID: "I_node7",
         CLI_VERSION: "",
-        CLI_PUBLISHED: "",
       },
       github,
     );
@@ -384,13 +387,21 @@ test("an empty floor-label never removes a label", async () => {
   assert.deepEqual(removed, []);
 });
 
+const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "intake-compose-"));
+test.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
+
 async function compose(graphql, env = {}) {
-  const { outputs, warnings } = await runScript(
+  const { outputs, warnings, failed } = await runScript(
     composeStep.with.script,
     {
       ALLOWED_LABELS: "priority: high\n",
       ESCALATION_LABEL,
       BASE_ARGS: "--max-turns 15",
+      CLI_VERSION: "latest",
+      REPOSITORY: "o/r",
+      ISSUE_NUMBER: "7",
+      INSTRUCTIONS: "",
+      RUNNER_TEMP: runnerTemp,
       ...env,
     },
     {
@@ -405,8 +416,10 @@ async function compose(graphql, env = {}) {
       rest: { issues: { listLabelsForRepo: () => {} } },
     },
   );
-  const schema = JSON.parse(/--json-schema '(.*)'$/u.exec(outputs.args)[1]);
-  return { outputs, warnings, schema };
+  const schema = outputs["schema-file"]
+    ? JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"))
+    : undefined;
+  return { outputs, warnings, failed, schema };
 }
 
 test("compose offers the enabled Issue Types plus none", async () => {
@@ -470,6 +483,8 @@ test("compose rejects an admission label as the floor label", async () => {
         ESCALATION_LABEL,
         FLOOR_LABEL: floor,
         BASE_ARGS: "",
+        CLI_VERSION: "latest",
+        RUNNER_TEMP: runnerTemp,
       },
       {
         paginate: async () => [{ name: ESCALATION_LABEL }, { name: floor }],
@@ -482,37 +497,93 @@ test("compose rejects an admission label as the floor label", async () => {
   }
 });
 
-test("compose reports the CLI's turn cap, the last --max-turns, for the run record", async () => {
+test("compose reads the model, effort and turn cap from claude-args; the last of each wins", async () => {
   const graphql = async () => ({ repository: null });
-  for (const [baseArgs, cap] of [
-    ["--model claude-sonnet-5 --max-turns 30", "30"],
-    ["--max-turns=12 --model x", "12"],
-    ["--max-turns 15 --max-turns 40", "40"],
-    ['--max-turns "30" --model x', "30"],
-    ["--max-turns='7'", "7"],
-    ["--model claude-sonnet-5", ""],
-    ["--max-turnsx 9", ""],
+  for (const [baseArgs, model, effort, cap] of [
+    [
+      "--model claude-sonnet-5 --max-turns 30",
+      "claude-sonnet-5",
+      "medium",
+      "30",
+    ],
+    ["--max-turns=12 --model x", "x", "medium", "12"],
+    ["--max-turns 15 --max-turns 40", "sonnet", "medium", "40"],
+    ['--max-turns "30" --model x', "x", "medium", "30"],
+    ["--max-turns='7' --effort=high", "sonnet", "high", "7"],
+    ["", "sonnet", "medium", "30"],
   ]) {
-    const { outputs } = await compose(graphql, { BASE_ARGS: baseArgs });
-    assert.equal(outputs["max-turns"], cap, baseArgs);
+    const { outputs, failed } = await compose(graphql, { BASE_ARGS: baseArgs });
+    assert.deepEqual(failed, [], baseArgs);
+    assert.deepEqual(
+      [outputs.model, outputs.effort, outputs["max-turns"]],
+      [model, effort, cap],
+      baseArgs,
+    );
   }
 });
 
-test("the default runs Sonnet at medium effort for 30 turns, and a caller's claude-args replaces it", async () => {
+test("compose refuses any other claude-args flag, a missing value or a bad turn cap", async () => {
+  const graphql = async () => ({ repository: null });
+  for (const baseArgs of [
+    "--max-turnsx 9",
+    "--model x --permission-mode bypassPermissions",
+    "--dangerously-skip-permissions",
+    "--model",
+    "--max-turns 0",
+    "sonnet",
+  ]) {
+    const { outputs, failed } = await compose(graphql, { BASE_ARGS: baseArgs });
+    assert.equal(failed.length, 1, baseArgs);
+    assert.equal(outputs["prompt-file"], undefined, baseArgs);
+  }
+});
+
+test("the default runs Sonnet at medium effort for 30 turns, which an omitted flag also takes", async () => {
   const graphql = async () => ({ repository: null });
   const fallback = workflow.on.workflow_call.inputs["claude-args"].default;
   assert.equal(fallback, "--model sonnet --effort medium --max-turns 30");
-  for (const [baseArgs, cap] of [
-    [fallback, "30"],
-    ["--model opus --max-turns 12 --effort high", "12"],
-  ]) {
-    const { outputs } = await compose(graphql, { BASE_ARGS: baseArgs });
-    assert.ok(
-      outputs.args.startsWith(`${baseArgs} --permission-mode dontAsk `),
-      outputs.args,
-    );
-    assert.equal(outputs["max-turns"], cap, baseArgs);
+  const explicit = await compose(graphql, { BASE_ARGS: fallback });
+  const omitted = await compose(graphql, { BASE_ARGS: "" });
+  for (const key of ["model", "effort", "max-turns"]) {
+    assert.equal(explicit.outputs[key], omitted.outputs[key], key);
   }
+});
+
+test("compose maps stable and bundled to latest and refuses other CLI versions", async () => {
+  const graphql = async () => ({ repository: null });
+  for (const [requested, resolved] of [
+    ["latest", "latest"],
+    ["2.1.302", "2.1.302"],
+    ["stable", "latest"],
+    ["bundled", "latest"],
+  ]) {
+    const { outputs } = await compose(graphql, { CLI_VERSION: requested });
+    assert.equal(outputs["cli-version"], resolved, requested);
+  }
+  for (const requested of ["2.1", "2.1.302-beta.1", "next"]) {
+    const { failed } = await compose(graphql, { CLI_VERSION: requested });
+    assert.equal(failed.length, 1, requested);
+  }
+});
+
+test("compose writes a prompt naming the issue, the allowed labels and the caller's instructions", async () => {
+  const { outputs } = await compose(async () => ({ repository: null }), {
+    INSTRUCTIONS: "Prefer the docs label for typos.",
+  });
+  const prompt = fs.readFileSync(outputs["prompt-file"], "utf8");
+  assert.match(prompt, /^REPO: o\/r\nISSUE NUMBER: 7\n/u);
+  assert.match(prompt, /^- priority: high$/mu);
+  assert.match(prompt, /`gh issue view <number>/u);
+  assert.match(prompt, /Prefer the docs label for typos\./u);
+  assert.equal(
+    outputs["allowed-tools"],
+    [
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)",
+      "Bash(gh search issues *)",
+      "Bash(gh label list *)",
+    ].join("\n"),
+  );
 });
 
 test("compose never offers admission labels to the model", async () => {

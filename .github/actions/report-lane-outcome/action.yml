@@ -93,6 +93,14 @@ inputs:
       non-numeric is omitted.
     required: false
     default: ""
+  known-failure-class:
+    description: >-
+      A failure class the caller already decided, such as run-claude-cli's
+      `lane-class`. When set, a failed run reports it instead of
+      reclassifying execution-file, which cannot see the launcher's
+      credit-stop or leg-timeout decisions. Empty reclassifies as before.
+    required: false
+    default: ""
 
 outputs:
   review-failed:
@@ -145,6 +153,7 @@ runs:
         CREDENTIAL: ${{ inputs.credential }}
         MAX_TURNS: ${{ inputs.max-turns }}
         INSTALL_OUTCOME: ${{ inputs.install-outcome }}
+        KNOWN_FAILURE_CLASS: ${{ inputs.known-failure-class }}
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
@@ -225,11 +234,17 @@ runs:
           const startedAt = Number(process.env.STEP_STARTED_AT || Number.NaN);
           const budgetMinutes = Number(process.env.STEP_TIMEOUT_MINUTES || Number.NaN);
           const timedOut = Date.now() / 1000 - startedAt >= budgetMinutes * 60;
-          const { reviewDetail, failureClass } = classifyExecutionFile(executionFile, {
+          const classified = classifyExecutionFile(executionFile, {
             timedOut,
             maxTurns: process.env.MAX_TURNS ?? "",
             installFailed: process.env.INSTALL_OUTCOME === "failure",
           });
+          const { reviewDetail } = classified;
+          // A caller's own decision wins, as a closed kebab token only.
+          const known = (process.env.KNOWN_FAILURE_CLASS ?? "").trim();
+          const failureClass = /^[a-z][a-z-]{0,39}$/u.test(known)
+            ? known
+            : classified.failureClass;
 
           // `class=<token>` is a machine-readable term, not prose: this
           // annotation is the detection surface a receiver polls through the

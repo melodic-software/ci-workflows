@@ -61,6 +61,7 @@ async function runOutcome({
   timeoutMinutes = "",
   credential = "",
   maxTurns = "",
+  knownFailureClass = "",
 }) {
   const keys = [
     "LANE_OUTCOME",
@@ -70,6 +71,7 @@ async function runOutcome({
     "STEP_TIMEOUT_MINUTES",
     "CREDENTIAL",
     "MAX_TURNS",
+    "KNOWN_FAILURE_CLASS",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -83,6 +85,7 @@ async function runOutcome({
     STEP_TIMEOUT_MINUTES: timeoutMinutes,
     CREDENTIAL: credential,
     MAX_TURNS: maxTurns,
+    KNOWN_FAILURE_CLASS: knownFailureClass,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -174,6 +177,31 @@ test("a genuine failure still classifies and reports as failed", async () => {
   assert.equal(outputs.failure_class, "auth");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /\bclass=auth\b/u);
+});
+
+test("a caller's known failure class wins over reclassifying the file", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 401,
+    },
+  ]);
+  const known = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    knownFailureClass: "timeout",
+  });
+  assert.equal(known.outputs.failure_class, "timeout");
+  assert.match(known.errors[0], /\bclass=timeout\b/u);
+  const unsafe = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    knownFailureClass: "Timeout; rm",
+  });
+  assert.equal(unsafe.outputs.failure_class, "auth");
 });
 
 test("a usage limit reads as a skipped review and keeps the class token", async () => {

@@ -966,11 +966,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `Proposed work class:` in its note. The lane never applies a `work-class:`
   label or `agent-ready`. After any other run the lane adds the floor if it
   is missing, so the result does not depend on whether
-  `intake-label-needs-triage` ran first. It installs the newest Claude Code CLI at run time (`cli-version`,
-  else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
-  the action's own). The caller grants `contents: read` and `issues: write`
-  and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries
-  the canonical caller and the security model. Runs only for issues opened by
+  `intake-label-needs-triage` ran first. It runs through
+  `.github/actions/run-claude-cli` (lane `intake`, funding `role` default
+  `automations`), which installs the newest Claude Code CLI at run time
+  (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`).
+  `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
+  caller grants `contents: read` and `issues: write` and passes the role's
+  `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one); the workflow
+  header carries the canonical caller and the security model. Runs only for issues opened by
   their author when that author's user id is in `allowed-author-ids` (a
   person) or `allowed-bot-sender-ids` (a bot); other issues wait for a
   person, and the `claude-intake-triage-skipped` job names the reason and
