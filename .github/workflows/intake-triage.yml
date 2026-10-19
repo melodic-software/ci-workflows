@@ -34,9 +34,9 @@ name: intake-triage
 #
 # SECURITY MODEL:
 #   - Issue text is untrusted, and anyone can open an issue on a public repo.
-#     The run goes through the claude-lane action: before the checkout the
+#     The run goes through the run-claude-cli action: before the checkout the
 #     job writes root-owned managed settings, then removes sudo and docker
-#     access and installs bubblewrap, and claude-lane refuses to start
+#     access and installs bubblewrap, and run-claude-cli refuses to start
 #     without all three. It turns on the CLI's subprocess credential scrub
 #     and puts exactly one Claude credential in the CLI environment.
 #   - The API key leg runs first; the subscription leg runs only when the key
@@ -81,7 +81,7 @@ name: intake-triage
 #     claude-intake-triage-skipped job names the reason in the run summary
 #     and a notice, and applies skipped-label when the caller sets one.
 #
-# CLI VERSION: claude-lane installs the Claude Code CLI at run time.
+# CLI VERSION: run-claude-cli installs the Claude Code CLI at run time.
 # `cli-version`, else the caller repo's CLAUDE_LANE_CLI_VERSION variable,
 # else `latest`, selects it: `latest` or an exact version. `stable` and
 # `bundled`, which the claude-code-action lane took, run `latest` with a
@@ -157,7 +157,7 @@ on:
       role:
         description: >-
           The funding role whose secrets the caller passes, lower-case kebab;
-          claude-lane records it and names the secrets after it
+          run-claude-cli records it and names the secrets after it
           (`<ROLE>_CLAUDE_API_KEY`, `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN`).
         type: string
         default: automations
@@ -306,10 +306,10 @@ jobs:
             core.setOutput("node-id", issue.node_id);
 
       # Managed settings need sudo, so they come first; isolation then removes
-      # sudo and docker before the checkout. claude-lane fails closed without
+      # sudo and docker before the checkout. run-claude-cli fails closed without
       # either.
-      - name: Write the claude-lane managed settings
-        uses: $/.github/actions/claude-lane/managed-settings
+      - name: Apply the Claude managed settings
+        uses: $/.github/actions/apply-claude-managed-settings
 
       # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, Claude Code on Linux will not
       # start without bubblewrap. The AppArmor sysctl is lifted only on
@@ -359,7 +359,7 @@ jobs:
 
       # The allowlist is the caller's labels that exist in the repository; the
       # same list becomes the output schema's enum, and the apply step checks
-      # it again. The prompt and schema go to files claude-lane reads.
+      # it again. The prompt and schema go to files run-claude-cli reads.
       - name: Resolve labels and compose Claude CLI arguments
         id: compose
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -404,7 +404,7 @@ jobs:
 
             let cliVersion = env.CLI_VERSION;
             if (cliVersion === "stable" || cliVersion === "bundled") {
-              core.warning(`cli-version '${cliVersion}' has no claude-lane equivalent; running latest.`);
+              core.warning(`cli-version '${cliVersion}' has no run-claude-cli equivalent; running latest.`);
               cliVersion = "latest";
             }
             if (!/^(latest|[0-9]+\.[0-9]+\.[0-9]+)$/u.test(cliVersion)) {
@@ -546,7 +546,7 @@ jobs:
             // Lets the outcome step tell a step timeout from other failures.
             core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
 
-      # continue-on-error keeps an infrastructure failure, which claude-lane
+      # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
       # and apply steps run; the last step carries the red. The outcome
       # step's step-timeout-minutes repeats timeout-minutes. GH_TOKEN is the
@@ -556,7 +556,7 @@ jobs:
         id: claude
         continue-on-error: true
         timeout-minutes: 12
-        uses: $/.github/actions/claude-lane
+        uses: $/.github/actions/run-claude-cli
         env:
           GH_TOKEN: ${{ github.token }}
         with:

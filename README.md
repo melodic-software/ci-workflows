@@ -935,7 +935,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   label or `agent-ready`. After any other run the lane adds the floor if it
   is missing, so the result does not depend on whether
   `intake-label-needs-triage` ran first. It runs through
-  `.github/actions/claude-lane` (lane `intake`, funding `role` default
+  `.github/actions/run-claude-cli` (lane `intake`, funding `role` default
   `automations`), which installs the newest Claude Code CLI at run time
   (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`).
   `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
