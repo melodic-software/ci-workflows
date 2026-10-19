@@ -192,7 +192,9 @@ on:
         description: >-
           auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
           incomplete when the step succeeded but no completed review was found;
-          skipped-validation when the action skipped itself; empty otherwise.
+          skipped-validation when the action skipped itself; sandbox-unavailable
+          when bubblewrap could not create a namespace, so no review ran;
+          empty otherwise.
         value: ${{ jobs.claude.outputs.failure-class }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -697,6 +699,17 @@ jobs:
             exit 1
           fi
 
+      # Installed bubblewrap can still fail to create a namespace (unprivileged
+      # user namespaces off), and then every Bash call the model makes fails
+      # while the step still concludes success. The probe fails the lane
+      # before any model run, as class sandbox-unavailable.
+      - name: Probe the subprocess sandbox
+        id: sandbox
+        if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/probe-subprocess-sandbox
+
       # continue-on-error keeps an infrastructure failure from ending the job
       # before the outcome step classifies it; the last step carries the red.
       # The pick step's first-attempt timeout repeats timeout-minutes. The
@@ -704,7 +717,7 @@ jobs:
       # holds them equal.
       - name: Claude review
         id: claude-review
-        if: steps.scope.outputs.review != 'false'
+        if: steps.scope.outputs.review != 'false' && steps.sandbox.outcome != 'failure'
         continue-on-error: true
         timeout-minutes: 11
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
@@ -1107,6 +1120,7 @@ jobs:
           install-outcome: ${{ steps.bun-check.outputs.outcome }}
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
+          known-failure-class: ${{ steps.sandbox.outputs.failure-class }}
 
       # The lane's one comment: created once, then edited in place. Only a
       # completed review, or a review that was not needed, moves the
@@ -1223,6 +1237,7 @@ jobs:
             timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
+            sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;
           esac
