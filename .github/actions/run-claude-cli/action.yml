@@ -1,0 +1,205 @@
+name: run-claude-cli
+description: >-
+  Run one prompt with headless `claude -p` for an agent-mode CI lane, on a
+  Linux runner. The API key leg runs first; the subscription leg runs in the
+  same job only when the key leg ends in a credit stop (classify.cjs
+  isCreditStop), and any other key-leg failure ends the run with its class.
+  Each leg's CLI environment has every credential and file-command variable
+  removed and exactly one credential set, and the CLI runs with `--restricted`
+  and `--strict-mcp-config`; whatever a leg appends to the step's GITHUB_ENV
+  or GITHUB_PATH file is cut off after the last leg. That is all it removes:
+  code a leg runs as the runner user can still reach the other file-command
+  files under RUNNER_TEMP, this step's GITHUB_OUTPUT and GITHUB_STEP_SUMMARY,
+  `_work/_actions` and `~/.npmrc`. So a lane that gives the model unrestricted
+  Bash, or any code-running tool beyond fixed read-only command rules, must
+  run this action in a job that holds no other secret or write token and do
+  its reporting and uploads in a downstream job that validates its inputs; a
+  lane whose Bash is limited to fixed read-only rules may stay in one job.
+  Input contract, in this order: the caller runs
+  `apply-claude-managed-settings` while sudo still works, then removes sudo and
+  docker access, installs bubblewrap and lets it create user namespaces
+  (runner isolation), and runs no head code in the job before this action.
+  This action fails closed when the settings are missing or unpinned, sudo
+  works, the docker socket is writable, `bwrap --unshare-pid` fails, or the
+  step environment sets NODE_OPTIONS, LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV,
+  NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED or a `*_PROXY` variable
+  other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
+  execution log (one object per leg) written only after a scan finds no
+  credential in it, and a job summary table of closed tokens. Uploading the
+  log is the caller's choice. The step fails, after writing its outputs,
+  whenever lane-class is not empty.
+
+inputs:
+  lane:
+    description: The lane, lower-case kebab (for example `intake` or `fix-ci`); recorded in the log.
+    required: true
+  role:
+    description: >-
+      The funding role whose two secrets the caller passes, lower-case kebab
+      (for example `automations`); recorded in the log. It names the secrets,
+      `<ROLE>_CLAUDE_API_KEY` and `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the
+      role upper-snake (`issue-lane` gives `ISSUE_LANE_CLAUDE_API_KEY`).
+    required: true
+  prompt-file:
+    description: Path to the prompt file. Never inline head text.
+    required: true
+  preamble:
+    description: Text prepended to the prompt, separated by a blank line. Empty sends the prompt alone.
+    required: false
+    default: >-
+      You are running unattended in GitHub Actions: no person can answer a
+      question or approve a prompt during this run. Report what you did, and
+      anything left undone, on the issue or pull request you were given. When
+      a step needs a person's decision, say so there and apply the
+      repository's human-gated label instead of guessing.
+  api-key:
+    description: The role's Console API key secret. Empty skips the key leg with a `skipped=` warning.
+    required: false
+    default: ""
+  subscription-token:
+    description: The role's subscription OAuth token secret. Empty skips the subscription leg.
+    required: false
+    default: ""
+  model:
+    description: Model alias or full name passed to `--model`.
+    required: true
+  effort:
+    description: Effort level passed to `--effort`.
+    required: true
+  max-turns:
+    description: Positive whole number passed to `--max-turns`.
+    required: true
+  permission-mode:
+    description: >-
+      `--permission-mode`: default, acceptEdits, plan, auto or dontAsk.
+      bypassPermissions is refused. Prompts are always answered `none`.
+    required: true
+  allowed-tools:
+    description: Permission rules passed to `--allowedTools`, one per line. Empty passes none.
+    required: false
+    default: ""
+  disallowed-tools:
+    description: Permission rules passed to `--disallowedTools`, one per line. Empty passes none.
+    required: false
+    default: ""
+  tools:
+    description: >-
+      Built-in tools the model may use, one per line, passed to `--tools`.
+      Empty leaves the CLI's default set. The CLI runs with `--restricted`,
+      which removes Bash, PowerShell, the other code-running tools and
+      WebFetch unless this input names them: list Bash here for the model to
+      run commands.
+    required: false
+    default: ""
+  json-schema-file:
+    description: >-
+      Path to a JSON Schema the final result must match (`--json-schema`); the
+      result's `structured_output` is in execution-file. Empty passes none.
+    required: false
+    default: ""
+  cli-version:
+    description: >-
+      `latest` resolves the newest @anthropic-ai/claude-code release with
+      `npm view` at run time; an exact major.minor.patch reproduces a run.
+      The resolved version is logged and output.
+    required: false
+    default: latest
+  watchdog-max-wait-ms:
+    description: CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS, the most each request waits out 429 and 529 errors.
+    required: false
+    default: "1800000"
+  leg-timeout-minutes:
+    description: >-
+      Wall-clock cap per leg, in whole minutes (30 by default); a leg that
+      reaches it ends with class `timeout`. Empty means none.
+    required: false
+    default: "30"
+
+outputs:
+  lane-class:
+    description: >-
+      report-lane-outcome's failure class of the leg that ended the run; empty
+      on success. A credit stop with no leg left reports `rate-limit`; a
+      failed install reports `install-failed`, and any other failure before
+      a leg ran, or a leg whose stdout passes 256 MiB, reports `other`.
+      Report this class; do not reclassify
+      execution-file, which cannot see the credit-stop or leg-timeout rules.
+    value: >-
+      ${{ steps.run.outputs.lane-class
+      || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
+      || (steps.run.outcome != 'success' && 'other')
+      || '' }}
+  lane-resets:
+    description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.
+    value: ${{ steps.run.outputs.lane-resets }}
+  lane-turns:
+    description: Turns the final leg took, from the CLI result.
+    value: ${{ steps.run.outputs.lane-turns }}
+  lane-models:
+    description: Comma list of models in the final leg's modelUsage.
+    value: ${{ steps.run.outputs.lane-models }}
+  credential:
+    description: Secret NAME of the leg that produced the result, never its value.
+    value: ${{ steps.run.outputs.credential }}
+  execution-file:
+    description: >-
+      The final leg's CLI messages as a JSON array (the execution_file shape
+      claude-code-action writes). It holds every tool result and model reply
+      and is never scanned for credentials, so do not upload it.
+    value: ${{ steps.run.outputs.execution-file }}
+  log-file:
+    description: JSONL execution log, one object per leg; empty when the credential scan failed.
+    value: ${{ steps.run.outputs.log-file }}
+  cli-version:
+    description: The Claude Code CLI version that ran.
+    value: ${{ steps.install.outputs.cli-version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the isolation contract
+      id: isolation
+      shell: bash
+      env:
+        LANE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json
+      run: node "$GITHUB_ACTION_PATH/lane.cjs" verify-isolation
+
+    - name: Prepare the work directory
+      id: workdir
+      shell: bash
+      run: |
+        dir="$(mktemp -d "$RUNNER_TEMP/run-claude-cli-XXXXXX")"
+        echo "path=$dir" >>"$GITHUB_OUTPUT"
+
+    - name: Install the Claude Code CLI
+      id: install
+      shell: bash
+      env:
+        LANE_CLI_VERSION_INPUT: ${{ inputs.cli-version }}
+        LANE_WORK_DIR: ${{ steps.workdir.outputs.path }}
+      run: node "$GITHUB_ACTION_PATH/lane.cjs" install
+
+    - name: Run the lane
+      id: run
+      shell: bash
+      env:
+        LANE_NAME: ${{ inputs.lane }}
+        LANE_ROLE: ${{ inputs.role }}
+        LANE_PROMPT_FILE: ${{ inputs.prompt-file }}
+        LANE_PREAMBLE: ${{ inputs.preamble }}
+        LANE_API_KEY: ${{ inputs.api-key }}
+        LANE_SUBSCRIPTION_TOKEN: ${{ inputs.subscription-token }}
+        LANE_MODEL: ${{ inputs.model }}
+        LANE_EFFORT: ${{ inputs.effort }}
+        LANE_MAX_TURNS: ${{ inputs.max-turns }}
+        LANE_PERMISSION_MODE: ${{ inputs.permission-mode }}
+        LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
+        LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
+        LANE_TOOLS: ${{ inputs.tools }}
+        LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}
+        LANE_WATCHDOG_MAX_WAIT_MS: ${{ inputs.watchdog-max-wait-ms }}
+        LANE_LEG_TIMEOUT_MINUTES: ${{ inputs.leg-timeout-minutes }}
+        LANE_CLI_VERSION: ${{ steps.install.outputs.cli-version }}
+        LANE_CLI_PATH: ${{ steps.install.outputs.cli-path }}
+        LANE_WORK_DIR: ${{ steps.workdir.outputs.path }}
+      run: node "$GITHUB_ACTION_PATH/lane.cjs" run
