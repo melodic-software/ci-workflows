@@ -2,18 +2,26 @@
 // the lane's subscription token in the same run only after a credit stop.
 //
 // Subcommands (argv[2]):
-//   verify-isolation  fail closed unless managed settings are root-owned,
-//                     sudo is gone and bubblewrap is installed
-//   install           resolve the CLI version and install it
+//   verify-isolation  fail closed unless managed settings are root-owned and
+//                     pinned, sudo and docker are gone and bubblewrap is
+//                     installed
+//   install           resolve the CLI version and install it from the public
+//                     registry, outside any checkout's .npmrc
 //   run               run the legs and write the action's outputs
 //
 // Security contract:
-//   - One credential in the CLI environment per leg (legEnv).
+//   - One credential in the CLI environment per leg (legEnv), and no
+//     workflow file-command path.
+//   - The CLI runs in --restricted mode: code-running tools only when the
+//     tools input names them, no user, project or local settings, file tools
+//     confined to the working directories, no bypassPermissions.
 //   - The subscription leg runs only when the key leg is a credit stop
 //     (classify.cjs isCreditStop), judged from structured fields.
-//   - The CLI's stdout goes to a file. Its stderr, closed-pattern tokens and
-//     a CLI-authored error line reach the job log, all inside
-//     ::stop-commands::.
+//   - The CLI's stdout is captured in memory and written to files only after
+//     the leg exits. Its stderr, closed-pattern tokens and a CLI-authored
+//     error line reach the job log, all inside ::stop-commands::.
+//   - Whatever a leg appends to the step's GITHUB_ENV or GITHUB_PATH file is
+//     cut off after the last leg, so it never reaches a later step.
 //   - The log file is written only after a scan finds no credential in it.
 "use strict";
 
@@ -59,6 +67,21 @@ const CREDENTIAL_VARIABLES = [
   "LANE_SUBSCRIPTION_TOKEN",
 ];
 const KEY_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}/u;
+// Workflow file-command variables. legEnv removes them, so a leg cannot set
+// environment, path, outputs, state or summary for later steps.
+const FILE_COMMAND_VARIABLES = [
+  "GITHUB_ENV",
+  "GITHUB_PATH",
+  "GITHUB_OUTPUT",
+  "GITHUB_STATE",
+  "GITHUB_STEP_SUMMARY",
+];
+// The most CLI stdout one leg may produce; past it the leg is killed and ends
+// with class `other`.
+const MAX_LEG_STDOUT_BYTES = 256 * 1024 * 1024;
+const NPM_REGISTRY = "https://registry.npmjs.org/";
+const PINNED_BASE_URL = "https://api.anthropic.com";
+const DOCKER_SOCKET = "/var/run/docker.sock";
 
 class LaneError extends Error {
   constructor(message) {
@@ -208,11 +231,12 @@ function resolveCliVersion(input, npmView) {
   return version;
 }
 
-// The CLI environment for one leg: every credential variable removed, then
-// only this leg's credential set.
+// The CLI environment for one leg: every credential and file-command
+// variable removed, then only this leg's credential set.
 function legEnv(baseEnv, leg, config) {
   const env = { ...baseEnv };
   for (const name of CREDENTIAL_VARIABLES) delete env[name];
+  for (const name of FILE_COMMAND_VARIABLES) delete env[name];
   if (leg.leg === "api-key") env.ANTHROPIC_API_KEY = leg.value;
   else env.CLAUDE_CODE_OAUTH_TOKEN = leg.value;
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1";
@@ -237,8 +261,7 @@ function cliArgs(config) {
     config.permissionMode,
     "--permission-prompts",
     "none",
-    "--setting-sources",
-    "user",
+    "--restricted",
     "--strict-mcp-config",
     "--no-session-persistence",
   ];
@@ -313,6 +336,7 @@ function legRecord({
   failureClass,
   resets,
   next,
+  message = null,
 }) {
   const result =
     messages.findLast((message) => message?.type === "result") ?? {};
@@ -359,7 +383,7 @@ function legRecord({
     num_turns: count(result.num_turns),
     is_error: typeof result.is_error === "boolean" ? result.is_error : null,
     class: failureClass,
-    message: cliMessage(messages, failureClass),
+    message: message ?? cliMessage(messages, failureClass),
     resets,
     usage: {
       input_tokens: count(usage.input_tokens),
@@ -422,6 +446,26 @@ function skipWarnings(config) {
     );
 }
 
+// The byte size of each file-command file the step was given, so restoreFiles
+// can cut off whatever a leg appends.
+function fileSizes(baseEnv) {
+  const sizes = [];
+  for (const name of ["GITHUB_ENV", "GITHUB_PATH"]) {
+    const file = (baseEnv[name] ?? "").trim();
+    if (file === "" || !fs.existsSync(file)) continue;
+    sizes.push({ file, size: fs.statSync(file).size });
+  }
+  return sizes;
+}
+
+function restoreFiles(sizes) {
+  for (const { file, size } of sizes) {
+    if (fs.existsSync(file) && fs.statSync(file).size !== size) {
+      fs.truncateSync(file, size);
+    }
+  }
+}
+
 function runLegs(
   config,
   {
@@ -434,59 +478,75 @@ function runLegs(
   const active = config.legs.filter((leg) => !leg.skipped);
   const records = [];
   let final = null;
-  for (const [position, leg] of active.entries()) {
-    const index = config.legs.indexOf(leg);
-    const streamFile = path.join(config.workDir, `leg-${index + 1}.jsonl`);
-    const executionFile = path.join(
-      config.workDir,
-      `leg-${index + 1}-execution.json`,
-    );
-    const startedAt = now().toISOString();
-    const out = fs.openSync(streamFile, "w");
-    let child;
-    try {
-      child = spawn(config.cliPath, cliArgs(config), {
+  const sizes = fileSizes(baseEnv);
+  try {
+    for (const [position, leg] of active.entries()) {
+      const index = config.legs.indexOf(leg);
+      const streamFile = path.join(config.workDir, `leg-${index + 1}.jsonl`);
+      const executionFile = path.join(
+        config.workDir,
+        `leg-${index + 1}-execution.json`,
+      );
+      const startedAt = now().toISOString();
+      const child = spawn(config.cliPath, cliArgs(config), {
         env: legEnv(baseEnv, leg, config),
         input: prompt,
-        stdio: ["pipe", out, "inherit"],
+        stdio: ["pipe", "pipe", "inherit"],
+        maxBuffer: MAX_LEG_STDOUT_BYTES,
         timeout: config.legTimeoutMs || undefined,
         killSignal: "SIGINT",
       });
-    } finally {
-      fs.closeSync(out);
+      const endedAt = now().toISOString();
+      const timedOut = child.error?.code === "ETIMEDOUT";
+      const overflowed = child.error?.code === "ENOBUFS";
+      const exitCode = typeof child.status === "number" ? child.status : null;
+      const stdout = child.stdout ?? Buffer.alloc(0);
+      fs.writeFileSync(streamFile, stdout);
+      fs.writeFileSync(
+        executionFile,
+        JSON.stringify(linesToMessages(stdout.toString("utf8"))),
+      );
+      let judged;
+      let message = null;
+      if (overflowed) {
+        message = `CLI stdout passed ${MAX_LEG_STDOUT_BYTES} bytes; the leg was stopped`;
+        judged = {
+          failureClass: "other",
+          resets: null,
+          messages: readMessages(executionFile) ?? [],
+        };
+        process.stderr.write(`run-claude-cli: leg ${index + 1}: ${message}\n`);
+      } else {
+        judged = judgeLeg({
+          leg,
+          executionFile,
+          exitCode,
+          timedOut,
+          maxTurns: config.maxTurns,
+        });
+      }
+      const goesOn =
+        judged.failureClass === "credit-stop" && position < active.length - 1;
+      records.push(
+        legRecord({
+          config,
+          leg,
+          index,
+          startedAt,
+          endedAt,
+          exitCode,
+          messages: judged.messages,
+          failureClass: judged.failureClass,
+          resets: judged.resets,
+          next: goesOn ? active[position + 1].leg : null,
+          message,
+        }),
+      );
+      final = { leg, executionFile, ...judged };
+      if (!goesOn) break;
     }
-    const endedAt = now().toISOString();
-    const timedOut = child.error?.code === "ETIMEDOUT";
-    const exitCode = typeof child.status === "number" ? child.status : null;
-    fs.writeFileSync(
-      executionFile,
-      JSON.stringify(linesToMessages(fs.readFileSync(streamFile, "utf8"))),
-    );
-    const judged = judgeLeg({
-      leg,
-      executionFile,
-      exitCode,
-      timedOut,
-      maxTurns: config.maxTurns,
-    });
-    const goesOn =
-      judged.failureClass === "credit-stop" && position < active.length - 1;
-    records.push(
-      legRecord({
-        config,
-        leg,
-        index,
-        startedAt,
-        endedAt,
-        exitCode,
-        messages: judged.messages,
-        failureClass: judged.failureClass,
-        resets: judged.resets,
-        next: goesOn ? active[position + 1].leg : null,
-      }),
-    );
-    final = { leg, executionFile, ...judged };
-    if (!goesOn) break;
+  } finally {
+    restoreFiles(sizes);
   }
   const record = readRunRecord(final.executionFile);
   // A credit stop with no leg left is a limit stop for the reporters, which
@@ -531,9 +591,9 @@ function writeOutputs(outputPath, outputs) {
   fs.appendFileSync(outputPath, `${lines.join("\n")}\n`);
 }
 
-// Root-owned, not writable by group or others, and pinning both `env` and
-// `apiKeyHelper`, so head code cannot repoint the credential through user
-// settings.
+// Root-owned, not writable by group or others, pinning `apiKeyHelper` and
+// `env.ANTHROPIC_BASE_URL` to the public API, and disabling bypassPermissions,
+// so head code cannot repoint the credential through user settings.
 function verifyManagedSettings(
   file,
   { stat = fs.statSync, read = fs.readFileSync } = {},
@@ -556,19 +616,51 @@ function verifyManagedSettings(
     throw new LaneError(`${file} is not JSON`);
   }
   if (
-    !Object.hasOwn(settings, "apiKeyHelper") ||
-    typeof settings.env !== "object" ||
-    settings.env === null
+    typeof settings !== "object" ||
+    settings === null ||
+    !Object.hasOwn(settings, "apiKeyHelper")
   ) {
-    throw new LaneError(`${file} does not pin both env and apiKeyHelper`);
+    throw new LaneError(`${file} does not pin apiKeyHelper`);
+  }
+  if (settings.env?.ANTHROPIC_BASE_URL !== PINNED_BASE_URL) {
+    throw new LaneError(
+      `${file} does not pin env.ANTHROPIC_BASE_URL to ${PINNED_BASE_URL}`,
+    );
+  }
+  if (settings.permissions?.disableBypassPermissionsMode !== "disable") {
+    throw new LaneError(
+      `${file} does not set permissions.disableBypassPermissionsMode to "disable"`,
+    );
   }
 }
 
-function verifyIsolation({ managedSettings, spawn = spawnSync, ...io }) {
+// True when the runner user can still write the Docker socket, which is root
+// on the host by another name.
+function dockerReachable(socket, access = fs.accessSync) {
+  if (!fs.existsSync(socket)) return false;
+  try {
+    access(socket, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function verifyIsolation({
+  managedSettings,
+  spawn = spawnSync,
+  dockerSocket = DOCKER_SOCKET,
+  ...io
+}) {
   verifyManagedSettings(managedSettings, io);
   if (spawn("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0) {
     throw new LaneError(
       "sudo still works: run runner isolation before run-claude-cli",
+    );
+  }
+  if (dockerReachable(dockerSocket)) {
+    throw new LaneError(
+      `${dockerSocket} is writable: runner isolation must remove docker access`,
     );
   }
   if (spawn("bwrap", ["--version"], { stdio: "ignore" }).status !== 0) {
@@ -578,9 +670,13 @@ function verifyIsolation({ managedSettings, spawn = spawnSync, ...io }) {
   }
 }
 
-function install(env) {
+// Both npm calls run in the work directory with the public registry named, so
+// a checkout's .npmrc cannot steer them.
+function install(env, { spawn = spawnSync } = {}) {
+  const registry = `--registry=${NPM_REGISTRY}`;
   const version = resolveCliVersion(env.LANE_CLI_VERSION_INPUT, () => {
-    const view = spawnSync("npm", ["view", CLI_PACKAGE, "version"], {
+    const view = spawn("npm", ["view", registry, CLI_PACKAGE, "version"], {
+      cwd: env.LANE_WORK_DIR,
       encoding: "utf8",
     });
     if (view.status !== 0)
@@ -588,10 +684,11 @@ function install(env) {
     return view.stdout;
   });
   const prefix = path.join(env.LANE_WORK_DIR, "cli");
-  const installed = spawnSync(
+  const installed = spawn(
     "npm",
     [
       "install",
+      registry,
       "--no-save",
       "--no-audit",
       "--no-fund",
@@ -599,7 +696,7 @@ function install(env) {
       prefix,
       `${CLI_PACKAGE}@${version}`,
     ],
-    { stdio: ["ignore", "ignore", "inherit"] },
+    { cwd: env.LANE_WORK_DIR, stdio: ["ignore", "ignore", "inherit"] },
   );
   if (installed.status !== 0)
     throw new LaneError(`npm install ${CLI_PACKAGE}@${version} failed`);
@@ -674,9 +771,13 @@ if (require.main === module) {
 
 module.exports = {
   CREDENTIAL_VARIABLES,
+  FILE_COMMAND_VARIABLES,
   LaneError,
+  MAX_LEG_STDOUT_BYTES,
+  NPM_REGISTRY,
   cliArgs,
   holdsCredential,
+  install,
   judgeLeg,
   legEnv,
   legRecord,

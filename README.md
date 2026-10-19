@@ -558,10 +558,16 @@ consumer to audit it.
   token leg runs in the same job only when the key leg ends in a credit stop
   (report-lane-outcome's opt-in `credit-stop` class), so a broken key stays
   visible instead of spending the subscription. Only one credential is in the
-  CLI environment at a time. Callers run `apply-claude-managed-settings` while
-  sudo still works, then runner isolation (sudo and docker removed, bubblewrap
-  installed), then the head checkout; the action fails closed when any of the
-  three is missing. Its outputs match report-check-run's `lane-*` inputs, plus
+  CLI environment at a time, with no workflow file-command variable; anything
+  a leg appends to the step's `GITHUB_ENV` or `GITHUB_PATH` file is cut off
+  after the last leg. The CLI runs with `--restricted`, so Bash and the other
+  code-running tools are available only when `tools` names them. Callers run
+  `apply-claude-managed-settings` while sudo still works, then runner
+  isolation (sudo and docker removed, bubblewrap installed), then the head
+  checkout; the action fails closed when the settings are missing or
+  unpinned, sudo works, the docker socket is writable, or bubblewrap is
+  missing. The CLI installs from the public npm registry, outside any
+  checkout's `.npmrc`. Its outputs match report-check-run's `lane-*` inputs, plus
   `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
   written only after a credential scan; every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names default
@@ -571,8 +577,9 @@ consumer to audit it.
   the same names. Uploading the log is the
   caller's.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
-  `/etc/claude-code/managed-settings.json` that pins `env` and `apiKeyHelper`,
-  so head code cannot repoint the lane's credential. Needs sudo, so it runs
+  `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
+  `env.ANTHROPIC_BASE_URL` and disables bypassPermissions mode, so head code
+  cannot repoint the lane's credential. Needs sudo, so it runs
   before runner isolation; run-claude-cli refuses to run without the file.
 
 Each input's meaning and default is documented inline in the action's `inputs:`

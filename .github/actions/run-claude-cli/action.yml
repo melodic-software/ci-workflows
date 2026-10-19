@@ -4,11 +4,13 @@ description: >-
   Linux runner. The API key leg runs first; the subscription leg runs in the
   same job only when the key leg ends in a credit stop (classify.cjs
   isCreditStop), and any other key-leg failure ends the run with its class.
-  Only one credential is in the CLI environment at a time. Input contract,
+  Only one credential is in the CLI environment at a time, and the CLI runs
+  with `--restricted` and `--strict-mcp-config`. Input contract,
   in this order, before any head checkout: the caller runs
   `apply-claude-managed-settings` while sudo still works, then removes sudo and
   docker access and installs bubblewrap (runner isolation); this action fails
-  closed when any of the three is missing. It writes the outputs
+  closed when the settings are missing or unpinned, sudo works, the docker
+  socket is writable, or bubblewrap is missing. It writes the outputs
   report-check-run reads, a JSONL execution log (one object per leg) written
   only after a scan finds no credential in it, and a job summary table.
   Uploading the log is the caller's choice. The step fails, after writing its
@@ -82,7 +84,10 @@ inputs:
   tools:
     description: >-
       Built-in tools the model may use, one per line, passed to `--tools`.
-      Empty leaves the CLI's default set.
+      Empty leaves the CLI's default set. The CLI runs with `--restricted`,
+      which removes Bash, PowerShell, the other code-running tools and
+      WebFetch unless this input names them: list Bash here for the model to
+      run commands.
     required: false
     default: ""
   json-schema-file:
@@ -113,7 +118,8 @@ outputs:
       report-lane-outcome's failure class of the leg that ended the run; empty
       on success. A credit stop with no leg left reports `rate-limit`; a
       failed install reports `install-failed`, and any other failure before
-      a leg ran reports `other`. Report this class; do not reclassify
+      a leg ran, or a leg whose stdout passes 256 MiB, reports `other`.
+      Report this class; do not reclassify
       execution-file, which cannot see the credit-stop or leg-timeout rules.
     value: >-
       ${{ steps.run.outputs.lane-class
