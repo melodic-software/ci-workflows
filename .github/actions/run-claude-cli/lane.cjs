@@ -682,8 +682,11 @@ function runLegs(
       if (!goesOn) break;
     }
   } finally {
-    restoreModes(modes);
-    restoreFiles(sizes);
+    try {
+      restoreModes(modes);
+    } finally {
+      restoreFiles(sizes);
+    }
   }
   const record = readRunRecord(final.executionFile);
   // A credit stop with no leg left is a limit stop for the reporters, which

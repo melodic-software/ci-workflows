@@ -567,6 +567,44 @@ test("the install tree is writable again when a leg throws", asNonRoot, () => {
   assert.equal(fs.statSync(installed).mode & 0o777, 0o755);
 });
 
+test("a failed mode restore still cuts off what a leg appended to the step files", () => {
+  const chmodSync = fs.chmodSync;
+  let cli;
+  let output;
+  try {
+    assert.throws(() =>
+      runCase({
+        key: SUCCESS,
+        sub: null,
+        prepare: (dir) => {
+          cli = path.join(dir, "cli");
+          writableTree(cli);
+          output = path.join(dir, "output");
+          fs.writeFileSync(output, "cli-version=2.1.302\n");
+          return { GITHUB_OUTPUT: output };
+        },
+        spawn: () => {
+          fs.appendFileSync(output, "PLANTED=1\n");
+          fs.chmodSync = () => {
+            throw Object.assign(new Error("EIO: i/o error, chmod"), { code: "EIO" });
+          };
+          return {
+            status: 0,
+            signal: null,
+            stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
+          };
+        },
+      }),
+    /EIO/u);
+  } finally {
+    fs.chmodSync = chmodSync;
+  }
+  assert.equal(fs.readFileSync(output, "utf8"), "cli-version=2.1.302\n");
+  for (const entry of ["", "node_modules", path.join("node_modules", "pkg")]) {
+    fs.chmodSync(path.join(cli, entry), 0o755);
+  }
+});
+
 test("stdout is captured in memory and a maxBuffer overflow is class other", () => {
   const seen = [];
   const spawn = (command, args, options) => {
