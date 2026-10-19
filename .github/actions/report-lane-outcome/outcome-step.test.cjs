@@ -204,6 +204,23 @@ test("a caller's known failure class wins over reclassifying the file", async ()
   assert.equal(unsafe.outputs.failure_class, "auth");
 });
 
+test("a review the sandbox probe kept from starting is a failure of its own class", async () => {
+  // The review lanes skip the model step when the bubblewrap probe fails and
+  // pass the probe's class here, so the step's outcome is "skipped" with no
+  // execution file. It must read as a failure, never as a review or a skip.
+  const { outputs, errors, warnings } = await runOutcome({
+    outcome: "skipped",
+    executionFile: "",
+    knownFailureClass: "sandbox-unavailable",
+  });
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(outputs.review_ran, "false");
+  assert.equal(outputs.failure_class, "sandbox-unavailable");
+  assert.deepEqual(warnings, []);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /\bclass=sandbox-unavailable\b/u);
+});
+
 test("a usage limit reads as a skipped review and keeps the class token", async () => {
   const file = writeExecutionFile([
     {

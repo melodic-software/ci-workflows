@@ -334,7 +334,10 @@ for (const lane of [codeLane, securityLane]) {
       );
     }
     const claudeStep = job.steps.find((step) => step.id === "claude-review");
-    assert.equal(claudeStep.if, "steps.scope.outputs.review != 'false'");
+    assert.equal(
+      claudeStep.if,
+      "steps.scope.outputs.review != 'false' && steps.sandbox.outcome != 'failure'",
+    );
     assert.match(
       claudeStep.with.prompt,
       /^\$\{\{ steps\.scope\.outputs\.note \}\}$/mu,

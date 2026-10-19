@@ -201,6 +201,44 @@ for (const lane of lanes) {
     );
   });
 
+  test(`${lane.file}: a failed sandbox probe skips the model and reaches the outcome step as its class`, () => {
+    const at = (predicate) => job.steps.findIndex(predicate);
+    const probeAt = at((candidate) => candidate.id === "sandbox");
+    const probe = job.steps[probeAt];
+    assert.equal(probe.uses, "$/.github/actions/check-subprocess-sandbox");
+    assert.equal(probe["continue-on-error"], true);
+    assert.match(probe.if, /runner\.os == 'Linux'/u);
+    // After bwrap is installed, before the model runs.
+    assert.ok(
+      at((candidate) => candidate.name === "Install subprocess isolation") <
+        probeAt,
+    );
+    const modelAt = at((candidate) => candidate.id === "claude-review");
+    assert.ok(probeAt < modelAt);
+    assert.match(
+      job.steps[modelAt].if,
+      /&& steps\.sandbox\.outcome != 'failure'$/u,
+    );
+    const outcome = job.steps.find(
+      (candidate) => candidate.id === "review-outcome",
+    );
+    assert.equal(
+      outcome.with["known-failure-class"],
+      `\${{ steps.sandbox.outcome == 'failure' && 'sandbox-unavailable' || '' }}`,
+    );
+  });
+
+  test(`${lane.file}: a sandbox that could not start goes red and says why`, () => {
+    const result = runStep(step, {
+      REVIEW_FAILED: "true",
+      FAILURE_CLASS: "sandbox-unavailable",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.summary, /failed: `sandbox-unavailable`/u);
+    assert.match(result.summary, /could not create a namespace/u);
+    assert.doesNotMatch(result.summary, /unclassified/u);
+  });
+
   test(`${lane.file}: every other way no review happened goes red and is named`, () => {
     for (const [failed, klass, named] of [
       ["true", "auth", "auth"],
@@ -209,6 +247,8 @@ for (const lane of lanes) {
       ["true", "timeout", "timeout"],
       ["true", "other", "other"],
       ["true", "", "unknown"],
+      // bubblewrap could not create a namespace, so the model never ran.
+      ["true", "sandbox-unavailable", "sandbox-unavailable"],
       // The action skipped itself: green step, nothing reviewed.
       ["false", "skipped-validation", "skipped-validation"],
       // The job ended before the outcome step wrote any output.
