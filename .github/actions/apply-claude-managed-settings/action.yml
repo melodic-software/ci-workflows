@@ -1,4 +1,4 @@
-name: claude-lane managed settings
+name: apply-claude-managed-settings
 description: >-
   Write a root-owned /etc/claude-code/managed-settings.json that pins `env`
   and `apiKeyHelper`, so head code writing ~/.claude/settings.json cannot
@@ -34,7 +34,7 @@ runs:
           }
         '
         if ! sudo -n true 2>/dev/null; then
-          echo "::error title=claude-lane::sudo is unavailable: run managed-settings before runner isolation"
+          echo "::error title=apply-claude-managed-settings::sudo is unavailable: run apply-claude-managed-settings before runner isolation"
           exit 1
         fi
         sudo install -d -o root -g root -m 755 /etc/claude-code

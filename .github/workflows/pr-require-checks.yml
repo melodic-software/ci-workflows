@@ -491,8 +491,8 @@ jobs:
         run: bash .github/actions/detect-changes/match.test.sh
       - name: Test Claude lane outcome classifier
         run: node --test .github/actions/report-lane-outcome/*.test.cjs
-      - name: Test the claude-lane launcher
-        run: node --test .github/actions/claude-lane/*.test.cjs
+      - name: Test the run-claude-cli launcher
+        run: node --test .github/actions/run-claude-cli/*.test.cjs
       - name: Test OSV scan policy guard
         run: bash .github/scripts/osv-scan-guard.test.sh
       - name: Test Gitleaks scan policy guard

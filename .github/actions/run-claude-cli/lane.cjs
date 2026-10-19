@@ -1,4 +1,4 @@
-// claude-lane: run one prompt with headless `claude -p`, API key first, then
+// run-claude-cli: run one prompt with headless `claude -p`, API key first, then
 // the lane's subscription token in the same run only after a credit stop.
 //
 // Subcommands (argv[2]):
@@ -418,7 +418,7 @@ function runLegs(
   const active = config.legs.filter((leg) => !leg.skipped);
   for (const leg of config.legs.filter((l) => l.skipped)) {
     log(
-      `::warning::claude-lane: skipped=${leg.name || leg.leg} (empty secret)`,
+      `::warning::run-claude-cli: skipped=${leg.name || leg.leg} (empty secret)`,
     );
   }
   const records = [];
@@ -532,7 +532,7 @@ function verifyManagedSettings(
     info = stat(file);
   } catch {
     throw new LaneError(
-      `${file} is missing: run the claude-lane managed-settings action before runner isolation`,
+      `${file} is missing: run the apply-claude-managed-settings action before runner isolation`,
     );
   }
   if (info.uid !== 0) throw new LaneError(`${file} is not owned by root`);
@@ -557,7 +557,7 @@ function verifyIsolation({ managedSettings, spawn = spawnSync, ...io }) {
   verifyManagedSettings(managedSettings, io);
   if (spawn("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0) {
     throw new LaneError(
-      "sudo still works: run runner isolation before claude-lane",
+      "sudo still works: run runner isolation before run-claude-cli",
     );
   }
   if (spawn("bwrap", ["--version"], { stdio: "ignore" }).status !== 0) {
@@ -592,7 +592,7 @@ function install(env) {
   );
   if (installed.status !== 0)
     throw new LaneError(`npm install ${CLI_PACKAGE}@${version} failed`);
-  process.stdout.write(`claude-lane: Claude Code CLI ${version}\n`);
+  process.stdout.write(`run-claude-cli: Claude Code CLI ${version}\n`);
   writeOutputs(env.GITHUB_OUTPUT, {
     "cli-version": version,
     "cli-path": path.join(prefix, "node_modules", ".bin", "claude"),
@@ -609,7 +609,7 @@ function run(env) {
   } finally {
     process.stdout.write(`::${token}::\n`);
   }
-  const logFile = path.join(config.workDir, "claude-lane-log.jsonl");
+  const logFile = path.join(config.workDir, "run-claude-cli-log.jsonl");
   const logText = `${outcome.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
   const secretValues = config.legs.map((leg) => leg.value).filter(Boolean);
   const clean = !holdsCredential(logText, secretValues);
@@ -621,7 +621,7 @@ function run(env) {
   if (env.GITHUB_STEP_SUMMARY && clean) {
     fs.appendFileSync(
       env.GITHUB_STEP_SUMMARY,
-      `### claude-lane: ${config.lane} (${config.role})\n\n${summaryTable(outcome.records)}\n`,
+      `### run-claude-cli: ${config.lane} (${config.role})\n\n${summaryTable(outcome.records)}\n`,
     );
   }
   if (!clean) {
@@ -655,7 +655,7 @@ if (require.main === module) {
         ? error.message
         : "unexpected failure (see the step log)";
     if (!(error instanceof LaneError)) console.error(error);
-    process.stdout.write(`::error title=claude-lane::${message}\n`);
+    process.stdout.write(`::error title=run-claude-cli::${message}\n`);
     process.exitCode = 1;
   }
 }
