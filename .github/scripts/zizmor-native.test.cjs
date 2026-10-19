@@ -361,7 +361,7 @@ test("the pr-require-checks.yml zizmor gate is as wide as the lane's audit scope
 
   assert.match(
     ci,
-    /uses: \.\/\.github\/workflows\/pr-audit-workflows\.yml(?: # zizmor: ignore\[self-repository\] .+)?\n {4}with:\n {6}paths: \./u,
+    /uses: \.\/\.github\/workflows\/pr-audit-workflows\.yml\n {4}with:\n {6}paths: \./u,
     "the zizmor lane is expected to audit repo-wide (paths: .)",
   );
   assert.match(
