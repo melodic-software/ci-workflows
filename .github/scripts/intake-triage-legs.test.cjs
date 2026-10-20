@@ -4,8 +4,10 @@
 // jobs (ci-workflows#799). The claude job holds only the key; the
 // claude-subscription job holds only the token, runs on a fixed GitHub-hosted
 // runner only after a key credit stop (or with no key), repeats the claude
-// job's hardening, and takes nothing from it but two compared outputs. The
-// status job reports one outcome: the subscription job's when it ran.
+// job's hardening, and takes nothing from it but two compared outputs. Both
+// model jobs are read-only (ci-workflows#804): one apply job with no model
+// writes the triage of whichever leg triaged. The status job reports one
+// outcome: the subscription job's when it ran, red when the apply job failed.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -23,7 +25,7 @@ const workflow = parseWorkflow(
     "utf8",
   ),
 );
-const { claude, subscription, status } = workflow.jobs;
+const { claude, subscription, status, apply } = workflow.jobs;
 const launcher = (job) => job.steps.find((step) => step.id === "claude");
 
 test("only the subscription job references the OAuth token, and only the claude job the key", () => {
@@ -120,7 +122,12 @@ test("the subscription job repeats the claude job's steps but for the credential
     strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
     strip(claude.steps, "CLAUDE_API_KEY", "api-key"),
   );
-  for (const key of ["permissions", "outputs", "timeout-minutes"]) {
+  for (const key of [
+    "permissions",
+    "outputs",
+    "timeout-minutes",
+    "cache-mode",
+  ]) {
     assert.deepEqual(subscription[key], claude[key], key);
   }
   // The hardening runs before the checkout in both jobs.
@@ -132,15 +139,15 @@ test("the subscription job repeats the claude job's steps but for the credential
   );
 });
 
-test("a key credit stop skips the claude job's outcome and apply steps", () => {
+test("a key credit stop skips the claude job's outcome and extract steps", () => {
   const byId = (id) => claude.steps.find((step) => step.id === id);
-  const apply = claude.steps.find((step) => step.name === "Apply the triage");
+  const extract = byId("extract");
   const steps = (laneClass, present = "true") => ({
     compose: { outcome: "success" },
     credential: { outputs: { present } },
     claude: { outputs: { "lane-class": laneClass } },
   });
-  for (const step of [byId("review-outcome"), apply]) {
+  for (const step of [byId("review-outcome"), extract]) {
     assert.equal(
       Boolean(evaluate(step.if, { steps: steps("credit-stop") })),
       false,
@@ -182,6 +189,7 @@ function report(env) {
     SUB_PRESENT: "",
     SUB_FAILED: "",
     SUB_CLASS: "",
+    APPLY_RESULT: "success",
   };
   const result = spawnSync("bash", ["-e", "-c", status.steps[0].run], {
     env: { PATH: process.env.PATH, ...defaults, ...env, GITHUB_OUTPUT: output },
@@ -199,7 +207,7 @@ function report(env) {
 
 test("the status job reads the subscription job when it ran, else the claude job", () => {
   assert.equal(status.name, "claude-intake-triage-status");
-  assert.deepEqual(status.needs, ["claude", "subscription"]);
+  assert.deepEqual(status.needs, ["claude", "subscription", "apply"]);
   assert.equal(
     workflow.on.workflow_call.outputs["failure-class"].value,
     `\${{ jobs.status.outputs.failure-class }}`,
@@ -273,4 +281,80 @@ test("the status job prints and writes only closed values", () => {
     "failure-class": "other",
   });
   assert.equal(forged.stdout.includes("planted"), false);
+});
+
+test("a failed or cancelled apply job turns the status red", () => {
+  for (const result of ["failure", "cancelled"]) {
+    const run = report({ KEY_FAILED: "false", APPLY_RESULT: result });
+    assert.equal(run.code, 1, result);
+    assert.match(run.stdout, new RegExp(`job=${result}`, "u"), result);
+  }
+  assert.equal(
+    report({ KEY_FAILED: "false", APPLY_RESULT: "skipped" }).code,
+    0,
+  );
+});
+
+test("the model jobs are read-only, cache-less, and give the model no GitHub token or gh", () => {
+  for (const job of [claude, subscription]) {
+    assert.deepEqual(
+      job.permissions,
+      { contents: "read", issues: "read" },
+      job.name,
+    );
+    assert.equal(job["cache-mode"], "none", job.name);
+    const step = launcher(job);
+    assert.equal(step.uses, "$/.github/actions/run-claude-cli", job.name);
+    assert.equal(step.env, undefined, job.name);
+    assert.doesNotMatch(
+      JSON.stringify(step),
+      /github\.token|GH_TOKEN|GITHUB_TOKEN/u,
+      job.name,
+    );
+    assert.deepEqual(
+      Object.values(step.with).filter((value) => /secrets\./u.test(value))
+        .length,
+      1,
+      job.name,
+    );
+    assert.deepEqual(
+      step.with.tools.trim().split("\n"),
+      ["Read", "Grep", "Glob"],
+      job.name,
+    );
+    assert.equal(step.with["allowed-tools"], undefined, job.name);
+    assert.ok(
+      step.with["disallowed-tools"].split("\n").includes("Bash"),
+      job.name,
+    );
+    assert.doesNotMatch(JSON.stringify(job), /Bash\(gh /u, job.name);
+  }
+});
+
+test("exactly one job, with no model, writes the triage", () => {
+  assert.equal(apply.name, "claude-intake-triage-apply");
+  assert.deepEqual(apply.needs, ["claude", "subscription"]);
+  assert.deepEqual(apply.permissions, { issues: "write" });
+  assert.equal(apply["runs-on"], "ubuntu-24.04");
+  for (const step of apply.steps) {
+    assert.doesNotMatch(
+      step.uses ?? "",
+      /run-claude-cli|actions\/(checkout|download-artifact|cache)/u,
+      step.name,
+    );
+    // Job outputs reach the script only through env.
+    assert.doesNotMatch(step.with?.script ?? "", /\$\{\{/u, step.name);
+  }
+  const writers = Object.entries(workflow.jobs)
+    .filter(([, job]) => job.permissions?.issues === "write")
+    .map(([name]) => name);
+  // The skipped job writes only skipped-label on an issue no model read.
+  assert.deepEqual(writers, ["apply", "skipped"]);
+  for (const job of [claude, subscription]) {
+    assert.equal(
+      job.steps.some((step) => step.name === "Apply the triage"),
+      false,
+      job.name,
+    );
+  }
 });

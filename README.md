@@ -340,7 +340,7 @@ consumer to audit it.
   `rerun-wait-seconds`, and only while a contract-only sibling is in flight
   (see `rerun-contract-only-siblings` below):
 
-  - `yield-to-full-run: 'true'` and `timeout-minutes: 3` on the `ci-status`
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 5` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
     SHA, then reads the status, and finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
@@ -429,6 +429,21 @@ consumer to audit it.
   `statuses: write` and `actions: write` (which covers the `actions: read`
   `yield-to-full-run` and a wait above `0` need).
 
+  **GitHub API rate limits.** GitHub answers both a rate limit and a refusal
+  with 403 or 429, so every 403 or 429 prints its status, message and the
+  `x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after` and
+  `x-accepted-github-permissions` headers, and names a missing scope only for
+  "Resource not accessible by integration" or that last header. A rate limit
+  waits `retry-after`, else until `x-ratelimit-reset` when remaining is `0`,
+  else 60 seconds, then retries once; a second limit, or a wait longer than
+  what is left of `rate-limit-wait-seconds` (default `60`, summed over the
+  step, at most `3600`), fails the call closed at once and prints the reset
+  time. The step never ends neutral, which a required check would count as a
+  pass. `check-contract` takes the same input. The two steps' caps plus
+  `rerun-wait-seconds` and the job's other work must fit the job's
+  `timeout-minutes`, and a wait never outlives a GitHub App installation
+  token's hour.
+
   ```yaml
   jobs:
     detect-changes:
@@ -443,7 +458,7 @@ consumer to audit it.
         # ... change detection
     ci-status:
       if: always()
-      timeout-minutes: 3
+      timeout-minutes: 5
       permissions:
         contents: read
         statuses: write
@@ -648,9 +663,11 @@ consumer to audit it.
   - reads only trusted inputs: no artifact download from job A and no
     cache restore.
 
-  Job A skips its apply and outcome steps on a credit stop, so whichever
-  job triaged applies and reports, and a status job that needs both reads
-  job B's outcome when it ran, else job A's: one lane record per run.
+  Job A skips its outcome step on a credit stop, so whichever job triaged
+  reports; a status job that needs both reads job B's outcome when it ran,
+  else job A's: one lane record per run. A lane that writes does it in a
+  separate job with no model that needs both and reads job B's outputs when
+  it ran, else job A's, so the write happens once.
   `intake-triage.yml` is the reference implementation.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
@@ -862,6 +879,41 @@ GitHub continues the normal weekly patching of each hosted image generation.
   present. A human triager assigning a real tier after this workflow ran is
   expected to remove the floor label as part of that transition — this
   workflow only guarantees a floor and does not police tier assignment.
+- `.github/workflows/maintenance-check-links-online.yml` — the weekly online
+  link check: lychee with the network on over the caller's Markdown, reading
+  its `lychee.toml` (the standards-synced config the offline lane uses) and
+  `.lycheeignore`. The report goes to the job summary and a broken link fails
+  the job red; it opens no issue and posts no comment. It holds only the
+  `GITHUB_TOKEN`, which cannot read another private repository, so lychee
+  never reports a link into one as OK. **Opt-in by repository property**: a
+  `schedule` run reads the caller's `opt-in-property` (default
+  `link-check-online`, an org `true_false` custom property) and skips unless it
+  is `true`; any other event, `workflow_dispatch` included, always runs, so a
+  repository shows a green dispatched run before the property turns its
+  schedule on. A property read that errors fails red. Required input: `runner`.
+  Optional: `config`, `globs`, `extra-args` (lychee-action evaluates its args
+  in a shell, so single-quote each regex), `lychee-version`, `timeout-minutes`.
+  Exceptions are exact-URL `.lycheeignore` entries with a dated reason; the
+  built-in per-host pacing flags do not stop every runner 429. Keep it out of
+  `ci-status`. The caller owns the trigger and picks a cron minute and day no
+  other opted-in repository uses (the standards sync delivers each opted-in
+  repository its own caller):
+
+  ```yaml
+  on:
+    schedule:
+      - cron: "37 11 * * 2"
+    workflow_dispatch:
+  permissions: {}
+  jobs:
+    check-links:
+      permissions:
+        contents: read
+      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@<sha>
+      with:
+        runner: ubuntu-24.04
+  ```
+
 - `.github/workflows/pr-automerge-dependabot.yml` — arms squash auto-merge on a
   Dependabot pull request, so GitHub merges it once `ci-status` and every other
   required check pass. It never merges directly. All gates must hold: the PR
@@ -1012,10 +1064,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fail the job. It skips a pull request whose files in scope are all
   documentation (`docs-only-paths`).
 - `.github/workflows/intake-triage.yml` — the intake-triage lane. On
-  `issues: [opened]`, a read-only Claude run (`--permission-mode dontAsk`,
-  read-only `gh` queries, JSON output) proposes labels and a comment; a step
-  with no model in it applies only labels in the caller's `allowed-labels`
-  that exist in the repository. On a permission denial, a max-turns stop,
+  `issues: [opened]`, a script step fetches the issue, its trusted comments and the
+  newest 200 open issues into the checkout; a read-only Claude run
+  (`--permission-mode dontAsk`, Read, Grep and Glob only, no GitHub token,
+  `contents: read` and `issues: read`, `cache-mode: none`, JSON output)
+  proposes labels and a comment; the `claude-intake-triage-apply` job, with
+  no model and the triage's only `issues: write` grant, re-validates it and
+  applies only labels in the caller's `allowed-labels` that exist in the
+  repository. On a permission denial, a max-turns stop,
   unusable output, a credential-like comment or a request for a person it
   applies only
   `escalation-label` (default `needs-human`) and a fixed note, dropping the
@@ -1039,7 +1095,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
   runs in the `claude-intake-triage` job; after its credit stop, or with no
   key, the token runs in the `claude-intake-triage-subscription` job on
-  `ubuntu-24.04` (the two-job pattern above), and
+  `ubuntu-24.04` (the two-job pattern above);
+  `claude-intake-triage-apply` writes whichever job triaged, and
   `claude-intake-triage-status` reports the one outcome. The workflow
   header carries the canonical caller and the security model. Runs only for issues opened by
   their author when that author's user id is in `allowed-author-ids` (a
@@ -1048,7 +1105,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   applies `skipped-label` when set. A caller can also run it on
   `workflow_dispatch` with `issue-number`, for issues a `GITHUB_TOKEN`
   created (those start no `issues` run); the dispatching actor's id must be
-  in the same lists, and the lane reads the issue from the API.
+  in the same lists, and the lane reads the issue from the API. On every
+  run the model sees only comments by a user whose id is in
+  `allowed-author-ids` or a bot whose id is in `allowed-bot-sender-ids`
+  (an empty or malformed list trusts no one), never the lane's own triage
+  comment. The issue title and body always reach it and stay untrusted.
 
 ## Claude lanes — shared consumption contract
 

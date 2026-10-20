@@ -212,6 +212,7 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
+    "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
     const block = jobBlocks.find((candidate) => jobName(candidate) === name);
@@ -224,8 +225,9 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
   assert.equal(evaluate(group, mergeGroupContext), "pr-require-checks-42");
 });
 
-test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
+test("the advisory lanes and issue labeler stay out of ci-status", () => {
   // Claude lane checks are advisory: a model outage must never block a merge.
+  // The kjanat/actionlint soak (#788) is advisory until phase 2 removes it.
   const needs =
     /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu.exec(
       ciWorkflow,
@@ -235,6 +237,7 @@ test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
+    "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
@@ -354,7 +357,7 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
 
   // A contract-only run yields to an in-flight full run instead of waiting,
   // and the full run re-runs its red contract-only siblings on success.
-  assert.equal(timeoutMinutes, 3);
+  assert.equal(timeoutMinutes, 5);
   assert.equal(waitSeconds, 0);
   assert.match(ciStatusJob, /^ {10}yield-to-full-run: 'true'$/mu);
   assert.match(ciStatusJob, /^ {10}rerun-contract-only-siblings: 'true'$/mu);

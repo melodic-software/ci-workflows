@@ -65,6 +65,7 @@ async function runScript(script, values, github, requireFn = require) {
       requireFn,
       {
         paginate: async (method, params) => (await method(params)).data,
+        hook: { error: () => {} },
         ...github,
       },
       { repo: { owner: "o", repo: "r" } },
