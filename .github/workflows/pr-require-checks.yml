@@ -662,4 +662,7 @@ jobs:
           yield-to-full-run: 'true'
           rerun-contract-only-siblings: 'true'
           carry-forward-wait-seconds: '0'
+          # This step's own name, so the own-step lookup never depends on
+          # how many steps of the job are in progress.
+          step-name: Aggregate lane results
           results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.check-workflow-naming.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
