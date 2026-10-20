@@ -539,11 +539,13 @@ jobs:
       # pr-audit-workflows.yml always declares this and a called workflow cannot elevate,
       # so grant it although the dogfood uploads no SARIF.
       security-events: write
-    # Audit this repo's own workflows AND composite actions (paths: .). Gates:
-    # any finding fails the lane and so ci-status.
+    # Audit this repo's own workflows, composite actions and dependabot.yml
+    # (paths: .github). Not '.': fixtures/ holds deliberately invalid actions
+    # that --strict-collection would refuse to load. Gates: any finding fails
+    # the lane and so ci-status.
     uses: ./.github/workflows/pr-audit-workflows.yml
     with:
-      paths: .
+      paths: .github
       fail-on-severity: low
 
   pr-scan-dependencies:
