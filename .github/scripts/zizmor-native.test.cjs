@@ -218,15 +218,16 @@ test("native zizmor verifies the exact release before executing it", () => {
   assert.doesNotMatch(step, /\bsudo\b/u);
   assert.doesNotMatch(step, /releases\/latest/u);
 
-  // --format=github requires zizmor >= 1.6.0; a caller-pinned older version
-  // must be rejected before the download, not left to fail argument parsing.
+  // --format=github requires zizmor >= 1.6.0 and --strict-collection >= 1.7.0;
+  // a caller-pinned older version must be rejected before the download, not
+  // left to fail argument parsing.
   assert.match(
     step,
     /IFS='\.' read -r zizmor_major zizmor_minor _ <<<"\$resolved_version"/u,
   );
   assert.match(
     step,
-    /if \(\(zizmor_major < 1 \|\| \(zizmor_major == 1 && zizmor_minor < 6\)\)\); then/u,
+    /if \(\(zizmor_major < 1 \|\| \(zizmor_major == 1 && zizmor_minor < 7\)\)\); then/u,
   );
   const versionGuard = step.indexOf("zizmor_major < 1");
   const download = step.indexOf("curl --fail");
@@ -245,6 +246,16 @@ test("native zizmor limits token exposure and fails closed outside findings", ()
   assert.ok(download < verifiedExecution);
 
   assert.match(step, /--format=github/u);
+  // An input zizmor cannot parse must fail the audit, not be skipped with a
+  // warning; both passes collect the same inputs.
+  assert.match(
+    step,
+    /\bargs=\(\n\s*--format=github\n\s*--strict-collection\n/u,
+  );
+  assert.match(
+    step,
+    /sarif_args=\(\n\s*--format=sarif\n\s*--strict-collection\n/u,
+  );
   assert.match(step, /--cache-dir=\$work_dir\/cache/u);
   assert.match(step, /args\+=\(--no-online-audits\)/u);
   // zizmor's --format=github renderer emits annotations to stdout; the run
@@ -361,14 +372,13 @@ test("the pr-require-checks.yml zizmor gate is as wide as the lane's audit scope
 
   assert.match(
     ci,
-    /uses: \.\/\.github\/workflows\/pr-audit-workflows\.yml\n {4}with:\n {6}paths: \./u,
-    "the zizmor lane is expected to audit repo-wide (paths: .)",
+    /uses: \.\/\.github\/workflows\/pr-audit-workflows\.yml\n {4}with:\n {6}paths: \.github\n/u,
+    "the zizmor lane is expected to audit .github (fixtures/ fail --strict-collection)",
   );
   assert.match(
     filter,
     /^ {14}\*\*\/action\.yml$/mu,
-    "a repo-wide audit needs a repo-wide gate: a composite action added " +
-      "outside .github/ must not skip the lane that audits it",
+    "the gate must cover every composite action the lane audits",
   );
 });
 
