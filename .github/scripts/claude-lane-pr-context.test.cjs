@@ -70,7 +70,9 @@ function run(script, env, directory) {
 }
 
 function trust(actors, authorIds = "", botIds = "") {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "check-author-trust-"));
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "check-author-trust-"),
+  );
   try {
     const { result, outputs } = run(
       trustRun,
