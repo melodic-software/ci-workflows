@@ -304,8 +304,14 @@ consumer to audit it.
   where a new commit would re-run every lane.
 
   **Carrying a `success` forward needs `actions: read`, whatever the wait.** The
-  run its `target_url` names must be read back and belong to this same workflow,
-  and an unreadable writer fails the run. Under an explicit `permissions:`
+  run its `target_url` names must be read back and be a full run of this same
+  workflow on this SHA, judged by its jobs: a contract-only run's aggregate step
+  also succeeds when it carries, so it vouches for nothing. Every completed full
+  run on the SHA whose latest attempt started at or after the writer's is read
+  back too, and one whose aggregate step completed with anything but `success`
+  (a run that concluded `cancelled` included) discards the carried `success`; a
+  run whose aggregate step was skipped or is absent is ignored. An unreadable
+  writer, including one Actions retention has deleted, fails the run. Under an explicit `permissions:`
   block the default for every scope is none, so the Actions calls 403 without
   it. In the wait, a 403 prints a `::warning::` naming the missing scope and then
   degrades to a single status read: loud, and never a pass on an absent or
