@@ -350,10 +350,15 @@ jobs:
           persist-credentials: false
       # dependabot.yml is validated by the `checks` lane: one check-jsonschema
       # call carries one schema family.
+      # SchemaStore's workflow schema at a pinned commit, not check-jsonschema
+      # 0.38.2's vendored copy, which predates the job-level `cache-mode` key
+      # intake-triage.yml sets. Return to builtin-schema
+      # vendor.github-workflows once a check-jsonschema release vendors a
+      # schema with `cache-mode`.
       - name: Validate workflows
         uses: ./.github/actions/check-jsonschema
         with:
-          builtin-schema: vendor.github-workflows
+          schemafile: https://raw.githubusercontent.com/SchemaStore/schemastore/8324c4fe6ccf1698c05d053e8b9d4c4a08c23a1f/src/schemas/json/github-workflow.json
           files: .github/workflows/*.yml
       - name: Validate composite actions
         uses: ./.github/actions/check-jsonschema
