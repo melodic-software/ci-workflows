@@ -373,13 +373,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Soak kjanat/actionlint against the rhysd baseline
+      - name: Install both actionlint builds and verify the fork's provenance
         env:
           GH_TOKEN: ${{ github.token }}
           KJANAT_VERSION: 1.17.0
           KJANAT_COMMIT: 08bb2c4f0d039744455b87aef1c647fb8b66d37b
           KJANAT_SHA256: 620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a
         run: bash .github/scripts/actionlint-kjanat-soak.sh
+      # No token in this step: it runs the fork's binary over the checkout.
+      - name: Soak kjanat/actionlint against the rhysd baseline
+        run: >-
+          node .github/scripts/actionlint-kjanat-soak.cjs
+          "$RUNNER_TEMP/ci-workflows/bin/actionlint-kjanat"
+          "$RUNNER_TEMP/ci-workflows/bin/actionlint"
 
   jsonschema:
     needs: detect-changes
