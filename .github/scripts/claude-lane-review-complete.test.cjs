@@ -82,6 +82,7 @@ async function runGithubScript(script, values, github) {
       require,
       {
         paginate: async (method, params) => (await method(params)).data,
+        hook: { error: () => {} },
         ...github,
       },
       { repo: { owner: "o", repo: "r" } },
@@ -886,6 +887,7 @@ test("claude-review writes the whole pull request's diff from a fetched base, no
       PATH: `${bin}:${process.env.PATH}`,
       HOME: root,
       GH_TOKEN: "x",
+      RUNNER_TEMP: root,
       REPO: "o/r",
       BASE_SHA: base,
       HEAD_SHA: head,
