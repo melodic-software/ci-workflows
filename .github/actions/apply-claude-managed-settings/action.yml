@@ -1,10 +1,11 @@
 name: apply-claude-managed-settings
 description: >-
   Write a root-owned /etc/claude-code/managed-settings.json that pins
-  `apiKeyHelper` and `env.ANTHROPIC_BASE_URL` and disables bypassPermissions
-  mode, so head code writing ~/.claude/settings.json cannot repoint the
-  lane's credential (for example through ANTHROPIC_BASE_URL or a helper that
-  outranks CLAUDE_CODE_OAUTH_TOKEN). Needs sudo: run it before
+  `apiKeyHelper` and `env.ANTHROPIC_BASE_URL`, disables bypassPermissions
+  mode and loads managed hooks only, so head code writing
+  ~/.claude/settings.json cannot repoint the lane's credential (for example
+  through ANTHROPIC_BASE_URL or a helper that outranks
+  CLAUDE_CODE_OAUTH_TOKEN) or add a hook. Needs sudo: run it before
   runner isolation removes sudo and before any head checkout. run-claude-cli
   refuses to run without the file.
 
@@ -12,9 +13,10 @@ inputs:
   settings:
     description: >-
       The managed settings JSON. It must be an object that sets
-      `apiKeyHelper`, `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`
-      and `permissions.disableBypassPermissionsMode` to `disable`;
-      run-claude-cli refuses anything else.
+      `apiKeyHelper`, `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`,
+      `permissions.disableBypassPermissionsMode` to `disable`, and
+      `allowManagedHooksOnly` or `disableAllHooks` to `true`; run-claude-cli
+      refuses anything else.
     required: false
     default: >-
       {"apiKeyHelper": "", "allowManagedHooksOnly": true,
@@ -34,8 +36,9 @@ runs:
           if (typeof s !== "object" || s === null || Array.isArray(s) ||
               !Object.hasOwn(s, "apiKeyHelper") ||
               s.env?.ANTHROPIC_BASE_URL !== "https://api.anthropic.com" ||
-              s.permissions?.disableBypassPermissionsMode !== "disable") {
-            throw new Error("settings must set apiKeyHelper, env.ANTHROPIC_BASE_URL https://api.anthropic.com and permissions.disableBypassPermissionsMode disable");
+              s.permissions?.disableBypassPermissionsMode !== "disable" ||
+              (s.allowManagedHooksOnly !== true && s.disableAllHooks !== true)) {
+            throw new Error("settings must set apiKeyHelper, env.ANTHROPIC_BASE_URL https://api.anthropic.com, permissions.disableBypassPermissionsMode disable, and allowManagedHooksOnly or disableAllHooks true");
           }
         '
         if ! sudo -n true 2>/dev/null; then

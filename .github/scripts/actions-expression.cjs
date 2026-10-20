@@ -1,9 +1,9 @@
 "use strict";
 
 // Evaluates the subset of the Actions expression language the lanes' job
-// gates use: context paths (a missing property is null), string literals,
-// ! && || == != and parentheses, and the case-insensitive
-// contains/startsWith/endsWith plus format.
+// and step gates use: github, inputs, needs and steps context paths (a
+// missing property is null), string literals, ! && || == != and parentheses,
+// the case-insensitive contains/startsWith/endsWith, format, and always().
 
 const str = (value) =>
   value === null || value === undefined ? "" : String(value);
@@ -16,14 +16,16 @@ const functions = {
     str(text).toLowerCase().endsWith(str(suffix).toLowerCase()),
   format: (template, ...args) =>
     template.replace(/\{(\d+)\}/gu, (_, i) => str(args[Number(i)])),
+  always: () => true,
 };
+const CONTEXTS = ["github", "inputs", "needs", "steps"];
 
 const evaluate = (expression, contexts) => {
   const body = expression
     .trim()
     .replace(/^\$\{\{([\s\S]*)\}\}$/u, "$1")
     .replace(
-      /\b(github|inputs)((?:\.[A-Za-z_][\w-]*)+)/gu,
+      /\b(github|inputs|needs|steps)((?:\.[A-Za-z_][\w-]*)+)/gu,
       (_, root, rest) =>
         `${root}${rest
           .slice(1)
@@ -33,11 +35,13 @@ const evaluate = (expression, contexts) => {
     );
   const run = new Function(
     ...Object.keys(functions),
-    "github",
-    "inputs",
+    ...CONTEXTS,
     `return (${body}) ?? null;`,
   );
-  return run(...Object.values(functions), contexts.github, contexts.inputs);
+  return run(
+    ...Object.values(functions),
+    ...CONTEXTS.map((name) => contexts[name]),
+  );
 };
 
 module.exports = { evaluate };
