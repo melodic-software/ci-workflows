@@ -6,8 +6,10 @@
 //                     pinned, sudo and docker are gone, bubblewrap can create
 //                     a PID namespace and no loader, TLS or proxy variable is
 //                     set
-//   install           resolve the CLI version and install it from the public
-//                     registry, outside any checkout's .npmrc
+//   install           resolve the CLI version, install it from the public
+//                     registry outside any checkout's .npmrc, and fail closed
+//                     unless npm verifies both packages' registry signatures
+//                     and the binary matches Anthropic's GPG-signed manifest
 //   run               run the one leg and write the action's outputs
 //
 // Security contract:
@@ -105,6 +107,12 @@ const FILE_COMMAND_VARIABLES = [
 // with class `other`.
 const MAX_LEG_STDOUT_BYTES = 256 * 1024 * 1024;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
+// Release manifest location and signing key, as
+// https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing
+// gives them. Releases from 2.1.89 on carry a signed manifest.
+const RELEASES_URL = "https://downloads.claude.ai/claude-code-releases";
+const SIGNING_KEY_URL = "https://downloads.claude.ai/keys/claude-code.asc";
+const SIGNING_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"; // gitleaks:allow (public key fingerprint)
 const PINNED_BASE_URL = "https://api.anthropic.com";
 const DOCKER_SOCKET = "/var/run/docker.sock";
 const BWRAP_PROBE = ["--unshare-pid", "--dev-bind", "/", "/", "true"];
@@ -253,9 +261,10 @@ function readConfig(env) {
   };
 }
 
-// `latest` (the default) asks the registry for the newest release; anything
-// else must be an exact version. Either way the value passes the shared
-// exact-version check before it is installed.
+// `latest` asks the registry for the newest release; anything else must be an
+// exact version (the action's cli-version input defaults to a pinned one).
+// Either way the value passes the shared exact-version check before it is
+// installed.
 function resolveCliVersion(input, npmView) {
   const wanted = (input ?? "").trim() || "latest";
   const candidate =
@@ -852,40 +861,236 @@ function verifyIsolation({
   }
 }
 
-// Both npm calls run in the work directory with the public registry named, so
-// a checkout's .npmrc cannot steer them.
-function install(env, { spawn = spawnSync } = {}) {
+// Run a command and fail closed when it cannot start or exits non-zero.
+function mustRun(spawn, what, command, args, options) {
+  const result = spawn(command, args, { encoding: "utf8", ...options });
+  if (result.error || result.status !== 0) {
+    const why = result.error
+      ? (result.error.code ?? result.error.message)
+      : `exit ${result.status}`;
+    throw new LaneError(`${what} failed (${why})`);
+  }
+  return result;
+}
+
+function sha256File(file) {
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.alloc(1024 * 1024);
+  const fd = fs.openSync(file, "r");
+  try {
+    let read;
+    while ((read = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+// The installed tree must hold exactly the wrapper and the platform package,
+// both at the resolved version, so the audit's package count names them.
+function verifyInstalledTree(prefix, version, platformPackage) {
+  const modules = path.join(prefix, "node_modules");
+  const allowed = new Set([".bin", ".package-lock.json", "@anthropic-ai"]);
+  const extra = fs.readdirSync(modules).filter((name) => !allowed.has(name));
+  const scoped = fs.readdirSync(path.join(modules, "@anthropic-ai")).sort();
+  const expected = [CLI_PACKAGE, platformPackage]
+    .map((name) => name.split("/")[1])
+    .sort();
+  if (extra.length > 0 || scoped.join(",") !== expected.join(",")) {
+    throw new LaneError(
+      `the install tree holds ${[...extra, ...scoped].join(", ")}, not exactly ${CLI_PACKAGE} and ${platformPackage}`,
+    );
+  }
+  for (const name of [CLI_PACKAGE, platformPackage]) {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(modules, name, "package.json"), "utf8"),
+    );
+    if (manifest.version !== version) {
+      throw new LaneError(
+        `${name} installed at ${manifest.version}, not ${version}`,
+      );
+    }
+  }
+}
+
+// `npm audit signatures --json` lists only invalid and missing signatures,
+// never the packages it verified (lib/utils/verify-signatures.js in
+// npm/cli), and a registry that serves no keys is skipped with exit 0. So
+// the text report must count both packages as audited and verified.
+function auditSignatures(spawn, { cwd, prefix, registry }) {
+  const audit = mustRun(
+    spawn,
+    "npm audit signatures",
+    "npm",
+    ["audit", "signatures", registry, "--color=false", "--prefix", prefix],
+    { cwd },
+  );
+  const report = String(audit.stdout ?? "");
+  if (
+    !/^audited 2 packages in /mu.test(report) ||
+    !/^2 packages have verified registry signatures$/mu.test(report)
+  ) {
+    throw new LaneError(
+      `npm audit signatures did not verify both ${CLI_PACKAGE} packages: ${JSON.stringify(report.trim())}`,
+    );
+  }
+  return report.match(/^audited .*$/mu)[0];
+}
+
+// Verify the release manifest's signature with the pinned key and return the
+// platform's entry. GPG runs with its own home, so no runner keyring counts.
+function signedManifestEntry(spawn, { dir, version, platform }) {
+  fs.mkdirSync(dir, { recursive: true });
+  const files = {
+    key: path.join(dir, "claude-code.asc"),
+    manifest: path.join(dir, "manifest.json"),
+    signature: path.join(dir, "manifest.json.sig"),
+  };
+  const urls = {
+    key: SIGNING_KEY_URL,
+    manifest: `${RELEASES_URL}/${version}/manifest.json`,
+    signature: `${RELEASES_URL}/${version}/manifest.json.sig`,
+  };
+  for (const name of Object.keys(files)) {
+    mustRun(
+      spawn,
+      `download ${urls[name]}`,
+      "curl",
+      ["--proto", "=https", "-fsSL", "-o", files[name], urls[name]],
+      { cwd: dir },
+    );
+  }
+  const home = fs.mkdtempSync(path.join(dir, "gnupg-"));
+  fs.chmodSync(home, 0o700);
+  const gpg = ["--batch", "--homedir", home];
+  mustRun(spawn, "gpg --import", "gpg", [...gpg, "--import", files.key], {
+    cwd: dir,
+  });
+  const verify = mustRun(
+    spawn,
+    "gpg --verify of the release manifest",
+    "gpg",
+    [...gpg, "--status-fd", "1", "--verify", files.signature, files.manifest],
+    { cwd: dir },
+  );
+  const status = String(verify.stdout ?? "").split("\n");
+  const goodSig = status.some((line) => line.startsWith("[GNUPG:] GOODSIG "));
+  const signedBy = status
+    .filter((line) => line.startsWith("[GNUPG:] VALIDSIG "))
+    .map((line) => line.trim().split(" ").at(-1));
+  if (
+    !goodSig ||
+    signedBy.length !== 1 ||
+    signedBy[0] !== SIGNING_KEY_FINGERPRINT
+  ) {
+    throw new LaneError(
+      `the ${version} release manifest is not signed by key ${SIGNING_KEY_FINGERPRINT}`,
+    );
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(files.manifest, "utf8"));
+  } catch {
+    throw new LaneError(`the ${version} release manifest is not JSON`);
+  }
+  if (manifest.version !== version) {
+    throw new LaneError(
+      `the signed manifest is for ${JSON.stringify(manifest.version)}, not ${version}`,
+    );
+  }
+  const entry = manifest.platforms?.[platform];
+  if (!/^[0-9a-f]{64}$/u.test(entry?.checksum ?? "")) {
+    throw new LaneError(
+      `the signed ${version} manifest has no ${platform} checksum`,
+    );
+  }
+  return entry;
+}
+
+// Every npm call runs in the work directory with the public registry named,
+// so a checkout's .npmrc cannot steer it. The install keeps scripts on: the
+// wrapper's postinstall puts the platform binary in place of a stub.
+function install(
+  env,
+  { spawn = spawnSync, platform = `${process.platform}-${process.arch}` } = {},
+) {
   const registry = `--registry=${NPM_REGISTRY}`;
+  const cwd = env.LANE_WORK_DIR;
+  const npmVersion = mustRun(spawn, "npm --version", "npm", ["--version"], {
+    cwd,
+  });
+  process.stdout.write(
+    `run-claude-cli: npm ${String(npmVersion.stdout).trim()}\n`,
+  );
   const version = resolveCliVersion(env.LANE_CLI_VERSION_INPUT, () => {
     const view = spawn("npm", ["view", registry, CLI_PACKAGE, "version"], {
-      cwd: env.LANE_WORK_DIR,
+      cwd,
       encoding: "utf8",
     });
     if (view.status !== 0)
       throw new LaneError(`npm view ${CLI_PACKAGE} version failed`);
     return view.stdout;
   });
-  const prefix = path.join(env.LANE_WORK_DIR, "cli");
-  const installed = spawn(
+  const platformPackage = `${CLI_PACKAGE}-${platform}`;
+  const prefix = path.join(cwd, "cli");
+  fs.mkdirSync(prefix, { recursive: true });
+  // npm 12 blocks dependency install scripts unless the root package.json
+  // allows them (npm 11 runs them with a notice); allow this one version.
+  fs.writeFileSync(
+    path.join(prefix, "package.json"),
+    `${JSON.stringify({ allowScripts: { [`${CLI_PACKAGE}@${version}`]: true } }, null, 2)}\n`,
+  );
+  mustRun(
+    spawn,
+    `npm install ${CLI_PACKAGE}@${version}`,
     "npm",
     [
       "install",
       registry,
-      "--no-save",
+      "--save-exact",
       "--no-audit",
       "--no-fund",
       "--prefix",
       prefix,
       `${CLI_PACKAGE}@${version}`,
     ],
-    { cwd: env.LANE_WORK_DIR, stdio: ["ignore", "ignore", "inherit"] },
+    { cwd, stdio: ["ignore", "ignore", "inherit"] },
   );
-  if (installed.status !== 0)
-    throw new LaneError(`npm install ${CLI_PACKAGE}@${version} failed`);
   process.stdout.write(`run-claude-cli: Claude Code CLI ${version}\n`);
+  verifyInstalledTree(prefix, version, platformPackage);
+  const audited = auditSignatures(spawn, { cwd, prefix, registry });
+  process.stdout.write(
+    `run-claude-cli: npm audit signatures: ${audited}, both verified\n`,
+  );
+
+  const entry = signedManifestEntry(spawn, {
+    dir: path.join(cwd, "cli-manifest"),
+    version,
+    platform,
+  });
+  const cliPath = path.join(prefix, "node_modules", ".bin", "claude");
+  const checksum = sha256File(fs.realpathSync(cliPath));
+  process.stdout.write(
+    `run-claude-cli: ${platform} binary sha256 ${checksum}, signed manifest ${entry.checksum}\n`,
+  );
+  if (checksum !== entry.checksum) {
+    throw new LaneError(
+      `the installed ${platform} binary does not match the signed ${version} manifest`,
+    );
+  }
+  const reported = mustRun(
+    spawn,
+    `${cliPath} --version`,
+    cliPath,
+    ["--version"],
+    { cwd },
+  );
+  process.stdout.write(`run-claude-cli: ${String(reported.stdout).trim()}\n`);
   writeOutputs(env.GITHUB_OUTPUT, {
     "cli-version": version,
-    "cli-path": path.join(prefix, "node_modules", ".bin", "claude"),
+    "cli-path": cliPath,
   });
 }
 
@@ -956,6 +1161,7 @@ module.exports = {
   LaneError,
   MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
+  SIGNING_KEY_FINGERPRINT,
   cliArgs,
   holdsCredential,
   install,

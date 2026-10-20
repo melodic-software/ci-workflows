@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
+const { evaluate } = require("./actions-expression.cjs");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
 const ciWorkflowPath = path.join(
@@ -147,8 +148,86 @@ test("only the issue labeler runs on an issues event", () => {
   assert.deepEqual(unguarded, []);
 });
 
-test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
+// A merge queue tests the group commit through `merge_group` alone; a required
+// check that never reports there holds every queued pull request until the
+// check timeout. The payload carries no `pull_request`, so each gate must
+// evaluate true for every lane ci-status aggregates, or the group is green
+// on lanes that never ran.
+const mergeGroupContext = {
+  github: {
+    event_name: "merge_group",
+    repository: "melodic-software/ci-workflows",
+    workflow: "pr-require-checks",
+    run_id: "42",
+    event: {
+      action: "checks_requested",
+      merge_group: {
+        head_ref:
+          "refs/heads/gh-readonly-queue/main/pr-7-0123456789abcdef0123456789abcdef01234567",
+        head_sha: "1".repeat(40),
+        base_sha: "2".repeat(40),
+      },
+    },
+  },
+};
+
+test("pr-require-checks.yml runs on merge_group checks_requested only", () => {
+  assert.match(
+    ciWorkflow,
+    /^ {2}merge_group:\n {4}types: \[checks_requested\]$/mu,
+  );
+});
+
+test("on merge_group every aggregated lane and ci-status run in full", () => {
+  const needs =
+    /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu
+      .exec(ciWorkflow)
+      ?.groups?.list?.split(/,\s*/u) ?? [];
+  assert.ok(needs.length > 0, "ci-status has no needs list");
+  // detect-changes falls open off a pull request: every group is relevant.
+  const relevant = JSON.stringify(
+    Object.fromEntries(
+      [...ciWorkflow.matchAll(/\['(?<group>[a-z-]+)'\] != 'false'/gu)].map(
+        (match) => [match.groups.group, "true"],
+      ),
+    ),
+  );
+  const contexts = {
+    ...mergeGroupContext,
+    needs: { "detect-changes": { outputs: { results: relevant } } },
+  };
+  const gated = [];
+  for (const name of [...needs, "ci-status"]) {
+    const block = jobBlocks.find((candidate) => jobName(candidate) === name);
+    assert.ok(block !== undefined, `no job named ${name}`);
+    if (evaluate(jobCondition(block), contexts) !== true) {
+      gated.push(name);
+    }
+  }
+  assert.deepEqual(gated, []);
+});
+
+test("on merge_group the advisory lanes stay off and no run shares a group", () => {
+  for (const name of [
+    "pr-review",
+    "pr-review-security",
+    "pr-automerge-dependabot",
+    "check-actionlint-kjanat-soak",
+    ISSUE_JOB,
+  ]) {
+    const block = jobBlocks.find((candidate) => jobName(candidate) === name);
+    assert.ok(block !== undefined, `no job named ${name}`);
+    assert.equal(evaluate(jobCondition(block), mergeGroupContext), false);
+  }
+  const group = /^concurrency:\n {2}group: >-\n(?<value>(?: {4}.*\n)+)/mu.exec(
+    ciWorkflow,
+  ).groups.value;
+  assert.equal(evaluate(group, mergeGroupContext), "pr-require-checks-42");
+});
+
+test("the advisory lanes and issue labeler stay out of ci-status", () => {
   // Claude lane checks are advisory: a model outage must never block a merge.
+  // The kjanat/actionlint soak (#788) is advisory until phase 2 removes it.
   const needs =
     /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu.exec(
       ciWorkflow,
@@ -158,6 +237,7 @@ test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
+    "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));

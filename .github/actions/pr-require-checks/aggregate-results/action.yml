@@ -50,9 +50,11 @@ inputs:
       purpose: a check run cannot say which event produced it, so only a status
       only full runs write can stop a chain of contract-only runs from
       self-certifying. A carried `success` passes only when the run its
-      `target_url` names is a run of this same workflow on this SHA whose
-      same-named step of the same-named job concluded `success` (a step still
-      running is waited for like an in-flight run), so any carry-forward
+      `target_url` names is a full run (not a contract-only one) of this same
+      workflow on this SHA whose same-named step of the same-named job
+      concluded `success` (a step still running is waited for like an
+      in-flight run), and no completed full run on the SHA whose latest
+      attempt started at or after it ended that step otherwise, so any carry-forward
       needs `actions: read` on the calling job; a writer that cannot be read
       fails the run.
     default: ci-lanes
@@ -184,6 +186,25 @@ inputs:
       calling job needs `actions: read`; a listing that fails after three
       tries fails the run. Off by default.
     default: 'false'
+  step-name:
+    description: >-
+      Name of the calling job's step that runs this action, as the jobs API
+      lists it (the step's `name:`). Carrying a `success` forward and the
+      `yield-to-full-run` listing find this run's own gate job by
+      `job.check_run_id`, which must name an in-progress job of this run; where
+      that is empty (GHES, or a runner before v2.324.0), as the one in-progress
+      job of this run on this runner (`RUNNER_NAME`). They then find this step
+      in it: the step of this name in progress when set, else the one step of
+      that job in progress. Set it when the job runs steps in parallel or in the
+      background, where more than one step can be in progress. Each read that
+      does not resolve, or a jobs read that fails other than with HTTP 403, is
+      retried after 1, 2, 4 and 8 seconds (15 in all); a 403 fails at once with
+      no retry. Then
+      the run fails closed with a warning naming the cause: no key, a job id
+      not in progress in this run, no job or more than one job in progress on
+      the runner, or no single matching step.
+      The writer step of the full run is matched by the same name.
+    default: ''
   token:
     description: >-
       Token used to write and read the commit status. The calling job needs
@@ -194,8 +215,11 @@ inputs:
     description: Target repository identity OWNER/REPO (defaults to this repo).
     default: ${{ github.repository }}
   sha:
-    description: Commit SHA the status is written to and read from.
-    default: ${{ github.event.pull_request.head.sha || github.sha }}
+    description: >-
+      Commit SHA the status is written to and read from: the pull request head,
+      or on a `merge_group` event the group head, where the `ci-status` check
+      run itself reports.
+    default: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
 runs:
   using: composite
@@ -213,6 +237,8 @@ runs:
         RERUN_WAIT_SECONDS: ${{ inputs.rerun-wait-seconds }}
         RECORD_PENDING: ${{ inputs.record-pending }}
         YIELD_TO_FULL_RUN: ${{ inputs.yield-to-full-run }}
+        STEP_NAME: ${{ inputs.step-name }}
+        JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         GH_TOKEN: ${{ inputs.token }}
         REPOSITORY: ${{ inputs.repository }}
         SHA: ${{ inputs.sha }}

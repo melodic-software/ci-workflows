@@ -300,6 +300,37 @@ test("an execution error or max turns escalates to a person", async () => {
   }
 });
 
+test("any non-success subtype escalates even with a valid triage", async () => {
+  // The workflow escalates every subtype other than success, including the
+  // `unknown` the extract step carries for an unrecognized one.
+  for (const subtype of ["unknown", "error_during_execution"]) {
+    const { labels, comments, removed, typeCalls, summary } = await apply(
+      { type: "result", subtype, num_turns: 3 },
+      { output: triaged() },
+    );
+    assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL], subtype);
+    assert.equal(comments.length, 1, subtype);
+    assert.match(comments[0], /handed this issue to a maintainer/u, subtype);
+    assert.doesNotMatch(comments[0], /bug in the parser/u, subtype);
+    assert.deepEqual(typeCalls, [], subtype);
+    assert.deepEqual(removed, [], subtype);
+    assert.match(
+      summary,
+      new RegExp(`Escalation: the run ended with subtype ${subtype}`, "u"),
+      subtype,
+    );
+  }
+});
+
+test("a success subtype with a valid triage does not escalate", async () => {
+  const { labels, comments, summary } = await apply(SUCCESS, {
+    output: triaged(),
+  });
+  assert.deepEqual(labels, ["priority: high"]);
+  assert.match(comments[0], /bug in the parser/u);
+  assert.match(summary, /Escalation: none/u);
+});
+
 test("a confident run sets the type and removes the floor label", async () => {
   const { labels, typeCalls, removed, failed } = await apply(SUCCESS, {
     output: triaged(),

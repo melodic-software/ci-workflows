@@ -212,6 +212,9 @@ run_case() {
     GITHUB_SERVER_URL=https://github.com \
     GITHUB_RUN_ID=4242 \
     GITHUB_EVENT_NAME=pull_request \
+    RUNNER_NAME="$own_runner" \
+    STEP_NAME= \
+    JOB_CHECK_RUN_ID= \
     "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
@@ -370,7 +373,8 @@ run_of_workflow 4000 777
 # The gate job as the jobs API lists it: this run's, with this action's step
 # running after the contract step; and a full run's, whose aggregate step ended
 # with the given conclusion (`running` for a step still in progress).
-own_gate_job='{"name":"ci-status","status":"in_progress","conclusion":null,"steps":[{"name":"Check the pull-request contract","status":"completed","conclusion":"success"},{"name":"Aggregate lane results","status":"in_progress","conclusion":null}]}'
+own_runner='GitHub Actions 7'
+own_gate_job='{"id":9100,"name":"ci-status","status":"in_progress","conclusion":null,"runner_name":"GitHub Actions 7","steps":[{"name":"Check the pull-request contract","status":"completed","conclusion":"success"},{"name":"Aggregate lane results","status":"in_progress","conclusion":null}]}'
 # writer_gate_job <aggregate-step-conclusion|running> [job-conclusion]
 writer_gate_job() {
   if [[ "$1" == running ]]; then
@@ -1941,6 +1945,540 @@ expect_no_gh_calls_at_all
 
 reset_yield_fixtures
 
+# --- carry-forward: the writer must be a full run, and no newer full run on
+# the SHA may disagree ---------------------------------------------------------
+
+runs_key_prefix='GET_repos_melodic-software_ci-workflows_actions_runs'
+# writer_run <run-id> <run_started_at> [run_attempt]
+# The writer run object with the start of its latest attempt.
+writer_run() {
+  printf '{"id":%s,"workflow_id":777,"head_sha":"%s","run_started_at":"%s","run_attempt":%s}' "$1" "$sha" "$2" "${3:-1}" \
+    >"$fixtures/${runs_key_prefix}_${1}.json"
+}
+# listed_run <id> <conclusion> <run_attempt> <run_started_at>
+# A completed run of this workflow on the SHA, as the run listing shows it.
+listed_run() {
+  printf '{"id":%s,"status":"completed","conclusion":"%s","run_attempt":%s,"run_started_at":"%s"}' "$1" "$2" "$3" "$4"
+}
+# gate_jobs_json <json-array-of-other-jobs> <aggregate-step-conclusion> [contract-step-conclusion]
+gate_jobs_json() {
+  jq -c --argjson gate "$(writer_gate_job "$2" "${3:-}")" '. + [$gate]' <<<"$1"
+}
+# completed_gate_jobs <run-id> <json-array-of-other-jobs> <aggregate-step-conclusion> [contract-step-conclusion]
+completed_gate_jobs() {
+  printf '{"jobs":%s}' "$(gate_jobs_json "$2" "$3" "${4:-}")" >"$fixtures/${runs_key_prefix}_${1}_jobs.json"
+}
+skipped_lanes='[{"name":"lint","status":"completed","conclusion":"skipped"},{"name":"test","status":"completed","conclusion":"skipped"}]'
+docs_only_lanes='[{"name":"changes","status":"completed","conclusion":"success"},{"name":"lint","status":"completed","conclusion":"skipped"},{"name":"test","status":"completed","conclusion":"skipped"}]'
+writer_started='2026-09-05T12:00:00Z'
+newer_started='2026-09-05T12:10:00Z'
+older_started='2026-09-05T11:50:00Z'
+not_full_warning="::warning::the newest ci-lanes success on ${sha} names run 4100, which is not a full run of this workflow"
+# expect_calls <key> <n>
+# How many times the shim served one key.
+expect_calls() {
+  local actual=0
+  if [[ -f "$calls/${1}.count" ]]; then
+    actual="$(cat "$calls/${1}.count")"
+  fi
+  if [[ "$actual" -ne "$2" ]]; then
+    echo "FAIL: expected $2 call(s) to ${1}, got $actual"
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+clear_writer_fixtures() {
+  local id
+  for id in 4100 3900 4500 4600; do
+    rm -f -- "${fixtures:?}/${runs_key_prefix:?}_${id}".*
+  done
+}
+reset_writer_fixtures() {
+  reset_yield_fixtures
+  clear_writer_fixtures
+  writer_run 4100 "$writer_started"
+  status_list "[$(full_run_success 100)]"
+}
+
+# Without the shape check, a `success` naming a green contract-only run of this
+# workflow on this SHA passes: its aggregate step succeeds when it carries.
+echo 'case: a success naming a contract-only run is rejected'
+reset_writer_fixtures
+completed_gate_jobs 4100 "$skipped_lanes" success
+run_case 1 'skipped skipped' pass true
+expect_log "${not_full_warning} (its jobs read contract); ignoring it."
+expect_log "${fail_prefix}${absent_remedy}"
+
+# Without reading a re-run writer's first attempt, a re-run of a contract-only
+# run whose latest attempt lists as full would vouch for the success.
+echo 'case: a success naming a re-run whose first attempt is contract-only is rejected'
+reset_writer_fixtures
+writer_run 4100 "$writer_started" 2
+attempt_one_jobs 4100 "$(gate_jobs_json "$skipped_lanes" success)"
+run_case 1 'skipped skipped' pass true
+expect_log "${not_full_warning} (its jobs read contract); ignoring it."
+expect_gh_call "GET repos/${repository}/actions/runs/4100/attempts/1/jobs"
+
+echo 'case: a re-run writer whose first attempt cannot be read fails closed'
+reset_writer_fixtures
+writer_run 4100 "$writer_started" 2
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${runs_key_prefix}_4100_attempts_1_jobs.err"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::could not read repos/${repository}/actions/runs/4100/attempts/1/jobs (HTTP 500)."
+expect_no_log 'Carried forward'
+
+# Without counting the change-detection job as a run lane, a full run whose path
+# filters skipped every lane reads as contract-only and its success is lost.
+echo 'case: a docs-only full run, lanes skipped but change detection run, is accepted as the writer'
+reset_writer_fixtures
+completed_gate_jobs 4100 "$docs_only_lanes" success
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without positive proof of a full run, a page listing fewer jobs than the run
+# has could hide that only the gate ran.
+echo 'case: a writer whose jobs page is incomplete is rejected'
+reset_writer_fixtures
+printf '{"total_count":150,"jobs":%s}' "$(gate_jobs_json "$docs_only_lanes" success)" >"$fixtures/${runs_key_prefix}_4100_jobs.json"
+run_case 1 'skipped skipped' pass true
+expect_log "${not_full_warning} (its jobs read unknown); ignoring it."
+
+echo 'case: a writer whose jobs cannot be read fails closed'
+reset_writer_fixtures
+rm -f -- "$fixtures/${runs_key_prefix}_4100_jobs.json"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${runs_key_prefix}_4100_jobs.err"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::could not read repos/${repository}/actions/runs/4100/jobs (HTTP 500)."
+expect_no_log 'Carried forward'
+
+# Retention deletes workflow runs and statuses; a status that outlives its run
+# names a writer that reads 404. Without failing closed it would pass unverified.
+echo 'case: a writer run deleted by retention (404) fails closed'
+reset_writer_fixtures
+rm -f -- "$fixtures/${runs_key_prefix}_4100.json"
+printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${runs_key_prefix}_4100.err"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::could not read repos/${repository}/actions/runs/4100 (HTTP 404)."
+expect_no_log 'Carried forward'
+
+# Without the newer-run check, a `success` naming older green run 4100 overrides
+# the failure newer full run 4500 recorded on the same SHA.
+echo 'case: a newer full run whose aggregate step failed discards the carried success'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4100 success 1 "$writer_started"),$(listed_run 4500 failure 1 "$newer_started")]"
+writer_jobs 4500 failure
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} names run 4100, but newer full run 4500 on this SHA ended step 'Aggregate lane results' of job 'ci-status' with failure; ignoring it."
+expect_log "${fail_prefix}${absent_remedy}"
+expect_calls "${runs_key_prefix}_4100_jobs" 1
+
+# Without judging the step rather than the run's conclusion, a cancelled run
+# would be skipped although its aggregate step recorded a failure.
+echo 'case: a newer full run that concluded cancelled with a failed aggregate step discards the carry'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4500 cancelled 1 "$newer_started")]"
+writer_jobs 4500 failure cancelled
+run_case 1 'skipped skipped' pass true
+expect_log 'but newer full run 4500 on this SHA ended step'
+expect_no_log 'Carried forward'
+
+# Without ignoring a run that reached no verdict, a newer run whose gate step
+# was skipped, or never listed, would discard every later carry.
+echo 'case: a newer full run whose aggregate step was skipped is ignored'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4500 cancelled 1 "$newer_started")]"
+writer_jobs 4500 skipped cancelled
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_gh_call "GET repos/${repository}/actions/runs/4500/jobs"
+
+echo 'case: a newer full run with no aggregate step listed is ignored'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4500 cancelled 1 "$newer_started")]"
+jobs_raw 4500 '[{"name":"lint","status":"completed","conclusion":"cancelled"},{"name":"ci-status","status":"completed","conclusion":"cancelled","steps":[]}]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without judging the aggregate step rather than the job, a newer full run that
+# failed only its contract check would discard the lanes success that the
+# contract-only run fixing the title, or dropping the label, must carry.
+for contract_fix in 'title fix' 'do-not-merge label removed'; do
+  echo "case: a newer full run that failed only its contract check does not discard the carry (${contract_fix})"
+  reset_writer_fixtures
+  workflow_runs "[$(listed_run 4500 failure 1 "$newer_started")]"
+  writer_jobs 4500 success failure
+  run_case 0 'skipped skipped' pass true
+  expect_log "Carried forward: ci-lanes is success on ${sha}"
+done
+
+# Without the shape filter, a contract-only run that failed closed would
+# discard every later carry on the SHA.
+echo 'case: a newer contract-only run that failed does not discard the carry'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4500 failure 1 "$newer_started")]"
+completed_gate_jobs 4500 "$skipped_lanes" failure
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without ordering by the latest attempt's start, a re-run of lower run id 3900
+# that started after the writer would be taken as older, and run 4600, a higher
+# id whose only attempt started before the writer, as newer.
+echo 'case: newer is the latest attempt start time, not the run id'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 3900 failure 2 "$newer_started"),$(listed_run 4600 failure 1 "$older_started")]"
+writer_jobs 3900 failure
+attempt_one_jobs 3900 "$(gate_jobs_json "$docs_only_lanes" failure)"
+writer_jobs 4600 failure
+run_case 1 'skipped skipped' pass true
+expect_log 'but newer full run 3900 on this SHA ended step'
+expect_no_gh_call 'actions/runs/4600/jobs'
+
+echo 'case: an older full run whose aggregate step failed does not discard the carry'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4600 failure 1 "$older_started")]"
+writer_jobs 4600 failure
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_gh_call 'actions/runs/4600/jobs'
+
+# Without failing closed, a refused listing would skip the comparison.
+echo 'case: a run listing that fails while verifying the writer fails closed'
+reset_writer_fixtures
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${workflow_runs_key}.err"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::could not read repos/${repository}/actions/workflows/777/runs (HTTP 500)."
+expect_no_log 'Carried forward'
+
+echo 'case: a newer full run whose jobs cannot be read discards the carry'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4500 failure 1 "$newer_started")]"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${runs_key_prefix}_4500_jobs.err"
+run_case 1 'skipped skipped' pass true
+expect_log 'Cannot rule out a newer verdict from run 4500'
+expect_no_log 'Carried forward'
+
+# Without reusing the poll's listing, the wait would list the runs twice per
+# read; and the writer's one jobs read serves both the step and the shape.
+echo 'case: the wait reuses its own run listing and the writer jobs read'
+reset_writer_fixtures
+workflow_runs "[$(listed_run 4500 success 1 "$newer_started")]"
+writer_jobs 4500 success
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "$workflow_runs_key" 1
+expect_calls "${runs_key_prefix}_4100_jobs" 1
+
+# At most one call more than before the shape and newer-run checks: the run
+# listing. Before them a plain carry made five (this run, the status list, the
+# writer run, this run's jobs, the writer's jobs).
+echo 'case: carrying one success makes at most one extra API call'
+reset_writer_fixtures
+workflow_runs '[]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100_jobs" 1
+if [[ "$(wc -l <"$gh_log")" -gt 6 ]]; then
+  echo "FAIL: expected at most 6 API calls, got $(wc -l <"$gh_log")"
+  cat "$gh_log"
+  failures=$((failures + 1))
+fi
+
+clear_writer_fixtures
+run_of_workflow 4100 777
+reset_yield_fixtures
+
+# --- carry-forward: reads reused across the writer check and the polls --------
+
+# row_of_run <id> <workflow-id> <head-sha> [status]
+# A run as the run listing shows it, with the fields the writer check reads.
+row_of_run() {
+  printf '{"id":%s,"status":"%s","conclusion":"success","workflow_id":%s,"head_sha":"%s","run_attempt":1,"run_started_at":"%s"}' \
+    "$1" "${4:-completed}" "$2" "$3" "$writer_started"
+}
+
+# Without comparing the row's own workflow, the listing's filter alone would
+# vouch for the writer; before the row was read, the run object (workflow 777)
+# decided and this passed.
+echo "case: a carried writer row in the listing with another workflow_id is ignored"
+reset_writer_fixtures
+workflow_runs "[$(row_of_run 4100 888 "$sha")]"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} was written by run 4100 of workflow 888, not this workflow (777); ignoring it."
+expect_calls "${runs_key_prefix}_4100" 0
+
+echo "case: a carried writer row in the listing with another head_sha is ignored"
+reset_writer_fixtures
+workflow_runs "[$(row_of_run 4100 777 cafebabecafebabecafebabecafebabecafebabe)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} names run 4100, which ran on cafebabecafebabecafebabecafebabecafebabe; ignoring it."
+expect_calls "${runs_key_prefix}_4100" 0
+
+# Without the row, every carry reads the writer run again.
+echo 'case: a carried writer row in the listing replaces the writer run read'
+reset_writer_fixtures
+workflow_runs "[$(row_of_run 4100 777 "$sha")]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100" 0
+
+# Without the fallback, a writer missing from the listing (or a row without its
+# workflow or SHA) could not be verified at all.
+echo 'case: a writer missing from the listing is read exactly once'
+reset_writer_fixtures
+workflow_runs '[]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100" 1
+
+echo 'case: a writer row without its head_sha falls back to one writer run read'
+reset_writer_fixtures
+workflow_runs '[{"id":4100,"status":"completed","workflow_id":777}]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100" 1
+
+# A yield run that waits two polls for writer 4000's step, beside an in-flight
+# contract-only sibling. Without keeping the workflow id between polls, every
+# poll reads this run again; without the writer's row, every poll reads the
+# writer run; this run's own jobs are read once, shared with the gate resolver.
+# The same fixture made 17 calls at 834f4e1 (origin/main before #743); the
+# ceiling below is that minus 2.
+echo 'case: a multi-poll yield carry reads this run, its jobs and the writer run at most once'
+reset_writer_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[$(row_of_run 4000 777 "$sha" in_progress),$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+writer_running_then_success
+jobs_raw 4300 "$contract_only_jobs"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_status_reads 2
+expect_calls "$current_run_key" 1
+expect_calls "${runs_key_prefix}_4242_jobs" 1
+expect_calls "${runs_key_prefix}_4000" 0
+if [[ "$(wc -l <"$gh_log")" -gt 15 ]]; then
+  echo "FAIL: expected at most 15 API calls (17 at 834f4e1, less 2), got $(wc -l <"$gh_log")"
+  cat "$gh_log"
+  failures=$((failures + 1))
+fi
+
+clear_writer_fixtures
+run_of_workflow 4100 777
+run_of_workflow 4000 777
+reset_yield_fixtures
+
+# --- this run's own gate job and step ------------------------------------------
+
+own_jobs_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs'
+# own_jobs <json-array-of-job-objects> [call-number]
+# This run's latest-attempt jobs, on every read or only on the Nth.
+own_jobs() {
+  printf '{"jobs":%s}' "$1" >"$fixtures/${own_jobs_key}${2:+.$2}.json"
+}
+clear_own_jobs() {
+  rm -f -- "$fixtures/${own_jobs_key}".*.json
+  install_step_fixtures
+}
+# expect_total_sleep_at_most <seconds>
+expect_total_sleep_at_most() {
+  local total=0 seconds
+  while read -r seconds; do
+    total=$((total + seconds))
+  done <"$sleep_log"
+  if [[ "$total" -le 0 || "$total" -gt "$1" ]]; then
+    echo "FAIL: expected a total sleep in 1..$1 seconds, got $total"
+    cat "$sleep_log"
+    failures=$((failures + 1))
+  fi
+}
+own_cause_prefix="::warning::could not identify this run's gate job and running step in repos/${repository}/actions/runs/4242/jobs: "
+running_contract_step='{"name":"Check the pull-request contract","status":"in_progress","conclusion":null}'
+running_aggregate_step='{"name":"Aggregate lane results","status":"in_progress","conclusion":null}'
+
+# Without matching this run's own job by its runner among in-progress jobs, a
+# sibling job the API still lists as queued is a second non-skipped job, and
+# the gate goes unidentified.
+echo 'case: a sibling job still listed as queued does not hide the gate job'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"lint\",\"status\":\"queued\",\"conclusion\":null},${own_gate_job}]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_sleep
+
+# Without the runner match, a reusable-workflow call job that ran in a
+# contract-only run is a second non-skipped job, and the gate goes unidentified
+# on every such run.
+echo 'case: an extra non-gate job that ran does not hide the gate job'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"pr-refine / fix-docs\",\"status\":\"completed\",\"conclusion\":\"success\",\"runner_name\":\"GitHub Actions 3\"},${own_gate_job}]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the shared resolver in the yield listing, a lagging sibling in this
+# run leaves no gate name, and a contract-only sibling counts as a full run.
+echo 'case: the yield listing resolves the gate job past a lagging sibling of this run'
+reset_yield_fixtures
+status_list '[]'
+own_jobs "[{\"name\":\"lint\",\"status\":\"queued\",\"conclusion\":null},${own_gate_job}]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+jobs_raw 4300 "$contract_only_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${fail_prefix}${absent_remedy}"
+expect_no_log 'superseded'
+
+# Without the retry, a step the API has not flipped to in_progress yet fails the
+# run on the first read.
+echo 'case: a step listed as in_progress only on the second read resolves after one retry'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"lint\",\"conclusion\":\"skipped\"},{\"id\":9100,\"name\":\"ci-status\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[{\"name\":\"Check the pull-request contract\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"name\":\"Aggregate lane results\",\"status\":\"queued\",\"conclusion\":null}]}]" 1
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+if [[ "$(cat "$sleep_log")" != 1 ]]; then
+  echo "FAIL: expected one 1-second sleep before the second read, got: $(tr '\n' ' ' <"$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_own_jobs
+
+# Without failing closed on an empty key, a job with no runner name would match
+# whichever in-progress job also lacks one.
+echo 'case: an empty job.check_run_id and runner name fail closed naming the cause'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true RUNNER_NAME=
+expect_log "${own_cause_prefix}job.check_run_id and RUNNER_NAME are both empty, so this run's own job has no key."
+expect_no_log 'Carried forward'
+expect_no_gh_call "actions/runs/4100/jobs"
+
+# Without the in-progress test on a named step, a step-name naming a step that
+# already finished would be trusted as the step running this action.
+echo 'case: a step-name naming a completed step fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'STEP_NAME=Check the pull-request contract'
+expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Check the pull-request contract' after 5 reads."
+expect_no_log 'Carried forward'
+
+# Without the control-character replacement and the digits-only count, a job
+# name carrying the field separator and a newline would shift text into the
+# count, which bash arithmetic evaluates when no step resolves.
+echo 'case: a job name carrying a field separator and a newline is never evaluated'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+injected_marker="$temporary_directory/injected"
+rm -f -- "$injected_marker"
+jq -cn --arg runner "$own_runner" --arg marker "$injected_marker" \
+  '{jobs: [{id: 9100, name: ("ci-status\u001fx\u001fx\u001fGITHUB_RUN_ID[$(touch " + $marker + ")]\nsteps"), status: "in_progress", conclusion: null, runner_name: $runner,
+    steps: []}]}' \
+  >"$fixtures/${own_jobs_key}.json"
+run_case 1 'skipped skipped' pass true
+expect_no_log 'Carried forward'
+if [[ -e "$injected_marker" ]]; then
+  echo 'FAIL: a job name was evaluated by bash'
+  failures=$((failures + 1))
+fi
+clear_own_jobs
+
+# check_job <job-id> <run-id>
+# `GET actions/jobs/{id}`: this run's gate job as the id path reads it, in the
+# run given.
+check_job_key='GET_repos_melodic-software_ci-workflows_actions_jobs_9100'
+check_job() {
+  jq -c --argjson run "$2" '. + {run_id: $run}' <<<"$own_gate_job" >"$fixtures/${check_job_key}.json"
+}
+check_job_cause_prefix="::warning::could not identify this run's gate job and running step in repos/${repository}/actions/jobs/9100: "
+
+# Without the id path, an empty runner name leaves the job unidentified; with
+# it, the job is read by its id and the run's job listing is never read.
+echo 'case: job.check_run_id reads the gate job of this run directly'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+check_job 9100 4242
+run_case 0 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100 RUNNER_NAME=
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_log "This run's gate job is 'ci-status' (REST id 9100, job.check_run_id 9100), found by job.check_run_id 9100 in run 4242."
+expect_gh_call "GET repos/${repository}/actions/jobs/9100"
+expect_no_gh_call "actions/runs/4242/jobs"
+expect_no_sleep
+
+# Without the fallback, a runner that leaves job.check_run_id empty (GHES, or
+# a runner before v2.324.0) could never identify its job.
+echo 'case: an empty job.check_run_id falls back to the runner-name match'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 0 'skipped skipped' pass true true JOB_CHECK_RUN_ID=
+expect_log "found by runner '${own_runner}'."
+expect_gh_call "GET repos/${repository}/actions/runs/4242/jobs"
+expect_no_gh_call "actions/jobs/"
+
+# Without the run check, a job id of another run would lend that run's job and
+# step names to this one.
+echo 'case: a job.check_run_id of another run fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+check_job 9100 5555
+run_case 1 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100
+expect_log "${check_job_cause_prefix}no in-progress job matched job.check_run_id 9100 in run 4242 after 5 reads."
+expect_no_log 'Carried forward'
+expect_no_gh_call "actions/runs/4242/jobs"
+rm -f -- "$fixtures/${check_job_key}.json"
+
+# Without validating the id, a value carrying `/` or `?` would address another
+# resource than this job.
+echo 'case: a job.check_run_id that is not a number fails closed before any jobs read'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'JOB_CHECK_RUN_ID=9100/../9200'
+expect_log "::warning::could not identify this run's gate job and running step in repos/${repository}/actions/jobs: job.check_run_id is not a job id: 9100/../9200."
+expect_no_gh_call "actions/jobs/"
+expect_no_gh_call "actions/runs/4242/jobs"
+
+# Without the bound, a job that never appears would retry past the job's
+# 3-minute timeout instead of failing with the cause.
+echo 'case: an own job that never resolves fails closed after a bounded retry'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'RUNNER_NAME=other runner'
+expect_log "${own_cause_prefix}no in-progress job matched runner 'other runner' after 5 reads."
+expect_total_sleep_at_most 15
+expect_no_log 'Carried forward'
+
+# Without failing on more than one match, a self-hosted runner name shared by a
+# repository and an organization runner could pick another job's steps.
+echo 'case: two in-progress jobs on the same runner name fail closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"other\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[]},${own_gate_job}]"
+run_case 1 'skipped skipped' pass true
+expect_log "${own_cause_prefix}2 in-progress jobs matched runner '${own_runner}' after 5 reads; a runner name is not unique."
+expect_no_log 'Carried forward'
+clear_own_jobs
+
+# Without the step-name input, parallel steps leave two in-progress steps and
+# the running step goes unidentified.
+echo 'case: step-name picks the step that runs this action among parallel steps'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"id\":9100,\"name\":\"ci-status\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[${running_contract_step},${running_aggregate_step}]}]"
+run_case 0 'skipped skipped' pass true true 'STEP_NAME=Aggregate lane results'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_sleep
+
+echo 'case: without step-name, two in-progress steps fail closed naming the input'
+run_case 1 'skipped skipped' pass true
+expect_log "${own_cause_prefix}job 'ci-status' has 2 in-progress steps after 5 reads; set step-name to the name of the step that runs this action."
+clear_own_jobs
+
+echo 'case: a step-name no step of the gate job carries fails closed naming it'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'STEP_NAME=Aggregate'
+expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Aggregate' after 5 reads."
+expect_total_sleep_at_most 15
+
+reset_yield_fixtures
+
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
 for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds record-pending yield-to-full-run token repository sha; do
@@ -1981,6 +2519,17 @@ fi
 rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
 if [[ "$rerun_wait_default" != "    default: '90'" ]]; then
   echo "FAIL: action.yml does not default rerun-wait-seconds to '90' (got: ${rerun_wait_default})"
+  failures=$((failures + 1))
+fi
+
+# step-name is opt-in: empty keeps the one-in-progress-step rule.
+if ! grep -qE '^  step-name:' "$action_metadata" || ! grep -qF '        STEP_NAME: ' "$action_metadata"; then
+  echo "FAIL: action.yml does not declare and wire the step-name input"
+  failures=$((failures + 1))
+fi
+step_name_default="$(awk '$0 == "  step-name:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
+if [[ "$step_name_default" != "    default: ''" ]]; then
+  echo "FAIL: action.yml does not default step-name to '' (got: ${step_name_default})"
   failures=$((failures + 1))
 fi
 

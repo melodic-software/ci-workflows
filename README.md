@@ -304,8 +304,14 @@ consumer to audit it.
   where a new commit would re-run every lane.
 
   **Carrying a `success` forward needs `actions: read`, whatever the wait.** The
-  run its `target_url` names must be read back and belong to this same workflow,
-  and an unreadable writer fails the run. Under an explicit `permissions:`
+  run its `target_url` names must be read back and be a full run of this same
+  workflow on this SHA, judged by its jobs: a contract-only run's aggregate step
+  also succeeds when it carries, so it vouches for nothing. Every completed full
+  run on the SHA whose latest attempt started at or after the writer's is read
+  back too, and one whose aggregate step completed with anything but `success`
+  (a run that concluded `cancelled` included) discards the carried `success`; a
+  run whose aggregate step was skipped or is absent is ignored. An unreadable
+  writer, including one Actions retention has deleted, fails the run. Under an explicit `permissions:`
   block the default for every scope is none, so the Actions calls 403 without
   it. In the wait, a 403 prints a `::warning::` naming the missing scope and then
   degrades to a single status read: loud, and never a pass on an absent or
@@ -356,6 +362,21 @@ consumer to audit it.
     superseded; a full run still waiting on it re-runs it once it completes.
     It overrides `carry-forward-wait-seconds`, needs
     `actions: read`, and fails the run when the listing fails three times.
+    This run's own gate job, whose name a contract-only sibling must match and
+    whose step names the writer step to verify, is the job `job.check_run_id`
+    names, read directly and required to be in progress in this run. Where
+    `job.check_run_id` is empty (GHES, or a runner before v2.324.0) it is the
+    one in-progress job of this run on this runner (`RUNNER_NAME`), and a
+    runner name shared by two such jobs fails closed. Either way a sibling job
+    of this run still queued, or an extra job that ran, does not hide it. `step-name` (default `''`) names the
+    step that runs the action, which must be in progress and which a job
+    running steps in parallel needs; left empty, it is the one step of that
+    job in progress. A read that does not resolve, or a jobs read that fails
+    other than with HTTP 403, is retried after 1, 2, 4 and 8 seconds; a 403
+    fails at once with no retry. Then the run fails
+    closed with a warning naming the cause (no key, a job id not in progress
+    in this run, no job or more than one job in progress on the runner, or no
+    single matching step).
     (`carry-forward-wait-seconds: '0'` alone reads the status once with no
     listing, so it can carry an older `success` across a full run that is
     queued or has not yet written its `pending` marker.)
@@ -427,6 +448,7 @@ consumer to audit it.
           with:
             yield-to-full-run: 'true'
             rerun-contract-only-siblings: 'true'
+            step-name: Aggregate lane results
             results: ${{ needs.detect-changes.result }} ...
   ```
 
@@ -836,6 +858,41 @@ GitHub continues the normal weekly patching of each hosted image generation.
   present. A human triager assigning a real tier after this workflow ran is
   expected to remove the floor label as part of that transition — this
   workflow only guarantees a floor and does not police tier assignment.
+- `.github/workflows/maintenance-check-links-online.yml` — the weekly online
+  link check: lychee with the network on over the caller's Markdown, reading
+  its `lychee.toml` (the standards-synced config the offline lane uses) and
+  `.lycheeignore`. The report goes to the job summary and a broken link fails
+  the job red; it opens no issue and posts no comment. It holds only the
+  `GITHUB_TOKEN`, which cannot read another private repository, so lychee
+  never reports a link into one as OK. **Opt-in by repository property**: a
+  `schedule` run reads the caller's `opt-in-property` (default
+  `link-check-online`, an org `true_false` custom property) and skips unless it
+  is `true`; any other event, `workflow_dispatch` included, always runs, so a
+  repository shows a green dispatched run before the property turns its
+  schedule on. A property read that errors fails red. Required input: `runner`.
+  Optional: `config`, `globs`, `extra-args` (lychee-action evaluates its args
+  in a shell, so single-quote each regex), `lychee-version`, `timeout-minutes`.
+  Exceptions are exact-URL `.lycheeignore` entries with a dated reason; the
+  built-in per-host pacing flags do not stop every runner 429. Keep it out of
+  `ci-status`. The caller owns the trigger and picks a cron minute and day no
+  other opted-in repository uses (the standards sync delivers each opted-in
+  repository its own caller):
+
+  ```yaml
+  on:
+    schedule:
+      - cron: "37 11 * * 2"
+    workflow_dispatch:
+  permissions: {}
+  jobs:
+    check-links:
+      permissions:
+        contents: read
+      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@<sha>
+      with:
+        runner: ubuntu-24.04
+  ```
+
 - `.github/workflows/pr-automerge-dependabot.yml` — arms squash auto-merge on a
   Dependabot pull request, so GitHub merges it once `ci-status` and every other
   required check pass. It never merges directly. All gates must hold: the PR

@@ -1473,6 +1473,7 @@ jobs:
             const denials = /^[0-9]{1,6}$/u.test(denialText) ? Number(denialText) : Number.NaN;
             if (!(denials === 0)) escalate.push(`${Number.isNaN(denials) ? "an unreadable number of" : denials} permission denial(s)`);
             if (subtype === "error_max_turns") escalate.push("the run stopped at max turns");
+            else if (subtype !== "success") escalate.push(`the run ended with subtype ${subtype}`);
 
             let output = null;
             try {

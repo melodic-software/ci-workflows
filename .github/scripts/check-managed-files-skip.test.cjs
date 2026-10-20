@@ -37,7 +37,13 @@ function mode(overrides) {
   const output = path.join(dir, "out");
   try {
     execFileSync("bash", ["-c", modeScript], {
-      env: { ...process.env, ...SYNC_PR, ...overrides, GITHUB_OUTPUT: output },
+      env: {
+        ...process.env,
+        GITHUB_EVENT_NAME: "pull_request",
+        ...SYNC_PR,
+        ...overrides,
+        GITHUB_OUTPUT: output,
+      },
       stdio: "pipe",
     });
     return fs.readFileSync(output, "utf8").trim();
@@ -114,6 +120,56 @@ test("a user login named dependabot without [bot] is not a candidate", () => {
   );
 });
 
+test("a merge_group run hands the group to the merge-group step", () => {
+  for (const pr of [{}, DEPENDABOT_PR, { PR_AUTHOR: "" }]) {
+    assert.equal(
+      mode({ ...pr, GITHUB_EVENT_NAME: "merge_group" }),
+      "mode=merge-group",
+    );
+  }
+});
+
+// merge-group.cjs applies the mode step's rules to each queued pull request.
+test("merge-group.cjs selects the same mode as the mode step", () => {
+  const { selectMode } = require(
+    path.join(
+      __dirname,
+      "..",
+      "actions",
+      "check-managed-files",
+      "merge-group.cjs",
+    ),
+  );
+  const cases = [
+    {},
+    { PR_HEAD_REF: "chore/other" },
+    { PR_HEAD_REPO: "someone/claude-code-plugins" },
+    { PR_HEAD_REPO: "", PR_BASE_REPO: "" },
+    { PR_AUTHOR: "some-contributor" },
+    { PR_AUTHOR: "melodic-standards-sync" },
+    DEPENDABOT_PR,
+    { ...DEPENDABOT_PR, PR_AUTHOR_ID: "12345" },
+    { ...DEPENDABOT_PR, PR_AUTHOR: "dependabot" },
+    { ...SYNC_PR, PR_AUTHOR: "dependabot[bot]", PR_AUTHOR_ID: "49699333" },
+  ];
+  for (const overrides of cases) {
+    const env = { PR_AUTHOR_ID: "", ...SYNC_PR, ...overrides };
+    const pr = {
+      user: {
+        login: env.PR_AUTHOR,
+        id: env.PR_AUTHOR_ID === "" ? undefined : Number(env.PR_AUTHOR_ID),
+      },
+      head: { ref: env.PR_HEAD_REF, repo: { full_name: env.PR_HEAD_REPO } },
+      base: { repo: { full_name: env.PR_BASE_REPO } },
+    };
+    assert.equal(
+      `mode=${selectMode(pr)}`,
+      mode(env),
+      JSON.stringify(overrides),
+    );
+  }
+});
+
 test("the mode step never selects skip itself", () => {
   assert.doesNotMatch(modeScript, /mode=skip/u);
 });
@@ -138,13 +194,25 @@ test("verification steps run only in sync mode and no step skips it", () => {
     gate("Reject hand-edits of managed files"),
     "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) == 'hand-edit'",
   );
+  assert.equal(
+    gate("Map the merge group to its pull requests"),
+    "steps.mode.outputs.mode == 'merge-group'",
+  );
+  assert.equal(
+    gate("Reject hand-edits in the merge group's pull requests"),
+    "steps.group.outputs.mode == 'hand-edit'",
+  );
+  assert.equal(
+    gate("Verify the queued sync PR content against standards"),
+    "steps.group.outputs.mode == 'sync'",
+  );
   for (const name of [
     "Check out standards manifest source",
     "Detect the engine flavor",
   ]) {
     assert.equal(
       gate(name),
-      "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'",
+      "(steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'",
     );
   }
 });

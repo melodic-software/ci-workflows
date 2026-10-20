@@ -22,7 +22,9 @@ inputs:
     description: >-
       Pull request number. Empty (a push, schedule, or workflow_dispatch run)
       makes the step a no-op that reports every output as `skipped` — this is a
-      pull-request gate, and a push run must not fail on it.
+      pull-request gate, and a push run must not fail on it. Ignored on a
+      `merge_group` event, which reads the queued pull request's number from
+      the group's head ref instead.
     default: ${{ github.event.pull_request.number }}
   types:
     description: >-
@@ -68,7 +70,8 @@ inputs:
 
 outputs:
   title:
-    description: '`pass`, `fail`, or `skipped` (no pull request in this event).'
+    description: >-
+      `pass`, `fail`, or `skipped` (no pull request in this event).
     value: ${{ steps.contract.outputs.title }}
   do-not-merge:
     description: '`pass`, `fail`, or `skipped` (no pull request in this event).'
@@ -76,7 +79,7 @@ outputs:
   linkage:
     description: >-
       `pass`, `fail`, `exempt` (an exempt author), or `skipped` (no pull request
-      in this event).
+      in this event, or a `merge_group` event).
     value: ${{ steps.contract.outputs.linkage }}
 
 runs:
@@ -96,4 +99,6 @@ runs:
         LINKAGE_LABEL: ${{ inputs.linkage-label }}
         LINKAGE_MODE: ${{ inputs.linkage-mode }}
         ISSUE_REF_PATTERN: ${{ inputs.issue-ref-pattern }}
+        EVENT_NAME: ${{ github.event_name }}
+        MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"
