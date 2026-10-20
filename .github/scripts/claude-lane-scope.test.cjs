@@ -219,7 +219,15 @@ async function runScope(
   const diff = fs.existsSync(diffFile)
     ? fs.readFileSync(diffFile, "utf8")
     : undefined;
-  return { outputs, messages, secrets, diff, listedComments, gitCalls, gitOptions };
+  return {
+    outputs,
+    messages,
+    secrets,
+    diff,
+    listedComments,
+    gitCalls,
+    gitOptions,
+  };
 }
 
 // The base did not move between the last review and the head.
