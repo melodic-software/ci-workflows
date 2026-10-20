@@ -446,6 +446,69 @@ run_case 0
 expect_output 'linkage=fail'
 expect_log 'trigger "doesn'"'"'t"'
 
+# Without the typographic-apostrophe normalization "doesn<U+2019>t" would not
+# read as a negation. LC_ALL=C runs the byte-oriented path, where awk sees
+# U+2019 as three characters; without the scan treating them as one apostrophe,
+# "doesn<U+2019>t" would count as two words and fall out of the five-word window.
+typographic_apostrophe=$'\xe2\x80\x99'
+for locale in C.UTF-8 C; do
+  echo "case: a contracted negation with a typographic apostrophe is detected (LC_ALL=${locale})"
+  set_pull 'feat: add pr-contract' "It doesn${typographic_apostrophe}t in any way really close #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
+  run_case 0 LC_ALL="$locale"
+  expect_output 'linkage=fail'
+  expect_log 'trigger "doesn'"'"'t"'
+done
+
+# Without the five-word bound the scan would reach any earlier negation on the
+# line; without the window at all the nearer one would be missed.
+echo 'case: a negation five words before the keyword is detected'
+set_pull 'feat: add pr-contract' "Not one two three four closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
+run_case 0
+expect_output 'linkage=fail'
+expect_log 'trigger "Not"'
+
+echo 'case: a negation six words before the keyword is not detected'
+set_pull 'feat: add pr-contract' "Not one two three four five closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+run_case 0
+expect_output 'linkage=pass'
+
+# Without the bounded backward scan in negation_trigger, and the single gsub
+# pass in scan_line, one long unpunctuated line of closing keywords costs
+# super-quadratic time: about 111 s at 4000 repeats, against the ci-status job's
+# 3-minute timeout. Linear work keeps the 8000/4000 ratio near 2; best of two
+# runs damps runner noise.
+# time_repeats <repeats>: sets best_time to the faster of two runs, in seconds.
+time_repeats() {
+  local repeats="$1" body elapsed started
+  printf -v body '%*s' "$repeats" ''
+  body="${body// /closes #1 }"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
+  set_pull 'feat: add pr-contract' "$body" someone ''
+  best_time=''
+  for _ in 1 2; do
+    started="$EPOCHREALTIME"
+    run_case 0
+    elapsed="$(awk -v a="$started" -v b="$EPOCHREALTIME" 'BEGIN { printf "%.3f", b - a }')"
+    expect_output 'linkage=pass'
+    if [[ -z "$best_time" ]] || awk -v a="$elapsed" -v b="$best_time" 'BEGIN { exit !(a < b) }'; then
+      best_time="$elapsed"
+    fi
+  done
+}
+echo "case: a long line of closing keywords scans in linear time ($(awk -W version 2>&1 | head -n 1))"
+time_repeats 4000
+time_4000="$best_time"
+time_repeats 8000
+time_8000="$best_time"
+echo "  4000 repeats: ${time_4000} s; 8000 repeats: ${time_8000} s"
+if ! awk -v t="$time_4000" 'BEGIN { exit !(t < 5) }'; then
+  echo "FAIL: 4000 repeats took ${time_4000} s, expected under 5 s"
+  failures=$((failures + 1))
+fi
+if ! awk -v a="$time_4000" -v b="$time_8000" 'BEGIN { exit !(b < 3 * a) }'; then
+  echo "FAIL: 8000 repeats took ${time_8000} s, at least 3x the ${time_4000} s for 4000"
+  failures=$((failures + 1))
+fi
+
 # --- linkage: issue-ref-pattern --------------------------------------------
 
 sections=$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
