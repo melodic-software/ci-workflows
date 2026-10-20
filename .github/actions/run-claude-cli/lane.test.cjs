@@ -23,6 +23,7 @@ const {
   LaneError,
   MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
+  SIGNING_KEY_FINGERPRINT,
   cliArgs,
   holdsCredential,
   install,
@@ -1396,30 +1397,266 @@ test("verifyIsolation refuses a writable docker socket", () => {
   );
 });
 
-test("install runs both npm calls in the work directory against the public registry", () => {
-  const dir = path.join(root, "install");
+// A stub npm, curl, gpg and CLI for install(). The npm install writes the
+// tree the real one leaves; each option breaks one piece of it.
+const NATIVE = "native claude binary\n";
+const sha256 = (text) =>
+  require("node:crypto").createHash("sha256").update(text).digest("hex");
+const AUDIT_OK =
+  "audited 2 packages in 1s\n\n2 packages have verified registry signatures\n\n";
+const GPG_OK = [
+  "[GNUPG:] NEWSIG",
+  `[GNUPG:] GOODSIG BAA929FF1A7ECACE Anthropic Claude Code Release Signing <security@anthropic.com>`,
+  `[GNUPG:] VALIDSIG ${SIGNING_KEY_FINGERPRINT} 2026-10-19 1792434757 0 4 0 1 10 00 ${SIGNING_KEY_FINGERPRINT}`,
+  "",
+].join("\n");
+
+let installCount = 0;
+function installWorld(options = {}) {
+  const {
+    input = "2.1.400",
+    installed = NATIVE,
+    manifest = (version) => ({
+      version,
+      platforms: {
+        "linux-x64": { binary: "claude", checksum: sha256(NATIVE) },
+      },
+    }),
+    gpgVerify = { status: 0, stdout: GPG_OK },
+    audit = { status: 0, stdout: AUDIT_OK },
+    cliVersion = { status: 0, stdout: "2.1.400 (Claude Code)\n" },
+    extraPackage = false,
+    missing = [],
+  } = options;
+  installCount += 1;
+  const dir = path.join(root, `install-${installCount}`);
   fs.mkdirSync(dir);
   const output = path.join(dir, "output");
   const calls = [];
-  const spawn = (command, args, options) => {
-    calls.push({ command, args, cwd: options.cwd });
-    return { status: 0, stdout: "2.1.400\n" };
+  const spawn = (command, args, opts) => {
+    calls.push({ command, args, cwd: opts.cwd });
+    if (missing.includes(command)) {
+      return {
+        status: null,
+        error: Object.assign(new Error("spawn"), { code: "ENOENT" }),
+      };
+    }
+    if (command === "npm" && args[0] === "--version")
+      return { status: 0, stdout: "10.9.9\n" };
+    if (command === "npm" && args[0] === "view")
+      return { status: 0, stdout: "2.1.400\n" };
+    if (command === "npm" && args[0] === "install") {
+      const modules = path.join(
+        args[args.indexOf("--prefix") + 1],
+        "node_modules",
+      );
+      const version = args.at(-1).split("@").at(-1);
+      for (const name of [
+        "claude-code",
+        "claude-code-linux-x64",
+        ...(extraPackage ? ["other"] : []),
+      ]) {
+        const pkg = path.join(modules, "@anthropic-ai", name);
+        fs.mkdirSync(pkg, { recursive: true });
+        fs.writeFileSync(
+          path.join(pkg, "package.json"),
+          JSON.stringify({ version }),
+        );
+      }
+      const bin = path.join(modules, "@anthropic-ai", "claude-code", "bin");
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, "claude.exe"), installed, {
+        mode: 0o755,
+      });
+      fs.mkdirSync(path.join(modules, ".bin"));
+      fs.symlinkSync(
+        "../@anthropic-ai/claude-code/bin/claude.exe",
+        path.join(modules, ".bin", "claude"),
+      );
+      return { status: 0 };
+    }
+    if (command === "npm" && args[0] === "audit") return audit;
+    if (command === "curl") {
+      const file = args[args.indexOf("-o") + 1];
+      const url = args.at(-1);
+      const version = url.split("/").at(-2);
+      const body = url.endsWith("manifest.json")
+        ? JSON.stringify(manifest(version))
+        : "data";
+      fs.writeFileSync(file, body);
+      return { status: 0 };
+    }
+    if (command === "gpg" && args.includes("--import")) return { status: 0 };
+    if (command === "gpg" && args.includes("--verify")) return gpgVerify;
+    if (command.endsWith("/.bin/claude")) return cliVersion;
+    throw new Error(`unexpected spawn ${command} ${args.join(" ")}`);
   };
-  install(
-    { LANE_CLI_VERSION_INPUT: "latest", LANE_WORK_DIR: dir, GITHUB_OUTPUT: output },
-    { spawn },
-  );
+  const env = {
+    LANE_CLI_VERSION_INPUT: input,
+    LANE_WORK_DIR: dir,
+    GITHUB_OUTPUT: output,
+  };
+  return {
+    dir,
+    calls,
+    output,
+    run: () => install(env, { spawn, platform: "linux-x64" }),
+  };
+}
+
+test("install verifies both packages and the signed binary, then writes the outputs", () => {
+  const world = installWorld({ input: "latest" });
+  world.run();
+  const npm = world.calls.filter((c) => c.command === "npm");
   assert.deepEqual(
-    calls.map((c) => [c.command, c.args[0]]),
-    [
-      ["npm", "view"],
-      ["npm", "install"],
-    ],
+    npm.map((c) => c.args[0]),
+    ["--version", "view", "install", "audit"],
   );
-  for (const call of calls) {
-    assert.equal(call.cwd, dir);
+  for (const call of world.calls)
+    assert.equal(call.cwd.startsWith(world.dir), true);
+  for (const call of npm.slice(1)) {
     assert.ok(call.args.includes(`--registry=${NPM_REGISTRY}`), call.args[0]);
   }
+  const installArgs = npm[2].args;
+  assert.ok(installArgs.includes("--save-exact"));
+  assert.ok(!installArgs.includes("--no-save"));
+  assert.ok(!installArgs.includes("--ignore-scripts"));
+  const audit = npm[3].args;
+  assert.deepEqual(audit.slice(0, 2), ["audit", "signatures"]);
+  assert.equal(
+    audit[audit.indexOf("--prefix") + 1],
+    installArgs[installArgs.indexOf("--prefix") + 1],
+  );
   assert.equal(NPM_REGISTRY, "https://registry.npmjs.org/");
-  assert.match(fs.readFileSync(output, "utf8"), /^cli-version=2\.1\.400$/mu);
+  assert.deepEqual(
+    world.calls.filter((c) => c.command === "curl").map((c) => c.args.at(-1)),
+    [
+      "https://downloads.claude.ai/keys/claude-code.asc",
+      "https://downloads.claude.ai/claude-code-releases/2.1.400/manifest.json",
+      "https://downloads.claude.ai/claude-code-releases/2.1.400/manifest.json.sig",
+    ],
+  );
+  assert.equal(
+    SIGNING_KEY_FINGERPRINT,
+    "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+  );
+  assert.deepEqual(
+    JSON.parse(
+      fs.readFileSync(path.join(world.dir, "cli", "package.json"), "utf8"),
+    ),
+    { allowScripts: { "@anthropic-ai/claude-code@2.1.400": true } },
+  );
+  const cliPath = path.join(world.dir, "cli", "node_modules", ".bin", "claude");
+  assert.deepEqual(world.calls.at(-1), {
+    command: cliPath,
+    args: ["--version"],
+    cwd: world.dir,
+  });
+  const out = fs.readFileSync(world.output, "utf8");
+  assert.match(out, /^cli-version=2\.1\.400$/mu);
+  assert.ok(out.includes(`cli-path=${cliPath}\n`));
 });
+
+// Each case fails the install step, so no output is written and the run step,
+// which runs the leg, never starts.
+for (const [name, options, pattern] of [
+  [
+    "a tampered binary",
+    { installed: "tampered\n" },
+    /does not match the signed 2\.1\.400 manifest/u,
+  ],
+  [
+    "the postinstall's stub left in place",
+    { installed: "#!/bin/sh\nexit 1\n" },
+    /does not match/u,
+  ],
+  [
+    "a bad manifest signature",
+    {
+      gpgVerify: { status: 1, stdout: "[GNUPG:] BADSIG BAA929FF1A7ECACE x\n" },
+    },
+    /gpg --verify of the release manifest failed/u,
+  ],
+  [
+    "a good signature from another key",
+    {
+      gpgVerify: {
+        status: 0,
+        stdout: GPG_OK.replaceAll(SIGNING_KEY_FINGERPRINT, "A".repeat(40)),
+      },
+    },
+    /not signed by key/u,
+  ],
+  [
+    "a manifest with no linux-x64 entry",
+    {
+      manifest: (version) => ({
+        version,
+        platforms: { "darwin-arm64": { checksum: sha256(NATIVE) } },
+      }),
+    },
+    /no linux-x64 checksum/u,
+  ],
+  [
+    "a signed manifest for another version",
+    {
+      manifest: () => ({
+        version: "2.1.399",
+        platforms: { "linux-x64": { checksum: sha256(NATIVE) } },
+      }),
+    },
+    /for "2\.1\.399", not 2\.1\.400/u,
+  ],
+  [
+    "an audit that verified one package, exit 0",
+    {
+      audit: {
+        status: 0,
+        stdout:
+          "audited 1 package in 0s\n\n1 package has a verified registry signature\n",
+      },
+    },
+    /did not verify both/u,
+  ],
+  [
+    "an audit that verified no signature, exit 0",
+    { audit: { status: 0, stdout: "audited 2 packages in 0s\n\n" } },
+    /did not verify both/u,
+  ],
+  [
+    "an audit that exits non-zero",
+    {
+      audit: {
+        status: 1,
+        stdout:
+          "audited 2 packages in 0s\n\n2 packages have verified registry signatures\n",
+      },
+    },
+    /npm audit signatures failed \(exit 1\)/u,
+  ],
+  ["a third installed package", { extraPackage: true }, /not exactly/u],
+  [
+    "a CLI whose --version fails",
+    { cliVersion: { status: 1, stdout: "" } },
+    /--version failed/u,
+  ],
+  [
+    "no gpg on the runner",
+    { missing: ["gpg"] },
+    /gpg --import failed \(ENOENT\)/u,
+  ],
+  [
+    "no curl on the runner",
+    { missing: ["curl"] },
+    /download .* failed \(ENOENT\)/u,
+  ],
+]) {
+  test(`install fails closed on ${name}`, () => {
+    const world = installWorld(options);
+    assert.throws(
+      world.run,
+      (error) => error instanceof LaneError && pattern.test(error.message),
+    );
+    assert.equal(fs.existsSync(world.output), false);
+  });
+}
