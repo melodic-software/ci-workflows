@@ -986,7 +986,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fail the job. It skips a pull request whose files in scope are all
   documentation (`docs-only-paths`).
 - `.github/workflows/intake-triage.yml` — the intake-triage lane. On
-  `issues: [opened]`, a script step fetches the issue, its comments and the
+  `issues: [opened]`, a script step fetches the issue, its trusted comments and the
   newest 200 open issues into the checkout; a read-only Claude run
   (`--permission-mode dontAsk`, Read, Grep and Glob only, no GitHub token,
   `contents: read` and `issues: read`, `cache-mode: none`, JSON output)
@@ -1027,7 +1027,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   applies `skipped-label` when set. A caller can also run it on
   `workflow_dispatch` with `issue-number`, for issues a `GITHUB_TOKEN`
   created (those start no `issues` run); the dispatching actor's id must be
-  in the same lists, and the lane reads the issue from the API.
+  in the same lists, and the lane reads the issue from the API. On every
+  run the model sees only comments by a user whose id is in
+  `allowed-author-ids` or a bot whose id is in `allowed-bot-sender-ids`
+  (an empty or malformed list trusts no one), never the lane's own triage
+  comment. The issue title and body always reach it and stay untrusted.
 
 ## Claude lanes — shared consumption contract
 

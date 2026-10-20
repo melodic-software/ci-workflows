@@ -58,6 +58,7 @@ async function runScript(script, env, github) {
       },
       setFailed: (message) => failed.push(message),
       warning: (message) => warnings.push(message),
+      info: () => {},
       setOutput: (key, value) => {
         outputs[key] = value;
       },
@@ -744,8 +745,8 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
     const github = {
       paginate: Object.assign(
         async () => [
-          { user: { login: "alice" }, body: "first" },
-          { user: null, body: null },
+          { user: { login: "alice", type: "User", id: 101 }, body: "first" },
+          { user: { login: "carol", type: "User", id: 102 }, body: null },
         ],
         {
           iterator: async function* () {
@@ -774,7 +775,12 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
     };
     const { outputs } = await runScript(
       fetchStep.with.script,
-      { ISSUE_NUMBER: "7", GITHUB_WORKSPACE: workspace },
+      {
+        ISSUE_NUMBER: "7",
+        GITHUB_WORKSPACE: workspace,
+        AUTHOR_IDS: "101,102",
+        BOT_IDS: "",
+      },
       github,
     );
     assert.ok(
@@ -792,7 +798,7 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
       body: path.join(dir, "body.md"),
       comments: [
         { author: "alice", body: path.join(dir, "comment-1.md") },
-        { author: "", body: path.join(dir, "comment-2.md") },
+        { author: "carol", body: path.join(dir, "comment-2.md") },
       ],
     });
     const read = (file) => fs.readFileSync(file, "utf8");
@@ -810,6 +816,137 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
     assert.deepEqual(Object.keys(open[0]), ["number", "title"]);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// Runs one model job's fetch step on the given comments and returns the
+// comment authors in the index and every file the step wrote, which is all
+// the model can read.
+async function fetchComments(job, comments, ids) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "intake-trust-"));
+  try {
+    const github = {
+      paginate: Object.assign(async () => comments, {
+        iterator: async function* () {},
+      }),
+      rest: {
+        issues: {
+          get: async () => ({
+            data: { number: 7, title: "t", body: "b", user: null, labels: [] },
+          }),
+          listComments: () => {},
+          listForRepo: () => {},
+        },
+      },
+    };
+    const fetch = workflow.jobs[job].steps.find(
+      (s) => s.name === "Fetch the issue for the model",
+    );
+    const { outputs } = await runScript(
+      fetch.with.script,
+      { ISSUE_NUMBER: "7", GITHUB_WORKSPACE: workspace, ...ids },
+      github,
+    );
+    const dir = path.dirname(outputs["issue-file"]);
+    const index = JSON.parse(fs.readFileSync(outputs["issue-file"], "utf8"));
+    const text = fs
+      .readdirSync(dir)
+      .map((file) => fs.readFileSync(path.join(dir, file), "utf8"))
+      .join("\n");
+    return { authors: index.comments.map((c) => c.author), text };
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+}
+
+const LANE_MARKER = "<!-- claude-lane intake-triage -->";
+const ALICE = { login: "alice", type: "User", id: 101 };
+const MALLORY = { login: "mallory", type: "User", id: 666 };
+const HELPER_BOT = { login: "helper[bot]", type: "Bot", id: 201 };
+const ACTIONS_BOT = { login: "github-actions[bot]", type: "Bot", id: 41898282 };
+
+for (const job of ["claude", "subscription"]) {
+  test(`${job}: only listed users' and bots' comments reach the model`, async () => {
+    const { authors, text } = await fetchComments(
+      job,
+      [
+        { user: ALICE, body: "trusted user text" },
+        { user: MALLORY, body: "untrusted user text" },
+        { user: HELPER_BOT, body: "trusted bot text" },
+        // A listed id under the other type is not trusted.
+        { user: { login: "imposter[bot]", type: "Bot", id: 101 }, body: "cross-type text" },
+        { user: { login: "acme", type: "Organization", id: 201 }, body: "org text" },
+      ],
+      { AUTHOR_IDS: "101,102", BOT_IDS: "201" },
+    );
+    assert.deepEqual(authors, ["alice", "helper[bot]"]);
+    assert.match(text, /trusted user text/u);
+    assert.match(text, /trusted bot text/u);
+    for (const absent of ["untrusted user text", "cross-type text", "org text"]) {
+      assert.equal(text.includes(absent), false, absent);
+    }
+  });
+
+  test(`${job}: the lane's own comment never reaches the model, even with its bot listed`, async () => {
+    const { authors, text } = await fetchComments(
+      job,
+      [
+        { user: ACTIONS_BOT, body: `${LANE_MARKER}\nProposed work class: none\n\nearlier answer` },
+        { user: ACTIONS_BOT, body: "other actions comment" },
+      ],
+      { AUTHOR_IDS: "101", BOT_IDS: "41898282" },
+    );
+    assert.deepEqual(authors, ["github-actions[bot]"]);
+    assert.equal(text.includes("earlier answer"), false);
+    assert.match(text, /other actions comment/u);
+  });
+
+  test(`${job}: an empty or malformed list passes no comment from its author type`, async () => {
+    const comments = [
+      { user: ALICE, body: "user text" },
+      { user: HELPER_BOT, body: "bot text" },
+    ];
+    for (const list of ["", ",101", "101,", "101,,102"]) {
+      const users = await fetchComments(job, comments, { AUTHOR_IDS: list, BOT_IDS: "201" });
+      assert.deepEqual(users.authors, ["helper[bot]"], `allowed-author-ids '${list}'`);
+      assert.equal(users.text.includes("user text"), false, list);
+      const bots = await fetchComments(job, comments, {
+        AUTHOR_IDS: "101",
+        BOT_IDS: list.replace("101", "201").replace("102", "202"),
+      });
+      assert.deepEqual(bots.authors, ["alice"], `allowed-bot-sender-ids '${list}'`);
+      assert.equal(bots.text.includes("bot text"), false, list);
+    }
+    const none = await fetchComments(job, comments, {});
+    assert.deepEqual(none.authors, []);
+  });
+
+  test(`${job}: a deleted author's comment never reaches the model`, async () => {
+    const { authors, text } = await fetchComments(
+      job,
+      [
+        { user: null, body: "deleted author text" },
+        // REST's ghost account stands in for a deleted user.
+        { user: { login: "ghost", type: "User", id: 10137 }, body: "ghost text" },
+        { user: { login: "noid", type: "User" }, body: "no id text" },
+      ],
+      { AUTHOR_IDS: "101", BOT_IDS: "201" },
+    );
+    assert.deepEqual(authors, []);
+    for (const absent of ["deleted author text", "ghost text", "no id text"]) {
+      assert.equal(text.includes(absent), false, absent);
+    }
+  });
+}
+
+test("the fetch step filters on every run, from the trust inputs", () => {
+  for (const job of ["claude", "subscription"]) {
+    const fetch = workflow.jobs[job].steps.find(
+      (s) => s.name === "Fetch the issue for the model",
+    );
+    assert.equal(fetch.if, undefined, job);
+    assert.equal(fetch.env.AUTHOR_IDS, "${{ inputs.allowed-author-ids }}", job);
+    assert.equal(fetch.env.BOT_IDS, "${{ inputs.allowed-bot-sender-ids }}", job);
   }
 });
 

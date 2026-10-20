@@ -64,6 +64,18 @@ name: intake-triage
 #     script step with no model fetches the issue's title, body, author,
 #     labels and comments, and the newest 200 open issues' numbers and
 #     titles for duplicates, into a directory inside the checkout.
+#   - The model receives only comments from trusted authors, on every run:
+#     a User whose id is in allowed-author-ids or a Bot whose id is in
+#     allowed-bot-sender-ids. An empty or malformed list trusts no one, and
+#     a deleted author (no user) or any other type is never trusted. The
+#     lane's own github-actions[bot] comment (it starts with the lane's
+#     marker) is always dropped, even when that bot is listed, so a rerun
+#     does not anchor on an earlier answer. A dropped comment is never
+#     written to the checkout. This narrows the input and is not a trust
+#     boundary: the title and body, from whoever filed the issue, always
+#     reach the model, and they, the labels and the trusted comments stay
+#     untrusted data. The containment is the no-tools model and the apply
+#     job's checks.
 #   - The model returns JSON only. An extract step with no model reduces the
 #     run to the job outputs: the result subtype, the error flag and the
 #     denial count, and the structured fields (labels, type, proposed class,
@@ -213,8 +225,9 @@ on:
         description: >-
           Comma-separated numeric GitHub user ids, no spaces, of people whose
           issues this lane triages. A person passes the author gate when the
-          issue's author id is listed and they opened it. Empty, or a
-          leading, trailing or doubled comma, skips every person.
+          issue's author id is listed and they opened it, and only listed
+          people's comments reach the model. Empty, or a leading, trailing
+          or doubled comma, skips every person.
         type: string
         default: ""
       skipped-label:
@@ -227,8 +240,9 @@ on:
         description: >-
           Comma-separated numeric GitHub user ids, no spaces, of bots whose
           issues this lane triages. A bot whose event sender id is listed
-          passes the author gate. Empty, or a leading, trailing or doubled
-          comma, skips every bot.
+          passes the author gate, and only listed bots' comments reach the
+          model (never the lane's own triage comment). Empty, or a leading,
+          trailing or doubled comma, skips every bot.
         type: string
         default: ""
     outputs:
@@ -411,13 +425,20 @@ jobs:
 
       # No model runs here. The model has no GitHub token and no gh, so this
       # step reads what it triages: the issue's title, body, author, labels
-      # and comments, and the newest open issues for duplicates. It writes
-      # them inside the checkout, the only place the model may read.
+      # and its trusted authors' comments, and the newest open issues for
+      # duplicates. It writes them inside the checkout, the only place the
+      # model may read. A comment is kept only when its author is a User
+      # whose id is in allowed-author-ids or a Bot whose id is in
+      # allowed-bot-sender-ids (an empty or malformed list trusts no one),
+      # and the lane's own triage comment is always dropped. A dropped
+      # comment gets no file, so the model cannot find it in the checkout.
       - name: Fetch the issue for the model
         id: fetch
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
+          BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
             const fs = require("node:fs");
@@ -425,12 +446,25 @@ jobs:
             const issue_number = Number(process.env.ISSUE_NUMBER);
             // Duplicate candidates: the newest open issues, at most this many.
             const DUPLICATE_LIMIT = 200;
+            // The apply job starts the lane's comment with this marker.
+            const MARKER = "<!-- claude-lane intake-triage -->";
+            // The gate's rule: empty, or a leading, trailing or doubled comma, lists no one.
+            const ids = (list) => new Set(/^[^,]+(,[^,]+)*$/u.test(list ?? "") ? list.split(",") : []);
+            const trusted = { User: ids(process.env.AUTHOR_IDS), Bot: ids(process.env.BOT_IDS) };
             const { data: issue } = await github.rest.issues.get({ ...context.repo, issue_number });
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const all = await github.paginate(github.rest.issues.listComments, {
               ...context.repo,
               issue_number,
               per_page: 100,
             });
+            const comments = all.filter(
+              (comment) =>
+                Object.hasOwn(trusted, comment.user?.type ?? "") &&
+                Number.isInteger(comment.user.id) &&
+                trusted[comment.user.type].has(String(comment.user.id)) &&
+                !(comment.user.login === "github-actions[bot]" && (comment.body ?? "").startsWith(MARKER)),
+            );
+            core.info(`Passing ${comments.length} of ${all.length} comments to the model; the rest are from untrusted authors or the lane.`);
             const open = [];
             for await (const { data } of github.paginate.iterator(github.rest.issues.listForRepo, {
               ...context.repo,
@@ -916,13 +950,20 @@ jobs:
 
       # No model runs here. The model has no GitHub token and no gh, so this
       # step reads what it triages: the issue's title, body, author, labels
-      # and comments, and the newest open issues for duplicates. It writes
-      # them inside the checkout, the only place the model may read.
+      # and its trusted authors' comments, and the newest open issues for
+      # duplicates. It writes them inside the checkout, the only place the
+      # model may read. A comment is kept only when its author is a User
+      # whose id is in allowed-author-ids or a Bot whose id is in
+      # allowed-bot-sender-ids (an empty or malformed list trusts no one),
+      # and the lane's own triage comment is always dropped. A dropped
+      # comment gets no file, so the model cannot find it in the checkout.
       - name: Fetch the issue for the model
         id: fetch
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
+          BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
             const fs = require("node:fs");
@@ -930,12 +971,25 @@ jobs:
             const issue_number = Number(process.env.ISSUE_NUMBER);
             // Duplicate candidates: the newest open issues, at most this many.
             const DUPLICATE_LIMIT = 200;
+            // The apply job starts the lane's comment with this marker.
+            const MARKER = "<!-- claude-lane intake-triage -->";
+            // The gate's rule: empty, or a leading, trailing or doubled comma, lists no one.
+            const ids = (list) => new Set(/^[^,]+(,[^,]+)*$/u.test(list ?? "") ? list.split(",") : []);
+            const trusted = { User: ids(process.env.AUTHOR_IDS), Bot: ids(process.env.BOT_IDS) };
             const { data: issue } = await github.rest.issues.get({ ...context.repo, issue_number });
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const all = await github.paginate(github.rest.issues.listComments, {
               ...context.repo,
               issue_number,
               per_page: 100,
             });
+            const comments = all.filter(
+              (comment) =>
+                Object.hasOwn(trusted, comment.user?.type ?? "") &&
+                Number.isInteger(comment.user.id) &&
+                trusted[comment.user.type].has(String(comment.user.id)) &&
+                !(comment.user.login === "github-actions[bot]" && (comment.body ?? "").startsWith(MARKER)),
+            );
+            core.info(`Passing ${comments.length} of ${all.length} comments to the model; the rest are from untrusted authors or the lane.`);
             const open = [];
             for await (const { data } of github.paginate.iterator(github.rest.issues.listForRepo, {
               ...context.repo,
