@@ -874,15 +874,25 @@ for (const job of ["claude", "subscription"]) {
         { user: MALLORY, body: "untrusted user text" },
         { user: HELPER_BOT, body: "trusted bot text" },
         // A listed id under the other type is not trusted.
-        { user: { login: "imposter[bot]", type: "Bot", id: 101 }, body: "cross-type text" },
-        { user: { login: "acme", type: "Organization", id: 201 }, body: "org text" },
+        {
+          user: { login: "imposter[bot]", type: "Bot", id: 101 },
+          body: "cross-type text",
+        },
+        {
+          user: { login: "acme", type: "Organization", id: 201 },
+          body: "org text",
+        },
       ],
       { AUTHOR_IDS: "101,102", BOT_IDS: "201" },
     );
     assert.deepEqual(authors, ["alice", "helper[bot]"]);
     assert.match(text, /trusted user text/u);
     assert.match(text, /trusted bot text/u);
-    for (const absent of ["untrusted user text", "cross-type text", "org text"]) {
+    for (const absent of [
+      "untrusted user text",
+      "cross-type text",
+      "org text",
+    ]) {
       assert.equal(text.includes(absent), false, absent);
     }
   });
@@ -891,7 +901,10 @@ for (const job of ["claude", "subscription"]) {
     const { authors, text } = await fetchComments(
       job,
       [
-        { user: ACTIONS_BOT, body: `${LANE_MARKER}\nProposed work class: none\n\nearlier answer` },
+        {
+          user: ACTIONS_BOT,
+          body: `${LANE_MARKER}\nProposed work class: none\n\nearlier answer`,
+        },
         { user: ACTIONS_BOT, body: "other actions comment" },
       ],
       { AUTHOR_IDS: "101", BOT_IDS: "41898282" },
@@ -907,14 +920,25 @@ for (const job of ["claude", "subscription"]) {
       { user: HELPER_BOT, body: "bot text" },
     ];
     for (const list of ["", ",101", "101,", "101,,102"]) {
-      const users = await fetchComments(job, comments, { AUTHOR_IDS: list, BOT_IDS: "201" });
-      assert.deepEqual(users.authors, ["helper[bot]"], `allowed-author-ids '${list}'`);
+      const users = await fetchComments(job, comments, {
+        AUTHOR_IDS: list,
+        BOT_IDS: "201",
+      });
+      assert.deepEqual(
+        users.authors,
+        ["helper[bot]"],
+        `allowed-author-ids '${list}'`,
+      );
       assert.equal(users.text.includes("user text"), false, list);
       const bots = await fetchComments(job, comments, {
         AUTHOR_IDS: "101",
         BOT_IDS: list.replace("101", "201").replace("102", "202"),
       });
-      assert.deepEqual(bots.authors, ["alice"], `allowed-bot-sender-ids '${list}'`);
+      assert.deepEqual(
+        bots.authors,
+        ["alice"],
+        `allowed-bot-sender-ids '${list}'`,
+      );
       assert.equal(bots.text.includes("bot text"), false, list);
     }
     const none = await fetchComments(job, comments, {});
@@ -927,7 +951,10 @@ for (const job of ["claude", "subscription"]) {
       [
         { user: null, body: "deleted author text" },
         // REST's ghost account stands in for a deleted user.
-        { user: { login: "ghost", type: "User", id: 10137 }, body: "ghost text" },
+        {
+          user: { login: "ghost", type: "User", id: 10137 },
+          body: "ghost text",
+        },
         { user: { login: "noid", type: "User" }, body: "no id text" },
       ],
       { AUTHOR_IDS: "101", BOT_IDS: "201" },
@@ -945,8 +972,16 @@ test("the fetch step filters on every run, from the trust inputs", () => {
       (s) => s.name === "Fetch the issue for the model",
     );
     assert.equal(fetch.if, undefined, job);
-    assert.equal(fetch.env.AUTHOR_IDS, "${{ inputs.allowed-author-ids }}", job);
-    assert.equal(fetch.env.BOT_IDS, "${{ inputs.allowed-bot-sender-ids }}", job);
+    assert.equal(
+      fetch.env.AUTHOR_IDS,
+      `\${{ inputs.allowed-author-ids }}`,
+      job,
+    );
+    assert.equal(
+      fetch.env.BOT_IDS,
+      `\${{ inputs.allowed-bot-sender-ids }}`,
+      job,
+    );
   }
 });
 
