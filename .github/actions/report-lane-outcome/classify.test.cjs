@@ -291,14 +291,14 @@ test("an unparsable execution file degrades to `other` and says so", () => {
   assert.equal(result.reviewDetail, "(execution file present but unparsable)");
 });
 
-test("no execution file at all (the action failed before producing one)", () => {
+test("no execution file, no timeout and no install failure classifies as no-execution", () => {
   fs.rmSync(executionFile, { force: true });
   let result = classifyExecutionFile(executionFile);
-  assert.equal(result.failureClass, "other");
+  assert.equal(result.failureClass, "no-execution");
   assert.equal(result.reviewDetail, "(no execution file was produced)");
 
-  result = classifyExecutionFile("");
-  assert.equal(result.failureClass, "other");
+  result = classifyExecutionFile("", { timedOut: false, installFailed: false });
+  assert.equal(result.failureClass, "no-execution");
   assert.equal(result.reviewDetail, "(no execution file was produced)");
 });
 

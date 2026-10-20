@@ -1122,7 +1122,8 @@ job is named `claude-review-status`, so its check is
 `security-review`, so with the canonical caller its check is
 `security-review / security-review`. The job's last step goes red, naming
 the cause, whenever no review happened: a failed attempt (`auth`,
-`rate-limit`, `overloaded`, `max-turns`, `timeout`, `other`), the action
+`rate-limit`, `overloaded`, `max-turns`, `timeout`, `install-failed`,
+`no-execution`, `other`), the action
 skipping itself because the
 PR edits the caller workflow (`skipped-validation`), a review that did not
 complete (`incomplete`), or a job that ended before the review reported
