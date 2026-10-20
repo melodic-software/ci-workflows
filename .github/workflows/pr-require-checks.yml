@@ -636,30 +636,6 @@ jobs:
         with:
           # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
-      # Evidence for #743: is `job.check_run_id` this job's REST id? Prints it
-      # beside the in-progress jobs of this run and the job that id names, so
-      # the run log records the comparison. Never gates.
-      - name: Probe job.check_run_id
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CHECK_RUN_ID: ${{ job.check_run_id }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          echo "job.check_run_id=${CHECK_RUN_ID:-<empty>} RUNNER_NAME=${RUNNER_NAME:-<empty>} RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-<empty>}"
-          rest_id="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
-            --jq '.jobs[] | select(.status == "in_progress" and .runner_name == env.RUNNER_NAME) | .id')"
-          echo "REST id of the in-progress job on this runner: ${rest_id:-<none>}"
-          if [[ -n "$CHECK_RUN_ID" ]]; then
-            gh api "repos/${REPOSITORY}/actions/jobs/${CHECK_RUN_ID}" --jq '"GET actions/jobs/\(.id): name=\(.name) run_id=\(.run_id) runner_name=\(.runner_name)"'
-          fi
-          if [[ -n "$CHECK_RUN_ID" && "$CHECK_RUN_ID" == "$rest_id" ]]; then
-            echo 'probe: job.check_run_id EQUALS the REST job id'
-          else
-            echo 'probe: job.check_run_id DIFFERS from the REST job id or is empty'
-          fi
       - name: Aggregate lane results
         # `!cancelled()` so a failing pr-contract step does not skip the
         # `ci-lanes` status write the next contract-only run needs.
