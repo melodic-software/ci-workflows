@@ -272,6 +272,46 @@ expect_output 'do-not-merge=skipped'
 expect_output 'linkage=skipped'
 expect_no_gh_calls_at_all
 
+# --- merge group -------------------------------------------------------------
+
+queue_ref="refs/heads/gh-readonly-queue/main/pr-${pr_number}-0123456789abcdef0123456789abcdef01234567"
+
+# Without the merge-group branch an empty pr-number skips, so the label passes.
+echo 'case: a merge group fails when the queued pull request carries do-not-merge'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'do-not-merge'
+run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
+expect_output 'do-not-merge=fail'
+expect_output 'title=skipped'
+expect_output 'linkage=skipped'
+expect_log "queued pull request #${pr_number} carries the 'do-not-merge' label"
+expect_gh_call "api -X GET repos/${repository}/pulls/${pr_number}"
+
+# Without the early exit a failing title, linkage and their writes would run here.
+echo 'case: a merge group checks only the label and writes nothing'
+set_pull 'wip: no conventional title' 'no linkage' someone ''
+run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
+expect_output 'do-not-merge=pass'
+expect_output 'title=skipped'
+expect_output 'linkage=skipped'
+expect_no_gh_call '-X POST'
+expect_no_gh_call '-X DELETE'
+
+# Without the fail-closed parse a ref with no pull request would skip and pass.
+echo 'case: a merge group with an unparsable head ref fails closed'
+for bad_ref in '' refs/heads/main 'refs/heads/gh-readonly-queue/main/pr-x-0123456789abcdef0123456789abcdef01234567' 'gh-readonly-queue/main/pr-7-abc'; do
+  run_case 1 PR_NUMBER="$pr_number" EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$bad_ref"
+  expect_output 'do-not-merge=fail'
+  expect_log 'cannot read a pull request number from the merge-group head ref'
+  expect_no_gh_calls_at_all
+done
+
+# Without the read-failure exit an unreadable pull request would pass the label.
+echo 'case: a merge group whose pull request cannot be read fails closed'
+printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${pull_key}.err"
+run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
+expect_log "could not read repos/${repository}/pulls/${pr_number} (HTTP 404)"
+rm -f -- "$fixtures/${pull_key}.err"
+
 # --- title check -----------------------------------------------------------
 
 # Without the title regex an unknown type would pass, so each accepted type has
@@ -827,7 +867,7 @@ for input_name in token repository pr-number types require-scope do-not-merge-la
     failures=$((failures + 1))
   fi
 done
-for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN; do
+for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN EVENT_NAME MERGE_GROUP_HEAD_REF; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))

@@ -115,9 +115,23 @@ if [[ "$pattern_status" -ne 0 ]]; then
   exit 1
 fi
 
-# Step 0 — no pull request in this event. The composite is a pull-request gate;
-# a push, schedule or workflow_dispatch run must report skipped, not fail.
-if [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
+# Step 0 — a merge group carries no pull request in its payload; the queued
+# one is named in the group's head ref, `gh-readonly-queue/<base>/pr-<N>-<sha>`.
+# An unparsable ref fails closed: a group whose pull request cannot be named
+# cannot be checked for the do-not-merge label.
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  merge_group_ref_pattern='^(refs/heads/)?gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$'
+  if [[ ! "${MERGE_GROUP_HEAD_REF:-}" =~ $merge_group_ref_pattern ]]; then
+    echo "::error::pr-contract: cannot read a pull request number from the merge-group head ref '$(escape_annotation "${MERGE_GROUP_HEAD_REF:-}")'"
+    emit_output title skipped
+    emit_output do-not-merge fail
+    emit_output linkage skipped
+    exit 1
+  fi
+  PR_NUMBER="${BASH_REMATCH[2]}"
+# A push, schedule or workflow_dispatch run has no pull request at all. The
+# composite is a pull-request gate; such a run must report skipped, not fail.
+elif [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   echo '::notice::pr-contract: no pull request in this event; nothing to check'
   emit_output title skipped
   emit_output do-not-merge skipped
@@ -187,6 +201,25 @@ pr_title="$(jq -r '.title // ""' <"$pr_json")"
 pr_author="$(jq -r '.user.login // ""' <"$pr_json")"
 jq -r '.body // ""' <"$pr_json" >"$scratch/body.txt"
 jq -r '(.labels // []) | .[].name' <"$pr_json" >"$scratch/labels.txt"
+
+# ---------------------------------------------------------------------------
+# Merge group — only the do-not-merge label. The title and linkage were checked
+# on the pull request before it could enter the queue, and a group run must not
+# write the linkage comment or label. A label can land after enqueue, so it is
+# re-read live; a failure here makes the queue drop the pull request.
+# ---------------------------------------------------------------------------
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  emit_output title skipped
+  emit_output linkage skipped
+  if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
+    emit_output do-not-merge fail
+    echo "::error::pr-contract: queued pull request #${PR_NUMBER} carries the '${DO_NOT_MERGE_LABEL}' label; the merge queue removes it. Remove the label and re-queue to merge."
+    exit 1
+  fi
+  emit_output do-not-merge pass
+  echo "pr-contract: queued pull request #${PR_NUMBER} carries no '${DO_NOT_MERGE_LABEL}' label."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Step 2 — title against Conventional Commits with the caller's type list.

@@ -18,8 +18,10 @@ inputs:
       Git-mode revision set passed to gitleaks as --log-opts (split on single
       spaces). Empty picks a default from the triggering event:
       `<pull_request.base.sha>..HEAD` on pull_request and pull_request_target
-      (the PR's own commits; an empty range fails closed), `--all` on schedule
-      and workflow_dispatch (a sweep of every local ref), and `HEAD` otherwise
+      (the PR's own commits; an empty range fails closed), likewise
+      `<merge_group.base_sha>..HEAD` on merge_group (the group's commits),
+      `--all` on schedule and workflow_dispatch (a sweep of every local ref),
+      and `HEAD` otherwise
       (the checked-out branch's history). PR and push runs do not scan other
       branches, so one branch's fixture cannot fail another branch's run.
       Mark token-shaped test fixtures with an inline `gitleaks:allow` comment;
@@ -83,7 +85,7 @@ runs:
         SCAN_MODE: ${{ inputs.scan-mode }}
         LOG_OPTS: ${{ inputs.log-opts }}
         EVENT_NAME: ${{ github.event_name }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         CONFIG: ${{ inputs.config }}
         REPORT_FORMAT: ${{ inputs.report-format }}
         REPORT_PATH: ${{ inputs.report-path }}
