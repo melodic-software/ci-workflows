@@ -334,7 +334,7 @@ consumer to audit it.
   `rerun-wait-seconds`, and only while a contract-only sibling is in flight
   (see `rerun-contract-only-siblings` below):
 
-  - `yield-to-full-run: 'true'` and `timeout-minutes: 3` on the `ci-status`
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 5` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
     SHA, then reads the status, and finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
@@ -452,7 +452,7 @@ consumer to audit it.
         # ... change detection
     ci-status:
       if: always()
-      timeout-minutes: 3
+      timeout-minutes: 5
       permissions:
         contents: read
         statuses: write

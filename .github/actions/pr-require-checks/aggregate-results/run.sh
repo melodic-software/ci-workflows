@@ -120,7 +120,7 @@ CARRY_FORWARD_POLL_SECONDS=15
 # Ceiling, in seconds, on how long a full run that records `success` waits for
 # in-flight contract-only siblings to finish before re-running the failed ones;
 # see `rerun_failed_contract_only_siblings`. `0` disables the wait. The default
-# fits inside the 3-minute `timeout-minutes` the README recommends for the
+# fits inside the 5-minute `timeout-minutes` the README recommends for the
 # ci-status job. Validated below. The re-list interval is fixed, like the poll
 # above.
 RERUN_WAIT_SECONDS="${RERUN_WAIT_SECONDS:-90}"
@@ -494,8 +494,7 @@ own_job_identity() {
 
 # Reads between the retries. The jobs API can list this job or this step a
 # moment after the runner started it, and lists a sibling job before its
-# `skipped`, so a miss is read again. The sleeps sum to 15 seconds, well inside
-# the 3-minute ci-status job.
+# `skipped`, so a miss is read again. The sleeps sum to 15 seconds.
 OWN_GATE_RETRY_DELAYS='1 2 4 8'
 
 # resolve_own_gate <job|step> <consequence>
