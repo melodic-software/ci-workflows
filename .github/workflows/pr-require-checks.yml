@@ -364,7 +364,7 @@ jobs:
   # Trust anchors: KJANAT_SHA256 pins the linux_amd64 archive and KJANAT_COMMIT
   # the release commit its provenance must name; KJANAT_VERSION only builds the
   # asset URL, because the fork's version numbers overlap upstream's.
-  soak-actionlint-kjanat:
+  check-actionlint-kjanat-soak:
     if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -212,7 +212,7 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
-    "soak-actionlint-kjanat",
+    "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
     const block = jobBlocks.find((candidate) => jobName(candidate) === name);
@@ -237,7 +237,7 @@ test("the advisory lanes and issue labeler stay out of ci-status", () => {
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
-    "soak-actionlint-kjanat",
+    "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
