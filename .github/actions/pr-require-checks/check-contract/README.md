@@ -52,7 +52,7 @@ Every input's meaning and default is documented inline in
 
 `title`, `do-not-merge`, and `linkage`. Every check runs before the step exits,
 so all three are always set: `pass`, `fail`, `skipped` (no pull request in this
-event, or `title` and `linkage` on a `merge_group` run), and additionally `exempt` for `linkage` when the author is exempt.
+event, or `linkage` on a `merge_group` run), and additionally `exempt` for `linkage` when the author is exempt.
 
 ## Permissions
 
@@ -75,11 +75,15 @@ own comment and would post a new one on every failing run.
   every output as `skipped` and exits 0. This is a pull-request gate; a push run
   must not fail on it.
 - A `merge_group` run reads the queued pull request's number from the group's
-  head ref, `gh-readonly-queue/<base>/pr-<N>-<sha>`, and checks only its live
-  `do-not-merge` label, which can land after enqueue; a failure makes the queue
-  drop that pull request. `title` and `linkage` report `skipped`, since both were
-  checked before the pull request could enter the queue, and nothing is written.
-  A ref it cannot parse, or a pull request it cannot read, fails the step.
+  head ref, `gh-readonly-queue/<base>/pr-<N>-<sha>`, and re-checks that pull
+  request's title and live `do-not-merge` label, since either can change after
+  enqueue; a failure makes the queue drop it. `linkage` reports `skipped` and
+  nothing is written. A ref it cannot parse, or a pull request it cannot read,
+  fails the step.
+- The head ref names only the last pull request in the group, so the merge
+  queue must use `grouping_strategy: ALLGREEN`. Under `HEADGREEN` a pull request
+  that failed its own group, a `do-not-merge` one included, can still merge
+  inside a later group whose last entry passes.
 - The advisory comment carries the HTML marker `<!-- pr-contract:linkage -->`.
   The step edits that comment rather than posting a second one, and on a linkage
   pass it rewrites the comment to say the body conforms rather than deleting it.

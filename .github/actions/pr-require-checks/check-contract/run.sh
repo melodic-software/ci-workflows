@@ -203,25 +203,6 @@ jq -r '.body // ""' <"$pr_json" >"$scratch/body.txt"
 jq -r '(.labels // []) | .[].name' <"$pr_json" >"$scratch/labels.txt"
 
 # ---------------------------------------------------------------------------
-# Merge group — only the do-not-merge label. The title and linkage were checked
-# on the pull request before it could enter the queue, and a group run must not
-# write the linkage comment or label. A label can land after enqueue, so it is
-# re-read live; a failure here makes the queue drop the pull request.
-# ---------------------------------------------------------------------------
-if [[ "${EVENT_NAME:-}" == merge_group ]]; then
-  emit_output title skipped
-  emit_output linkage skipped
-  if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
-    emit_output do-not-merge fail
-    echo "::error::pr-contract: queued pull request #${PR_NUMBER} carries the '${DO_NOT_MERGE_LABEL}' label; the merge queue removes it. Remove the label and re-queue to merge."
-    exit 1
-  fi
-  emit_output do-not-merge pass
-  echo "pr-contract: queued pull request #${PR_NUMBER} carries no '${DO_NOT_MERGE_LABEL}' label."
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
 # Step 2 — title against Conventional Commits with the caller's type list.
 # ---------------------------------------------------------------------------
 types_list="$(printf '%s' "$TYPES" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
@@ -256,6 +237,23 @@ do_not_merge_result=pass
 if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
   do_not_merge_result=fail
   echo "::error::pr-contract: this PR carries the '${DO_NOT_MERGE_LABEL}' label; remove it to merge."
+fi
+
+# ---------------------------------------------------------------------------
+# Merge group — the title and the live do-not-merge label, both re-read because
+# either can change after enqueue; a failure makes the queue drop the pull
+# request. Linkage is advisory and a group run writes no comment or label.
+# ---------------------------------------------------------------------------
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  emit_output title "$title_result"
+  emit_output do-not-merge "$do_not_merge_result"
+  emit_output linkage skipped
+  if [[ "$title_result" == fail || "$do_not_merge_result" == fail ]]; then
+    echo "::error::pr-contract: queued pull request #${PR_NUMBER} fails the contract; the merge queue removes it. Fix it and re-queue to merge."
+    exit 1
+  fi
+  echo "pr-contract: queued pull request #${PR_NUMBER} passes the title and '${DO_NOT_MERGE_LABEL}' checks."
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------

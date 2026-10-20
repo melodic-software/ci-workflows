@@ -281,18 +281,30 @@ echo 'case: a merge group fails when the queued pull request carries do-not-merg
 set_pull 'feat: add pr-contract' "$conforming_body" someone 'do-not-merge'
 run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
 expect_output 'do-not-merge=fail'
-expect_output 'title=skipped'
+expect_output 'title=pass'
 expect_output 'linkage=skipped'
-expect_log "queued pull request #${pr_number} carries the 'do-not-merge' label"
+expect_log "this PR carries the 'do-not-merge' label"
+expect_log "queued pull request #${pr_number} fails the contract"
 expect_gh_call "api -X GET repos/${repository}/pulls/${pr_number}"
 
-# Without the early exit a failing title, linkage and their writes would run here.
-echo 'case: a merge group checks only the label and writes nothing'
-set_pull 'wip: no conventional title' 'no linkage' someone ''
+# Without the early exit the failing linkage and its writes would run here.
+echo 'case: a merge group with a good title passes, skips linkage, and writes nothing'
+set_pull 'feat: add pr-contract' 'no linkage' someone ''
 run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
+expect_output 'title=pass'
 expect_output 'do-not-merge=pass'
-expect_output 'title=skipped'
 expect_output 'linkage=skipped'
+expect_no_gh_call '-X POST'
+expect_no_gh_call '-X DELETE'
+
+# Without the title check on merge_group a title edited after enqueue would land.
+echo 'case: a merge group with a non-conventional title fails and writes nothing'
+set_pull 'wip: no conventional title' 'no linkage' someone ''
+run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
+expect_output 'title=fail'
+expect_output 'do-not-merge=pass'
+expect_output 'linkage=skipped'
+expect_log 'does not follow Conventional Commits: "wip: no conventional title"'
 expect_no_gh_call '-X POST'
 expect_no_gh_call '-X DELETE'
 

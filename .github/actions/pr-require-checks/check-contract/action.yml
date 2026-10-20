@@ -71,9 +71,7 @@ inputs:
 outputs:
   title:
     description: >-
-      `pass`, `fail`, or `skipped` (no pull request in this event, or a
-      `merge_group` event: the title was checked before the pull request could
-      enter the queue).
+      `pass`, `fail`, or `skipped` (no pull request in this event).
     value: ${{ steps.contract.outputs.title }}
   do-not-merge:
     description: '`pass`, `fail`, or `skipped` (no pull request in this event).'

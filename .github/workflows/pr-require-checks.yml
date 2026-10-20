@@ -23,7 +23,9 @@ on:
   # contract-only predicate is false and every lane runs in full; the
   # concurrency group falls back to `github.run_id`; the lanes and `ci-status`
   # run on `github.sha`, the group head (`merge_group.head_sha`); and
-  # `check-contract` reads the queued pull request's live `do-not-merge` label.
+  # `check-contract` re-checks the title and live `do-not-merge` label of the
+  # pull request the head ref names, the group's last entry, so the queue must
+  # use `grouping_strategy: ALLGREEN`.
   # The Claude review lanes and the Dependabot arm run on `pull_request` only.
   merge_group:
     types: [checks_requested]
