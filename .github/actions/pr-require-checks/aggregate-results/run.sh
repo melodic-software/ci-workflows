@@ -429,19 +429,40 @@ own_gate_job=""
 own_gate_job_id=""
 own_gate_step=""
 
-# The identity key: the one place that says which listed job is this run's own.
-# A runner runs one job at a time, so among in-progress jobs the one on this
-# runner is this job. GitHub documents that a runner name may not be unique in
-# a run (repository and organization runners can share one), so a second match
-# fails closed rather than picking. Keying on `job.check_run_id` instead changes
-# this function only. Sets the key, the jq predicate over one job that tests it
-# against `$key`, and the phrase a warning names it by.
+# The identity key: the one place that says which job is this run's own.
+# `job.check_run_id` (passed in as JOB_CHECK_RUN_ID) is this job's REST id, so
+# the job is read directly and must belong to this run and be in progress.
+# GHES and runners before v2.324.0 leave it empty; then the job is the one
+# in-progress job of this run on this runner. GitHub documents that a runner
+# name may not be unique in a run (repository and organization runners can
+# share one), so a second match fails closed rather than picking. Sets the
+# endpoint to read and its query, the jq predicate one job must pass (`$key` and `$run` are
+# bound by `--arg`), the phrase a warning names the key by, and, when there is
+# no usable key, the cause.
 own_job_identity() {
-  own_job_key="${RUNNER_NAME:-}"
-  # shellcheck disable=SC2016 # `$key` is a jq variable, bound by `--arg`.
-  own_job_predicate='.status == "in_progress" and (.runner_name // "") == $key'
-  own_job_label="runner '$(escape_annotation "$own_job_key")'"
-  own_job_key_cause="RUNNER_NAME is empty, so this run's own job has no key."
+  own_job_key_cause=""
+  if [[ -n "${JOB_CHECK_RUN_ID:-}" ]]; then
+    own_job_key="$JOB_CHECK_RUN_ID"
+    own_job_endpoint="repos/${REPOSITORY}/actions/jobs/${own_job_key}"
+    own_job_query=""
+    # shellcheck disable=SC2016 # `$key` and `$run` are jq variables.
+    own_job_predicate='(.id | tostring) == $key and (.run_id | tostring) == $run and .status == "in_progress"'
+    own_job_label="job.check_run_id ${own_job_key} in run ${GITHUB_RUN_ID}"
+    if [[ ! "$own_job_key" =~ ^[0-9]+$ ]]; then
+      own_job_endpoint="repos/${REPOSITORY}/actions/jobs"
+      own_job_key_cause="job.check_run_id is not a job id: $(escape_annotation "$own_job_key")."
+    fi
+  else
+    own_job_key="${RUNNER_NAME:-}"
+    own_job_endpoint="repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs"
+    own_job_query='?filter=latest&per_page=100'
+    # shellcheck disable=SC2016 # `$key` is a jq variable.
+    own_job_predicate='.status == "in_progress" and (.runner_name // "") == $key'
+    own_job_label="runner '$(escape_annotation "$own_job_key")'"
+    if [[ -z "$own_job_key" ]]; then
+      own_job_key_cause="job.check_run_id and RUNNER_NAME are both empty, so this run's own job has no key."
+    fi
+  fi
 }
 
 # Reads between the retries. The jobs API can list this job or this step a
@@ -456,13 +477,14 @@ OWN_GATE_RETRY_DELAYS='1 2 4 8'
 # `step-name`, else the one step of the job in progress. Returns 1 after a
 # warning naming the cause and ending in `consequence`.
 resolve_own_gate() {
-  local need="$1" consequence="$2" endpoint="repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs"
+  local need="$1" consequence="$2" endpoint
   local delay reads=0 verdict job_name job_id step_name count cause=""
   if [[ -n "$own_gate_job" && ("$need" == job || -n "$own_gate_step") ]]; then
     return 0
   fi
   own_job_identity
-  if [[ -z "$own_job_key" ]]; then
+  endpoint="$own_job_endpoint"
+  if [[ -n "$own_job_key_cause" ]]; then
     echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${own_job_key_cause} ${consequence}"
     return 1
   fi
@@ -472,7 +494,7 @@ resolve_own_gate() {
     fi
     reads=$((reads + 1))
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
-    if ! gh_api GET "${endpoint}?filter=latest&per_page=100"; then
+    if ! gh_api GET "${endpoint}${own_job_query}"; then
       if [[ "$GH_HTTP_STATUS" == 403 || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
         warn_actions_failed "$endpoint" 'actions: read' "$consequence"
         return 1
@@ -482,8 +504,8 @@ resolve_own_gate() {
     # One line of unit-separated fields: verdict (`jobs` when the key matched
     # other than one job, `steps` when the job's step did not resolve, else
     # `ok`), job name, job id, step name, and the match count behind the verdict.
-    IFS=$'\x1f' read -r verdict job_name job_id step_name count < <(jq -r --arg key "$own_job_key" --arg step "${STEP_NAME:-}" \
-      "[ .jobs[]? | select(${own_job_predicate}) ]"' as $own
+    IFS=$'\x1f' read -r verdict job_name job_id step_name count < <(jq -r --arg key "$own_job_key" --arg run "$GITHUB_RUN_ID" --arg step "${STEP_NAME:-}" \
+      "[ (if has(\"jobs\") then .jobs[]? else . end) | select(${own_job_predicate}) ]"' as $own
       | if ($own | length) != 1 then ["jobs", "", "", "", ($own | length)]
         else $own[0] as $job
         | [ $job.steps[]? | if $step == "" then select(.status == "in_progress") else select(.name == $step) end ] as $steps
@@ -499,16 +521,16 @@ resolve_own_gate() {
       fi
       if [[ "$need" == job || -n "$own_gate_step" ]]; then
         # `job.check_run_id` beside the REST id is evidence for keying on it.
-        echo "This run's gate job is '${own_gate_job}' (REST id ${own_gate_job_id:-none}, job.check_run_id ${JOB_CHECK_RUN_ID:-empty}), found on ${own_job_label}."
+        echo "This run's gate job is '${own_gate_job}' (REST id ${own_gate_job_id:-none}, job.check_run_id ${JOB_CHECK_RUN_ID:-empty}), found by ${own_job_label}."
         return 0
       fi
     fi
     case "$verdict" in
       jobs)
         if [[ "$count" -eq 0 ]]; then
-          cause="no in-progress job ran on ${own_job_label}"
+          cause="no in-progress job matched ${own_job_label}"
         else
-          cause="${count} in-progress jobs ran on ${own_job_label}"
+          cause="${count} in-progress jobs matched ${own_job_label}"
         fi
         ;;
       steps)
@@ -526,7 +548,7 @@ resolve_own_gate() {
     esac
   done
   case "$cause" in
-    *' jobs ran on '*) cause="${cause} after ${reads} reads; a runner name is not unique." ;;
+    *' jobs matched '*) cause="${cause} after ${reads} reads; a runner name is not unique." ;;
     *' in-progress steps') cause="${cause} after ${reads} reads; set step-name to the name of the step that runs this action." ;;
     *) cause="${cause} after ${reads} reads." ;;
   esac

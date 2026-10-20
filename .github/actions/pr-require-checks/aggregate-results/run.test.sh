@@ -2022,13 +2022,67 @@ clear_own_jobs
 
 # Without failing closed on an empty key, a job with no runner name would match
 # whichever in-progress job also lacks one.
-echo 'case: an empty runner name fails closed naming the cause'
+echo 'case: an empty job.check_run_id and runner name fail closed naming the cause'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true RUNNER_NAME=
-expect_log "${own_cause_prefix}RUNNER_NAME is empty, so this run's own job has no key."
+expect_log "${own_cause_prefix}job.check_run_id and RUNNER_NAME are both empty, so this run's own job has no key."
 expect_no_log 'Carried forward'
 expect_no_gh_call "actions/runs/4100/jobs"
+
+# check_job <job-id> <run-id>
+# `GET actions/jobs/{id}`: this run's gate job as the id path reads it, in the
+# run given.
+check_job_key='GET_repos_melodic-software_ci-workflows_actions_jobs_9100'
+check_job() {
+  jq -c --argjson run "$2" '. + {run_id: $run}' <<<"$own_gate_job" >"$fixtures/${check_job_key}.json"
+}
+check_job_cause_prefix="::warning::could not identify this run's gate job and running step in repos/${repository}/actions/jobs/9100: "
+
+# Without the id path, an empty runner name leaves the job unidentified; with
+# it, the job is read by its id and the run's job listing is never read.
+echo 'case: job.check_run_id reads the gate job of this run directly'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+check_job 9100 4242
+run_case 0 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100 RUNNER_NAME=
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_log "This run's gate job is 'ci-status' (REST id 9100, job.check_run_id 9100), found by job.check_run_id 9100 in run 4242."
+expect_gh_call "GET repos/${repository}/actions/jobs/9100"
+expect_no_gh_call "actions/runs/4242/jobs"
+expect_no_sleep
+
+# Without the fallback, a runner that leaves job.check_run_id empty (GHES, or
+# a runner before v2.324.0) could never identify its job.
+echo 'case: an empty job.check_run_id falls back to the runner-name match'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 0 'skipped skipped' pass true true JOB_CHECK_RUN_ID=
+expect_log "found by runner '${own_runner}'."
+expect_gh_call "GET repos/${repository}/actions/runs/4242/jobs"
+expect_no_gh_call "actions/jobs/"
+
+# Without the run check, a job id of another run would lend that run's job and
+# step names to this one.
+echo 'case: a job.check_run_id of another run fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+check_job 9100 5555
+run_case 1 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100
+expect_log "${check_job_cause_prefix}no in-progress job matched job.check_run_id 9100 in run 4242 after 5 reads."
+expect_no_log 'Carried forward'
+expect_no_gh_call "actions/runs/4242/jobs"
+rm -f -- "$fixtures/${check_job_key}.json"
+
+# Without validating the id, a value carrying `/` or `?` would address another
+# resource than this job.
+echo 'case: a job.check_run_id that is not a number fails closed before any jobs read'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'JOB_CHECK_RUN_ID=9100/../9200'
+expect_log "::warning::could not identify this run's gate job and running step in repos/${repository}/actions/jobs: job.check_run_id is not a job id: 9100/../9200."
+expect_no_gh_call "actions/jobs/"
+expect_no_gh_call "actions/runs/4242/jobs"
 
 # Without the bound, a job that never appears would retry past the job's
 # 3-minute timeout instead of failing with the cause.
@@ -2036,7 +2090,7 @@ echo 'case: an own job that never resolves fails closed after a bounded retry'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true 'RUNNER_NAME=other runner'
-expect_log "${own_cause_prefix}no in-progress job ran on runner 'other runner' after 5 reads."
+expect_log "${own_cause_prefix}no in-progress job matched runner 'other runner' after 5 reads."
 expect_total_sleep_at_most 15
 expect_no_log 'Carried forward'
 
@@ -2047,7 +2101,7 @@ reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 own_jobs "[{\"name\":\"other\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[]},${own_gate_job}]"
 run_case 1 'skipped skipped' pass true
-expect_log "${own_cause_prefix}2 in-progress jobs ran on runner '${own_runner}' after 5 reads; a runner name is not unique."
+expect_log "${own_cause_prefix}2 in-progress jobs matched runner '${own_runner}' after 5 reads; a runner name is not unique."
 expect_no_log 'Carried forward'
 clear_own_jobs
 
