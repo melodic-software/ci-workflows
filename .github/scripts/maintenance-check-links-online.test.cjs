@@ -3,7 +3,7 @@
 // The online link check is opt-in per repository: a scheduled run does nothing
 // unless the caller repository's custom property is "true", a dispatched run
 // always checks, and a property read that errors fails red. The workflow also
-// holds the issue #739 contract: workflow_call only, contents: read, the
+// holds its contract: workflow_call only, contents: read, the
 // GITHUB_TOKEN only, and the report in the job summary.
 
 const assert = require("node:assert/strict");
@@ -46,12 +46,13 @@ async function runGate({ eventName, properties }) {
       setFailed: (message) => failed.push(message),
     };
     const context = { eventName, repo: { owner: "o", repo: "r" } };
-    await new AsyncFunction("github", "context", "core", "process", gate.with.script)(
-      github,
-      context,
-      core,
-      process,
-    );
+    await new AsyncFunction(
+      "github",
+      "context",
+      "core",
+      "process",
+      gate.with.script,
+    )(github, context, core, process);
     return { outputs, failed, requests };
   } finally {
     if (original === undefined) delete process.env.OPT_IN_PROPERTY;
@@ -70,6 +71,7 @@ test("the workflow is reusable only, read-only, and declares no secrets", () => 
 
 test("lychee uses the GITHUB_TOKEN, fails red, and writes the job summary", () => {
   assert.match(lychee.uses, /^lycheeverse\/lychee-action@[0-9a-f]{40}$/u);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
   assert.equal(lychee.with.token, "${{ github.token }}");
   assert.equal(lychee.with.fail, true);
   assert.equal(lychee.with.jobSummary, true);
@@ -100,7 +102,10 @@ test("a scheduled run checks links when the property is true", async () => {
     properties: [{ property_name: "link-check-online", value: "true" }],
   });
   assert.deepEqual(outputs, { run: "true" });
-  assert.equal(requests[0].route, "GET /repos/{owner}/{repo}/properties/values");
+  assert.equal(
+    requests[0].route,
+    "GET /repos/{owner}/{repo}/properties/values",
+  );
   assert.deepEqual(requests[0].params, { owner: "o", repo: "r" });
 });
 
@@ -111,7 +116,10 @@ test("a scheduled run skips when the property is unset or false", async () => {
     [{ property_name: "link-check-online", value: null }],
     [{ property_name: "other", value: "true" }],
   ]) {
-    const { outputs, failed } = await runGate({ eventName: "schedule", properties });
+    const { outputs, failed } = await runGate({
+      eventName: "schedule",
+      properties,
+    });
     assert.deepEqual(outputs, { run: "false" });
     assert.deepEqual(failed, []);
   }
