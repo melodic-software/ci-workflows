@@ -212,6 +212,7 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
+    "soak-actionlint-kjanat",
     ISSUE_JOB,
   ]) {
     const block = jobBlocks.find((candidate) => jobName(candidate) === name);
@@ -224,8 +225,9 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
   assert.equal(evaluate(group, mergeGroupContext), "pr-require-checks-42");
 });
 
-test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
+test("the advisory lanes and issue labeler stay out of ci-status", () => {
   // Claude lane checks are advisory: a model outage must never block a merge.
+  // The kjanat/actionlint soak (#788) is advisory until phase 2 removes it.
   const needs =
     /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu.exec(
       ciWorkflow,
@@ -235,6 +237,7 @@ test("the dogfood Claude lanes and issue labeler stay out of ci-status", () => {
     "pr-review",
     "pr-review-security",
     "pr-automerge-dependabot",
+    "soak-actionlint-kjanat",
     ISSUE_JOB,
   ]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));

@@ -350,6 +350,37 @@ jobs:
       - name: Prove a broken composite shell block fails
         run: bash .github/scripts/composite-run-shellcheck.test.sh
 
+  # Advisory soak of the kjanat/actionlint fork (#788 phase 1): never in
+  # `ci-status`, pull_request only, so it cannot block a merge. It lints with the
+  # `$/` and `queue` ignores removed and groups the fork's findings against the
+  # rhysd baseline the gating lane pins. A failed install, a failed provenance
+  # check or a fork that rejects `$/` or `queue` turns it red; findings do not.
+  # Soak: started 2026-10-20, ends 2026-11-03 (two weeks of pull request runs).
+  # The soak is clean when no run reports `ref is missing` or `unexpected key
+  # "queue"`, the support probe passes on every run, and every finding is
+  # classified as a true positive, a false positive or a cache-safety-policy
+  # finding with its run link in the tally posted on #788. Phase 2 removes
+  # this job.
+  # Trust anchors: KJANAT_SHA256 pins the linux_amd64 archive and KJANAT_COMMIT
+  # the release commit its provenance must name; KJANAT_VERSION only builds the
+  # asset URL, because the fork's version numbers overlap upstream's.
+  soak-actionlint-kjanat:
+    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Soak kjanat/actionlint against the rhysd baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KJANAT_VERSION: 1.17.0
+          KJANAT_COMMIT: 08bb2c4f0d039744455b87aef1c647fb8b66d37b
+          KJANAT_SHA256: 620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a
+        run: bash .github/scripts/actionlint-kjanat-soak.sh
+
   jsonschema:
     needs: detect-changes
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['jsonschema'] != 'false' }}
