@@ -183,7 +183,8 @@ on:
         value: ${{ jobs.claude.outputs.review-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
+          auth | rate-limit | overloaded | max-turns | timeout | install-failed |
+          no-execution | other on a failure;
           incomplete when the step succeeded but no completed review was found;
           skipped-validation when the action skipped itself; sandbox-unavailable
           when bubblewrap could not create a namespace, so no review ran;
@@ -1108,6 +1109,8 @@ jobs:
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
             max-turns) why="the review used every turn --max-turns allows before finishing; raise it in claude-args" ;;
             timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
+            install-failed) why="the Bun install failed (often an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
+            no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
             sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;
