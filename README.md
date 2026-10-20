@@ -553,8 +553,9 @@ consumer to audit it.
   --verify-no-changes` (the build-time analyzers own code-style and code-quality,
   so none of the three lanes double-report).
 - `.github/actions/run-claude-cli` — runs one prompt with headless `claude -p` for
-  an agent-mode lane on a Linux runner, installing the newest Claude Code CLI
-  unless `cli-version` pins one. Each invocation runs one leg on one
+  an agent-mode lane on a Linux runner, installing the Claude Code CLI
+  version `cli-version` names (an exact version, pinned by default, or
+  `latest`). Each invocation runs one leg on one
   credential: pass exactly one of `api-key` and `subscription-token`, or
   the action fails closed. A key leg that ends in a credit stop
   (report-lane-outcome's opt-in `credit-stop` class) sets `lane-class` to
@@ -563,10 +564,11 @@ consumer to audit it.
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
   environment has every credential and workflow file-command variable
-  removed and its one credential set. Anything the leg appends to the step's
-  `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` or
-  `GITHUB_STATE` file is cut off after it ends, before the action writes its
-  own outputs (`lane-class` included), and the installed CLI tree and
+  removed and its one credential set. The step's `GITHUB_ENV`,
+  `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` and `GITHUB_STATE`
+  files are bound read-only for the leg and anything it leaves running, and
+  restored to their exact content after it ends, before the action writes
+  its own outputs (`lane-class` included); the installed CLI tree and
   `_work/_actions` have their write bits removed while it runs. Code the leg
   runs still runs as the runner
   user, so a lane that gives the model unrestricted Bash, or any
@@ -1001,8 +1003,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   is missing, so the result does not depend on whether
   `intake-label-needs-triage` ran first. It runs through
   `.github/actions/run-claude-cli` (lane `intake`, funding `role` default
-  `automations`), which installs the newest Claude Code CLI at run time
-  (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`).
+  `automations`), which installs the Claude Code CLI at run time
+  (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else the
+  pinned version in the workflow).
   `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
   caller grants `contents: read` and `issues: write` and passes the role's
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key

@@ -19,9 +19,10 @@
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
 //     runs as the runner user.
-//   - Every file-command file the step was given is cut back to its size
-//     before the leg once the leg ends, and run writes the action's own
-//     outputs, lane-class included, and summary after that.
+//   - Every file-command file the step was given is bound read-only for the
+//     leg (and anything it leaves running), restored to its exact content
+//     once the leg ends, and only then does run write the action's own
+//     outputs, lane-class included, and summary.
 //   - The CLI install tree and _work/_actions have their write bits removed
 //     before the leg and restored after it.
 //   - Caller rule: a lane that gives the model unrestricted Bash, or any
@@ -529,36 +530,39 @@ function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   return { failureClass, resets, messages };
 }
 
-// The byte size of each file-command file the step was given, so restoreFiles
-// can cut off whatever the leg appends. run writes the action's own outputs and
-// summary after the reset.
-function fileSizes(baseEnv) {
-  const sizes = [];
+// The content of each file-command file the step was given, so restoreFiles
+// can put back exactly what was there, whatever the leg appended or
+// rewrote. run writes the action's own outputs and summary after the reset.
+function snapshotFiles(baseEnv) {
+  const snapshots = [];
   for (const name of FILE_COMMAND_VARIABLES) {
     const file = (baseEnv[name] ?? "").trim();
     if (file === "" || !fs.existsSync(file)) continue;
-    sizes.push({ file, size: fs.statSync(file).size });
+    snapshots.push({ file, content: fs.readFileSync(file) });
   }
-  return sizes;
+  return snapshots;
 }
 
-function restoreFiles(sizes) {
-  for (const { file, size } of sizes) {
-    if (fs.existsSync(file) && fs.statSync(file).size !== size) {
-      fs.truncateSync(file, size);
+function restoreFiles(snapshots) {
+  for (const { file, content } of snapshots) {
+    if (!fs.existsSync(file) || !fs.readFileSync(file).equals(content)) {
+      fs.writeFileSync(file, content);
     }
   }
 }
 
-// The trees no leg may write: the CLI install under the work directory and
-// the runner's action checkouts, `_work/_actions` beside RUNNER_WORKSPACE.
-function readOnlyPaths(config, baseEnv) {
+// What no leg may write: the CLI install under the work directory, the
+// runner's action checkouts (`_work/_actions` beside RUNNER_WORKSPACE), and
+// the step's file-command files. bwrap binds each read-only in the leg's mount
+// namespace, which a process the leg leaves behind keeps after it ends.
+function readOnlyPaths(config, baseEnv, files = []) {
   const runnerWorkspace = (baseEnv.RUNNER_WORKSPACE ?? "").trim();
   return [
     path.join(config.workDir, "cli"),
     runnerWorkspace === ""
       ? ""
       : path.join(path.dirname(runnerWorkspace), "_actions"),
+    ...files,
   ].filter((dir) => dir !== "" && fs.existsSync(dir));
 }
 
@@ -620,12 +624,16 @@ function runLeg(
   const prompt = promptText(config);
   const { leg } = config;
   const executionFile = path.join(config.workDir, "leg-1-execution.json");
-  const sizes = fileSizes(baseEnv);
+  const snapshots = snapshotFiles(baseEnv);
   const modes = [];
   let record;
   let judged;
   try {
-    const readOnly = readOnlyPaths(config, baseEnv);
+    const readOnly = readOnlyPaths(
+      config,
+      baseEnv,
+      snapshots.map(({ file }) => file),
+    );
     lockTrees(readOnly, modes);
     const startedAt = now().toISOString();
     const child = spawn(...legCommand(config, readOnly), {
@@ -681,7 +689,7 @@ function runLeg(
     try {
       restoreModes(modes);
     } finally {
-      restoreFiles(sizes);
+      restoreFiles(snapshots);
     }
   }
   const run = readRunRecord(executionFile);

@@ -52,7 +52,9 @@ const leg = process.env.ANTHROPIC_API_KEY ? "KEY" : "SUB";
 const seen = ${JSON.stringify(CREDENTIAL_VARIABLES)}.filter((n) => n in process.env);
 const fileCommands = ${JSON.stringify(FILE_COMMAND_VARIABLES)}.filter((n) => n in process.env);
 for (const file of (process.env.FAKE_APPEND ?? "").split(":").filter(Boolean)) {
-  fs.appendFileSync(file, "PLANTED=1\\n");
+  try {
+    fs.appendFileSync(file, "PLANTED=1\\n");
+  } catch {}
 }
 const chmods = (process.env.FAKE_CHMOD ?? "").split(":").filter(Boolean).map((file) => {
   try {
@@ -76,6 +78,20 @@ fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileComman
   wait: process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS,
   args: process.argv.slice(2),
   stdin: fs.readFileSync(0, "utf8") }) + "\\n");
+// A process the leg leaves behind: after the leg ends it tries to put a
+// forged lane-class into the step's output file.
+if (process.env.FAKE_STRAGGLE) {
+  require("node:child_process").spawn(process.execPath, ["-e", \`
+    const fs = require("node:fs");
+    setTimeout(() => {
+      let outcome = "written";
+      try { fs.chmodSync(process.env.FAKE_STRAGGLE, 0o644); } catch {}
+      try { fs.appendFileSync(process.env.FAKE_STRAGGLE, "lane-class=credit-stop\\\\n"); }
+      catch (error) { outcome = error.code; }
+      fs.writeFileSync(process.env.FAKE_STRAGGLE_DONE, outcome);
+    }, 1500);
+  \`], { detached: true, stdio: "ignore" }).unref();
+}
 if (process.env["FAKE_" + leg + "_SLEEP"]) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
   if (process.env.FAKE_SURVIVED) fs.writeFileSync(process.env.FAKE_SURVIVED, "");
@@ -680,6 +696,8 @@ test("a failed mode restore still cuts off what a leg appended to the step files
           return { GITHUB_OUTPUT: output };
         },
         spawn: () => {
+          // A leg that got its write bit back before the restore failed.
+          fs.chmodSync(output, 0o644);
           fs.appendFileSync(output, "PLANTED=1\n");
           fs.chmodSync = () => {
             throw Object.assign(new Error("EIO: i/o error, chmod"), { code: "EIO" });
@@ -699,6 +717,51 @@ test("a failed mode restore still cuts off what a leg appended to the step files
   for (const entry of ["", "node_modules", path.join("node_modules", "pkg")]) {
     fs.chmodSync(path.join(cli, entry), 0o755);
   }
+});
+
+test("a same-size rewrite of a step file is put back byte for byte", () => {
+  let output;
+  const original = "cli-version=2.1.302\n";
+  const forged = "lane-class=credit-s\n";
+  assert.equal(forged.length, original.length);
+  runCase({
+    key: SUCCESS,
+    prepare: (dir) => {
+      output = path.join(dir, "output");
+      fs.writeFileSync(output, original);
+      return { GITHUB_OUTPUT: output };
+    },
+    spawn: () => {
+      fs.chmodSync(output, 0o644);
+      fs.writeFileSync(output, forged);
+      return {
+        status: 0,
+        signal: null,
+        stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
+      };
+    },
+  });
+  assert.equal(fs.readFileSync(output, "utf8"), original);
+});
+
+test("a process the leg leaves behind cannot add a lane-class after the launcher writes its own", withBwrap, () => {
+  const dir = path.join(root, "run-straggler");
+  const env = runEnv(dir, {});
+  fs.writeFileSync(env.GITHUB_OUTPUT, "");
+  env.FAKE_KEY = legFile(dir, "key.jsonl", SUCCESS);
+  env.FAKE_KEY_EXIT = "0";
+  env.FAKE_STRAGGLE = env.GITHUB_OUTPUT;
+  env.FAKE_STRAGGLE_DONE = path.join(dir, "straggler-done");
+  run(env);
+  // The straggler waits 1.5 seconds after the leg starts, then tries.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
+  assert.equal(fs.readFileSync(env.FAKE_STRAGGLE_DONE, "utf8"), "EROFS");
+  const lines = fs.readFileSync(env.GITHUB_OUTPUT, "utf8").trim().split("\n");
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith("lane-class=")),
+    ["lane-class="],
+  );
+  assert.equal(lines.at(-1).startsWith("log-file="), true);
 });
 
 test("stdout is captured in memory and a maxBuffer overflow is class other", () => {

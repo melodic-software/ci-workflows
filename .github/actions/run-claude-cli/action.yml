@@ -9,9 +9,10 @@ description: >-
   exact value (see the README's two-job pattern), never in this job.
   The leg's CLI environment has every credential and file-command variable
   removed and its one credential set, and the CLI runs with `--restricted`
-  and `--strict-mcp-config`; whatever the leg appends to the step's GITHUB_ENV,
-  GITHUB_PATH, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE file is
-  cut off after it ends, before the action writes its own outputs, and
+  and `--strict-mcp-config`; the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
+  GITHUB_STEP_SUMMARY and GITHUB_STATE files are bound read-only for the leg
+  and restored to their exact content after it ends, before the action
+  writes its own outputs, and
   the installed CLI tree and `_work/_actions` have their write bits removed
   while it runs. Code the leg runs still runs as the runner user, so a
   lane that gives the model unrestricted
@@ -121,11 +122,12 @@ inputs:
     default: ""
   cli-version:
     description: >-
-      `latest` resolves the newest @anthropic-ai/claude-code release with
-      `npm view` at run time; an exact major.minor.patch reproduces a run.
-      The resolved version is logged and output.
+      An exact major.minor.patch, or `latest`, which resolves the newest
+      @anthropic-ai/claude-code release with `npm view` at run time. The
+      default is pinned to 2.1.304 (`npm view @anthropic-ai/claude-code
+      version`, 2026-10-20). The resolved version is logged and output.
     required: false
-    default: latest
+    default: 2.1.304
   watchdog-max-wait-ms:
     description: CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS, the most each request waits out 429 and 529 errors.
     required: false
@@ -148,7 +150,7 @@ outputs:
       before the leg ran, or a leg whose stdout passes 256 MiB, reports
       `other`. Report this class; do not reclassify execution-file, which
       cannot see the credit-stop or leg-timeout rules. Set after the step
-      files are cut back, so the leg cannot set it.
+      files are restored, so the leg cannot set it.
     value: >-
       ${{ steps.run.outputs.lane-class
       || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
