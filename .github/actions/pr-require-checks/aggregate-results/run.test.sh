@@ -2187,6 +2187,85 @@ clear_writer_fixtures
 run_of_workflow 4100 777
 reset_yield_fixtures
 
+# --- carry-forward: reads reused across the writer check and the polls --------
+
+# row_of_run <id> <workflow-id> <head-sha> [status]
+# A run as the run listing shows it, with the fields the writer check reads.
+row_of_run() {
+  printf '{"id":%s,"status":"%s","conclusion":"success","workflow_id":%s,"head_sha":"%s","run_attempt":1,"run_started_at":"%s"}' \
+    "$1" "${4:-completed}" "$2" "$3" "$writer_started"
+}
+
+# Without comparing the row's own workflow, the listing's filter alone would
+# vouch for the writer; before the row was read, the run object (workflow 777)
+# decided and this passed.
+echo "case: a carried writer row in the listing with another workflow_id is ignored"
+reset_writer_fixtures
+workflow_runs "[$(row_of_run 4100 888 "$sha")]"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} was written by run 4100 of workflow 888, not this workflow (777); ignoring it."
+expect_calls "${runs_key_prefix}_4100" 0
+
+echo "case: a carried writer row in the listing with another head_sha is ignored"
+reset_writer_fixtures
+workflow_runs "[$(row_of_run 4100 777 cafebabecafebabecafebabecafebabecafebabe)]"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::the newest ci-lanes success on ${sha} names run 4100, which ran on cafebabecafebabecafebabecafebabecafebabe; ignoring it."
+expect_calls "${runs_key_prefix}_4100" 0
+
+# Without the row, every carry reads the writer run again.
+echo 'case: a carried writer row in the listing replaces the writer run read'
+reset_writer_fixtures
+workflow_runs "[$(row_of_run 4100 777 "$sha")]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100" 0
+
+# Without the fallback, a writer missing from the listing (or a row without its
+# workflow or SHA) could not be verified at all.
+echo 'case: a writer missing from the listing is read exactly once'
+reset_writer_fixtures
+workflow_runs '[]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100" 1
+
+echo 'case: a writer row without its head_sha falls back to one writer run read'
+reset_writer_fixtures
+workflow_runs '[{"id":4100,"status":"completed","workflow_id":777}]'
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "${runs_key_prefix}_4100" 1
+
+# A yield run that waits two polls for writer 4000's step, beside an in-flight
+# contract-only sibling. Without keeping the workflow id between polls, every
+# poll reads this run again; without the writer's row, every poll reads the
+# writer run; this run's own jobs are read once, shared with the gate resolver.
+# The same fixture made 17 calls at 834f4e1 (origin/main before #743); the
+# ceiling below is that minus 2.
+echo 'case: a multi-poll yield carry reads this run, its jobs and the writer run at most once'
+reset_writer_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[$(row_of_run 4000 777 "$sha" in_progress),$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+writer_running_then_success
+jobs_raw 4300 "$contract_only_jobs"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_status_reads 2
+expect_calls "$current_run_key" 1
+expect_calls "${runs_key_prefix}_4242_jobs" 1
+expect_calls "${runs_key_prefix}_4000" 0
+if [[ "$(wc -l <"$gh_log")" -gt 15 ]]; then
+  echo "FAIL: expected at most 15 API calls (17 at 834f4e1, less 2), got $(wc -l <"$gh_log")"
+  cat "$gh_log"
+  failures=$((failures + 1))
+fi
+
+clear_writer_fixtures
+run_of_workflow 4100 777
+run_of_workflow 4000 777
+reset_yield_fixtures
+
 # --- this run's own gate job and step ------------------------------------------
 
 own_jobs_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs'

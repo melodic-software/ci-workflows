@@ -404,18 +404,37 @@ verify_carried_writer() {
     carried_state=""
     return 0
   fi
-  if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
-    # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
-    if ! resolve_workflow_id 'actions: read' "$unverified"; then
-      return 1
-    fi
-  fi
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}"; then
-    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}" 'actions: read' "$unverified"
+  # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
+  if ! resolve_workflow_id 'actions: read' "$unverified"; then
     return 1
   fi
-  writer="$(jq -r '"\(.workflow_id // "")|\(.head_sha // "")|\(.run_started_at // "")|\(.run_attempt // 1)"' <"$gh_stdout")" || return 1
+  # The run listing the newer-run check needs anyway: the caller's from this
+  # poll, else one made here. A listing that fails is a failed read.
+  if [[ "$carried_runs_listed" != listed ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$unverified"
+      return 1
+    fi
+    cp -- "$gh_stdout" "$scratch/runs.json"
+    carried_runs_listed=listed
+  fi
+  # The writer's row in that listing carries every field read below, so the run
+  # itself is read only when its row is absent or lacks the workflow or the
+  # SHA. The row's own fields are still compared: the listing is filtered by
+  # both, but the comparison, not the filter, is what this check trusts.
+  writer="$(jq -r --arg writer "$carried_writer_run_id" \
+    'first(.workflow_runs[]? | select((.id | tostring) == $writer and .workflow_id != null and .head_sha != null)) // empty
+     | "\(.workflow_id)|\(.head_sha)|\(.run_started_at // "")|\(.run_attempt // 1)"' \
+    <"$scratch/runs.json")" || return 1
+  if [[ -z "$writer" ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}" 'actions: read' "$unverified"
+      return 1
+    fi
+    writer="$(jq -r '"\(.workflow_id // "")|\(.head_sha // "")|\(.run_started_at // "")|\(.run_attempt // 1)"' <"$gh_stdout")" || return 1
+  fi
   IFS='|' read -r writer_workflow_id writer_head_sha carried_writer_started_at carried_writer_attempt <<<"$writer"
   if [[ "$writer_workflow_id" != "$workflow_id" ]]; then
     echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} was written by run ${carried_writer_run_id} of workflow ${writer_workflow_id:-unknown}, not this workflow (${workflow_id}); ignoring it."
@@ -613,7 +632,7 @@ verify_writer_step() {
       fi
       if [[ "$carried_state" == success ]]; then
         # shellcheck disable=SC2310 # verify_no_newer_verdict warns itself; the caller fails closed.
-        if ! verify_no_newer_verdict "$unverified"; then
+        if ! verify_no_newer_verdict; then
           return 1
         fi
       fi
@@ -699,18 +718,10 @@ verify_writer_shape() {
 # carry. A run whose jobs cannot be read discards the status. In-flight runs are
 # left to the wait and the yield listing.
 #
-# The run listing is the one the caller made in this poll (`carried_runs_listed`),
-# else one made here; a listing that fails returns 1, a failed read.
+# The run listing is the one `verify_carried_writer` holds in
+# `$scratch/runs.json`.
 verify_no_newer_verdict() {
-  local consequence="$1" rivals rival id attempt shape outcome
-  if [[ "$carried_runs_listed" != listed ]]; then
-    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-    if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
-      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$consequence"
-      return 1
-    fi
-    cp -- "$gh_stdout" "$scratch/runs.json"
-  fi
+  local rivals rival id attempt shape outcome
   rivals="$(jq -r --arg self "$GITHUB_RUN_ID" --arg writer "$carried_writer_run_id" --arg since "$carried_writer_started_at" \
     '[ .workflow_runs[]? | select(.status == "completed" and (.id | type) == "number")
        | select((.id | tostring) != $self and (.id | tostring) != $writer)
@@ -775,6 +786,10 @@ resolve_workflow_id() {
   if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
     echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from the runs on ${SHA}. ${consequence}"
     return 1
+  fi
+  # A run's workflow never changes, so one read serves every poll.
+  if [[ "$workflow_id" =~ ^[0-9]+$ ]]; then
+    return 0
   fi
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
