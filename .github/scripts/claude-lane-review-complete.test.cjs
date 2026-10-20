@@ -66,6 +66,7 @@ async function runGithubScript(script, values, github) {
     setOutput: (key, value) => {
       outputs[key] = value;
     },
+    setSecret: () => {},
     info: (message) => messages.push(message),
     warning: (message) => messages.push(`warning: ${message}`),
   };
