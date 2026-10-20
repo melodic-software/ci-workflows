@@ -261,6 +261,9 @@ const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
 const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
 const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
+// Why a subscription job ran in the two-job pattern: the key job's credit
+// stop, or no key at all (ci-workflows#806).
+const FALLBACK_REASONS = ["credit-stop", "no-key"];
 
 // SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
 function isoFromEpoch(value) {
@@ -311,9 +314,15 @@ function readRunRecord(executionFilePath) {
 // The record tokens for one annotation line, unknown values omitted.
 // `resets=` and `resets-window=` are printed only on a limit stop: that
 // stop's reset time and the window (rateLimitType) that stopped it.
+// `fallback=` follows `credential=`, only from FALLBACK_REASONS.
 function recordTokens(
   { turns = null, models = [], resetsAt = null, resetsWindow = null },
-  { failureClass = "", maxTurns = "", credential = "" } = {},
+  {
+    failureClass = "",
+    maxTurns = "",
+    credential = "",
+    fallbackReason = "",
+  } = {},
 ) {
   const tokens = [];
   if (failureClass === "rate-limit" && resetsAt) {
@@ -322,6 +331,9 @@ function recordTokens(
   }
   if (CREDENTIAL_PATTERN.test(credential)) {
     tokens.push(`credential=${credential}`);
+  }
+  if (FALLBACK_REASONS.includes(fallbackReason)) {
+    tokens.push(`fallback=${fallbackReason}`);
   }
   if (turns !== null) tokens.push(`turns=${turns}`);
   if (COUNT_PATTERN.test(maxTurns)) {
@@ -334,6 +346,7 @@ function recordTokens(
 module.exports = {
   classifyExecutionFile,
   creditStopResetsAt,
+  FALLBACK_REASONS,
   isCreditStop,
   readMessages,
   readRunRecord,
