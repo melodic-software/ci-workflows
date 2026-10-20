@@ -1103,6 +1103,18 @@ expect_no_output 'title=pass'
 rm -f -- "$fixtures/${pull_key}.headers" "$fixtures/${pull_key}.exit0"
 set_pull 'feat: add pr-contract' "$conforming_body" someone ''
 
+# Without the numeric check a malformed status line would put its text in
+# every message that names the HTTP status.
+echo 'case: a GraphQL error under a malformed status line reports an unknown status'
+jq '.errors = [{"type":"INTERNAL","message":"Something went wrong."}]' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
+mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
+printf 'HTTP/2.0 2OO-bogus\r\n' >"$fixtures/${pull_key}.headers"
+run_case 1
+expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP unknown): Something went wrong."
+expect_no_log '2OO-bogus'
+rm -f -- "$fixtures/${pull_key}.headers"
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+
 # Without the `[bot]` suffix a Bot author's GraphQL login never equals the
 # REST login an exempt-authors entry names.
 echo 'case: a Bot author read over GraphQL matches its REST login in exempt-authors'
