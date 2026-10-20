@@ -423,6 +423,21 @@ consumer to audit it.
   `statuses: write` and `actions: write` (which covers the `actions: read`
   `yield-to-full-run` and a wait above `0` need).
 
+  **GitHub API rate limits.** GitHub answers both a rate limit and a refusal
+  with 403 or 429, so every 403 or 429 prints its status, message and the
+  `x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after` and
+  `x-accepted-github-permissions` headers, and names a missing scope only for
+  "Resource not accessible by integration" or that last header. A rate limit
+  waits `retry-after`, else until `x-ratelimit-reset` when remaining is `0`,
+  else 60 seconds, then retries once; a second limit, or a wait longer than
+  what is left of `rate-limit-wait-seconds` (default `60`, summed over the
+  step, at most `3600`), fails the call closed at once and prints the reset
+  time. The step never ends neutral, which a required check would count as a
+  pass. `check-contract` takes the same input. The two steps' caps plus
+  `rerun-wait-seconds` and the job's other work must fit the job's
+  `timeout-minutes`, and a wait never outlives a GitHub App installation
+  token's hour.
+
   ```yaml
   jobs:
     detect-changes:

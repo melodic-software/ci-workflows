@@ -152,23 +152,9 @@ trap 'rm -rf -- "$scratch"' EXIT
 gh_stdout="$scratch/gh-stdout"
 gh_stderr="$scratch/gh-stderr"
 
-GH_HTTP_STATUS=""
-gh_api() {
-  local method="$1" path="$2"
-  shift 2
-  local status=0
-  : >"$gh_stdout"
-  : >"$gh_stderr"
-  GH_HTTP_STATUS=""
-  set +e
-  gh api -X "$method" "$path" "$@" >"$gh_stdout" 2>"$gh_stderr"
-  status=$?
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    GH_HTTP_STATUS="$(sed -n 's/.*(HTTP \([0-9][0-9]*\)).*/\1/p' "$gh_stderr" | head -n1)"
-  fi
-  return "$status"
-}
+gh_headers="$scratch/gh-headers"
+# shellcheck source=../gh-api.sh
+source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
 
 # A GitHub expression renders as the literal `true`/`false`. Empty means the
 # caller left the input unset, which takes the safer reading of each flag:
@@ -241,6 +227,8 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+# At most an hour, the life of a GitHub App installation token.
+require_pattern rate-limit-wait-seconds "$RATE_LIMIT_WAIT_SECONDS" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
 
 # POST one `status-context` entry on `sha` naming this run, retrying after 1s,
 # 2s and 4s. Every write is load-bearing, not best-effort: the carry-forward
@@ -261,6 +249,10 @@ write_status() {
     if gh_api POST "repos/${REPOSITORY}/statuses/${SHA}" --input "$scratch/status-payload.json"; then
       return 0
     fi
+    # gh_api already took the one bounded wait a rate limit allows.
+    if [[ "$GH_FAILURE" == rate-limit ]]; then
+      break
+    fi
     if [[ "$attempt" -lt 4 ]]; then
       delay=$((STATUS_RETRY_BASE_DELAY * (1 << (attempt - 1))))
       echo "::warning::could not record ${STATUS_CONTEXT} on ${SHA} (HTTP ${GH_HTTP_STATUS:-unknown}); retrying in ${delay}s"
@@ -268,7 +260,11 @@ write_status() {
     fi
   done
   cat "$gh_stderr" >&2
-  echo "::error::could not record ${STATUS_CONTEXT} on ${SHA} (${GH_HTTP_STATUS:-unknown}); the calling job needs statuses: write"
+  if [[ "$GH_FAILURE" == rate-limit ]]; then
+    echo "::error::could not record ${STATUS_CONTEXT} on ${SHA} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
+  else
+    echo "::error::could not record ${STATUS_CONTEXT} on ${SHA} (${GH_HTTP_STATUS:-unknown}); the calling job needs statuses: write"
+  fi
   return 1
 }
 
@@ -526,7 +522,7 @@ resolve_own_gate() {
     reads=$((reads + 1))
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
     if ! gh_api GET "${endpoint}${own_job_query}"; then
-      if [[ "$GH_HTTP_STATUS" == 403 || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
+      if [[ "$GH_HTTP_STATUS" == 403 || "$GH_FAILURE" == rate-limit || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
         warn_actions_failed "$endpoint" 'actions: read' "$consequence"
         return 1
       fi
@@ -765,12 +761,17 @@ verify_no_newer_verdict() {
 
 # The Actions calls need a scope an explicit `permissions:` block does not grant
 # by default: `actions: read` to wait, `actions: write` to re-run siblings. Name
-# the scope rather than printing a bare 403, and say what the run does instead.
+# the scope only for a permission failure, not for a rate limit or an
+# unclassified 403 (see gh-api.sh), and say what the run does instead.
 # Neither caller treats a refusal as permission to pass.
 warn_actions_failed() {
   local endpoint="$1" scope="$2" consequence="$3"
-  if [[ "$GH_HTTP_STATUS" == 403 ]]; then
-    echo "::warning::${endpoint} returned HTTP 403; the ci-status job needs '${scope}'. ${consequence}"
+  if [[ "$GH_FAILURE" == permission ]]; then
+    echo "::warning::${endpoint} returned HTTP ${GH_HTTP_STATUS}; the ci-status job needs '${scope}'. ${consequence}"
+  elif [[ "$GH_FAILURE" == rate-limit ]]; then
+    echo "::warning::${endpoint} is rate limited (HTTP ${GH_HTTP_STATUS}). ${consequence}"
+  elif [[ -n "$GH_FAILURE" ]]; then
+    echo "::warning::${endpoint} returned HTTP ${GH_HTTP_STATUS}: $(escape_annotation "$GH_MESSAGE"). ${consequence}"
   else
     echo "::warning::could not read ${endpoint} (HTTP ${GH_HTTP_STATUS:-unknown}). ${consequence}"
   fi
@@ -1355,8 +1356,12 @@ rerun_failed_contract_only_siblings() {
     fi
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api POST "repos/${REPOSITORY}/actions/runs/${id}/rerun-failed-jobs"; then
-      if [[ "$GH_HTTP_STATUS" == 403 ]]; then
-        echo "::warning::re-running run ${id} returned HTTP 403; rerun-contract-only-siblings needs 'actions: write' on the ci-status job."
+      if [[ "$GH_FAILURE" == permission ]]; then
+        echo "::warning::re-running run ${id} returned HTTP ${GH_HTTP_STATUS}; rerun-contract-only-siblings needs 'actions: write' on the ci-status job."
+      elif [[ "$GH_FAILURE" == rate-limit ]]; then
+        echo "::warning::re-running run ${id} is rate limited (HTTP ${GH_HTTP_STATUS}); not re-running it."
+      elif [[ -n "$GH_FAILURE" ]]; then
+        echo "::warning::re-running run ${id} returned HTTP ${GH_HTTP_STATUS}: $(escape_annotation "$GH_MESSAGE")."
       else
         echo "::warning::could not re-run run ${id} (HTTP ${GH_HTTP_STATUS:-unknown})."
       fi

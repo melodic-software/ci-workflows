@@ -30,6 +30,9 @@ labels_key="repos_melodic-software_ci-workflows_issues_${pr_number}_labels"
 # A `gh` shim first on PATH: it serves fixture JSON keyed by method plus API
 # path, records every call and every request body so the harness can assert on
 # writes that did and did not happen, and can fail a keyed call on demand.
+# Under `-i` it prints `<key>.<n>.headers` or `<key>.headers` (a status line
+# and header lines) before the output, as `gh api -i` does, and
+# `<key>.<n>.err` fails only the Nth call with that stderr.
 cat >"$shim_directory/gh" <<'SHIM'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -40,6 +43,7 @@ method=GET
 path=""
 input=""
 slurp=false
+include=false
 seen_api=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,6 +61,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --slurp)
       slurp=true
+      shift
+      ;;
+    -i | --include)
+      include=true
       shift
       ;;
     --paginate | --silent)
@@ -82,6 +90,28 @@ if [[ -n "$input" && -f "$input" ]]; then
   cp -- "$input" "$GH_CALLS/${key}.input.json"
 elif [[ "$input" == "-" ]]; then
   cat >"$GH_CALLS/${key}.input.json"
+fi
+
+count_file="$GH_CALLS/${key}.count"
+call_number=1
+if [[ -f "$count_file" ]]; then
+  call_number="$(($(cat "$count_file") + 1))"
+fi
+printf '%s\n' "$call_number" >"$count_file"
+
+if [[ "$include" == true ]]; then
+  for headers in "$GH_FIXTURES/${key}.${call_number}.headers" "$GH_FIXTURES/${key}.headers"; do
+    if [[ -f "$headers" ]]; then
+      cat "$headers"
+      printf '\r\n'
+      break
+    fi
+  done
+fi
+
+if [[ -f "$GH_FIXTURES/${key}.${call_number}.err" ]]; then
+  cat "$GH_FIXTURES/${key}.${call_number}.err" >&2
+  exit 1
 fi
 
 fail_times="$GH_FIXTURES/${key}.fail-times"
@@ -123,6 +153,24 @@ fi
 SHIM
 chmod +x "$shim_directory/gh"
 
+# A `sleep` that only logs, and a `date` that reads a fixed clock, so a
+# rate-limit wait is asserted without taking it.
+sleep_log="$temporary_directory/sleep.log"
+cat >"$shim_directory/sleep" <<'SLEEP_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"$SLEEP_LOG"
+SLEEP_SHIM
+chmod +x "$shim_directory/sleep"
+cat >"$shim_directory/date" <<'DATE_SHIM'
+#!/usr/bin/env bash
+if [[ "$*" != '+%s' ]]; then
+  echo "date shim: only +%s is supported, got: $*" >&2
+  exit 1
+fi
+echo 0
+DATE_SHIM
+chmod +x "$shim_directory/date"
+
 # set_pull <title> <body> <author> <labels-csv>
 set_pull() {
   local title="$1" body="$2" author="$3" labels="$4"
@@ -161,6 +209,7 @@ run_case() {
   local actual_status
   : >"$gh_log"
   : >"$output_file"
+  : >"$sleep_log"
   rm -rf -- "$calls"
   mkdir -p "$calls"
   set +e
@@ -169,6 +218,7 @@ run_case() {
     GH_LOG="$gh_log" \
     GH_FIXTURES="$fixtures" \
     GH_CALLS="$calls" \
+    SLEEP_LOG="$sleep_log" \
     GH_TOKEN=fixture-token \
     GITHUB_OUTPUT="$output_file" \
     REPOSITORY="$repository" \
@@ -846,6 +896,48 @@ expect_log "::error::pr-contract: could not read repos/${repository}/pulls/${pr_
 rm -f -- "$fixtures/${pull_key}.err"
 mv -- "$fixtures/${pull_key}.json.bak" "$fixtures/${pull_key}.json"
 
+# --- rate limits -----------------------------------------------------------
+
+primary_limit_message='gh: API rate limit exceeded for installation ID 1 (HTTP 403)'
+
+# Without the wait the first limited read fails a good pull request red.
+echo 'case: a rate-limited pull request read reports its headers, waits until the reset, and retries once'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+printf '%s\n' "$primary_limit_message" >"$fixtures/${pull_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 20\r\n' >"$fixtures/${pull_key}.1.headers"
+run_case 0
+expect_log "::warning::GET repos/${repository}/pulls/${pr_number} returned HTTP 403 (rate-limit): API rate limit exceeded for installation ID 1; x-ratelimit-remaining=0 x-ratelimit-reset=20 retry-after=absent"
+expect_log 'waiting 20s, then retrying once.'
+expect_output 'title=pass'
+if [[ "$(cat "$sleep_log")" != 20 ]]; then
+  echo "FAIL: expected one 20s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/${pull_key}.1.err" "$fixtures/${pull_key}.1.headers"
+
+# Without the cap check the step would sleep past its job timeout.
+echo 'case: a pull request read whose reset is beyond the cap fails closed at once'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${pull_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 900\r\n' >"$fixtures/${pull_key}.1.headers"
+run_case 1 RATE_LIMIT_WAIT_SECONDS=60
+expect_log 'needs a 900s wait, more than the 60s left of rate-limit-wait-seconds (60); not waiting. The limit resets at 900 (1970-01-01T00:15:00Z).'
+expect_log "::error::pr-contract: could not read repos/${repository}/pulls/${pr_number} (HTTP 403): rate limited past rate-limit-wait-seconds"
+if [[ -s "$sleep_log" ]]; then
+  echo "FAIL: expected no sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/${pull_key}.1.err" "$fixtures/${pull_key}.1.headers"
+
+# Without the permission branch a refused write would be reported as a limit.
+echo 'case: a permission 403 on an advisory write names no rate limit and keeps the exit code'
+set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/POST_${labels_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: issues=write; pull_requests=write\r\n' >"$fixtures/POST_${labels_key}.1.headers"
+run_case 0
+expect_log 'returned HTTP 403 (permission): Resource not accessible by integration; x-ratelimit-remaining=absent x-ratelimit-reset=absent retry-after=absent x-accepted-github-permissions=issues=write; pull_requests=write'
+expect_log '::notice::pr-contract: adding the linkage label was refused (HTTP 403); continuing without it'
+rm -f -- "$fixtures/POST_${labels_key}.1.err" "$fixtures/POST_${labels_key}.1.headers"
+
 # --- comment-upsert capture ------------------------------------------------
 
 # Without the `.user.type == "Bot"` filter the gate edits a stranger's planted
@@ -936,13 +1028,13 @@ expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issu
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode issue-ref-pattern; do
+for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode issue-ref-pattern rate-limit-wait-seconds; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN EVENT_NAME MERGE_GROUP_HEAD_REF; do
+for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN RATE_LIMIT_WAIT_SECONDS EVENT_NAME MERGE_GROUP_HEAD_REF; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))

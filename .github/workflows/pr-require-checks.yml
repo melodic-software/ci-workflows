@@ -477,7 +477,7 @@ jobs:
         # boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
+          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/pr-require-checks/gh-api.sh .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 

@@ -148,28 +148,12 @@ fi
 require_pattern repository "$REPOSITORY" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'OWNER/REPO'
 require_pattern pr-number "$PR_NUMBER" '^[0-9]+$' 'a positive integer'
 
-# gh_api <method> <path> [extra args...]
-# Captures stdout and stderr; sets GH_HTTP_STATUS from gh's "(HTTP nnn)" tail
-# when the call failed. Returns gh's exit status.
-GH_HTTP_STATUS=""
-gh_api() {
-  local method="$1" path="$2"
-  shift 2
-  local status=0
-  : >"$gh_stdout"
-  : >"$gh_stderr"
-  GH_HTTP_STATUS=""
-  # `set +e` around the call: a failed API read is classified by the caller,
-  # not aborted by errexit.
-  set +e
-  gh api -X "$method" "$path" "$@" >"$gh_stdout" 2>"$gh_stderr"
-  status=$?
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    GH_HTTP_STATUS="$(sed -n 's/.*(HTTP \([0-9][0-9]*\)).*/\1/p' "$gh_stderr" | head -n1)"
-  fi
-  return "$status"
-}
+# At most an hour, the life of a GitHub App installation token.
+require_pattern rate-limit-wait-seconds "${RATE_LIMIT_WAIT_SECONDS:-60}" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
+
+gh_headers="$scratch/gh-headers"
+# shellcheck source=../gh-api.sh
+source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
 
 # Best-effort write: a refused or missing write surfaces as a ::notice:: and
 # never changes the exit code. The advisory comment and label are convenience,
@@ -191,7 +175,11 @@ best_effort() {
 # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
 if ! gh_api GET "repos/${REPOSITORY}/pulls/${PR_NUMBER}"; then
   cat "$gh_stderr" >&2
-  echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS:-unknown})"
+  if [[ "$GH_FAILURE" == rate-limit ]]; then
+    echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
+  else
+    echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS:-unknown})"
+  fi
   exit 1
 fi
 pr_json="$scratch/pr.json"
