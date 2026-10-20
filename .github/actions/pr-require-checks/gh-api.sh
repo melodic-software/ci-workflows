@@ -120,6 +120,7 @@ gh_api_once() {
     if [[ "$GH_GRAPHQL_ERRORS" == true ]]; then
       if [[ -z "$GH_HTTP_STATUS" ]]; then
         GH_HTTP_STATUS="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$gh_headers")"
+        [[ "$GH_HTTP_STATUS" =~ ^[0-9]{3}$ ]] || GH_HTTP_STATUS=""
       fi
       GH_MESSAGE="$(jq -r 'first(.errors[]? | .message? | strings) // ""' <"$gh_stdout" 2>/dev/null | head -n1 || true)"
     fi

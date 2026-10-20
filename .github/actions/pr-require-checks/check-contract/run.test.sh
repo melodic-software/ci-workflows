@@ -155,7 +155,9 @@ else
 fi
 # A GraphQL body with an `errors` array, as gh 2.102.0 prints one: the body on
 # stdout, `gh: <first message>` with no "(HTTP nnn)" on stderr, and exit 1.
-if jq -e 'type == "object" and ((.errors // []) | length > 0)' <<<"$body" >/dev/null 2>&1; then
+# `<key>.exit0` serves it with exit 0 instead, so a case can show the runner
+# fails on the `errors` entry itself, not on gh's exit status.
+if [[ ! -f "$GH_FIXTURES/${key}.exit0" ]] && jq -e 'type == "object" and ((.errors // []) | length > 0)' <<<"$body" >/dev/null 2>&1; then
   printf 'gh: %s\n' "$(jq -r '.errors[0].message // ""' <<<"$body")" >&2
   exit 1
 fi
@@ -1084,6 +1086,22 @@ printf '{"data":{"repository":{"pullRequest":null}}}' >"$fixtures/${pull_key}.js
 run_case 1
 expect_log 'read over GraphQL lacks its title, body or complete label list; failing closed'
 expect_no_log 'does not follow Conventional Commits'
+
+# Without failing on every `errors` entry whatever gh's exit status, data
+# beside a FORBIDDEN error would be read as the pull request and pass.
+echo 'case: a GraphQL FORBIDDEN error beside a complete pull request fails closed'
+set_comments '[]'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+jq '.errors = [{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
+mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
+printf 'HTTP/2.0 200 OK\r\n' >"$fixtures/${pull_key}.headers"
+: >"$fixtures/${pull_key}.exit0"
+run_case 1
+expect_log 'POST graphql returned HTTP 200 with GraphQL error FORBIDDEN (permission)'
+expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 200)"
+expect_no_output 'title=pass'
+rm -f -- "$fixtures/${pull_key}.headers" "$fixtures/${pull_key}.exit0"
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
 
 # Without the `[bot]` suffix a Bot author's GraphQL login never equals the
 # REST login an exempt-authors entry names.

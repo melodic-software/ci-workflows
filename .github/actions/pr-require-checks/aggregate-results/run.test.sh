@@ -1025,6 +1025,14 @@ run_case 1 'skipped skipped' pass true
 expect_log '::warning::run 4242 reported no workflow_id.'
 expect_no_log 'Carried forward'
 
+# Without the type check, an object of another type that carries this run's
+# databaseId would supply the workflow the carried writer is compared against.
+echo 'case: a GraphQL run read that resolves to a non-WorkflowRun fails closed'
+run_resource 4242 777 CheckRun
+run_case 1 'skipped skipped' pass true
+expect_log '::warning::run 4242 reported no workflow_id.'
+expect_no_log 'Carried forward'
+
 # A URL GraphQL cannot resolve reads `null` with no error, which must never
 # pass as a workflow.
 echo 'case: a GraphQL run read with no run in its data fails closed'
