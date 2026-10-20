@@ -192,10 +192,12 @@ inputs:
       `job.check_run_id`, which must name an in-progress job of this run; where
       that is empty (GHES, or a runner before v2.324.0), as the one in-progress
       job of this run on this runner (`RUNNER_NAME`). They then find this step
-      in it: by this name when set, else as the one step of that job in
-      progress. Set it when the job runs steps in parallel or in the
+      in it: the step of this name in progress when set, else the one step of
+      that job in progress. Set it when the job runs steps in parallel or in the
       background, where more than one step can be in progress. Each read that
-      does not resolve is retried after 1, 2, 4 and 8 seconds (15 in all), then
+      does not resolve, or a jobs read that fails other than with HTTP 403, is
+      retried after 1, 2, 4 and 8 seconds (15 in all); a 403 fails at once with
+      no retry. Then
       the run fails closed with a warning naming the cause: no key, a job id
       not in progress in this run, no job or more than one job in progress on
       the runner, or no single matching step.

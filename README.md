@@ -363,9 +363,11 @@ consumer to audit it.
     one in-progress job of this run on this runner (`RUNNER_NAME`), and a
     runner name shared by two such jobs fails closed. Either way a sibling job
     of this run still queued, or an extra job that ran, does not hide it. `step-name` (default `''`) names the
-    step that runs the action, which a job running steps in parallel needs;
-    left empty, it is the one step of that job in progress. A read that does
-    not resolve is retried after 1, 2, 4 and 8 seconds, then the run fails
+    step that runs the action, which must be in progress and which a job
+    running steps in parallel needs; left empty, it is the one step of that
+    job in progress. A read that does not resolve, or a jobs read that fails
+    other than with HTTP 403, is retried after 1, 2, 4 and 8 seconds; a 403
+    fails at once with no retry. Then the run fails
     closed with a warning naming the cause (no key, a job id not in progress
     in this run, no job or more than one job in progress on the runner, or no
     single matching step).

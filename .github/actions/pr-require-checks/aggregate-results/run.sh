@@ -503,16 +503,20 @@ resolve_own_gate() {
     fi
     # One line of unit-separated fields: verdict (`jobs` when the key matched
     # other than one job, `steps` when the job's step did not resolve, else
-    # `ok`), job name, job id, step name, and the match count behind the verdict.
+    # `ok`), job name, job id, step name, and the match count behind the
+    # verdict. Control characters in a name become `?`, so a name cannot add a
+    # field or a line.
     IFS=$'\x1f' read -r verdict job_name job_id step_name count < <(jq -r --arg key "$own_job_key" --arg run "$GITHUB_RUN_ID" --arg step "${STEP_NAME:-}" \
       "[ (if has(\"jobs\") then .jobs[]? else . end) | select(${own_job_predicate}) ]"' as $own
       | if ($own | length) != 1 then ["jobs", "", "", "", ($own | length)]
         else $own[0] as $job
-        | [ $job.steps[]? | if $step == "" then select(.status == "in_progress") else select(.name == $step) end ] as $steps
-        | [ (if ($steps | length) == 1 then "ok" else "steps" end), ($job.name // ""), ($job.id // ""),
-            (if ($steps | length) == 1 then $steps[0].name // "" else "" end), ($steps | length) ]
+        | [ $job.steps[]? | if $step == "" then select(.status == "in_progress") else select(.name == $step and .status == "in_progress") end ] as $steps
+        | [ (if ($steps | length) == 1 then "ok" else "steps" end), ($job.name // "" | gsub("[\u0000-\u001f]"; "?")), ($job.id // ""),
+            (if ($steps | length) == 1 then $steps[0].name // "" | gsub("[\u0000-\u001f]"; "?") else "" end), ($steps | length) ]
         end
       | map(tostring) | join("\u001f")' <"$gh_stdout") || verdict=unreadable
+    # The count reaches bash arithmetic, so nothing but digits may.
+    [[ "$count" =~ ^[0-9]+$ ]] || verdict=unreadable
     if [[ "$verdict" == ok || "$verdict" == steps ]] && [[ -n "$job_name" ]]; then
       own_gate_job="$job_name"
       own_gate_job_id="$job_id"
@@ -535,9 +539,9 @@ resolve_own_gate() {
         ;;
       steps)
         if [[ -n "${STEP_NAME:-}" && "$count" -eq 0 ]]; then
-          cause="job '${job_name}' has no step named '$(escape_annotation "$STEP_NAME")'"
+          cause="job '${job_name}' has no in-progress step named '$(escape_annotation "$STEP_NAME")'"
         elif [[ -n "${STEP_NAME:-}" ]]; then
-          cause="job '${job_name}' has ${count} steps named '$(escape_annotation "$STEP_NAME")'"
+          cause="job '${job_name}' has ${count} in-progress steps named '$(escape_annotation "$STEP_NAME")'"
         elif [[ "$count" -eq 0 ]]; then
           cause="job '${job_name}' has no in-progress step"
         else

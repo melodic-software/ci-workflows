@@ -2030,6 +2030,35 @@ expect_log "${own_cause_prefix}job.check_run_id and RUNNER_NAME are both empty, 
 expect_no_log 'Carried forward'
 expect_no_gh_call "actions/runs/4100/jobs"
 
+# Without the in-progress test on a named step, a step-name naming a step that
+# already finished would be trusted as the step running this action.
+echo 'case: a step-name naming a completed step fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'STEP_NAME=Check the pull-request contract'
+expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Check the pull-request contract' after 5 reads."
+expect_no_log 'Carried forward'
+
+# Without the control-character replacement and the digits-only count, a job
+# name carrying the field separator and a newline would shift text into the
+# count, which bash arithmetic evaluates when no step resolves.
+echo 'case: a job name carrying a field separator and a newline is never evaluated'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+injected_marker="$temporary_directory/injected"
+rm -f -- "$injected_marker"
+jq -cn --arg runner "$own_runner" --arg marker "$injected_marker" \
+  '{jobs: [{id: 9100, name: ("ci-status\u001fx\u001fx\u001fGITHUB_RUN_ID[$(touch " + $marker + ")]\nsteps"), status: "in_progress", conclusion: null, runner_name: $runner,
+    steps: []}]}' \
+  >"$fixtures/${own_jobs_key}.json"
+run_case 1 'skipped skipped' pass true
+expect_no_log 'Carried forward'
+if [[ -e "$injected_marker" ]]; then
+  echo 'FAIL: a job name was evaluated by bash'
+  failures=$((failures + 1))
+fi
+clear_own_jobs
+
 # check_job <job-id> <run-id>
 # `GET actions/jobs/{id}`: this run's gate job as the id path reads it, in the
 # run given.
@@ -2124,7 +2153,7 @@ echo 'case: a step-name no step of the gate job carries fails closed naming it'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true 'STEP_NAME=Aggregate'
-expect_log "${own_cause_prefix}job 'ci-status' has no step named 'Aggregate' after 5 reads."
+expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Aggregate' after 5 reads."
 expect_total_sleep_at_most 15
 
 reset_yield_fixtures
