@@ -1,16 +1,19 @@
 name: run-claude-cli
 description: >-
   Run one prompt with headless `claude -p` for an agent-mode CI lane, on a
-  Linux runner. The API key leg runs first; the subscription leg runs in the
-  same job only when the key leg ends in a credit stop (classify.cjs
-  isCreditStop), and any other key-leg failure ends the run with its class.
-  Each leg's CLI environment has every credential and file-command variable
-  removed and exactly one credential set, and the CLI runs with `--restricted`
-  and `--strict-mcp-config`; whatever a leg appends to the step's GITHUB_ENV,
+  Linux runner, on exactly one credential: set `api-key` or
+  `subscription-token`, never both (the action fails closed otherwise). A
+  key leg that ends in a credit stop (classify.cjs isCreditStop) sets
+  lane-class `credit-stop`; a caller that falls back to the subscription
+  runs it as a second job on a fixed GitHub-hosted runner, gated on that
+  exact value (see the README's two-job pattern), never in this job.
+  The leg's CLI environment has every credential and file-command variable
+  removed and its one credential set, and the CLI runs with `--restricted`
+  and `--strict-mcp-config`; whatever the leg appends to the step's GITHUB_ENV,
   GITHUB_PATH, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE file is
-  cut off after the last leg, before the action writes its own outputs, and
+  cut off after it ends, before the action writes its own outputs, and
   the installed CLI tree and `_work/_actions` have their write bits removed
-  while the legs run. Code a leg runs still runs as the runner user, so a
+  while it runs. Code the leg runs still runs as the runner user, so a
   lane that gives the model unrestricted
   Bash, or any code-running tool beyond fixed read-only command rules, must
   run this action in a job that holds no other secret or write token and do
@@ -25,7 +28,7 @@ description: >-
   step environment sets NODE_OPTIONS, LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV,
   NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED or a `*_PROXY` variable
   other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
-  execution log (one object per leg) written only after a scan finds no
+  execution log (one object for the leg) written only after a scan finds no
   credential in it, and a job summary table of closed tokens. Uploading the
   log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
@@ -36,9 +39,9 @@ inputs:
     required: true
   role:
     description: >-
-      The funding role whose two secrets the caller passes, lower-case kebab
-      (for example `automations`); recorded in the log. It names the secrets,
-      `<ROLE>_CLAUDE_API_KEY` and `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the
+      The funding role whose secret the caller passes, lower-case kebab (for
+      example `automations`); recorded in the log. It names the secret,
+      `<ROLE>_CLAUDE_API_KEY` or `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the
       role upper-snake (`issue-lane` gives `ISSUE_LANE_CLAUDE_API_KEY`).
     required: true
   prompt-file:
@@ -54,11 +57,13 @@ inputs:
       a step needs a person's decision, say so there and apply the
       repository's human-gated label instead of guessing.
   api-key:
-    description: The role's Console API key secret. Empty skips the key leg with a `skipped=` warning.
+    description: The role's Console API key secret. Set exactly one of this and subscription-token.
     required: false
     default: ""
   subscription-token:
-    description: The role's subscription OAuth token secret. Empty skips the subscription leg.
+    description: >-
+      The role's subscription OAuth token secret. Set exactly one of this and
+      api-key; pass it only in the job that runs the subscription leg.
     required: false
     default: ""
   model:
@@ -127,7 +132,7 @@ inputs:
     default: "1800000"
   leg-timeout-minutes:
     description: >-
-      Wall-clock cap per leg, in whole minutes (30 by default); a leg that
+      Wall-clock cap for the leg, in whole minutes (30 by default); a leg that
       reaches it ends with class `timeout`. Empty means none.
     required: false
     default: "30"
@@ -135,12 +140,15 @@ inputs:
 outputs:
   lane-class:
     description: >-
-      report-lane-outcome's failure class of the leg that ended the run; empty
-      on success. A credit stop with no leg left reports `rate-limit`; a
-      failed install reports `install-failed`, and any other failure before
-      a leg ran, or a leg whose stdout passes 256 MiB, reports `other`.
-      Report this class; do not reclassify
-      execution-file, which cannot see the credit-stop or leg-timeout rules.
+      The leg's failure class; empty on success. `credit-stop` (key leg only)
+      means the caller may run the subscription leg in a separate job; a
+      caller that does not reports it as `rate-limit`, the class
+      report-lane-outcome knows. Otherwise it is report-lane-outcome's
+      class: a failed install reports `install-failed`, and any other failure
+      before the leg ran, or a leg whose stdout passes 256 MiB, reports
+      `other`. Report this class; do not reclassify execution-file, which
+      cannot see the credit-stop or leg-timeout rules. Set after the step
+      files are cut back, so the leg cannot set it.
     value: >-
       ${{ steps.run.outputs.lane-class
       || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
@@ -150,22 +158,22 @@ outputs:
     description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.
     value: ${{ steps.run.outputs.lane-resets }}
   lane-turns:
-    description: Turns the final leg took, from the CLI result.
+    description: Turns the leg took, from the CLI result.
     value: ${{ steps.run.outputs.lane-turns }}
   lane-models:
-    description: Comma list of models in the final leg's modelUsage.
+    description: Comma list of models in the leg's modelUsage.
     value: ${{ steps.run.outputs.lane-models }}
   credential:
-    description: Secret NAME of the leg that produced the result, never its value.
+    description: Secret NAME the leg ran on, never its value.
     value: ${{ steps.run.outputs.credential }}
   execution-file:
     description: >-
-      The final leg's CLI messages as a JSON array (the execution_file shape
+      The leg's CLI messages as a JSON array (the execution_file shape
       claude-code-action writes). It holds every tool result and model reply
       and is never scanned for credentials, so do not upload it.
     value: ${{ steps.run.outputs.execution-file }}
   log-file:
-    description: JSONL execution log, one object per leg; empty when the credential scan failed.
+    description: JSONL execution log, one object for the leg; empty when the credential scan failed.
     value: ${{ steps.run.outputs.log-file }}
   cli-version:
     description: The Claude Code CLI version that ran.

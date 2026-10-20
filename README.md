@@ -554,16 +554,21 @@ consumer to audit it.
   so none of the three lanes double-report).
 - `.github/actions/run-claude-cli` — runs one prompt with headless `claude -p` for
   an agent-mode lane on a Linux runner, installing the newest Claude Code CLI
-  unless `cli-version` pins one. The API key leg runs first; the subscription
-  token leg runs in the same job only when the key leg ends in a credit stop
-  (report-lane-outcome's opt-in `credit-stop` class), so a broken key stays
-  visible instead of spending the subscription. Each leg's CLI environment
-  has every credential and workflow file-command variable removed and one
-  credential set. Anything a leg appends to the step's `GITHUB_ENV`,
-  `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` or `GITHUB_STATE`
-  file is cut off after the last leg, before the action writes its own
-  outputs, and the installed CLI tree and `_work/_actions` have their write
-  bits removed while the legs run. Code a leg runs still runs as the runner
+  unless `cli-version` pins one. Each invocation runs one leg on one
+  credential: pass exactly one of `api-key` and `subscription-token`, or
+  the action fails closed. A key leg that ends in a credit stop
+  (report-lane-outcome's opt-in `credit-stop` class) sets `lane-class` to
+  `credit-stop`; any other failure sets its own class, so a broken key stays
+  visible instead of spending the subscription. A caller that falls back to
+  the subscription does so in a second job (the two-job pattern below);
+  a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
+  environment has every credential and workflow file-command variable
+  removed and its one credential set. Anything the leg appends to the step's
+  `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` or
+  `GITHUB_STATE` file is cut off after it ends, before the action writes its
+  own outputs (`lane-class` included), and the installed CLI tree and
+  `_work/_actions` have their write bits removed while it runs. Code the leg
+  runs still runs as the runner
   user, so a lane that gives the model unrestricted Bash, or any
   code-running tool beyond fixed
   read-only command rules, runs the action in a job that holds no other
@@ -595,10 +600,33 @@ consumer to audit it.
   files under `--restricted`; `add-dirs` passes more `--add-dir` directories.
   Each entry must resolve, with no `..` part, to an existing directory inside
   `GITHUB_WORKSPACE`. Uploading the log is the caller's.
+
+  **Two-job pattern for the subscription fallback.** Two legs in one job
+  would share the runner user, the filesystem and the environment, so the
+  fallback runs on a new VM. Job A runs the key leg with `api-key` only
+  (`continue-on-error: true` on the step) and exposes `lane-class` as a job
+  output. Job B runs the subscription leg with `subscription-token` only.
+  Only job B references the OAuth secret, and it:
+
+  - declares `needs: A` and
+    `if: needs.A.outputs.lane-class == 'credit-stop'`, an exact compare,
+    and never writes job A's outputs into a `run:` script;
+  - runs on a fixed GitHub-hosted label (`runs-on: ubuntu-24.04`), never a
+    caller-supplied runner;
+  - repeats job A's hardening from the start: a fresh checkout,
+    `apply-claude-managed-settings`, runner isolation, then the action;
+  - reads only trusted inputs: no artifact download from job A and no
+    cache restore.
+
+  Job A skips its apply and outcome steps on a credit stop, so whichever
+  job triaged applies and reports, and a status job that needs both reads
+  job B's outcome when it ran, else job A's: one lane record per run.
+  `intake-triage.yml` is the reference implementation.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
-  `env.ANTHROPIC_BASE_URL` and disables bypassPermissions mode, so head code
-  cannot repoint the lane's credential. Needs sudo, so it runs
+  `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
+  `allowManagedHooksOnly` (or the caller's `disableAllHooks`), so head code
+  cannot repoint the lane's credential or add a hook. Needs sudo, so it runs
   before runner isolation; run-claude-cli refuses to run without the file.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
@@ -977,7 +1005,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`).
   `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
   caller grants `contents: read` and `issues: write` and passes the role's
-  `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one); the workflow
+  `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
+  runs in the `claude-intake-triage` job; after its credit stop, or with no
+  key, the token runs in the `claude-intake-triage-subscription` job on
+  `ubuntu-24.04` (the two-job pattern above), and
+  `claude-intake-triage-status` reports the one outcome. The workflow
   header carries the canonical caller and the security model. Runs only for issues opened by
   their author when that author's user id is in `allowed-author-ids` (a
   person) or `allowed-bot-sender-ids` (a bot); other issues wait for a

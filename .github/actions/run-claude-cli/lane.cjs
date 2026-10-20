@@ -1,5 +1,5 @@
-// run-claude-cli: run one prompt with headless `claude -p`, API key first, then
-// the lane's subscription token in the same run only after a credit stop.
+// run-claude-cli: run one prompt with headless `claude -p` on exactly one
+// credential, the lane's API key or its subscription token, never both.
 //
 // Subcommands (argv[2]):
 //   verify-isolation  fail closed unless managed settings are root-owned and
@@ -8,18 +8,22 @@
 //                     set
 //   install           resolve the CLI version and install it from the public
 //                     registry, outside any checkout's .npmrc
-//   run               run the legs and write the action's outputs
+//   run               run the one leg and write the action's outputs
 //
 // Security contract:
+//   - One leg per invocation: readConfig fails closed unless exactly one of
+//     the two credentials is set. A caller that falls back to the
+//     subscription after a key-leg credit stop runs a second job, on a fresh
+//     runner, gated on this one's lane-class output being `credit-stop`.
 //   - legEnv copies the step environment and removes every credential and
-//     file-command VARIABLE, then sets this leg's one credential. That is a
-//     denylist, not a sandbox: code a leg runs (a Bash tool call, a hook)
+//     file-command VARIABLE, then sets the leg's one credential. That is a
+//     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
 //     runs as the runner user.
 //   - Every file-command file the step was given is cut back to its size
-//     before the first leg once the last leg ends, and run writes the
-//     action's own outputs and summary after that.
+//     before the leg once the leg ends, and run writes the action's own
+//     outputs, lane-class included, and summary after that.
 //   - The CLI install tree and _work/_actions have their write bits removed
-//     before the first leg and restored after the last.
+//     before the leg and restored after it.
 //   - Caller rule: a lane that gives the model unrestricted Bash, or any
 //     code-running tool beyond fixed read-only command rules, runs this
 //     action in a job that holds no other secret or write token, and does
@@ -31,12 +35,12 @@
 //     LD_LIBRARY_PATH, BASH_ENV, NODE_EXTRA_CA_CERTS,
 //     NODE_TLS_REJECT_UNAUTHORIZED or *_PROXY other than NO_PROXY
 //     (verifyEnvironment, checked before the install and again before the
-//     first leg).
+//     leg).
 //   - The CLI runs in --restricted mode: code-running tools only when the
 //     tools input names them, no user, project or local settings, file tools
 //     confined to the working directories, no bypassPermissions.
-//   - The subscription leg runs only when the key leg is a credit stop
-//     (classify.cjs isCreditStop), judged from structured fields.
+//   - Only the key leg can end in `credit-stop` (classify.cjs isCreditStop),
+//     judged from structured fields.
 //   - Secret names are derived from the role and never taken from input.
 //   - The CLI's stdout is captured in memory and written to files only after
 //     the leg exits. Its stderr and closed-pattern tokens reach the job log,
@@ -74,7 +78,7 @@ const PERMISSION_MODES = new Set([
   "dontAsk",
 ]);
 // Every variable that selects or carries a credential. legEnv removes all of
-// them, then sets exactly one.
+// them, then sets the leg's one.
 const CREDENTIAL_VARIABLES = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -96,7 +100,7 @@ const FILE_COMMAND_VARIABLES = [
   "GITHUB_STATE",
   "GITHUB_STEP_SUMMARY",
 ];
-// The most CLI stdout one leg may produce; past it the leg is killed and ends
+// The most CLI stdout the leg may produce; past it the leg is killed and ends
 // with class `other`.
 const MAX_LEG_STDOUT_BYTES = 256 * 1024 * 1024;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
@@ -148,26 +152,22 @@ function required(env, name, pattern, label) {
 // closed pattern, so nothing unchecked reaches the CLI's argv or the log.
 function readConfig(env) {
   const role = required(env, "LANE_ROLE", KEBAB_PATTERN, "role");
-  const legs = [];
-  for (const [leg, valueVar, suffix] of [
-    ["api-key", "LANE_API_KEY", "CLAUDE_API_KEY"],
-    ["subscription", "LANE_SUBSCRIPTION_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
-  ]) {
-    const value = env[valueVar] ?? "";
-    // The role's name, `<ROLE>_<suffix>` with the role upper-snake, is the
-    // only one. It is checked even for an empty secret, because skipWarnings
-    // prints it into a workflow command.
-    const name = `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
-    if (!NAME_PATTERN.test(name)) {
-      throw new LaneError(
-        `${leg} secret name ${JSON.stringify(name)} is not an upper-case secret name`,
-      );
-    }
-    legs.push({ leg, name, value, skipped: value === "" });
-  }
-  if (legs.every((leg) => leg.skipped)) {
+  const supplied = [
+    ["api-key", env.LANE_API_KEY ?? "", "CLAUDE_API_KEY"],
+    ["subscription", env.LANE_SUBSCRIPTION_TOKEN ?? "", "CLAUDE_CODE_OAUTH_TOKEN"],
+  ].filter(([, value]) => value !== "");
+  if (supplied.length !== 1) {
     throw new LaneError(
-      "no credential: api-key and subscription-token are both empty",
+      `${supplied.length === 0 ? "no credential" : "two credentials"}: set exactly one of api-key and subscription-token, and run the subscription leg as its own job`,
+    );
+  }
+  const [[legName, value, suffix]] = supplied;
+  // The role's name, `<ROLE>_<suffix>` with the role upper-snake, is the only
+  // one.
+  const name = `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
+  if (!NAME_PATTERN.test(name)) {
+    throw new LaneError(
+      `${legName} secret name ${JSON.stringify(name)} is not an upper-case secret name`,
     );
   }
   const permissionMode = (env.LANE_PERMISSION_MODE ?? "").trim();
@@ -214,7 +214,7 @@ function readConfig(env) {
     }
   }
   return {
-    legs,
+    leg: { leg: legName, name, value },
     lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
     role,
     model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
@@ -280,8 +280,8 @@ function resolveCliVersion(input, npmView) {
   return version;
 }
 
-// The CLI environment for one leg: every credential and file-command
-// variable removed, then only this leg's credential set.
+// The CLI environment for the leg: every credential and file-command
+// variable removed, then only the leg's credential set.
 function legEnv(baseEnv, leg, config) {
   const env = { ...baseEnv };
   for (const name of CREDENTIAL_VARIABLES) delete env[name];
@@ -423,7 +423,6 @@ function cliMessage(messages, failureClass) {
 function legRecord({
   config,
   leg,
-  index,
   startedAt,
   endedAt,
   exitCode,
@@ -453,7 +452,7 @@ function legRecord({
     run_id: config.runId,
     lane: config.lane,
     role: config.role,
-    leg: index + 1,
+    leg: 1,
     credential: leg.leg,
     secret: leg.name,
     cli_version: config.cliVersion,
@@ -509,8 +508,8 @@ function holdsCredential(text, secretValues) {
   );
 }
 
-// What one finished leg means for the run: success, stop with a class, or go
-// on to the subscription leg. Only a credit stop on the key leg goes on.
+// What the finished leg means for the run: success or a stop with a class.
+// Only the key leg can end in a credit stop.
 function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   const messages = readMessages(executionFile) ?? [];
   const result = messages.findLast((message) => message?.type === "result");
@@ -530,19 +529,8 @@ function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   return { failureClass, resets, messages };
 }
 
-// One warning per skipped leg, printed before ::stop-commands:: so the runner
-// shows it as an annotation.
-function skipWarnings(config) {
-  return config.legs
-    .filter((leg) => leg.skipped)
-    .map(
-      (leg) =>
-        `::warning::run-claude-cli: skipped=${leg.name} (empty secret)`,
-    );
-}
-
 // The byte size of each file-command file the step was given, so restoreFiles
-// can cut off whatever a leg appends. run writes the action's own outputs and
+// can cut off whatever the leg appends. run writes the action's own outputs and
 // summary after the reset.
 function fileSizes(baseEnv) {
   const sizes = [];
@@ -590,7 +578,7 @@ function lockTrees(dirs, modes) {
   for (const dir of dirs) walk(dir);
 }
 
-// The command one leg runs. With trees to protect, bwrap binds each one
+// The command the leg runs. With trees to protect, bwrap binds each one
 // read-only over a view of the whole filesystem, so the leg cannot restore the
 // write bits lockTrees removed. --die-with-parent kills the CLI when a timeout
 // or an overflow kills bwrap, which forwards no signal.
@@ -621,7 +609,7 @@ function restoreModes(modes) {
   }
 }
 
-function runLegs(
+function runLeg(
   config,
   {
     baseEnv = process.env,
@@ -630,79 +618,65 @@ function runLegs(
   } = {},
 ) {
   const prompt = promptText(config);
-  const active = config.legs.filter((leg) => !leg.skipped);
-  const records = [];
-  let final = null;
+  const { leg } = config;
+  const executionFile = path.join(config.workDir, "leg-1-execution.json");
   const sizes = fileSizes(baseEnv);
   const modes = [];
+  let record;
+  let judged;
   try {
     const readOnly = readOnlyPaths(config, baseEnv);
     lockTrees(readOnly, modes);
-    for (const [position, leg] of active.entries()) {
-      const index = config.legs.indexOf(leg);
-      const streamFile = path.join(config.workDir, `leg-${index + 1}.jsonl`);
-      const executionFile = path.join(
-        config.workDir,
-        `leg-${index + 1}-execution.json`,
-      );
-      const startedAt = now().toISOString();
-      const child = spawn(...legCommand(config, readOnly), {
-        env: legEnv(baseEnv, leg, config),
-        input: prompt,
-        stdio: ["pipe", "pipe", "inherit"],
-        maxBuffer: MAX_LEG_STDOUT_BYTES,
-        timeout: config.legTimeoutMs || undefined,
-        killSignal: "SIGINT",
-      });
-      const endedAt = now().toISOString();
-      const timedOut = child.error?.code === "ETIMEDOUT";
-      const overflowed = child.error?.code === "ENOBUFS";
-      const exitCode = typeof child.status === "number" ? child.status : null;
-      const stdout = child.stdout ?? Buffer.alloc(0);
-      fs.writeFileSync(streamFile, stdout);
-      fs.writeFileSync(
+    const startedAt = now().toISOString();
+    const child = spawn(...legCommand(config, readOnly), {
+      env: legEnv(baseEnv, leg, config),
+      input: prompt,
+      stdio: ["pipe", "pipe", "inherit"],
+      maxBuffer: MAX_LEG_STDOUT_BYTES,
+      timeout: config.legTimeoutMs || undefined,
+      killSignal: "SIGINT",
+    });
+    const endedAt = now().toISOString();
+    const timedOut = child.error?.code === "ETIMEDOUT";
+    const overflowed = child.error?.code === "ENOBUFS";
+    const exitCode = typeof child.status === "number" ? child.status : null;
+    const stdout = child.stdout ?? Buffer.alloc(0);
+    fs.writeFileSync(path.join(config.workDir, "leg-1.jsonl"), stdout);
+    fs.writeFileSync(
+      executionFile,
+      JSON.stringify(linesToMessages(stdout.toString("utf8"))),
+    );
+    let message = null;
+    if (overflowed) {
+      message = `CLI stdout passed ${MAX_LEG_STDOUT_BYTES} bytes; the leg was stopped`;
+      judged = {
+        failureClass: "other",
+        resets: null,
+        messages: readMessages(executionFile) ?? [],
+      };
+      process.stderr.write(`run-claude-cli: ${message}\n`);
+    } else {
+      judged = judgeLeg({
+        leg,
         executionFile,
-        JSON.stringify(linesToMessages(stdout.toString("utf8"))),
-      );
-      let judged;
-      let message = null;
-      if (overflowed) {
-        message = `CLI stdout passed ${MAX_LEG_STDOUT_BYTES} bytes; the leg was stopped`;
-        judged = {
-          failureClass: "other",
-          resets: null,
-          messages: readMessages(executionFile) ?? [],
-        };
-        process.stderr.write(`run-claude-cli: leg ${index + 1}: ${message}\n`);
-      } else {
-        judged = judgeLeg({
-          leg,
-          executionFile,
-          exitCode,
-          timedOut,
-          maxTurns: config.maxTurns,
-        });
-      }
-      const goesOn =
-        judged.failureClass === "credit-stop" && position < active.length - 1;
-      records.push(
-        legRecord({
-          config,
-          leg,
-          index,
-          startedAt,
-          endedAt,
-          exitCode,
-          messages: judged.messages,
-          failureClass: judged.failureClass,
-          resets: judged.resets,
-          next: goesOn ? active[position + 1].leg : null,
-          message,
-        }),
-      );
-      final = { leg, executionFile, ...judged };
-      if (!goesOn) break;
+        exitCode,
+        timedOut,
+        maxTurns: config.maxTurns,
+      });
     }
+    record = legRecord({
+      config,
+      leg,
+      startedAt,
+      endedAt,
+      exitCode,
+      messages: judged.messages,
+      failureClass: judged.failureClass,
+      resets: judged.resets,
+      // A credit stop hands the run to the caller's subscription job.
+      next: judged.failureClass === "credit-stop" ? "subscription" : null,
+      message,
+    });
   } finally {
     try {
       restoreModes(modes);
@@ -710,20 +684,16 @@ function runLegs(
       restoreFiles(sizes);
     }
   }
-  const record = readRunRecord(final.executionFile);
-  // A credit stop with no leg left is a limit stop for the reporters, which
-  // know rate-limit and not credit-stop.
-  const laneClass =
-    final.failureClass === "credit-stop" ? "rate-limit" : final.failureClass;
+  const run = readRunRecord(executionFile);
   return {
-    records,
+    records: [record],
     outputs: {
-      "lane-class": laneClass,
-      "lane-resets": final.resets ?? "",
-      "lane-turns": record.turns === null ? "" : String(record.turns),
-      "lane-models": record.models.join(","),
-      credential: final.leg.name,
-      "execution-file": final.executionFile,
+      "lane-class": judged.failureClass,
+      "lane-resets": judged.resets ?? "",
+      "lane-turns": run.turns === null ? "" : String(run.turns),
+      "lane-models": run.models.join(","),
+      credential: leg.name,
+      "execution-file": executionFile,
     },
   };
 }
@@ -757,8 +727,10 @@ function writeOutputs(outputPath, outputs) {
 }
 
 // Root-owned, not writable by group or others, pinning `apiKeyHelper` and
-// `env.ANTHROPIC_BASE_URL` to the public API, and disabling bypassPermissions,
-// so head code cannot repoint the credential through user settings.
+// `env.ANTHROPIC_BASE_URL` to the public API, disabling bypassPermissions, and
+// keeping user, project and plugin hooks from loading (`allowManagedHooksOnly`
+// or `disableAllHooks`), so head code cannot repoint the credential or run a
+// hook through settings it writes.
 function verifyManagedSettings(
   file,
   { stat = fs.statSync, read = fs.readFileSync } = {},
@@ -795,6 +767,14 @@ function verifyManagedSettings(
   if (settings.permissions?.disableBypassPermissionsMode !== "disable") {
     throw new LaneError(
       `${file} does not set permissions.disableBypassPermissionsMode to "disable"`,
+    );
+  }
+  if (
+    settings.allowManagedHooksOnly !== true &&
+    settings.disableAllHooks !== true
+  ) {
+    throw new LaneError(
+      `${file} sets neither allowManagedHooksOnly nor disableAllHooks to true`,
     );
   }
 }
@@ -904,19 +884,17 @@ function install(env, { spawn = spawnSync } = {}) {
 function run(env) {
   verifyEnvironment(env);
   const config = readConfig(env);
-  for (const line of skipWarnings(config)) process.stdout.write(`${line}\n`);
   const token = crypto.randomBytes(16).toString("hex");
   process.stdout.write(`::stop-commands::${token}\n`);
   let outcome;
   try {
-    outcome = runLegs(config, { baseEnv: env });
+    outcome = runLeg(config, { baseEnv: env });
   } finally {
     process.stdout.write(`::${token}::\n`);
   }
   const logFile = path.join(config.workDir, "run-claude-cli-log.jsonl");
   const logText = `${outcome.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
-  const secretValues = config.legs.map((leg) => leg.value).filter(Boolean);
-  const clean = !holdsCredential(logText, secretValues);
+  const clean = !holdsCredential(logText, [config.leg.value]);
   if (clean) fs.writeFileSync(logFile, logText);
   writeOutputs(env.GITHUB_OUTPUT, {
     ...outcome.outputs,
@@ -980,8 +958,7 @@ module.exports = {
   readConfig,
   resolveCliVersion,
   run,
-  runLegs,
-  skipWarnings,
+  runLeg,
   summaryTable,
   verifyEnvironment,
   verifyIsolation,

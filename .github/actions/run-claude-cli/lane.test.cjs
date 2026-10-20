@@ -30,8 +30,7 @@ const {
   readConfig,
   resolveCliVersion,
   run,
-  runLegs,
-  skipWarnings,
+  runLeg,
   summaryTable,
   verifyEnvironment,
   verifyIsolation,
@@ -89,7 +88,7 @@ fs.chmodSync(fakeCli, 0o755);
 
 let caseNumber = 0;
 
-// Runs what follows `--` when the legs ask for bwrap, so cases with a tree to
+// Runs what follows `--` when the leg asks for bwrap, so cases with a tree to
 // protect test the mode lock on hosts without bubblewrap.
 function withoutBwrap(command, args, options) {
   if (command !== "bwrap") return spawnSync(command, args, options);
@@ -214,11 +213,11 @@ const SESSION_LIMIT = [
   }),
 ];
 
-// Runs the legs against the fake CLI. `key` and `sub` are the message lists
-// each leg prints; null leaves that credential empty.
+// Runs the one leg against the fake CLI. Set exactly one of `key` and `sub`,
+// the message list that leg prints.
 function runCase({
-  key,
-  sub,
+  key = null,
+  sub = null,
   keyExit = 1,
   subExit = 1,
   keySleep = false,
@@ -234,7 +233,7 @@ function runCase({
   const baseEnv = {
     PATH: process.env.PATH,
     FAKE_CALLS: calls,
-    // Inherited credentials the legs must never see.
+    // Inherited credentials the leg must never see.
     ANTHROPIC_AUTH_TOKEN: "inherited-auth-token",
     CLAUDE_CODE_ENTRYPOINT: "inherited-entrypoint",
     LANE_API_KEY: KEY,
@@ -256,20 +255,9 @@ function runCase({
   const prompt = path.join(dir, "prompt.md");
   fs.writeFileSync(prompt, "Fix the failing check.\n");
   const config = {
-    legs: [
-      {
-        leg: "api-key",
-        name: KEY_NAME,
-        value: key ? KEY : "",
-        skipped: !key,
-      },
-      {
-        leg: "subscription",
-        name: TOKEN_NAME,
-        value: sub ? TOKEN : "",
-        skipped: !sub,
-      },
-    ],
+    leg: key
+      ? { leg: "api-key", name: KEY_NAME, value: KEY }
+      : { leg: "subscription", name: TOKEN_NAME, value: TOKEN },
     lane: "fix-ci",
     role: "automations",
     model: "claude-sonnet-5",
@@ -289,44 +277,48 @@ function runCase({
     workDir: dir,
     runId: "123",
   };
-  const outcome = runLegs(config, { baseEnv, spawn });
+  const outcome = runLeg(config, { baseEnv, spawn });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
   return { ...outcome, calls: callLines.map((l) => JSON.parse(l)), config };
 }
 
-test("a key-leg credit stop runs the subscription leg, one credential each", () => {
-  const { outputs, calls, records } = runCase({
-    key: CREDIT_STOP,
-    sub: SUCCESS,
-  });
+test("a key-leg credit stop ends the run with lane-class credit-stop and runs no second leg", () => {
+  const { outputs, calls, records } = runCase({ key: CREDIT_STOP });
   assert.deepEqual(
     calls.map((c) => [c.leg, c.seen]),
-    [
-      ["KEY", ["ANTHROPIC_API_KEY"]],
-      ["SUB", ["CLAUDE_CODE_OAUTH_TOKEN"]],
-    ],
+    [["KEY", ["ANTHROPIC_API_KEY"]]],
   );
-  assert.equal(outputs["lane-class"], "");
-  assert.equal(outputs.credential, TOKEN_NAME);
+  assert.equal(outputs["lane-class"], "credit-stop");
+  assert.equal(outputs.credential, KEY_NAME);
   assert.deepEqual(
     records.map((r) => [r.leg, r.secret, r.class, r.next]),
-    [
-      [1, KEY_NAME, "credit-stop", "subscription"],
-      [2, TOKEN_NAME, "", null],
-    ],
+    [[1, KEY_NAME, "credit-stop", "subscription"]],
   );
 });
 
-test("a tier spend cap is a credit stop too", () => {
-  const { calls, records } = runCase({ key: TIER_CAP, sub: SUCCESS });
-  assert.equal(calls.length, 2);
+test("a tier spend cap is a credit stop too, with its reset", () => {
+  const { outputs, calls, records } = runCase({ key: TIER_CAP });
+  assert.equal(calls.length, 1);
   assert.equal(records[0].class, "credit-stop");
+  assert.equal(outputs["lane-class"], "credit-stop");
+  assert.equal(outputs["lane-resets"], "2026-09-01T00:00:00Z");
 });
 
-test("an auth failure on the key leg ends the run without the subscription", () => {
-  const { outputs, calls } = runCase({ key: AUTH, sub: SUCCESS });
+test("a credit-stop-shaped failure on the subscription leg is never credit-stop", () => {
+  const { outputs, calls } = runCase({ sub: CREDIT_STOP });
+  assert.deepEqual(
+    calls.map((c) => [c.leg, c.seen]),
+    [["SUB", ["CLAUDE_CODE_OAUTH_TOKEN"]]],
+  );
+  assert.notEqual(outputs["lane-class"], "credit-stop");
+  assert.notEqual(outputs["lane-class"], "");
+  assert.equal(outputs.credential, TOKEN_NAME);
+});
+
+test("an auth failure on the key leg ends the run with its class", () => {
+  const { outputs, calls } = runCase({ key: AUTH });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["KEY"],
@@ -335,16 +327,12 @@ test("an auth failure on the key leg ends the run without the subscription", () 
   assert.equal(outputs.credential, KEY_NAME);
 });
 
-test("max-turns and timeout on the key leg do not fall back", () => {
-  const maxTurns = runCase({ key: MAX_TURNS, sub: SUCCESS });
-  assert.deepEqual(
-    maxTurns.calls.map((c) => c.leg),
-    ["KEY"],
-  );
+test("max-turns and timeout on the key leg end the run with their class", () => {
+  const maxTurns = runCase({ key: MAX_TURNS });
+  assert.equal(maxTurns.calls.length, 1);
   assert.equal(maxTurns.outputs["lane-class"], "max-turns");
   const timedOut = runCase({
     key: SUCCESS,
-    sub: SUCCESS,
     keySleep: true,
     legTimeoutMs: 300,
   });
@@ -352,8 +340,8 @@ test("max-turns and timeout on the key leg do not fall back", () => {
   assert.equal(timedOut.records.length, 1);
 });
 
-test("a key-leg success never touches the subscription", () => {
-  const { outputs, calls } = runCase({ key: SUCCESS, sub: SUCCESS });
+test("a key-leg success writes the outputs from that leg", () => {
+  const { outputs, calls } = runCase({ key: SUCCESS });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["KEY"],
@@ -373,35 +361,15 @@ test("a key-leg success never touches the subscription", () => {
 });
 
 test("a subscription limit stop is rate-limit with the rejected window's reset", () => {
-  const { outputs } = runCase({ key: CREDIT_STOP, sub: SESSION_LIMIT });
+  const { outputs } = runCase({ sub: SESSION_LIMIT });
   assert.equal(outputs["lane-class"], "rate-limit");
   // resetsAt 1767225600 is 2026-01-01T00:00:00Z.
   assert.equal(outputs["lane-resets"], "2026-01-01T00:00:00Z");
   assert.equal(outputs.credential, TOKEN_NAME);
 });
 
-test("a credit stop with no subscription is a limit stop for the reporters", () => {
-  const { outputs, records } = runCase({ key: TIER_CAP, sub: null });
-  assert.equal(outputs["lane-class"], "rate-limit");
-  assert.equal(outputs["lane-resets"], "2026-09-01T00:00:00Z");
-  assert.equal(records[0].class, "credit-stop");
-  assert.equal(records[0].next, null);
-});
-
-test("an empty api-key skips the key leg with a visible warning", () => {
-  const { calls, config, outputs } = runCase({ key: null, sub: SUCCESS });
-  assert.deepEqual(
-    calls.map((c) => c.leg),
-    ["SUB"],
-  );
-  assert.deepEqual(skipWarnings(config), [
-    "::warning::run-claude-cli: skipped=AUTOMATIONS_CLAUDE_API_KEY (empty secret)",
-  ]);
-  assert.equal(outputs.credential, TOKEN_NAME);
-});
-
 test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", () => {
-  const { calls } = runCase({ key: SUCCESS, sub: null });
+  const { calls } = runCase({ key: SUCCESS });
   const [call] = calls;
   assert.equal(call.scrub, "1");
   assert.equal(call.watchdog, "1");
@@ -474,8 +442,7 @@ test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHU
   fs.writeFileSync(envFile, "EARLIER=1\n");
   fs.writeFileSync(pathFile, "");
   const { calls } = runCase({
-    key: CREDIT_STOP,
-    sub: SUCCESS,
+    key: SUCCESS,
     extraEnv: {
       GITHUB_ENV: envFile,
       GITHUB_PATH: pathFile,
@@ -487,7 +454,7 @@ test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHU
   });
   assert.deepEqual(
     calls.map((c) => c.fileCommands),
-    [[], []],
+    [[]],
   );
   assert.equal(fs.readFileSync(envFile, "utf8"), "EARLIER=1\n");
   assert.equal(fs.readFileSync(pathFile, "utf8"), "");
@@ -505,7 +472,6 @@ test("what a leg appends to GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE i
   fs.writeFileSync(files.GITHUB_STEP_SUMMARY, "### earlier step\n");
   fs.writeFileSync(files.GITHUB_STATE, "");
   runCase({
-    key: CREDIT_STOP,
     sub: SUCCESS,
     extraEnv: { ...files, FAKE_APPEND: Object.values(files).join(":") },
   });
@@ -531,11 +497,10 @@ function writableTree(dir) {
   return file;
 }
 
-test("every leg finds the CLI install tree read-only, and its modes come back after", asNonRoot, () => {
+test("the leg finds the CLI install tree read-only, and its modes come back after", asNonRoot, () => {
   let installed;
   let added;
   const { calls } = runCase({
-    key: CREDIT_STOP,
     sub: SUCCESS,
     prepare: (dir) => {
       installed = writableTree(path.join(dir, "cli"));
@@ -545,10 +510,7 @@ test("every leg finds the CLI install tree read-only, and its modes come back af
   });
   assert.deepEqual(
     calls.map((c) => c.writes),
-    [
-      ["EACCES", "EACCES"],
-      ["EACCES", "EACCES"],
-    ],
+    [["EACCES", "EACCES"]],
   );
   assert.equal(fs.readFileSync(installed, "utf8"), "original\n");
   assert.equal(fs.existsSync(added), false);
@@ -556,11 +518,10 @@ test("every leg finds the CLI install tree read-only, and its modes come back af
   assert.equal(fs.statSync(path.dirname(installed)).mode & 0o200, 0o200);
 });
 
-test("_work/_actions beside RUNNER_WORKSPACE is read-only during the legs and writable after", asNonRoot, () => {
+test("_work/_actions beside RUNNER_WORKSPACE is read-only during the leg and writable after", asNonRoot, () => {
   let action;
   const { calls } = runCase({
     key: SUCCESS,
-    sub: null,
     prepare: (dir) => {
       const work = path.join(dir, "_work");
       fs.mkdirSync(path.join(work, "repo"), { recursive: true });
@@ -584,13 +545,12 @@ function recordingSpawn(spawned) {
   };
 }
 
-test("with the install and action trees present, each leg runs the CLI under bwrap that binds both read-only after the root", () => {
+test("with the install and action trees present, the leg runs the CLI under bwrap that binds both read-only after the root", () => {
   let cli;
   let actions;
   const spawned = [];
   const { config } = runCase({
     key: CREDIT_STOP,
-    sub: SUCCESS,
     prepare: (dir) => {
       cli = path.join(dir, "cli");
       writableTree(cli);
@@ -625,7 +585,6 @@ test("with neither tree present, the leg runs the CLI directly", () => {
   const spawned = [];
   const { config } = runCase({
     key: SUCCESS,
-    sub: null,
     spawn: recordingSpawn(spawned),
   });
   assert.deepEqual(spawned, [[fakeCli, cliArgs(config)]]);
@@ -635,7 +594,6 @@ test("under bwrap a leg cannot put the write bits back on the install tree", wit
   let installed;
   const { calls } = runCase({
     key: SUCCESS,
-    sub: null,
     prepare: (dir) => {
       installed = writableTree(path.join(dir, "cli"));
       return { FAKE_CHMOD: installed, FAKE_WRITE: installed };
@@ -652,7 +610,6 @@ test("under bwrap a leg cannot put the write bits back on _work/_actions", withB
   let action;
   const { calls } = runCase({
     key: SUCCESS,
-    sub: null,
     prepare: (dir) => {
       const work = path.join(dir, "_work");
       fs.mkdirSync(path.join(work, "repo"), { recursive: true });
@@ -675,7 +632,6 @@ test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
   let survived;
   const { outputs } = runCase({
     key: SUCCESS,
-    sub: null,
     keySleep: true,
     legTimeoutMs: 300,
     prepare: (dir) => {
@@ -696,7 +652,6 @@ test("the install tree is writable again when a leg throws", asNonRoot, () => {
   assert.throws(() =>
     runCase({
       key: SUCCESS,
-      sub: null,
       prepare: (dir) => {
         installed = writableTree(path.join(dir, "cli"));
         return {};
@@ -717,7 +672,6 @@ test("a failed mode restore still cuts off what a leg appended to the step files
     assert.throws(() =>
       runCase({
         key: SUCCESS,
-        sub: null,
         prepare: (dir) => {
           cli = path.join(dir, "cli");
           writableTree(cli);
@@ -762,7 +716,6 @@ test("stdout is captured in memory and a maxBuffer overflow is class other", () 
   };
   const { records, outputs, calls } = runCase({
     key: CREDIT_STOP,
-    sub: SUCCESS,
     spawn,
   });
   assert.equal(calls.length, 0);
@@ -780,7 +733,7 @@ test("stdout is captured in memory and a maxBuffer overflow is class other", () 
   );
 });
 
-test("the log has one object per leg with the documented fields and no credential or model text", () => {
+test("the log has one object for the leg with the documented fields and no credential or model text", () => {
   const denied = result({
     permission_denials: [
       { tool_name: "Bash", tool_use_id: "a", tool_input: {} },
@@ -793,8 +746,9 @@ test("the log has one object per leg with the documented fields and no credentia
       "claude-haiku-5-5": { costUSD: 0.0033, inputTokens: 2, outputTokens: 4 },
     },
   });
-  const { records } = runCase({ key: CREDIT_STOP, sub: [denied] });
-  assert.equal(records.length, 2);
+  const { records } = runCase({ sub: [denied] });
+  const [stopped] = runCase({ key: CREDIT_STOP }).records;
+  assert.equal(records.length, 1);
   assert.deepEqual(Object.keys(records[0]), [
     "run_id",
     "lane",
@@ -820,20 +774,20 @@ test("the log has one object per leg with the documented fields and no credentia
     "denials",
     "next",
   ]);
-  assert.equal(records[0].message, "Credit balance is too low");
-  assert.equal(records[0].exit_code, 1);
-  assert.equal(records[0].num_turns, 0);
-  assert.equal(records[1].message, null);
-  assert.equal(records[1].duration_ms, 1200);
-  assert.equal(records[1].total_cost_usd, 0.0033);
-  assert.deepEqual(records[1].models_used, {
+  assert.equal(stopped.message, "Credit balance is too low");
+  assert.equal(stopped.exit_code, 1);
+  assert.equal(stopped.num_turns, 0);
+  assert.equal(records[0].message, null);
+  assert.equal(records[0].duration_ms, 1200);
+  assert.equal(records[0].total_cost_usd, 0.0033);
+  assert.deepEqual(records[0].models_used, {
     "claude-haiku-5-5": { cost_usd: 0.0033, input_tokens: 2, output_tokens: 4 },
   });
-  assert.deepEqual(records[1].denials, {
+  assert.deepEqual(records[0].denials, {
     count: 3,
     tools: ["Bash", "WebFetch"],
   });
-  const text = JSON.stringify(records);
+  const text = JSON.stringify([...records, stopped]);
   assert.equal(holdsCredential(text, [KEY, TOKEN]), false);
   assert.equal(text.includes("model text"), false);
 });
@@ -894,36 +848,49 @@ function configEnv(overrides = {}) {
   };
 }
 
-test("readConfig names every secret after the role, an empty one too, and takes no name from input", () => {
-  const derived = readConfig(
+test("readConfig takes exactly one credential, named after the role, never from input", () => {
+  const key = readConfig(
     configEnv({
       LANE_ROLE: "issue-lane",
-      LANE_SUBSCRIPTION_TOKEN: TOKEN,
       LANE_API_KEY_NAME: "OTHER_SECRET",
+    }),
+  );
+  assert.deepEqual(key.leg, {
+    leg: "api-key",
+    name: "ISSUE_LANE_CLAUDE_API_KEY",
+    value: KEY,
+  });
+  const sub = readConfig(
+    configEnv({
+      LANE_ROLE: "issue-lane",
+      LANE_API_KEY: "",
+      LANE_SUBSCRIPTION_TOKEN: TOKEN,
       LANE_SUBSCRIPTION_TOKEN_NAME: "OTHER_TOKEN",
     }),
   );
-  assert.deepEqual(
-    derived.legs.map((leg) => leg.name),
-    ["ISSUE_LANE_CLAUDE_API_KEY", "ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN"],
-  );
-  const skipped = readConfig(configEnv()).legs[1];
-  assert.equal(skipped.skipped, true);
-  assert.equal(skipped.name, "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN");
-  assert.deepEqual(skipWarnings(readConfig(configEnv())), [
-    "::warning::run-claude-cli: skipped=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN (empty secret)",
-  ]);
-});
-
-test("readConfig refuses bypass, no credential and bad values", () => {
-  assert.equal(readConfig(configEnv()).legs[1].skipped, true);
+  assert.deepEqual(sub.leg, {
+    leg: "subscription",
+    name: "ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN",
+    value: TOKEN,
+  });
   assert.throws(
-    () => readConfig(configEnv({ LANE_PERMISSION_MODE: "bypassPermissions" })),
-    /permission-mode/u,
+    () => readConfig(configEnv({ LANE_SUBSCRIPTION_TOKEN: TOKEN })),
+    (error) =>
+      error instanceof LaneError &&
+      /^two credentials: set exactly one/u.test(error.message),
   );
   assert.throws(
     () => readConfig(configEnv({ LANE_API_KEY: "" })),
-    /no credential/u,
+    (error) =>
+      error instanceof LaneError &&
+      /^no credential: set exactly one/u.test(error.message),
+  );
+});
+
+test("readConfig refuses bypass and bad values", () => {
+  assert.throws(
+    () => readConfig(configEnv({ LANE_PERMISSION_MODE: "bypassPermissions" })),
+    /permission-mode/u,
   );
   assert.throws(
     () => readConfig(configEnv({ LANE_MAX_TURNS: "0" })),
@@ -1027,40 +994,43 @@ test("plugin-dirs and add-dirs refuse paths outside the workspace", () => {
   );
 });
 
-test("run writes the outputs, the log and the summary, and fails on a lane class", () => {
-  const dir = path.join(root, "run");
+function runEnv(dir, overrides) {
   fs.mkdirSync(dir);
-  const output = path.join(dir, "output");
-  const summary = path.join(dir, "summary");
-  const sub = path.join(dir, "sub.jsonl");
-  fs.writeFileSync(sub, SESSION_LIMIT.map((m) => JSON.stringify(m)).join("\n"));
-  const key = path.join(dir, "key.jsonl");
-  fs.writeFileSync(key, CREDIT_STOP.map((m) => JSON.stringify(m)).join("\n"));
-  const env = {
-    ...configEnv({
-      LANE_SUBSCRIPTION_TOKEN: TOKEN,
-      LANE_WORK_DIR: dir,
-    }),
+  return {
+    ...configEnv({ LANE_WORK_DIR: dir, ...overrides }),
     PATH: process.env.PATH,
-    GITHUB_OUTPUT: output,
-    GITHUB_STEP_SUMMARY: summary,
+    GITHUB_OUTPUT: path.join(dir, "output"),
+    GITHUB_STEP_SUMMARY: path.join(dir, "summary"),
     FAKE_CALLS: path.join(dir, "calls.jsonl"),
-    FAKE_KEY: key,
-    FAKE_KEY_EXIT: "1",
-    FAKE_SUB: sub,
-    FAKE_SUB_EXIT: "1",
   };
-  assert.throws(
-    () => run(env),
-    /intake ended class=rate-limit on AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN/u,
-  );
-  const outputs = Object.fromEntries(
+}
+
+function legFile(dir, name, messages) {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, messages.map((m) => JSON.stringify(m)).join("\n"));
+  return file;
+}
+
+function readOutputs(file) {
+  return Object.fromEntries(
     fs
-      .readFileSync(output, "utf8")
+      .readFileSync(file, "utf8")
       .trim()
       .split("\n")
       .map((l) => l.split(/=(.*)/su).slice(0, 2)),
   );
+}
+
+test("run writes the outputs, the log and the summary, and fails on a lane class", () => {
+  const dir = path.join(root, "run");
+  const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", SESSION_LIMIT);
+  env.FAKE_SUB_EXIT = "1";
+  assert.throws(
+    () => run(env),
+    /intake ended class=rate-limit on AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN/u,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
   assert.equal(outputs["lane-class"], "rate-limit");
   assert.equal(outputs.credential, TOKEN_NAME);
   const log = fs
@@ -1069,21 +1039,52 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
     .split("\n")
     .map((l) => JSON.parse(l));
   assert.deepEqual(
-    log.map((r) => r.class),
-    ["credit-stop", "rate-limit"],
+    log.map((r) => [r.class, r.secret]),
+    [["rate-limit", TOKEN_NAME]],
   );
-  assert.equal(log[1].message, "You've hit your session limit · resets 3:45pm");
-  const summaryText = fs.readFileSync(summary, "utf8");
+  assert.equal(log[0].message, "You've hit your session limit · resets 3:45pm");
+  const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
   assert.match(
     summaryText,
-    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| credit-stop \| .* \| credit stop: add Console credit or raise the spend limit \|/u,
+    /\| 1 \| AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN \| rate-limit \| .* \| limit stop: rerun after the reset \|/u,
   );
+  assert.equal(summaryText.includes("session limit"), false);
+});
+
+test("run on a key-leg credit stop sets lane-class credit-stop and starts no subscription leg", () => {
+  const dir = path.join(root, "run-credit-stop");
+  const env = runEnv(dir, {});
+  env.FAKE_KEY = legFile(dir, "key.jsonl", CREDIT_STOP);
+  env.FAKE_KEY_EXIT = "1";
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
+  env.FAKE_SUB_EXIT = "0";
+  assert.throws(
+    () => run(env),
+    /intake ended class=credit-stop on AUTOMATIONS_CLAUDE_API_KEY/u,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.equal(outputs["lane-class"], "credit-stop");
+  const calls = fs.readFileSync(env.FAKE_CALLS, "utf8").trim().split("\n");
+  assert.deepEqual(
+    calls.map((l) => JSON.parse(l).leg),
+    ["KEY"],
+  );
+  const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
   assert.match(
     summaryText,
-    /\| 2 \| AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN \| rate-limit \| .* \| limit stop: rerun after the reset \|/u,
+    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| credit-stop \| .* \| subscription \| credit stop: add Console credit or raise the spend limit \|/u,
   );
   assert.equal(summaryText.includes("Credit balance"), false);
-  assert.equal(summaryText.includes("session limit"), false);
+});
+
+test("run refuses both credentials before any leg starts", () => {
+  const dir = path.join(root, "run-two-credentials");
+  const env = runEnv(dir, { LANE_SUBSCRIPTION_TOKEN: TOKEN });
+  env.FAKE_KEY = legFile(dir, "key.jsonl", SUCCESS);
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
+  assert.throws(() => run(env), /two credentials/u);
+  assert.equal(fs.existsSync(env.FAKE_CALLS), false);
+  assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
 });
 
 test("the summary shows a closed token per class and never a record's message", () => {
@@ -1127,6 +1128,7 @@ test("run refuses a loader, TLS or proxy variable before any leg", () => {
 
 const PINNED = {
   apiKeyHelper: "",
+  allowManagedHooksOnly: true,
   env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
   permissions: { disableBypassPermissionsMode: "disable" },
 };
@@ -1160,6 +1162,13 @@ test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () =
       { ...PINNED, permissions: { disableBypassPermissionsMode: "enable" } },
       /disableBypassPermissionsMode/u,
     ],
+    [{ ...PINNED, allowManagedHooksOnly: undefined }, /allowManagedHooksOnly nor disableAllHooks/u],
+    [{ ...PINNED, allowManagedHooksOnly: false }, /allowManagedHooksOnly nor disableAllHooks/u],
+    [{ ...PINNED, allowManagedHooksOnly: "true" }, /allowManagedHooksOnly nor disableAllHooks/u],
+    [
+      { ...PINNED, allowManagedHooksOnly: undefined, disableAllHooks: false },
+      /allowManagedHooksOnly nor disableAllHooks/u,
+    ],
   ]) {
     fs.writeFileSync(file, JSON.stringify(settings));
     assert.throws(
@@ -1167,6 +1176,40 @@ test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () =
       refusal,
     );
   }
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      ...PINNED,
+      allowManagedHooksOnly: undefined,
+      disableAllHooks: true,
+    }),
+  );
+  assert.doesNotThrow(() =>
+    verifyManagedSettings(file, { stat: asRoot(0o100644) }),
+  );
+});
+
+test("apply-claude-managed-settings writes settings verifyManagedSettings accepts by default", () => {
+  const { parseWorkflow } = require("../../scripts/workflow-yaml.cjs");
+  const action = parseWorkflow(
+    fs.readFileSync(
+      path.join(__dirname, "..", "apply-claude-managed-settings", "action.yml"),
+      "utf8",
+    ),
+  );
+  const file = path.join(root, "default-managed-settings.json");
+  fs.writeFileSync(file, action.inputs.settings.default);
+  assert.doesNotThrow(() =>
+    verifyManagedSettings(file, { stat: () => ({ uid: 0, mode: 0o100644 }) }),
+  );
+  // The action's own check runs the same rule before it writes.
+  const check = /node -e '([^']*)'/u.exec(action.runs.steps[0].run)[1];
+  const verdict = (settings) =>
+    spawnSync(process.execPath, ["-e", check], {
+      env: { SETTINGS: JSON.stringify(settings) },
+    }).status;
+  assert.equal(verdict(PINNED), 0);
+  assert.notEqual(verdict({ ...PINNED, allowManagedHooksOnly: undefined }), 0);
 });
 
 test("verifyEnvironment refuses loader, TLS and proxy variables, NO_PROXY and empty values aside", () => {
