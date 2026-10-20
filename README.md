@@ -166,7 +166,7 @@ consumer to audit it.
   `:job_workflow_ref:<repository>/.github/workflows/<name>.yml@<ref>` form.
   Callers require paired live positive/near-match negative token-exchange
   evidence before removing the legacy trust rules.
-- `.github/actions/author-trust` — the Claude lanes' author trust rule, defined
+- `.github/actions/check-author-trust` — the Claude lanes' author trust rule, defined
   once: a `User` whose numeric id is in `allowed-author-ids` or a `Bot` whose
   id is in `allowed-bot-sender-ids`. Takes a JSON array of `{type, id}` and
   returns the trusted `"<type>:<id>"` keys. An empty or malformed list trusts

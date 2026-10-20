@@ -1,7 +1,7 @@
 "use strict";
 
 // The code-review lane's PR-context file: a same-repository closing issue
-// keeps its title and body only when author-trust trusts its author; any
+// keeps its title and body only when check-author-trust trusts its author; any
 // other gets a placeholder, and a cross-repository one is written as its
 // repository and number alone. The fetch, trust and render run blocks are
 // expression-free shell, so they are executed here against a stub gh.
@@ -27,7 +27,7 @@ const step = (id) => {
 };
 const trustAction = parseWorkflow(
   fs.readFileSync(
-    path.join(root, "actions", "author-trust", "action.yml"),
+    path.join(root, "actions", "check-author-trust", "action.yml"),
     "utf8",
   ),
 );
@@ -70,7 +70,7 @@ function run(script, env, directory) {
 }
 
 function trust(actors, authorIds = "", botIds = "") {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "author-trust-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "check-author-trust-"));
   try {
     const { result, outputs } = run(
       trustRun,
@@ -105,7 +105,7 @@ const user = (id) => ({
 });
 const bot = (id) => ({ __typename: "Bot", login: `bot${id}`, databaseId: id });
 
-// Runs fetch, author-trust and render as the job does and returns the file.
+// Runs fetch, check-author-trust and render as the job does and returns the file.
 function context(
   issues,
   { authorIds = "", botIds = "", trustFails = false } = {},
@@ -173,13 +173,13 @@ function context(
 const PLACEHOLDER =
   "Title and body omitted: the author is not in allowed-author-ids or allowed-bot-sender-ids.";
 
-test("pr-review.yml: the trust step runs author-trust between fetch and render", () => {
+test("pr-review.yml: the trust step runs check-author-trust between fetch and render", () => {
   const ids = steps.map((s) => s?.id);
   const at = (id) => ids.indexOf(id);
   assert.ok(at("pr-context-fetch") < at("pr-context-trust"));
   assert.ok(at("pr-context-trust") < at("pr-context"));
   const trustStep = step("pr-context-trust");
-  assert.equal(trustStep.uses, "$/.github/actions/author-trust");
+  assert.equal(trustStep.uses, "$/.github/actions/check-author-trust");
   assert.equal(
     trustStep.with["allowed-author-ids"],
     `\${{ inputs.allowed-author-ids }}`,
@@ -273,7 +273,7 @@ test("the existing comment filter still applies to a same-repository issue", () 
   assert.ok(!file.includes("STRANGER-NOTE"));
 });
 
-test("author-trust: each type is checked only against its own list", () => {
+test("check-author-trust: each type is checked only against its own list", () => {
   const actors = JSON.stringify([
     { type: "User", id: KYLE },
     { type: "Bot", id: BOT },
@@ -288,7 +288,7 @@ test("author-trust: each type is checked only against its own list", () => {
   assert.deepEqual(trusted, [`Bot:${BOT}`, `User:${KYLE}`]);
 });
 
-test("author-trust: an empty or malformed list trusts no one", () => {
+test("check-author-trust: an empty or malformed list trusts no one", () => {
   const actors = JSON.stringify([{ type: "User", id: KYLE }]);
   for (const list of ["", `,${KYLE}`, `${KYLE},`, `1,,${KYLE}`]) {
     assert.deepEqual(trust(actors, list).trusted, [], list);
@@ -296,7 +296,7 @@ test("author-trust: an empty or malformed list trusts no one", () => {
   assert.deepEqual(trust(actors, `${KYLE}0`).trusted, []);
 });
 
-test("author-trust: input that is not a JSON array fails the step", () => {
+test("check-author-trust: input that is not a JSON array fails the step", () => {
   for (const actors of ["not json", "{}", ""]) {
     assert.notEqual(trust(actors, String(KYLE)).status, 0, actors);
   }

@@ -43,7 +43,7 @@ name: pr-review
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
 #   - The code review reads a closing issue's title and body only when the
-#     issue is in this repository and author-trust trusts its author: a
+#     issue is in this repository and check-author-trust trusts its author: a
 #     person whose numeric user id is in allowed-author-ids, or a bot whose
 #     id is in allowed-bot-sender-ids. Anyone can open an issue and get it
 #     linked, so any other closing issue is written as its number alone.
@@ -585,7 +585,7 @@ jobs:
       # gets no gh grant for it: `gh pr view --comments` would bypass
       # exclude-comments-by-actor. Pull request comments stay out. A
       # same-repository closing issue keeps its title and body only when
-      # author-trust trusts its author (allowed-author-ids or
+      # check-author-trust trusts its author (allowed-author-ids or
       # allowed-bot-sender-ids); otherwise a placeholder line names it. A
       # cross-repository closing issue is written as its repository and
       # number only. An issue comment is kept only when GitHub reports its
@@ -634,7 +634,7 @@ jobs:
         if: steps.scope.outputs.review != 'false'
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/author-trust
+        uses: $/.github/actions/check-author-trust
         with:
           actors: ${{ steps.pr-context-fetch.outputs.actors || '[]' }}
           allowed-author-ids: ${{ inputs.allowed-author-ids }}
