@@ -34,12 +34,29 @@
 # off here. `-i` is not passed with `--paginate`: gh prints a header block per
 # page, and with `--slurp` wraps the raw output in a JSON array. A paginated
 # call is classified from its message alone.
+#
+# `gh_api POST graphql -f query=... [-f/-F variables...]` is a GraphQL call,
+# billed to the GraphQL rate limit rather than the REST one. GraphQL answers a
+# primary rate limit with HTTP 200, an error message and
+# `x-ratelimit-remaining: 0`, and a secondary one with 200 or 403
+# (https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api),
+# so the status alone misses it. Any `errors` entry fails the call, whatever
+# gh's exit status, and its data is never read: `GH_HTTP_STATUS` comes from the
+# response's status line, `GH_MESSAGE` from the first error, and
+# `GH_GRAPHQL_ERROR_TYPES` lists the error types. It is a rate limit when an
+# error's type is `RATE_LIMITED` or by the REST tests above, a permission
+# failure when a type is `FORBIDDEN` or by those tests, and is reported, waited
+# out and retried exactly as a REST rate limit is. A 200 with no `errors` is a
+# success, so the caller must check every field it reads: GraphQL returns
+# `null` for a resource it cannot resolve.
 
 RATE_LIMIT_WAIT_SECONDS="${RATE_LIMIT_WAIT_SECONDS:-60}"
 RATE_LIMIT_WAITED=0
 GH_HTTP_STATUS=""
 GH_MESSAGE=""
 GH_FAILURE=""
+GH_GRAPHQL_ERRORS=false
+GH_GRAPHQL_ERROR_TYPES=""
 
 # The value of one response header, matched case-insensitively; gh prints the
 # names in Go's canonical case (`X-Ratelimit-Remaining`).
@@ -69,6 +86,8 @@ gh_api_once() {
   GH_HTTP_STATUS=""
   GH_MESSAGE=""
   GH_FAILURE=""
+  GH_GRAPHQL_ERRORS=false
+  GH_GRAPHQL_ERROR_TYPES=""
   # `set +e` around the call: a failed API call is classified by the caller,
   # not aborted by errexit.
   set +e
@@ -88,9 +107,23 @@ gh_api_once() {
     status=$?
   fi
   set -e
+  if [[ "$path" == graphql ]] && jq -e 'type == "object" and ((.errors // []) | length > 0)' <"$gh_stdout" >/dev/null 2>&1; then
+    GH_GRAPHQL_ERRORS=true
+    GH_GRAPHQL_ERROR_TYPES="$(jq -r '[.errors[]? | .type? | strings] | join(",")' <"$gh_stdout" 2>/dev/null || true)"
+    if [[ "$status" -eq 0 ]]; then
+      status=1
+    fi
+  fi
   if [[ "$status" -ne 0 ]]; then
     GH_HTTP_STATUS="$(sed -n 's/.*(HTTP \([0-9][0-9]*\)).*/\1/p' "$gh_stderr" | head -n1)"
     GH_MESSAGE="$(sed -n 's/^gh: \(.*\) (HTTP [0-9][0-9]*)$/\1/p' "$gh_stderr" | head -n1)"
+    if [[ "$GH_GRAPHQL_ERRORS" == true ]]; then
+      if [[ -z "$GH_HTTP_STATUS" ]]; then
+        GH_HTTP_STATUS="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$gh_headers")"
+        [[ "$GH_HTTP_STATUS" =~ ^[0-9]{3}$ ]] || GH_HTTP_STATUS=""
+      fi
+      GH_MESSAGE="$(jq -r 'first(.errors[]? | .message? | strings) // ""' <"$gh_stdout" 2>/dev/null | head -n1 || true)"
+    fi
     if [[ -z "$GH_MESSAGE" ]]; then
       GH_MESSAGE="$(head -n1 "$gh_stderr")"
     fi
@@ -98,26 +131,26 @@ gh_api_once() {
   return "$status"
 }
 
-# On a 403 or 429, sets `GH_FAILURE` and the four header values and prints
-# the report line. Returns 1 for any other status.
+# On a 403 or 429, or a GraphQL `errors` entry, sets `GH_FAILURE` and the four
+# header values and prints the report line. Returns 1 for any other failure.
 # shellcheck disable=SC2311 # gh_header is one awk read; errexit has nothing to stop in it.
 gh_classify() {
   local method="$1" path="$2"
-  if [[ "$GH_HTTP_STATUS" != 403 && "$GH_HTTP_STATUS" != 429 ]]; then
+  if [[ "$GH_HTTP_STATUS" != 403 && "$GH_HTTP_STATUS" != 429 && "$GH_GRAPHQL_ERRORS" != true ]]; then
     return 1
   fi
   gh_remaining="$(gh_header x-ratelimit-remaining)"
   gh_reset="$(gh_header x-ratelimit-reset)"
   gh_retry_after="$(gh_header retry-after)"
   gh_accepted="$(gh_header x-accepted-github-permissions)"
-  if [[ -n "$gh_retry_after" || "$gh_remaining" == 0 || "${GH_MESSAGE,,}" == *'rate limit'* ]]; then
+  if [[ ",${GH_GRAPHQL_ERROR_TYPES}," == *,RATE_LIMITED,* || -n "$gh_retry_after" || "$gh_remaining" == 0 || "${GH_MESSAGE,,}" == *'rate limit'* ]]; then
     GH_FAILURE=rate-limit
-  elif [[ "$GH_MESSAGE" == *'Resource not accessible by integration'* || -n "$gh_accepted" ]]; then
+  elif [[ ",${GH_GRAPHQL_ERROR_TYPES}," == *,FORBIDDEN,* || "$GH_MESSAGE" == *'Resource not accessible by integration'* || -n "$gh_accepted" ]]; then
     GH_FAILURE=permission
   else
     GH_FAILURE=other
   fi
-  echo "::warning::${method} ${path} returned HTTP ${GH_HTTP_STATUS} (${GH_FAILURE}): $(escape_annotation "$GH_MESSAGE"); x-ratelimit-remaining=$(escape_annotation "${gh_remaining:-absent}") x-ratelimit-reset=$(escape_annotation "${gh_reset:-absent}") retry-after=$(escape_annotation "${gh_retry_after:-absent}") x-accepted-github-permissions=$(escape_annotation "${gh_accepted:-absent}")"
+  echo "::warning::${method} ${path} returned HTTP ${GH_HTTP_STATUS:-unknown}${GH_GRAPHQL_ERROR_TYPES:+ with GraphQL error $(escape_annotation "$GH_GRAPHQL_ERROR_TYPES")} (${GH_FAILURE}): $(escape_annotation "$GH_MESSAGE"); x-ratelimit-remaining=$(escape_annotation "${gh_remaining:-absent}") x-ratelimit-reset=$(escape_annotation "${gh_reset:-absent}") retry-after=$(escape_annotation "${gh_retry_after:-absent}") x-accepted-github-permissions=$(escape_annotation "${gh_accepted:-absent}")"
 }
 
 gh_api() {

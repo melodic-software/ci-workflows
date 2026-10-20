@@ -195,6 +195,12 @@ if [[ "$slurp" == true ]]; then
 else
   printf '%s\n' "$body"
 fi
+# A GraphQL body with an `errors` array, as gh 2.102.0 prints one: the body on
+# stdout, `gh: <first message>` with no "(HTTP nnn)" on stderr, and exit 1.
+if jq -e 'type == "object" and ((.errors // []) | length > 0)' <<<"$body" >/dev/null 2>&1; then
+  printf 'gh: %s\n' "$(jq -r '.errors[0].message // ""' <<<"$body")" >&2
+  exit 1
+fi
 SHIM
 chmod +x "$shim_directory/gh"
 
@@ -317,6 +323,20 @@ expect_status_reads() {
   fi
 }
 
+# expect_calls <key> <n>
+# How many times the shim served one key.
+expect_calls() {
+  local actual=0
+  if [[ -f "$calls/${1}.count" ]]; then
+    actual="$(cat "$calls/${1}.count")"
+  fi
+  if [[ "$actual" -ne "$2" ]]; then
+    echo "FAIL: expected $2 call(s) to ${1}, got $actual"
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
 expect_no_sleep() {
   if [[ -s "$sleep_log" ]]; then
     echo 'FAIL: expected no sleep, got:'
@@ -424,6 +444,8 @@ install_step_fixtures
 
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
 current_run_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242'
+# The run's workflow is read over GraphQL, the only GraphQL call this step makes.
+graphql_key='POST_graphql'
 workflow_runs_key='GET_repos_melodic-software_ci-workflows_actions_workflows_777_runs'
 # The run under test: workflow 777, run id 4242, created at 12:00:30Z. Every
 # incomplete sibling counts whatever its id, and only 4242 itself is excluded;
@@ -442,13 +464,22 @@ clear_status_fixtures() {
 }
 
 clear_run_fixtures() {
-  rm -f -- "$fixtures/${current_run_key}".* "$fixtures/${workflow_runs_key}".*
-  rm -f -- "$fixtures/${current_run_key}.json" "$fixtures/${workflow_runs_key}.json"
+  rm -f -- "$fixtures/${current_run_key}".* "$fixtures/${workflow_runs_key}".* "$fixtures/${graphql_key}".*
+  rm -f -- "$fixtures/${current_run_key}.json" "$fixtures/${workflow_runs_key}.json" "$fixtures/${graphql_key}.json"
+}
+
+# run_resource <run-id> <workflow-id> [typename]
+# `resource(url:)` for a run's URL, in the shape GitHub returned for a real run
+# of this repository: `workflow.databaseId` is the REST `workflow_id`.
+run_resource() {
+  printf '{"data":{"run":{"__typename":"%s","databaseId":%s,"workflow":{"databaseId":%s}}}}' "${3:-WorkflowRun}" "$1" "$2" \
+    >"$fixtures/${graphql_key}.json"
 }
 
 current_run() {
   printf '{"id":4242,"workflow_id":777,"created_at":"%s"}' "$current_run_created_at" \
     >"$fixtures/${current_run_key}.json"
+  run_resource 4242 777
 }
 current_run
 
@@ -823,7 +854,7 @@ echo 'case: a success written by this workflow is carried after verifying its wr
 status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_gh_call "GET repos/${repository}/actions/runs/4242"
+expect_gh_call "-f url=https://github.com/${repository}/actions/runs/4242 -i"
 expect_gh_call "GET repos/${repository}/actions/runs/4100"
 
 # Without the workflow comparison a bot success from any workflow passes.
@@ -937,11 +968,79 @@ expect_no_log 'needs'
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100.err"
 
 echo 'case: a current run whose workflow cannot be read fails closed'
-printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${current_run_key}.err"
+printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/${graphql_key}.err"
 run_case 1 'skipped skipped' pass true
 expect_no_log 'Carried forward'
 expect_no_gh_call 'actions/runs/4100'
-rm -f -- "$fixtures/${current_run_key}.err"
+rm -f -- "$fixtures/${graphql_key}.err"
+
+# --- GraphQL reads -------------------------------------------------------------
+
+# Without the GraphQL read this run's workflow costs a REST call. The same
+# case made 6 REST calls and no GraphQL call at 8b41a59
+# (origin/main before this read moved to GraphQL).
+echo 'case: a contract-only run carrying a success makes one REST call fewer than before'
+status_list "[$(full_run_success 100)]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "$graphql_key" 1
+expect_calls "$current_run_key" 0
+rest_calls="$(grep -cv '^api -X POST graphql ' "$gh_log" || true)"
+if [[ "$rest_calls" -ne 5 ]]; then
+  echo "FAIL: expected 5 REST calls (6 at 8b41a59, less 1), got ${rest_calls}"
+  cat "$gh_log"
+  failures=$((failures + 1))
+fi
+
+# Without reading the GraphQL `errors` array a primary rate limit, which
+# GraphQL answers with HTTP 200, is neither reported nor waited out, and the
+# carry fails closed on the first throttled read. The type alone marks it: no
+# header and no message here says rate limit.
+echo 'case: a GraphQL RATE_LIMITED error on HTTP 200 is reported as a rate limit, waited out, and retried'
+printf '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"Throttled."}]}' >"$fixtures/${graphql_key}.1.json"
+printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n' >"$fixtures/${graphql_key}.1.headers"
+run_case 0 'skipped skipped' pass true
+expect_log '::warning::POST graphql returned HTTP 200 with GraphQL error RATE_LIMITED (rate-limit): Throttled.; x-ratelimit-remaining=absent'
+expect_log 'POST graphql is rate limited; waiting 60s, then retrying once.'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log "needs 'actions: read'"
+expect_calls "$graphql_key" 2
+
+# Without the rate-limit classification a second throttled read would be named
+# a refusal; with it the carry still fails closed, never passes.
+echo 'case: a GraphQL RATE_LIMITED error that outlasts the wait fails the carry closed'
+printf '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"Throttled."}]}' >"$fixtures/${graphql_key}.2.json"
+printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n' >"$fixtures/${graphql_key}.2.headers"
+run_case 1 'skipped skipped' pass true
+expect_log 'POST graphql is still rate limited after the wait; not retrying.'
+expect_log '::warning::graphql WorkflowRun 4242 is rate limited (HTTP 200).'
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/${graphql_key}".1.* "$fixtures/${graphql_key}".2.*
+
+# Without checking which run the URL resolved to, a resource that is not this
+# run would supply the workflow the carried writer is compared against.
+echo 'case: a GraphQL run read that resolves to another run fails closed'
+run_resource 5555 777
+run_case 1 'skipped skipped' pass true
+expect_log '::warning::run 4242 reported no workflow_id.'
+expect_no_log 'Carried forward'
+
+# Without the type check, an object of another type that carries this run's
+# databaseId would supply the workflow the carried writer is compared against.
+echo 'case: a GraphQL run read that resolves to a non-WorkflowRun fails closed'
+run_resource 4242 777 CheckRun
+run_case 1 'skipped skipped' pass true
+expect_log '::warning::run 4242 reported no workflow_id.'
+expect_no_log 'Carried forward'
+
+# A URL GraphQL cannot resolve reads `null` with no error, which must never
+# pass as a workflow.
+echo 'case: a GraphQL run read with no run in its data fails closed'
+printf '{"data":{"run":null}}' >"$fixtures/${graphql_key}.json"
+run_case 1 'skipped skipped' pass true
+expect_log '::warning::run 4242 reported no workflow_id.'
+expect_no_log 'Carried forward'
+current_run
 
 # --- carry-forward: pagination -----------------------------------------------
 
@@ -978,7 +1077,7 @@ run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "The ci-lanes status on ${sha} settled after 15s."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_gh_call 'actions/runs/4242'
+expect_gh_call "-f url=https://github.com/${repository}/actions/runs/4242 -i"
 # The load-bearing intra-poll ordering: listing after reading would let a
 # sibling's flip to `completed` land between the two calls, reporting both "no
 # status" and "nothing in flight" on a SHA that does carry a verdict.
@@ -1094,9 +1193,9 @@ echo 'case: a 403 on the current-run fetch warns and never reaches the workflow-
 clear_status_fixtures
 clear_run_fixtures
 status_list '[]'
-printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${current_run_key}.err"
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${graphql_key}.err"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "::warning::repos/${repository}/actions/runs/4242 returned HTTP 403; the ci-status job needs 'actions: read'"
+expect_log "::warning::graphql WorkflowRun 4242 returned HTTP 403; the ci-status job needs 'actions: read'"
 expect_no_gh_call 'actions/workflows/'
 
 # Without the `> 0` guard, a consumer that disabled the wait still pays two
@@ -2115,19 +2214,6 @@ writer_started='2026-09-05T12:00:00Z'
 newer_started='2026-09-05T12:10:00Z'
 older_started='2026-09-05T11:50:00Z'
 not_full_warning="::warning::the newest ci-lanes success on ${sha} names run 4100, which is not a full run of this workflow"
-# expect_calls <key> <n>
-# How many times the shim served one key.
-expect_calls() {
-  local actual=0
-  if [[ -f "$calls/${1}.count" ]]; then
-    actual="$(cat "$calls/${1}.count")"
-  fi
-  if [[ "$actual" -ne "$2" ]]; then
-    echo "FAIL: expected $2 call(s) to ${1}, got $actual"
-    cat "$gh_log"
-    failures=$((failures + 1))
-  fi
-}
 clear_writer_fixtures() {
   local id
   for id in 4100 3900 4500 4600; do
@@ -2393,7 +2479,8 @@ jobs_raw 4300 "$contract_only_jobs"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_status_reads 2
-expect_calls "$current_run_key" 1
+expect_calls "$graphql_key" 1
+expect_calls "$current_run_key" 0
 expect_calls "${runs_key_prefix}_4242_jobs" 1
 expect_calls "${runs_key_prefix}_4000" 0
 if [[ "$(wc -l <"$gh_log")" -gt 15 ]]; then

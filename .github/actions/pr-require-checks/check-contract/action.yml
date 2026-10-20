@@ -72,12 +72,14 @@ inputs:
       Ceiling, in seconds, on the time this step spends waiting out GitHub API
       rate limits, summed over its calls. A 403 or 429 is a rate limit when it
       carries `retry-after`, `x-ratelimit-remaining: 0`, or a rate-limit
-      message; the step then waits `retry-after`, else until
+      message, and so is a GraphQL error of type `RATE_LIMITED`, which
+      GraphQL returns with HTTP 200; the step then waits `retry-after`, else until
       `x-ratelimit-reset`, else 60 seconds, and retries once. A wait that does
       not fit in what is left fails the call at once and prints the reset
       time, and a second rate limit fails it too. A failed pull request read
       fails the step; the advisory comment and label writes still degrade to a
-      notice. Every 403 or 429 prints its status, message and
+      notice. Every 403 or 429, and every GraphQL error, prints its status,
+      message and
       `x-ratelimit-*`, `retry-after` and `x-accepted-github-permissions`
       headers. Keep this, plus the other steps' waits, under the calling job's
       `timeout-minutes`, and under 3600, the life of a GitHub App installation
