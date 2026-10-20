@@ -854,7 +854,7 @@ echo 'case: a success written by this workflow is carried after verifying its wr
 status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_gh_call "GET repos/${repository}/actions/runs/4242"
+expect_gh_call "-f url=https://github.com/${repository}/actions/runs/4242 -i"
 expect_gh_call "GET repos/${repository}/actions/runs/4100"
 
 # Without the workflow comparison a bot success from any workflow passes.
@@ -1069,7 +1069,7 @@ run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "The ci-lanes status on ${sha} settled after 15s."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_gh_call 'actions/runs/4242'
+expect_gh_call "-f url=https://github.com/${repository}/actions/runs/4242 -i"
 # The load-bearing intra-poll ordering: listing after reading would let a
 # sibling's flip to `completed` land between the two calls, reporting both "no
 # status" and "nothing in flight" on a SHA that does carry a verdict.
