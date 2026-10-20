@@ -226,7 +226,10 @@ test("a usable escalated triage sets the type, proposes the class and removes th
   // The class an escalated run chose may have been steered by the issue
   // text, so the proposal line a rule evaluator reads records none.
   assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
-  assert.match(comments[0], /\nUnconfirmed model suggestion: work-class: scoped\n/u);
+  assert.match(
+    comments[0],
+    /\nUnconfirmed model suggestion: work-class: scoped\n/u,
+  );
   assert.doesNotMatch(comments[0], /Looks like a bug/u);
 });
 
