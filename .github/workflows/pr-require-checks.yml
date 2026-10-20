@@ -145,11 +145,12 @@ jobs:
               **/go.mod
               **/go.sum
               **/.golangci.yml
-            # Repo-wide `**/action.yml`: zizmor audits composite metadata
-            # anywhere (`paths: .`); `action.yaml` is rejected repo-wide (#267).
+            # zizmor audits `.github` (`paths: .github`), not fixtures/. The
+            # repo-wide `**/action.yml` trigger is kept so a composite action
+            # added outside .github/ still runs the lane; `action.yaml` is
+            # rejected repo-wide (#267).
             zizmor:
               .github/**
-              fixtures/composite-action/**
               **/action.yml
 
   # A local reusable-workflow reference executes pr-run-checks.yml from this exact
