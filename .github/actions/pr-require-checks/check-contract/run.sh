@@ -115,9 +115,23 @@ if [[ "$pattern_status" -ne 0 ]]; then
   exit 1
 fi
 
-# Step 0 — no pull request in this event. The composite is a pull-request gate;
-# a push, schedule or workflow_dispatch run must report skipped, not fail.
-if [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
+# Step 0 — a merge group carries no pull request in its payload; the queued
+# one is named in the group's head ref, `gh-readonly-queue/<base>/pr-<N>-<sha>`.
+# An unparsable ref fails closed: a group whose pull request cannot be named
+# cannot be checked for the do-not-merge label.
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  merge_group_ref_pattern='^(refs/heads/)?gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$'
+  if [[ ! "${MERGE_GROUP_HEAD_REF:-}" =~ $merge_group_ref_pattern ]]; then
+    echo "::error::pr-contract: cannot read a pull request number from the merge-group head ref '$(escape_annotation "${MERGE_GROUP_HEAD_REF:-}")'"
+    emit_output title skipped
+    emit_output do-not-merge fail
+    emit_output linkage skipped
+    exit 1
+  fi
+  PR_NUMBER="${BASH_REMATCH[2]}"
+# A push, schedule or workflow_dispatch run has no pull request at all. The
+# composite is a pull-request gate; such a run must report skipped, not fail.
+elif [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   echo '::notice::pr-contract: no pull request in this event; nothing to check'
   emit_output title skipped
   emit_output do-not-merge skipped
@@ -223,6 +237,23 @@ do_not_merge_result=pass
 if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
   do_not_merge_result=fail
   echo "::error::pr-contract: this PR carries the '${DO_NOT_MERGE_LABEL}' label; remove it to merge."
+fi
+
+# ---------------------------------------------------------------------------
+# Merge group — the title and the live do-not-merge label, both re-read because
+# either can change after enqueue; a failure makes the queue drop the pull
+# request. Linkage is advisory and a group run writes no comment or label.
+# ---------------------------------------------------------------------------
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  emit_output title "$title_result"
+  emit_output do-not-merge "$do_not_merge_result"
+  emit_output linkage skipped
+  if [[ "$title_result" == fail || "$do_not_merge_result" == fail ]]; then
+    echo "::error::pr-contract: queued pull request #${PR_NUMBER} fails the contract; the merge queue removes it. Fix it and re-queue to merge."
+    exit 1
+  fi
+  echo "pr-contract: queued pull request #${PR_NUMBER} passes the title and '${DO_NOT_MERGE_LABEL}' checks."
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------

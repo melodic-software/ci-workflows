@@ -17,6 +17,18 @@ on:
   # `ci-status` included, guards on `github.event_name != 'issues'`.
   issues:
     types: [opened, reopened]
+  # A merge queue tests each group commit through this event alone; a required
+  # check that never reports on it holds every queued pull request until the
+  # check timeout. The payload carries no `github.event.pull_request`, so the
+  # contract-only predicate is false and every lane runs in full; the
+  # concurrency group falls back to `github.run_id`; the lanes and `ci-status`
+  # run on `github.sha`, the group head (`merge_group.head_sha`); and
+  # `check-contract` re-checks the title and live `do-not-merge` label of the
+  # pull request the head ref names, the group's last entry, so the queue must
+  # use `grouping_strategy: ALLGREEN`.
+  # The Claude review lanes and the Dependabot arm run on `pull_request` only.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -29,7 +41,7 @@ permissions:
 # newer ci-status decides the gate.
 #
 # Full runs key on the PR number (not head_ref, so same-named fork branches do
-# not cancel each other); pushes key on `github.run_id`.
+# not cancel each other); pushes and merge groups key on `github.run_id`.
 #
 # Hazard: re-running a STALE run on a superseded head SHA lands in the current
 # head's group and cancels the run that is reporting. Re-run on the current head.
@@ -388,14 +400,14 @@ jobs:
       - name: Check workflow and action naming
         uses: ./.github/actions/check-workflow-naming
         with:
-          standards-ref: d4ce69bef0c6140d761a4d9f2986e15906b5cedb
+          standards-ref: 584df89f3646cbd0fef574b4b79fe7529f29fc76
       - name: Run a misnamed workflow fixture in enforcing mode
         id: bad-enforcing
         continue-on-error: true
         uses: ./.github/actions/check-workflow-naming
         with:
           root: fixtures/workflow-naming/bad
-          standards-ref: d4ce69bef0c6140d761a4d9f2986e15906b5cedb
+          standards-ref: 584df89f3646cbd0fef574b4b79fe7529f29fc76
       - name: Prove the misnamed workflow fixture failed
         env:
           OUTCOME: ${{ steps.bad-enforcing.outcome }}
@@ -413,9 +425,10 @@ jobs:
         run: bash .github/actions/check-workflow-naming/run.test.sh
 
   # Advisory (#208): reject hand-edits of sync-manifest-managed files. Not in
-  # ci-status yet: promote after a clean soak.
+  # ci-status yet: promote after a clean soak. A merge_group run re-checks each
+  # queued pull request's own diff.
   check-managed-files:
-    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && github.event_name == 'pull_request' }}
+    if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && contains(fromJSON('["pull_request","merge_group"]'), github.event_name) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -650,4 +663,7 @@ jobs:
           yield-to-full-run: 'true'
           rerun-contract-only-siblings: 'true'
           carry-forward-wait-seconds: '0'
+          # This step's own name, so the own-step lookup never depends on
+          # how many steps of the job are in progress.
+          step-name: Aggregate lane results
           results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.check-workflow-naming.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}

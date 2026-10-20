@@ -27,8 +27,9 @@
 # `github-actions[bot]` wins, so a later full-run failure on the same SHA
 # overrides an earlier success. The combined-status endpoint would be shorter
 # but exposes no author; see `read_carried_state` for why that matters. A
-# `success` passes only when its writer run belongs to this same workflow; see
-# `verify_carried_writer`.
+# `success` passes only when its writer run is a full run of this same
+# workflow on this SHA whose aggregate step succeeded, and no newer full run on
+# the SHA ended that step otherwise; see `verify_carried_writer`.
 #
 # The branched concurrency group stops a contract-only run
 # queueing behind the full run whose status it reads, so the two now race.
@@ -80,7 +81,7 @@
 # it releases the mutual wait above, and it can carry an older `success` forward
 # while a re-run of the same SHA is in flight to overwrite it. The defenses
 # against a forged status (context, creator login, Bot type, newest id, writer
-# workflow) hold.
+# workflow, writer shape, newer runs) hold.
 #
 # Every red names the remedy that fits the state it read; see
 # `fail_carry_forward`.
@@ -328,8 +329,14 @@ carried_writer_running=false
 # itself, so the caller below must not read a second time and overwrite what the
 # loop decided on.
 carried_state_read=false
+# `listed` when the caller wrote `$scratch/runs.json` in this same poll, just
+# before this read; the newer-run check then reuses that listing instead of
+# making its own. Set per read, so a listing from an earlier poll is never
+# taken for a fresh one.
+carried_runs_listed=""
 read_carried_state() {
   local entry
+  carried_runs_listed="${1:-}"
   carried_state=""
   carried_created_at=""
   carried_writer_run_id=""
@@ -383,7 +390,12 @@ read_carried_state() {
 # run its `target_url` names must be a run of this same workflow on this same
 # SHA. A `success` naming no run, or any other run, is discarded and the read goes
 # on as if no status were recorded. A failed lookup returns 1, a failed read,
-# which every caller turns red: an unverifiable writer never passes.
+# which every caller turns red: an unverifiable writer never passes. A writer
+# run that Actions retention has deleted reads 404 and fails the same way.
+# The writer's latest-attempt start and attempt number, for the newer-run check
+# and the shape check of a re-run; see `verify_writer_step`.
+carried_writer_started_at=""
+carried_writer_attempt=1
 verify_carried_writer() {
   local writer writer_workflow_id writer_head_sha
   local unverified='Cannot verify which workflow wrote the carried status, so this run fails closed.'
@@ -392,19 +404,38 @@ verify_carried_writer() {
     carried_state=""
     return 0
   fi
-  if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
-    # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
-    if ! resolve_workflow_id 'actions: read' "$unverified"; then
-      return 1
-    fi
-  fi
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}"; then
-    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}" 'actions: read' "$unverified"
+  # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
+  if ! resolve_workflow_id 'actions: read' "$unverified"; then
     return 1
   fi
-  writer="$(jq -r '"\(.workflow_id // "")|\(.head_sha // "")"' <"$gh_stdout")" || return 1
-  IFS='|' read -r writer_workflow_id writer_head_sha <<<"$writer"
+  # The run listing the newer-run check needs anyway: the caller's from this
+  # poll, else one made here. A listing that fails is a failed read.
+  if [[ "$carried_runs_listed" != listed ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$unverified"
+      return 1
+    fi
+    cp -- "$gh_stdout" "$scratch/runs.json"
+    carried_runs_listed=listed
+  fi
+  # The writer's row in that listing carries every field read below, so the run
+  # itself is read only when its row is absent or lacks the workflow or the
+  # SHA. The row's own fields are still compared: the listing is filtered by
+  # both, but the comparison, not the filter, is what this check trusts.
+  writer="$(jq -r --arg writer "$carried_writer_run_id" \
+    'first(.workflow_runs[]? | select((.id | tostring) == $writer and .workflow_id != null and .head_sha != null)) // empty
+     | "\(.workflow_id)|\(.head_sha)|\(.run_started_at // "")|\(.run_attempt // 1)"' \
+    <"$scratch/runs.json")" || return 1
+  if [[ -z "$writer" ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}" 'actions: read' "$unverified"
+      return 1
+    fi
+    writer="$(jq -r '"\(.workflow_id // "")|\(.head_sha // "")|\(.run_started_at // "")|\(.run_attempt // 1)"' <"$gh_stdout")" || return 1
+  fi
+  IFS='|' read -r writer_workflow_id writer_head_sha carried_writer_started_at carried_writer_attempt <<<"$writer"
   if [[ "$writer_workflow_id" != "$workflow_id" ]]; then
     echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} was written by run ${carried_writer_run_id} of workflow ${writer_workflow_id:-unknown}, not this workflow (${workflow_id}); ignoring it."
     carried_state=""
@@ -420,29 +451,148 @@ verify_carried_writer() {
   fi
 }
 
-# This run's gate job and the step running this action, found by name: in a
-# contract-only run the gate is the one job not skipped, and this step is the
-# one step of it in progress. The full run's gate is the same job of the same
-# workflow, so the writer step carries the same two names. Cached across polls.
+# This run's gate job and the step running this action, as the jobs API lists
+# this run. The full run's gate is the same job of the same workflow, so the
+# writer step carries the same two names. Both callers, the writer check and
+# the yield listing, resolve through `resolve_own_gate`, and each half is cached
+# once found.
 own_gate_job=""
+own_gate_job_id=""
 own_gate_step=""
-resolve_own_step() {
-  local jobs="$scratch/own-jobs.json"
-  if [[ -n "$own_gate_job" && -n "$own_gate_step" ]]; then
+
+# The identity key: the one place that says which job is this run's own.
+# `job.check_run_id` (passed in as JOB_CHECK_RUN_ID) is this job's REST id, so
+# the job is read directly and must belong to this run and be in progress.
+# GHES and runners before v2.324.0 leave it empty; then the job is the one
+# in-progress job of this run on this runner. GitHub documents that a runner
+# name may not be unique in a run (repository and organization runners can
+# share one), so a second match fails closed rather than picking. Sets the
+# endpoint to read and its query, the jq predicate one job must pass (`$key` and `$run` are
+# bound by `--arg`), the phrase a warning names the key by, and, when there is
+# no usable key, the cause.
+own_job_identity() {
+  own_job_key_cause=""
+  if [[ -n "${JOB_CHECK_RUN_ID:-}" ]]; then
+    own_job_key="$JOB_CHECK_RUN_ID"
+    own_job_endpoint="repos/${REPOSITORY}/actions/jobs/${own_job_key}"
+    own_job_query=""
+    # shellcheck disable=SC2016 # `$key` and `$run` are jq variables.
+    own_job_predicate='(.id | tostring) == $key and (.run_id | tostring) == $run and .status == "in_progress"'
+    own_job_label="job.check_run_id ${own_job_key} in run ${GITHUB_RUN_ID}"
+    if [[ ! "$own_job_key" =~ ^[0-9]+$ ]]; then
+      own_job_endpoint="repos/${REPOSITORY}/actions/jobs"
+      own_job_key_cause="job.check_run_id is not a job id: $(escape_annotation "$own_job_key")."
+    fi
+  else
+    own_job_key="${RUNNER_NAME:-}"
+    own_job_endpoint="repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs"
+    own_job_query='?filter=latest&per_page=100'
+    # shellcheck disable=SC2016 # `$key` is a jq variable.
+    own_job_predicate='.status == "in_progress" and (.runner_name // "") == $key'
+    own_job_label="runner '$(escape_annotation "$own_job_key")'"
+    if [[ -z "$own_job_key" ]]; then
+      own_job_key_cause="job.check_run_id and RUNNER_NAME are both empty, so this run's own job has no key."
+    fi
+  fi
+}
+
+# Reads between the retries. The jobs API can list this job or this step a
+# moment after the runner started it, and lists a sibling job before its
+# `skipped`, so a miss is read again. The sleeps sum to 15 seconds, well inside
+# the 3-minute ci-status job.
+OWN_GATE_RETRY_DELAYS='1 2 4 8'
+
+# resolve_own_gate <job|step> <consequence>
+# `job` needs only the gate job's name (the yield listing); `step` needs the
+# running step too (the writer check). The step is the one named by
+# `step-name`, else the one step of the job in progress. Returns 1 after a
+# warning naming the cause and ending in `consequence`.
+resolve_own_gate() {
+  local need="$1" consequence="$2" endpoint
+  local delay reads=0 verdict job_name job_id step_name count cause=""
+  if [[ -n "$own_gate_job" && ("$need" == job || -n "$own_gate_step") ]]; then
     return 0
   fi
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller fails closed.
-  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100"; then
-    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 'actions: read' "$1"
+  own_job_identity
+  endpoint="$own_job_endpoint"
+  if [[ -n "$own_job_key_cause" ]]; then
+    echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${own_job_key_cause} ${consequence}"
     return 1
   fi
-  cp -- "$gh_stdout" "$jobs"
-  own_gate_job="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") ] | if length == 1 then .[0].name // "" else "" end' <"$jobs")" || return 1
-  own_gate_step="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") ] | if length == 1 then [ .[0].steps[]? | select(.status == "in_progress") | .name ] | if length == 1 then .[0] // "" else "" end else "" end' <"$jobs")" || return 1
-  if [[ -z "$own_gate_job" || -z "$own_gate_step" ]]; then
-    echo "::warning::could not identify this run's gate job and running step in repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs. $1"
-    return 1
-  fi
+  for delay in 0 $OWN_GATE_RETRY_DELAYS; do
+    if [[ "$delay" -gt 0 ]]; then
+      sleep "$delay"
+    fi
+    reads=$((reads + 1))
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
+    if ! gh_api GET "${endpoint}${own_job_query}"; then
+      if [[ "$GH_HTTP_STATUS" == 403 || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
+        warn_actions_failed "$endpoint" 'actions: read' "$consequence"
+        return 1
+      fi
+      continue
+    fi
+    # One line of unit-separated fields: verdict (`jobs` when the key matched
+    # other than one job, `steps` when the job's step did not resolve, else
+    # `ok`), job name, job id, step name, and the match count behind the
+    # verdict. Control characters in a name become `?`, so a name cannot add a
+    # field or a line.
+    IFS=$'\x1f' read -r verdict job_name job_id step_name count < <(jq -r --arg key "$own_job_key" --arg run "$GITHUB_RUN_ID" --arg step "${STEP_NAME:-}" \
+      "[ (if has(\"jobs\") then .jobs[]? else . end) | select(${own_job_predicate}) ]"' as $own
+      | if ($own | length) != 1 then ["jobs", "", "", "", ($own | length)]
+        else $own[0] as $job
+        | [ $job.steps[]? | if $step == "" then select(.status == "in_progress") else select(.name == $step and .status == "in_progress") end ] as $steps
+        | [ (if ($steps | length) == 1 then "ok" else "steps" end), ($job.name // "" | gsub("[\u0000-\u001f]"; "?")), ($job.id // ""),
+            (if ($steps | length) == 1 then $steps[0].name // "" | gsub("[\u0000-\u001f]"; "?") else "" end), ($steps | length) ]
+        end
+      | map(tostring) | join("\u001f")' <"$gh_stdout") || verdict=unreadable
+    # The count reaches bash arithmetic, so nothing but digits may.
+    [[ "$count" =~ ^[0-9]+$ ]] || verdict=unreadable
+    if [[ "$verdict" == ok || "$verdict" == steps ]] && [[ -n "$job_name" ]]; then
+      own_gate_job="$job_name"
+      own_gate_job_id="$job_id"
+      if [[ "$verdict" == ok && -n "$step_name" ]]; then
+        own_gate_step="$step_name"
+      fi
+      if [[ "$need" == job || -n "$own_gate_step" ]]; then
+        # `job.check_run_id` beside the REST id is evidence for keying on it.
+        echo "This run's gate job is '${own_gate_job}' (REST id ${own_gate_job_id:-none}, job.check_run_id ${JOB_CHECK_RUN_ID:-empty}), found by ${own_job_label}."
+        return 0
+      fi
+    fi
+    case "$verdict" in
+      jobs)
+        if [[ "$count" -eq 0 ]]; then
+          cause="no in-progress job matched ${own_job_label}"
+        else
+          cause="${count} in-progress jobs matched ${own_job_label}"
+        fi
+        ;;
+      steps)
+        if [[ -n "${STEP_NAME:-}" && "$count" -eq 0 ]]; then
+          cause="job '${job_name}' has no in-progress step named '$(escape_annotation "$STEP_NAME")'"
+        elif [[ -n "${STEP_NAME:-}" ]]; then
+          cause="job '${job_name}' has ${count} in-progress steps named '$(escape_annotation "$STEP_NAME")'"
+        elif [[ "$count" -eq 0 ]]; then
+          cause="job '${job_name}' has no in-progress step"
+        else
+          cause="job '${job_name}' has ${count} in-progress steps"
+        fi
+        ;;
+      *) cause='its jobs listing could not be parsed' ;;
+    esac
+  done
+  case "$cause" in
+    *' jobs matched '*) cause="${cause} after ${reads} reads; a runner name is not unique." ;;
+    *' in-progress steps') cause="${cause} after ${reads} reads; set step-name to the name of the step that runs this action." ;;
+    *) cause="${cause} after ${reads} reads." ;;
+  esac
+  echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${cause} ${consequence}"
+  return 1
+}
+
+resolve_own_step() {
+  resolve_own_gate step "$1"
 }
 
 # A status is free text any workflow can post with any `target_url`, so a run
@@ -453,6 +603,13 @@ resolve_own_step() {
 # must carry it. While that step is still running the status reads `pending`,
 # which the wait polls on and fails closed at its end. A completed step that did
 # not succeed discards the status.
+#
+# A step that succeeded still proves nothing about the lanes unless its run is a
+# full run: a contract-only run's aggregate step also concludes `success` when
+# it carries one, so the writer's jobs must read `full` in `job_shape` (see
+# `verify_writer_shape`). Then no newer full run on the SHA may have reached a
+# different verdict; see `verify_no_newer_verdict`. Both reuse the one jobs read
+# made here.
 verify_writer_step() {
   local outcome unverified='Cannot verify the step that wrote the carried status, so this run fails closed.'
   # shellcheck disable=SC2310 # resolve_own_step warns itself; the caller fails closed.
@@ -464,13 +621,23 @@ verify_writer_step() {
     warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}/jobs" 'actions: read' "$unverified"
     return 1
   fi
-  outcome="$(jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" \
-    '[ .jobs[]? | select(.name == $job) | .steps[]? | select(.name == $step) ]
-     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end) elif length == 0 then "running" else "ambiguous" end' \
-    <"$gh_stdout")" || return 1
+  cp -- "$gh_stdout" "$scratch/writer-jobs.json"
+  # shellcheck disable=SC2310 # gate_step_outcome returns jq's status; a body it cannot parse is handled here.
+  outcome="$(gate_step_outcome "$scratch/writer-jobs.json")" || return 1
   case "$outcome" in
-    success) ;;
-    running)
+    success)
+      # shellcheck disable=SC2310 # verify_writer_shape warns itself; the caller fails closed.
+      if ! verify_writer_shape "$unverified"; then
+        return 1
+      fi
+      if [[ "$carried_state" == success ]]; then
+        # shellcheck disable=SC2310 # verify_no_newer_verdict warns itself; the caller fails closed.
+        if ! verify_no_newer_verdict; then
+          return 1
+        fi
+      fi
+      ;;
+    running | absent)
       echo "Run ${carried_writer_run_id} has not finished step '${own_gate_step}' of job '${own_gate_job}'; its ${STATUS_CONTEXT} success is not carried yet."
       carried_state=pending
       carried_writer_running=true
@@ -480,6 +647,120 @@ verify_writer_step() {
       carried_state=""
       ;;
   esac
+}
+
+# gate_step_outcome <jobs-file>
+# The outcome of the gate step (`own_gate_step` of job `own_gate_job`) in a
+# jobs listing: its conclusion once completed, `running` before that, `absent`
+# when no such step is listed, `ambiguous` when more than one is. Returns jq's
+# status, so an unparseable body is a failed read.
+gate_step_outcome() {
+  jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" \
+    '[ .jobs[]? | select(.name == $job) | .steps[]? | select(.name == $step) ]
+     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end) elif length == 0 then "absent" else "ambiguous" end' \
+    <"$1"
+}
+
+# job_shape <jobs-file> <gate-job-name>
+# The shape of one attempt of a run, from its jobs listing:
+#   contract    more than one job, all listed, and every job but the gate was
+#               skipped: a contract-only run only ever runs its gate;
+#   full        all listed, and a job other than the gate ran (any conclusion
+#               but `skipped`). A full run whose path filters skipped every
+#               lane still ran its change-detection job, so it reads `full`;
+#   unknown     anything else: fewer jobs listed than `total_count`, nothing
+#               but the gate listed, or a body jq cannot parse.
+# Each caller reads `unknown` the way that fails closed for it.
+job_shape() {
+  jq -r --arg gate "$2" \
+    '(.total_count // 0) as $total | [ .jobs[]? ] as $jobs | ($jobs | map(select(.conclusion != "skipped") | .name)) as $ran
+     | if ($jobs | length) < $total then "unknown"
+       elif ($jobs | length) > 1 and $ran == [$gate] then "contract"
+       elif any($ran[]; . != $gate) then "full"
+       else "unknown" end' \
+    <"$1" 2>/dev/null || echo unknown
+}
+
+# Only a full run aggregates the lanes, so a `success` naming a contract-only
+# run proves nothing. The writer must read `full`: a contract-shaped or
+# `unknown` latest attempt discards the status. A re-run keeps its original
+# event, so a writer on attempt 2 or later is classified by its first attempt
+# as well, which must read `full` too; a first attempt that cannot be read
+# fails closed.
+verify_writer_shape() {
+  local consequence="$1" shape
+  shape="$(job_shape "$scratch/writer-jobs.json" "$own_gate_job")"
+  if [[ "$shape" == full && "$carried_writer_attempt" != 1 ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}/attempts/1/jobs?per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${carried_writer_run_id}/attempts/1/jobs" 'actions: read' "$consequence"
+      return 1
+    fi
+    shape="$(job_shape "$gh_stdout" "$own_gate_job")"
+  fi
+  if [[ "$shape" != full ]]; then
+    echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, which is not a full run of this workflow (its jobs read ${shape}); ignoring it."
+    carried_state=""
+  fi
+}
+
+# A status names the run it came from, but nothing stops a writer with
+# `statuses: write` from posting a `success` that names an older green run over
+# a newer run's failure. So every other completed full run of this workflow on
+# the SHA whose latest attempt started at or after the writer's (a tie counts as
+# newer, and so does a missing start time on either side) is read back, and a
+# gate step that completed with anything but `success` discards the status.
+# The verdict is the step's, not the run's conclusion: the step runs under
+# `!cancelled()`, so a run that concluded `cancelled` can still carry a
+# completed verdict. A run whose gate step was skipped or is absent never
+# reached a verdict and is ignored, and so is a contract-only run: it never
+# writes the status, and one that failed closed must not discard every later
+# carry. A run whose jobs cannot be read discards the status. In-flight runs are
+# left to the wait and the yield listing.
+#
+# The run listing is the one `verify_carried_writer` holds in
+# `$scratch/runs.json`.
+verify_no_newer_verdict() {
+  local rivals rival id attempt shape outcome
+  rivals="$(jq -r --arg self "$GITHUB_RUN_ID" --arg writer "$carried_writer_run_id" --arg since "$carried_writer_started_at" \
+    '[ .workflow_runs[]? | select(.status == "completed" and (.id | type) == "number")
+       | select((.id | tostring) != $self and (.id | tostring) != $writer)
+       | select($since == "" or (.run_started_at // "") == "" or .run_started_at >= $since)
+       | "\(.id):\(.run_attempt // 1)" ] | join(" ")' \
+    <"$scratch/runs.json")" || return 1
+  for rival in $rivals; do
+    id="${rival%%:*}"
+    attempt="${rival#*:}"
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable run discards the status.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Cannot rule out a newer verdict from run ${id}; ignoring the ${STATUS_CONTEXT} success that names run ${carried_writer_run_id}."
+      carried_state=""
+      return 0
+    fi
+    cp -- "$gh_stdout" "$scratch/rival-jobs.json"
+    shape="$(job_shape "$scratch/rival-jobs.json" "$own_gate_job")"
+    if [[ "$shape" != contract && "$attempt" != 1 ]]; then
+      # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
+      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
+        shape="$(job_shape "$gh_stdout" "$own_gate_job")"
+      else
+        warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run."
+      fi
+    fi
+    if [[ "$shape" == contract ]]; then
+      continue
+    fi
+    # shellcheck disable=SC2310 # gate_step_outcome returns jq's status; a body it cannot parse is handled here.
+    outcome="$(gate_step_outcome "$scratch/rival-jobs.json")" || outcome=unreadable
+    case "$outcome" in
+      success | skipped | absent | running) ;;
+      *)
+        echo "::warning::the newest ${STATUS_CONTEXT} success on ${SHA} names run ${carried_writer_run_id}, but newer full run ${id} on this SHA ended step '${own_gate_step}' of job '${own_gate_job}' with ${outcome:-no conclusion}; ignoring it."
+        carried_state=""
+        return 0
+        ;;
+    esac
+  done
 }
 
 # The Actions calls need a scope an explicit `permissions:` block does not grant
@@ -505,6 +786,10 @@ resolve_workflow_id() {
   if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
     echo "::warning::GITHUB_RUN_ID is not a run id; cannot exclude this run from the runs on ${SHA}. ${consequence}"
     return 1
+  fi
+  # A run's workflow never changes, so one read serves every poll.
+  if [[ "$workflow_id" =~ ^[0-9]+$ ]]; then
+    return 0
   fi
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
@@ -588,7 +873,7 @@ wait_for_sibling_runs() {
     # writes the status and flips to `completed` moments later, and the other
     # order lets that completion land between the two calls.
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
-    if ! read_carried_state; then
+    if ! read_carried_state listed; then
       # The same degraded path the listing failure above takes, for the same
       # reason. This endpoint is read once per poll, up to sixteen times
       # under the 240s ceiling, so failing the run on the first transient 5xx
@@ -759,33 +1044,31 @@ list_in_flight_full_runs() {
   if [[ -z "$ids" ]]; then
     return 0
   fi
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; no gate name counts every sibling as a full run.
-  if gh_api GET "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100"; then
-    gate="$(jq -r '[ .jobs[]? | select(.conclusion != "skipped") | .name ] | if length == 1 then .[0] else "" end' <"$gh_stdout")" || gate=""
-  else
-    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 'actions: read' 'Counting every run in flight as a full run.'
+  # shellcheck disable=SC2310 # resolve_own_gate warns itself; no gate name counts every sibling as a full run.
+  if resolve_own_gate job 'Counting every run in flight as a full run.'; then
+    gate="$own_gate_job"
   fi
   for id in $ids; do
-    shape=false
+    shape=unknown
     # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
     if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-      shape="$(jq -r --arg gate "$gate" '(.total_count // 0) as $total | [ .jobs[]? ] | length > 1 and length >= $total and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
+      shape="$(job_shape "$gh_stdout" "$gate")"
     else
       warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
     fi
     # A re-run keeps its original event, so a re-run of a contract-only run is
     # contract-only too, yet its new attempt's jobs may not be listed yet. Its
     # first attempt has completed, so that attempt's jobs decide.
-    if [[ "$shape" != true ]] &&
+    if [[ "$shape" != contract ]] &&
       [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
       # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
       if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
-        shape="$(jq -r --arg gate "$gate" '(.total_count // 0) as $total | [ .jobs[]? ] | length > 1 and length >= $total and (map(select(.conclusion != "skipped") | .name) == [$gate])' <"$gh_stdout")" || shape=false
+        shape="$(job_shape "$gh_stdout" "$gate")"
       else
         warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
       fi
     fi
-    if [[ "$shape" != true ]]; then
+    if [[ "$shape" != contract ]]; then
       yield_full_runs="${yield_full_runs}${yield_full_runs:+ }${id}"
     fi
   done
@@ -827,7 +1110,7 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
       exit 1
     fi
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
-    if ! read_carried_state; then
+    if ! read_carried_state listed; then
       cat "$gh_stderr" >&2
       fail_carry_forward
     fi
