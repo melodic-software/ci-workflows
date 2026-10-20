@@ -639,7 +639,9 @@ function groupGithub({ pulls, files = {}, commits = {}, getError } = {}) {
     },
     paginate: async (method, { pull_number }) =>
       method === "pulls.listFiles"
-        ? (files[pull_number] ?? []).map((filename) => ({ filename }))
+        ? (files[pull_number] ?? []).map((file) =>
+            typeof file === "string" ? { filename: file } : file,
+          )
         : (commits[pull_number] ?? []),
   };
 }
@@ -921,4 +923,76 @@ test("merge group: a sync PR sharing its group fails closed", async () => {
   });
   assert.equal(result.mode, null);
   assert.match(result.errors, /sync pull request #7 shares its merge group/u);
+});
+
+test("merge group: renaming a managed file away fails on its old path", async () => {
+  const fx = fixture({
+    mutateHead: (t) => {
+      keepToolAtBase(t);
+      fs.mkdirSync(path.join(t, "other"));
+      fs.renameSync(
+        path.join(t, "managed/config.txt"),
+        path.join(t, "other/config.txt"),
+      );
+    },
+  });
+  const result = await runGroup(fx, {
+    number: 7,
+    pulls: [pull(7)],
+    files: {
+      7: [
+        {
+          filename: "other/config.txt",
+          previous_filename: "managed/config.txt",
+        },
+      ],
+    },
+  });
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Pull request #7 edits/u);
+  assert.match(result.stderr, /- managed\/config\.txt/u);
+});
+
+test("merge group: renaming a file onto a managed path fails", async () => {
+  const fx = fixture({
+    mutateBase: (t) => {
+      fs.rmSync(path.join(t, "managed/config.txt"));
+      write(t, "legacy/config.txt", "config v1\n");
+    },
+    mutateHead: (t) => {
+      keepToolAtBase(t);
+      fs.rmSync(path.join(t, "legacy/config.txt"));
+    },
+  });
+  const result = await runGroup(fx, {
+    number: 7,
+    pulls: [pull(7)],
+    files: {
+      7: [
+        {
+          filename: "managed/config.txt",
+          previous_filename: "legacy/config.txt",
+        },
+      ],
+    },
+  });
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /- managed\/config\.txt/u);
+  assert.doesNotMatch(result.stderr, /legacy\/config\.txt/u);
+});
+
+test("merge group: a file list at the 3000-file API cap fails closed", async () => {
+  const files = Array.from({ length: 3000 }, (_, i) => `docs/file-${i}.md`);
+  const result = await runGroup(fixture(), {
+    number: 7,
+    pulls: [pull(7)],
+    files: { 7: files },
+  });
+  assert.equal(result.mode, null);
+  assert.match(
+    result.errors,
+    /pull request #7 lists 3000 files, the API cap, so the list may be incomplete/u,
+  );
 });
