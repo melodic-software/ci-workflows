@@ -42,8 +42,9 @@ name: pr-review
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
-#   - The checkout must persist credentials until claude-code-action#1236
-#     ships: later steps fetch with them. Fork pull requests never run this job.
+#   - The checkout persists no credential. The job's own git calls pass the
+#     job token per command, never in .git/config, and the action's agent
+#     mode sets up its own git auth. Fork pull requests never run this job.
 #   - The last reviewed head and the review summary are kept in one pull
 #     request comment this job writes with its own token, so its author is
 #     github-actions[bot]; the lane reads only that author's marker. The
@@ -259,13 +260,13 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
-      # persist-credentials stays default: later steps fetch with the persisted
-      # credential until claude-code-action#1236 ships. Fork PRs never reach this job.
-      - name: Check out # zizmor: ignore[artipacked] later fetches need the credential; see above
+      # No credential is persisted; see SECURITY MODEL. Fork PRs never reach this job.
+      - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
+          persist-credentials: false
 
       # Decides whole-PR, incremental, or no review (see REVIEW CADENCE). The
       # last head this lane finished reviewing is read from the lane's marker
@@ -284,6 +285,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           DIFF_FILE: .claude-lane/incremental.diff
+          GIT_TOKEN: ${{ github.token }}
         with:
           script: |
             const fs = require("node:fs");
@@ -327,10 +329,20 @@ jobs:
             const compare = async (basehead) =>
               (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
 
+            // The checkout persists no credential: each git call carries the job
+            // token in its environment, so it reaches neither argv nor .git/config.
+            const basic = Buffer.from(`x-access-token:${env.GIT_TOKEN}`).toString("base64");
+            core.setSecret(basic);
             const git = (args) =>
               require("node:child_process").execFileSync("git", args, {
                 encoding: "utf8",
                 stdio: ["ignore", "pipe", "pipe"],
+                env: {
+                  ...env,
+                  GIT_CONFIG_COUNT: "1",
+                  GIT_CONFIG_KEY_0: `http.${env.GITHUB_SERVER_URL}/.extraheader`,
+                  GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+                },
               });
 
             // Why a base-branch change since the last review needs a whole review, or "".
@@ -537,6 +549,12 @@ jobs:
             echo "::warning::No merge base was found for the full diff."
             exit 1
           fi
+          # The checkout persists no credential, and the blob-less clone fetches
+          # file contents during the diff too, so every git call here carries
+          # the job token in its environment, never in argv or .git/config.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
           git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base"
           mkdir -p "$(dirname "$DIFF_FILE")"
           git diff --no-color --no-ext-diff "$base" "$HEAD_SHA" > "$DIFF_FILE"
