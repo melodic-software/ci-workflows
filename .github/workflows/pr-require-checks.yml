@@ -17,6 +17,18 @@ on:
   # `ci-status` included, guards on `github.event_name != 'issues'`.
   issues:
     types: [opened, reopened]
+  # A merge queue tests each group commit through this event alone; a required
+  # check that never reports on it holds every queued pull request until the
+  # check timeout. The payload carries no `github.event.pull_request`, so the
+  # contract-only predicate is false and every lane runs in full; the
+  # concurrency group falls back to `github.run_id`; the lanes and `ci-status`
+  # run on `github.sha`, the group head (`merge_group.head_sha`); and
+  # `check-contract` re-checks the title and live `do-not-merge` label of the
+  # pull request the head ref names, the group's last entry, so the queue must
+  # use `grouping_strategy: ALLGREEN`.
+  # The Claude review lanes and the Dependabot arm run on `pull_request` only.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -29,7 +41,7 @@ permissions:
 # newer ci-status decides the gate.
 #
 # Full runs key on the PR number (not head_ref, so same-named fork branches do
-# not cancel each other); pushes key on `github.run_id`.
+# not cancel each other); pushes and merge groups key on `github.run_id`.
 #
 # Hazard: re-running a STALE run on a superseded head SHA lands in the current
 # head's group and cancels the run that is reporting. Re-run on the current head.

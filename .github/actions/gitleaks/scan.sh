@@ -115,9 +115,9 @@ if [[ "$SCAN_MODE" == git ]]; then
   # Always pass --log-opts: an empty value makes gitleaks fall back to --all.
   if [[ -z "${LOG_OPTS// /}" ]]; then
     case "$EVENT_NAME" in
-      pull_request | pull_request_target)
+      pull_request | pull_request_target | merge_group)
         if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-          echo "::error::gitleaks: $EVENT_NAME event has no valid pull_request.base.sha to scope the scan"
+          echo "::error::gitleaks: $EVENT_NAME event has no valid base SHA to scope the scan"
           exit 2
         fi
         LOG_OPTS="$BASE_SHA..HEAD"
