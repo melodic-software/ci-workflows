@@ -464,7 +464,7 @@ jobs:
         # boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
+          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt .github/actions/run-shell-tests
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 
@@ -513,6 +513,8 @@ jobs:
         run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
         run: bash .github/actions/pr-require-checks/aggregate-results/run.test.sh
+      - name: Test the shell-tests runner
+        run: bash .github/actions/run-shell-tests/run.test.sh
       - name: Test Pulumi deployment guard
         run: bash .github/actions/verify-pulumi-deploy-policy/guard.test.sh
       - name: Test govulncheck SARIF classification

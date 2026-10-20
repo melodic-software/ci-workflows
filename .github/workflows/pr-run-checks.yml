@@ -142,6 +142,20 @@ on:
           `vendor.dependabot`.
         type: string
         default: ''
+      shell-tests:
+        description: >-
+          Run the `run-shell-tests` composite: every tracked `*.test.sh`, each
+          with bash from the repository root. OFF by default, unlike the
+          hygiene toggles: it runs the caller's own tests, and fails when the
+          caller tracks none.
+        type: boolean
+        default: false
+      shell-tests-node-version:
+        description: >-
+          Node.js version `run-shell-tests` installs before the tests, for
+          suites that call node or npm. Blank (the default) installs nothing.
+        type: string
+        default: ''
       machine-specific-paths-exclude:
         description: >-
           Git pathspec exclusion for `machine-specific-paths`. A repository
@@ -304,6 +318,16 @@ jobs:
           files: ${{ inputs.check-jsonschema-files }}
           builtin-schema: ${{ inputs.check-jsonschema-builtin-schema }}
 
+      # The step timeout also bounds a hung test, not only the Node download.
+      - name: Run shell tests
+        id: shell_tests
+        if: ${{ inputs.shell-tests && fromJSON(steps.detect.outputs.results || '{}')['shell-tests'] != 'false' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: $/.github/actions/run-shell-tests
+        with:
+          node-version: ${{ inputs.shell-tests-node-version }}
+
       # `outcome` is written BEFORE the exit, but a caller should read
       # `needs.<job>.result`: outputs of a failed called job may not propagate.
       - name: Join composite outcomes
@@ -325,6 +349,7 @@ jobs:
           COMMENT_HYGIENE: ${{ steps.comment_hygiene.outcome }}
           LYCHEE_OFFLINE: ${{ steps.lychee_offline.outcome }}
           CHECK_JSONSCHEMA: ${{ steps.check_jsonschema.outcome }}
+          SHELL_TESTS: ${{ steps.shell_tests.outcome }}
         run: |
           set -euo pipefail
           first=''
@@ -356,6 +381,7 @@ jobs:
           report comment-hygiene "$COMMENT_HYGIENE"
           report lychee-offline "$LYCHEE_OFFLINE"
           report check-jsonschema "$CHECK_JSONSCHEMA"
+          report shell-tests "$SHELL_TESTS"
           if [[ "$failures" -eq 0 ]]; then
             echo "outcome=success" >>"$GITHUB_OUTPUT"
             echo "checks passed."

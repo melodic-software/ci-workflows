@@ -83,8 +83,8 @@ function runJoin(outcomes) {
 test("the join reads every continue-on-error step", () => {
   assert.equal(
     composites.length,
-    12,
-    `expected the twelve hygiene composites, found ${composites.length}`,
+    13,
+    `expected the thirteen composites, found ${composites.length}`,
   );
   for (const step of joined) {
     const name = step.id.replaceAll("_", "-");
@@ -107,6 +107,7 @@ test("the join reads every continue-on-error step", () => {
     "eol-renormalize": "check-line-endings",
     "machine-specific-paths": "check-machine-paths",
     "comment-hygiene": "check-comment-markers",
+    "shell-tests": "run-shell-tests",
   };
   for (const step of composites) {
     const name = step.id.replaceAll("_", "-");

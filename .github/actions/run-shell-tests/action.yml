@@ -1,0 +1,26 @@
+name: run-shell-tests
+description: >-
+  Run every tracked `*.test.sh` with bash from the repository root, run them
+  all, and fail when any exits non-zero. Fails when no test file is tracked, so
+  an enabled lane cannot pass on nothing.
+
+inputs:
+  node-version:
+    description: >-
+      Node.js version to install before the tests, for suites that call node or
+      npm. Blank (the default) installs nothing.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      if: ${{ inputs.node-version != '' }}
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+
+    - name: Run shell tests
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

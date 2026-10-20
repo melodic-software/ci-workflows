@@ -166,6 +166,10 @@ consumer to audit it.
   `:job_workflow_ref:<repository>/.github/workflows/<name>.yml@<ref>` form.
   Callers require paired live positive/near-match negative token-exchange
   evidence before removing the legacy trust rules.
+- `.github/actions/run-shell-tests` — runs every tracked `*.test.sh` with
+  bash from the repository root, runs them all, and fails when any exits
+  non-zero or when none is tracked. `node-version` (default blank) installs
+  Node.js first for suites that call node or npm.
 - `.github/actions/editorconfig-checker` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a
@@ -726,10 +730,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   composites are the unit of reuse. Required inputs: `runner` (no default; a
   hosted default would silently bill a private caller's pool) and `filters`
   (`change-detection` filter groups). `timeout-minutes` defaults to `15`.
-  Twelve boolean toggles — `typos`, `gitleaks`, `editorconfig`, `markdown`,
+  Thirteen boolean toggles — `typos`, `gitleaks`, `editorconfig`, `markdown`,
   `shellcheck`, `actionlint`, `exec-bit`, `machine-specific-paths`,
-  `eol-renormalize`, `comment-hygiene`, `lychee-offline`, `check-jsonschema` —
-  turn composites off; all default `true` except `check-jsonschema`, whose
+  `eol-renormalize`, `comment-hygiene`, `lychee-offline`, `check-jsonschema`,
+  `shell-tests` — turn composites on or off; all default `true` except
+  `shell-tests` (opt in to run the caller's own tracked `*.test.sh` files; pass
+  `shell-tests-node-version` when they call node or npm) and
+  `check-jsonschema`, whose
   `files` input is required and has no universal default (pass
   `check-jsonschema-files` and `check-jsonschema-builtin-schema`; one call
   carries one schema family). Enabling it with no `check-jsonschema-files`
