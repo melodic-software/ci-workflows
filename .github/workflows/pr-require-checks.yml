@@ -520,7 +520,7 @@ jobs:
         # boundary cannot bypass the required formatter.
         uses: ./.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
+          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/pr-require-checks/gh-api.sh .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 
@@ -669,10 +669,11 @@ jobs:
     # every gated lane fails open and runs.
     needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, check-workflow-naming, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
     runs-on: ubuntu-24.04
-    # No run waits for another: with `yield-to-full-run` a contract-only run
-    # lists in-flight runs once and reads the status once, and a full run's
-    # ci-status runs after its lanes, so either finishes in seconds.
-    timeout-minutes: 3
+    # Worst case: two rate-limit waits of 60s (`rate-limit-wait-seconds` on
+    # each step), 15s of own-gate retries, 7s of status-write retries and the
+    # 90s `rerun-wait-seconds` wait, about four minutes. Without a rate limit
+    # either kind of run finishes in seconds.
+    timeout-minutes: 5
     permissions:
       contents: read
       # pr-contract upserts the linkage comment and label; ci-status records

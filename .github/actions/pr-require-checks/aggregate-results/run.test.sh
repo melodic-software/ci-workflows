@@ -60,6 +60,9 @@ chmod +x "$shim_directory/date"
 # (the retry case), can serve a DIFFERENT body on the Nth call to the same key
 # (`<key>.<n>.json`), which is how a status appearing mid-wait is fixtured, and
 # can make every call to a key take time on the fake clock (`<key>.advance`).
+# Under `-i` it prints `<key>.<n>.headers` or `<key>.headers` (a status line
+# and header lines) before the output, as `gh api -i` does, and
+# `<key>.<n>.err` fails only the Nth call with that stderr.
 cat >"$shim_directory/gh" <<'SHIM'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -70,6 +73,7 @@ method=GET
 path=""
 input=""
 slurp=false
+include=false
 seen_api=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,6 +91,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --slurp)
       slurp=true
+      shift
+      ;;
+    -i | --include)
+      include=true
       shift
       ;;
     --paginate | --silent)
@@ -121,6 +129,16 @@ if [[ -f "$count_file" ]]; then
 fi
 printf '%s\n' "$call_number" >"$count_file"
 
+if [[ "$include" == true ]]; then
+  for headers in "$GH_FIXTURES/${key}.${call_number}.headers" "$GH_FIXTURES/${key}.headers"; do
+    if [[ -f "$headers" ]]; then
+      cat "$headers"
+      printf '\r\n'
+      break
+    fi
+  done
+fi
+
 if [[ -f "$GH_FIXTURES/${key}.advance" ]]; then
   printf '%s\n' "$(($(cat "$FAKE_CLOCK") + $(cat "$GH_FIXTURES/${key}.advance")))" >"$FAKE_CLOCK"
 fi
@@ -141,6 +159,11 @@ fi
 fail_on_call="$GH_FIXTURES/${key}.fail-on-call"
 if [[ -f "$fail_on_call" && "$call_number" == "$(cat "$fail_on_call")" ]]; then
   echo "gh: Internal Server Error (HTTP 500)" >&2
+  exit 1
+fi
+
+if [[ -f "$GH_FIXTURES/${key}.${call_number}.err" ]]; then
+  cat "$GH_FIXTURES/${key}.${call_number}.err" >&2
   exit 1
 fi
 
@@ -487,6 +510,113 @@ expect_log 'retrying in 0s'
 expect_log "Recorded ci-lanes=success on ${sha}."
 rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 
+# --- rate limits -----------------------------------------------------------
+#
+# A 403 or 429 is classified from its message and headers, not its status, and
+# a rate limit waits once inside rate-limit-wait-seconds, then fails closed.
+status_post_key="POST_repos_melodic-software_ci-workflows_statuses_${sha}"
+primary_limit_message='gh: API rate limit exceeded for installation ID 1 (HTTP 403)'
+clear_rate_limit_fixtures() {
+  rm -f -- "$fixtures/${status_post_key}".*.err "$fixtures/${status_post_key}".*.headers
+}
+
+# Without the header capture the warning carries no x-ratelimit values, and
+# without the classification it names a missing scope.
+echo 'case: a primary-limit 403 reports status, message and headers, waits until the reset, and retries once'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 30\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log "::warning::POST repos/${repository}/statuses/${sha} returned HTTP 403 (rate-limit): API rate limit exceeded for installation ID 1; x-ratelimit-remaining=0 x-ratelimit-reset=30 retry-after=absent"
+expect_log 'rate limited; waiting 30s, then retrying once.'
+expect_log "Recorded ci-lanes=success on ${sha}."
+expect_no_log 'needs statuses: write'
+if [[ "$(cat "$sleep_log")" != 30 ]]; then
+  echo "FAIL: expected one 30s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
+# Without the single-retry rule the second limit falls into the 1/2/4s retry
+# loop, which GitHub says not to do on a secondary limit.
+echo 'case: a call still rate limited after the wait fails closed without further retries'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.2.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 30\r\n' >"$fixtures/${status_post_key}.1.headers"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 3600\r\n' >"$fixtures/${status_post_key}.2.headers"
+run_case 1 'success success' pass ''
+expect_log 'x-ratelimit-remaining=0 x-ratelimit-reset=3600 retry-after=absent'
+expect_log 'is still rate limited after the wait; not retrying.'
+expect_log "::error::could not record ci-lanes on ${sha} (HTTP 403): rate limited past rate-limit-wait-seconds"
+expect_no_log 'retrying in'
+if [[ "$(cat "$calls/${status_post_key}.count")" != 2 ]]; then
+  echo "FAIL: expected 2 status writes, got $(cat "$calls/${status_post_key}.count")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
+# Without retry-after taking precedence the wait would run to the reset (50s).
+echo 'case: a secondary-limit 429 with retry-after waits retry-after, not until the reset'
+printf '%s\n' 'gh: You have exceeded a secondary rate limit. (HTTP 429)' >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 429 Too Many Requests\r\nRetry-After: 7\r\nX-Ratelimit-Remaining: 12\r\nX-Ratelimit-Reset: 50\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log 'returned HTTP 429 (rate-limit): You have exceeded a secondary rate limit.; x-ratelimit-remaining=12 x-ratelimit-reset=50 retry-after=7'
+expect_log 'waiting 7s, then retrying once.'
+if [[ "$(cat "$sleep_log")" != 7 ]]; then
+  echo "FAIL: expected one 7s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
+# Without `10#` a leading zero reads as octal: 010 would wait 8s, and 09 is an
+# arithmetic error that ends the step.
+echo 'case: a reset with leading zeros is read as decimal'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 010\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log 'waiting 10s, then retrying once.'
+if [[ "$(cat "$sleep_log")" != 10 ]]; then
+  echo "FAIL: expected one 10s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
+# Without the ten-digit bound the arithmetic overflows bash's integers and
+# the wait comes out negative or wrong; an oversized value counts as absent.
+echo 'case: an oversized retry-after or reset falls back to the 60s wait'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nRetry-After: 99999999999999999999\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 99999999999999999999\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log 'waiting 60s, then retrying once.'
+if [[ "$(cat "$sleep_log")" != 60 ]]; then
+  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
+# Without the cap check the run would sleep ten minutes past its job timeout.
+echo 'case: a reset beyond rate-limit-wait-seconds fails closed at once and prints the reset time'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 600\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 1 'success success' pass '' true 'RATE_LIMIT_WAIT_SECONDS=60'
+expect_log 'needs a 600s wait, more than the 60s left of rate-limit-wait-seconds (60); not waiting. The limit resets at 600 (1970-01-01T00:10:00Z).'
+expect_log "::error::could not record ci-lanes on ${sha} (HTTP 403): rate limited past rate-limit-wait-seconds"
+expect_no_sleep
+clear_rate_limit_fixtures
+
+# Without the permission branch this would wait as if rate limited, or name no
+# scope at all.
+echo 'case: a permission 403 names the scope and does not wait'
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: statuses=write\r\nX-Ratelimit-Remaining: 4999\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log 'returned HTTP 403 (permission): Resource not accessible by integration; x-ratelimit-remaining=4999 x-ratelimit-reset=absent retry-after=absent x-accepted-github-permissions=statuses=write'
+expect_no_log 'rate limited'
+clear_rate_limit_fixtures
+
+echo 'case: an out-of-range rate-limit-wait-seconds is rejected'
+run_case 1 'success success' pass '' true 'RATE_LIMIT_WAIT_SECONDS=3601'
+expect_log '::error::rate-limit-wait-seconds must be an integer number of seconds from 0 to 3600, got: 3601'
+
 # Without the treat-skipped-as branch a skipped lane fails here.
 echo 'case: treat-skipped-as pass lets a skipped lane through'
 run_case 0 'success skipped success' pass ''
@@ -793,6 +923,17 @@ printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' \
 run_case 1 'skipped skipped' pass true
 expect_log "::warning::repos/${repository}/actions/runs/4100 returned HTTP 403; the ci-status job needs 'actions: read'"
 expect_no_log 'Carried forward'
+rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100.err"
+
+# Without the classification an unexplained 403 would name a scope the job
+# may already hold.
+echo 'case: an unclassified 403 reports its message and names no scope'
+status_list "[$(full_run_success 100)]"
+printf '%s\n' 'gh: Forbidden (HTTP 403)' \
+  >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100.err"
+run_case 1 'skipped skipped' pass true
+expect_log "::warning::repos/${repository}/actions/runs/4100 returned HTTP 403: Forbidden."
+expect_no_log 'needs'
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100.err"
 
 echo 'case: a current run whose workflow cannot be read fails closed'
@@ -2435,7 +2576,7 @@ expect_no_gh_call "actions/jobs/"
 expect_no_gh_call "actions/runs/4242/jobs"
 
 # Without the bound, a job that never appears would retry past the job's
-# 3-minute timeout instead of failing with the cause.
+# timeout instead of failing with the cause.
 echo 'case: an own job that never resolves fails closed after a bounded retry'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
@@ -2481,13 +2622,13 @@ reset_yield_fixtures
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds record-pending yield-to-full-run token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds rate-limit-wait-seconds record-pending yield-to-full-run token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RATE_LIMIT_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
@@ -2514,7 +2655,7 @@ if ! grep -qF "    default: '240'" "$action_metadata"; then
 fi
 
 # The rerun wait holds the full run's ci-status open, so its default must stay
-# inside the 3-minute ci-status job the README recommends. Every case above
+# inside the 5-minute ci-status job the README recommends. Every case above
 # runs on run.sh's own fallback, which this does not see.
 rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
 if [[ "$rerun_wait_default" != "    default: '90'" ]]; then

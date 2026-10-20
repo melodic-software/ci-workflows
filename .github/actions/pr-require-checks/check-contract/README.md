@@ -106,6 +106,12 @@ own comment and would post a new one on every failing run.
   ignores the surrounding words and closes the issue on merge regardless of the
   disclaimer. Use `Refs: #N` or `Relates to: #N` on its own line instead.
 
+- A 403 or 429 from the API prints its status, message and rate-limit
+  headers. A rate-limited pull request read waits once, bounded by
+  `rate-limit-wait-seconds` (default `60`), then fails the step closed; keep
+  that cap, with the aggregate step's, inside the job's `timeout-minutes`. See
+  the [ci-workflows README](../../../../README.md) under `aggregate-results`.
+
 ## Consumer wiring
 
 Both steps go in the `ci-status` job, in this order:

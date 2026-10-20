@@ -278,6 +278,18 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
+            // A failed GitHub API call logs its status and rate-limit headers, then
+            // throws as before: these lanes stay advisory and add no retry.
+            github.hook.error("request", (error, options) => {
+              const headers = error.response?.headers ?? {};
+              const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
+                .filter((name) => headers[name] !== undefined)
+                .map((name) => `${name}=${headers[name]}`);
+              const line = `GitHub API ${options.method} ${options.url} failed with HTTP ${error.status ?? "unknown"}${fields.length ? `: ${fields.join(" ")}` : ""}`;
+              if (error.status === 403 || error.status === 429) core.warning(line);
+              else core.info(line);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -914,6 +926,18 @@ jobs:
           SCOPE: ${{ steps.scope.outputs.scope }}
         with:
           script: |
+            // A failed GitHub API call logs its status and rate-limit headers, then
+            // throws as before: these lanes stay advisory and add no retry.
+            github.hook.error("request", (error, options) => {
+              const headers = error.response?.headers ?? {};
+              const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
+                .filter((name) => headers[name] !== undefined)
+                .map((name) => `${name}=${headers[name]}`);
+              const line = `GitHub API ${options.method} ${options.url} failed with HTTP ${error.status ?? "unknown"}${fields.length ? `: ${fields.join(" ")}` : ""}`;
+              if (error.status === 403 || error.status === 429) core.warning(line);
+              else core.info(line);
+              throw error;
+            });
             const env = process.env;
             const { owner, repo } = context.repo;
             const BOT = "claude[bot]";
@@ -1038,6 +1062,18 @@ jobs:
           INLINE: ${{ steps.verify.outputs.inline }}
         with:
           script: |
+            // A failed GitHub API call logs its status and rate-limit headers, then
+            // throws as before: these lanes stay advisory and add no retry.
+            github.hook.error("request", (error, options) => {
+              const headers = error.response?.headers ?? {};
+              const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
+                .filter((name) => headers[name] !== undefined)
+                .map((name) => `${name}=${headers[name]}`);
+              const line = `GitHub API ${options.method} ${options.url} failed with HTTP ${error.status ?? "unknown"}${fields.length ? `: ${fields.join(" ")}` : ""}`;
+              if (error.status === 403 || error.status === 429) core.warning(line);
+              else core.info(line);
+              throw error;
+            });
             const env = process.env;
             const { owner, repo } = context.repo;
             // The second line names the base the review used; a rebase is

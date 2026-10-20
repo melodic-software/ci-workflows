@@ -148,28 +148,12 @@ fi
 require_pattern repository "$REPOSITORY" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'OWNER/REPO'
 require_pattern pr-number "$PR_NUMBER" '^[0-9]+$' 'a positive integer'
 
-# gh_api <method> <path> [extra args...]
-# Captures stdout and stderr; sets GH_HTTP_STATUS from gh's "(HTTP nnn)" tail
-# when the call failed. Returns gh's exit status.
-GH_HTTP_STATUS=""
-gh_api() {
-  local method="$1" path="$2"
-  shift 2
-  local status=0
-  : >"$gh_stdout"
-  : >"$gh_stderr"
-  GH_HTTP_STATUS=""
-  # `set +e` around the call: a failed API read is classified by the caller,
-  # not aborted by errexit.
-  set +e
-  gh api -X "$method" "$path" "$@" >"$gh_stdout" 2>"$gh_stderr"
-  status=$?
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    GH_HTTP_STATUS="$(sed -n 's/.*(HTTP \([0-9][0-9]*\)).*/\1/p' "$gh_stderr" | head -n1)"
-  fi
-  return "$status"
-}
+# At most an hour, the life of a GitHub App installation token.
+require_pattern rate-limit-wait-seconds "${RATE_LIMIT_WAIT_SECONDS:-60}" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
+
+gh_headers="$scratch/gh-headers"
+# shellcheck source=../gh-api.sh
+source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
 
 # Best-effort write: a refused or missing write surfaces as a ::notice:: and
 # never changes the exit code. The advisory comment and label are convenience,
@@ -191,7 +175,11 @@ best_effort() {
 # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
 if ! gh_api GET "repos/${REPOSITORY}/pulls/${PR_NUMBER}"; then
   cat "$gh_stderr" >&2
-  echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS:-unknown})"
+  if [[ "$GH_FAILURE" == rate-limit ]]; then
+    echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
+  else
+    echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS:-unknown})"
+  fi
   exit 1
 fi
 pr_json="$scratch/pr.json"
@@ -643,7 +631,13 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5 — advisory outcome: one marker comment, upserted, plus the label.
 # ---------------------------------------------------------------------------
+# Sets `marker_comment_id` (empty when there is none). Never call it in a
+# command substitution: gh_api prints its warnings to stdout and adds its
+# rate-limit wait to RATE_LIMIT_WAITED, and a subshell would capture the one
+# and drop the other.
+marker_comment_id=""
 find_marker_comment() {
+  marker_comment_id=""
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp; then
     return 1
@@ -653,18 +647,19 @@ find_marker_comment() {
   # the gate would edit their comment instead of posting its own. `--slurp`
   # wraps every page in one outer array, so `max_by` sees all pages at once
   # rather than printing one id per page.
-  jq -r --arg marker "$LINKAGE_MARKER" \
+  marker_comment_id="$(jq -r --arg marker "$LINKAGE_MARKER" \
     '[ .[][] | select((.user.type // "") == "Bot" and ((.body // "") | contains($marker))) ] | (max_by(.id).id // empty)' \
-    <"$gh_stdout"
+    <"$gh_stdout")"
 }
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.
 upsert_marker_comment() {
-  local body="$1" comment_id=""
+  local body="$1" comment_id
   # shellcheck disable=SC2310 # find_marker_comment reports the read failure through its status.
-  if ! comment_id="$(find_marker_comment)"; then
+  if ! find_marker_comment; then
     return 1
   fi
+  comment_id="$marker_comment_id"
   jq -n --arg body "$body" '{body: $body}' >"$scratch/comment-payload.json"
   if [[ -n "$comment_id" ]]; then
     gh_api PATCH "repos/${REPOSITORY}/issues/comments/${comment_id}" --input "$scratch/comment-payload.json"
@@ -721,7 +716,7 @@ else
   } >"$scratch/comment-body.md"
 
   # shellcheck disable=SC2310 # a failed read simply means there is no comment to update.
-  if [[ -n "$(find_marker_comment 2>/dev/null || true)" ]]; then
+  if find_marker_comment 2>/dev/null && [[ -n "$marker_comment_id" ]]; then
     best_effort 'updating the linkage comment' upsert_marker_comment "$(cat "$scratch/comment-body.md")"
   fi
   if grep -qxF -- "$LINKAGE_LABEL" "$scratch/labels.txt"; then

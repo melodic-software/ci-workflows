@@ -334,7 +334,7 @@ consumer to audit it.
   `rerun-wait-seconds`, and only while a contract-only sibling is in flight
   (see `rerun-contract-only-siblings` below):
 
-  - `yield-to-full-run: 'true'` and `timeout-minutes: 3` on the `ci-status`
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 5` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
     SHA, then reads the status, and finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
@@ -423,6 +423,21 @@ consumer to audit it.
   `statuses: write` and `actions: write` (which covers the `actions: read`
   `yield-to-full-run` and a wait above `0` need).
 
+  **GitHub API rate limits.** GitHub answers both a rate limit and a refusal
+  with 403 or 429, so every 403 or 429 prints its status, message and the
+  `x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after` and
+  `x-accepted-github-permissions` headers, and names a missing scope only for
+  "Resource not accessible by integration" or that last header. A rate limit
+  waits `retry-after`, else until `x-ratelimit-reset` when remaining is `0`,
+  else 60 seconds, then retries once; a second limit, or a wait longer than
+  what is left of `rate-limit-wait-seconds` (default `60`, summed over the
+  step, at most `3600`), fails the call closed at once and prints the reset
+  time. The step never ends neutral, which a required check would count as a
+  pass. `check-contract` takes the same input. The two steps' caps plus
+  `rerun-wait-seconds` and the job's other work must fit the job's
+  `timeout-minutes`, and a wait never outlives a GitHub App installation
+  token's hour.
+
   ```yaml
   jobs:
     detect-changes:
@@ -437,7 +452,7 @@ consumer to audit it.
         # ... change detection
     ci-status:
       if: always()
-      timeout-minutes: 3
+      timeout-minutes: 5
       permissions:
         contents: read
         statuses: write

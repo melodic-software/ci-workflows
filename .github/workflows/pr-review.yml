@@ -288,6 +288,18 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
+            // A failed GitHub API call logs its status and rate-limit headers, then
+            // throws as before: these lanes stay advisory and add no retry.
+            github.hook.error("request", (error, options) => {
+              const headers = error.response?.headers ?? {};
+              const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
+                .filter((name) => headers[name] !== undefined)
+                .map((name) => `${name}=${headers[name]}`);
+              const line = `GitHub API ${options.method} ${options.url} failed with HTTP ${error.status ?? "unknown"}${fields.length ? `: ${fields.join(" ")}` : ""}`;
+              if (error.status === 403 || error.status === 429) core.warning(line);
+              else core.info(line);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -544,7 +556,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
-          base="$(gh api "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha)"
+          # `-i` keeps the response headers, so a failed call logs its rate limit.
+          response="$RUNNER_TEMP/compare.http"
+          if ! gh api -i "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha > "$response"; then
+            echo "::warning::The compare call failed: $(tr -d '\r' < "$response" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
+            exit 1
+          fi
+          base="$(tr -d '\r' < "$response" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }')"
           if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::warning::No merge base was found for the full diff."
             exit 1
@@ -604,7 +622,12 @@ jobs:
           }'
           response="$RUNNER_TEMP/pr-context.json"
           # A partial answer (an issue the token cannot read) still carries the pull request.
-          gh api graphql -F owner="$OWNER" -F name="$REPO_NAME" -F number="$PR_NUMBER" -f query="$query" > "$response" || true
+          # `-i` keeps the response headers, so a failed call logs its rate limit.
+          if ! gh api -i graphql -F owner="$OWNER" -F name="$REPO_NAME" -F number="$PR_NUMBER" -f query="$query" > "$response.http"; then
+            # A partial answer fails too, so this is a log line, not a warning.
+            echo "The pull request context query failed: $(tr -d '\r' < "$response.http" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
+          fi
+          tr -d '\r' < "$response.http" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }' > "$response"
           mkdir -p "$(dirname "$CONTEXT_FILE")"
           jq -r '
             def cap($n): (. // "") | .[0:$n];
@@ -1050,6 +1073,18 @@ jobs:
           FULL_DIFF: ${{ steps.full-diff.outputs.written }}
         with:
           script: |
+            // A failed GitHub API call logs its status and rate-limit headers, then
+            // throws as before: these lanes stay advisory and add no retry.
+            github.hook.error("request", (error, options) => {
+              const headers = error.response?.headers ?? {};
+              const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
+                .filter((name) => headers[name] !== undefined)
+                .map((name) => `${name}=${headers[name]}`);
+              const line = `GitHub API ${options.method} ${options.url} failed with HTTP ${error.status ?? "unknown"}${fields.length ? `: ${fields.join(" ")}` : ""}`;
+              if (error.status === 403 || error.status === 429) core.warning(line);
+              else core.info(line);
+              throw error;
+            });
             const env = process.env;
             const { owner, repo } = context.repo;
             const BOT = "claude[bot]";
@@ -1174,6 +1209,18 @@ jobs:
           INLINE: ${{ steps.verify.outputs.inline }}
         with:
           script: |
+            // A failed GitHub API call logs its status and rate-limit headers, then
+            // throws as before: these lanes stay advisory and add no retry.
+            github.hook.error("request", (error, options) => {
+              const headers = error.response?.headers ?? {};
+              const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
+                .filter((name) => headers[name] !== undefined)
+                .map((name) => `${name}=${headers[name]}`);
+              const line = `GitHub API ${options.method} ${options.url} failed with HTTP ${error.status ?? "unknown"}${fields.length ? `: ${fields.join(" ")}` : ""}`;
+              if (error.status === 403 || error.status === 429) core.warning(line);
+              else core.info(line);
+              throw error;
+            });
             const env = process.env;
             const { owner, repo } = context.repo;
             // The second line names the base the review used; a rebase is
