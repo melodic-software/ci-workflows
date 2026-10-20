@@ -98,39 +98,42 @@ gh_api_once() {
   return "$status"
 }
 
+# On a 403 or 429, sets `GH_FAILURE` and the four header values and prints
+# the report line. Returns 1 for any other status.
 # shellcheck disable=SC2311 # gh_header is one awk read; errexit has nothing to stop in it.
-gh_api() {
+gh_classify() {
   local method="$1" path="$2"
-  local status remaining reset retry_after accepted reset_at wait left
-  # shellcheck disable=SC2310 # gh_api_once handles its own errexit; the status is classified below.
-  gh_api_once "$@" && return 0
-  status=$?
   if [[ "$GH_HTTP_STATUS" != 403 && "$GH_HTTP_STATUS" != 429 ]]; then
-    return "$status"
+    return 1
   fi
-  remaining="$(gh_header x-ratelimit-remaining)"
-  reset="$(gh_header x-ratelimit-reset)"
-  retry_after="$(gh_header retry-after)"
-  accepted="$(gh_header x-accepted-github-permissions)"
-  if [[ -n "$retry_after" || "$remaining" == 0 || "${GH_MESSAGE,,}" == *'rate limit'* ]]; then
+  gh_remaining="$(gh_header x-ratelimit-remaining)"
+  gh_reset="$(gh_header x-ratelimit-reset)"
+  gh_retry_after="$(gh_header retry-after)"
+  gh_accepted="$(gh_header x-accepted-github-permissions)"
+  if [[ -n "$gh_retry_after" || "$gh_remaining" == 0 || "${GH_MESSAGE,,}" == *'rate limit'* ]]; then
     GH_FAILURE=rate-limit
-  elif [[ "$GH_MESSAGE" == *'Resource not accessible by integration'* || -n "$accepted" ]]; then
+  elif [[ "$GH_MESSAGE" == *'Resource not accessible by integration'* || -n "$gh_accepted" ]]; then
     GH_FAILURE=permission
   else
     GH_FAILURE=other
   fi
-  reset_at="an unknown time"
-  if [[ "$reset" =~ ^[0-9]+$ ]]; then
-    reset_at="${reset} ($(jq -rn --arg epoch "$reset" '$epoch | tonumber | todate'))"
-  fi
-  echo "::warning::${method} ${path} returned HTTP ${GH_HTTP_STATUS} (${GH_FAILURE}): $(escape_annotation "$GH_MESSAGE"); x-ratelimit-remaining=$(escape_annotation "${remaining:-absent}") x-ratelimit-reset=$(escape_annotation "${reset:-absent}") retry-after=$(escape_annotation "${retry_after:-absent}") x-accepted-github-permissions=$(escape_annotation "${accepted:-absent}")"
-  if [[ "$GH_FAILURE" != rate-limit ]]; then
+  echo "::warning::${method} ${path} returned HTTP ${GH_HTTP_STATUS} (${GH_FAILURE}): $(escape_annotation "$GH_MESSAGE"); x-ratelimit-remaining=$(escape_annotation "${gh_remaining:-absent}") x-ratelimit-reset=$(escape_annotation "${gh_reset:-absent}") retry-after=$(escape_annotation "${gh_retry_after:-absent}") x-accepted-github-permissions=$(escape_annotation "${gh_accepted:-absent}")"
+}
+
+gh_api() {
+  local method="$1" path="$2"
+  local status reset_at wait left
+  # shellcheck disable=SC2310 # gh_api_once handles its own errexit; the status is classified below.
+  gh_api_once "$@" && return 0
+  status=$?
+  # shellcheck disable=SC2310 # gh_classify reports a status it does not classify through its return.
+  if ! gh_classify "$method" "$path" || [[ "$GH_FAILURE" != rate-limit ]]; then
     return "$status"
   fi
-  if [[ "$retry_after" =~ ^[0-9]+$ ]]; then
-    wait=$((10#$retry_after))
-  elif [[ "$remaining" == 0 && "$reset" =~ ^[0-9]+$ ]]; then
-    wait=$((reset - $(date +%s)))
+  if [[ "$gh_retry_after" =~ ^[0-9]+$ ]]; then
+    wait=$((10#$gh_retry_after))
+  elif [[ "$gh_remaining" == 0 && "$gh_reset" =~ ^[0-9]+$ ]]; then
+    wait=$((gh_reset - $(date +%s)))
     if [[ "$wait" -lt 1 ]]; then
       wait=1
     fi
@@ -139,6 +142,10 @@ gh_api() {
   fi
   left=$((RATE_LIMIT_WAIT_SECONDS - RATE_LIMIT_WAITED))
   if [[ "$wait" -gt "$left" ]]; then
+    reset_at="an unknown time"
+    if [[ "$gh_reset" =~ ^[0-9]+$ ]]; then
+      reset_at="${gh_reset} ($(jq -rn --arg epoch "$gh_reset" '$epoch | tonumber | todate'))"
+    fi
     echo "::warning::${method} ${path} is rate limited and needs a ${wait}s wait, more than the ${left}s left of rate-limit-wait-seconds (${RATE_LIMIT_WAIT_SECONDS}); not waiting. The limit resets at ${reset_at}."
     return "$status"
   fi
@@ -148,9 +155,9 @@ gh_api() {
   # shellcheck disable=SC2310 # gh_api_once handles its own errexit; the status is classified below.
   gh_api_once "$@" && return 0
   status=$?
-  if [[ "$GH_HTTP_STATUS" == 403 || "$GH_HTTP_STATUS" == 429 ]]; then
-    GH_FAILURE=rate-limit
-    echo "::warning::${method} ${path} returned HTTP ${GH_HTTP_STATUS} again after the wait: $(escape_annotation "$GH_MESSAGE"); not retrying."
+  # shellcheck disable=SC2310 # gh_classify reports a status it does not classify through its return.
+  if gh_classify "$method" "$path" && [[ "$GH_FAILURE" == rate-limit ]]; then
+    echo "::warning::${method} ${path} is still rate limited after the wait; not retrying."
   fi
   return "$status"
 }

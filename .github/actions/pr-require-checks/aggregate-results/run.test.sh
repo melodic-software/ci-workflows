@@ -542,8 +542,10 @@ echo 'case: a call still rate limited after the wait fails closed without furthe
 printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
 printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.2.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 30\r\n' >"$fixtures/${status_post_key}.1.headers"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 3600\r\n' >"$fixtures/${status_post_key}.2.headers"
 run_case 1 'success success' pass ''
-expect_log 'returned HTTP 403 again after the wait'
+expect_log 'x-ratelimit-remaining=0 x-ratelimit-reset=3600 retry-after=absent'
+expect_log 'is still rate limited after the wait; not retrying.'
 expect_log "::error::could not record ci-lanes on ${sha} (HTTP 403): rate limited past rate-limit-wait-seconds"
 expect_no_log 'retrying in'
 if [[ "$(cat "$calls/${status_post_key}.count")" != 2 ]]; then
