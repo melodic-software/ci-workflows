@@ -631,7 +631,13 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5 — advisory outcome: one marker comment, upserted, plus the label.
 # ---------------------------------------------------------------------------
+# Sets `marker_comment_id` (empty when there is none). Never call it in a
+# command substitution: gh_api prints its warnings to stdout and adds its
+# rate-limit wait to RATE_LIMIT_WAITED, and a subshell would capture the one
+# and drop the other.
+marker_comment_id=""
 find_marker_comment() {
+  marker_comment_id=""
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
   if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp; then
     return 1
@@ -641,18 +647,19 @@ find_marker_comment() {
   # the gate would edit their comment instead of posting its own. `--slurp`
   # wraps every page in one outer array, so `max_by` sees all pages at once
   # rather than printing one id per page.
-  jq -r --arg marker "$LINKAGE_MARKER" \
+  marker_comment_id="$(jq -r --arg marker "$LINKAGE_MARKER" \
     '[ .[][] | select((.user.type // "") == "Bot" and ((.body // "") | contains($marker))) ] | (max_by(.id).id // empty)' \
-    <"$gh_stdout"
+    <"$gh_stdout")"
 }
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.
 upsert_marker_comment() {
-  local body="$1" comment_id=""
+  local body="$1" comment_id
   # shellcheck disable=SC2310 # find_marker_comment reports the read failure through its status.
-  if ! comment_id="$(find_marker_comment)"; then
+  if ! find_marker_comment; then
     return 1
   fi
+  comment_id="$marker_comment_id"
   jq -n --arg body "$body" '{body: $body}' >"$scratch/comment-payload.json"
   if [[ -n "$comment_id" ]]; then
     gh_api PATCH "repos/${REPOSITORY}/issues/comments/${comment_id}" --input "$scratch/comment-payload.json"
@@ -709,7 +716,7 @@ else
   } >"$scratch/comment-body.md"
 
   # shellcheck disable=SC2310 # a failed read simply means there is no comment to update.
-  if [[ -n "$(find_marker_comment 2>/dev/null || true)" ]]; then
+  if find_marker_comment 2>/dev/null && [[ -n "$marker_comment_id" ]]; then
     best_effort 'updating the linkage comment' upsert_marker_comment "$(cat "$scratch/comment-body.md")"
   fi
   if grep -qxF -- "$LINKAGE_LABEL" "$scratch/labels.txt"; then

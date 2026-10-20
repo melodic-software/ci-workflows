@@ -577,7 +577,7 @@ expect_output 'linkage=pass'
 # Without the bounded backward scan in negation_trigger, and the single gsub
 # pass in scan_line, one long unpunctuated line of closing keywords costs
 # super-quadratic time: about 111 s at 4000 repeats, against the ci-status job's
-# 3-minute timeout. Linear work keeps the 8000/4000 ratio near 2; best of two
+# 5-minute timeout. Linear work keeps the 8000/4000 ratio near 2; best of two
 # runs damps runner noise.
 # time_repeats <repeats>: sets best_time to the faster of two runs, in seconds.
 time_repeats() {
@@ -937,6 +937,39 @@ run_case 0
 expect_log 'returned HTTP 403 (permission): Resource not accessible by integration; x-ratelimit-remaining=absent x-ratelimit-reset=absent retry-after=absent x-accepted-github-permissions=issues=write; pull_requests=write'
 expect_log '::notice::pr-contract: adding the linkage label was refused (HTTP 403); continuing without it'
 rm -f -- "$fixtures/POST_${labels_key}.1.err" "$fixtures/POST_${labels_key}.1.headers"
+
+# Without reading the marker comment outside a command substitution, the wait
+# warning is captured as a comment id, and the conforming path posts a comment
+# it should only ever edit.
+echo 'case: a rate-limited marker comment read on a conforming pull request posts nothing'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_comments '[]'
+printf '%s\n' "$primary_limit_message" >"$fixtures/GET_${comments_key}.1.err"
+run_case 0
+expect_log "::warning::GET repos/${repository}/issues/${pr_number}/comments returned HTTP 403 (rate-limit)"
+expect_log 'is rate limited; waiting 60s, then retrying once.'
+expect_no_gh_call "-X POST repos/${repository}/issues/${pr_number}/comments"
+expect_no_gh_call '-X PATCH'
+if [[ "$(cat "$sleep_log")" != 60 ]]; then
+  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/GET_${comments_key}.1.err"
+
+# Without the wait counted in the parent shell, the comment read's wait is
+# forgotten and the comment write waits a second time, past the step's cap.
+echo 'case: the marker comment read and write share one rate-limit-wait-seconds budget'
+set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+printf '%s\n' "$primary_limit_message" >"$fixtures/GET_${comments_key}.1.err"
+printf '%s\n' "$primary_limit_message" >"$fixtures/POST_${comments_key}.1.err"
+run_case 0
+expect_log 'needs a 60s wait, more than the 0s left of rate-limit-wait-seconds (60); not waiting.'
+expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 403); continuing without it'
+if [[ "$(cat "$sleep_log")" != 60 ]]; then
+  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/GET_${comments_key}.1.err" "$fixtures/POST_${comments_key}.1.err"
 
 # --- comment-upsert capture ------------------------------------------------
 
