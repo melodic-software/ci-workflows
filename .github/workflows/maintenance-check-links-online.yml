@@ -1,0 +1,135 @@
+name: maintenance-check-links-online
+
+# Reusable workflow: runs lychee with the network on over the caller's
+# Markdown, with the caller's lychee.toml (the standards-synced config the
+# offline lane also reads) and the .lycheeignore lychee picks up from the
+# working directory. The report goes to the job summary and any broken link
+# fails the job red. It never opens an issue or posts a comment.
+#
+# GITHUB_TOKEN only: it lifts the github.com rate limit, and it cannot read
+# another private repository, so lychee never reports a link into one as OK.
+# A broader token would. This workflow declares no secrets.
+#
+# OPT-IN BY REPOSITORY PROPERTY. A `schedule` run reads the caller
+# repository's custom property named by `opt-in-property` and does nothing
+# unless its value is `true`; an unset property means off. Any other event,
+# `workflow_dispatch` included, always runs, so a repository proves a green
+# dispatched run before its property turns the schedule on. A property read
+# that errors fails the job red rather than skipping, so a broken gate shows.
+#
+# The caller owns the trigger: `schedule` with a cron minute and day no other
+# opted-in repository uses, plus `workflow_dispatch`. Informational: keep it
+# out of `ci-status`.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller.
+        type: string
+        required: true
+      timeout-minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 40
+      opt-in-property:
+        description: >-
+          Org custom property (true_false) that turns scheduled runs on for
+          the caller repository. Unset or false skips a scheduled run.
+        type: string
+        default: link-check-online
+      config:
+        description: Path to the lychee.toml ruleset in the caller repository.
+        type: string
+        default: lychee.toml
+      extra-args:
+        description: >-
+          Extra lychee arguments appended before the globs, such as
+          `--exclude-path` regexes for intentionally broken fixtures.
+          lychee-action evaluates `args` in a shell, so single-quote each
+          regex and glob.
+        type: string
+        default: ''
+      globs:
+        description: Input globs, shell-quoted. Default scans all Markdown.
+        type: string
+        default: "'**/*.md'"
+      lychee-version:
+        description: Exact lychee release tag lychee-action installs.
+        type: string
+        default: v0.24.2
+
+permissions: {}
+
+jobs:
+  check-links:
+    name: check-links
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    steps:
+      - name: Read the opt-in property
+        id: gate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OPT_IN_PROPERTY: ${{ inputs.opt-in-property }}
+        with:
+          script: |
+            const property = process.env.OPT_IN_PROPERTY || "";
+            if (context.eventName !== "schedule") {
+              core.info(`Event '${context.eventName}' always runs.`);
+              core.setOutput("run", "true");
+              return;
+            }
+            if (property.length === 0) {
+              core.setFailed("The 'opt-in-property' input must be non-empty.");
+              return;
+            }
+            // An error here throws and fails the job: a gate that cannot read
+            // the property must not pass as an opted-out skip.
+            const { data } = await github.request(
+              "GET /repos/{owner}/{repo}/properties/values",
+              context.repo,
+            );
+            const value = data.find((entry) => entry.property_name === property)?.value;
+            if (value !== "true") {
+              core.notice(
+                `Property '${property}' is ${JSON.stringify(value ?? null)}, not "true"; ` +
+                  "skipping the scheduled online link check.",
+              );
+              core.setOutput("run", "false");
+              return;
+            }
+            core.setOutput("run", "true");
+
+      - name: Check out
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pacing: some hosts throttle lychee's default per-host burst from a
+      # runner IP, so each host gets fewer parallel requests, spaced out, with
+      # longer retries and timeout. Pacing did not stop every 429
+      # (standards#775, #776); a page proven alive that still blocks the
+      # checker gets an exact-URL .lycheeignore entry with a dated reason. A
+      # single red run on a github.com blob page 503 is not proof of rot.
+      - name: Check links (online)
+        if: steps.gate.outputs.run == 'true'
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          lycheeVersion: ${{ inputs.lychee-version }}
+          token: ${{ github.token }}
+          fail: true
+          jobSummary: true
+          format: markdown
+          args: >-
+            --no-progress
+            --config '${{ inputs.config }}'
+            --host-concurrency 4
+            --host-request-interval 250ms
+            --max-retries 4
+            --retry-wait-time 5
+            --timeout 40
+            ${{ inputs.extra-args }}
+            ${{ inputs.globs }}

@@ -856,6 +856,41 @@ GitHub continues the normal weekly patching of each hosted image generation.
   present. A human triager assigning a real tier after this workflow ran is
   expected to remove the floor label as part of that transition — this
   workflow only guarantees a floor and does not police tier assignment.
+- `.github/workflows/maintenance-check-links-online.yml` — the weekly online
+  link check: lychee with the network on over the caller's Markdown, reading
+  its `lychee.toml` (the standards-synced config the offline lane uses) and
+  `.lycheeignore`. The report goes to the job summary and a broken link fails
+  the job red; it opens no issue and posts no comment. It holds only the
+  `GITHUB_TOKEN`, which cannot read another private repository, so lychee
+  never reports a link into one as OK. **Opt-in by repository property**: a
+  `schedule` run reads the caller's `opt-in-property` (default
+  `link-check-online`, an org `true_false` custom property) and skips unless it
+  is `true`; any other event, `workflow_dispatch` included, always runs, so a
+  repository shows a green dispatched run before the property turns its
+  schedule on. A property read that errors fails red. Required input: `runner`.
+  Optional: `config`, `globs`, `extra-args` (lychee-action evaluates its args
+  in a shell, so single-quote each regex), `lychee-version`, `timeout-minutes`.
+  Exceptions are exact-URL `.lycheeignore` entries with a dated reason; the
+  built-in per-host pacing flags do not stop every runner 429. Keep it out of
+  `ci-status`. The caller owns the trigger and picks a cron minute and day no
+  other opted-in repository uses (the standards sync delivers each opted-in
+  repository its own caller):
+
+  ```yaml
+  on:
+    schedule:
+      - cron: "37 11 * * 2"
+    workflow_dispatch:
+  permissions: {}
+  jobs:
+    check-links:
+      permissions:
+        contents: read
+      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@<sha>
+      with:
+        runner: ubuntu-24.04
+  ```
+
 - `.github/workflows/pr-automerge-dependabot.yml` — arms squash auto-merge on a
   Dependabot pull request, so GitHub merges it once `ci-status` and every other
   required check pass. It never merges directly. All gates must hold: the PR
