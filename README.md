@@ -1124,8 +1124,9 @@ job is named `claude-review-status`, so its check is
 the cause, whenever no review happened: a failed attempt (`auth`,
 `rate-limit`, `overloaded`, `max-turns`, `timeout`, `other`), the action
 skipping itself because the
-PR edits the caller workflow (`skipped-validation`), a review that did not
-complete (`incomplete`), or a job that ended before the review reported
+PR edits the caller workflow (`skipped-validation`), bubblewrap unable to
+create a namespace so no review ran (`sandbox-unavailable`), a review that did
+not complete (`incomplete`), or a job that ended before the review reported
 (`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
 
