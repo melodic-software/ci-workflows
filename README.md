@@ -642,9 +642,11 @@ consumer to audit it.
   - reads only trusted inputs: no artifact download from job A and no
     cache restore.
 
-  Job A skips its apply and outcome steps on a credit stop, so whichever
-  job triaged applies and reports, and a status job that needs both reads
-  job B's outcome when it ran, else job A's: one lane record per run.
+  Job A skips its outcome step on a credit stop, so whichever job triaged
+  reports; a status job that needs both reads job B's outcome when it ran,
+  else job A's: one lane record per run. A lane that writes does it in a
+  separate job with no model that needs both and reads job B's outputs when
+  it ran, else job A's, so the write happens once.
   `intake-triage.yml` is the reference implementation.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
@@ -1041,10 +1043,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fail the job. It skips a pull request whose files in scope are all
   documentation (`docs-only-paths`).
 - `.github/workflows/intake-triage.yml` — the intake-triage lane. On
-  `issues: [opened]`, a read-only Claude run (`--permission-mode dontAsk`,
-  read-only `gh` queries, JSON output) proposes labels and a comment; a step
-  with no model in it applies only labels in the caller's `allowed-labels`
-  that exist in the repository. On a permission denial, a max-turns stop,
+  `issues: [opened]`, a script step fetches the issue, its comments and the
+  newest 200 open issues into the checkout; a read-only Claude run
+  (`--permission-mode dontAsk`, Read, Grep and Glob only, no GitHub token,
+  `contents: read` and `issues: read`, `cache-mode: none`, JSON output)
+  proposes labels and a comment; the `claude-intake-triage-apply` job, with
+  no model and the triage's only `issues: write` grant, re-validates it and
+  applies only labels in the caller's `allowed-labels` that exist in the
+  repository. On a permission denial, a max-turns stop,
   unusable output, a credential-like comment or a request for a person it
   applies only
   `escalation-label` (default `needs-human`) and a fixed note, dropping the
@@ -1068,7 +1074,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
   runs in the `claude-intake-triage` job; after its credit stop, or with no
   key, the token runs in the `claude-intake-triage-subscription` job on
-  `ubuntu-24.04` (the two-job pattern above), and
+  `ubuntu-24.04` (the two-job pattern above);
+  `claude-intake-triage-apply` writes whichever job triaged, and
   `claude-intake-triage-status` reports the one outcome. The workflow
   header carries the canonical caller and the security model. Runs only for issues opened by
   their author when that author's user id is in `allowed-author-ids` (a
