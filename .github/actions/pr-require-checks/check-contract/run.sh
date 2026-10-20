@@ -273,29 +273,51 @@ function has_closing_run(s, start, ticks,   col, stop) {
   return 0
 }
 
-function negation_trigger(line, keyword_index,   preceding, cut, i, ch, tail, count, words, first, word, lower) {
-  preceding = substr(line, 1, keyword_index - 1)
-  cut = 0
-  for (i = length(preceding); i >= 1; i--) {
-    ch = substr(preceding, i, 1)
-    if (ch == "." || ch == "!" || ch == "?" || ch == ";" || ch == ",") {
-      cut = i
-      break
+# The negation window is the last five words before the keyword, cut at the
+# nearest sentence punctuation. The backward scan stops at whichever comes
+# first, so each call costs the window, not the whole preceding line; copying
+# the preceding text per keyword made a long run of keywords super-quadratic.
+function negation_trigger(line, keyword_index,   start, i, ch, width, in_word, has_letter, seen, tail, count, words, word, lower) {
+  in_word = 0
+  has_letter = 0
+  seen = 0
+  i = keyword_index - 1
+  while (i >= 1) {
+    ch = substr(line, i, 1)
+    width = 0
+    if (ch ~ /[A-Za-z]/) {
+      width = 1
+      has_letter = 1
+    } else if (ch == "'"'"'" || ch == apostrophe) {
+      width = 1
+    } else if (i >= 3 && substr(line, i - 2, 3) == apostrophe) {
+      # A byte-oriented awk sees the typographic apostrophe as three characters.
+      width = 3
     }
+    if (width) {
+      in_word = 1
+      i -= width
+      continue
+    }
+    # A word is a run of letters and apostrophes holding at least one letter.
+    if (in_word && has_letter && ++seen == 5) break
+    in_word = 0
+    has_letter = 0
+    if (ch == "." || ch == "!" || ch == "?" || ch == ";" || ch == ",") break
+    i--
   }
-  tail = substr(preceding, cut + 1)
-  # U+2019 RIGHT SINGLE QUOTATION MARK, written as its UTF-8 bytes so the source
-  # of this action stays plain ASCII: normalize a typographic apostrophe to the
-  # straight one so "doesn<U+2019>t close #N" is detected like "doesn'"'"'t".
-  gsub("\342\200\231", "'"'"'", tail)
+  start = i + 1
+  tail = substr(line, start, keyword_index - start)
+  # Normalize a typographic apostrophe to the straight one so
+  # "doesn<U+2019>t close #N" is detected like "doesn'"'"'t".
+  gsub(apostrophe, "'"'"'", tail)
   count = 0
   while (match(tail, /[A-Za-z][A-Za-z'"'"']*/)) {
     count++
     words[count] = substr(tail, RSTART, RLENGTH)
     tail = substr(tail, RSTART + RLENGTH)
   }
-  first = (count > 5) ? count - 4 : 1
-  for (i = first; i <= count; i++) {
+  for (i = 1; i <= count; i++) {
     word = words[i]
     lower = tolower(word)
     # Correlative "not only ... but" is affirmative, not a disclaimer.
@@ -307,7 +329,7 @@ function negation_trigger(line, keyword_index,   preceding, cut, i, ch, tail, co
   return ""
 }
 
-function scan_line(line,   indent, rest, lower, offset, chunk, start, len, before, after, text, trigger) {
+function scan_line(line,   indent, rest, lower, marked, pieces, count, i, position, start, len, before, after, text, trigger) {
   indent = 0
   while (substr(line, indent + 1, 1) == " ") indent++
   if (indent <= 3) {
@@ -317,13 +339,18 @@ function scan_line(line,   indent, rest, lower, offset, chunk, start, len, befor
     }
   }
   lower = tolower(line)
-  offset = 0
-  while (1) {
-    chunk = substr(lower, offset + 1)
-    if (!match(chunk, closing_regex)) break
-    start = offset + RSTART
-    len = RLENGTH
-    offset = start + len - 1
+  # One gsub pass finds the same successive leftmost-longest matches as calling
+  # match() on each remainder, without rescanning the rest of the line per
+  # match. A record never holds a newline, so it can fence each match; the
+  # pieces then alternate text, match, text.
+  marked = lower
+  gsub(closing_regex, "\n&\n", marked)
+  count = split(marked, pieces, "\n")
+  position = 1
+  for (i = 1; i < count; i += 2) {
+    start = position + length(pieces[i])
+    len = length(pieces[i + 1])
+    position = start + len
     before = (start > 1) ? substr(lower, start - 1, 1) : ""
     after = substr(lower, start + len, 1)
     # Word-boundary equivalent of the upstream /\b...\b/ anchors.
@@ -384,6 +411,9 @@ BEGIN {
   has_closing = 0
   has_non_closing = 0
   negated_count = 0
+  # U+2019 RIGHT SINGLE QUOTATION MARK, written as its UTF-8 bytes so the source
+  # of this action stays plain ASCII.
+  apostrophe = "\342\200\231"
   # The caller pattern arrives through ENVIRON, so awk applies no escape
   # processing to it and it never becomes program text.
   ref = tolower(ENVIRON["ISSUE_REF_PATTERN"])
