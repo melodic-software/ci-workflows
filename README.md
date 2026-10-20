@@ -552,6 +552,84 @@ consumer to audit it.
   using-directive organization via `dotnet format style --diagnostics IDE0055
   --verify-no-changes` (the build-time analyzers own code-style and code-quality,
   so none of the three lanes double-report).
+- `.github/actions/run-claude-cli` — runs one prompt with headless `claude -p` for
+  an agent-mode lane on a Linux runner, installing the Claude Code CLI
+  version `cli-version` names (an exact version, pinned by default, or
+  `latest`). Each invocation runs one leg on one
+  credential: pass exactly one of `api-key` and `subscription-token`, or
+  the action fails closed. A key leg that ends in a credit stop
+  (report-lane-outcome's opt-in `credit-stop` class) sets `lane-class` to
+  `credit-stop`; any other failure sets its own class, so a broken key stays
+  visible instead of spending the subscription. A caller that falls back to
+  the subscription does so in a second job (the two-job pattern below);
+  a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
+  environment has every credential and workflow file-command variable
+  removed and its one credential set. The step's `GITHUB_ENV`,
+  `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` and `GITHUB_STATE`
+  files are bound read-only for the leg and anything it leaves running, and
+  restored to their exact content after it ends, before the action writes
+  its own outputs (`lane-class` included); the installed CLI tree and
+  `_work/_actions` have their write bits removed while it runs. Code the leg
+  runs still runs as the runner
+  user, so a lane that gives the model unrestricted Bash, or any
+  code-running tool beyond fixed
+  read-only command rules, runs the action in a job that holds no other
+  secret or write token and does its reporting and uploads in a downstream
+  job that validates its inputs; a lane whose Bash is limited to fixed
+  read-only rules may stay in one job. The CLI runs with
+  `--restricted`, so Bash and the other code-running tools are available
+  only when `tools` names them. Callers run `apply-claude-managed-settings`
+  while sudo still works, then runner isolation (sudo and docker removed,
+  bubblewrap installed, and on Ubuntu 24.04
+  `kernel.apparmor_restrict_unprivileged_userns=0`), then the head checkout,
+  and run no head code before the action. It fails closed when the settings
+  are missing or unpinned, sudo works, the docker socket is writable,
+  `bwrap --unshare-pid` fails, or the step environment sets `NODE_OPTIONS`,
+  `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `NODE_EXTRA_CA_CERTS`,
+  `NODE_TLS_REJECT_UNAUTHORIZED` or a `*_PROXY` variable other than
+  `NO_PROXY`. The CLI installs from the public npm registry, outside any
+  checkout's `.npmrc`. Its outputs match report-check-run's `lane-*` inputs, plus
+  `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
+  written only after a credential scan; every log line records the `lane` and
+  the funding `role` whose secrets the caller passed. The secret names are
+  always the role's, `<ROLE>_CLAUDE_API_KEY` and
+  `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake. The job summary
+  shows only closed tokens; the CLI's own error line stays in the log. Each
+  leg stops after `leg-timeout-minutes`, 30 by default. `tools`,
+  `allowed-tools`, `disallowed-tools` and `json-schema-file` pass through to
+  the CLI flags of the same names. `plugin-dirs` passes each directory to
+  `--plugin-dir` and `--add-dir`, so a plugin's skills can read their own
+  files under `--restricted`; `add-dirs` passes more `--add-dir` directories.
+  Each entry must resolve, with no `..` part, to an existing directory inside
+  `GITHUB_WORKSPACE`. Uploading the log is the caller's.
+
+  **Two-job pattern for the subscription fallback.** Two legs in one job
+  would share the runner user, the filesystem and the environment, so the
+  fallback runs on a new VM. Job A runs the key leg with `api-key` only
+  (`continue-on-error: true` on the step) and exposes `lane-class` as a job
+  output. Job B runs the subscription leg with `subscription-token` only.
+  Only job B references the OAuth secret, and it:
+
+  - declares `needs: A` and
+    `if: needs.A.outputs.lane-class == 'credit-stop'`, an exact compare,
+    and never writes job A's outputs into a `run:` script;
+  - runs on a fixed GitHub-hosted label (`runs-on: ubuntu-24.04`), never a
+    caller-supplied runner;
+  - repeats job A's hardening from the start: a fresh checkout,
+    `apply-claude-managed-settings`, runner isolation, then the action;
+  - reads only trusted inputs: no artifact download from job A and no
+    cache restore.
+
+  Job A skips its apply and outcome steps on a credit stop, so whichever
+  job triaged applies and reports, and a status job that needs both reads
+  job B's outcome when it ran, else job A's: one lane record per run.
+  `intake-triage.yml` is the reference implementation.
+- `.github/actions/apply-claude-managed-settings` — writes the root-owned
+  `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
+  `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
+  `allowManagedHooksOnly` (or the caller's `disableAllHooks`), so head code
+  cannot repoint the lane's credential or add a hook. Needs sudo, so it runs
+  before runner isolation; run-claude-cli refuses to run without the file.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
@@ -760,15 +838,26 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Dependabot pull request, so GitHub merges it once `ci-status` and every other
   required check pass. It never merges directly. All gates must hold: the PR
   author and the event sender are account id `49699333` (dependabot[bot]);
-  fetch-metadata succeeded; every update is
-  `github_actions`; every dependency name matches the publisher allowlist
-  (`actions/*`, `github/*`, `anthropics/*`, mirroring standards
-  `dependabot-policy` `autoMerge`); every update is semver patch or minor; and
-  every commit, head included, has author `49699333`, committer web-flow
+  fetch-metadata succeeded; every update is `github_actions` or, unless the
+  caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`
+  (docker, uv, dotnet-sdk and other ecosystems stay manual); every GitHub
+  Actions dependency name matches the publisher allowlist (`actions/*`,
+  `github/*`, `anthropics/*`, mirroring standards `dependabot-policy`
+  `autoMerge`); no package name is in the caller's `review-only-dependencies`
+  JSON array (its `autoMerge.reviewOnly` entries); every update is semver patch
+  or minor, and a version below 1.0 keeps its minor component; and every
+  commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. A repository that adopts it
-  records it as the merge authority for Dependabot PRs. The caller owns the
-  trigger and concurrency:
+  records it as the merge authority for Dependabot PRs. A repository where a
+  merge can lead to a deploy passes `package-auto-merge: false`. Package
+  updates have no publisher allowlist, and this workflow does not check a
+  cooldown. The delay against a malicious patch or minor release lives in each
+  caller's `.github/dependabot.yml` `cooldown`, and the standards
+  `dependabot-policy` lint (`cooldownMinimumDays`) requires it. A caller whose
+  package runs with credentials lists that package in
+  `review-only-dependencies`. The caller
+  owns the trigger and concurrency:
 
   ```yaml
   on:
@@ -912,12 +1001,26 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `Proposed work class:` in its note. The lane never applies a `work-class:`
   label or `agent-ready`. After any other run the lane adds the floor if it
   is missing, so the result does not depend on whether
-  `intake-label-needs-triage` ran first. It installs the newest Claude Code CLI at run time (`cli-version`,
-  else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`; `bundled` uses
-  the action's own). The caller grants `contents: read` and `issues: write`
-  and passes `CLAUDE_CODE_OAUTH_TOKEN` by name; the workflow header carries
-  the canonical caller and the security model. Runs for any issue author,
-  including people without write access.
+  `intake-label-needs-triage` ran first. It runs through
+  `.github/actions/run-claude-cli` (lane `intake`, funding `role` default
+  `automations`), which installs the Claude Code CLI at run time
+  (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else the
+  pinned version in the workflow).
+  `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
+  caller grants `contents: read` and `issues: write` and passes the role's
+  `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
+  runs in the `claude-intake-triage` job; after its credit stop, or with no
+  key, the token runs in the `claude-intake-triage-subscription` job on
+  `ubuntu-24.04` (the two-job pattern above), and
+  `claude-intake-triage-status` reports the one outcome. The workflow
+  header carries the canonical caller and the security model. Runs only for issues opened by
+  their author when that author's user id is in `allowed-author-ids` (a
+  person) or `allowed-bot-sender-ids` (a bot); other issues wait for a
+  person, and the `claude-intake-triage-skipped` job names the reason and
+  applies `skipped-label` when set. A caller can also run it on
+  `workflow_dispatch` with `issue-number`, for issues a `GITHUB_TOKEN`
+  created (those start no `issues` run); the dispatching actor's id must be
+  in the same lists, and the lane reads the issue from the API.
 
 ## Claude lanes — shared consumption contract
 
@@ -953,6 +1056,14 @@ visibility "all repositories", so every org repo receives it. Pass that one
 named secret explicitly rather than `secrets: inherit`, which forwards every
 parent secret.
 
+**Usage-limit fallback.** Both lanes accept an optional second secret,
+`fallback-claude-code-oauth-token`. When the first attempt stops on a usage
+limit (`class=rate-limit`), the job retries the review once on that token, in
+the same job and inside the review step's budget, before the report steps; the
+completion record then ends with the field `account=fallback`. The first attempt's limit leaves only a warning with no
+`class=` token, so the final report alone names the run's class. Without the
+secret the job makes one attempt.
+
 **Inputs** (both lanes, all optional):
 
 | Input | Default | Purpose |
@@ -961,7 +1072,10 @@ parent secret.
 | `plugins` | `review@melodic-software` | Plugins the action installs |
 | `plugin-marketplaces` | the org marketplace URL | Marketplaces for `plugins` |
 | `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
-| `claude-args` | `--model claude-sonnet-5 --max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the inline-comment grant and a `Skill(<plugin-command>)` grant are always appended |
+| `model` | `sonnet` | Model alias or ID, appended as `--model` after `claude-args`, so it wins over a `--model` there |
+| `effort` | `high` | `low`, `medium`, `high`, `xhigh` or `max`, appended as `--effort` after `claude-args` |
+| `model-args` | empty | resolve-config's `claude-args` (`[--model <alias>] --max-turns <n> [--effort <level>]`); when set, appended after `claude-args` in place of `model` and `effort`, and any other value fails the job. Claude args only: a profile's `subagent-model` (resolve-config's `settings-json`) is not supported, so routes feeding this input keep `subagent-model: inherit` |
+| `claude-args` | `--max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the `model` and `effort` inputs are appended after them, or `model-args` in their place when set, then the inline-comment grant and a `Skill(<plugin-command>)` grant. With `model-args` set, only the flags it carries are appended, so a `--model` or `--effort` here is used when `model-args` leaves that flag out |
 | `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
 | `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |
 | `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
@@ -977,15 +1091,30 @@ Calling either lane from `pull_request_target` or
 request; the code-review lane writes its whole diff to `.claude-lane/pr.diff`.
 A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
-their diff to `.claude-lane/incremental.diff`. Each lane keeps the last head
-it reviewed in one pull request comment that the job writes with its own token
-(author `github-actions[bot]`) and edits after each completed review. A push
+their diff to `.claude-lane/incremental.diff`. A push
 reviews the whole pull request instead when no earlier review is recorded, the
 recorded head is not an ancestor of the new head (force push or rebase), 300
 or more files changed since, a base-branch merge since then changed a file the
 pull request also changes (or 300 or more files, too many to check), or the
 API returns no patch for a changed text file (too large to show). A push that
-changes no file of the pull request is not reviewed again.
+changes no file of the pull request is not reviewed again, and neither is a
+rebase or restack onto the same base branch that leaves the pull request's
+files, their statuses, and every one of those paths' mode, type and content
+as reviewed. The marker comment's second line records the base branch and
+merge base each review used. A skip is taken only while the pull request's
+live head is still the run's head.
+
+**The lane's comment.** Each lane posts one pull request comment of its own,
+written with the job token (author `github-actions[bot]`), created once and
+edited in place after each completed review and each designed skip, whatever
+`incremental-review` says. Its first line is the hidden marker
+`<!-- claude-lane-reviewed-head lane=<id> sha=<head> -->` that the scope step
+and other repositories' tooling parse; its visible body names the head it
+covers, the findings count and the review summary (a skip keeps the last
+summary). The action posts no tracking comment: `track_progress` is off, so
+on a pull request event with a prompt it runs in agent mode, which creates no
+tracking comment and gives the model no comment tool but the inline one. The
+job's own check shows a review in progress and done.
 
 **Status check, red means no review.** Each lane is one job. The code-review
 job is named `claude-review-status`, so its check is
@@ -1001,21 +1130,18 @@ complete (`incomplete`), or a job that ended before the review reported
 (nothing changed, or docs only) stays green and says why in the job summary.
 
 **Completion.** A green Claude step is not taken as a review. The model
-returns its findings count as structured output (`--json-schema`, appended
-after the caller's `claude-args`), and the step "Verify the review completed"
-then requires a summary by the Claude App (`claude[bot]`), posted after the
-step started, carrying the plain-text line
-`claude-lane-summary: lane=<id> sha=<head> run=<github.run_id>` with this
-run's id (so a marker another workflow posts as the same App does not count),
-and a count no lower than the App's inline comments on the head in that
-window. Each inline comment ends with the plain-text footer
+returns its findings count and its summary as structured output
+(`--json-schema`, appended after the caller's `claude-args`), and the step
+"Verify the review completed" then requires both, with a count no lower than
+the Claude App's (`claude[bot]`) inline comments on the head since the step
+started. Each inline comment ends with the plain-text footer
 `claude-lane: <id>` as its last non-blank line. Counting rule: a comment footed
 for the other lane counts only for that lane; any App inline comment on the
 head in that window with no footer fails the review of every lane whose window
-covers it, since it belongs to neither lane. Both markers are
-plain text because the action's comment tools delete HTML comments before
-posting. Anything less is `incomplete`: red, and the
-reviewed-head marker is not written. On a whole review the code-review lane
+covers it, since it belongs to neither lane. The footer is plain text
+because the action's comment tool deletes HTML comments before posting.
+Anything less is `incomplete`: red, and the reviewed-head marker is not
+written. On a whole review the code-review lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
 cannot be written, the review is `incomplete`. The security lane reviews from
@@ -1029,6 +1155,7 @@ read through the check-run annotations API:
 |---|---|
 | Completed review | `claude-lane-review-complete lane=<id> sha=<head> findings=<N> inline=<K> scope=whole` |
 | Completed incremental review | `... findings=<N> inline=<K> scope=incremental since=<last reviewed head>` |
+| Either, reviewed on the fallback token | the same message with a last field `account=fallback` |
 | Nothing changed since the last review | `claude-lane-review-complete lane=<id> sha=<head> skip=no-change through=<last reviewed head>` |
 | Every file in scope is documentation | `claude-lane-review-complete lane=<id> sha=<head> skip=docs-only` |
 
@@ -1038,6 +1165,13 @@ which bounds that only when inline comments exist. A failed, skipped or
 incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
 reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
+Every outcome annotation, and a notice on a run that completed, also carries
+the run record as bare tokens, each omitted when unknown: `turns=<n>`,
+`max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
+`credential` input), `models=<modelUsage keys>` and, on `class=rate-limit`,
+`resets=<ISO 8601 UTC>` and `resets-window=<rateLimitType>` from the run's
+newest `rejected` `rate_limit_event` (none without one), the time also
+exposed as the composite's `resets-at` output.
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
 required check); do not make either check required.

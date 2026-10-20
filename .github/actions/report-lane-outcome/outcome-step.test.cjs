@@ -59,6 +59,9 @@ async function runOutcome({
   lane = "Claude review",
   startedAt = "",
   timeoutMinutes = "",
+  credential = "",
+  maxTurns = "",
+  knownFailureClass = "",
 }) {
   const keys = [
     "LANE_OUTCOME",
@@ -66,6 +69,9 @@ async function runOutcome({
     "LANE_NAME",
     "STEP_STARTED_AT",
     "STEP_TIMEOUT_MINUTES",
+    "CREDENTIAL",
+    "MAX_TURNS",
+    "KNOWN_FAILURE_CLASS",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -77,6 +83,9 @@ async function runOutcome({
     LANE_NAME: lane,
     STEP_STARTED_AT: startedAt,
     STEP_TIMEOUT_MINUTES: timeoutMinutes,
+    CREDENTIAL: credential,
+    MAX_TURNS: maxTurns,
+    KNOWN_FAILURE_CLASS: knownFailureClass,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -84,12 +93,14 @@ async function runOutcome({
   const warnings = [];
   const failed = [];
   const infos = [];
+  const notices = [];
   try {
     const core = {
       setOutput: (key, value) => (outputs[key] = value),
       error: (message) => errors.push(message),
       warning: (message) => warnings.push(message),
       info: (message) => infos.push(message),
+      notice: (message) => notices.push(message),
       setFailed: (message) => failed.push(message),
     };
     const execute = new AsyncFunction(
@@ -99,7 +110,7 @@ async function runOutcome({
       stepScript(),
     );
     await execute(core, require, process);
-    return { outputs, errors, warnings, failed, infos };
+    return { outputs, errors, warnings, failed, infos, notices };
   } finally {
     for (const key of keys) {
       if (originalValues[key] === undefined) delete process.env[key];
@@ -166,6 +177,48 @@ test("a genuine failure still classifies and reports as failed", async () => {
   assert.equal(outputs.failure_class, "auth");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /\bclass=auth\b/u);
+});
+
+test("a caller's known failure class wins over reclassifying the file", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 401,
+    },
+  ]);
+  const known = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    knownFailureClass: "timeout",
+  });
+  assert.equal(known.outputs.failure_class, "timeout");
+  assert.match(known.errors[0], /\bclass=timeout\b/u);
+  const unsafe = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    knownFailureClass: "Timeout; rm",
+  });
+  assert.equal(unsafe.outputs.failure_class, "auth");
+});
+
+test("a review the sandbox probe kept from starting is a failure of its own class", async () => {
+  // The review lanes skip the model step when the bubblewrap probe fails and
+  // pass the probe's class here, so the step's outcome is "skipped" with no
+  // execution file. It must read as a failure, never as a review or a skip.
+  const { outputs, errors, warnings } = await runOutcome({
+    outcome: "skipped",
+    executionFile: "",
+    knownFailureClass: "sandbox-unavailable",
+  });
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(outputs.review_ran, "false");
+  assert.equal(outputs.failure_class, "sandbox-unavailable");
+  assert.deepEqual(warnings, []);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /\bclass=sandbox-unavailable\b/u);
 });
 
 test("a usage limit reads as a skipped review and keeps the class token", async () => {
@@ -261,4 +314,107 @@ test("a failed step that stopped inside its budget, or reported no start, is not
       `${startedAt}/${timeoutMinutes}`,
     );
   }
+});
+
+// 1767225600 is 2026-01-01T00:00:00Z in epoch seconds.
+test("a limit stop puts resets, credential, turns, max-turns and models on the class line", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        resetsAt: 1767225600,
+        rateLimitType: "five_hour",
+      },
+    },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 3,
+      api_error_status: 429,
+      modelUsage: { "claude-sonnet-5": {} },
+    },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    maxTurns: "30",
+  });
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /\bclass=rate-limit resets=2026-01-01T00:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 max-turns=30 models=claude-sonnet-5\b/u,
+  );
+  assert.equal(outputs.resets_at, "2026-01-01T00:00:00Z");
+});
+
+test("a non-limit failure carries the record but no resets", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed", resetsAt: 1767225600 },
+    },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 401,
+    },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.match(
+    errors[0],
+    /\bclass=auth credential=CLAUDE_CODE_OAUTH_TOKEN turns=1 /u,
+  );
+  assert.doesNotMatch(errors[0], /resets=/u);
+  assert.equal(outputs.resets_at, undefined);
+});
+
+test("a success writes a notice with turn headroom and models, and no class", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 11,
+      modelUsage: { "claude-sonnet-5": {}, "claude-haiku-5": {} },
+    },
+  ]);
+  const { outputs, errors, notices } = await runOutcome({
+    outcome: "success",
+    executionFile: file,
+    maxTurns: "30",
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(outputs.review_ran, "true");
+  assert.equal(notices.length, 1);
+  assert.match(
+    notices[0],
+    /\bturns=11 max-turns=30 models=claude-sonnet-5,claude-haiku-5\b/u,
+  );
+  assert.doesNotMatch(notices[0], /class=/u);
+});
+
+test("a run that finished past its turn cap reads as max-turns with its turns and cap", async () => {
+  // claude-code-plugins run 39038437240: 16 turns against a cap of 15.
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 16 },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude intake triage",
+    maxTurns: "15",
+  });
+  assert.equal(outputs.failure_class, "max-turns");
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /\bclass=max-turns turns=16 max-turns=15\b/u);
 });

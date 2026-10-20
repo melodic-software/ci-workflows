@@ -68,10 +68,12 @@ const update = (
   dependencyName,
   updateType,
   packageEcosystem = "github_actions",
+  versions = {},
 ) => ({
   dependencyName,
   updateType,
   packageEcosystem,
+  ...versions,
 });
 
 async function runGate({
@@ -82,6 +84,8 @@ async function runGate({
   senderId = DEPENDABOT_ID,
   metadataOutcome = "success",
   metadataJson = JSON.stringify(updates),
+  packageAutoMerge = "true",
+  reviewOnly = "[]",
 } = {}) {
   const graphqlCalls = [];
   const notices = [];
@@ -90,6 +94,8 @@ async function runGate({
     PUBLISHER_ALLOWLIST: stepEnv("PUBLISHER_ALLOWLIST"),
     SENDER_ID: String(senderId),
     METADATA_OUTCOME: metadataOutcome,
+    PACKAGE_AUTO_MERGE: packageAutoMerge,
+    REVIEW_ONLY_DEPENDENCIES: reviewOnly,
   };
   const original = { ...process.env };
   Object.assign(process.env, env);
@@ -359,18 +365,149 @@ test("a head that moved after the event is skipped", async () => {
   );
 });
 
-test("a non-actions ecosystem is skipped", async () => {
+function inputDefault(name) {
+  const input = workflowLines.indexOf(`      ${name}:`);
+  assert.notEqual(input, -1, `${name} input must exist`);
+  const line = workflowLines
+    .slice(input + 1)
+    .find((candidate) => candidate.trim().startsWith("default:"));
+  return line.trim().slice("default:".length).trim();
+}
+
+test("package auto-merge is on by default with no review-only names", () => {
+  assert.equal(inputDefault("package-auto-merge"), "true");
+  assert.equal(inputDefault("review-only-dependencies"), '"[]"');
+  assert.equal(
+    stepEnv("PACKAGE_AUTO_MERGE"),
+    `\${{ inputs.package-auto-merge }}`,
+  );
+  assert.equal(
+    stepEnv("REVIEW_ONLY_DEPENDENCIES"),
+    `\${{ inputs.review-only-dependencies }}`,
+  );
+});
+
+for (const [ecosystem, name, updateType] of [
+  ["npm_and_yarn", "lefthook", "version-update:semver-minor"],
+  ["pip", "requests", "version-update:semver-patch"],
+  ["nuget", "Microsoft.Extensions.Logging", "version-update:semver-minor"],
+]) {
+  test(`a ${ecosystem} ${updateType.split("-").at(-1)} from any publisher is armed`, async () => {
+    const { armCalls, notices } = await runGate({
+      updates: [update(name, updateType, ecosystem)],
+    });
+    assert.equal(notices.length, 0);
+    assert.equal(armCalls.length, 1);
+  });
+}
+
+test("a grouped npm update with one major bump is skipped", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("lefthook", "version-update:semver-minor", "npm_and_yarn"),
+        update("typescript", "version-update:semver-major", "npm_and_yarn"),
+      ],
+    }),
+    /typescript is not a patch or minor update/u,
+  );
+});
+
+test("a package minor below 1.0 is skipped as breaking", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("smol-toml", "version-update:semver-minor", "npm_and_yarn", {
+          prevVersion: "0.8.0",
+          newVersion: "0.9.0",
+        }),
+      ],
+    }),
+    /smol-toml changes its minor version below 1\.0/u,
+  );
+});
+
+test("a package patch below 1.0 is armed", async () => {
+  const { armCalls } = await runGate({
+    updates: [
+      update("smol-toml", "version-update:semver-patch", "npm_and_yarn", {
+        prevVersion: "0.8.0",
+        newVersion: "0.8.1",
+      }),
+    ],
+  });
+  assert.equal(armCalls.length, 1);
+});
+
+test("a package minor at or above 1.0 is armed", async () => {
+  const { armCalls } = await runGate({
+    updates: [
+      update("smol-toml", "version-update:semver-minor", "npm_and_yarn", {
+        prevVersion: "1.8.0",
+        newVersion: "1.9.0",
+      }),
+    ],
+  });
+  assert.equal(armCalls.length, 1);
+});
+
+test("a package update is skipped when the caller turns package auto-merge off", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("lefthook", "version-update:semver-patch", "npm_and_yarn"),
+      ],
+      packageAutoMerge: "false",
+    }),
+    /lefthook is a package update and this repository turned package auto-merge off/u,
+  );
+});
+
+test("a vendor action is still armed with package auto-merge off", async () => {
+  const { armCalls } = await runGate({ packageAutoMerge: "false" });
+  assert.equal(armCalls.length, 1);
+});
+
+test("a review-only package dependency is skipped", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [update("yaml", "version-update:semver-patch", "npm_and_yarn")],
+      reviewOnly: '["yaml"]',
+    }),
+    /yaml is a review-only dependency/u,
+  );
+});
+
+test("an invalid review-only-dependencies input is skipped", async () => {
+  assertSkipped(
+    await runGate({ reviewOnly: '{"yaml":true}' }),
+    /the review-only-dependencies input is not a JSON array of names/u,
+  );
+});
+
+for (const ecosystem of ["docker", "uv", "dotnet_sdk"]) {
+  test(`a ${ecosystem} update is skipped`, async () => {
+    assertSkipped(
+      await runGate({
+        updates: [update("thing", "version-update:semver-patch", ecosystem)],
+      }),
+      /thing is not a GitHub Actions, npm, pip or NuGet update/u,
+    );
+  });
+}
+
+test("a package named like an allowlisted publisher is judged as a package", async () => {
   assertSkipped(
     await runGate({
       updates: [
         update(
           "actions/checkout",
-          "version-update:semver-patch",
+          "version-update:semver-major",
           "npm_and_yarn",
         ),
       ],
     }),
-    /actions\/checkout is not a GitHub Actions update/u,
+    /actions\/checkout is not a patch or minor update/u,
   );
 });
 

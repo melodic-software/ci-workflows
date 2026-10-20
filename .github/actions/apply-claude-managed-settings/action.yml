@@ -1,0 +1,51 @@
+name: apply-claude-managed-settings
+description: >-
+  Write a root-owned /etc/claude-code/managed-settings.json that pins
+  `apiKeyHelper` and `env.ANTHROPIC_BASE_URL`, disables bypassPermissions
+  mode and loads managed hooks only, so head code writing
+  ~/.claude/settings.json cannot repoint the lane's credential (for example
+  through ANTHROPIC_BASE_URL or a helper that outranks
+  CLAUDE_CODE_OAUTH_TOKEN) or add a hook. Needs sudo: run it before
+  runner isolation removes sudo and before any head checkout. run-claude-cli
+  refuses to run without the file.
+
+inputs:
+  settings:
+    description: >-
+      The managed settings JSON. It must be an object that sets
+      `apiKeyHelper`, `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`,
+      `permissions.disableBypassPermissionsMode` to `disable`, and
+      `allowManagedHooksOnly` or `disableAllHooks` to `true`; run-claude-cli
+      refuses anything else.
+    required: false
+    default: >-
+      {"apiKeyHelper": "", "allowManagedHooksOnly": true,
+      "env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+      "permissions": {"disableBypassPermissionsMode": "disable"}}
+
+runs:
+  using: composite
+  steps:
+    - name: Write the managed settings
+      shell: bash
+      env:
+        SETTINGS: ${{ inputs.settings }}
+      run: |
+        node -e '
+          const s = JSON.parse(process.env.SETTINGS);
+          if (typeof s !== "object" || s === null || Array.isArray(s) ||
+              !Object.hasOwn(s, "apiKeyHelper") ||
+              s.env?.ANTHROPIC_BASE_URL !== "https://api.anthropic.com" ||
+              s.permissions?.disableBypassPermissionsMode !== "disable" ||
+              (s.allowManagedHooksOnly !== true && s.disableAllHooks !== true)) {
+            throw new Error("settings must set apiKeyHelper, env.ANTHROPIC_BASE_URL https://api.anthropic.com, permissions.disableBypassPermissionsMode disable, and allowManagedHooksOnly or disableAllHooks true");
+          }
+        '
+        if ! sudo -n true 2>/dev/null; then
+          echo "::error title=apply-claude-managed-settings::sudo is unavailable: run apply-claude-managed-settings before runner isolation"
+          exit 1
+        fi
+        sudo install -d -o root -g root -m 755 /etc/claude-code
+        printf '%s\n' "$SETTINGS" | sudo tee /etc/claude-code/managed-settings.json >/dev/null
+        sudo chown root:root /etc/claude-code/managed-settings.json
+        sudo chmod 644 /etc/claude-code/managed-settings.json

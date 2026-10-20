@@ -25,7 +25,7 @@ const workflowsDirectory = path.join(__dirname, "..", "workflows");
 // The compose run block is expression-free shell (env carries the ${{ }}
 // values), so the append contract is executed here rather than
 // pattern-matched.
-function composeArgs(script, baseArgs, pluginCommand) {
+function runCompose(script, env) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "compose-args-"));
   try {
     const githubOutput = path.join(directory, "github-output");
@@ -34,22 +34,33 @@ function composeArgs(script, baseArgs, pluginCommand) {
       encoding: "utf8",
       env: {
         ...process.env,
-        BASE_ARGS: baseArgs,
-        PLUGIN_COMMAND: pluginCommand,
+        MODEL: "sonnet",
+        EFFORT: "high",
+        MODEL_ARGS: "",
+        HAS_FALLBACK: "false",
+        ...env,
         GITHUB_OUTPUT: githubOutput,
       },
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const output = fs.readFileSync(githubOutput, "utf8");
-    const match =
-      /^args<<(?<delimiter>\S+)\n(?<value>[\s\S]*?)\n\k<delimiter>\n/mu.exec(
-        output,
-      );
-    assert.ok(match, `no heredoc args output in: ${output}`);
-    return match.groups.value;
+    return { result, output: fs.readFileSync(githubOutput, "utf8") };
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function composeArgs(script, baseArgs, pluginCommand, env = {}) {
+  const { result, output } = runCompose(script, {
+    BASE_ARGS: baseArgs,
+    PLUGIN_COMMAND: pluginCommand,
+    ...env,
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const match =
+    /^args<<(?<delimiter>\S+)\n(?<value>[\s\S]*?)\n\k<delimiter>\n/mu.exec(
+      output,
+    );
+  assert.ok(match, `no heredoc args output in: ${output}`);
+  return match.groups.value;
 }
 
 for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
@@ -62,16 +73,141 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
   const pluginCommand =
     workflow.on.workflow_call.inputs["plugin-command"].default;
 
-  test(`${fileName}: the one Claude invocation consumes the composed args`, () => {
+  test(`${fileName}: both Claude attempts consume the composed args`, () => {
     const invocations = steps.filter((step) =>
       String(step?.uses ?? "").startsWith("anthropics/claude-code-action@"),
     );
-    assert.equal(invocations.length, 1);
-    assert.equal(
-      invocations[0].with.claude_args,
-      COMPOSED_ARGS,
-      "claude_args must come from the compose step, or the appended inline-comment grant never reaches the action",
+    assert.deepEqual(
+      invocations.map((step) => step.id),
+      ["claude-review", "claude-review-fallback"],
     );
+    for (const invocation of invocations) {
+      assert.equal(
+        invocation.with.claude_args,
+        COMPOSED_ARGS,
+        "claude_args must come from the compose step, or the appended inline-comment grant never reaches the action",
+      );
+    }
+  });
+
+  test(`${fileName}: the model and effort inputs follow the caller's args, so they win over a --model there`, () => {
+    assert.equal(composeStep.env.MODEL, `\${{ inputs.model }}`);
+    assert.equal(composeStep.env.EFFORT, `\${{ inputs.effort }}`);
+    const args = composeArgs(
+      composeStep.run,
+      "--model claude-opus-5 --max-turns 5",
+      pluginCommand,
+      { MODEL: "claude-sonnet-5-5[1m]", EFFORT: "xhigh" },
+    );
+    assert.ok(
+      args.startsWith(
+        "--model claude-opus-5 --max-turns 5 --model claude-sonnet-5-5[1m] --effort xhigh --json-schema ",
+      ),
+      args,
+    );
+  });
+
+  test(`${fileName}: a model or effort that is not a plain value stops the job before Claude runs`, () => {
+    for (const env of [
+      { MODEL: "sonnet --dangerously-skip-permissions" },
+      { MODEL: "" },
+      { MODEL: "sonnet;id" },
+      { EFFORT: "extreme" },
+      { EFFORT: "" },
+    ]) {
+      const { result, output } = runCompose(composeStep.run, {
+        BASE_ARGS: "--max-turns 5",
+        PLUGIN_COMMAND: pluginCommand,
+        ...env,
+      });
+      assert.equal(result.status, 1, JSON.stringify(env));
+      assert.match(
+        result.stdout,
+        /^::error::The (model|effort) input must be/mu,
+      );
+      assert.equal(output, "", "no args may be written for a rejected value");
+    }
+  });
+
+  test(`${fileName}: with no model-args the defaults compose today's model, effort, turns and tools`, () => {
+    const modelArgsInput = workflow.on.workflow_call.inputs["model-args"];
+    assert.equal(modelArgsInput.default, "");
+    assert.equal(composeStep.env.MODEL_ARGS, `\${{ inputs.model-args }}`);
+    const args = composeArgs(
+      composeStep.run,
+      claudeArgsInput.default,
+      pluginCommand,
+      {
+        MODEL: workflow.on.workflow_call.inputs.model.default,
+        EFFORT: workflow.on.workflow_call.inputs.effort.default,
+      },
+    );
+    assert.ok(
+      args.startsWith(
+        '--max-turns 75 --allowedTools "Bash(gh pr diff:*)" --model sonnet --effort high --json-schema ',
+      ),
+      args,
+    );
+  });
+
+  test(`${fileName}: model-args replaces the model and effort inputs after the caller's args`, () => {
+    for (const modelArgs of [
+      "--model sonnet --max-turns 75 --effort high",
+      "--max-turns 60",
+      "--model opus --max-turns 30",
+    ]) {
+      const args = composeArgs(
+        composeStep.run,
+        claudeArgsInput.default,
+        pluginCommand,
+        { MODEL: "haiku", EFFORT: "low", MODEL_ARGS: modelArgs },
+      );
+      assert.ok(
+        args.startsWith(
+          `--max-turns 75 --allowedTools "Bash(gh pr diff:*)" ${modelArgs} --json-schema `,
+        ),
+        args,
+      );
+      assert.doesNotMatch(args, /haiku|--effort low/u);
+    }
+  });
+
+  test(`${fileName}: a model-args value outside resolve-config's shape stops the job before Claude runs`, () => {
+    for (const modelArgs of [
+      "--model sonnet --max-turns 75; id",
+      '--max-turns 75 --allowedTools "Bash(*)"',
+      "--model sonnet --max-turns 75 --effort high --dangerously-skip-permissions",
+      "--model sonnet --max-turns 75\n--allowedTools Bash",
+      "--model sonnet",
+      "--max-turns 0",
+      "--model Sonnet --max-turns 75",
+      "--max-turns 75 ",
+      "$(id) --max-turns 75",
+    ]) {
+      const { result, output } = runCompose(composeStep.run, {
+        BASE_ARGS: "--max-turns 5",
+        PLUGIN_COMMAND: pluginCommand,
+        MODEL_ARGS: modelArgs,
+      });
+      assert.equal(result.status, 1, modelArgs);
+      assert.match(result.stdout, /^::error::The model-args input must be/mu);
+      assert.equal(output, "", "no args may be written for a rejected value");
+    }
+  });
+
+  test(`${fileName}: the compose step reports whether the caller passed a fallback token`, () => {
+    assert.equal(
+      composeStep.env.HAS_FALLBACK,
+      `\${{ secrets.fallback-claude-code-oauth-token != '' }}`,
+    );
+    for (const value of ["true", "false"]) {
+      const { output } = runCompose(composeStep.run, {
+        BASE_ARGS: "--max-turns 5",
+        PLUGIN_COMMAND: pluginCommand,
+        HAS_FALLBACK: value,
+      });
+      assert.match(output, new RegExp(`^fallback=${value}$`, "mu"));
+    }
   });
 
   test(`${fileName}: the caller-replaceable default carries no inline-comment grant`, () => {
@@ -79,6 +215,12 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
     // in the one place a caller's value replaces wholesale.
     assert.doesNotMatch(claudeArgsInput.default, /inline_comment/u);
     assert.match(claudeArgsInput.default, /Bash\(gh pr diff:\*\)/u);
+  });
+
+  test(`${fileName}: the default grants no gh read that returns comments`, () => {
+    // `gh pr view --comments` would bypass exclude-comments-by-actor, so the
+    // description reaches the model as a file the job writes instead.
+    assert.doesNotMatch(claudeArgsInput.default, /gh (?:pr|issue) view/u);
   });
 
   test(`${fileName}: the compose step appends both grants to any caller value`, () => {
@@ -127,3 +269,23 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
     }
   });
 }
+
+test("pr-review.yml: both Claude attempts name the description file the job writes", () => {
+  const workflow = parseWorkflow(
+    fs.readFileSync(path.join(workflowsDirectory, "pr-review.yml"), "utf8"),
+  );
+  const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+  const writer = steps.find((step) => step?.id === "pr-context");
+  assert.ok(writer, "pr-context step not found");
+  assert.equal(writer.env.CONTEXT_FILE, ".claude-lane/pr-context.md");
+  const attempts = steps.filter((step) =>
+    step?.uses?.startsWith("anthropics/claude-code-action@"),
+  );
+  assert.equal(attempts.length, 2);
+  for (const attempt of attempts) {
+    assert.match(
+      attempt.with.prompt,
+      /^\$\{\{ steps\.pr-context\.outputs\.note \}\}$/mu,
+    );
+  }
+});

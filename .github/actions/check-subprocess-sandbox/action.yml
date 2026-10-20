@@ -1,0 +1,29 @@
+name: check-subprocess-sandbox
+description: >-
+  Pre-flight for a Claude lane that runs with
+  CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 on Linux: runs
+  `bwrap --unshare-pid --dev-bind / / true`, the probe run-claude-cli uses
+  (lane.cjs BWRAP_PROBE). bubblewrap that is installed but cannot create a
+  namespace (unprivileged user namespaces off) fails every Bash call the
+  model makes, so the lane must not start the model. On failure the step
+  fails and writes an ::error annotation carrying bwrap's stderr. Run it with
+  continue-on-error, gate the model step on its outcome, and report a failed
+  outcome (a timeout included) to report-lane-outcome as known-failure-class
+  `sandbox-unavailable`.
+
+runs:
+  using: composite
+  steps:
+    - name: Probe the bubblewrap sandbox
+      shell: bash
+      run: |
+        if stderr="$(bwrap --unshare-pid --dev-bind / / true 2>&1 >/dev/null)"; then
+          echo "bwrap created a PID namespace; the subprocess sandbox can start."
+          exit 0
+        fi
+        # Workflow commands end at a newline and decode %, CR and LF.
+        stderr="${stderr//'%'/%25}"
+        stderr="${stderr//$'\r'/%0D}"
+        stderr="${stderr//$'\n'/%0A}"
+        echo "::error title=Subprocess sandbox unavailable::failure-class=sandbox-unavailable: bwrap --unshare-pid --dev-bind / / true failed, so every Bash call the model makes would fail and the review would see nothing; enable unprivileged user namespaces on this runner (on Ubuntu 24.04, kernel.apparmor_restrict_unprivileged_userns=0). stderr: ${stderr:-(none)}"
+        exit 1

@@ -85,21 +85,71 @@ for (const lane of lanes) {
     }
   });
 
-  test(`${lane.file}: the outcome step times the review against the step's own budget`, () => {
+  test(`${lane.file}: the outcome step times the attempt that counts against that attempt's own budget`, () => {
     const claudeStep = job.steps.find((candidate) =>
       String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
     );
-    const outcome = job.steps.find(
-      (candidate) => candidate.id === "review-outcome",
-    );
+    const byId = (id) => job.steps.find((candidate) => candidate.id === id);
+    const outcome = byId("review-outcome");
     assert.equal(
-      String(outcome.with["step-timeout-minutes"]),
-      String(claudeStep["timeout-minutes"]),
+      outcome.with["step-timeout-minutes"],
+      `\${{ steps.attempt.outputs.timeout-minutes }}`,
     );
     assert.equal(
       outcome.with["step-started-at"],
+      `\${{ steps.attempt.outputs.started-at }}`,
+    );
+    const attempt = byId("attempt");
+    assert.equal(
+      attempt.env.FIRST_TIMEOUT_MINUTES,
+      String(claudeStep["timeout-minutes"]),
+    );
+    assert.equal(
+      attempt.env.FIRST_STARTED_AT,
       `\${{ steps.compose-args.outputs.started-at }}`,
     );
+    for (const id of ["first-outcome", "fallback"]) {
+      assert.equal(
+        byId(id).env.BUDGET_MINUTES,
+        String(claudeStep["timeout-minutes"]),
+        id,
+      );
+    }
+  });
+
+  test(`${lane.file}: a review on the fallback account says so on its record`, () => {
+    const ran = (account) =>
+      runStep(step, {
+        REVIEW_FAILED: "false",
+        FAILURE_CLASS: "",
+        HEAD_SHA: "a".repeat(40),
+        FINDINGS: "2",
+        INLINE: "1",
+        SCOPE: "whole",
+        ACCOUNT: account,
+      });
+    const record = `claude-lane-review-complete lane=${step.env.LANE} sha=${"a".repeat(40)} findings=2 inline=1 scope=whole`;
+    const fallback = ran("fallback");
+    assert.equal(fallback.status, 0);
+    assert.match(
+      fallback.stdout,
+      new RegExp(
+        `^::notice title=claude-lane-review-complete::${record} account=fallback$`,
+        "mu",
+      ),
+    );
+    assert.match(fallback.summary, /fallback account/u);
+    for (const account of ["primary", ""]) {
+      const first = ran(account);
+      assert.match(
+        first.stdout,
+        new RegExp(
+          `^::notice title=claude-lane-review-complete::${record}$`,
+          "mu",
+        ),
+      );
+      assert.doesNotMatch(first.summary, /fallback/u);
+    }
   });
 
   test(`${lane.file}: the verdict reaches the script through env, never inline`, () => {
@@ -151,6 +201,44 @@ for (const lane of lanes) {
     );
   });
 
+  test(`${lane.file}: a failed sandbox probe skips the model and reaches the outcome step as its class`, () => {
+    const at = (predicate) => job.steps.findIndex(predicate);
+    const probeAt = at((candidate) => candidate.id === "sandbox");
+    const probe = job.steps[probeAt];
+    assert.equal(probe.uses, "$/.github/actions/check-subprocess-sandbox");
+    assert.equal(probe["continue-on-error"], true);
+    assert.match(probe.if, /runner\.os == 'Linux'/u);
+    // After bwrap is installed, before the model runs.
+    assert.ok(
+      at((candidate) => candidate.name === "Install subprocess isolation") <
+        probeAt,
+    );
+    const modelAt = at((candidate) => candidate.id === "claude-review");
+    assert.ok(probeAt < modelAt);
+    assert.match(
+      job.steps[modelAt].if,
+      /&& steps\.sandbox\.outcome != 'failure'$/u,
+    );
+    const outcome = job.steps.find(
+      (candidate) => candidate.id === "review-outcome",
+    );
+    assert.equal(
+      outcome.with["known-failure-class"],
+      `\${{ steps.sandbox.outcome == 'failure' && 'sandbox-unavailable' || '' }}`,
+    );
+  });
+
+  test(`${lane.file}: a sandbox that could not start goes red and says why`, () => {
+    const result = runStep(step, {
+      REVIEW_FAILED: "true",
+      FAILURE_CLASS: "sandbox-unavailable",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.summary, /failed: `sandbox-unavailable`/u);
+    assert.match(result.summary, /could not create a namespace/u);
+    assert.doesNotMatch(result.summary, /unclassified/u);
+  });
+
   test(`${lane.file}: every other way no review happened goes red and is named`, () => {
     for (const [failed, klass, named] of [
       ["true", "auth", "auth"],
@@ -159,6 +247,8 @@ for (const lane of lanes) {
       ["true", "timeout", "timeout"],
       ["true", "other", "other"],
       ["true", "", "unknown"],
+      // bubblewrap could not create a namespace, so the model never ran.
+      ["true", "sandbox-unavailable", "sandbox-unavailable"],
       // The action skipped itself: green step, nothing reviewed.
       ["false", "skipped-validation", "skipped-validation"],
       // The job ended before the outcome step wrote any output.

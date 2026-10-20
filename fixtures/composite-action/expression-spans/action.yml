@@ -15,7 +15,7 @@ runs:
       shell: bash
       env:
         PATHS: ${{ github.action_path }}
-      run: |
+      run: | # zizmor: ignore[template-injection] constant expression; the inline span is the fixture's subject
         # The expression occupies two lines, so a substitution that swallows its
         # newline reports the finding below one line too low.
         echo "${{ fromJSON(

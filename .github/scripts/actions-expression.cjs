@@ -1,0 +1,47 @@
+"use strict";
+
+// Evaluates the subset of the Actions expression language the lanes' job
+// and step gates use: github, inputs, needs and steps context paths (a
+// missing property is null), string literals, ! && || == != and parentheses,
+// the case-insensitive contains/startsWith/endsWith, format, and always().
+
+const str = (value) =>
+  value === null || value === undefined ? "" : String(value);
+const functions = {
+  contains: (haystack, needle) =>
+    str(haystack).toLowerCase().includes(str(needle).toLowerCase()),
+  startsWith: (text, prefix) =>
+    str(text).toLowerCase().startsWith(str(prefix).toLowerCase()),
+  endsWith: (text, suffix) =>
+    str(text).toLowerCase().endsWith(str(suffix).toLowerCase()),
+  format: (template, ...args) =>
+    template.replace(/\{(\d+)\}/gu, (_, i) => str(args[Number(i)])),
+  always: () => true,
+};
+const CONTEXTS = ["github", "inputs", "needs", "steps"];
+
+const evaluate = (expression, contexts) => {
+  const body = expression
+    .trim()
+    .replace(/^\$\{\{([\s\S]*)\}\}$/u, "$1")
+    .replace(
+      /\b(github|inputs|needs|steps)((?:\.[A-Za-z_][\w-]*)+)/gu,
+      (_, root, rest) =>
+        `${root}${rest
+          .slice(1)
+          .split(".")
+          .map((key) => `?.[${JSON.stringify(key)}]`)
+          .join("")}`,
+    );
+  const run = new Function(
+    ...Object.keys(functions),
+    ...CONTEXTS,
+    `return (${body}) ?? null;`,
+  );
+  return run(
+    ...Object.values(functions),
+    ...CONTEXTS.map((name) => contexts[name]),
+  );
+};
+
+module.exports = { evaluate };

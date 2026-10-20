@@ -10,4 +10,4 @@ runs:
   using: composite
   steps:
     - name: A step carrying no embedded shell
-      uses: ./fixtures/composite-action/bad
+      uses: $/fixtures/composite-action/bad

@@ -1,8 +1,8 @@
 name: pr-automerge-dependabot
 
 # Reusable workflow: arms GitHub auto-merge (squash) on a Dependabot pull
-# request that bumps only allowlisted GitHub Actions publishers by a patch or
-# minor version. Arming never merges: GitHub merges once every required check,
+# request whose every update is a patch or minor bump of an allowlisted GitHub
+# Actions publisher or of an npm, pip or NuGet package. Arming never merges: GitHub merges once every required check,
 # `ci-status` included, passes. Nothing here calls a merge mutation, so this
 # workflow cannot bypass the required check. A repository without a required
 # check makes GitHub refuse the arm (the pull request is already mergeable),
@@ -24,14 +24,23 @@ name: pr-automerge-dependabot
 #           pull-requests: write   # enable/disable auto-merge on the PR
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
 #
+# A repository where a merge can lead to a deploy passes
+# `package-auto-merge: false`, which leaves only the GitHub Actions path.
+#
 # GATES (all must hold, or the pull request is left for a human):
 #   - the event is `pull_request` and the PR author's id is 49699333
 #     (dependabot[bot]); an id, not a login, so no look-alike account matches;
-#   - every updated dependency's ecosystem is `github_actions`;
-#   - every dependency name matches a PUBLISHER_ALLOWLIST glob, mirroring
-#     standards `components/dependabot-policy/policy.json` `autoMerge`;
-#   - every update is a semver patch or minor; a grouped PR with one major
-#     bump, or an update type Dependabot could not compute, is skipped;
+#   - every update is `github_actions`, or, unless the caller passes
+#     `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`; any other
+#     ecosystem (docker, uv, dotnet_sdk and the rest) is left for a human;
+#   - every GitHub Actions dependency name matches a PUBLISHER_ALLOWLIST glob,
+#     mirroring standards `components/dependabot-policy/policy.json`
+#     `autoMerge`;
+#   - no package dependency name is in the caller's `review-only-dependencies`
+#     (its entries in that policy's `autoMerge.reviewOnly`);
+#   - every update is a semver patch or minor, and a version below 1.0 keeps
+#     its minor component (the policy's non-major rule); a grouped PR with one
+#     major bump, or an update type Dependabot could not compute, is skipped;
 #   - the event's sender (the pusher on opened/synchronize/reopened) is
 #     49699333, so a push or reopen by anyone else is skipped;
 #   - fetch-metadata succeeded; it fails when the first commit is not
@@ -59,12 +68,24 @@ on:
         description: Runner label selected by the caller.
         type: string
         default: ubuntu-24.04
+      package-auto-merge:
+        description: >-
+          Also arm npm, pip and NuGet patch and minor bumps. Pass false where a
+          merge can lead to a deploy.
+        type: boolean
+        default: true
+      review-only-dependencies:
+        description: >-
+          JSON array of package dependency names never armed: the caller's
+          entries in standards dependabot-policy autoMerge.reviewOnly.
+        type: string
+        default: "[]"
 
 permissions: {}
 
 jobs:
   enable-auto-merge:
-    name: Arm auto-merge for allowlisted Dependabot bumps
+    name: Arm auto-merge for safe Dependabot bumps
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.id == 49699333 }}
     runs-on: ${{ inputs.runner }}
     # One metadata fetch, one commit listing and one GraphQL mutation. Ten
@@ -93,11 +114,15 @@ jobs:
           SENDER_ID: ${{ github.event.sender.id }}
           UPDATED_DEPENDENCIES_JSON: ${{ steps.metadata.outputs.updated-dependencies-json }}
           PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
+          PACKAGE_AUTO_MERGE: ${{ inputs.package-auto-merge }}
+          REVIEW_ONLY_DEPENDENCIES: ${{ inputs.review-only-dependencies }}
         with:
           script: |
             const DEPENDABOT_ID = 49699333;
             const WEB_FLOW_ID = 19864447;
-            const ECOSYSTEM = "github_actions";
+            const ACTIONS_ECOSYSTEM = "github_actions";
+            // fetch-metadata's ids for npm, pip and NuGet (Dependabot branch names).
+            const PACKAGE_ECOSYSTEMS = new Set(["npm_and_yarn", "pip", "nuget"]);
             const UPDATE_TYPES = new Set([
               "version-update:semver-patch",
               "version-update:semver-minor",
@@ -110,6 +135,15 @@ jobs:
                 "u",
               );
             const allowlist = JSON.parse(process.env.PUBLISHER_ALLOWLIST).map(globToRegExp);
+            const packageAutoMerge = process.env.PACKAGE_AUTO_MERGE === "true";
+
+            const majorMinor = (version) => /^v?(\d+)\.(\d+)/u.exec(String(version ?? ""));
+            function breaksBelowOne(update) {
+              const previous = majorMinor(update?.prevVersion);
+              if (previous?.[1] !== "0") return false;
+              const next = majorMinor(update?.newVersion);
+              return next === null || next[1] !== "0" || next[2] !== previous[2];
+            }
 
             async function gateFailure() {
               if (pr.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
@@ -122,11 +156,29 @@ jobs:
                 return "the Dependabot metadata is not valid JSON";
               }
               if (!Array.isArray(updates) || updates.length === 0) return "no updated dependencies";
+              let reviewOnly;
+              try {
+                reviewOnly = JSON.parse(process.env.REVIEW_ONLY_DEPENDENCIES);
+              } catch {
+                reviewOnly = null;
+              }
+              if (!Array.isArray(reviewOnly) || !reviewOnly.every((entry) => typeof entry === "string")) {
+                return "the review-only-dependencies input is not a JSON array of names";
+              }
               for (const update of updates) {
                 const name = String(update?.dependencyName ?? "");
-                if (update?.packageEcosystem !== ECOSYSTEM) return `${name} is not a GitHub Actions update`;
-                if (!allowlist.some((pattern) => pattern.test(name))) return `${name} is not an allowlisted publisher`;
+                const ecosystem = update?.packageEcosystem;
+                if (ecosystem === ACTIONS_ECOSYSTEM) {
+                  if (!allowlist.some((pattern) => pattern.test(name))) return `${name} is not an allowlisted publisher`;
+                } else if (!PACKAGE_ECOSYSTEMS.has(ecosystem)) {
+                  return `${name} is not a GitHub Actions, npm, pip or NuGet update`;
+                } else if (!packageAutoMerge) {
+                  return `${name} is a package update and this repository turned package auto-merge off`;
+                } else if (reviewOnly.includes(name)) {
+                  return `${name} is a review-only dependency`;
+                }
                 if (!UPDATE_TYPES.has(update?.updateType)) return `${name} is not a patch or minor update`;
+                if (breaksBelowOne(update)) return `${name} changes its minor version below 1.0`;
               }
               const commits = await github.paginate(github.rest.pulls.listCommits, {
                 ...context.repo,
