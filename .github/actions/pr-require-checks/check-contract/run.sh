@@ -115,9 +115,23 @@ if [[ "$pattern_status" -ne 0 ]]; then
   exit 1
 fi
 
-# Step 0 — no pull request in this event. The composite is a pull-request gate;
-# a push, schedule or workflow_dispatch run must report skipped, not fail.
-if [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
+# Step 0 — a merge group carries no pull request in its payload; the queued
+# one is named in the group's head ref, `gh-readonly-queue/<base>/pr-<N>-<sha>`.
+# An unparsable ref fails closed: a group whose pull request cannot be named
+# cannot be checked for the do-not-merge label.
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  merge_group_ref_pattern='^(refs/heads/)?gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$'
+  if [[ ! "${MERGE_GROUP_HEAD_REF:-}" =~ $merge_group_ref_pattern ]]; then
+    echo "::error::pr-contract: cannot read a pull request number from the merge-group head ref '$(escape_annotation "${MERGE_GROUP_HEAD_REF:-}")'"
+    emit_output title skipped
+    emit_output do-not-merge fail
+    emit_output linkage skipped
+    exit 1
+  fi
+  PR_NUMBER="${BASH_REMATCH[2]}"
+# A push, schedule or workflow_dispatch run has no pull request at all. The
+# composite is a pull-request gate; such a run must report skipped, not fail.
+elif [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   echo '::notice::pr-contract: no pull request in this event; nothing to check'
   emit_output title skipped
   emit_output do-not-merge skipped
@@ -226,6 +240,23 @@ if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
 fi
 
 # ---------------------------------------------------------------------------
+# Merge group — the title and the live do-not-merge label, both re-read because
+# either can change after enqueue; a failure makes the queue drop the pull
+# request. Linkage is advisory and a group run writes no comment or label.
+# ---------------------------------------------------------------------------
+if [[ "${EVENT_NAME:-}" == merge_group ]]; then
+  emit_output title "$title_result"
+  emit_output do-not-merge "$do_not_merge_result"
+  emit_output linkage skipped
+  if [[ "$title_result" == fail || "$do_not_merge_result" == fail ]]; then
+    echo "::error::pr-contract: queued pull request #${PR_NUMBER} fails the contract; the merge queue removes it. Fix it and re-queue to merge."
+    exit 1
+  fi
+  echo "pr-contract: queued pull request #${PR_NUMBER} passes the title and '${DO_NOT_MERGE_LABEL}' checks."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Step 4 — issue linkage.
 #
 # The body must
@@ -273,29 +304,51 @@ function has_closing_run(s, start, ticks,   col, stop) {
   return 0
 }
 
-function negation_trigger(line, keyword_index,   preceding, cut, i, ch, tail, count, words, first, word, lower) {
-  preceding = substr(line, 1, keyword_index - 1)
-  cut = 0
-  for (i = length(preceding); i >= 1; i--) {
-    ch = substr(preceding, i, 1)
-    if (ch == "." || ch == "!" || ch == "?" || ch == ";" || ch == ",") {
-      cut = i
-      break
+# The negation window is the last five words before the keyword, cut at the
+# nearest sentence punctuation. The backward scan stops at whichever comes
+# first, so each call costs the window, not the whole preceding line; copying
+# the preceding text per keyword made a long run of keywords super-quadratic.
+function negation_trigger(line, keyword_index,   start, i, ch, width, in_word, has_letter, seen, tail, count, words, word, lower) {
+  in_word = 0
+  has_letter = 0
+  seen = 0
+  i = keyword_index - 1
+  while (i >= 1) {
+    ch = substr(line, i, 1)
+    width = 0
+    if (ch ~ /[A-Za-z]/) {
+      width = 1
+      has_letter = 1
+    } else if (ch == "'"'"'" || ch == apostrophe) {
+      width = 1
+    } else if (i >= 3 && substr(line, i - 2, 3) == apostrophe) {
+      # A byte-oriented awk sees the typographic apostrophe as three characters.
+      width = 3
     }
+    if (width) {
+      in_word = 1
+      i -= width
+      continue
+    }
+    # A word is a run of letters and apostrophes holding at least one letter.
+    if (in_word && has_letter && ++seen == 5) break
+    in_word = 0
+    has_letter = 0
+    if (ch == "." || ch == "!" || ch == "?" || ch == ";" || ch == ",") break
+    i--
   }
-  tail = substr(preceding, cut + 1)
-  # U+2019 RIGHT SINGLE QUOTATION MARK, written as its UTF-8 bytes so the source
-  # of this action stays plain ASCII: normalize a typographic apostrophe to the
-  # straight one so "doesn<U+2019>t close #N" is detected like "doesn'"'"'t".
-  gsub("\342\200\231", "'"'"'", tail)
+  start = i + 1
+  tail = substr(line, start, keyword_index - start)
+  # Normalize a typographic apostrophe to the straight one so
+  # "doesn<U+2019>t close #N" is detected like "doesn'"'"'t".
+  gsub(apostrophe, "'"'"'", tail)
   count = 0
   while (match(tail, /[A-Za-z][A-Za-z'"'"']*/)) {
     count++
     words[count] = substr(tail, RSTART, RLENGTH)
     tail = substr(tail, RSTART + RLENGTH)
   }
-  first = (count > 5) ? count - 4 : 1
-  for (i = first; i <= count; i++) {
+  for (i = 1; i <= count; i++) {
     word = words[i]
     lower = tolower(word)
     # Correlative "not only ... but" is affirmative, not a disclaimer.
@@ -307,7 +360,7 @@ function negation_trigger(line, keyword_index,   preceding, cut, i, ch, tail, co
   return ""
 }
 
-function scan_line(line,   indent, rest, lower, offset, chunk, start, len, before, after, text, trigger) {
+function scan_line(line,   indent, rest, lower, marked, pieces, count, i, position, start, len, before, after, text, trigger) {
   indent = 0
   while (substr(line, indent + 1, 1) == " ") indent++
   if (indent <= 3) {
@@ -317,13 +370,18 @@ function scan_line(line,   indent, rest, lower, offset, chunk, start, len, befor
     }
   }
   lower = tolower(line)
-  offset = 0
-  while (1) {
-    chunk = substr(lower, offset + 1)
-    if (!match(chunk, closing_regex)) break
-    start = offset + RSTART
-    len = RLENGTH
-    offset = start + len - 1
+  # One gsub pass finds the same successive leftmost-longest matches as calling
+  # match() on each remainder, without rescanning the rest of the line per
+  # match. A record never holds a newline, so it can fence each match; the
+  # pieces then alternate text, match, text.
+  marked = lower
+  gsub(closing_regex, "\n&\n", marked)
+  count = split(marked, pieces, "\n")
+  position = 1
+  for (i = 1; i < count; i += 2) {
+    start = position + length(pieces[i])
+    len = length(pieces[i + 1])
+    position = start + len
     before = (start > 1) ? substr(lower, start - 1, 1) : ""
     after = substr(lower, start + len, 1)
     # Word-boundary equivalent of the upstream /\b...\b/ anchors.
@@ -384,6 +442,9 @@ BEGIN {
   has_closing = 0
   has_non_closing = 0
   negated_count = 0
+  # U+2019 RIGHT SINGLE QUOTATION MARK, written as its UTF-8 bytes so the source
+  # of this action stays plain ASCII.
+  apostrophe = "\342\200\231"
   # The caller pattern arrives through ENVIRON, so awk applies no escape
   # processing to it and it never becomes program text.
   ref = tolower(ENVIRON["ISSUE_REF_PATTERN"])

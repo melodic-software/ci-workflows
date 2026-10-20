@@ -215,8 +215,11 @@ inputs:
     description: Target repository identity OWNER/REPO (defaults to this repo).
     default: ${{ github.repository }}
   sha:
-    description: Commit SHA the status is written to and read from.
-    default: ${{ github.event.pull_request.head.sha || github.sha }}
+    description: >-
+      Commit SHA the status is written to and read from: the pull request head,
+      or on a `merge_group` event the group head, where the `ci-status` check
+      run itself reports.
+    default: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
 runs:
   using: composite

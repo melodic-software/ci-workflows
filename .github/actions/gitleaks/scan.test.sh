@@ -156,7 +156,7 @@ run_case 'Git history scan outside a pull request' 0 clean '' '' true git "$full
 assert_captured_args 'Git mode scans only HEAD history by default' \
   git "$full_repository" --log-opts=HEAD --config "$temporary_directory/config.toml" --no-banner --redact
 base_sha="$(git -C "$full_repository" rev-parse HEAD~1)"
-for event in pull_request pull_request_target; do
+for event in pull_request pull_request_target merge_group; do
   EVENT_NAME="$event" BASE_SHA="$base_sha" run_case "$event scan" 0 clean '' '' true git "$full_repository"
   assert_captured_args "$event scans only the PR's commits" \
     git "$full_repository" "--log-opts=$base_sha..HEAD" --config "$temporary_directory/config.toml" --no-banner --redact
@@ -180,6 +180,11 @@ assert_captured_args 'explicit log-opts overrides the event default' \
 EVENT_NAME=pull_request BASE_SHA='' run_case 'pull request without base SHA fails closed' 2 clean '' '' true git "$full_repository"
 if [[ -e "$temporary_directory/args" ]]; then
   echo 'scanner ran without a pull request base SHA' >&2
+  exit 1
+fi
+EVENT_NAME=merge_group BASE_SHA='' run_case 'merge group without base SHA fails closed' 2 clean '' '' true git "$full_repository"
+if [[ -e "$temporary_directory/args" ]]; then
+  echo 'scanner ran without a merge group base SHA' >&2
   exit 1
 fi
 run_case 'Git finding remains blocking' 1 finding '' '' true git "$full_repository"

@@ -47,7 +47,9 @@ const file = (filename, extra = {}) => ({
 async function runScript(script, values, github, requireFn = require) {
   const outputs = {};
   const messages = [];
+  const secrets = [];
   const core = {
+    setSecret: (value) => secrets.push(value),
     setOutput: (key, value) => {
       outputs[key] = value;
     },
@@ -74,7 +76,7 @@ async function runScript(script, values, github, requireFn = require) {
       else process.env[key] = value;
     }
   }
-  return { outputs, messages };
+  return { outputs, messages, secrets };
 }
 
 // Runs a lane's record step and returns the comment call it made.
@@ -153,12 +155,14 @@ async function runScope(
   const diffFile = path.join(directory, "state", "incremental.diff");
   let listedComments = 0;
   const gitCalls = [];
+  const gitOptions = [];
   const requireFn = (name) =>
     name === "node:child_process"
       ? {
-          execFileSync: (command, args) => {
+          execFileSync: (command, args, options) => {
             assert.equal(command, "git");
             gitCalls.push(args);
+            gitOptions.push(options);
             return git(args);
           },
         }
@@ -194,7 +198,7 @@ async function runScope(
       },
     },
   };
-  const { outputs, messages } = await runScript(
+  const { outputs, messages, secrets } = await runScript(
     lane.script,
     {
       LANE: lane.lane,
@@ -205,6 +209,8 @@ async function runScope(
       HEAD_SHA: HEAD,
       BASE_REF: "main",
       DIFF_FILE: diffFile,
+      GIT_TOKEN: "job-token",
+      GITHUB_SERVER_URL: "https://github.com",
       ...env,
     },
     github,
@@ -213,7 +219,15 @@ async function runScope(
   const diff = fs.existsSync(diffFile)
     ? fs.readFileSync(diffFile, "utf8")
     : undefined;
-  return { outputs, messages, diff, listedComments, gitCalls };
+  return {
+    outputs,
+    messages,
+    secrets,
+    diff,
+    listedComments,
+    gitCalls,
+    gitOptions,
+  };
 }
 
 // The base did not move between the last review and the head.
@@ -680,6 +694,39 @@ test("a restack onto another base branch, or under a marker with no base, review
     assert.equal(result.outputs.review, "true");
     assert.equal(result.outputs.scope, "whole");
     assert.equal(result.gitCalls.length, 0);
+  }
+});
+
+test("both lanes' restack fetch carries the job token in git's environment, masked", async () => {
+  const basic = Buffer.from("x-access-token:job-token").toString("base64");
+  for (const lane of [codeLane, securityLane]) {
+    const prFiles = [file("src/a.js")];
+    const result = await runScope(lane, {
+      prFiles,
+      compares: restack(prFiles.map((entry) => ({ ...entry }))),
+      comments: [await restackMarker(lane)],
+      git: gitShowing(""),
+    });
+    assert.equal(result.gitCalls[0][0], "fetch", lane.file);
+    assert.ok(
+      result.gitCalls[0].every((arg) => !arg.includes(basic)),
+      "the token stays out of argv",
+    );
+    const { env } = result.gitOptions[0];
+    assert.equal(env.GIT_CONFIG_COUNT, "1");
+    assert.equal(env.GIT_CONFIG_KEY_0, "http.https://github.com/.extraheader");
+    assert.equal(env.GIT_CONFIG_VALUE_0, `AUTHORIZATION: basic ${basic}`);
+    assert.ok(env.PATH, "git keeps the step's environment");
+    assert.deepEqual(result.secrets, [basic]);
+  }
+});
+
+test("both lanes' checkout persists no credential", () => {
+  for (const lane of [codeLane, securityLane]) {
+    const checkout = lane.job.steps.find((step) =>
+      String(step.uses ?? "").startsWith("actions/checkout@"),
+    );
+    assert.equal(checkout.with["persist-credentials"], false, lane.file);
   }
 });
 

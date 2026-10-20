@@ -42,8 +42,9 @@ name: pr-review
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
-#   - The checkout must persist credentials until claude-code-action#1236
-#     ships: later steps fetch with them. Fork pull requests never run this job.
+#   - The checkout persists no credential. The job's own git calls pass the
+#     job token per command, never in .git/config, and the action's agent
+#     mode sets up its own git auth. Fork pull requests never run this job.
 #   - The last reviewed head and the review summary are kept in one pull
 #     request comment this job writes with its own token, so its author is
 #     github-actions[bot]; the lane reads only that author's marker. The
@@ -190,7 +191,8 @@ on:
         value: ${{ jobs.claude.outputs.review-failed }}
       failure-class:
         description: >-
-          auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
+          auth | rate-limit | overloaded | max-turns | timeout | install-failed |
+          no-execution | other on a failure;
           incomplete when the step succeeded but no completed review was found;
           skipped-validation when the action skipped itself; sandbox-unavailable
           when bubblewrap could not create a namespace, so no review ran;
@@ -258,13 +260,13 @@ jobs:
             "with base-repo secrets over untrusted code (token exfiltration risk)."
           exit 1
 
-      # persist-credentials stays default: later steps fetch with the persisted
-      # credential until claude-code-action#1236 ships. Fork PRs never reach this job.
-      - name: Check out # zizmor: ignore[artipacked] later fetches need the credential; see above
+      # No credential is persisted; see SECURITY MODEL. Fork PRs never reach this job.
+      - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           filter: blob:none
+          persist-credentials: false
 
       # Decides whole-PR, incremental, or no review (see REVIEW CADENCE). The
       # last head this lane finished reviewing is read from the lane's marker
@@ -283,6 +285,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           DIFF_FILE: .claude-lane/incremental.diff
+          GIT_TOKEN: ${{ github.token }}
         with:
           script: |
             const fs = require("node:fs");
@@ -326,10 +329,20 @@ jobs:
             const compare = async (basehead) =>
               (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead })).data;
 
+            // The checkout persists no credential: each git call carries the job
+            // token in its environment, so it reaches neither argv nor .git/config.
+            const basic = Buffer.from(`x-access-token:${env.GIT_TOKEN}`).toString("base64");
+            core.setSecret(basic);
             const git = (args) =>
               require("node:child_process").execFileSync("git", args, {
                 encoding: "utf8",
                 stdio: ["ignore", "pipe", "pipe"],
+                env: {
+                  ...env,
+                  GIT_CONFIG_COUNT: "1",
+                  GIT_CONFIG_KEY_0: `http.${env.GITHUB_SERVER_URL}/.extraheader`,
+                  GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
+                },
               });
 
             // Why a base-branch change since the last review needs a whole review, or "".
@@ -536,6 +549,12 @@ jobs:
             echo "::warning::No merge base was found for the full diff."
             exit 1
           fi
+          # The checkout persists no credential, and the blob-less clone fetches
+          # file contents during the diff too, so every git call here carries
+          # the job token in its environment, never in argv or .git/config.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
           git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base"
           mkdir -p "$(dirname "$DIFF_FILE")"
           git diff --no-color --no-ext-diff "$base" "$HEAD_SHA" > "$DIFF_FILE"
@@ -782,6 +801,10 @@ jobs:
             permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
+            Never post a second inline comment to correct or re-anchor an
+            earlier one. If a posted comment sits on the wrong line, say so
+            in the summary and name the line it belongs on.
+
             When you finish, whether or not you found anything:
             - End the body of every inline comment with this line, as plain
               text (the comment tool deletes HTML comments before posting):
@@ -943,6 +966,10 @@ jobs:
             locations to the commit blob (not the PR) with a line-numbered
             permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+            Never post a second inline comment to correct or re-anchor an
+            earlier one. If a posted comment sits on the wrong line, say so
+            in the summary and name the line it belongs on.
 
             When you finish, whether or not you found anything:
             - End the body of every inline comment with this line, as plain
@@ -1175,11 +1202,6 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number: Number(env.PR_NUMBER), body });
             }
 
-      # zizmor `artipacked` mitigation: scrub the token checkout persisted.
-      - name: Strip persisted git credentials
-        if: always()
-        run: git config --unset-all http.https://github.com/.extraheader || true
-
       # Goes red whenever no review happened and none was skipped on purpose.
       # A completed review, and each designed skip, leaves one
       # `claude-lane-review-complete` notice on the check run: the machine
@@ -1235,6 +1257,8 @@ jobs:
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
             max-turns) why="the review used every turn --max-turns allows before finishing; raise it in claude-args" ;;
             timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
+            install-failed) why="the Bun install failed (often an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
+            no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
             sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;

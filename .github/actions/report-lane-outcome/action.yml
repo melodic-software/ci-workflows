@@ -35,8 +35,9 @@ inputs:
     required: true
   execution-file:
     description: >-
-      The Claude action step's execution_file output. May be unset, missing,
-      or unparsable — all degrade to failure class `other`.
+      The Claude action step's execution_file output. Unset or missing
+      classifies as `no-execution` (or `timeout`/`install-failed`);
+      unparsable degrades to `other`.
     required: false
     default: ""
   lane:
@@ -121,7 +122,7 @@ outputs:
   failure-class:
     description: >-
       auth | rate-limit | overloaded | max-turns | timeout |
-      install-failed | other (empty on
+      install-failed | no-execution | other (empty on
       a genuine success; skipped-validation when the action skipped itself;
       incomplete when require-completion found no completed review).
     value: ${{ steps.outcome.outputs.failure_class }}

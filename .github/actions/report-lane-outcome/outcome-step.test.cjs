@@ -279,7 +279,7 @@ test("a failure with no execution file keeps the fail-path class, not the skip c
   });
   assert.equal(outputs.review_failed, "true");
   assert.equal(outputs.review_ran, "false");
-  assert.equal(outputs.failure_class, "other");
+  assert.equal(outputs.failure_class, "no-execution");
 });
 
 test("a failed step that ran its whole timeout-minutes is a timeout", async () => {
@@ -310,7 +310,7 @@ test("a failed step that stopped inside its budget, or reported no start, is not
     });
     assert.equal(
       outputs.failure_class,
-      "other",
+      "no-execution",
       `${startedAt}/${timeoutMinutes}`,
     );
   }
