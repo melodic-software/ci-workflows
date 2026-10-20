@@ -121,7 +121,7 @@ const codeJob = parseWorkflow(
 for (const [name, expected] of [
   ["Write the full diff", "::warning::The compare call failed: "],
   [
-    "Write the pull request description and closing issues",
+    "Fetch the pull request description and closing issues",
     "The pull request context query failed: ",
   ],
 ]) {

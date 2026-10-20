@@ -166,6 +166,12 @@ consumer to audit it.
   `:job_workflow_ref:<repository>/.github/workflows/<name>.yml@<ref>` form.
   Callers require paired live positive/near-match negative token-exchange
   evidence before removing the legacy trust rules.
+- `.github/actions/check-author-trust` — the Claude lanes' author trust rule, defined
+  once: a `User` whose numeric id is in `allowed-author-ids` or a `Bot` whose
+  id is in `allowed-bot-sender-ids`. Takes a JSON array of `{type, id}` and
+  returns the trusted `"<type>:<id>"` keys. An empty or malformed list trusts
+  no one. pr-review uses it to decide which closing issues the code review
+  reads in full.
 - `.github/actions/editorconfig-checker` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
 - `.github/actions/typos` — `typos` spell-check over source against a
@@ -1165,6 +1171,7 @@ secret the job makes one attempt.
 | `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |
 | `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
 | `allowed-bot-sender-ids` | empty | Comma-separated numeric GitHub user ids, no spaces, of bot senders to review; only a listed sender's login reaches the action's `allowed_bots` |
+| `allowed-author-ids` | empty | Code review only. Comma-separated numeric GitHub user ids, no spaces, of people whose closing issues the review reads in full. A same-repository closing issue keeps its title and body only when its author's id is here or, for a bot, in `allowed-bot-sender-ids`; any other gets a placeholder, and a cross-repository one is written as `owner/repo#N` alone |
 
 **Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
 fork changes by hand) and every bot actor whose event sender id is not in
