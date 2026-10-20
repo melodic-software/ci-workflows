@@ -1053,11 +1053,6 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number: Number(env.PR_NUMBER), body });
             }
 
-      # zizmor `artipacked` mitigation: scrub the token checkout persisted.
-      - name: Strip persisted git credentials
-        if: always()
-        run: git config --unset-all http.https://github.com/.extraheader || true
-
       # Goes red whenever no review happened and none was skipped on purpose.
       # A completed review, and each designed skip, leaves one
       # `claude-lane-review-complete` notice on the check run: the machine
