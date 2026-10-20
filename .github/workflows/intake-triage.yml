@@ -712,11 +712,12 @@ jobs:
             // is applied, only the escalation label and a fixed note. Its
             // enum-checked type and proposed class survive when usable.
             const escalated = ran && escalate.length > 0;
+            const BASIS = "Basis: automated intake triage; a maintainer confirms or changes it.";
             if (escalated) {
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
               comment = "Thanks for the report. Automated triage handed this issue to a maintainer.";
-              if (proposed) comment += `\n\nUnconfirmed model suggestion: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`;
+              if (proposed) comment += `\n\nUnconfirmed model suggestion: ${proposed}\n${BASIS}`;
             }
             if (!ran) {
               labels.clear();
@@ -729,7 +730,7 @@ jobs:
             // none there: its class may have been steered by the issue text.
             const proposal =
               proposed && !escalated
-                ? `Proposed work class: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`
+                ? `Proposed work class: ${proposed}\n${BASIS}`
                 : "Proposed work class: none";
 
             // The comment goes first, so a failed label write leaves an
@@ -1273,11 +1274,12 @@ jobs:
             // is applied, only the escalation label and a fixed note. Its
             // enum-checked type and proposed class survive when usable.
             const escalated = ran && escalate.length > 0;
+            const BASIS = "Basis: automated intake triage; a maintainer confirms or changes it.";
             if (escalated) {
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
               comment = "Thanks for the report. Automated triage handed this issue to a maintainer.";
-              if (proposed) comment += `\n\nUnconfirmed model suggestion: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`;
+              if (proposed) comment += `\n\nUnconfirmed model suggestion: ${proposed}\n${BASIS}`;
             }
             if (!ran) {
               labels.clear();
@@ -1290,7 +1292,7 @@ jobs:
             // none there: its class may have been steered by the issue text.
             const proposal =
               proposed && !escalated
-                ? `Proposed work class: ${proposed}\nBasis: automated intake triage; a maintainer confirms or changes it.`
+                ? `Proposed work class: ${proposed}\n${BASIS}`
                 : "Proposed work class: none";
 
             // The comment goes first, so a failed label write leaves an
