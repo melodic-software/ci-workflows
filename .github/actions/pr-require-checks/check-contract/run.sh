@@ -170,20 +170,50 @@ best_effort() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1 — fetch the pull request once.
+# Step 1 — fetch the pull request, and its comments for the marker upsert,
+# in one GraphQL query. GraphQL, not `pulls/N`: the REST bucket is the one
+# that runs out during a burst of pull request CI.
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2016 # `$owner`, `$name` and `$number` are GraphQL variables.
+pr_query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { title body author { __typename login } labels(first: 100) { totalCount nodes { name } } comments(last: 100) { totalCount nodes { databaseId body author { __typename } } } } } }'
+pr_read="pull request ${REPOSITORY}#${PR_NUMBER}"
 # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-if ! gh_api GET "repos/${REPOSITORY}/pulls/${PR_NUMBER}"; then
+if ! gh_api POST graphql -f query="$pr_query" -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" -F number="$PR_NUMBER"; then
   cat "$gh_stderr" >&2
   if [[ "$GH_FAILURE" == rate-limit ]]; then
-    echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
+    echo "::error::pr-contract: could not read ${pr_read} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
   else
-    echo "::error::pr-contract: could not read repos/${REPOSITORY}/pulls/${PR_NUMBER} (HTTP ${GH_HTTP_STATUS:-unknown})"
+    echo "::error::pr-contract: could not read ${pr_read} (HTTP ${GH_HTTP_STATUS:-unknown}): $(escape_annotation "$GH_MESSAGE")"
   fi
   exit 1
 fi
 pr_json="$scratch/pr.json"
-cp -- "$gh_stdout" "$pr_json"
+# Every field a verdict reads must be present with its type, or the read fails
+# closed: GraphQL answers a pull request it cannot resolve with `null` and no
+# error, and a `labels` page that does not hold every label could hide
+# `do-not-merge`. The pull request is rewritten into the REST shape the checks
+# below read. A Bot's GraphQL login lacks the `[bot]` suffix its REST login
+# carries (`dependabot` against `dependabot[bot]`), so it is added back for
+# `exempt-authors`. A deleted author reads `null`, which exempts nobody.
+if ! jq -e '.data.repository.pullRequest
+  | select(type == "object" and (.title | type) == "string" and (.body | type) == "string"
+      and (.labels.totalCount | type) == "number" and (.labels.nodes | type) == "array"
+      and (.labels.totalCount == (.labels.nodes | length))
+      and all(.labels.nodes[]; (.name | type) == "string"))
+  | {title, body,
+     user: {login: (if .author == null then "" elif .author.__typename == "Bot" then "\(.author.login)[bot]" else (.author.login // "") end)},
+     labels: [.labels.nodes[] | {name}]}' <"$gh_stdout" >"$pr_json"; then
+  echo "::error::pr-contract: ${pr_read} read over GraphQL lacks its title, body or complete label list; failing closed"
+  exit 1
+fi
+# The comments, in the REST listing's shape, when the one page holds them all.
+# Otherwise the marker lookup lists them over REST.
+comments_json="$scratch/comments.json"
+jq -e '.data.repository.pullRequest.comments
+  | select((.totalCount | type) == "number" and (.nodes | type) == "array" and .totalCount == (.nodes | length)
+      and all(.nodes[]; (.databaseId | type) == "number" and (.body | type) == "string"))
+  | [[.nodes[] | {id: .databaseId, user: {type: (.author.__typename // "")}, body}]]' \
+  <"$gh_stdout" >"$comments_json" 2>/dev/null || rm -f -- "$comments_json"
 
 pr_title="$(jq -r '.title // ""' <"$pr_json")"
 pr_author="$(jq -r '.user.login // ""' <"$pr_json")"
@@ -631,16 +661,21 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5 — advisory outcome: one marker comment, upserted, plus the label.
 # ---------------------------------------------------------------------------
-# Sets `marker_comment_id` (empty when there is none). Never call it in a
+# Sets `marker_comment_id` (empty when there is none), from the comments step 1
+# read when that page held them all, else from the REST listing. Never call it in a
 # command substitution: gh_api prints its warnings to stdout and adds its
 # rate-limit wait to RATE_LIMIT_WAITED, and a subshell would capture the one
 # and drop the other.
 marker_comment_id=""
 find_marker_comment() {
+  local listing="$comments_json"
   marker_comment_id=""
-  # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp; then
-    return 1
+  if [[ ! -f "$listing" ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
+    if ! gh_api GET "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp; then
+      return 1
+    fi
+    listing="$gh_stdout"
   fi
   # Bot-authored only, newest first. On a public repository anyone can comment,
   # so a stranger who plants the marker would otherwise capture the upsert and
@@ -649,7 +684,7 @@ find_marker_comment() {
   # rather than printing one id per page.
   marker_comment_id="$(jq -r --arg marker "$LINKAGE_MARKER" \
     '[ .[][] | select((.user.type // "") == "Bot" and ((.body // "") | contains($marker))) ] | (max_by(.id).id // empty)' \
-    <"$gh_stdout")"
+    <"$listing")"
 }
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.

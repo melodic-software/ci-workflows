@@ -106,8 +106,13 @@ own comment and would post a new one on every failing run.
   ignores the surrounding words and closes the issue on merge regardless of the
   disclaimer. Use `Refs: #N` or `Relates to: #N` on its own line instead.
 
-- A 403 or 429 from the API prints its status, message and rate-limit
-  headers. A rate-limited pull request read waits once, bounded by
+- The pull request and its comments are read in one GraphQL query, which
+  draws on a separate rate limit from REST; comments past the query's one page
+  of 100 are listed over REST. A 403 or 429 from the API, or a GraphQL error
+  (a primary rate limit is HTTP 200 with an error of type `RATE_LIMITED`),
+  prints its status, message and rate-limit headers. A read missing a field
+  the checks need, or a label list longer than one page, fails the step
+  closed. A rate-limited pull request read waits once, bounded by
   `rate-limit-wait-seconds` (default `60`), then fails the step closed; keep
   that cap, with the aggregate step's, inside the job's `timeout-minutes`. See
   the [ci-workflows README](../../../../README.md) under `aggregate-results`.

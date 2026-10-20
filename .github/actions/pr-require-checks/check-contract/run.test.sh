@@ -23,7 +23,8 @@ mkdir -p "$fixtures" "$calls" "$shim_directory"
 
 repository=melodic-software/ci-workflows
 pr_number=7
-pull_key="GET_repos_melodic-software_ci-workflows_pulls_${pr_number}"
+# The pull request and its comments are one GraphQL read, the step's only one.
+pull_key="POST_graphql"
 comments_key="repos_melodic-software_ci-workflows_issues_${pr_number}_comments"
 labels_key="repos_melodic-software_ci-workflows_issues_${pr_number}_labels"
 
@@ -142,13 +143,21 @@ if [[ -f "$GH_FIXTURES/${key}.pages.json" ]]; then
 fi
 
 body='{}'
-if [[ -f "$GH_FIXTURES/${key}.json" ]]; then
+if [[ -f "$GH_FIXTURES/${key}.${call_number}.json" ]]; then
+  body="$(cat "$GH_FIXTURES/${key}.${call_number}.json")"
+elif [[ -f "$GH_FIXTURES/${key}.json" ]]; then
   body="$(cat "$GH_FIXTURES/${key}.json")"
 fi
 if [[ "$slurp" == true ]]; then
   printf '[%s]\n' "$body"
 else
   printf '%s\n' "$body"
+fi
+# A GraphQL body with an `errors` array, as gh 2.102.0 prints one: the body on
+# stdout, `gh: <first message>` with no "(HTTP nnn)" on stderr, and exit 1.
+if jq -e 'type == "object" and ((.errors // []) | length > 0)' <<<"$body" >/dev/null 2>&1; then
+  printf 'gh: %s\n' "$(jq -r '.errors[0].message // ""' <<<"$body")" >&2
+  exit 1
 fi
 SHIM
 chmod +x "$shim_directory/gh"
@@ -171,7 +180,21 @@ echo 0
 DATE_SHIM
 chmod +x "$shim_directory/date"
 
+# The GraphQL read is composed from the pull request and its comments, each
+# set on its own, in the shapes GitHub returned for a real pull request: a Bot
+# author's login has no `[bot]` suffix, and a comment's REST `id` and
+# `user.type` are its `databaseId` and `author.__typename`.
+graphql_pull="$fixtures/graphql-pull.json"
+graphql_comments="$fixtures/graphql-comments.json"
+compose_pull_read() {
+  jq -n --slurpfile pr "$graphql_pull" --slurpfile comments "$graphql_comments" \
+    '{data: {repository: {pullRequest: ($pr[0] + {comments: $comments[0]})}}}' >"$fixtures/${pull_key}.json"
+}
+
+printf '{"totalCount":0,"nodes":[]}' >"$graphql_comments"
+
 # set_pull <title> <body> <author> <labels-csv>
+# An author ending `[bot]` is a Bot, as REST names one.
 set_pull() {
   local title="$1" body="$2" author="$3" labels="$4"
   jq -n \
@@ -182,14 +205,28 @@ set_pull() {
     '{
       title: $title,
       body: $body,
-      draft: false,
-      user: {login: $author},
-      labels: ($labels | if . == "" then [] else split(",") end | map({name: .}))
-    }' >"$fixtures/${pull_key}.json"
+      author: (if ($author | endswith("[bot]")) then {__typename: "Bot", login: ($author | rtrimstr("[bot]"))} else {__typename: "User", login: $author} end),
+      labels: ($labels | if . == "" then [] else split(",") end | {totalCount: length, nodes: map({name: .})})
+    }' >"$graphql_pull"
+  compose_pull_read
 }
 
+# set_comments <json-array-of-rest-comments>
+# The REST listing, and the same comments as the GraphQL read's one page.
 set_comments() {
   printf '%s' "$1" >"$fixtures/GET_${comments_key}.json"
+  jq '{totalCount: length, nodes: map({databaseId: .id, body, author: {__typename: .user.type}})}' <<<"$1" >"$graphql_comments"
+  if [[ -f "$graphql_pull" ]]; then
+    compose_pull_read
+  fi
+}
+
+# The GraphQL read's one page of comments holds fewer than the pull request
+# has, so the marker lookup lists them over REST.
+comments_beyond_one_page() {
+  jq '.totalCount = 101' <"$graphql_comments" >"$graphql_comments.tmp"
+  mv -- "$graphql_comments.tmp" "$graphql_comments"
+  compose_pull_read
 }
 
 bot_comment() {
@@ -252,10 +289,29 @@ expect_output() {
   fi
 }
 
+expect_no_output() {
+  local unexpected="$1"
+  if grep -qxF -- "$unexpected" "$output_file"; then
+    echo "FAIL: expected NO output '$unexpected', got:"
+    cat "$output_file"
+    cat "$log_file"
+    failures=$((failures + 1))
+  fi
+}
+
 expect_log() {
   local expected="$1"
   if ! grep -qF -- "$expected" "$log_file"; then
     echo "FAIL: expected log to contain '$expected', got:"
+    cat "$log_file"
+    failures=$((failures + 1))
+  fi
+}
+
+expect_no_log() {
+  local unexpected="$1"
+  if grep -qF -- "$unexpected" "$log_file"; then
+    echo "FAIL: expected log NOT to contain '$unexpected', got:"
     cat "$log_file"
     failures=$((failures + 1))
   fi
@@ -335,7 +391,7 @@ expect_output 'title=pass'
 expect_output 'linkage=skipped'
 expect_log "this PR carries the 'do-not-merge' label"
 expect_log "queued pull request #${pr_number} fails the contract"
-expect_gh_call "api -X GET repos/${repository}/pulls/${pr_number}"
+expect_gh_call "-F number=${pr_number} -i"
 
 # Without the early exit the failing linkage and its writes would run here.
 echo 'case: a merge group with a good title passes, skips linkage, and writes nothing'
@@ -344,7 +400,7 @@ run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
 expect_output 'title=pass'
 expect_output 'do-not-merge=pass'
 expect_output 'linkage=skipped'
-expect_no_gh_call '-X POST'
+expect_no_gh_call '-X POST repos/'
 expect_no_gh_call '-X DELETE'
 
 # Without the title check on merge_group a title edited after enqueue would land.
@@ -355,7 +411,7 @@ expect_output 'title=fail'
 expect_output 'do-not-merge=pass'
 expect_output 'linkage=skipped'
 expect_log 'does not follow Conventional Commits: "wip: no conventional title"'
-expect_no_gh_call '-X POST'
+expect_no_gh_call '-X POST repos/'
 expect_no_gh_call '-X DELETE'
 
 # Without the fail-closed parse a ref with no pull request would skip and pass.
@@ -371,7 +427,7 @@ done
 echo 'case: a merge group whose pull request cannot be read fails closed'
 printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${pull_key}.err"
 run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
-expect_log "could not read repos/${repository}/pulls/${pr_number} (HTTP 404)"
+expect_log "could not read pull request ${repository}#${pr_number} (HTTP 404)"
 rm -f -- "$fixtures/${pull_key}.err"
 
 # --- title check -----------------------------------------------------------
@@ -892,7 +948,7 @@ echo 'case: an unreadable pull request fails loudly'
 mv -- "$fixtures/${pull_key}.json" "$fixtures/${pull_key}.json.bak"
 printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${pull_key}.err"
 run_case 1
-expect_log "::error::pr-contract: could not read repos/${repository}/pulls/${pr_number} (HTTP 404)"
+expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 404)"
 rm -f -- "$fixtures/${pull_key}.err"
 mv -- "$fixtures/${pull_key}.json.bak" "$fixtures/${pull_key}.json"
 
@@ -906,7 +962,7 @@ set_pull 'feat: add pr-contract' "$conforming_body" someone ''
 printf '%s\n' "$primary_limit_message" >"$fixtures/${pull_key}.1.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 20\r\n' >"$fixtures/${pull_key}.1.headers"
 run_case 0
-expect_log "::warning::GET repos/${repository}/pulls/${pr_number} returned HTTP 403 (rate-limit): API rate limit exceeded for installation ID 1; x-ratelimit-remaining=0 x-ratelimit-reset=20 retry-after=absent"
+expect_log "::warning::POST graphql returned HTTP 403 (rate-limit): API rate limit exceeded for installation ID 1; x-ratelimit-remaining=0 x-ratelimit-reset=20 retry-after=absent"
 expect_log 'waiting 20s, then retrying once.'
 expect_output 'title=pass'
 if [[ "$(cat "$sleep_log")" != 20 ]]; then
@@ -921,7 +977,7 @@ printf '%s\n' "$primary_limit_message" >"$fixtures/${pull_key}.1.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 900\r\n' >"$fixtures/${pull_key}.1.headers"
 run_case 1 RATE_LIMIT_WAIT_SECONDS=60
 expect_log 'needs a 900s wait, more than the 60s left of rate-limit-wait-seconds (60); not waiting. The limit resets at 900 (1970-01-01T00:15:00Z).'
-expect_log "::error::pr-contract: could not read repos/${repository}/pulls/${pr_number} (HTTP 403): rate limited past rate-limit-wait-seconds"
+expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 403): rate limited past rate-limit-wait-seconds"
 if [[ -s "$sleep_log" ]]; then
   echo "FAIL: expected no sleep, got: $(cat "$sleep_log")"
   failures=$((failures + 1))
@@ -944,6 +1000,7 @@ rm -f -- "$fixtures/POST_${labels_key}.1.err" "$fixtures/POST_${labels_key}.1.he
 echo 'case: a rate-limited marker comment read on a conforming pull request posts nothing'
 set_pull 'feat: add pr-contract' "$conforming_body" someone ''
 set_comments '[]'
+comments_beyond_one_page
 printf '%s\n' "$primary_limit_message" >"$fixtures/GET_${comments_key}.1.err"
 run_case 0
 expect_log "::warning::GET repos/${repository}/issues/${pr_number}/comments returned HTTP 403 (rate-limit)"
@@ -970,6 +1027,91 @@ if [[ "$(cat "$sleep_log")" != 60 ]]; then
   failures=$((failures + 1))
 fi
 rm -f -- "$fixtures/GET_${comments_key}.1.err" "$fixtures/POST_${comments_key}.1.err"
+set_comments '[]'
+
+# --- the GraphQL read ------------------------------------------------------
+
+# Without reading the GraphQL `errors` array a primary rate limit, which
+# GraphQL answers with HTTP 200, is neither reported nor waited out, and a good
+# pull request fails red on its first throttled read.
+echo 'case: a GraphQL RATE_LIMITED error on HTTP 200 is reported as a rate limit, waited out, and retried'
+set_comments '[]'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+printf '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 1."}]}' >"$fixtures/${pull_key}.1.json"
+printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 20\r\nX-Ratelimit-Resource: graphql\r\n' >"$fixtures/${pull_key}.1.headers"
+run_case 0
+expect_log '::warning::POST graphql returned HTTP 200 with GraphQL error RATE_LIMITED (rate-limit): API rate limit already exceeded for installation ID 1.; x-ratelimit-remaining=0 x-ratelimit-reset=20'
+expect_log 'waiting 20s, then retrying once.'
+expect_output 'title=pass'
+expect_output 'linkage=pass'
+if [[ "$(cat "$sleep_log")" != 20 ]]; then
+  echo "FAIL: expected one 20s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the rate-limit classification, a throttled read past the cap would be
+# reported as some other failure; it still fails closed.
+echo 'case: a GraphQL RATE_LIMITED error beyond the cap fails closed as a rate limit'
+printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 900\r\n' >"$fixtures/${pull_key}.1.headers"
+run_case 1
+expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 200): rate limited past rate-limit-wait-seconds"
+rm -f -- "$fixtures/${pull_key}".1.*
+
+# Without the completeness check a label past the one page the read holds is
+# never seen, and a pull request carrying do-not-merge there passes.
+echo 'case: a GraphQL label page that does not hold every label fails closed'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+jq '.data.repository.pullRequest.labels.totalCount = 101' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
+mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
+run_case 1
+expect_log "::error::pr-contract: pull request ${repository}#${pr_number} read over GraphQL lacks its title, body or complete label list; failing closed"
+expect_no_output 'do-not-merge=pass'
+
+# Without the field checks a read whose labels carry no nodes reads as no
+# labels at all, and the do-not-merge gate passes on nothing.
+echo 'case: a GraphQL read missing its label nodes fails closed'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'do-not-merge'
+jq 'del(.data.repository.pullRequest.labels.nodes)' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
+mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
+run_case 1
+expect_log 'read over GraphQL lacks its title, body or complete label list; failing closed'
+expect_no_output 'do-not-merge=pass'
+
+# GraphQL answers a pull request it cannot resolve with `null`; that is a
+# failed read, not an empty title and body.
+echo 'case: a GraphQL read with no pull request in its data fails closed'
+printf '{"data":{"repository":{"pullRequest":null}}}' >"$fixtures/${pull_key}.json"
+run_case 1
+expect_log 'read over GraphQL lacks its title, body or complete label list; failing closed'
+expect_no_log 'does not follow Conventional Commits'
+
+# Without the `[bot]` suffix a Bot author's GraphQL login never equals the
+# REST login an exempt-authors entry names.
+echo 'case: a Bot author read over GraphQL matches its REST login in exempt-authors'
+set_pull 'build: bump a dependency' 'Bumps a thing.' 'dependabot[bot]' ''
+run_case 0 'EXEMPT_AUTHORS=dependabot[bot]'
+expect_output 'linkage=exempt'
+
+# Without the comments in the GraphQL read, these two cases make REST reads of
+# the pull request and its comments: 3 for the passing one (the comments
+# twice) and 2 for the failing one at 8b41a59 (origin/main).
+echo 'case: a conforming pull request makes no REST read'
+set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale failure text')]"
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+run_case 0
+expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
+if [[ "$(grep -c -- '-X GET ' "$gh_log" || true)" -ne 0 || "$(grep -c -- '-X POST graphql ' "$gh_log" || true)" -ne 1 ]]; then
+  echo 'FAIL: expected no REST read and one GraphQL read, got:'
+  cat "$gh_log"
+  failures=$((failures + 1))
+fi
+
+echo 'case: a failing pull request reads its marker comment from the GraphQL read'
+set_pull 'feat: add pr-contract' 'nothing here' someone ''
+run_case 0
+expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
+expect_no_gh_call '-X GET '
+set_comments '[]'
 
 # --- comment-upsert capture ------------------------------------------------
 
@@ -993,6 +1135,7 @@ expect_gh_call "PATCH repos/${repository}/issues/comments/1200"
 # Without `--slurp` jq runs once per page and prints one id per page, so the
 # PATCH path carries both ids and the newest comment is not the one edited.
 echo 'case: the newest bot marker comment is selected across pages'
+comments_beyond_one_page
 rm -f -- "$fixtures/GET_${comments_key}.json"
 printf '[[%s],[%s]]' "$(bot_comment 900 '<!-- pr-contract:linkage -->\nold')" "$(bot_comment 1200 '<!-- pr-contract:linkage -->\nnewer')" \
   >"$fixtures/GET_${comments_key}.pages.json"

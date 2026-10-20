@@ -427,7 +427,13 @@ consumer to audit it.
   with 403 or 429, so every 403 or 429 prints its status, message and the
   `x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after` and
   `x-accepted-github-permissions` headers, and names a missing scope only for
-  "Resource not accessible by integration" or that last header. A rate limit
+  "Resource not accessible by integration" or that last header. GraphQL
+  answers a primary rate limit with HTTP 200 and an error, so an `errors`
+  entry of type `RATE_LIMITED` is a rate limit too, and any other GraphQL
+  error fails the read. The step reads this run's workflow, and
+  `check-contract` reads the pull request and its comments, over GraphQL,
+  which draws on a separate rate limit from REST; the status list, run
+  listings and jobs stay on REST. A rate limit
   waits `retry-after`, else until `x-ratelimit-reset` when remaining is `0`,
   else 60 seconds, then retries once; a second limit, or a wait longer than
   what is left of `rate-limit-wait-seconds` (default `60`, summed over the

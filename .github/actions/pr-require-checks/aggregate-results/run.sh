@@ -791,17 +791,28 @@ resolve_workflow_id() {
   if [[ "$workflow_id" =~ ^[0-9]+$ ]]; then
     return 0
   fi
+  # GraphQL, not `actions/runs/<id>`: this is the step's first Actions read,
+  # and the REST bucket is the one that runs out during a burst of pull
+  # request CI. `resource(url:)` resolves a run's web URL to its WorkflowRun,
+  # whose `workflow.databaseId` is the REST `workflow_id`. A URL that does not
+  # resolve to this run reads `null`, with no error, so the type and the run
+  # id are checked before the workflow id is trusted.
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-  if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${run_id}"; then
-    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${run_id}" "$scope" "$consequence"
+  if ! gh_api POST graphql -f query="$run_workflow_query" -f url="${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${run_id}"; then
+    warn_actions_failed "graphql WorkflowRun ${run_id}" "$scope" "$consequence"
     return 1
   fi
-  workflow_id="$(jq -r '.workflow_id // ""' <"$gh_stdout")"
+  workflow_id="$(jq -r --arg run "$run_id" \
+    '.data.run // {} | if .__typename == "WorkflowRun" and ((.databaseId // "") | tostring) == $run then (.workflow.databaseId // "" | tostring) else "" end' \
+    <"$gh_stdout")" || workflow_id=""
   if [[ ! "$workflow_id" =~ ^[0-9]+$ ]]; then
+    workflow_id=""
     echo "::warning::run ${run_id} reported no workflow_id. ${consequence}"
     return 1
   fi
 }
+# shellcheck disable=SC2016 # `$url` is a GraphQL variable.
+run_workflow_query='query($url: URI!) { run: resource(url: $url) { __typename ... on WorkflowRun { databaseId workflow { databaseId } } } }'
 
 # Wall-clock seconds since the wait began, and the sibling run ids waited on,
 # for the ceiling message. Set by wait_for_sibling_runs.
