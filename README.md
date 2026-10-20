@@ -563,7 +563,11 @@ consumer to audit it.
   `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` or `GITHUB_STATE`
   file is cut off after the last leg, before the action writes its own
   outputs, and the installed CLI tree and `_work/_actions` have their write
-  bits removed while the legs run. Code a leg runs still runs as the runner
+  bits removed while the legs run. After each leg, every process of the
+  runner user started after the launcher is stopped and killed, whether it
+  detached with `&`, `nohup`, `setsid` or a double fork, and the next leg
+  starts only once none is left; a process that survives fails the step.
+  Code a leg runs still runs as the runner
   user, so a lane that gives the model unrestricted Bash, or any
   code-running tool beyond fixed
   read-only command rules, runs the action in a job that holds no other

@@ -27,6 +27,8 @@ const {
   holdsCredential,
   install,
   legEnv,
+  legProcesses,
+  procStat,
   readConfig,
   resolveCliVersion,
   run,
@@ -77,6 +79,20 @@ fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ leg, seen, fileComman
   wait: process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS,
   args: process.argv.slice(2),
   stdin: fs.readFileSync(0, "utf8") }) + "\\n");
+// FAKE_DETACH: leave one process running per way of detaching, each writing
+// its own pid to a file in that directory first.
+if (process.env.FAKE_DETACH && leg === "KEY") {
+  const dir = process.env.FAKE_DETACH;
+  require("node:child_process").spawnSync("sh", ["-c", [
+    \`sleep 60 & echo $! > \${dir}/amp\`,
+    \`nohup sleep 60 > /dev/null 2>&1 & echo $! > \${dir}/nohup\`,
+    \`setsid -f sh -c 'echo $$ > \${dir}/setsid; exec sleep 60' > /dev/null 2>&1\`,
+    \`(sh -c 'echo $$ > \${dir}/double; exec sleep 60' > /dev/null 2>&1 &)\`,
+  ].join("\\n")], { stdio: "ignore" });
+  for (let i = 0; i < 250 && fs.readdirSync(dir).length < 4; i += 1) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+}
 if (process.env["FAKE_" + leg + "_SLEEP"]) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
   if (process.env.FAKE_SURVIVED) fs.writeFileSync(process.env.FAKE_SURVIVED, "");
@@ -88,6 +104,33 @@ process.exit(Number(process.env["FAKE_" + leg + "_EXIT"] ?? 0));
 fs.chmodSync(fakeCli, 0o755);
 
 let caseNumber = 0;
+
+// legProcesses as runLegs lists them, narrowed to the processes whose
+// environment holds this case's marker, so a test never signals a process
+// another test or the user started meanwhile.
+const testStart = procStat(process.pid).start;
+function caseProcesses(marker) {
+  return () =>
+    legProcesses({ since: testStart }).filter((pid) => {
+      try {
+        return fs
+          .readFileSync(`/proc/${pid}/environ`, "utf8")
+          .split("\0")
+          .includes(marker);
+      } catch {
+        return false;
+      }
+    });
+}
+
+// True while the process runs; a zombie has already ended.
+function alive(pid) {
+  try {
+    return !["Z", "X"].includes(procStat(pid).state);
+  } catch {
+    return false;
+  }
+}
 
 // Runs what follows `--` when the legs ask for bwrap, so cases with a tree to
 // protect test the mode lock on hosts without bubblewrap.
@@ -226,6 +269,7 @@ function runCase({
   extraEnv = {},
   prepare = () => ({}),
   spawn = withoutBwrap,
+  kill = process.kill,
 }) {
   caseNumber += 1;
   const dir = path.join(root, `case-${caseNumber}`);
@@ -289,7 +333,12 @@ function runCase({
     workDir: dir,
     runId: "123",
   };
-  const outcome = runLegs(config, { baseEnv, spawn });
+  const outcome = runLegs(config, {
+    baseEnv,
+    spawn,
+    kill,
+    listLegProcesses: caseProcesses(`FAKE_CALLS=${calls}`),
+  });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
@@ -691,6 +740,127 @@ test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
   assert.equal(fs.existsSync(survived), false);
 });
 
+const DETACHED = ["amp", "nohup", "setsid", "double"];
+
+// The pid each detached process wrote for itself, by way of detaching.
+function detachedPids(dir) {
+  return Object.fromEntries(
+    DETACHED.map((name) => [
+      name,
+      Number(fs.readFileSync(path.join(dir, name), "utf8")),
+    ]),
+  );
+}
+
+// Cleanup when a case fails: kills whatever detached process is left.
+function killAll(dir) {
+  for (const pid of Object.values(detachedPids(dir))) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+test("legProcesses finds a process left by &, nohup, setsid and a double fork, never this process or its parent", () => {
+  const dir = fs.mkdtempSync(path.join(root, "detach-"));
+  const since = procStat(process.pid).start;
+  fs.writeFileSync(`${dir}.jsonl`, "");
+  spawnSync(fakeCli, [], {
+    env: {
+      ...process.env,
+      ANTHROPIC_API_KEY: "x",
+      FAKE_DETACH: dir,
+      FAKE_CALLS: `${dir}.calls`,
+      FAKE_KEY: `${dir}.jsonl`,
+    },
+    input: "",
+  });
+  const pids = detachedPids(dir);
+  try {
+    const found = legProcesses({ since });
+    for (const [name, pid] of Object.entries(pids)) {
+      assert.ok(found.includes(pid), `${name} pid ${pid} not listed`);
+    }
+    assert.equal(found.includes(process.pid), false);
+    assert.equal(found.includes(process.ppid), false);
+  } finally {
+    killAll(dir);
+  }
+});
+
+test("what leg 1 detaches by &, nohup, setsid or a double fork is dead before leg 2 starts", () => {
+  let detach;
+  let atLeg2 = null;
+  const { calls, outputs } = runCase({
+    key: CREDIT_STOP,
+    sub: SUCCESS,
+    prepare: (dir) => {
+      detach = path.join(dir, "detached");
+      fs.mkdirSync(detach);
+      return { FAKE_DETACH: detach };
+    },
+    spawn: (command, args, options) => {
+      if (options.env.CLAUDE_CODE_OAUTH_TOKEN) {
+        atLeg2 = Object.fromEntries(
+          Object.entries(detachedPids(detach)).map(([name, pid]) => [
+            name,
+            alive(pid),
+          ]),
+        );
+      }
+      return withoutBwrap(command, args, options);
+    },
+  });
+  try {
+    assert.deepEqual(atLeg2, {
+      amp: false,
+      nohup: false,
+      setsid: false,
+      double: false,
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(outputs["lane-class"], "");
+  } finally {
+    killAll(detach);
+  }
+});
+
+test("a detached process that cannot be killed fails the run before leg 2", () => {
+  let detach;
+  let dir;
+  try {
+    assert.throws(
+      () =>
+        runCase({
+          key: CREDIT_STOP,
+          sub: SUCCESS,
+          prepare: (caseDir) => {
+            dir = caseDir;
+            detach = path.join(caseDir, "detached");
+            fs.mkdirSync(detach);
+            return { FAKE_DETACH: detach };
+          },
+          kill: () => {},
+        }),
+      (error) =>
+        error instanceof LaneError &&
+        /^leg 1 left 4 process\(es\) running after it ended; no further leg runs$/u.test(
+          error.message,
+        ),
+    );
+    const legs = fs
+      .readFileSync(path.join(dir, "calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).leg);
+    assert.deepEqual(legs, ["KEY"]);
+  } finally {
+    killAll(detach);
+  }
+});
+
 test("the install tree is writable again when a leg throws", asNonRoot, () => {
   let installed;
   assert.throws(() =>
@@ -1051,7 +1221,10 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
     FAKE_SUB_EXIT: "1",
   };
   assert.throws(
-    () => run(env),
+    () =>
+      run(env, {
+        listLegProcesses: caseProcesses(`FAKE_CALLS=${env.FAKE_CALLS}`),
+      }),
     /intake ended class=rate-limit on AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN/u,
   );
   const outputs = Object.fromEntries(

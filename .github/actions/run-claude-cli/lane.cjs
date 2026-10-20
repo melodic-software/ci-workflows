@@ -35,6 +35,9 @@
 //   - The CLI runs in --restricted mode: code-running tools only when the
 //     tools input names them, no user, project or local settings, file tools
 //     confined to the working directories, no bypassPermissions.
+//   - After each leg, every process of the runner user started after this
+//     one (legProcesses) is stopped and killed, and the next leg starts only
+//     once a listing finds none; any survivor fails the run.
 //   - The subscription leg runs only when the key leg is a credit stop
 //     (classify.cjs isCreditStop), judged from structured fields.
 //   - Secret names are derived from the role and never taken from input.
@@ -621,14 +624,89 @@ function restoreModes(modes) {
   }
 }
 
+// One process's state, parent and start time (clock ticks after boot) from
+// /proc/<pid>/stat; the fields after the command name start at field 3.
+function procStat(pid, procRoot = "/proc") {
+  const text = fs.readFileSync(path.join(procRoot, String(pid), "stat"), "utf8");
+  const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+  return {
+    state: fields[0],
+    ppid: Number(fields[1]),
+    start: BigInt(fields[19]),
+  };
+}
+
+// Every live process whose real uid is `uid` and that started no earlier than
+// `since`, other than this process and its ancestors. Neither a new session (setsid) nor a new parent (a
+// double fork, nohup, `&`) changes a process's uid or start time, so this
+// finds whatever a leg left running however it detached.
+function legProcesses({
+  since,
+  uid = process.getuid(),
+  self = process.pid,
+  procRoot = "/proc",
+}) {
+  const ancestors = new Set();
+  for (let pid = self; pid > 0 && !ancestors.has(pid); ) {
+    ancestors.add(pid);
+    pid = procStat(pid, procRoot).ppid;
+  }
+  const found = [];
+  for (const name of fs.readdirSync(procRoot)) {
+    if (!/^\d+$/u.test(name) || ancestors.has(Number(name))) continue;
+    try {
+      const stat = procStat(name, procRoot);
+      if (stat.state === "Z" || stat.state === "X" || stat.start < since)
+        continue;
+      // Only a privileged process can change its real uid.
+      const realUid = fs
+        .readFileSync(path.join(procRoot, name, "status"), "utf8")
+        .match(/^Uid:\s+(\d+)/mu)[1];
+      if (Number(realUid) === uid) found.push(Number(name));
+    } catch (error) {
+      // The process ended while it was read.
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+    }
+  }
+  return found;
+}
+
+// Stops, then kills, every process `list` returns, until a listing comes back
+// empty or the rounds run out. Stopping first keeps a process from forking
+// again before it is killed. Returns the processes still alive: an empty list
+// confirms the leg left nothing running.
+function reapLeg({ list, kill = process.kill, rounds = 50, pauseMs = 20 }) {
+  for (let round = 0; round < rounds; round += 1) {
+    const pids = list();
+    if (pids.length === 0) return [];
+    for (const signal of ["SIGSTOP", "SIGKILL"]) {
+      for (const pid of pids) {
+        try {
+          kill(pid, signal);
+        } catch {
+          // Gone already, or not ours to kill: the next listing decides.
+        }
+      }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pauseMs);
+  }
+  return list();
+}
+
 function runLegs(
   config,
   {
     baseEnv = process.env,
     spawn = spawnSync,
     now = () => new Date(),
+    listLegProcesses,
+    kill = process.kill,
   } = {},
 ) {
+  // Anything of the runner user's started after this process is a leg's.
+  const list =
+    listLegProcesses ??
+    (() => legProcesses({ since: procStat(process.pid).start }));
   const prompt = promptText(config);
   const active = config.legs.filter((leg) => !leg.skipped);
   const records = [];
@@ -655,6 +733,12 @@ function runLegs(
         killSignal: "SIGINT",
       });
       const endedAt = now().toISOString();
+      const survivors = reapLeg({ list, kill });
+      if (survivors.length > 0) {
+        throw new LaneError(
+          `leg ${index + 1} left ${survivors.length} process(es) running after it ended; no further leg runs`,
+        );
+      }
       const timedOut = child.error?.code === "ETIMEDOUT";
       const overflowed = child.error?.code === "ENOBUFS";
       const exitCode = typeof child.status === "number" ? child.status : null;
@@ -901,7 +985,7 @@ function install(env, { spawn = spawnSync } = {}) {
   });
 }
 
-function run(env) {
+function run(env, legOptions = {}) {
   verifyEnvironment(env);
   const config = readConfig(env);
   for (const line of skipWarnings(config)) process.stdout.write(`${line}\n`);
@@ -909,7 +993,7 @@ function run(env) {
   process.stdout.write(`::stop-commands::${token}\n`);
   let outcome;
   try {
-    outcome = runLegs(config, { baseEnv: env });
+    outcome = runLegs(config, { ...legOptions, baseEnv: env });
   } finally {
     process.stdout.write(`::${token}::\n`);
   }
@@ -975,6 +1059,9 @@ module.exports = {
   install,
   judgeLeg,
   legEnv,
+  legProcesses,
+  procStat,
+  reapLeg,
   legRecord,
   linesToMessages,
   readConfig,
