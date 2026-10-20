@@ -184,6 +184,20 @@ inputs:
       calling job needs `actions: read`; a listing that fails after three
       tries fails the run. Off by default.
     default: 'false'
+  step-name:
+    description: >-
+      Name of the calling job's step that runs this action, as the jobs API
+      lists it (the step's `name:`). Carrying a `success` forward and the
+      `yield-to-full-run` listing find this run's own gate job among its
+      in-progress jobs by runner name (`RUNNER_NAME`), then this step in it:
+      by this name when set, else as the one step of that job in progress.
+      Set it when the job runs steps in parallel or in the background, where
+      more than one step can be in progress. Each read that does not resolve
+      is retried after 1, 2, 4 and 8 seconds (15 in all), then the run fails
+      closed with a warning naming the cause: an empty runner name, no job or
+      more than one job in progress on that runner, or no single matching step.
+      The writer step of the full run is matched by the same name.
+    default: ''
   token:
     description: >-
       Token used to write and read the commit status. The calling job needs
@@ -213,6 +227,8 @@ runs:
         RERUN_WAIT_SECONDS: ${{ inputs.rerun-wait-seconds }}
         RECORD_PENDING: ${{ inputs.record-pending }}
         YIELD_TO_FULL_RUN: ${{ inputs.yield-to-full-run }}
+        STEP_NAME: ${{ inputs.step-name }}
+        JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         GH_TOKEN: ${{ inputs.token }}
         REPOSITORY: ${{ inputs.repository }}
         SHA: ${{ inputs.sha }}

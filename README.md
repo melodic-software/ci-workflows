@@ -356,6 +356,15 @@ consumer to audit it.
     superseded; a full run still waiting on it re-runs it once it completes.
     It overrides `carry-forward-wait-seconds`, needs
     `actions: read`, and fails the run when the listing fails three times.
+    This run's own gate job, whose name a contract-only sibling must match and
+    whose step names the writer step to verify, is the one in-progress job on
+    this runner (`RUNNER_NAME`); a sibling job of this run still queued, or an
+    extra job that ran, does not hide it. `step-name` (default `''`) names the
+    step that runs the action, which a job running steps in parallel needs;
+    left empty, it is the one step of that job in progress. A read that does
+    not resolve is retried after 1, 2, 4 and 8 seconds, then the run fails
+    closed with a warning naming the cause (an empty runner name, no job or
+    more than one job in progress on the runner, or no single matching step).
     (`carry-forward-wait-seconds: '0'` alone reads the status once with no
     listing, so it can carry an older `success` across a full run that is
     queued or has not yet written its `pending` marker.)
@@ -427,6 +436,7 @@ consumer to audit it.
           with:
             yield-to-full-run: 'true'
             rerun-contract-only-siblings: 'true'
+            step-name: Aggregate lane results
             results: ${{ needs.detect-changes.result }} ...
   ```
 

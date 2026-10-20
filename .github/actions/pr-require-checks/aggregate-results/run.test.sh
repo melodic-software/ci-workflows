@@ -212,6 +212,9 @@ run_case() {
     GITHUB_SERVER_URL=https://github.com \
     GITHUB_RUN_ID=4242 \
     GITHUB_EVENT_NAME=pull_request \
+    RUNNER_NAME="$own_runner" \
+    STEP_NAME= \
+    JOB_CHECK_RUN_ID= \
     "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
@@ -370,7 +373,8 @@ run_of_workflow 4000 777
 # The gate job as the jobs API lists it: this run's, with this action's step
 # running after the contract step; and a full run's, whose aggregate step ended
 # with the given conclusion (`running` for a step still in progress).
-own_gate_job='{"name":"ci-status","status":"in_progress","conclusion":null,"steps":[{"name":"Check the pull-request contract","status":"completed","conclusion":"success"},{"name":"Aggregate lane results","status":"in_progress","conclusion":null}]}'
+own_runner='GitHub Actions 7'
+own_gate_job='{"id":9100,"name":"ci-status","status":"in_progress","conclusion":null,"runner_name":"GitHub Actions 7","steps":[{"name":"Check the pull-request contract","status":"completed","conclusion":"success"},{"name":"Aggregate lane results","status":"in_progress","conclusion":null}]}'
 # writer_gate_job <aggregate-step-conclusion|running> [job-conclusion]
 writer_gate_job() {
   if [[ "$1" == running ]]; then
@@ -1941,6 +1945,136 @@ expect_no_gh_calls_at_all
 
 reset_yield_fixtures
 
+# --- this run's own gate job and step ------------------------------------------
+
+own_jobs_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs'
+# own_jobs <json-array-of-job-objects> [call-number]
+# This run's latest-attempt jobs, on every read or only on the Nth.
+own_jobs() {
+  printf '{"jobs":%s}' "$1" >"$fixtures/${own_jobs_key}${2:+.$2}.json"
+}
+clear_own_jobs() {
+  rm -f -- "$fixtures/${own_jobs_key}".*.json
+  install_step_fixtures
+}
+# expect_total_sleep_at_most <seconds>
+expect_total_sleep_at_most() {
+  local total=0 seconds
+  while read -r seconds; do
+    total=$((total + seconds))
+  done <"$sleep_log"
+  if [[ "$total" -le 0 || "$total" -gt "$1" ]]; then
+    echo "FAIL: expected a total sleep in 1..$1 seconds, got $total"
+    cat "$sleep_log"
+    failures=$((failures + 1))
+  fi
+}
+own_cause_prefix="::warning::could not identify this run's gate job and running step in repos/${repository}/actions/runs/4242/jobs: "
+running_contract_step='{"name":"Check the pull-request contract","status":"in_progress","conclusion":null}'
+running_aggregate_step='{"name":"Aggregate lane results","status":"in_progress","conclusion":null}'
+
+# Without matching this run's own job by its runner among in-progress jobs, a
+# sibling job the API still lists as queued is a second non-skipped job, and
+# the gate goes unidentified.
+echo 'case: a sibling job still listed as queued does not hide the gate job'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"lint\",\"status\":\"queued\",\"conclusion\":null},${own_gate_job}]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_sleep
+
+# Without the runner match, a reusable-workflow call job that ran in a
+# contract-only run is a second non-skipped job, and the gate goes unidentified
+# on every such run.
+echo 'case: an extra non-gate job that ran does not hide the gate job'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"pr-refine / fix-docs\",\"status\":\"completed\",\"conclusion\":\"success\",\"runner_name\":\"GitHub Actions 3\"},${own_gate_job}]"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the shared resolver in the yield listing, a lagging sibling in this
+# run leaves no gate name, and a contract-only sibling counts as a full run.
+echo 'case: the yield listing resolves the gate job past a lagging sibling of this run'
+reset_yield_fixtures
+status_list '[]'
+own_jobs "[{\"name\":\"lint\",\"status\":\"queued\",\"conclusion\":null},${own_gate_job}]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+jobs_raw 4300 "$contract_only_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log "${fail_prefix}${absent_remedy}"
+expect_no_log 'superseded'
+
+# Without the retry, a step the API has not flipped to in_progress yet fails the
+# run on the first read.
+echo 'case: a step listed as in_progress only on the second read resolves after one retry'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"lint\",\"conclusion\":\"skipped\"},{\"id\":9100,\"name\":\"ci-status\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[{\"name\":\"Check the pull-request contract\",\"status\":\"completed\",\"conclusion\":\"success\"},{\"name\":\"Aggregate lane results\",\"status\":\"queued\",\"conclusion\":null}]}]" 1
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+if [[ "$(cat "$sleep_log")" != 1 ]]; then
+  echo "FAIL: expected one 1-second sleep before the second read, got: $(tr '\n' ' ' <"$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_own_jobs
+
+# Without failing closed on an empty key, a job with no runner name would match
+# whichever in-progress job also lacks one.
+echo 'case: an empty runner name fails closed naming the cause'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true RUNNER_NAME=
+expect_log "${own_cause_prefix}RUNNER_NAME is empty, so this run's own job has no key."
+expect_no_log 'Carried forward'
+expect_no_gh_call "actions/runs/4100/jobs"
+
+# Without the bound, a job that never appears would retry past the job's
+# 3-minute timeout instead of failing with the cause.
+echo 'case: an own job that never resolves fails closed after a bounded retry'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'RUNNER_NAME=other runner'
+expect_log "${own_cause_prefix}no in-progress job ran on runner 'other runner' after 5 reads."
+expect_total_sleep_at_most 15
+expect_no_log 'Carried forward'
+
+# Without failing on more than one match, a self-hosted runner name shared by a
+# repository and an organization runner could pick another job's steps.
+echo 'case: two in-progress jobs on the same runner name fail closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"name\":\"other\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[]},${own_gate_job}]"
+run_case 1 'skipped skipped' pass true
+expect_log "${own_cause_prefix}2 in-progress jobs ran on runner '${own_runner}' after 5 reads; a runner name is not unique."
+expect_no_log 'Carried forward'
+clear_own_jobs
+
+# Without the step-name input, parallel steps leave two in-progress steps and
+# the running step goes unidentified.
+echo 'case: step-name picks the step that runs this action among parallel steps'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+own_jobs "[{\"id\":9100,\"name\":\"ci-status\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[${running_contract_step},${running_aggregate_step}]}]"
+run_case 0 'skipped skipped' pass true true 'STEP_NAME=Aggregate lane results'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_sleep
+
+echo 'case: without step-name, two in-progress steps fail closed naming the input'
+run_case 1 'skipped skipped' pass true
+expect_log "${own_cause_prefix}job 'ci-status' has 2 in-progress steps after 5 reads; set step-name to the name of the step that runs this action."
+clear_own_jobs
+
+echo 'case: a step-name no step of the gate job carries fails closed naming it'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 1 'skipped skipped' pass true true 'STEP_NAME=Aggregate'
+expect_log "${own_cause_prefix}job 'ci-status' has no step named 'Aggregate' after 5 reads."
+expect_total_sleep_at_most 15
+
+reset_yield_fixtures
+
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
 for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds record-pending yield-to-full-run token repository sha; do
@@ -1981,6 +2115,17 @@ fi
 rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
 if [[ "$rerun_wait_default" != "    default: '90'" ]]; then
   echo "FAIL: action.yml does not default rerun-wait-seconds to '90' (got: ${rerun_wait_default})"
+  failures=$((failures + 1))
+fi
+
+# step-name is opt-in: empty keeps the one-in-progress-step rule.
+if ! grep -qE '^  step-name:' "$action_metadata" || ! grep -qF '        STEP_NAME: ' "$action_metadata"; then
+  echo "FAIL: action.yml does not declare and wire the step-name input"
+  failures=$((failures + 1))
+fi
+step_name_default="$(awk '$0 == "  step-name:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
+if [[ "$step_name_default" != "    default: ''" ]]; then
+  echo "FAIL: action.yml does not default step-name to '' (got: ${step_name_default})"
   failures=$((failures + 1))
 fi
 
