@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Reject PR diffs that touch sync-manifest-managed destinations.
+# CHANGED_PATHS_FILE, when set, names a NUL-separated list of changed paths to
+# check instead of the BASE_REF...HEAD_REF diff; SUBJECT names whose they are.
 set -euo pipefail
 
 : "${REPOSITORY:?REPOSITORY is required}"
@@ -32,29 +34,39 @@ for path in "${managed[@]}"; do
   managed_set["$path"]=1
 done
 
-# Triple-dot against the merge base to match PR changed-file semantics.
-# Deletions count, and --no-renames lists both paths of a rename.
-if [[ -n "$BASE_REF" && "$BASE_REF" != "$HEAD_REF" ]]; then
-  diff_range="$BASE_REF...$HEAD_REF"
-else
-  diff_range="$HEAD_REF"
-fi
+subject="${SUBJECT:-This PR}"
 
-# Command substitution, not `mapfile < <(git …)`: process substitution drops
-# git's exit status, so a bad ref would pass as an empty diff.
-if ! changed_paths="$(
-  git diff --name-only --no-renames --diff-filter=ACDMRTUXB "$diff_range"
-)"; then
-  echo "::error::failed to diff $diff_range — cannot verify managed-file edits"
-  exit 1
-fi
-
-# `mapfile <<<""` yields one empty element, so an empty diff must short-circuit
-# rather than produce a phantom path.
-if [[ -z "$changed_paths" ]]; then
-  changed=()
+if [[ -n "${CHANGED_PATHS_FILE:-}" ]]; then
+  if [[ ! -f "$CHANGED_PATHS_FILE" ]]; then
+    echo "::error::changed-paths file $CHANGED_PATHS_FILE is missing"
+    exit 1
+  fi
+  mapfile -d '' -t changed <"$CHANGED_PATHS_FILE"
 else
-  mapfile -t changed <<<"$changed_paths"
+  # Triple-dot against the merge base to match PR changed-file semantics.
+  # Deletions count, and --no-renames lists both paths of a rename.
+  if [[ -n "$BASE_REF" && "$BASE_REF" != "$HEAD_REF" ]]; then
+    diff_range="$BASE_REF...$HEAD_REF"
+  else
+    diff_range="$HEAD_REF"
+  fi
+
+  # Command substitution, not `mapfile < <(git …)`: process substitution drops
+  # git's exit status, so a bad ref would pass as an empty diff.
+  if ! changed_paths="$(
+    git diff --name-only --no-renames --diff-filter=ACDMRTUXB "$diff_range"
+  )"; then
+    echo "::error::failed to diff $diff_range — cannot verify managed-file edits"
+    exit 1
+  fi
+
+  # `mapfile <<<""` yields one empty element, so an empty diff must
+  # short-circuit rather than produce a phantom path.
+  if [[ -z "$changed_paths" ]]; then
+    changed=()
+  else
+    mapfile -t changed <<<"$changed_paths"
+  fi
 fi
 
 hits=()
@@ -65,12 +77,12 @@ for path in "${changed[@]}"; do
 done
 
 if ((${#hits[@]} == 0)); then
-  echo "No managed-file hand-edits in this diff."
+  echo "No managed-file hand-edits in this diff${SUBJECT:+ (${SUBJECT})}."
   exit 0
 fi
 
 {
-  echo "::error::This PR edits sync-manifest-managed files. Change them in"
+  echo "::error::$subject edits sync-manifest-managed files. Change them in"
   echo "::error::melodic-software/standards and let standards-sync land the"
   echo "::error::update. Standards-sync PRs are opened by the sync workflow and"
   echo "::error::verified automatically; no label or exemption applies."

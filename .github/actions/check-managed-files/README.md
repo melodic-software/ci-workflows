@@ -24,6 +24,34 @@ the last listed commit is the checked head. This is the identity rule
 `dependabot/*` branch, an unreadable commit list, or a moved head drops the
 pull request to the hand-edit check, which fails on any managed-file edit.
 
+## Merge groups
+
+A `merge_group` payload names no pull request, so the guard maps the group to
+the pull requests it holds and checks each one's own diff:
+
+- It reads the queued pull request's number from the group's head ref,
+  `gh-readonly-queue/<base>/pr-<N>-<sha>`, and reads it with `pulls.get`. A
+  stack lands as one group, so while a pull request targets another pull
+  request's branch rather than the queue's base branch, the guard reads that
+  one too, down to the base branch.
+- Each pull request gets the mode the rules above select. A hand-edit pull
+  request fails on any managed path in its own file list from
+  `pulls.listFiles`. A Dependabot pull request is skipped only when its commits
+  pass the Dependabot check. A sync pull request must be queued alone: its
+  commit identity is checked again, and the group's commits are verified
+  against standards `main` as resolved when the group runs, so a sync that
+  `main` has moved past fails in the queue.
+- The run fails when the head ref names no pull request, a pull request or its
+  file list cannot be read, the walk does not reach the base branch, or a path
+  that `merge_group.base_sha...head_sha` changes belongs to none of the group's
+  pull requests.
+
+The head ref names only the group's last pull request, so the merge queue must
+use `grouping_strategy: ALLGREEN`, as for
+[check-contract](../pr-require-checks/check-contract/README.md). Under
+`HEADGREEN`, a pull request that failed its own group can still merge inside a
+later group, whose diff starts after it.
+
 ## Why standards `main`, not a SHA the PR names
 
 Sync mode checks out standards at `main` when the check runs and verifies
@@ -41,6 +69,9 @@ The action is a trust boundary only when the PR cannot change it:
   from a workflow file that CODEOWNERS protects. With `uses: ./...`, as in
   ci-workflows' own dogfood job, the PR edits the code that grades it.
 - Grant the job `pull-requests: read` (sync and Dependabot modes list the PR's
-  commits) and `contents: read`.
+  commits; a merge group reads each queued pull request and its files) and
+  `contents: read`.
+- To guard a merge queue, run the job on `merge_group` as well as
+  `pull_request`.
 - Check out the PR with `fetch-depth: 0`, so the base and head commits are
-  both present.
+  both present (in a merge group, `merge_group.base_sha` and `head_sha`).
