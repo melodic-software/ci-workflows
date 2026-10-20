@@ -1285,6 +1285,8 @@ jobs:
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
+          # Why this job ran, for the run's one lane record (ci-workflows#806).
+          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,

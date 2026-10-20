@@ -473,6 +473,34 @@ test("record tokens: resets only on a limit stop, unknown and malformed values o
   );
 });
 
+// ci-workflows#806: a subscription job that ran because the key job
+// credit-stopped, or had no key, says so right after the credential.
+test("record tokens: a fallback reason prints right after the credential, only from its vocabulary", () => {
+  const run = { turns: 4, models: [], resetsAt: null };
+  const credential = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
+  assert.equal(
+    recordTokens(run, { credential, fallbackReason: "credit-stop" }),
+    "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop turns=4",
+  );
+  assert.equal(
+    recordTokens(run, { credential, fallbackReason: "no-key" }),
+    "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=no-key turns=4",
+  );
+  for (const forged of [
+    "",
+    "auth",
+    "Credit-Stop",
+    " no-key",
+    "credit-stop\n::error::x",
+  ]) {
+    assert.equal(
+      recordTokens(run, { credential, fallbackReason: forged }),
+      "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN turns=4",
+      JSON.stringify(forged),
+    );
+  }
+});
+
 // credit-stop. The stop texts come from the published pages:
 // "Credit balance is too low" (code.claude.com/docs/en/errors), the self-set
 // spend limit "You have reached your specified API usage limits" (400) and the

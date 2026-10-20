@@ -62,6 +62,7 @@ async function runOutcome({
   credential = "",
   maxTurns = "",
   knownFailureClass = "",
+  fallbackReason = "",
 }) {
   const keys = [
     "LANE_OUTCOME",
@@ -72,6 +73,7 @@ async function runOutcome({
     "CREDENTIAL",
     "MAX_TURNS",
     "KNOWN_FAILURE_CLASS",
+    "FALLBACK_REASON",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -86,6 +88,7 @@ async function runOutcome({
     CREDENTIAL: credential,
     MAX_TURNS: maxTurns,
     KNOWN_FAILURE_CLASS: knownFailureClass,
+    FALLBACK_REASON: fallbackReason,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -417,4 +420,73 @@ test("a run that finished past its turn cap reads as max-turns with its turns an
   assert.equal(outputs.review_failed, "true");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /\bclass=max-turns turns=16 max-turns=15\b/u);
+});
+
+// ci-workflows#806: the subscription job of the two-job pattern writes the
+// run's one lane record, so it names why it ran beside the credential.
+test("a fallback reason rides beside the credential on the notice and the class line", async () => {
+  const succeeded = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 5 },
+  ]);
+  const ok = await runOutcome({
+    outcome: "success",
+    executionFile: succeeded,
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "credit-stop",
+  });
+  assert.deepEqual(ok.failed, []);
+  assert.equal(ok.notices.length, 1);
+  assert.match(
+    ok.notices[0],
+    / credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop turns=5\b/u,
+  );
+  const authFailed = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 401,
+    },
+  ]);
+  const failed = await runOutcome({
+    outcome: "failure",
+    executionFile: authFailed,
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "no-key",
+  });
+  assert.equal(failed.errors.length, 1);
+  assert.match(
+    failed.errors[0],
+    /\bclass=auth credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=no-key turns=1\b/u,
+  );
+  const none = await runOutcome({
+    outcome: "success",
+    executionFile: succeeded,
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.doesNotMatch(none.notices[0], /fallback=/u);
+});
+
+test("a fallback reason outside credit-stop and no-key fails the step and reports nothing", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 5 },
+  ]);
+  for (const outcome of ["success", "failure"]) {
+    for (const fallbackReason of ["auth", "Credit-Stop", " credit-stop"]) {
+      const run = await runOutcome({
+        outcome,
+        executionFile: file,
+        fallbackReason,
+      });
+      const label = `${outcome}/${JSON.stringify(fallbackReason)}`;
+      assert.equal(run.failed.length, 1, label);
+      assert.match(run.failed[0], /credit-stop/u, label);
+      assert.match(run.failed[0], /no-key/u, label);
+      assert.deepEqual(run.notices, [], label);
+      assert.deepEqual(run.errors, [], label);
+      assert.deepEqual(run.warnings, [], label);
+      assert.deepEqual(run.outputs, {}, label);
+    }
+  }
 });

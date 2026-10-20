@@ -20,8 +20,8 @@ description: >-
   `class=<token>` ::error annotation, and
   records the failure class and detail. Every annotation it writes,
   a success notice included, carries the run record as bare tokens:
-  `turns=`, `max-turns=`, `credential=`, `models=` (the result message's
-  modelUsage keys) and, on class rate-limit, `resets=<ISO>` and
+  `turns=`, `max-turns=`, `credential=`, `fallback=`, `models=` (the result
+  message's modelUsage keys) and, on class rate-limit, `resets=<ISO>` and
   `resets-window=<rateLimitType>` from the newest rejected
   rate_limit_event; an unknown value is omitted. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
@@ -77,6 +77,14 @@ inputs:
       CLAUDE_CODE_OAUTH_TOKEN. Printed as `credential=<name>` on the lane's
       annotation line; empty, or anything but an upper-case secret name, is
       omitted.
+    required: false
+    default: ""
+  fallback-reason:
+    description: >-
+      Why this run used a fallback credential: `credit-stop` (the key job
+      credit-stopped) or `no-key` (the key was empty). Printed as
+      `fallback=<reason>` right after `credential=`. Empty prints nothing;
+      any other value fails the step before it reports.
     required: false
     default: ""
   install-outcome:
@@ -152,6 +160,7 @@ runs:
         REQUIRE_COMPLETION: ${{ inputs.require-completion }}
         COMPLETION: ${{ inputs.completion }}
         CREDENTIAL: ${{ inputs.credential }}
+        FALLBACK_REASON: ${{ inputs.fallback-reason }}
         MAX_TURNS: ${{ inputs.max-turns }}
         INSTALL_OUTCOME: ${{ inputs.install-outcome }}
         KNOWN_FAILURE_CLASS: ${{ inputs.known-failure-class }}
@@ -160,9 +169,17 @@ runs:
         script: |
           const fs = require("node:fs");
           const path = require("node:path");
-          const { classifyExecutionFile, readRunRecord, recordTokens } = require(
-            path.join(process.env.ACTION_PATH, "classify.cjs"),
-          );
+          const { classifyExecutionFile, FALLBACK_REASONS, readRunRecord, recordTokens } =
+            require(path.join(process.env.ACTION_PATH, "classify.cjs"));
+
+          // A caller wiring error, not a lane outcome: fail before reporting.
+          const fallbackReason = process.env.FALLBACK_REASON ?? "";
+          if (fallbackReason !== "" && !FALLBACK_REASONS.includes(fallbackReason)) {
+            core.setFailed(
+              `fallback-reason must be empty or one of: ${FALLBACK_REASONS.join(", ")}.`,
+            );
+            return;
+          }
 
           const outcome = process.env.LANE_OUTCOME ?? "";
           const lane = process.env.LANE_NAME ?? "Claude review";
@@ -175,6 +192,7 @@ runs:
               failureClass,
               maxTurns: process.env.MAX_TURNS ?? "",
               credential: process.env.CREDENTIAL ?? "",
+              fallbackReason,
             });
             return tokens === "" ? "" : ` ${tokens}`;
           };

@@ -102,7 +102,12 @@ test("the subscription job downloads nothing from the claude job and never write
   }
 });
 
-test("the subscription job repeats the claude job's steps but for the credential", () => {
+// The subscription job's outcome step names why it ran (ci-workflows#806).
+const FALLBACK_REASON =
+  "${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || " +
+  "needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}";
+
+test("the subscription job repeats the claude job's steps but for the credential and the fallback reason", () => {
   const strip = (steps, secret, input) =>
     steps.map((step) => {
       const copy = structuredClone(step);
@@ -115,6 +120,10 @@ test("the subscription job repeats the claude job's steps but for the credential
       if (copy.id === "claude") {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
         delete copy.with[input];
+      }
+      if (copy.id === "review-outcome" && input === "subscription-token") {
+        assert.equal(copy.with["fallback-reason"], FALLBACK_REASON);
+        delete copy.with["fallback-reason"];
       }
       return copy;
     });
@@ -136,6 +145,25 @@ test("the subscription job repeats the claude job's steps but for the credential
     order.indexOf("Isolate the runner") < order.indexOf("Check out") &&
       order.indexOf("Apply the Claude managed settings") <
         order.indexOf("Isolate the runner"),
+  );
+});
+
+test("the subscription job's lane record names the credit stop or the empty key it ran for", () => {
+  const value = subscription.steps.find((step) => step.id === "review-outcome")
+    .with["fallback-reason"];
+  const reason = (outputs) =>
+    evaluate(value, { needs: { claude: { outputs } } });
+  assert.equal(
+    reason({ "lane-class": "credit-stop", "credential-present": "true" }),
+    "credit-stop",
+  );
+  assert.equal(
+    reason({ "lane-class": "", "credential-present": "false" }),
+    "no-key",
+  );
+  assert.equal(
+    reason({ "lane-class": "auth", "credential-present": "true" }),
+    "",
   );
 });
 

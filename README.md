@@ -643,8 +643,10 @@ consumer to audit it.
     cache restore.
 
   Job A skips its outcome step on a credit stop, so whichever job triaged
-  reports; a status job that needs both reads job B's outcome when it ran,
-  else job A's: one lane record per run. A lane that writes does it in a
+  reports. Job B passes report-lane-outcome's `fallback-reason`,
+  `credit-stop` or `no-key` from job A's `lane-class` and key presence, so
+  its record says why it ran. A status job that needs both reads job B's
+  outcome when it ran, else job A's: one lane record per run. A lane that writes does it in a
   separate job with no model that needs both and reads job B's outputs when
   it ran, else job A's, so the write happens once.
   `intake-triage.yml` is the reference implementation.
@@ -1238,7 +1240,9 @@ reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
 Every outcome annotation, and a notice on a run that completed, also carries
 the run record as bare tokens, each omitted when unknown: `turns=<n>`,
 `max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
-`credential` input), `models=<modelUsage keys>` and, on `class=rate-limit`,
+`credential` input), `fallback=credit-stop` or `fallback=no-key` (the
+`fallback-reason` input, which rejects any other value),
+`models=<modelUsage keys>` and, on `class=rate-limit`,
 `resets=<ISO 8601 UTC>` and `resets-window=<rateLimitType>` from the run's
 newest `rejected` `rate_limit_event` (none without one), the time also
 exposed as the composite's `resets-at` output.
