@@ -782,6 +782,10 @@ jobs:
             permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
 
+            Never post a second inline comment to correct or re-anchor an
+            earlier one. If a posted comment sits on the wrong line, say so
+            in the summary and name the line it belongs on.
+
             When you finish, whether or not you found anything:
             - End the body of every inline comment with this line, as plain
               text (the comment tool deletes HTML comments before posting):
@@ -943,6 +947,10 @@ jobs:
             locations to the commit blob (not the PR) with a line-numbered
             permalink:
             https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+            Never post a second inline comment to correct or re-anchor an
+            earlier one. If a posted comment sits on the wrong line, say so
+            in the summary and name the line it belongs on.
 
             When you finish, whether or not you found anything:
             - End the body of every inline comment with this line, as plain
