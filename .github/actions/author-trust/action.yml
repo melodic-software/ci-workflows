@@ -1,0 +1,59 @@
+name: author-trust
+description: >-
+  The Claude lanes' author trust rule, defined once. A GitHub `User` is
+  trusted when its numeric id is in allowed-author-ids; a `Bot` when its id
+  is in allowed-bot-sender-ids. Ids, not logins or authorAssociation: a login
+  can be renamed and re-registered, and a webhook computes authorAssociation
+  with no viewer, so a member whose org membership is private reads
+  CONTRIBUTOR. An empty list, or one with a leading, trailing or doubled
+  comma, trusts no one, as the intake-triage gate does. Any other actor type
+  (a deleted user's null author, an Organization, a Mannequin) is never
+  trusted. A GraphQL `databaseId` is the REST `id` these lists hold.
+
+inputs:
+  actors:
+    description: >-
+      JSON array of `{"type": "User" | "Bot", "id": <number>}`, one per actor
+      to check (GraphQL `__typename` and `databaseId`). Null entries are
+      skipped.
+    required: true
+  allowed-author-ids:
+    description: Comma-separated numeric GitHub user ids, no spaces, of trusted people.
+    required: false
+    default: ""
+  allowed-bot-sender-ids:
+    description: Comma-separated numeric GitHub user ids, no spaces, of trusted bots.
+    required: false
+    default: ""
+
+outputs:
+  trusted:
+    description: >-
+      JSON array of `"<type>:<id>"` keys, one per trusted actor, sorted and
+      unique. The step fails on input that is not a JSON array; a caller then
+      treats every actor as untrusted.
+    value: ${{ steps.trust.outputs.trusted }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the actors against the allowed ids
+      id: trust
+      shell: bash
+      env:
+        ACTORS: ${{ inputs.actors }}
+        AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
+        BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
+      run: |
+        # shellcheck disable=SC2016 # $actors and the other $ names are jq variables.
+        trusted="$(jq -cn --argjson actors "$ACTORS" --arg authors "$AUTHOR_IDS" --arg bots "$BOT_IDS" '
+          def ids($list): if $list | test("^[^,]+(,[^,]+)*$") then $list | split(",") else [] end;
+          if ($actors | type) != "array" then error("actors must be a JSON array") else . end
+          | { User: ids($authors), Bot: ids($bots) } as $allowed
+          | [ $actors[]
+              | select(type == "object" and (.id | type) == "number" and (.type | IN("User", "Bot")))
+              | select((.id | tostring) as $id | $allowed[.type] | index([$id]))
+              | "\(.type):\(.id)" ]
+          | unique
+        ')"
+        echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
