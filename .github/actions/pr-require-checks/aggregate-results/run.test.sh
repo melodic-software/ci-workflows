@@ -567,6 +567,32 @@ if [[ "$(cat "$sleep_log")" != 7 ]]; then
 fi
 clear_rate_limit_fixtures
 
+# Without `10#` a leading zero reads as octal: 010 would wait 8s, and 09 is an
+# arithmetic error that ends the step.
+echo 'case: a reset with leading zeros is read as decimal'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 010\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log 'waiting 10s, then retrying once.'
+if [[ "$(cat "$sleep_log")" != 10 ]]; then
+  echo "FAIL: expected one 10s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
+# Without the ten-digit bound the arithmetic overflows bash's integers and
+# the wait comes out negative or wrong; an oversized value counts as absent.
+echo 'case: an oversized retry-after or reset falls back to the 60s wait'
+printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
+printf 'HTTP/2.0 403 Forbidden\r\nRetry-After: 99999999999999999999\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 99999999999999999999\r\n' >"$fixtures/${status_post_key}.1.headers"
+run_case 0 'success success' pass ''
+expect_log 'waiting 60s, then retrying once.'
+if [[ "$(cat "$sleep_log")" != 60 ]]; then
+  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
+  failures=$((failures + 1))
+fi
+clear_rate_limit_fixtures
+
 # Without the cap check the run would sleep ten minutes past its job timeout.
 echo 'case: a reset beyond rate-limit-wait-seconds fails closed at once and prints the reset time'
 printf '%s\n' "$primary_limit_message" >"$fixtures/${status_post_key}.1.err"
@@ -2550,7 +2576,7 @@ expect_no_gh_call "actions/jobs/"
 expect_no_gh_call "actions/runs/4242/jobs"
 
 # Without the bound, a job that never appears would retry past the job's
-# 3-minute timeout instead of failing with the cause.
+# timeout instead of failing with the cause.
 echo 'case: an own job that never resolves fails closed after a bounded retry'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
@@ -2629,7 +2655,7 @@ if ! grep -qF "    default: '240'" "$action_metadata"; then
 fi
 
 # The rerun wait holds the full run's ci-status open, so its default must stay
-# inside the 3-minute ci-status job the README recommends. Every case above
+# inside the 5-minute ci-status job the README recommends. Every case above
 # runs on run.sh's own fallback, which this does not see.
 rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
 if [[ "$rerun_wait_default" != "    default: '90'" ]]; then

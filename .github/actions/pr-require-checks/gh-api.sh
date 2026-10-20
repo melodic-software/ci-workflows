@@ -130,10 +130,12 @@ gh_api() {
   if ! gh_classify "$method" "$path" || [[ "$GH_FAILURE" != rate-limit ]]; then
     return "$status"
   fi
-  if [[ "$gh_retry_after" =~ ^[0-9]+$ ]]; then
+  # At most ten digits, read as decimal: a longer or non-numeric value is
+  # treated as absent, so the arithmetic never overflows or reads octal.
+  if [[ "$gh_retry_after" =~ ^[0-9]{1,10}$ ]]; then
     wait=$((10#$gh_retry_after))
-  elif [[ "$gh_remaining" == 0 && "$gh_reset" =~ ^[0-9]+$ ]]; then
-    wait=$((gh_reset - $(date +%s)))
+  elif [[ "$gh_remaining" == 0 && "$gh_reset" =~ ^[0-9]{1,10}$ ]]; then
+    wait=$((10#$gh_reset - $(date +%s)))
     if [[ "$wait" -lt 1 ]]; then
       wait=1
     fi
@@ -143,7 +145,7 @@ gh_api() {
   left=$((RATE_LIMIT_WAIT_SECONDS - RATE_LIMIT_WAITED))
   if [[ "$wait" -gt "$left" ]]; then
     reset_at="an unknown time"
-    if [[ "$gh_reset" =~ ^[0-9]+$ ]]; then
+    if [[ "$gh_reset" =~ ^[0-9]{1,10}$ ]]; then
       reset_at="${gh_reset} ($(jq -rn --arg epoch "$gh_reset" '$epoch | tonumber | todate'))"
     fi
     echo "::warning::${method} ${path} is rate limited and needs a ${wait}s wait, more than the ${left}s left of rate-limit-wait-seconds (${RATE_LIMIT_WAIT_SECONDS}); not waiting. The limit resets at ${reset_at}."
