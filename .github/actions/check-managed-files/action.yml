@@ -20,14 +20,17 @@ inputs:
     description: Target repository identity OWNER/REPO (defaults to this repo).
     default: ${{ github.repository }}
   base-ref:
-    description: Git ref to diff against for changed files.
+    description: >-
+      Git ref to diff against for changed files. A merge_group run ignores it
+      and reads each queued pull request's diff from the pulls API.
     default: ${{ github.event.pull_request.base.sha || github.sha }}
   head-ref:
     description: Git ref of the PR head (or current SHA for non-PR runs).
     default: ${{ github.event.pull_request.head.sha || github.sha }}
   github-token:
     description: >-
-      Token that lists the PR's commits in sync and Dependabot modes. The job needs
+      Token that lists the PR's commits in sync and Dependabot modes, and reads
+      each queued pull request in a merge_group run. The job needs
       `pull-requests: read`.
     default: ${{ github.token }}
 
@@ -38,7 +41,9 @@ runs:
     # branch, in this repository. Anything less falls through to the
     # hand-edit check, so a lookalike PR is held to the stricter rule. A
     # Dependabot-opened PR is only a candidate for skipping: the next step
-    # skips it only when every commit is a verified Dependabot commit.
+    # skips it only when every commit is a verified Dependabot commit. A
+    # merge_group payload carries no pull request; the next step maps the group
+    # and applies these rules to each pull request in it (merge-group.cjs).
     - name: Select the guard mode
       id: mode
       shell: bash
@@ -59,8 +64,49 @@ runs:
         if [[ "$PR_AUTHOR" == 'dependabot[bot]' && "$PR_AUTHOR_ID" == '49699333' ]]; then
           mode=dependabot
         fi
+        if [[ "${GITHUB_EVENT_NAME:-}" == 'merge_group' ]]; then
+          mode=merge-group
+        fi
         echo "mode=$mode" >>"$GITHUB_OUTPUT"
         echo "managed-files-guard mode: $mode"
+
+    # Resolves the group to sync, hand-edit or skip. It fails the run when the
+    # head ref names no pull request, a pull request cannot be read, or a path
+    # the group changes belongs to none of its pull requests.
+    - name: Map the merge group to its pull requests
+      id: group
+      if: steps.mode.outputs.mode == 'merge-group'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        QUEUE_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        QUEUE_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { resolveMergeGroup } = require(`${process.env.ACTION_PATH}/merge-group.cjs`);
+          const pathsDir = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "managed-files-guard-"));
+          const mode = await resolveMergeGroup({
+            github,
+            core,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            headRef: process.env.QUEUE_HEAD_REF,
+            baseRef: process.env.QUEUE_BASE_REF,
+            baseSha: process.env.QUEUE_BASE_SHA,
+            headSha: process.env.QUEUE_HEAD_SHA,
+            workspace: process.env.GITHUB_WORKSPACE,
+            pathsDir,
+          });
+          if (mode) {
+            core.setOutput("mode", mode);
+            core.setOutput("paths-dir", pathsDir);
+            core.info(`managed-files-guard merge-group mode: ${mode}`);
+          }
 
     # Resolves the dependabot candidate to skip or hand-edit. Later steps read
     # this step's mode first and fall back to the mode step's.
@@ -112,17 +158,17 @@ runs:
     # If main moves mid-sync the check fails closed; the sync workflow runs on
     # every standards main push, updates the PR, and CI re-runs.
     - name: Check out standards manifest source
-      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
+      if: (steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: melodic-software/standards
-        ref: ${{ steps.mode.outputs.mode == 'sync' && 'main' || inputs.standards-ref }}
+        ref: ${{ (steps.group.outputs.mode || steps.mode.outputs.mode) == 'sync' && 'main' || inputs.standards-ref }}
         path: .managed-files-guard-standards
         persist-credentials: false
 
     - name: Detect the engine flavor
       id: engine
-      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
+      if: (steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
       shell: bash
       env:
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
@@ -173,5 +219,42 @@ runs:
         REPOSITORY: ${{ inputs.repository }}
         BASE_REF: ${{ inputs.base-ref }}
         HEAD_REF: ${{ inputs.head-ref }}
+        STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+      run: bash "$GITHUB_ACTION_PATH/verify-sync.sh"
+
+    # Each queued pull request's own changed paths, as the pulls API lists them.
+    - name: Reject hand-edits in the merge group's pull requests
+      if: steps.group.outputs.mode == 'hand-edit'
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        BASE_REF: ${{ github.event.merge_group.base_sha }}
+        HEAD_REF: ${{ github.event.merge_group.head_sha }}
+        STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+        PATHS_DIR: ${{ steps.group.outputs.paths-dir }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        files=("$PATHS_DIR"/pr-*)
+        if ((${#files[@]} == 0)); then
+          echo "::error::no pull request file lists under $PATHS_DIR"
+          exit 1
+        fi
+        status=0
+        for file in "${files[@]}"; do
+          CHANGED_PATHS_FILE="$file" SUBJECT="Pull request #${file##*/pr-}" \
+            bash "$GITHUB_ACTION_PATH/run.sh" || status=1
+        done
+        exit "$status"
+
+    # A group that is one sync pull request: its commits are that pull
+    # request's diff, verified against standards main as resolved now.
+    - name: Verify the queued sync PR content against standards
+      if: steps.group.outputs.mode == 'sync'
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        BASE_REF: ${{ github.event.merge_group.base_sha }}
+        HEAD_REF: ${{ github.event.merge_group.head_sha }}
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
       run: bash "$GITHUB_ACTION_PATH/verify-sync.sh"

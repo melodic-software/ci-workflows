@@ -597,3 +597,328 @@ test("an empty or unreadable Dependabot commit list is not skipped", async () =>
     "hand-edit",
   );
 });
+
+// --- merge-group mode ------------------------------------------------------
+
+const { resolveMergeGroup } = require(path.join(actionDir, "merge-group.cjs"));
+const QUEUE_SHA = "0123456789abcdef0123456789abcdef01234567";
+const queueRef = (number) =>
+  `refs/heads/gh-readonly-queue/main/pr-${number}-${QUEUE_SHA}`;
+
+function pull(
+  number,
+  { login = "some-contributor", id = 1, ref, base = "main" } = {},
+) {
+  const repo = { full_name: TARGET };
+  return {
+    number,
+    user: { login, id },
+    head: { ref: ref ?? `feature/${number}`, sha: HEAD_SHA, repo },
+    base: { ref: base, repo },
+  };
+}
+
+function groupGithub({ pulls, files = {}, commits = {}, getError } = {}) {
+  const byNumber = new Map(pulls.map((pr) => [pr.number, pr]));
+  return {
+    rest: {
+      pulls: {
+        get: async ({ pull_number }) => {
+          if (getError) throw getError;
+          if (!byNumber.has(pull_number)) throw new Error("Not Found");
+          return { data: byNumber.get(pull_number) };
+        },
+        list: async ({ head }) => ({
+          data: pulls.filter(
+            (pr) => `melodic-software:${pr.head.ref}` === head,
+          ),
+        }),
+        listFiles: "pulls.listFiles",
+        listCommits: "pulls.listCommits",
+      },
+    },
+    paginate: async (method, { pull_number }) =>
+      method === "pulls.listFiles"
+        ? (files[pull_number] ?? []).map((filename) => ({ filename }))
+        : (commits[pull_number] ?? []),
+  };
+}
+
+// Runs the action's merge-group steps against the fixture: the group's base
+// is the fixture base and its head the fixture head.
+async function runGroup(fx, { number, ...fake }) {
+  const pathsDir = path.join(fx.dir, "paths");
+  fs.mkdirSync(pathsDir);
+  const core = {
+    errors: [],
+    failed: undefined,
+    info() {},
+    warning() {},
+    error(message) {
+      this.errors.push(message);
+    },
+    setFailed(message) {
+      this.failed = message;
+    },
+  };
+  const env = {
+    ...gitEnv,
+    REPOSITORY: TARGET,
+    BASE_REF: fx.base,
+    HEAD_REF: fx.head,
+    STANDARDS_ROOT: fx.standards,
+  };
+  const script = (name, extra = {}) =>
+    spawnSync("bash", [path.join(actionDir, name)], {
+      cwd: fx.target,
+      env: { ...env, ...extra },
+      encoding: "utf8",
+    });
+  try {
+    const mode = await resolveMergeGroup({
+      github: groupGithub(fake),
+      core,
+      owner: "melodic-software",
+      repo: "target",
+      headRef: fake.headRef ?? queueRef(number),
+      baseRef: "refs/heads/main",
+      baseSha: fx.base,
+      headSha: fx.head,
+      workspace: fx.target,
+      pathsDir,
+    });
+    const results = [];
+    if (mode === "sync") results.push(script("verify-sync.sh"));
+    if (mode === "hand-edit") {
+      for (const file of fs.readdirSync(pathsDir)) {
+        results.push(
+          script("run.sh", {
+            CHANGED_PATHS_FILE: path.join(pathsDir, file),
+            SUBJECT: `Pull request #${file.slice(3)}`,
+          }),
+        );
+      }
+    }
+    return {
+      mode,
+      errors: core.errors.join("\n"),
+      failed: core.failed,
+      status: results.some((r) => r.status !== 0) ? 1 : 0,
+      stderr: results.map((r) => r.stderr).join("\n"),
+    };
+  } finally {
+    fs.rmSync(fx.dir, { recursive: true, force: true });
+  }
+}
+
+const SYNC_FILES = ["managed/config.txt", "managed/tool.sh"];
+const keepManagedAtBase = (target) => {
+  write(target, "managed/config.txt", "config v1\n");
+  keepToolAtBase(target);
+};
+
+test("merge group: an unparsable head ref fails, named", async () => {
+  const ref = "refs/heads/gh-readonly-queue/main/pr-x-abc";
+  const result = await runGroup(fixture(), {
+    headRef: ref,
+    pulls: [pull(7)],
+  });
+  assert.equal(result.mode, null);
+  assert.ok(result.errors.includes(`'${ref}'`), result.errors);
+  assert.match(result.failed, /Cannot verify the merge group/u);
+});
+
+test("merge group: a pulls.get failure fails", async () => {
+  const result = await runGroup(fixture(), {
+    number: 7,
+    pulls: [pull(7)],
+    getError: new Error("Resource not accessible"),
+  });
+  assert.equal(result.mode, null);
+  assert.match(
+    result.errors,
+    /could not read pull request #7: Resource not accessible/u,
+  );
+});
+
+test("merge group: a sync PR that matched standards main passes", async () => {
+  const sync = pull(7, {
+    login: BOT,
+    ref: "chore/standards-sync",
+  });
+  const result = await runGroup(fixture(), {
+    number: 7,
+    pulls: [sync],
+    files: { 7: SYNC_FILES },
+    commits: { 7: [commit(HEAD_SHA)] },
+  });
+  assert.equal(result.mode, "sync");
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("merge group: a sync PR fails after standards main moves past it", async () => {
+  const sync = pull(7, { login: BOT, ref: "chore/standards-sync" });
+  const fx = fixture({
+    mutateStandards: (s) => write(s, "src/config.txt", "config v3\n"),
+  });
+  const sha = fx.sha;
+  const result = await runGroup(fx, {
+    number: 7,
+    pulls: [sync],
+    files: { 7: SYNC_FILES },
+    commits: { 7: [commit(HEAD_SHA)] },
+  });
+  assert.equal(result.mode, "sync");
+  assert.equal(result.status, 1);
+  assert.ok(
+    result.stderr.includes(`managed/config.txt: differs from apply at ${sha}`),
+    result.stderr,
+  );
+});
+
+test("merge group: a sync PR whose commits are not the App's fails", async () => {
+  const sync = pull(7, { login: BOT, ref: "chore/standards-sync" });
+  const result = await runGroup(fixture(), {
+    number: 7,
+    pulls: [sync],
+    files: { 7: SYNC_FILES },
+    commits: { 7: [commit(HEAD_SHA, { login: "some-contributor" })] },
+  });
+  assert.equal(result.mode, null);
+  assert.match(result.failed, /Re-run the standards sync/u);
+});
+
+test("merge group: a hand-edit PR touching a managed path fails", async () => {
+  const fx = fixture();
+  // What the guard did before merge-group mode: head-ref only, an empty diff.
+  const before = spawnSync("bash", [path.join(actionDir, "run.sh")], {
+    cwd: fx.target,
+    env: {
+      ...gitEnv,
+      REPOSITORY: TARGET,
+      BASE_REF: fx.head,
+      HEAD_REF: fx.head,
+      STANDARDS_ROOT: fx.standards,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(before.status, 0, before.stderr);
+  const result = await runGroup(fx, {
+    number: 7,
+    pulls: [pull(7)],
+    files: { 7: SYNC_FILES },
+  });
+  assert.equal(result.mode, "hand-edit");
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /Pull request #7 edits sync-manifest-managed files/u,
+  );
+  assert.match(result.stderr, /- managed\/config\.txt/u);
+});
+
+test("merge group: a non-sync PR touching no managed path passes", async () => {
+  const fx = fixture({
+    mutateHead: (t) => {
+      keepManagedAtBase(t);
+      write(t, "README.md", "edited\n");
+    },
+  });
+  const result = await runGroup(fx, {
+    number: 7,
+    pulls: [pull(7)],
+    files: { 7: ["README.md"] },
+  });
+  assert.equal(result.mode, "hand-edit");
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("merge group: a verified Dependabot PR is skipped", async () => {
+  const fx = fixture({ mutateHead: keepManagedAtBase });
+  const result = await runGroup(fx, {
+    number: 7,
+    pulls: [pull(7, { login: "dependabot[bot]", id: DEPENDABOT_ID })],
+    commits: { 7: [dependabotCommit(HEAD_SHA)] },
+  });
+  assert.equal(result.mode, "skip");
+});
+
+// A two-PR stack: #7 targets main, #8 targets #7's branch and is the entry the
+// head ref names.
+const stack = () => [
+  pull(7, { ref: "feature/a" }),
+  pull(8, { ref: "feature/b", base: "feature/a" }),
+];
+const twoPrHead = (t) => {
+  keepToolAtBase(t);
+  write(t, "README.md", "edited\n");
+};
+
+test("merge group: a managed edit in the upper stacked PR fails, named", async () => {
+  const result = await runGroup(fixture({ mutateHead: twoPrHead }), {
+    number: 8,
+    pulls: stack(),
+    files: { 7: ["README.md"], 8: ["managed/config.txt"] },
+  });
+  assert.equal(result.mode, "hand-edit");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Pull request #8 edits/u);
+  assert.doesNotMatch(result.stderr, /Pull request #7 edits/u);
+});
+
+test("merge group: a managed edit in the lower stacked PR fails, named", async () => {
+  const result = await runGroup(fixture({ mutateHead: twoPrHead }), {
+    number: 8,
+    pulls: stack(),
+    files: { 7: ["managed/config.txt"], 8: ["README.md"] },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Pull request #7 edits/u);
+  assert.doesNotMatch(result.stderr, /Pull request #8 edits/u);
+});
+
+test("merge group: a group path in neither stacked PR fails closed", async () => {
+  const fx = fixture({
+    mutateHead: (t) => {
+      keepManagedAtBase(t);
+      write(t, "README.md", "edited\n");
+      write(t, "extra/unmapped.txt", "new\n");
+    },
+  });
+  const result = await runGroup(fx, {
+    number: 8,
+    pulls: stack(),
+    files: { 7: ["README.md"], 8: ["README.md"] },
+  });
+  assert.equal(result.mode, null);
+  assert.match(
+    result.errors,
+    /extra\/unmapped\.txt changes in the merge group but in none of its pull requests/u,
+  );
+});
+
+test("merge group: a stack whose base branch has no open PR fails closed", async () => {
+  const result = await runGroup(fixture(), {
+    number: 8,
+    pulls: [pull(8, { ref: "feature/b", base: "feature/a" })],
+  });
+  assert.equal(result.mode, null);
+  assert.match(
+    result.errors,
+    /#8 targets feature\/a, not main, and 0 open pull requests/u,
+  );
+});
+
+test("merge group: a sync PR sharing its group fails closed", async () => {
+  const result = await runGroup(fixture(), {
+    number: 8,
+    pulls: [
+      pull(7, { login: BOT, ref: "chore/standards-sync" }),
+      pull(8, { ref: "feature/b", base: "chore/standards-sync" }),
+    ],
+    files: { 7: SYNC_FILES, 8: [] },
+    commits: { 7: [commit(HEAD_SHA)] },
+  });
+  assert.equal(result.mode, null);
+  assert.match(result.errors, /sync pull request #7 shares its merge group/u);
+});
