@@ -1,0 +1,16 @@
+# Support probe for the kjanat/actionlint soak (#788). The fork must accept
+# `concurrency.queue` and the `$/` reference, and resolve `$/` far enough to
+# reject the undefined input: that one finding is the probe's positive control.
+# It lives outside .github/workflows so the gating actionlint lane never reads it.
+on: pull_request
+permissions: {}
+concurrency:
+  group: support-probe
+  queue: max
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: $/.github/actions/actionlint
+        with:
+          no-such-input: probe
