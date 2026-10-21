@@ -1280,7 +1280,9 @@ read through the check-run annotations API:
 
 `<id>` is `claude-review` or `claude-security-review`. `N` is the model's own
 count, so text in the diff can talk it down; `N` below `K` is `incomplete`,
-which bounds that only when inline comments exist. A failed, skipped or
+which bounds that only when inline comments exist. A count below the summary's
+`manifest <field>: flag` lines (bulleted or backticked included) is raised to
+their number, with a log line. A failed, skipped or
 incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
 reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
