@@ -43,14 +43,16 @@ name: intake-triage
 #     without all three. It turns on the CLI's subprocess credential scrub
 #     and puts exactly one Claude credential in the CLI environment.
 #   - The API key runs in the claude job. The subscription token runs only in
-#     the claude-subscription job, and only when the claude job's lane-class
-#     output is exactly `credit-stop` or its key was empty. That job runs on
-#     a fresh ubuntu-24.04 GitHub-hosted runner, never the caller's runner
-#     input, repeats every hardening step, and takes nothing from the claude
-#     job but that output and the credential-present flag: no artifact, no
-#     cache. lane-class is set by run-claude-cli after it restores the step
-#     files, so the model cannot set it; a forged credit stop would cost only
-#     subscription usage. Either secret may be empty, not both.
+#     the claude-subscription job, and only when the claude job's handoff
+#     output is exactly `true` (the key's credits are used up, lane-class
+#     `credit-stop`, or the key was rejected, lane-class `auth`) or its key
+#     was empty. That job runs on a fresh ubuntu-24.04 GitHub-hosted runner,
+#     never the caller's runner input, repeats every hardening step, and
+#     takes nothing from the claude job but those outputs and the
+#     credential-present flag: no artifact, no cache. handoff and lane-class
+#     are set by run-claude-cli after it restores the step files, so the
+#     model cannot set them; a forged handoff would cost only subscription
+#     usage. Either secret may be empty, not both.
 #   - The model jobs cannot write: their token has contents: read and
 #     issues: read, and `cache-mode: none` closes the Actions cache, which
 #     a workflow_dispatch run could otherwise write. The run-claude-cli step's
@@ -332,6 +334,7 @@ jobs:
     cache-mode: none
     outputs:
       lane-class: ${{ steps.claude.outputs.lane-class }}
+      handoff: ${{ steps.claude.outputs.handoff }}
       credential-present: ${{ steps.credential.outputs.present }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
@@ -748,7 +751,7 @@ jobs:
 
       - name: Report triage outcome
         id: review-outcome
-        if: steps.credential.outputs.present == 'true' && steps.claude.outputs.lane-class != 'credit-stop'
+        if: steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude.outcome }}
@@ -767,7 +770,7 @@ jobs:
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
-        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.lane-class != 'credit-stop'
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
@@ -839,14 +842,14 @@ jobs:
   # The subscription leg, as its own job on a fresh VM: the claude job's
   # processes, files and environment do not reach it. Its steps repeat the
   # claude job's but for the credential (a test holds them equal), so the
-  # hardening runs again before the checkout. It reads two outputs of the
+  # hardening runs again before the checkout. It reads three outputs of the
   # claude job, each compared to a fixed string here and never written into
   # a run: script, and nothing else from that job. It does not use
   # inputs.runner: a caller's runner could keep state between jobs.
   subscription:
     name: claude-intake-triage-subscription
     needs: claude
-    if: needs.claude.outputs.lane-class == 'credit-stop' || needs.claude.outputs.credential-present == 'false'
+    if: needs.claude.outputs.handoff == 'true' || needs.claude.outputs.credential-present == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 16
     # The model's job reads and never writes: the token can read the issue
@@ -857,6 +860,7 @@ jobs:
     cache-mode: none
     outputs:
       lane-class: ${{ steps.claude.outputs.lane-class }}
+      handoff: ${{ steps.claude.outputs.handoff }}
       credential-present: ${{ steps.credential.outputs.present }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
@@ -1273,7 +1277,7 @@ jobs:
 
       - name: Report triage outcome
         id: review-outcome
-        if: steps.credential.outputs.present == 'true' && steps.claude.outputs.lane-class != 'credit-stop'
+        if: steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude.outcome }}
@@ -1285,7 +1289,7 @@ jobs:
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           # Why this job ran, for the run's one lane record (ci-workflows#806).
-          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
+          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
@@ -1294,7 +1298,7 @@ jobs:
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
-        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.lane-class != 'credit-stop'
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
@@ -1659,10 +1663,15 @@ jobs:
             job=$KEY_RESULT present=$KEY_PRESENT failed=$KEY_FAILED class=$KEY_CLASS
           fi
           # A triage job with an empty secret did not triage: after a key credit
-          # stop that is a limit stop, otherwise both secrets were empty.
+          # stop that is a limit stop, after a rejected key it is that auth
+          # failure, otherwise both secrets were empty.
           if [ "$present" = false ]; then
             failed=true
-            if [ "$KEY_CLASS" = credit-stop ]; then class=rate-limit; else class=other; fi
+            case "$KEY_CLASS" in
+              credit-stop) class=rate-limit ;;
+              auth) class=auth ;;
+              *) class=other ;;
+            esac
           fi
           # A failed or cancelled write fails the record like a failed leg.
           if [ "$job" = success ]; then

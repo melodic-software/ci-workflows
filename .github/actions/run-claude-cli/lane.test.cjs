@@ -794,7 +794,7 @@ test("a process the leg leaves behind cannot add a lane-class after the launcher
 
 test("stdout is captured in memory and a maxBuffer overflow is class other", () => {
   const seen = [];
-  const spawn = (command, args, options) => {
+  const spawn = (_command, _args, options) => {
     seen.push(options);
     const overflow = new Error("spawnSync ENOBUFS");
     overflow.code = "ENOBUFS";

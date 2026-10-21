@@ -82,7 +82,8 @@ inputs:
   fallback-reason:
     description: >-
       Why this run used a fallback credential: `credit-stop` (the key job
-      credit-stopped) or `no-key` (the key was empty). Printed as
+      credit-stopped), `auth` (the key job's key was rejected, disabled or
+      deleted) or `no-key` (the key was empty). Printed as
       `fallback=<reason>` right after `credential=`. Empty prints nothing;
       any other value fails the step before it reports.
     required: false

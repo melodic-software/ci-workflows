@@ -262,8 +262,8 @@ const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
 const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
 // Why a subscription job ran in the two-job pattern: the key job's credit
-// stop, or no key at all (ci-workflows#806).
-const FALLBACK_REASONS = ["credit-stop", "no-key"];
+// stop, its key rejected (disabled or deleted), or no key at all.
+const FALLBACK_REASONS = ["credit-stop", "auth", "no-key"];
 
 // SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
 function isoFromEpoch(value) {

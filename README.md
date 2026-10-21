@@ -674,14 +674,12 @@ consumer to audit it.
 
   Job A skips its outcome step on a handoff, so whichever job triaged
   reports. Job B passes report-lane-outcome's `fallback-reason`,
-  `credit-stop` or `no-key` from job A's `lane-class` and key presence, so
-  its record says why it ran; report-lane-outcome takes no `auth` reason
-  yet, so a rejected key shows only in job A's summary, log and annotation.
+  `credit-stop`, `auth` or `no-key` from job A's `lane-class` and key
+  presence, so its record says why it ran, a dead key included.
   A status job that needs both reads job B's outcome when it ran, else job A's: one lane record per run. A lane that writes does it in a
   separate job with no model that needs both and reads job B's outputs when
   it ran, else job A's, so the write happens once.
-  `intake-triage.yml` is the reference implementation; it still gates job B
-  on `lane-class == 'credit-stop'`, so it does not hand off on `auth` yet.
+  `intake-triage.yml` is the reference implementation.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
@@ -1105,8 +1103,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
   caller grants `contents: read` and `issues: write` and passes the role's
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
-  runs in the `claude-intake-triage` job; after its credit stop, or with no
-  key, the token runs in the `claude-intake-triage-subscription` job on
+  runs in the `claude-intake-triage` job; after it hands off (a credit stop
+  or a rejected key), or with no key, the token runs in the `claude-intake-triage-subscription` job on
   `ubuntu-24.04` (the two-job pattern above);
   `claude-intake-triage-apply` writes whichever job triaged, and
   `claude-intake-triage-status` reports the one outcome. The workflow
@@ -1272,8 +1270,8 @@ reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
 Every outcome annotation, and a notice on a run that completed, also carries
 the run record as bare tokens, each omitted when unknown: `turns=<n>`,
 `max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
-`credential` input), `fallback=credit-stop` or `fallback=no-key` (the
-`fallback-reason` input, which rejects any other value),
+`credential` input), `fallback=credit-stop`, `fallback=auth` or
+`fallback=no-key` (the `fallback-reason` input, which rejects any other value),
 `models=<modelUsage keys>` and, on `class=rate-limit`,
 `resets=<ISO 8601 UTC>` and `resets-window=<rateLimitType>` from the run's
 newest `rejected` `rate_limit_event` (none without one), the time also
