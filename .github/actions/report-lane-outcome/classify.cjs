@@ -151,10 +151,22 @@ function cliOnlyRun(messages) {
   return { result, assistants, content };
 }
 
+// The CLI's own error text in a cliOnlyRun: the result text, `errors[]` on
+// the error variant, and assistant text blocks.
+function cliOnlyText({ result, content }) {
+  return [
+    typeof result.result === "string" ? result.result : "",
+    ...(Array.isArray(result.errors) ? result.errors : []).map(toStringLikeJq),
+    ...content
+      .filter((block) => block?.type === "text")
+      .map((block) => String(block.text ?? "")),
+  ].join("\n");
+}
+
 function creditStopText(messages) {
   const run = cliOnlyRun(messages);
   if (run === null) return null;
-  const { result, assistants, content } = run;
+  const { result, assistants } = run;
   const status = result.api_error_status;
   // A 403 is a permission stop whatever its text says, so it never becomes
   // a credit stop, which hands off.
@@ -165,13 +177,7 @@ function creditStopText(messages) {
     typeof status === "number" && CREDIT_STOP_STATUSES.has(status);
   const errorMatches = assistants.some((m) => CREDIT_STOP_ERRORS.has(m.error));
   if (!statusMatches && !errorMatches) return null;
-  const text = [
-    typeof result.result === "string" ? result.result : "",
-    ...(Array.isArray(result.errors) ? result.errors : []).map(toStringLikeJq),
-    ...content
-      .filter((block) => block?.type === "text")
-      .map((block) => String(block.text ?? "")),
-  ].join("\n");
+  const text = cliOnlyText(run);
   return CREDIT_STOP_PHRASES.some((phrase) => phrase.test(text)) ? text : null;
 }
 
@@ -203,15 +209,7 @@ function apiErrorFacts(messages) {
   const run = Array.isArray(messages) ? cliOnlyRun(messages) : null;
   const none = { errorType: null, errorCode: null, requestId: null };
   if (run === null) return none;
-  const text = [
-    typeof run.result.result === "string" ? run.result.result : "",
-    ...(Array.isArray(run.result.errors) ? run.result.errors : []).map(
-      toStringLikeJq,
-    ),
-    ...run.content
-      .filter((block) => block?.type === "text")
-      .map((block) => String(block.text ?? "")),
-  ].join("\n");
+  const text = cliOnlyText(run);
   const match = (pattern) => text.match(pattern)?.[1] ?? null;
   return {
     errorType: match(/"error":\{"type":"([a-z_]{1,40})"/u),
