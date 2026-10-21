@@ -908,7 +908,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   link check: lychee with the network on over the caller's Markdown, reading
   its `lychee.toml` (the standards-synced config the offline lane uses) and
   `.lycheeignore`. The report goes to the job summary and a broken link fails
-  the job red; it opens no issue and posts no comment. It holds only the
+  the job red. The 429 and 5xx responses the config accepts are listed in the
+  summary without failing the job, and so are timeouts when the config sets
+  `accept_timeouts` (otherwise a timeout fails it). It opens no issue and posts
+  no comment. It holds only the
   `GITHUB_TOKEN`, which cannot read another private repository, so lychee
   never reports a link into one as OK. **Opt-in by repository property**: a
   `schedule` run reads the caller's `opt-in-property` (default

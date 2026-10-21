@@ -4,7 +4,10 @@ name: maintenance-check-links-online
 # Markdown, with the caller's lychee.toml (the standards-synced config the
 # offline lane also reads) and the .lycheeignore lychee picks up from the
 # working directory. The report goes to the job summary and any broken link
-# fails the job red. It never opens an issue or posts a comment.
+# fails the job red. Links the caller's lychee.toml accepts as transient (a
+# 429 or 5xx in `accept`, a timeout under `accept_timeouts`) do not fail it but
+# are listed in the summary, so a host that stays down is still noticed. It
+# never opens an issue or posts a comment.
 #
 # GITHUB_TOKEN only: it lifts the github.com rate limit, and it cannot read
 # another private repository, so lychee never reports a link into one as OK.
@@ -112,19 +115,27 @@ jobs:
       # runner IP, so each host gets fewer parallel requests, spaced out, with
       # longer retries and timeout. Pacing did not stop every 429
       # (standards#775, #776); a page proven alive that still blocks the
-      # checker gets an exact-URL .lycheeignore entry with a dated reason. A
-      # single red run on a github.com blob page 503 is not proof of rot.
+      # checker gets an exact-URL .lycheeignore entry with a dated reason.
+      #
+      # JSON with -v, because only that output lists accepted responses
+      # (lychee 0.24.2 fills `success_map` at -v and above; the markdown report
+      # never lists them). The next step writes the summary and decides the
+      # job's result, so this step neither fails nor writes a summary.
       - name: Check links (online)
+        id: lychee
         if: steps.gate.outputs.run == 'true'
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           lycheeVersion: ${{ inputs.lychee-version }}
           token: ${{ github.token }}
-          fail: true
-          jobSummary: true
-          format: markdown
+          fail: false
+          failIfEmpty: false
+          jobSummary: false
+          format: json
+          output: ${{ runner.temp }}/lychee/report.json
           args: >-
             --no-progress
+            --verbose
             --config '${{ inputs.config }}'
             --host-concurrency 4
             --host-request-interval 250ms
@@ -133,3 +144,69 @@ jobs:
             --timeout 40
             ${{ inputs.extra-args }}
             ${{ inputs.globs }}
+
+      # Broken links fail the job; accepted 429 and 5xx responses are listed but
+      # do not. Timeouts are listed too, and fail the job only when the
+      # caller's config does not set accept_timeouts (lychee check.rs decides
+      # the exit code). lychee-action creates the report file before lychee
+      # runs, so a config error or a panic leaves it empty; that fails the job
+      # with a pointer to the lychee step's log. Each section is capped so the
+      # summary stays under the 1 MiB per-step limit
+      # (https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#step-isolation-and-limits).
+      - name: Write the report
+        if: steps.gate.outputs.run == 'true' && !cancelled()
+        env:
+          REPORT: ${{ runner.temp }}/lychee/report.json
+          LYCHEE_EXIT: ${{ steps.lychee.outputs.exit_code }}
+          MAX_ROWS: 200
+        run: |
+          set -euo pipefail
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::lychee exited ${LYCHEE_EXIT} without writing a report: see the 'Check links (online)' step log."
+            exit 1
+          fi
+          if ! jq -e 'type == "object"' "$REPORT" >/dev/null 2>&1; then
+            echo "::error::lychee exited ${LYCHEE_EXIT} and its report is not JSON: see the 'Check links (online)' step log."
+            exit 1
+          fi
+          jq -r --argjson max "$MAX_ROWS" '
+            # A code span whose fence is longer than any backtick run inside it.
+            def code: ([scan("`+") | length] | max // 0) as $n
+              | ("`" * ($n + 1)) as $fence
+              | if $n > 0 then "\($fence) \(.) \($fence)" else "\($fence)\(.)\($fence)" end;
+            def rows($map):
+              [$map | to_entries | sort_by(.key)[] | .key as $input
+                | .value | sort_by(.url)[]
+                | "* [\(.status.code // .status.text)] <\(.url)> in \($input | code)"
+                  + (if .span then " at \(.span.line)" + (if .span.column then ":\(.span.column)" else "" end) else "" end)
+                  + " | \(.status.details // .status.text | gsub("[\r\n]+"; " "))"];
+            def section($title; $map):
+              rows($map)
+              | if length == 0 then empty
+                else "\n## \($title)\n\n" + (.[:$max] | join("\n"))
+                  + (if length > $max then "\n* +\(length - $max) more" else "" end)
+                end;
+            "# Online link check\n",
+            "| Total | OK | Broken | Timeouts | Excluded |",
+            "| --- | --- | --- | --- | --- |",
+            "| \(.total) | \(.successful) | \(.errors) | \(.timeouts) | \(.excludes) |",
+            section("Broken links (fail the run)"; .error_map),
+            section("Timeouts"; .timeout_map),
+            section("Accepted 429 and 5xx responses (do not fail the run)";
+              .success_map
+              | map_values(map(select(.status.code == 429
+                  or (.status.code >= 500 and .status.code <= 599))))
+              | with_entries(select(.value | length > 0)))
+          ' "$REPORT" >>"$GITHUB_STEP_SUMMARY"
+          if ! jq -e '.total > 0' "$REPORT" >/dev/null; then
+            echo "::error::No links were found. This usually indicates a configuration error."
+            exit 1
+          fi
+          if [ "$LYCHEE_EXIT" != 0 ]; then
+            if jq -e '.errors == 0 and .timeouts > 0' "$REPORT" >/dev/null; then
+              echo "::error::lychee exited ${LYCHEE_EXIT}: timeouts failed the run: the config does not set accept_timeouts."
+            else
+              echo "::error::lychee exited ${LYCHEE_EXIT}: see the broken links in the job summary."
+            fi
+            exit 1
+          fi

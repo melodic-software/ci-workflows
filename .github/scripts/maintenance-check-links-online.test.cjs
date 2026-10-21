@@ -4,13 +4,17 @@
 // unless the caller repository's custom property is "true", a dispatched run
 // always checks, and a property read that errors fails red. The workflow also
 // holds its contract: workflow_call only, contents: read, the
-// GITHUB_TOKEN only, and the report in the job summary.
+// GITHUB_TOKEN only, and the report in the job summary: broken links fail the
+// job, while timeouts and accepted 429 and 5xx responses are listed without
+// failing it.
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -21,7 +25,7 @@ const source = fs.readFileSync(
 );
 const workflow = parseWorkflow(source);
 const job = workflow.jobs["check-links"];
-const [gate, checkout, lychee] = job.steps;
+const [gate, checkout, lychee, report] = job.steps;
 
 async function runGate({ eventName, properties }) {
   const original = process.env.OPT_IN_PROPERTY;
@@ -69,14 +73,22 @@ test("the workflow is reusable only, read-only, and declares no secrets", () => 
   assert.doesNotMatch(source, /\$\{\{\s*secrets\./u);
 });
 
-test("lychee uses the GITHUB_TOKEN, fails red, and writes the job summary", () => {
+test("lychee uses the GITHUB_TOKEN and hands a verbose JSON report to the report step", () => {
   assert.match(lychee.uses, /^lycheeverse\/lychee-action@[0-9a-f]{40}$/u);
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
   assert.equal(lychee.with.token, "${{ github.token }}");
-  assert.equal(lychee.with.fail, true);
-  assert.equal(lychee.with.jobSummary, true);
-  assert.equal(lychee.with.format, "markdown");
-  assert.doesNotMatch(lychee.with.args, /--offline/u);
+  // lychee-action writes the job summary only for markdown and fails on
+  // lychee's exit code itself; the report step owns both instead.
+  assert.equal(lychee.with.format, "json");
+  assert.equal(lychee.with.jobSummary, false);
+  assert.equal(lychee.with.fail, false);
+  assert.equal(lychee.with.failIfEmpty, false);
+  // Only -v and above fills success_map, where accepted responses appear.
+  assert.match(lychee.with.args, /(^|\s)--verbose(\s|$)/u);
+  assert.doesNotMatch(lychee.with.args, /--offline|--format|--output/u);
+  assert.equal(report.env.REPORT, lychee.with.output);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+  assert.equal(report.env.LYCHEE_EXIT, "${{ steps.lychee.outputs.exit_code }}");
   assert.equal(checkout.with["persist-credentials"], false);
 });
 
@@ -84,6 +96,239 @@ test("every step after the gate runs only when the gate says so", () => {
   for (const step of [checkout, lychee]) {
     assert.equal(step.if, "steps.gate.outputs.run == 'true'");
   }
+  assert.equal(report.if, "steps.gate.outputs.run == 'true' && !cancelled()");
+});
+
+// Recorded from lychee 0.24.2 `--format json --verbose` against a local status
+// server, with accept = 100..=103, 200..=299, 429, 500..=599 and
+// accept_timeouts; only the input path is renamed and durations dropped.
+const recorded = {
+  total: 7,
+  unique: 7,
+  successful: 3,
+  unknown: 0,
+  unsupported: 0,
+  timeouts: 1,
+  redirects: 0,
+  remaps: 0,
+  excludes: 0,
+  errors: 3,
+  cached: 0,
+  success_map: {
+    "docs/links.md": [
+      {
+        url: "http://127.0.0.1:18766/429/y",
+        status: { text: "429 Too Many Requests", code: 429 },
+        span: { line: 1, column: 2 },
+      },
+      {
+        url: "http://127.0.0.1:18766/503/y",
+        status: { text: "503 Service Unavailable", code: 503 },
+        span: { line: 2, column: 2 },
+      },
+      {
+        url: "http://127.0.0.1:18766/200/y",
+        status: { text: "200 OK", code: 200 },
+        span: { line: 4, column: 2 },
+      },
+    ],
+  },
+  error_map: {
+    "docs/links.md": [
+      {
+        url: "http://127.0.0.1:18766/404/y",
+        status: { text: "Rejected status code: 404 Not Found", code: 404 },
+        span: { line: 5, column: 2 },
+      },
+      {
+        url: "http://127.0.0.1:18766/410/y",
+        status: { text: "Rejected status code: 410 Gone", code: 410 },
+        span: { line: 6, column: 2 },
+      },
+      {
+        url: "http://127.0.0.1:18766/403/y",
+        status: { text: "Rejected status code: 403 Forbidden", code: 403 },
+        span: { line: 7, column: 2 },
+      },
+    ],
+  },
+  timeout_map: {
+    "docs/links.md": [
+      {
+        url: "http://127.0.0.1:18766/hang/y",
+        status: { text: "Timeout", details: "Request timed out" },
+        span: { line: 3, column: 2 },
+      },
+    ],
+  },
+  suggestion_map: {},
+  redirect_map: {},
+  excluded_map: {},
+  detailed_stats: true,
+};
+
+function runReport(reportBody, lycheeExit, maxRows = report.env.MAX_ROWS) {
+  const directory = makeTemporaryDirectory("check-links-online-");
+  const reportPath = path.join(directory, "report.json");
+  const summaryPath = path.join(directory, "summary.md");
+  fs.writeFileSync(reportPath, reportBody);
+  fs.writeFileSync(summaryPath, "");
+  const result = spawnSync("bash", ["-c", report.run], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REPORT: reportPath,
+      LYCHEE_EXIT: lycheeExit,
+      MAX_ROWS: String(maxRows),
+      GITHUB_STEP_SUMMARY: summaryPath,
+    },
+  });
+  return {
+    status: result.status,
+    log: `${result.stdout}${result.stderr}`,
+    summary: fs.readFileSync(summaryPath, "utf8"),
+  };
+}
+
+function section(summary, title) {
+  const start = summary.indexOf(`## ${title}`);
+  if (start === -1) return "";
+  const next = summary.indexOf("\n## ", start + 1);
+  return summary.slice(start, next === -1 ? undefined : next);
+}
+
+test("broken links fail the job and every list reaches the summary", () => {
+  const { status, summary } = runReport(JSON.stringify(recorded), "2");
+  assert.equal(status, 1);
+  const broken = section(summary, "Broken links");
+  assert.match(
+    broken,
+    /<http:\/\/127\.0\.0\.1:18766\/404\/y> in `docs\/links\.md` at 5:2/u,
+  );
+  assert.match(broken, /\/410\/y>/u);
+  assert.match(broken, /\/403\/y>/u);
+  assert.match(section(summary, "Timeouts"), /\/hang\/y>/u);
+  const accepted = section(summary, "Accepted 429 and 5xx");
+  assert.match(accepted, /^\* \[429\] <http:\/\/127\.0\.0\.1:18766\/429\/y>/mu);
+  assert.match(accepted, /^\* \[503\] <http:\/\/127\.0\.0\.1:18766\/503\/y>/mu);
+  assert.doesNotMatch(accepted, /\/200\/y>/u);
+});
+
+test("timeouts and accepted 429 and 5xx responses are listed without failing the job", () => {
+  const { error_map: _broken, ...rest } = recorded;
+  const passing = { ...rest, errors: 0, error_map: {} };
+  const { status, summary } = runReport(JSON.stringify(passing), "0");
+  assert.equal(status, 0);
+  assert.equal(section(summary, "Broken links"), "");
+  assert.match(section(summary, "Timeouts"), /\/hang\/y>/u);
+  assert.match(
+    section(summary, "Accepted 429 and 5xx"),
+    /\/429\/y>[\s\S]*\/503\/y>/u,
+  );
+});
+
+test("a run that found no links fails the job", () => {
+  const empty = {
+    ...recorded,
+    total: 0,
+    successful: 0,
+    errors: 0,
+    timeouts: 0,
+    success_map: {},
+    error_map: {},
+    timeout_map: {},
+  };
+  const { status, log } = runReport(JSON.stringify(empty), "0");
+  assert.equal(status, 1);
+  assert.match(log, /::error::No links were found\./u);
+});
+
+test("an empty report, as lychee-action leaves after a lychee error, fails with a pointer to the lychee step", () => {
+  const { status, log, summary } = runReport("", "1");
+  assert.equal(status, 1);
+  assert.match(
+    log,
+    /::error::lychee exited 1 without writing a report: see the 'Check links \(online\)' step log\./u,
+  );
+  assert.doesNotMatch(log, /No links were found/u);
+  assert.equal(summary, "");
+});
+
+test("a report that is not JSON fails the job", () => {
+  const { status, log } = runReport("not json", "1");
+  assert.equal(status, 1);
+  assert.match(log, /::error::lychee exited 1 and its report is not JSON/u);
+});
+
+test("timeouts that fail the run name the missing accept_timeouts", () => {
+  // lychee exits 2 for a timeout when accept_timeouts is unset (check.rs).
+  const onlyTimeouts = {
+    ...recorded,
+    errors: 0,
+    error_map: {},
+    success_map: {},
+  };
+  const { status, log, summary } = runReport(JSON.stringify(onlyTimeouts), "2");
+  assert.equal(status, 1);
+  assert.match(
+    log,
+    /::error::lychee exited 2: timeouts failed the run: the config does not set accept_timeouts\./u,
+  );
+  assert.match(summary, /^## Timeouts$/mu);
+  assert.match(section(summary, "Timeouts"), /\/hang\/y>/u);
+});
+
+test("entries render without a code, without a column, and with odd input names", () => {
+  // Same status shape as the recorded timeout entry: details and no code.
+  const odd = {
+    ...recorded,
+    errors: 1,
+    error_map: {
+      "docs/a`b.md": [
+        {
+          url: "http://127.0.0.1:18766/reset/y",
+          status: {
+            text: "Network error",
+            details: "connection reset\nby peer",
+          },
+          span: { line: 9, column: null },
+        },
+      ],
+    },
+  };
+  const broken = section(
+    runReport(JSON.stringify(odd), "2").summary,
+    "Broken links",
+  );
+  assert.equal(
+    broken.trim().split("\n").at(-1),
+    "* [Network error] <http://127.0.0.1:18766/reset/y> in `` docs/a`b.md `` at 9 | connection reset by peer",
+  );
+});
+
+test("sections are sorted by input and URL and capped with a remainder line", () => {
+  const entry = (n) => ({
+    url: `http://127.0.0.1:18766/404/${n}`,
+    status: { text: "Rejected status code: 404 Not Found", code: 404 },
+    span: { line: 1, column: 2 },
+  });
+  const many = {
+    ...recorded,
+    errors: 4,
+    error_map: {
+      "z.md": [entry("d"), entry("c")],
+      "a.md": [entry("b"), entry("a")],
+    },
+  };
+  const broken = section(
+    runReport(JSON.stringify(many), "2", 3).summary,
+    "Broken links",
+  );
+  const rows = broken.trim().split("\n").slice(2);
+  assert.deepEqual(
+    rows.map((row) => row.match(/404\/(\w)>|^\* \+\d+ more$/u)[1] ?? row),
+    ["a", "b", "c", "* +1 more"],
+  );
 });
 
 test("a dispatched run checks links without reading the property", async () => {
