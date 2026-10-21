@@ -405,6 +405,35 @@ test("a 403 does not hand off and records its error type, code and request id", 
   );
 });
 
+test("a 403 with credit-stop text and SDK error is not a credit stop and does not hand off", () => {
+  for (const error of ["billing_error", "invalid_request"]) {
+    const { outputs, records } = runCase({
+      key: [
+        {
+          type: "assistant",
+          error,
+          api_error_status: 403,
+          message: {
+            content: [{ type: "text", text: "Your credit balance is too low" }],
+          },
+        },
+        ...authLeg({
+          status: 403,
+          text: `Your credit balance is too low. ${PERMISSION_TEXT}`,
+        }),
+      ],
+    });
+    assert.equal(outputs["lane-class"], "auth", error);
+    assert.equal(outputs.handoff, "false", error);
+    assert.equal(records[0].next, null, error);
+    assert.deepEqual(
+      [records[0].api_error_status, records[0].error_type, records[0].request_id],
+      [403, "permission_error", REQUEST_ID],
+      error,
+    );
+  }
+});
+
 test("a 403 with model output records no error facts from its text", () => {
   const { records } = runCase({
     key: authLeg({ status: 403, text: PERMISSION_TEXT, outputTokens: 5 }),

@@ -796,3 +796,19 @@ test("record tokens: error facts print only on a failure", () => {
   );
   assert.equal(recordTokens(run, {}), "turns=1");
 });
+
+test("credit-stop: a 403 is never a credit stop, whatever its text", () => {
+  for (const error of ["billing_error", "invalid_request"]) {
+    const messages = stopMessages({
+      status: 403,
+      error,
+      text: "Your credit balance is too low",
+    });
+    assert.equal(isCreditStop(messages, { exitCode: 1 }), false, error);
+    assert.equal(
+      classifyStop(messages, { detectCreditStop: true, exitCode: 1 }),
+      "auth",
+      error,
+    );
+  }
+});

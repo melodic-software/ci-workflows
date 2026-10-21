@@ -8,9 +8,11 @@
 //
 // This runs on a PUBLIC repo. The result message's `result` field is
 // model-authored free text and its `errors[]` entries are raw error stacks; both
-// are read INSIDE this module only, and nothing but the class token and the
-// structured projection below ever leaves it. Never widen the projection to
-// either field, and never emit the result message wholesale.
+// are read INSIDE this module only, and nothing but the class token, the
+// structured projection below and apiErrorFacts' values ever leaves it.
+// apiErrorFacts reads the CLI's own error text from a run with no model
+// output and keeps only values that match a closed pattern. Never widen the
+// projection to either field, and never emit the result message wholesale.
 //
 // Classification order:
 //   0. `timedOut` — the caller saw the step run its whole timeout-minutes
@@ -154,6 +156,11 @@ function creditStopText(messages) {
   if (run === null) return null;
   const { result, assistants, content } = run;
   const status = result.api_error_status;
+  // A 403 is a permission stop whatever its text says, so it never becomes
+  // a credit stop, which hands off.
+  if (status === 403 || assistants.some((m) => m.api_error_status === 403)) {
+    return null;
+  }
   const statusMatches =
     typeof status === "number" && CREDIT_STOP_STATUSES.has(status);
   const errorMatches = assistants.some((m) => CREDIT_STOP_ERRORS.has(m.error));
@@ -287,8 +294,9 @@ function classifyExecutionFile(
 // The run record: structured facts about a run, each printed as a bare
 // `key=value` token on the lane's annotation line so a brief can read limit
 // stops, the credential behind them, turn headroom and the models used.
-// Values come only from typed SDK fields and caller inputs, each checked
-// against a closed pattern, never from free text.
+// Values come from typed SDK fields and caller inputs, and the error facts
+// from the CLI's own error text (apiErrorFacts), each checked against a
+// closed pattern; nothing else is taken from free text.
 const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
 const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
