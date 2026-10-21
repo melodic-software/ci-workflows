@@ -25,5 +25,5 @@ runs:
         stderr="${stderr//'%'/%25}"
         stderr="${stderr//$'\r'/%0D}"
         stderr="${stderr//$'\n'/%0A}"
-        echo "::error title=Subprocess sandbox unavailable::failure-class=sandbox-unavailable: bwrap --unshare-pid --dev-bind / / true failed, so every Bash call the model makes would fail and the review would see nothing; enable unprivileged user namespaces on this runner (on Ubuntu 24.04, kernel.apparmor_restrict_unprivileged_userns=0). stderr: ${stderr:-(none)}"
+        echo "::error title=Subprocess sandbox unavailable::failure-class=sandbox-unavailable: bwrap --unshare-pid --dev-bind / / true failed, so every Bash call the model makes would fail and the review would see nothing; enable unprivileged user namespaces on this runner: on a Docker-worker runner, Docker's default seccomp profile blocks them (set the ci-runner target's seccompProfile: userns); on an Ubuntu 24.04 host, set kernel.apparmor_restrict_unprivileged_userns=0. stderr: ${stderr:-(none)}"
         exit 1

@@ -918,7 +918,7 @@ function verifyIsolation({
   }
   if (probe.status !== 0) {
     throw new LaneError(
-      `bwrap ${BWRAP_PROBE.join(" ")} failed: bubblewrap cannot create a PID namespace. On Ubuntu 24.04 run \`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\` in runner isolation, before sudo is removed (see pr-review.yml, "Install subprocess isolation")`,
+      `bwrap ${BWRAP_PROBE.join(" ")} failed: bubblewrap cannot create a PID namespace. In a Docker worker, Docker's default seccomp profile blocks it: set the ci-runner target's seccompProfile: userns. On an Ubuntu 24.04 host run \`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\` in runner isolation, before sudo is removed (see pr-review.yml, "Install subprocess isolation")`,
     );
   }
 }
