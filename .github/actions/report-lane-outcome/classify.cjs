@@ -195,7 +195,8 @@ function creditStopResetsAt(messages) {
 
 // The API error body's type, `error.details.error_code` and `request_id`
 // (the error shape at platform.claude.com/docs/en/api/errors), read from
-// the CLI's own error text only (cliOnlyRun) and each kept only when it
+// the CLI's own error text only (cliOnlyRun): the result text, `errors[]`
+// on the error variant, and assistant text. Each is kept only when it
 // matches a closed pattern; null when absent. Diagnostics only: no class
 // or handoff depends on them.
 function apiErrorFacts(messages) {
@@ -204,6 +205,9 @@ function apiErrorFacts(messages) {
   if (run === null) return none;
   const text = [
     typeof run.result.result === "string" ? run.result.result : "",
+    ...(Array.isArray(run.result.errors) ? run.result.errors : []).map(
+      toStringLikeJq,
+    ),
     ...run.content
       .filter((block) => block?.type === "text")
       .map((block) => String(block.text ?? "")),

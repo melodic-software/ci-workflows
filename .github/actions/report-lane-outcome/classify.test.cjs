@@ -813,3 +813,15 @@ test("credit-stop: a 403 is never a credit stop, whatever its text", () => {
     );
   }
 });
+
+test("api error facts: read from errors[] on the error_during_execution variant", () => {
+  const body =
+    'APIError: {"type":"error","error":{"type":"permission_error",' +
+    '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
+    '"request_id":"req_fake0000000000000000"}\n    at request (/x/y.js:1:1)';
+  assert.deepEqual(apiErrorFacts(errorMessage([DIAGNOSTIC, body])), {
+    errorType: "permission_error",
+    errorCode: "workspace_access_denied",
+    requestId: "req_fake0000000000000000",
+  });
+});
