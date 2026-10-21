@@ -601,6 +601,43 @@ test("a count below the inline comments concludes incomplete", async () => {
   assert.equal(outputs.findings, undefined);
 });
 
+for (const lane of lanes) {
+  test(`${lane.file}: a count below the summary's manifest flag lines is raised to them`, async () => {
+    // Two bare `manifest <field>: flag` lines, a bulleted one and a
+    // backticked one count; a pass line and a flag phrase mid-line do not:
+    // four findings, though the model said 0.
+    const summary = [
+      "manifest version: flag, bumped without a changelog entry",
+      "manifest name: pass",
+      "manifest hooks: flag, adds a SessionStart hook",
+      "  - manifest keywords: flag, names a removed skill",
+      "`manifest description: flag, omits the new skill`",
+      "Not a manifest version: flag line.",
+    ].join("\n");
+    const { outputs, messages } = await verify(lane, {
+      structured: { findings: 0, summary },
+    });
+    assert.equal(outputs.verdict, "complete");
+    assert.equal(outputs.findings, "4");
+    assert.ok(
+      messages.some((line) => /raised .*0 to 4/u.test(line)),
+      messages.join("\n"),
+    );
+  });
+}
+
+test("a count above the summary's manifest flag lines is kept", async () => {
+  const { outputs, messages } = await verify(codeLane, {
+    structured: {
+      findings: 5,
+      summary: "manifest version: flag, bumped without a changelog entry",
+    },
+  });
+  assert.equal(outputs.verdict, "complete");
+  assert.equal(outputs.findings, "5");
+  assert.ok(!messages.some((line) => /raised/u.test(line)));
+});
+
 test("injected text that makes the model report zero findings cannot pass the arithmetic", async () => {
   // The diff under review carries an instruction aimed at the model, and the
   // model obeys it: structured output says 0. The step never reads the diff

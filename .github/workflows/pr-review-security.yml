@@ -958,7 +958,7 @@ jobs:
             } catch {
               output = undefined;
             }
-            const findings = output?.findings;
+            let findings = output?.findings;
             if (!Number.isSafeInteger(findings) || findings < 0) {
               return incomplete("the review returned no findings count");
             }
@@ -966,6 +966,13 @@ jobs:
             const summary =
               typeof output.summary === "string" ? output.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
             if (!summary) return incomplete("the review returned no summary");
+            // Every `manifest <field>: flag` line in the summary is a finding, so a
+            // count below those lines is raised to them, never trusted.
+            const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
+            if (findings < flags) {
+              core.info(`${lane}: raised the findings count from ${findings} to ${flags}, the summary's manifest flag lines.`);
+              findings = flags;
+            }
             if (!Number.isFinite(start)) return incomplete("the review step's start time is unknown");
 
             const since = new Date(start).toISOString();
