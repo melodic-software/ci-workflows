@@ -83,6 +83,10 @@ test("a sandbox that cannot create a namespace fails as sandbox-unavailable with
   assert.match(errors[0], /failure-class=sandbox-unavailable/u);
   assert.match(
     errors[0],
+    /Docker's default seccomp profile.*kernel\.apparmor_restrict_unprivileged_userns=0/u,
+  );
+  assert.match(
+    errors[0],
     /bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces\.%0A100%25 denied$/u,
   );
 });

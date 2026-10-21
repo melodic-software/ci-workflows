@@ -1589,7 +1589,7 @@ test("verifyIsolation probes a PID namespace and refuses an unsafe environment",
         stat,
         spawn: answer({ status: 1 }),
       }),
-    /cannot create a PID namespace.*apparmor_restrict_unprivileged_userns=0/u,
+    /cannot create a PID namespace.*Docker's default seccomp profile.*apparmor_restrict_unprivileged_userns=0/u,
   );
   const missing = Object.assign(new Error("spawnSync bwrap ENOENT"), {
     code: "ENOENT",
