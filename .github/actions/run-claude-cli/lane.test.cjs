@@ -1250,7 +1250,7 @@ test("the summary shows a closed token per class and never a record's message", 
   );
   assert.match(table, /\| unknown \| .* \| see the step log \|/u);
   assert.match(table, /\| constructor \| .* \| see the step log \|/u);
-  // No spend limits exist to raise: credits are bought, with auto-reload off.
+  // No note tells the owner to raise a spend limit: the owner runs none.
   assert.doesNotMatch(table, /spend limit/iu);
 });
 
