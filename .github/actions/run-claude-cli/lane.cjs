@@ -16,8 +16,8 @@
 //   - One leg per invocation: readConfig fails closed unless exactly one of
 //     the two credentials is set. A caller that falls back to the
 //     subscription after a key leg hands off (a credit stop, or class auth
-//     with api_error_status 401 or 402, NEXT_STEPS) runs a second job, on a fresh runner, gated on this
-//     one's handoff output being `true`.
+//     with api_error_status 401, 402 or 403, NEXT_STEPS) runs a second job,
+//     on a fresh runner, gated on this one's handoff output being `true`.
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
@@ -142,11 +142,11 @@ const NEXT_STEPS = {
     handoff: true,
     note: "credits used up: the subscription job runs; the owner rotates a key by hand when needed",
   },
-  // 401 (key disabled or deleted) and 402 (billing) hand off; 403
-  // (permission_error) fails the run.
+  // 401 (key disabled or deleted), 402 (billing) and 403 (permission) hand
+  // off; an auth class with no numeric status does not.
   auth: {
     handoff: true,
-    statuses: [401, 402],
+    statuses: [401, 402, 403],
     note: "credential unusable (rejected, unpaid or not permitted): the owner replaces the secret by hand",
   },
   "rate-limit": { handoff: false, note: "limit stop: rerun after the reset" },

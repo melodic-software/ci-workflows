@@ -335,7 +335,8 @@ test("an unusable key warns the owner to replace the secret, even when the subsc
   });
   assert.equal(fellBack.code, 0);
   assert.match(fellBack.stdout, warning);
-  // A 403 does not hand off: the key job alone reports, red, and still warns.
+  // An auth class with no numeric status does not hand off: the key job
+  // alone reports, red, and still warns.
   const refused = report({
     KEY_RESULT: "success",
     KEY_FAILED: "true",

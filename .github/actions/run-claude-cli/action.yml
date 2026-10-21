@@ -4,8 +4,8 @@ description: >-
   Linux runner, on exactly one credential: set `api-key` or
   `subscription-token`, never both (the action fails closed otherwise). A
   key leg that ends in a credit stop (classify.cjs isCreditStop, lane-class
-  `credit-stop`) or a key the API refused with status 401 or 402 (lane-class
-  `auth`) sets handoff `true`;
+  `credit-stop`) or a key the API refused with status 401, 402 or 403
+  (lane-class `auth`) sets handoff `true`;
   a caller that falls back to the subscription runs it as a second job on a
   fixed GitHub-hosted runner, gated on that exact value (see the README's
   two-job pattern), never in this job.
@@ -164,10 +164,8 @@ outputs:
   handoff:
     description: >-
       `true` when a key leg ended in `credit-stop`, or in `auth` with the
-      numeric API status 401 or 402, so the caller may run the subscription
-      leg in a separate job; `false` otherwise, a 403 included, which fails
-      the run instead;
-      empty when the step failed before the leg ran. lane-class keeps the
+      numeric API status 401, 402 or 403, so the caller may run the
+      subscription leg in a separate job; `false` otherwise; empty when the step failed before the leg ran. lane-class keeps the
       reason. Set after the step files are restored, so the leg cannot set it.
     value: ${{ steps.run.outputs.handoff }}
   lane-resets:

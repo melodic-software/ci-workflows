@@ -367,32 +367,24 @@ function authLeg({ status, errors }) {
   ];
 }
 
-test("a key refused with 401 or 402 hands off; a 403 keeps class auth and fails the run", () => {
-  for (const [status, handoff] of [
-    [401, "true"],
-    [402, "true"],
-    [403, "false"],
-  ]) {
+test("a key refused with 401, 402 or 403 hands off and keeps class auth", () => {
+  for (const status of [401, 402, 403]) {
     const { outputs, records } = runCase({ key: authLeg({ status }) });
     assert.equal(outputs["lane-class"], "auth", String(status));
-    assert.equal(outputs.handoff, handoff, String(status));
-    assert.equal(
-      records[0].next,
-      handoff === "true" ? "subscription" : null,
-      String(status),
-    );
+    assert.equal(outputs.handoff, "true", String(status));
+    assert.equal(records[0].next, "subscription", String(status));
   }
 });
 
-test("a 403 whose errors[] text names another type does not hand off", () => {
+test("a 403 whose errors[] text names another type still hands off by its status", () => {
   const { outputs } = runCase({
     key: authLeg({
       status: 403,
-      errors: ['{"type":"error","error":{"type":"authentication_error"}}'],
+      errors: ['{"type":"error","error":{"type":"rate_limit_error"}}'],
     }),
   });
   assert.equal(outputs["lane-class"], "auth");
-  assert.equal(outputs.handoff, "false");
+  assert.equal(outputs.handoff, "true");
 });
 
 test("permission_error in errors[] text alone, with no numeric status, does not hand off", () => {
