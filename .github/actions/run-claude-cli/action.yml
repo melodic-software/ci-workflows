@@ -4,8 +4,8 @@ description: >-
   Linux runner, on exactly one credential: set `api-key` or
   `subscription-token`, never both (the action fails closed otherwise). A
   key leg that ends in a credit stop (classify.cjs isCreditStop, lane-class
-  `credit-stop`) or a key the API refused with status 401, 402 or 403
-  (lane-class `auth`) sets handoff `true`;
+  `credit-stop`) or a key the API refused with status 401 or 402
+  (lane-class `auth`) sets handoff `true`; a 403 stops the run;
   a caller that falls back to the subscription runs it as a second job on a
   fixed GitHub-hosted runner, gated on that exact value (see the README's
   two-job pattern), never in this job.
@@ -150,7 +150,11 @@ outputs:
       means the key's credits are used up; a caller that does not fall back
       reports it as `rate-limit`, the class report-lane-outcome knows.
       `auth` means the credential is unusable: API status 401 (disabled or
-      deleted), 402 (billing) or 403 (permission). Otherwise it is
+      deleted), 402 (billing) or 403 (permission). On a failed leg the
+      step's error line, the job summary's Error cell and the log record add
+      `api_error_status`, and the API error body's `error_type`,
+      `error_code` (error.details.error_code) and `request_id` when the
+      CLI's own text carries them. Otherwise it is
       report-lane-outcome's class: a failed install or integrity check
       reports `install-failed`, and any other failure before the leg ran, or a leg whose stdout passes
       256 MiB, reports `other`. Report this class; do not reclassify execution-file, which
@@ -164,14 +168,17 @@ outputs:
   handoff:
     description: >-
       `true` when a key leg ended in `credit-stop`, or in `auth` with the
-      numeric API status 401, 402 or 403, so the caller may run the
-      subscription leg in a separate job; `false` otherwise; empty when the
-      step failed before the leg ran. A 403 hands off too: lane role keys
-      are whole-account Console keys with no per-key scope, so a 403 means
-      the key or its workspace is misconfigured; the run hands off so the
-      lane keeps running, and the caller's status job warns on every such
-      run until the owner replaces the key. lane-class keeps the reason.
-      Set after the step files are restored, so the leg cannot set it.
+      numeric API status 401 or 402, so the caller may run the subscription
+      leg in a separate job; `false` otherwise; empty when the step failed
+      before the leg ran. A 403 (permission_error) does not hand off: a
+      Console key is bound to a workspace, or acts across several, and
+      carries its identity's workspace role
+      (https://platform.claude.com/docs/en/manage-claude/authentication), so
+      a 403 is a key or workspace setting the owner fixes
+      (https://platform.claude.com/docs/en/api/errors), and the run stops
+      with its error type, error_code and request_id instead of hiding it
+      behind the subscription. lane-class keeps the reason. Set after the
+      step files are restored, so the leg cannot set it.
     value: ${{ steps.run.outputs.handoff }}
   lane-resets:
     description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.

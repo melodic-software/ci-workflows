@@ -45,8 +45,9 @@ name: intake-triage
 #   - The API key runs in the claude job. The subscription token runs only in
 #     the claude-subscription job, and only when the claude job's handoff
 #     output is exactly `true` (the key's credits are used up, lane-class
-#     `credit-stop`, or the API refused the key with status 401, 402 or
-#     403, lane-class `auth`) or its key was empty. That job runs on a
+#     `credit-stop`, or the API refused the key with status 401 or 402,
+#     lane-class `auth`; a 403 stops the run) or its key was empty. That
+#     job runs on a
 #     fresh ubuntu-24.04 GitHub-hosted runner, never the caller's runner
 #     input, repeats every hardening step, and
 #     takes nothing from the claude job but those outputs and the
@@ -141,7 +142,7 @@ name: intake-triage
 # triage, editing the lane's earlier comment.
 #
 # `claude-intake-triage` triages on the API key; after it hands off (a credit
-# stop, or the key refused with API status 401, 402 or 403) or with no
+# stop, or the key refused with API status 401 or 402) or with no
 # key, `claude-intake-triage-subscription` triages on the subscription token
 # instead. `claude-intake-triage-apply` applies the triage of the job
 # that triaged, and `claude-intake-triage-status` reads all three and goes red
@@ -716,7 +717,7 @@ jobs:
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
       # and extract steps run; the status job carries the red. A handoff (key
-      # only: a credit stop, or class auth with API status 401-403) skips
+      # only: a credit stop, or class auth with API status 401 or 402) skips
       # the outcome and extract steps: the subscription job triages instead. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
@@ -1242,7 +1243,7 @@ jobs:
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
       # and extract steps run; the status job carries the red. A handoff (key
-      # only: a credit stop, or class auth with API status 401-403) skips
+      # only: a credit stop, or class auth with API status 401 or 402) skips
       # the outcome and extract steps: the subscription job triages instead. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.

@@ -350,25 +350,35 @@ test("a rejected key hands off to the subscription job and keeps class auth", ()
   );
 });
 
-// An auth leg with the given numeric status, or none, and errors[] entries.
-// The 402 and 403 bodies follow the published error table
-// (platform.claude.com/docs/en/api/errors): billing_error and
+// An auth leg with the given numeric status, or none, errors[] entries and
+// the CLI's result text. The 402 and 403 bodies follow the published error
+// table (platform.claude.com/docs/en/api/errors): billing_error and
 // permission_error.
-function authLeg({ status, errors }) {
+function authLeg({ status, errors, text = "API Error", outputTokens = 0 }) {
   return [
     result({
       ...(errors ? { subtype: "error_during_execution", errors } : {}),
       is_error: true,
       num_turns: 0,
-      result: "API Error",
+      result: text,
       ...(status === undefined ? {} : { api_error_status: status }),
-      usage: { input_tokens: 0, output_tokens: 0 },
+      usage: { input_tokens: 0, output_tokens: outputTokens },
     }),
   ];
 }
 
-test("a key refused with 401, 402 or 403 hands off and keeps class auth", () => {
-  for (const status of [401, 402, 403]) {
+// A 403 in the published error shape (platform.claude.com/docs/en/api/errors:
+// error.type, request_id, the example request id), with an
+// error.details.error_code as the tier spend-cap body carries one. The code
+// value is made up for the test.
+const REQUEST_ID = "req_011CSHoEeqs5C35K2UUqR7Fy";
+const PERMISSION_TEXT =
+  'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
+  '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
+  `"request_id":"${REQUEST_ID}"}`;
+
+test("a key refused with 401 or 402 hands off and keeps class auth", () => {
+  for (const status of [401, 402]) {
     const { outputs, records } = runCase({ key: authLeg({ status }) });
     assert.equal(outputs["lane-class"], "auth", String(status));
     assert.equal(outputs.handoff, "true", String(status));
@@ -376,11 +386,51 @@ test("a key refused with 401, 402 or 403 hands off and keeps class auth", () => 
   }
 });
 
-test("a 403 whose errors[] text names another type still hands off by its status", () => {
+test("a 403 does not hand off and records its error type, code and request id", () => {
+  const { outputs, records } = runCase({
+    key: authLeg({ status: 403, text: PERMISSION_TEXT }),
+  });
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "false");
+  const [record] = records;
+  assert.equal(record.next, null);
+  assert.deepEqual(
+    [
+      record.api_error_status,
+      record.error_type,
+      record.error_code,
+      record.request_id,
+    ],
+    [403, "permission_error", "workspace_access_denied", REQUEST_ID],
+  );
+});
+
+test("a 403 with model output records no error facts from its text", () => {
+  const { records } = runCase({
+    key: authLeg({ status: 403, text: PERMISSION_TEXT, outputTokens: 5 }),
+  });
+  assert.deepEqual(
+    [records[0].error_type, records[0].error_code, records[0].request_id],
+    [null, null, null],
+  );
+});
+
+test("a 403 whose errors[] text names authentication_error still does not hand off", () => {
   const { outputs } = runCase({
     key: authLeg({
       status: 403,
-      errors: ['{"type":"error","error":{"type":"rate_limit_error"}}'],
+      errors: ['{"type":"error","error":{"type":"authentication_error"}}'],
+    }),
+  });
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "false");
+});
+
+test("a 401 whose errors[] text names another type still hands off by its status", () => {
+  const { outputs } = runCase({
+    key: authLeg({
+      status: 401,
+      errors: ['{"type":"error","error":{"type":"permission_error"}}'],
     }),
   });
   assert.equal(outputs["lane-class"], "auth");
@@ -909,6 +959,10 @@ test("the log has one object for the leg with the documented fields and no crede
     "num_turns",
     "is_error",
     "class",
+    "api_error_status",
+    "error_type",
+    "error_code",
+    "request_id",
     "message",
     "resets",
     "usage",
@@ -1248,7 +1302,7 @@ test("run on a rejected key sets handoff and a summary row that names the dead k
   const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
   assert.match(
     summaryText,
-    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| auth \| .* \| subscription \| credential unusable \(rejected, unpaid or not permitted\): the owner replaces the secret by hand \|/u,
+    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| auth \| .* \| subscription \| credential unusable: 401 or 402 hands off to the subscription job, 403 \(permission\) stops the run; the owner fixes the key by hand \|/u,
   );
   const [record] = fs
     .readFileSync(outputs["log-file"], "utf8")
@@ -1256,6 +1310,39 @@ test("run on a rejected key sets handoff and a summary row that names the dead k
     .split("\n")
     .map((l) => JSON.parse(l));
   assert.deepEqual([record.class, record.next], ["auth", "subscription"]);
+});
+
+test("run on a 403 key stops with no handoff and names the error in the log, summary and record", () => {
+  const dir = path.join(root, "run-permission");
+  const env = runEnv(dir, {});
+  env.FAKE_KEY = legFile(
+    dir,
+    "key.jsonl",
+    authLeg({ status: 403, text: PERMISSION_TEXT }),
+  );
+  env.FAKE_KEY_EXIT = "1";
+  const facts = `api_error_status=403 error_type=permission_error error_code=workspace_access_denied request_id=${REQUEST_ID}`;
+  assert.throws(
+    () => run(env),
+    (error) =>
+      error.message ===
+      `intake ended class=auth on AUTOMATIONS_CLAUDE_API_KEY ${facts}`,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "false");
+  const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
+  assert.equal(summaryText.includes(`| auth | ${facts} |`), true);
+  assert.equal(summaryText.includes("not permitted"), false);
+  const [record] = fs
+    .readFileSync(outputs["log-file"], "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.deepEqual(
+    [record.class, record.next, record.request_id],
+    ["auth", null, REQUEST_ID],
+  );
 });
 
 test("run refuses both credentials before any leg starts", () => {
@@ -1293,10 +1380,10 @@ test("the summary shows a closed token per class and never a record's message", 
   ];
   const table = summaryTable(classes.map(record));
   assert.equal(table.includes("planted"), false);
-  assert.match(table, /\| success \| 0 \| 0 \|  \|  \|  \|$/mu);
+  assert.match(table, /\| success \|  \| 0 \| 0 \|  \|  \|  \|$/mu);
   assert.match(
     table,
-    /\| auth \| .* \| credential unusable \(rejected, unpaid or not permitted\): the owner replaces the secret by hand \|/u,
+    /\| auth \| .* \| credential unusable: 401 or 402 hands off to the subscription job, 403 \(permission\) stops the run; the owner fixes the key by hand \|/u,
   );
   assert.match(table, /\| unknown \| .* \| see the step log \|/u);
   assert.match(table, /\| constructor \| .* \| see the step log \|/u);

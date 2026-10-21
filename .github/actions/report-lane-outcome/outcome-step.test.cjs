@@ -509,3 +509,33 @@ test("a fallback reason outside credit-stop, auth and no-key fails the step and 
     }
   }
 });
+
+test("a 403 the launcher stopped is recorded with its error type, code and request id", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 403,
+      result:
+        'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
+        '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
+        '"request_id":"req_011CSHoEeqs5C35K2UUqR7Fy"}',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  ]);
+  const run = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude intake triage",
+    credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    knownFailureClass: "auth",
+  });
+  assert.equal(run.errors.length, 1);
+  assert.match(
+    run.errors[0],
+    /\bclass=auth error-type=permission_error error-code=workspace_access_denied request-id=req_011CSHoEeqs5C35K2UUqR7Fy credential=AUTOMATIONS_CLAUDE_API_KEY turns=1\b/u,
+  );
+  assert.equal(run.errors[0].includes("not permitted"), false);
+});

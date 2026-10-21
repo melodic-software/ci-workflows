@@ -427,6 +427,9 @@ test("no rate_limit_event, a missing file or an unparsable one leaves the record
     models: [],
     resetsAt: null,
     resetsWindow: null,
+    errorType: null,
+    errorCode: null,
+    requestId: null,
   };
   assert.deepEqual(record([{ type: "result", subtype: "success" }]), empty);
   fs.writeFileSync(executionFile, "not json");
@@ -735,4 +738,61 @@ test("credit-stop: never when the model could have written the text", () => {
     ),
     false,
   );
+});
+
+// A 403 in the published error shape (platform.claude.com/docs/en/api/errors:
+// error.type, request_id and its example id), with an error.details.error_code
+// as the tier spend-cap body above carries one; the code value is made up.
+const { apiErrorFacts } = require("./classify.cjs");
+const PERMISSION_TEXT =
+  'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
+  '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
+  '"request_id":"req_011CSHoEeqs5C35K2UUqR7Fy"}';
+
+function permissionMessages({ outputTokens = 0, text = PERMISSION_TEXT } = {}) {
+  return [
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 403,
+      result: text,
+      usage: { input_tokens: 0, output_tokens: outputTokens },
+    },
+  ];
+}
+
+test("api error facts: a 403's type, error_code and request_id from the CLI's own text", () => {
+  assert.deepEqual(apiErrorFacts(permissionMessages()), {
+    errorType: "permission_error",
+    errorCode: "workspace_access_denied",
+    requestId: "req_011CSHoEeqs5C35K2UUqR7Fy",
+  });
+  const none = { errorType: null, errorCode: null, requestId: null };
+  // Model output means the text may be the model's: nothing is read.
+  assert.deepEqual(apiErrorFacts(permissionMessages({ outputTokens: 3 })), none);
+  // A value outside its closed pattern is dropped.
+  assert.deepEqual(
+    apiErrorFacts(
+      permissionMessages({
+        text: 'API Error: 403 {"type":"error","error":{"type":"Permission Error::x","details":{"error_code":"a b"}},"request_id":"req_::x"}',
+      }),
+    ),
+    none,
+  );
+});
+
+test("record tokens: error facts print only on a failure", () => {
+  const run = {
+    turns: 1,
+    errorType: "permission_error",
+    errorCode: "workspace_access_denied",
+    requestId: "req_011CSHoEeqs5C35K2UUqR7Fy",
+  };
+  assert.equal(
+    recordTokens(run, { failureClass: "auth" }),
+    "error-type=permission_error error-code=workspace_access_denied request-id=req_011CSHoEeqs5C35K2UUqR7Fy turns=1",
+  );
+  assert.equal(recordTokens(run, {}), "turns=1");
 });

@@ -133,7 +133,9 @@ const CREDIT_STOP_PHRASES = [
 const REGAIN_ACCESS =
   /regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}):(\d{2}) UTC/u;
 
-function creditStopText(messages) {
+// The failed run's messages when no model output exists, so every text in
+// them is the CLI's own; else null.
+function cliOnlyRun(messages) {
   const result = messages.findLast((message) => message?.type === "result");
   if (result?.is_error !== true) return null;
   const assistants = messages.filter((m) => m?.type === "assistant");
@@ -144,6 +146,13 @@ function creditStopText(messages) {
   if (assistants.some((m) => typeof m.error !== "string")) return null;
   const outputTokens = result.usage?.output_tokens;
   if (outputTokens !== undefined && outputTokens !== 0) return null;
+  return { result, assistants, content };
+}
+
+function creditStopText(messages) {
+  const run = cliOnlyRun(messages);
+  if (run === null) return null;
+  const { result, assistants, content } = run;
   const status = result.api_error_status;
   const statusMatches =
     typeof status === "number" && CREDIT_STOP_STATUSES.has(status);
@@ -175,6 +184,29 @@ function creditStopResetsAt(messages) {
   return Number.isNaN(date.getTime())
     ? null
     : date.toISOString().replace(/\.000Z$/u, "Z");
+}
+
+// The API error body's type, `error.details.error_code` and `request_id`
+// (the error shape at platform.claude.com/docs/en/api/errors), read from
+// the CLI's own error text only (cliOnlyRun) and each kept only when it
+// matches a closed pattern; null when absent. Diagnostics only: no class
+// or handoff depends on them.
+function apiErrorFacts(messages) {
+  const run = Array.isArray(messages) ? cliOnlyRun(messages) : null;
+  const none = { errorType: null, errorCode: null, requestId: null };
+  if (run === null) return none;
+  const text = [
+    typeof run.result.result === "string" ? run.result.result : "",
+    ...run.content
+      .filter((block) => block?.type === "text")
+      .map((block) => String(block.text ?? "")),
+  ].join("\n");
+  const match = (pattern) => text.match(pattern)?.[1] ?? null;
+  return {
+    errorType: match(/"error":\{"type":"([a-z_]{1,40})"/u),
+    errorCode: match(/"error_code":"([a-z0-9_]{1,64})"/u),
+    requestId: match(/\b(req_[A-Za-z0-9]{8,64})\b/u),
+  };
 }
 
 function classifyExecutionFile(
@@ -262,7 +294,7 @@ const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
 const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
 // Why a subscription job ran in the two-job pattern: the key job's credit
-// stop, its key refused with API status 401, 402 or 403, or no key at all.
+// stop, its key refused with API status 401 or 402, or no key at all.
 const FALLBACK_REASONS = ["credit-stop", "auth", "no-key"];
 
 // SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
@@ -308,15 +340,26 @@ function readRunRecord(executionFilePath) {
         ? Object.keys(usage).filter((key) => MODEL_PATTERN.test(key))
         : [],
     ...limitStopFrom(messages),
+    ...apiErrorFacts(messages),
   };
 }
 
 // The record tokens for one annotation line, unknown values omitted.
 // `resets=` and `resets-window=` are printed only on a limit stop: that
 // stop's reset time and the window (rateLimitType) that stopped it.
-// `fallback=` follows `credential=`, only from FALLBACK_REASONS.
+// `error-type=`, `error-code=` and `request-id=` (apiErrorFacts) are printed
+// only on a failure. `fallback=` follows `credential=`, only from
+// FALLBACK_REASONS.
 function recordTokens(
-  { turns = null, models = [], resetsAt = null, resetsWindow = null },
+  {
+    turns = null,
+    models = [],
+    resetsAt = null,
+    resetsWindow = null,
+    errorType = null,
+    errorCode = null,
+    requestId = null,
+  },
   {
     failureClass = "",
     maxTurns = "",
@@ -328,6 +371,11 @@ function recordTokens(
   if (failureClass === "rate-limit" && resetsAt) {
     tokens.push(`resets=${resetsAt}`);
     if (resetsWindow) tokens.push(`resets-window=${resetsWindow}`);
+  }
+  if (failureClass !== "") {
+    if (errorType) tokens.push(`error-type=${errorType}`);
+    if (errorCode) tokens.push(`error-code=${errorCode}`);
+    if (requestId) tokens.push(`request-id=${requestId}`);
   }
   if (CREDENTIAL_PATTERN.test(credential)) {
     tokens.push(`credential=${credential}`);
@@ -344,6 +392,7 @@ function recordTokens(
 }
 
 module.exports = {
+  apiErrorFacts,
   classifyExecutionFile,
   creditStopResetsAt,
   FALLBACK_REASONS,
