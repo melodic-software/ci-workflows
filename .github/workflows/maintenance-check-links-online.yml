@@ -145,30 +145,53 @@ jobs:
             ${{ inputs.extra-args }}
             ${{ inputs.globs }}
 
-      # Broken links fail the job; timeouts and accepted 429 and 5xx responses
-      # are listed but do not. A report jq cannot parse (lychee panicked or
-      # never ran) fails the job too.
+      # Broken links fail the job; accepted 429 and 5xx responses are listed but
+      # do not. Timeouts are listed too, and fail the job only when the
+      # caller's config does not set accept_timeouts (lychee check.rs decides
+      # the exit code). lychee-action creates the report file before lychee
+      # runs, so a config error or a panic leaves it empty; that fails the job
+      # with a pointer to the lychee step's log. Each section is capped so the
+      # summary stays under the 1 MiB per-step limit
+      # (https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#step-isolation-and-limits).
       - name: Write the report
         if: steps.gate.outputs.run == 'true' && !cancelled()
         env:
           REPORT: ${{ runner.temp }}/lychee/report.json
           LYCHEE_EXIT: ${{ steps.lychee.outputs.exit_code }}
+          MAX_ROWS: 200
         run: |
           set -euo pipefail
-          jq -r '
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::lychee exited ${LYCHEE_EXIT} without writing a report: see the 'Check links (online)' step log."
+            exit 1
+          fi
+          if ! jq -e 'type == "object"' "$REPORT" >/dev/null 2>&1; then
+            echo "::error::lychee exited ${LYCHEE_EXIT} and its report is not JSON: see the 'Check links (online)' step log."
+            exit 1
+          fi
+          jq -r --argjson max "$MAX_ROWS" '
+            # A code span whose fence is longer than any backtick run inside it.
+            def code: ([scan("`+") | length] | max // 0) as $n
+              | ("`" * ($n + 1)) as $fence
+              | if $n > 0 then "\($fence) \(.) \($fence)" else "\($fence)\(.)\($fence)" end;
             def rows($map):
-              [$map | to_entries[] | .key as $input | .value[]
-                | "* [\(.status.code // .status.text)] <\(.url)> in `\($input)`"
-                  + (if .span then " at \(.span.line):\(.span.column)" else "" end)
-                  + " | \(.status.details // .status.text)"];
+              [$map | to_entries | sort_by(.key)[] | .key as $input
+                | .value | sort_by(.url)[]
+                | "* [\(.status.code // .status.text)] <\(.url)> in \($input | code)"
+                  + (if .span then " at \(.span.line)" + (if .span.column then ":\(.span.column)" else "" end) else "" end)
+                  + " | \(.status.details // .status.text | gsub("[\r\n]+"; " "))"];
             def section($title; $map):
-              rows($map) | if length > 0 then "\n## \($title)\n\n" + join("\n") else empty end;
+              rows($map)
+              | if length == 0 then empty
+                else "\n## \($title)\n\n" + (.[:$max] | join("\n"))
+                  + (if length > $max then "\n* +\(length - $max) more" else "" end)
+                end;
             "# Online link check\n",
             "| Total | OK | Broken | Timeouts | Excluded |",
             "| --- | --- | --- | --- | --- |",
             "| \(.total) | \(.successful) | \(.errors) | \(.timeouts) | \(.excludes) |",
             section("Broken links (fail the run)"; .error_map),
-            section("Timeouts (do not fail the run)"; .timeout_map),
+            section("Timeouts"; .timeout_map),
             section("Accepted 429 and 5xx responses (do not fail the run)";
               .success_map
               | map_values(map(select(.status.code == 429
@@ -180,6 +203,10 @@ jobs:
             exit 1
           fi
           if [ "$LYCHEE_EXIT" != 0 ]; then
-            echo "::error::lychee exited ${LYCHEE_EXIT}: see the broken links in the job summary."
+            if jq -e '.errors == 0 and .timeouts > 0' "$REPORT" >/dev/null; then
+              echo "::error::lychee exited ${LYCHEE_EXIT}: timeouts failed the run: the config does not set accept_timeouts."
+            else
+              echo "::error::lychee exited ${LYCHEE_EXIT}: see the broken links in the job summary."
+            fi
             exit 1
           fi

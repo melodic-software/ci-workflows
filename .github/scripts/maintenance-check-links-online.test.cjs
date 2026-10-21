@@ -167,7 +167,7 @@ const recorded = {
   detailed_stats: true,
 };
 
-function runReport(reportBody, lycheeExit) {
+function runReport(reportBody, lycheeExit, maxRows = report.env.MAX_ROWS) {
   const directory = makeTemporaryDirectory("check-links-online-");
   const reportPath = path.join(directory, "report.json");
   const summaryPath = path.join(directory, "summary.md");
@@ -179,6 +179,7 @@ function runReport(reportBody, lycheeExit) {
       ...process.env,
       REPORT: reportPath,
       LYCHEE_EXIT: lycheeExit,
+      MAX_ROWS: String(maxRows),
       GITHUB_STEP_SUMMARY: summaryPath,
     },
   });
@@ -226,7 +227,7 @@ test("timeouts and accepted 429 and 5xx responses are listed without failing the
   );
 });
 
-test("a run that found no links or left no JSON report fails the job", () => {
+test("a run that found no links fails the job", () => {
   const empty = {
     ...recorded,
     total: 0,
@@ -237,9 +238,97 @@ test("a run that found no links or left no JSON report fails the job", () => {
     error_map: {},
     timeout_map: {},
   };
-  assert.equal(runReport(JSON.stringify(empty), "0").status, 1);
-  assert.equal(runReport("", "101").status, 1);
-  assert.notEqual(runReport("thread 'main' panicked", "101").status, 0);
+  const { status, log } = runReport(JSON.stringify(empty), "0");
+  assert.equal(status, 1);
+  assert.match(log, /::error::No links were found\./u);
+});
+
+test("an empty report, as lychee-action leaves after a lychee error, fails with a pointer to the lychee step", () => {
+  const { status, log, summary } = runReport("", "1");
+  assert.equal(status, 1);
+  assert.match(
+    log,
+    /::error::lychee exited 1 without writing a report: see the 'Check links \(online\)' step log\./u,
+  );
+  assert.doesNotMatch(log, /No links were found/u);
+  assert.equal(summary, "");
+});
+
+test("a report that is not JSON fails the job", () => {
+  const { status, log } = runReport("not json", "1");
+  assert.equal(status, 1);
+  assert.match(log, /::error::lychee exited 1 and its report is not JSON/u);
+});
+
+test("timeouts that fail the run name the missing accept_timeouts", () => {
+  // lychee exits 2 for a timeout when accept_timeouts is unset (check.rs).
+  const onlyTimeouts = {
+    ...recorded,
+    errors: 0,
+    error_map: {},
+    success_map: {},
+  };
+  const { status, log, summary } = runReport(JSON.stringify(onlyTimeouts), "2");
+  assert.equal(status, 1);
+  assert.match(
+    log,
+    /::error::lychee exited 2: timeouts failed the run: the config does not set accept_timeouts\./u,
+  );
+  assert.match(summary, /^## Timeouts$/mu);
+  assert.match(section(summary, "Timeouts"), /\/hang\/y>/u);
+});
+
+test("entries render without a code, without a column, and with odd input names", () => {
+  // Same status shape as the recorded timeout entry: details and no code.
+  const odd = {
+    ...recorded,
+    errors: 1,
+    error_map: {
+      "docs/a`b.md": [
+        {
+          url: "http://127.0.0.1:18766/reset/y",
+          status: {
+            text: "Network error",
+            details: "connection reset\nby peer",
+          },
+          span: { line: 9, column: null },
+        },
+      ],
+    },
+  };
+  const broken = section(
+    runReport(JSON.stringify(odd), "2").summary,
+    "Broken links",
+  );
+  assert.equal(
+    broken.trim().split("\n").at(-1),
+    "* [Network error] <http://127.0.0.1:18766/reset/y> in `` docs/a`b.md `` at 9 | connection reset by peer",
+  );
+});
+
+test("sections are sorted by input and URL and capped with a remainder line", () => {
+  const entry = (n) => ({
+    url: `http://127.0.0.1:18766/404/${n}`,
+    status: { text: "Rejected status code: 404 Not Found", code: 404 },
+    span: { line: 1, column: 2 },
+  });
+  const many = {
+    ...recorded,
+    errors: 4,
+    error_map: {
+      "z.md": [entry("d"), entry("c")],
+      "a.md": [entry("b"), entry("a")],
+    },
+  };
+  const broken = section(
+    runReport(JSON.stringify(many), "2", 3).summary,
+    "Broken links",
+  );
+  const rows = broken.trim().split("\n").slice(2);
+  assert.deepEqual(
+    rows.map((row) => row.match(/404\/(\w)>|^\* \+\d+ more$/u)[1] ?? row),
+    ["a", "b", "c", "* +1 more"],
+  );
 });
 
 test("a dispatched run checks links without reading the property", async () => {
