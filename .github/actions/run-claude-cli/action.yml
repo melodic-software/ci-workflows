@@ -165,8 +165,13 @@ outputs:
     description: >-
       `true` when a key leg ended in `credit-stop`, or in `auth` with the
       numeric API status 401, 402 or 403, so the caller may run the
-      subscription leg in a separate job; `false` otherwise; empty when the step failed before the leg ran. lane-class keeps the
-      reason. Set after the step files are restored, so the leg cannot set it.
+      subscription leg in a separate job; `false` otherwise; empty when the
+      step failed before the leg ran. A 403 hands off too: lane role keys
+      are whole-account Console keys with no per-key scope, so a 403 means
+      the key or its workspace is misconfigured; the run hands off so the
+      lane keeps running, and the caller's status job warns on every such
+      run until the owner replaces the key. lane-class keeps the reason.
+      Set after the step files are restored, so the leg cannot set it.
     value: ${{ steps.run.outputs.handoff }}
   lane-resets:
     description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.

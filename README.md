@@ -611,8 +611,12 @@ consumer to audit it.
   opt-in `credit-stop` class: the role's credits are used up) or with its key
   refused by the API with numeric status 401 (disabled or deleted), 402
   (billing) or 403 (permission), class `auth`; an error-type string with no
-  numeric status hands off nothing. `lane-class` keeps `credit-stop` or `auth`, so
-  the job summary and the log name the reason and a dead key stays visible.
+  numeric status hands off nothing. Lane role keys are whole-account Console
+  keys with no per-key scope, so a 403 means the key or its workspace is
+  misconfigured: the run hands off so the lane keeps running, and the status
+  job warns on every such run until the owner replaces the key.
+  `lane-class` keeps `credit-stop` or `auth`, so the job summary and the log
+  name the reason and a dead key stays visible.
   Any other failure hands off nothing. Rotating a
   key stays the owner's manual step. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
