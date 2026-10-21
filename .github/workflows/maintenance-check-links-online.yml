@@ -4,7 +4,10 @@ name: maintenance-check-links-online
 # Markdown, with the caller's lychee.toml (the standards-synced config the
 # offline lane also reads) and the .lycheeignore lychee picks up from the
 # working directory. The report goes to the job summary and any broken link
-# fails the job red. It never opens an issue or posts a comment.
+# fails the job red. Links the caller's lychee.toml accepts as transient (a
+# 429 or 5xx in `accept`, a timeout under `accept_timeouts`) do not fail it but
+# are listed in the summary, so a host that stays down is still noticed. It
+# never opens an issue or posts a comment.
 #
 # GITHUB_TOKEN only: it lifts the github.com rate limit, and it cannot read
 # another private repository, so lychee never reports a link into one as OK.
@@ -112,19 +115,27 @@ jobs:
       # runner IP, so each host gets fewer parallel requests, spaced out, with
       # longer retries and timeout. Pacing did not stop every 429
       # (standards#775, #776); a page proven alive that still blocks the
-      # checker gets an exact-URL .lycheeignore entry with a dated reason. A
-      # single red run on a github.com blob page 503 is not proof of rot.
+      # checker gets an exact-URL .lycheeignore entry with a dated reason.
+      #
+      # JSON with -v, because only that output lists accepted responses
+      # (lychee 0.24.2 fills `success_map` at -v and above; the markdown report
+      # never lists them). The next step writes the summary and decides the
+      # job's result, so this step neither fails nor writes a summary.
       - name: Check links (online)
+        id: lychee
         if: steps.gate.outputs.run == 'true'
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           lycheeVersion: ${{ inputs.lychee-version }}
           token: ${{ github.token }}
-          fail: true
-          jobSummary: true
-          format: markdown
+          fail: false
+          failIfEmpty: false
+          jobSummary: false
+          format: json
+          output: ${{ runner.temp }}/lychee/report.json
           args: >-
             --no-progress
+            --verbose
             --config '${{ inputs.config }}'
             --host-concurrency 4
             --host-request-interval 250ms
@@ -133,3 +144,42 @@ jobs:
             --timeout 40
             ${{ inputs.extra-args }}
             ${{ inputs.globs }}
+
+      # Broken links fail the job; timeouts and accepted 429 and 5xx responses
+      # are listed but do not. A report jq cannot parse (lychee panicked or
+      # never ran) fails the job too.
+      - name: Write the report
+        if: steps.gate.outputs.run == 'true' && !cancelled()
+        env:
+          REPORT: ${{ runner.temp }}/lychee/report.json
+          LYCHEE_EXIT: ${{ steps.lychee.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          jq -r '
+            def rows($map):
+              [$map | to_entries[] | .key as $input | .value[]
+                | "* [\(.status.code // .status.text)] <\(.url)> in `\($input)`"
+                  + (if .span then " at \(.span.line):\(.span.column)" else "" end)
+                  + " | \(.status.details // .status.text)"];
+            def section($title; $map):
+              rows($map) | if length > 0 then "\n## \($title)\n\n" + join("\n") else empty end;
+            "# Online link check\n",
+            "| Total | OK | Broken | Timeouts | Excluded |",
+            "| --- | --- | --- | --- | --- |",
+            "| \(.total) | \(.successful) | \(.errors) | \(.timeouts) | \(.excludes) |",
+            section("Broken links (fail the run)"; .error_map),
+            section("Timeouts (do not fail the run)"; .timeout_map),
+            section("Accepted 429 and 5xx responses (do not fail the run)";
+              .success_map
+              | map_values(map(select(.status.code == 429
+                  or (.status.code >= 500 and .status.code <= 599))))
+              | with_entries(select(.value | length > 0)))
+          ' "$REPORT" >>"$GITHUB_STEP_SUMMARY"
+          if ! jq -e '.total > 0' "$REPORT" >/dev/null; then
+            echo "::error::No links were found. This usually indicates a configuration error."
+            exit 1
+          fi
+          if [ "$LYCHEE_EXIT" != 0 ]; then
+            echo "::error::lychee exited ${LYCHEE_EXIT}: see the broken links in the job summary."
+            exit 1
+          fi
