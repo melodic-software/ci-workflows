@@ -16,8 +16,9 @@
 //   - One leg per invocation: readConfig fails closed unless exactly one of
 //     the two credentials is set. A caller that falls back to the
 //     subscription after a key leg hands off (a credit stop, or class auth
-//     with api_error_status 401, 402 or 403, NEXT_STEPS) runs a second job,
-//     on a fresh runner, gated on this one's handoff output being `true`.
+//     with api_error_status 401 or 402, NEXT_STEPS) runs a second job, on a
+//     fresh runner, gated on this one's handoff output being `true`. A 403
+//     stops the run with its error type, error_code and request_id.
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
@@ -59,6 +60,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const {
+  apiErrorFacts,
   classifyExecutionFile,
   creditStopResetsAt,
   readMessages,
@@ -142,12 +144,14 @@ const NEXT_STEPS = {
     handoff: true,
     note: "credits used up: the subscription job runs; the owner rotates a key by hand when needed",
   },
-  // 401 (key disabled or deleted), 402 (billing) and 403 (permission) hand
-  // off; an auth class with no numeric status does not.
+  // 401 (key disabled or deleted) and 402 (billing) hand off. 403
+  // (permission) does not: the key reached the API but may not use the
+  // resource, a setting the owner fixes, and handing off would hide it. An
+  // auth class with no numeric status does not hand off either.
   auth: {
     handoff: true,
-    statuses: [401, 402, 403],
-    note: "credential unusable (rejected, unpaid or not permitted): the owner replaces the secret by hand",
+    statuses: [401, 402],
+    note: "credential unusable: 401 or 402 hands off to the subscription job, 403 (permission) stops the run; the owner fixes the key by hand",
   },
   "rate-limit": { handoff: false, note: "limit stop: rerun after the reset" },
   overloaded: { handoff: false, note: "API overloaded: rerun later" },
@@ -491,6 +495,8 @@ function legRecord({
     result.modelUsage && typeof result.modelUsage === "object"
       ? result.modelUsage
       : {};
+  const status = messages.at(-1)?.api_error_status;
+  const facts = failureClass === "" ? {} : apiErrorFacts(messages);
   return {
     run_id: config.runId,
     lane: config.lane,
@@ -520,6 +526,10 @@ function legRecord({
     num_turns: count(result.num_turns),
     is_error: typeof result.is_error === "boolean" ? result.is_error : null,
     class: failureClass,
+    api_error_status: Number.isInteger(status) ? status : null,
+    error_type: facts.errorType ?? null,
+    error_code: facts.errorCode ?? null,
+    request_id: facts.requestId ?? null,
     message: message ?? cliMessage(messages, failureClass),
     resets,
     usage: {
@@ -756,6 +766,19 @@ function runLeg(
   };
 }
 
+// The record's API error facts as `key=value` tokens, each a closed value.
+function errorTokens(record) {
+  return [
+    ["api_error_status", record.api_error_status],
+    ["error_type", record.error_type],
+    ["error_code", record.error_code],
+    ["request_id", record.request_id],
+  ]
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+}
+
 // Every cell is a closed token or a value lane.cjs checked; no CLI text.
 function summaryTable(records) {
   const cell = (value) =>
@@ -764,11 +787,11 @@ function summaryTable(records) {
       .replaceAll("`", "'");
   const rows = records.map(
     (r) =>
-      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(nextStep(r.class).note)} |`,
+      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(errorTokens(r))} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(nextStep(r.class).note)} |`,
   );
   return [
-    "| Leg | Secret | Class | Turns | Denials | Resets | Next | Stop |",
-    "|---|---|---|---|---|---|---|---|",
+    "| Leg | Secret | Class | Error | Turns | Denials | Resets | Next | Stop |",
+    "|---|---|---|---|---|---|---|---|---|",
     ...rows,
   ].join("\n");
 }
@@ -1165,8 +1188,9 @@ function run(env) {
   }
   const laneClass = outcome.outputs["lane-class"];
   if (laneClass !== "") {
+    const facts = errorTokens(outcome.records[0]);
     throw new LaneError(
-      `${config.lane} ended class=${laneClass} on ${outcome.outputs.credential}`,
+      `${config.lane} ended class=${laneClass} on ${outcome.outputs.credential}${facts === "" ? "" : ` ${facts}`}`,
     );
   }
 }

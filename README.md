@@ -609,14 +609,22 @@ consumer to audit it.
   the action fails closed. A key leg hands off to the subscription, output
   `handoff` set to `true`, when it ends in a credit stop (report-lane-outcome's
   opt-in `credit-stop` class: the role's credits are used up) or with its key
-  refused by the API with numeric status 401 (disabled or deleted), 402
-  (billing) or 403 (permission), class `auth`; an error-type string with no
-  numeric status hands off nothing. Lane role keys are whole-account Console
-  keys with no per-key scope, so a 403 means the key or its workspace is
-  misconfigured: the run hands off so the lane keeps running, and the status
-  job warns on every such run until the owner replaces the key.
-  `lane-class` keeps `credit-stop` or `auth`, so the job summary and the log
-  name the reason and a dead key stays visible.
+  refused by the API with numeric status 401 (disabled or deleted) or 402
+  (billing), class `auth`; an error-type string with no numeric status
+  hands off nothing. A 403 (`permission_error`, class `auth`) hands off
+  nothing either and stops the run. A Console key is bound to one
+  workspace, or acts across several, and carries its identity's workspace
+  role ([authentication](https://platform.claude.com/docs/en/manage-claude/authentication));
+  the Console has no per-model or per-endpoint restriction on it
+  ([model configuration](https://code.claude.com/docs/en/model-config)).
+  So a 403, which the [API errors page](https://platform.claude.com/docs/en/api/errors)
+  defines as the key lacking permission for the resource, is a key or
+  workspace setting the owner fixes, and a handoff would hide it. The
+  step's error line, the job summary's Error cell, the log record and
+  report-lane-outcome's record name the API status, error type,
+  `error_code` and `request_id` whenever the CLI's own error text carries
+  them. `lane-class` keeps `credit-stop` or `auth`, so the job summary and
+  the log name the reason and a dead key stays visible.
   Any other failure hands off nothing. Rotating a
   key stays the owner's manual step. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);

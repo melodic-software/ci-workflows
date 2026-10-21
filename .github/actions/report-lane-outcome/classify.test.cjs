@@ -427,6 +427,9 @@ test("no rate_limit_event, a missing file or an unparsable one leaves the record
     models: [],
     resetsAt: null,
     resetsWindow: null,
+    errorType: null,
+    errorCode: null,
+    requestId: null,
   };
   assert.deepEqual(record([{ type: "result", subtype: "success" }]), empty);
   fs.writeFileSync(executionFile, "not json");
@@ -735,4 +738,90 @@ test("credit-stop: never when the model could have written the text", () => {
     ),
     false,
   );
+});
+
+// A 403 in the published error shape (platform.claude.com/docs/en/api/errors:
+// error.type and request_id), with an error.details.error_code as the tier
+// spend-cap body above carries one; the code and the low-entropy request id
+// are made up, so the secret scan does not read them as a key.
+const { apiErrorFacts } = require("./classify.cjs");
+const PERMISSION_TEXT =
+  'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
+  '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
+  '"request_id":"req_fake0000000000000000"}';
+
+function permissionMessages({ outputTokens = 0, text = PERMISSION_TEXT } = {}) {
+  return [
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      api_error_status: 403,
+      result: text,
+      usage: { input_tokens: 0, output_tokens: outputTokens },
+    },
+  ];
+}
+
+test("api error facts: a 403's type, error_code and request_id from the CLI's own text", () => {
+  assert.deepEqual(apiErrorFacts(permissionMessages()), {
+    errorType: "permission_error",
+    errorCode: "workspace_access_denied",
+    requestId: "req_fake0000000000000000",
+  });
+  const none = { errorType: null, errorCode: null, requestId: null };
+  // Model output means the text may be the model's: nothing is read.
+  assert.deepEqual(apiErrorFacts(permissionMessages({ outputTokens: 3 })), none);
+  // A value outside its closed pattern is dropped.
+  assert.deepEqual(
+    apiErrorFacts(
+      permissionMessages({
+        text: 'API Error: 403 {"type":"error","error":{"type":"Permission Error::x","details":{"error_code":"a b"}},"request_id":"req_::x"}',
+      }),
+    ),
+    none,
+  );
+});
+
+test("record tokens: error facts print only on a failure", () => {
+  const run = {
+    turns: 1,
+    errorType: "permission_error",
+    errorCode: "workspace_access_denied",
+    requestId: "req_fake0000000000000000",
+  };
+  assert.equal(
+    recordTokens(run, { failureClass: "auth" }),
+    "error-type=permission_error error-code=workspace_access_denied request-id=req_fake0000000000000000 turns=1",
+  );
+  assert.equal(recordTokens(run, {}), "turns=1");
+});
+
+test("credit-stop: a 403 is never a credit stop, whatever its text", () => {
+  for (const error of ["billing_error", "invalid_request"]) {
+    const messages = stopMessages({
+      status: 403,
+      error,
+      text: "Your credit balance is too low",
+    });
+    assert.equal(isCreditStop(messages, { exitCode: 1 }), false, error);
+    assert.equal(
+      classifyStop(messages, { detectCreditStop: true, exitCode: 1 }),
+      "auth",
+      error,
+    );
+  }
+});
+
+test("api error facts: read from errors[] on the error_during_execution variant", () => {
+  const body =
+    'APIError: {"type":"error","error":{"type":"permission_error",' +
+    '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
+    '"request_id":"req_fake0000000000000000"}\n    at request (/x/y.js:1:1)';
+  assert.deepEqual(apiErrorFacts(errorMessage([DIAGNOSTIC, body])), {
+    errorType: "permission_error",
+    errorCode: "workspace_access_denied",
+    requestId: "req_fake0000000000000000",
+  });
 });
