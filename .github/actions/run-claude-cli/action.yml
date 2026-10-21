@@ -3,10 +3,12 @@ description: >-
   Run one prompt with headless `claude -p` for an agent-mode CI lane, on a
   Linux runner, on exactly one credential: set `api-key` or
   `subscription-token`, never both (the action fails closed otherwise). A
-  key leg that ends in a credit stop (classify.cjs isCreditStop) sets
-  lane-class `credit-stop`; a caller that falls back to the subscription
-  runs it as a second job on a fixed GitHub-hosted runner, gated on that
-  exact value (see the README's two-job pattern), never in this job.
+  key leg that ends in a credit stop (classify.cjs isCreditStop, lane-class
+  `credit-stop`) or a key the API refused with status 401, 402 or 403
+  (lane-class `auth`) sets handoff `true`;
+  a caller that falls back to the subscription runs it as a second job on a
+  fixed GitHub-hosted runner, gated on that exact value (see the README's
+  two-job pattern), never in this job.
   The leg's CLI environment has every credential and file-command variable
   removed and its one credential set, and the CLI runs with `--restricted`
   and `--strict-mcp-config`; the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
@@ -122,15 +124,14 @@ inputs:
     default: ""
   cli-version:
     description: >-
-      An exact major.minor.patch, or `latest`, which resolves the newest
-      @anthropic-ai/claude-code release with `npm view` at run time. The
-      default is pinned to 2.1.304 (`npm view @anthropic-ai/claude-code
-      version`, 2026-10-20). The resolved version is logged and output. The
+      `latest` (the default) resolves the newest @anthropic-ai/claude-code
+      release with `npm view` at run time; an exact major.minor.patch
+      reproduces a run. The resolved version is logged and output. The
       install fails unless `npm audit signatures` verifies the wrapper and
       platform packages and the binary matches the release's GPG-signed
       manifest.json, so the version must be 2.1.89 or later.
     required: false
-    default: 2.1.304
+    default: latest
   watchdog-max-wait-ms:
     description: CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS, the most each request waits out 429 and 529 errors.
     required: false
@@ -146,11 +147,12 @@ outputs:
   lane-class:
     description: >-
       The leg's failure class; empty on success. `credit-stop` (key leg only)
-      means the caller may run the subscription leg in a separate job; a
-      caller that does not reports it as `rate-limit`, the class
-      report-lane-outcome knows. Otherwise it is report-lane-outcome's
-      class: a failed install or integrity check reports `install-failed`,
-      and any other failure before the leg ran, or a leg whose stdout passes
+      means the key's credits are used up; a caller that does not fall back
+      reports it as `rate-limit`, the class report-lane-outcome knows.
+      `auth` means the credential is unusable: API status 401 (disabled or
+      deleted), 402 (billing) or 403 (permission). Otherwise it is
+      report-lane-outcome's class: a failed install or integrity check
+      reports `install-failed`, and any other failure before the leg ran, or a leg whose stdout passes
       256 MiB, reports `other`. Report this class; do not reclassify execution-file, which
       cannot see the credit-stop or leg-timeout rules. Set after the step
       files are restored, so the leg cannot set it.
@@ -159,6 +161,18 @@ outputs:
       || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
       || (steps.run.outcome != 'success' && 'other')
       || '' }}
+  handoff:
+    description: >-
+      `true` when a key leg ended in `credit-stop`, or in `auth` with the
+      numeric API status 401, 402 or 403, so the caller may run the
+      subscription leg in a separate job; `false` otherwise; empty when the
+      step failed before the leg ran. A 403 hands off too: lane role keys
+      are whole-account Console keys with no per-key scope, so a 403 means
+      the key or its workspace is misconfigured; the run hands off so the
+      lane keeps running, and the caller's status job warns on every such
+      run until the owner replaces the key. lane-class keeps the reason.
+      Set after the step files are restored, so the leg cannot set it.
+    value: ${{ steps.run.outputs.handoff }}
   lane-resets:
     description: ISO 8601 time the blocking limit lifts, when the CLI's structured output gives it; else empty.
     value: ${{ steps.run.outputs.lane-resets }}

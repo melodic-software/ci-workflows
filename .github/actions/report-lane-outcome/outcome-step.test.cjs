@@ -468,12 +468,30 @@ test("a fallback reason rides beside the credential on the notice and the class 
   assert.doesNotMatch(none.notices[0], /fallback=/u);
 });
 
-test("a fallback reason outside credit-stop and no-key fails the step and reports nothing", async () => {
+test("an auth fallback reason, a rejected key, is recorded beside the credential", async () => {
+  const succeeded = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 2 },
+  ]);
+  const run = await runOutcome({
+    outcome: "success",
+    executionFile: succeeded,
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "auth",
+  });
+  assert.deepEqual(run.failed, []);
+  assert.equal(run.notices.length, 1);
+  assert.match(
+    run.notices[0],
+    / credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=auth turns=2\b/u,
+  );
+});
+
+test("a fallback reason outside credit-stop, auth and no-key fails the step and reports nothing", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 5 },
   ]);
   for (const outcome of ["success", "failure"]) {
-    for (const fallbackReason of ["auth", "Credit-Stop", " credit-stop"]) {
+    for (const fallbackReason of ["Auth", "Credit-Stop", " credit-stop"]) {
       const run = await runOutcome({
         outcome,
         executionFile: file,
@@ -483,6 +501,7 @@ test("a fallback reason outside credit-stop and no-key fails the step and report
       assert.equal(run.failed.length, 1, label);
       assert.match(run.failed[0], /credit-stop/u, label);
       assert.match(run.failed[0], /no-key/u, label);
+      assert.match(run.failed[0], /\bauth\b/u, label);
       assert.deepEqual(run.notices, [], label);
       assert.deepEqual(run.errors, [], label);
       assert.deepEqual(run.warnings, [], label);

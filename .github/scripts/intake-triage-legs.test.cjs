@@ -3,8 +3,9 @@
 // The intake lane runs the API key and the subscription token in separate
 // jobs (ci-workflows#799). The claude job holds only the key; the
 // claude-subscription job holds only the token, runs on a fixed GitHub-hosted
-// runner only after a key credit stop (or with no key), repeats the claude
-// job's hardening, and takes nothing from it but two compared outputs. Both
+// runner only after the key job hands off (a credit stop or a rejected key)
+// or with no key, repeats the claude job's hardening, and takes nothing from
+// it but compared outputs. Both
 // model jobs are read-only (ci-workflows#804): one apply job with no model
 // writes the triage of whichever leg triaged. The status job reports one
 // outcome: the subscription job's when it ran, red when the apply job failed.
@@ -60,29 +61,45 @@ test("the subscription job runs on a fixed GitHub-hosted label, after the claude
   assert.equal(subscription.name, "claude-intake-triage-subscription");
 });
 
-test("the subscription job starts only on an exact credit-stop or an empty key", () => {
+test("the subscription job starts only on an exact handoff or an empty key", () => {
   const starts = (outputs) =>
     Boolean(evaluate(subscription.if, { needs: { claude: { outputs } } }));
-  assert.equal(
-    starts({ "lane-class": "credit-stop", "credential-present": "true" }),
-    true,
-  );
-  assert.equal(
-    starts({ "lane-class": "", "credential-present": "false" }),
-    true,
-  );
-  for (const laneClass of [
-    "",
-    "rate-limit",
-    "auth",
-    "other",
-    "credit-stop-x",
-    " credit-stop",
-  ]) {
+  for (const laneClass of ["credit-stop", "auth"]) {
     assert.equal(
-      starts({ "lane-class": laneClass, "credential-present": "true" }),
+      starts({
+        handoff: "true",
+        "lane-class": laneClass,
+        "credential-present": "true",
+      }),
+      true,
+      laneClass,
+    );
+  }
+  assert.equal(
+    starts({ handoff: "", "lane-class": "", "credential-present": "false" }),
+    true,
+  );
+  // The handoff alone decides: a lane-class with no handoff starts nothing.
+  for (const laneClass of ["credit-stop", "auth", "rate-limit", "other", ""]) {
+    assert.equal(
+      starts({
+        handoff: "false",
+        "lane-class": laneClass,
+        "credential-present": "true",
+      }),
       false,
       laneClass,
+    );
+  }
+  for (const handoff of ["", "True", "true ", "1"]) {
+    assert.equal(
+      starts({
+        handoff,
+        "lane-class": "auth",
+        "credential-present": "true",
+      }),
+      false,
+      JSON.stringify(handoff),
     );
   }
   // A failed or cancelled claude job never starts it: the if has no status
@@ -105,6 +122,7 @@ test("the subscription job downloads nothing from the claude job and never write
 // The subscription job's outcome step names why it ran (ci-workflows#806).
 const FALLBACK_REASON =
   "${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || " +
+  "needs.claude.outputs.lane-class == 'auth' && 'auth' || " +
   "needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}";
 
 test("the subscription job repeats the claude job's steps but for the credential and the fallback reason", () => {
@@ -148,7 +166,7 @@ test("the subscription job repeats the claude job's steps but for the credential
   );
 });
 
-test("the subscription job's lane record names the credit stop or the empty key it ran for", () => {
+test("the subscription job's lane record names the credit stop, the rejected key or the empty key it ran for", () => {
   const value = subscription.steps.find((step) => step.id === "review-outcome")
     .with["fallback-reason"];
   const reason = (outputs) =>
@@ -163,34 +181,33 @@ test("the subscription job's lane record names the credit stop or the empty key 
   );
   assert.equal(
     reason({ "lane-class": "auth", "credential-present": "true" }),
-    "",
+    "auth",
   );
 });
 
-test("a key credit stop skips the claude job's outcome and extract steps", () => {
+test("a handoff skips the claude job's outcome and extract steps", () => {
   const byId = (id) => claude.steps.find((step) => step.id === id);
   const extract = byId("extract");
-  const steps = (laneClass, present = "true") => ({
+  const steps = (handoff, present = "true") => ({
     compose: { outcome: "success" },
     credential: { outputs: { present } },
-    claude: { outputs: { "lane-class": laneClass } },
+    claude: { outputs: { handoff } },
   });
   for (const step of [byId("review-outcome"), extract]) {
     assert.equal(
-      Boolean(evaluate(step.if, { steps: steps("credit-stop") })),
+      Boolean(evaluate(step.if, { steps: steps("true") })),
       false,
       step.name,
     );
-    assert.equal(
-      Boolean(evaluate(step.if, { steps: steps("") })),
-      true,
-      step.name,
-    );
-    assert.equal(
-      Boolean(evaluate(step.if, { steps: steps("auth") })),
-      true,
-      step.name,
-    );
+    // No handoff, or a step that failed before the leg ran: the claude job
+    // reports.
+    for (const handoff of ["false", ""]) {
+      assert.equal(
+        Boolean(evaluate(step.if, { steps: steps(handoff) })),
+        true,
+        `${step.name} ${JSON.stringify(handoff)}`,
+      );
+    }
     assert.equal(
       Boolean(evaluate(step.if, { steps: steps("", "false") })),
       false,
@@ -284,6 +301,17 @@ test("an empty secret in the job that should triage fails with a fixed class", (
     "triage-failed": "true",
     "failure-class": "rate-limit",
   });
+  // A rejected key with no subscription token stays an auth failure.
+  const deadKeyNoToken = report({
+    KEY_CLASS: "auth",
+    SUB_RESULT: "success",
+    SUB_PRESENT: "false",
+  });
+  assert.equal(deadKeyNoToken.code, 1);
+  assert.deepEqual(deadKeyNoToken.outputs, {
+    "triage-failed": "true",
+    "failure-class": "auth",
+  });
   // Both secrets empty.
   const neither = report({
     KEY_PRESENT: "false",
@@ -295,6 +323,31 @@ test("an empty secret in the job that should triage fails with a fixed class", (
     "triage-failed": "true",
     "failure-class": "other",
   });
+});
+
+test("an unusable key warns the owner to replace the secret, even when the subscription job triaged", () => {
+  const warning = /^::warning[^:]*::class=auth: .*replace the secret/mu;
+  const fellBack = report({
+    KEY_CLASS: "auth",
+    SUB_RESULT: "success",
+    SUB_PRESENT: "true",
+    SUB_FAILED: "false",
+  });
+  assert.equal(fellBack.code, 0);
+  assert.match(fellBack.stdout, warning);
+  // An auth class with no numeric status does not hand off: the key job
+  // alone reports, red, and still warns.
+  const refused = report({
+    KEY_RESULT: "success",
+    KEY_FAILED: "true",
+    KEY_CLASS: "auth",
+  });
+  assert.equal(refused.code, 1);
+  assert.match(refused.stdout, warning);
+  for (const keyClass of ["", "credit-stop", "rate-limit", "other"]) {
+    const run = report({ KEY_CLASS: keyClass, KEY_FAILED: "false" });
+    assert.doesNotMatch(run.stdout, /::warning/u, keyClass);
+  }
 });
 
 test("the status job prints and writes only closed values", () => {

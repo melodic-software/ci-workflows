@@ -486,9 +486,13 @@ test("record tokens: a fallback reason prints right after the credential, only f
     recordTokens(run, { credential, fallbackReason: "no-key" }),
     "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=no-key turns=4",
   );
+  assert.equal(
+    recordTokens(run, { credential, fallbackReason: "auth" }),
+    "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=auth turns=4",
+  );
   for (const forged of [
     "",
-    "auth",
+    "Auth",
     "Credit-Stop",
     " no-key",
     "credit-stop\n::error::x",
