@@ -368,10 +368,10 @@ function authLeg({ status, errors, text = "API Error", outputTokens = 0 }) {
 }
 
 // A 403 in the published error shape (platform.claude.com/docs/en/api/errors:
-// error.type, request_id, the example request id), with an
-// error.details.error_code as the tier spend-cap body carries one. The code
-// value is made up for the test.
-const REQUEST_ID = "req_011CSHoEeqs5C35K2UUqR7Fy";
+// error.type and request_id), with an error.details.error_code as the tier
+// spend-cap body carries one. The code and the low-entropy request id are
+// made up, so the secret scan does not read them as a key.
+const REQUEST_ID = "req_fake0000000000000000";
 const PERMISSION_TEXT =
   'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
   '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +

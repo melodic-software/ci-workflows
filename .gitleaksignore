@@ -1,0 +1,4 @@
+# Test fixtures, not secrets: the API errors page's example request id in
+# run-claude-cli 403 tests, replaced by a low-entropy fake in a later commit.
+1b6fe5d91e467ecaaab2bbe10a35762d58341f8a:.github/actions/report-lane-outcome/classify.test.cjs:generic-api-key:795
+1b6fe5d91e467ecaaab2bbe10a35762d58341f8a:.github/actions/report-lane-outcome/outcome-step.test.cjs:generic-api-key:538

@@ -521,7 +521,7 @@ test("a 403 the launcher stopped is recorded with its error type, code and reque
       result:
         'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
         '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
-        '"request_id":"req_011CSHoEeqs5C35K2UUqR7Fy"}',
+        '"request_id":"req_fake0000000000000000"}',
       usage: { input_tokens: 0, output_tokens: 0 },
     },
   ]);
@@ -535,7 +535,7 @@ test("a 403 the launcher stopped is recorded with its error type, code and reque
   assert.equal(run.errors.length, 1);
   assert.match(
     run.errors[0],
-    /\bclass=auth error-type=permission_error error-code=workspace_access_denied request-id=req_011CSHoEeqs5C35K2UUqR7Fy credential=AUTOMATIONS_CLAUDE_API_KEY turns=1\b/u,
+    /\bclass=auth error-type=permission_error error-code=workspace_access_denied request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1\b/u,
   );
   assert.equal(run.errors[0].includes("not permitted"), false);
 });
