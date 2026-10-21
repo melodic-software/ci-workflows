@@ -325,6 +325,30 @@ test("an empty secret in the job that should triage fails with a fixed class", (
   });
 });
 
+test("an unusable key warns the owner to replace the secret, even when the subscription job triaged", () => {
+  const warning = /^::warning[^:]*::class=auth: .*replace the secret/mu;
+  const fellBack = report({
+    KEY_CLASS: "auth",
+    SUB_RESULT: "success",
+    SUB_PRESENT: "true",
+    SUB_FAILED: "false",
+  });
+  assert.equal(fellBack.code, 0);
+  assert.match(fellBack.stdout, warning);
+  // A 403 does not hand off: the key job alone reports, red, and still warns.
+  const refused = report({
+    KEY_RESULT: "success",
+    KEY_FAILED: "true",
+    KEY_CLASS: "auth",
+  });
+  assert.equal(refused.code, 1);
+  assert.match(refused.stdout, warning);
+  for (const keyClass of ["", "credit-stop", "rate-limit", "other"]) {
+    const run = report({ KEY_CLASS: keyClass, KEY_FAILED: "false" });
+    assert.doesNotMatch(run.stdout, /::warning/u, keyClass);
+  }
+});
+
 test("the status job prints and writes only closed values", () => {
   const forged = report({
     KEY_RESULT: "failure",

@@ -609,9 +609,11 @@ consumer to audit it.
   the action fails closed. A key leg hands off to the subscription, output
   `handoff` set to `true`, when it ends in a credit stop (report-lane-outcome's
   opt-in `credit-stop` class: the role's credits are used up) or with its key
-  rejected (`auth`: the key was disabled or deleted). `lane-class` keeps
-  `credit-stop` or `auth`, so the job summary and the log name the reason and
-  a dead key stays visible. Any other failure hands off nothing. Rotating a
+  refused by the API with numeric status 401 (disabled or deleted) or 402
+  (billing), class `auth`. A 403 (permission) is `auth` too but hands off
+  nothing: it fails the run. `lane-class` keeps `credit-stop` or `auth`, so
+  the job summary and the log name the reason and a dead key stays visible.
+  Any other failure hands off nothing. Rotating a
   key stays the owner's manual step. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI

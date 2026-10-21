@@ -15,8 +15,8 @@
 // Security contract:
 //   - One leg per invocation: readConfig fails closed unless exactly one of
 //     the two credentials is set. A caller that falls back to the
-//     subscription after a key leg hands off (a credit stop or a rejected
-//     key, NEXT_STEPS) runs a second job, on a fresh runner, gated on this
+//     subscription after a key leg hands off (a credit stop, or class auth
+//     with api_error_status 401 or 402, NEXT_STEPS) runs a second job, on a fresh runner, gated on this
 //     one's handoff output being `true`.
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets the leg's one credential. That is a
@@ -132,17 +132,22 @@ const UNSAFE_VARIABLES = new Set([
   "NODE_TLS_REJECT_UNAUTHORIZED",
 ]);
 // What each class means for the run. `handoff`: a key leg that ends in it
-// hands the run to the caller's subscription job. `note`: the job summary's
-// closed token, the named stop and what happens next.
+// hands the run to the caller's subscription job; `statuses`, when set,
+// narrows that to these numeric api_error_status values, never an error-type
+// string, which errors[] text could carry. `note`: the job summary's closed
+// token, the named stop and what happens next.
 const NEXT_STEPS = {
   "": { handoff: false, note: "" },
   "credit-stop": {
     handoff: true,
     note: "credits used up: the subscription job runs; the owner rotates a key by hand when needed",
   },
+  // 401 (key disabled or deleted) and 402 (billing) hand off; 403
+  // (permission_error) fails the run.
   auth: {
     handoff: true,
-    note: "credential rejected (disabled or deleted): the owner replaces the secret by hand",
+    statuses: [401, 402],
+    note: "credential unusable (rejected, unpaid or not permitted): the owner replaces the secret by hand",
   },
   "rate-limit": { handoff: false, note: "limit stop: rerun after the reset" },
   overloaded: { handoff: false, note: "API overloaded: rerun later" },
@@ -164,8 +169,11 @@ function nextStep(failureClass) {
 }
 
 // Only a key leg hands off: the subscription leg is the last one.
-function handsOff(leg, failureClass) {
-  return leg.leg === "api-key" && nextStep(failureClass).handoff;
+// `apiErrorStatus` is the last message's numeric api_error_status.
+function handsOff(leg, failureClass, apiErrorStatus) {
+  const step = nextStep(failureClass);
+  if (leg.leg !== "api-key" || !step.handoff) return false;
+  return step.statuses === undefined || step.statuses.includes(apiErrorStatus);
 }
 
 class LaneError extends Error {
@@ -662,6 +670,7 @@ function runLeg(
   const modes = [];
   let record;
   let judged;
+  let handoff = false;
   try {
     const readOnly = readOnlyPaths(
       config,
@@ -706,6 +715,13 @@ function runLeg(
         maxTurns: config.maxTurns,
       });
     }
+    // The same message classify.cjs reads its status from.
+    const status = judged.messages.at(-1)?.api_error_status;
+    handoff = handsOff(
+      leg,
+      judged.failureClass,
+      Number.isInteger(status) ? status : null,
+    );
     record = legRecord({
       config,
       leg,
@@ -715,7 +731,7 @@ function runLeg(
       messages: judged.messages,
       failureClass: judged.failureClass,
       resets: judged.resets,
-      next: handsOff(leg, judged.failureClass) ? "subscription" : null,
+      next: handoff ? "subscription" : null,
       message,
     });
   } finally {
@@ -730,7 +746,7 @@ function runLeg(
     records: [record],
     outputs: {
       "lane-class": judged.failureClass,
-      handoff: String(handsOff(leg, judged.failureClass)),
+      handoff: String(handoff),
       "lane-resets": judged.resets ?? "",
       "lane-turns": run.turns === null ? "" : String(run.turns),
       "lane-models": run.models.join(","),

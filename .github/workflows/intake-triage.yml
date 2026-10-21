@@ -45,8 +45,8 @@ name: intake-triage
 #   - The API key runs in the claude job. The subscription token runs only in
 #     the claude-subscription job, and only when the claude job's handoff
 #     output is exactly `true` (the key's credits are used up, lane-class
-#     `credit-stop`, or the key was rejected, lane-class `auth`) or its key
-#     was empty. That job runs on a fresh ubuntu-24.04 GitHub-hosted runner,
+#     `credit-stop`, or the API refused the key with status 401 or 402,
+#     lane-class `auth`; a 403 fails the run instead) or its key was empty. That job runs on a fresh ubuntu-24.04 GitHub-hosted runner,
 #     never the caller's runner input, repeats every hardening step, and
 #     takes nothing from the claude job but those outputs and the
 #     credential-present flag: no artifact, no cache. handoff and lane-class
@@ -84,7 +84,7 @@ name: intake-triage
 #     comment, needs_human) checked against the job's allowlist and enums.
 #   - Only the claude-intake-triage-apply job writes, and it runs no model.
 #     It takes the subscription job's outputs when that job ran, else the
-#     claude job's, so a credit stop applies once. It takes the issue from
+#     claude job's, so a handoff applies once. It takes the issue from
 #     the event or the issue-number input, never from a job output, and
 #     rebuilds the allowlist, Issue Types and work classes itself. It keeps
 #     labels that are in the caller's allowlist AND exist in the repository
@@ -139,9 +139,10 @@ name: intake-triage
 # legs' outputs in that run hold, so a rerun of it alone reapplies the same
 # triage, editing the lane's earlier comment.
 #
-# `claude-intake-triage` triages on the API key; after a credit stop (or with
-# no key) `claude-intake-triage-subscription` triages on the subscription
-# token instead. `claude-intake-triage-apply` applies the triage of the job
+# `claude-intake-triage` triages on the API key; after it hands off (a credit
+# stop, or the key refused with API status 401 or 402) or with no key,
+# `claude-intake-triage-subscription` triages on the subscription token
+# instead. A 403 does not hand off. `claude-intake-triage-apply` applies the triage of the job
 # that triaged, and `claude-intake-triage-status` reads all three and goes red
 # when the triage or its write failed. Never make that check required.
 # `claude-intake-triage-skipped` runs only when the author gate skipped the
@@ -713,9 +714,9 @@ jobs:
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
-      # and extract steps run; the status job carries the red. A credit stop
-      # (key only) skips the outcome and extract steps: the subscription job
-      # triages instead. The outcome step's step-timeout-minutes repeats
+      # and extract steps run; the status job carries the red. A handoff (key
+      # only: a credit stop, or class auth with API status 401 or 402) skips
+      # the outcome and extract steps: the subscription job triages instead. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
       - name: Claude intake triage
@@ -1239,9 +1240,9 @@ jobs:
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
-      # and extract steps run; the status job carries the red. A credit stop
-      # (key only) skips the outcome and extract steps: the subscription job
-      # triages instead. The outcome step's step-timeout-minutes repeats
+      # and extract steps run; the status job carries the red. A handoff (key
+      # only: a credit stop, or class auth with API status 401 or 402) skips
+      # the outcome and extract steps: the subscription job triages instead. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
       - name: Claude intake triage
@@ -1662,8 +1663,13 @@ jobs:
           else
             job=$KEY_RESULT present=$KEY_PRESENT failed=$KEY_FAILED class=$KEY_CLASS
           fi
+          # An unusable key stays visible even when the subscription job then
+          # triaged and the run is green.
+          if [ "$KEY_CLASS" = auth ]; then
+            echo "::warning title=claude-intake-triage key::class=auth: the API refused the key; the owner must replace the secret."
+          fi
           # A triage job with an empty secret did not triage: after a key credit
-          # stop that is a limit stop, after a rejected key it is that auth
+          # stop that is a limit stop, after an unusable key it is that auth
           # failure, otherwise both secrets were empty.
           if [ "$present" = false ]; then
             failed=true

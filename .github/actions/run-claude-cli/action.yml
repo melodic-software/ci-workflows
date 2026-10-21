@@ -4,7 +4,8 @@ description: >-
   Linux runner, on exactly one credential: set `api-key` or
   `subscription-token`, never both (the action fails closed otherwise). A
   key leg that ends in a credit stop (classify.cjs isCreditStop, lane-class
-  `credit-stop`) or a rejected key (lane-class `auth`) sets handoff `true`;
+  `credit-stop`) or a key the API refused with status 401 or 402 (lane-class
+  `auth`) sets handoff `true`;
   a caller that falls back to the subscription runs it as a second job on a
   fixed GitHub-hosted runner, gated on that exact value (see the README's
   two-job pattern), never in this job.
@@ -148,9 +149,10 @@ outputs:
       The leg's failure class; empty on success. `credit-stop` (key leg only)
       means the key's credits are used up; a caller that does not fall back
       reports it as `rate-limit`, the class report-lane-outcome knows.
-      `auth` means the credential was rejected (disabled or deleted).
-      Otherwise it is report-lane-outcome's class: a failed install or integrity check reports `install-failed`,
-      and any other failure before the leg ran, or a leg whose stdout passes
+      `auth` means the credential is unusable: API status 401 (disabled or
+      deleted), 402 (billing) or 403 (permission). Otherwise it is
+      report-lane-outcome's class: a failed install or integrity check
+      reports `install-failed`, and any other failure before the leg ran, or a leg whose stdout passes
       256 MiB, reports `other`. Report this class; do not reclassify execution-file, which
       cannot see the credit-stop or leg-timeout rules. Set after the step
       files are restored, so the leg cannot set it.
@@ -161,8 +163,10 @@ outputs:
       || '' }}
   handoff:
     description: >-
-      `true` when a key leg ended in `credit-stop` or `auth`, so the caller
-      may run the subscription leg in a separate job; `false` otherwise;
+      `true` when a key leg ended in `credit-stop`, or in `auth` with the
+      numeric API status 401 or 402, so the caller may run the subscription
+      leg in a separate job; `false` otherwise, a 403 included, which fails
+      the run instead;
       empty when the step failed before the leg ran. lane-class keeps the
       reason. Set after the step files are restored, so the leg cannot set it.
     value: ${{ steps.run.outputs.handoff }}

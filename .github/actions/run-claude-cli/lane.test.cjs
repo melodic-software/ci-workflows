@@ -350,6 +350,64 @@ test("a rejected key hands off to the subscription job and keeps class auth", ()
   );
 });
 
+// An auth leg with the given numeric status, or none, and errors[] entries.
+// The 402 and 403 bodies follow the published error table
+// (platform.claude.com/docs/en/api/errors): billing_error and
+// permission_error.
+function authLeg({ status, errors }) {
+  return [
+    result({
+      ...(errors ? { subtype: "error_during_execution", errors } : {}),
+      is_error: true,
+      num_turns: 0,
+      result: "API Error",
+      ...(status === undefined ? {} : { api_error_status: status }),
+      usage: { input_tokens: 0, output_tokens: 0 },
+    }),
+  ];
+}
+
+test("a key refused with 401 or 402 hands off; a 403 keeps class auth and fails the run", () => {
+  for (const [status, handoff] of [
+    [401, "true"],
+    [402, "true"],
+    [403, "false"],
+  ]) {
+    const { outputs, records } = runCase({ key: authLeg({ status }) });
+    assert.equal(outputs["lane-class"], "auth", String(status));
+    assert.equal(outputs.handoff, handoff, String(status));
+    assert.equal(
+      records[0].next,
+      handoff === "true" ? "subscription" : null,
+      String(status),
+    );
+  }
+});
+
+test("a 403 whose errors[] text names another type does not hand off", () => {
+  const { outputs } = runCase({
+    key: authLeg({
+      status: 403,
+      errors: ['{"type":"error","error":{"type":"authentication_error"}}'],
+    }),
+  });
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "false");
+});
+
+test("permission_error in errors[] text alone, with no numeric status, does not hand off", () => {
+  const { outputs, records } = runCase({
+    key: authLeg({
+      errors: [
+        'model text: {"type":"error","error":{"type":"permission_error"}}',
+      ],
+    }),
+  });
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "false");
+  assert.equal(records[0].next, null);
+});
+
 test("a rejected subscription token, the last leg, hands off nothing", () => {
   const { outputs, records } = runCase({ sub: AUTH });
   assert.equal(outputs["lane-class"], "auth");
@@ -1198,7 +1256,7 @@ test("run on a rejected key sets handoff and a summary row that names the dead k
   const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
   assert.match(
     summaryText,
-    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| auth \| .* \| subscription \| credential rejected \(disabled or deleted\): the owner replaces the secret by hand \|/u,
+    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| auth \| .* \| subscription \| credential unusable \(rejected, unpaid or not permitted\): the owner replaces the secret by hand \|/u,
   );
   const [record] = fs
     .readFileSync(outputs["log-file"], "utf8")
@@ -1246,7 +1304,7 @@ test("the summary shows a closed token per class and never a record's message", 
   assert.match(table, /\| success \| 0 \| 0 \|  \|  \|  \|$/mu);
   assert.match(
     table,
-    /\| auth \| .* \| credential rejected \(disabled or deleted\): the owner replaces the secret by hand \|/u,
+    /\| auth \| .* \| credential unusable \(rejected, unpaid or not permitted\): the owner replaces the secret by hand \|/u,
   );
   assert.match(table, /\| unknown \| .* \| see the step log \|/u);
   assert.match(table, /\| constructor \| .* \| see the step log \|/u);
