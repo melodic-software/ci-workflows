@@ -15,8 +15,9 @@
 // Security contract:
 //   - One leg per invocation: readConfig fails closed unless exactly one of
 //     the two credentials is set. A caller that falls back to the
-//     subscription after a key-leg credit stop runs a second job, on a fresh
-//     runner, gated on this one's lane-class output being `credit-stop`.
+//     subscription after a key leg hands off (a credit stop or a rejected
+//     key, NEXT_STEPS) runs a second job, on a fresh runner, gated on this
+//     one's handoff output being `true`.
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
@@ -130,17 +131,42 @@ const UNSAFE_VARIABLES = new Set([
   "NODE_EXTRA_CA_CERTS",
   "NODE_TLS_REJECT_UNAUTHORIZED",
 ]);
-// The job summary's closed token per class: the named stop and its recovery.
-const SUMMARY_NOTES = {
-  "": "",
-  "credit-stop": "credit stop: add Console credit or raise the spend limit",
-  "rate-limit": "limit stop: rerun after the reset",
-  auth: "credential unusable: replace the secret",
-  overloaded: "API overloaded: rerun later",
-  "max-turns": "turn cap: raise max-turns or narrow the task",
-  timeout: "leg timeout: raise leg-timeout-minutes or narrow the task",
-  other: "see the step log",
+// What each class means for the run. `handoff`: a key leg that ends in it
+// hands the run to the caller's subscription job. `note`: the job summary's
+// closed token, the named stop and what happens next.
+const NEXT_STEPS = {
+  "": { handoff: false, note: "" },
+  "credit-stop": {
+    handoff: true,
+    note: "credits used up: the subscription job runs; the owner rotates a key by hand when needed",
+  },
+  auth: {
+    handoff: true,
+    note: "credential rejected (disabled or deleted): the owner replaces the secret by hand",
+  },
+  "rate-limit": { handoff: false, note: "limit stop: rerun after the reset" },
+  overloaded: { handoff: false, note: "API overloaded: rerun later" },
+  "max-turns": {
+    handoff: false,
+    note: "turn cap: raise max-turns or narrow the task",
+  },
+  timeout: {
+    handoff: false,
+    note: "leg timeout: raise leg-timeout-minutes or narrow the task",
+  },
+  other: { handoff: false, note: "see the step log" },
 };
+
+function nextStep(failureClass) {
+  return Object.hasOwn(NEXT_STEPS, failureClass)
+    ? NEXT_STEPS[failureClass]
+    : NEXT_STEPS.other;
+}
+
+// Only a key leg hands off: the subscription leg is the last one.
+function handsOff(leg, failureClass) {
+  return leg.leg === "api-key" && nextStep(failureClass).handoff;
+}
 
 class LaneError extends Error {
   constructor(message) {
@@ -262,8 +288,7 @@ function readConfig(env) {
 }
 
 // `latest` asks the registry for the newest release; anything else must be an
-// exact version (the action's cli-version input defaults to a pinned one).
-// Either way the value passes the shared exact-version check before it is
+// exact version. Either way the value passes the shared exact-version check before it is
 // installed.
 function resolveCliVersion(input, npmView) {
   const wanted = (input ?? "").trim() || "latest";
@@ -690,8 +715,7 @@ function runLeg(
       messages: judged.messages,
       failureClass: judged.failureClass,
       resets: judged.resets,
-      // A credit stop hands the run to the caller's subscription job.
-      next: judged.failureClass === "credit-stop" ? "subscription" : null,
+      next: handsOff(leg, judged.failureClass) ? "subscription" : null,
       message,
     });
   } finally {
@@ -706,6 +730,7 @@ function runLeg(
     records: [record],
     outputs: {
       "lane-class": judged.failureClass,
+      handoff: String(handsOff(leg, judged.failureClass)),
       "lane-resets": judged.resets ?? "",
       "lane-turns": run.turns === null ? "" : String(run.turns),
       "lane-models": run.models.join(","),
@@ -721,11 +746,9 @@ function summaryTable(records) {
     String(value ?? "")
       .replaceAll("|", "\\|")
       .replaceAll("`", "'");
-  const note = (failureClass) =>
-    SUMMARY_NOTES[failureClass] ?? SUMMARY_NOTES.other;
   const rows = records.map(
     (r) =>
-      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(note(r.class))} |`,
+      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(nextStep(r.class).note)} |`,
   );
   return [
     "| Leg | Secret | Class | Turns | Denials | Resets | Next | Stop |",

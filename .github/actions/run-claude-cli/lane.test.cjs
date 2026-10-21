@@ -308,6 +308,7 @@ test("a key-leg credit stop ends the run with lane-class credit-stop and runs no
     [["KEY", ["ANTHROPIC_API_KEY"]]],
   );
   assert.equal(outputs["lane-class"], "credit-stop");
+  assert.equal(outputs.handoff, "true");
   assert.equal(outputs.credential, KEY_NAME);
   assert.deepEqual(
     records.map((r) => [r.leg, r.secret, r.class, r.next]),
@@ -334,14 +335,39 @@ test("a credit-stop-shaped failure on the subscription leg is never credit-stop"
   assert.equal(outputs.credential, TOKEN_NAME);
 });
 
-test("an auth failure on the key leg ends the run with its class", () => {
-  const { outputs, calls } = runCase({ key: AUTH });
+test("a rejected key hands off to the subscription job and keeps class auth", () => {
+  const { outputs, calls, records } = runCase({ key: AUTH });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["KEY"],
   );
   assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "true");
   assert.equal(outputs.credential, KEY_NAME);
+  assert.deepEqual(
+    records.map((r) => [r.class, r.next]),
+    [["auth", "subscription"]],
+  );
+});
+
+test("a rejected subscription token, the last leg, hands off nothing", () => {
+  const { outputs, records } = runCase({ sub: AUTH });
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "false");
+  assert.equal(records[0].next, null);
+});
+
+test("a key leg hands off on no other failure class", () => {
+  for (const [name, key, extra] of [
+    ["max-turns", MAX_TURNS, {}],
+    ["rate-limit", SESSION_LIMIT, {}],
+    ["timeout", SUCCESS, { keySleep: true, legTimeoutMs: 300 }],
+  ]) {
+    const { outputs, records } = runCase({ key, ...extra });
+    assert.equal(outputs["lane-class"], name, name);
+    assert.equal(outputs.handoff, "false", name);
+    assert.equal(records[0].next, null, name);
+  }
 });
 
 test("max-turns and timeout on the key leg end the run with their class", () => {
@@ -365,6 +391,7 @@ test("a key-leg success writes the outputs from that leg", () => {
   );
   assert.deepEqual(outputs, {
     "lane-class": "",
+    handoff: "false",
     "lane-resets": "",
     "lane-turns": "3",
     "lane-models": "claude-sonnet-5",
@@ -891,6 +918,20 @@ test("cli-version latest resolves from npm view; exact versions pass; others fai
   );
 });
 
+test("the action's cli-version default resolves the newest release from npm view", () => {
+  const { parseWorkflow } = require("../../scripts/workflow-yaml.cjs");
+  const action = parseWorkflow(
+    fs.readFileSync(path.join(__dirname, "action.yml"), "utf8"),
+  );
+  let viewed = 0;
+  const version = resolveCliVersion(action.inputs["cli-version"].default, () => {
+    viewed += 1;
+    return "2.1.999\n";
+  });
+  assert.equal(version, "2.1.999");
+  assert.equal(viewed, 1);
+});
+
 function configEnv(overrides = {}) {
   const prompt = path.join(root, "config-prompt.md");
   fs.writeFileSync(prompt, "Do the task.\n");
@@ -1136,9 +1177,35 @@ test("run on a key-leg credit stop sets lane-class credit-stop and starts no sub
   const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
   assert.match(
     summaryText,
-    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| credit-stop \| .* \| subscription \| credit stop: add Console credit or raise the spend limit \|/u,
+    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| credit-stop \| .* \| subscription \| credits used up: the subscription job runs; the owner rotates a key by hand when needed \|/u,
   );
   assert.equal(summaryText.includes("Credit balance"), false);
+  assert.equal(readOutputs(env.GITHUB_OUTPUT).handoff, "true");
+});
+
+test("run on a rejected key sets handoff and a summary row that names the dead key", () => {
+  const dir = path.join(root, "run-auth");
+  const env = runEnv(dir, {});
+  env.FAKE_KEY = legFile(dir, "key.jsonl", AUTH);
+  env.FAKE_KEY_EXIT = "1";
+  assert.throws(
+    () => run(env),
+    /intake ended class=auth on AUTOMATIONS_CLAUDE_API_KEY/u,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.equal(outputs["lane-class"], "auth");
+  assert.equal(outputs.handoff, "true");
+  const summaryText = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
+  assert.match(
+    summaryText,
+    /\| 1 \| AUTOMATIONS_CLAUDE_API_KEY \| auth \| .* \| subscription \| credential rejected \(disabled or deleted\): the owner replaces the secret by hand \|/u,
+  );
+  const [record] = fs
+    .readFileSync(outputs["log-file"], "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.deepEqual([record.class, record.next], ["auth", "subscription"]);
 });
 
 test("run refuses both credentials before any leg starts", () => {
@@ -1162,15 +1229,29 @@ test("the summary shows a closed token per class and never a record's message", 
     next: null,
     message: "::error::planted CLI text",
   });
-  const table = summaryTable(
-    ["", "auth", "timeout", "max-turns", "overloaded", "other", "unknown"].map(
-      record,
-    ),
-  );
+  const classes = [
+    "",
+    "credit-stop",
+    "auth",
+    "rate-limit",
+    "timeout",
+    "max-turns",
+    "overloaded",
+    "other",
+    "unknown",
+    "constructor",
+  ];
+  const table = summaryTable(classes.map(record));
   assert.equal(table.includes("planted"), false);
   assert.match(table, /\| success \| 0 \| 0 \|  \|  \|  \|$/mu);
-  assert.match(table, /\| auth \| .* \| credential unusable: replace the secret \|/u);
+  assert.match(
+    table,
+    /\| auth \| .* \| credential rejected \(disabled or deleted\): the owner replaces the secret by hand \|/u,
+  );
   assert.match(table, /\| unknown \| .* \| see the step log \|/u);
+  assert.match(table, /\| constructor \| .* \| see the step log \|/u);
+  // No spend limits exist to raise: credits are bought, with auto-reload off.
+  assert.doesNotMatch(table, /spend limit/iu);
 });
 
 test("run refuses a loader, TLS or proxy variable before any leg", () => {
@@ -1555,6 +1636,26 @@ test("install verifies both packages and the signed binary, then writes the outp
   const out = fs.readFileSync(world.output, "utf8");
   assert.match(out, /^cli-version=2\.1\.400$/mu);
   assert.ok(out.includes(`cli-path=${cliPath}\n`));
+});
+
+test("install with an exact cli-version installs that version and asks npm view nothing", () => {
+  const world = installWorld({ input: "2.1.305" });
+  world.run();
+  const npm = world.calls.filter((c) => c.command === "npm");
+  assert.deepEqual(
+    npm.map((c) => c.args[0]),
+    ["--version", "install", "audit"],
+  );
+  assert.equal(npm[1].args.at(-1), "@anthropic-ai/claude-code@2.1.305");
+  assert.ok(
+    world.calls.some(
+      (c) =>
+        c.command === "curl" &&
+        c.args.at(-1) ===
+          "https://downloads.claude.ai/claude-code-releases/2.1.305/manifest.json",
+    ),
+  );
+  assert.match(fs.readFileSync(world.output, "utf8"), /^cli-version=2\.1\.305$/mu);
 });
 
 // Each case fails the install step, so no output is written and the run step,

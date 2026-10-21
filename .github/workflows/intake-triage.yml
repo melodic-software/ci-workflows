@@ -126,8 +126,7 @@ name: intake-triage
 #
 # CLI VERSION: run-claude-cli installs the Claude Code CLI at run time.
 # `cli-version`, else the caller repo's CLAUDE_LANE_CLI_VERSION variable,
-# else the pinned 2.1.304 (`npm view @anthropic-ai/claude-code version`,
-# 2026-10-20), selects it: `latest` or an exact version. `stable` and
+# else `latest`, selects it: `latest` or an exact version. `stable` and
 # `bundled`, which the claude-code-action lane took, run `latest` with a
 # warning.
 #
@@ -193,7 +192,7 @@ on:
         description: >-
           Claude Code CLI to run: latest or an exact major.minor.patch (stable
           and bundled run latest with a warning). Empty falls back to the
-          CLAUDE_LANE_CLI_VERSION variable, then the pinned 2.1.304.
+          CLAUDE_LANE_CLI_VERSION variable, then latest.
         type: string
         default: ""
       claude-args:
@@ -519,7 +518,7 @@ jobs:
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
           BASE_ARGS: ${{ inputs.claude-args }}
-          CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || '2.1.304' }}
+          CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           ISSUE_FILE: ${{ steps.fetch.outputs.issue-file }}
@@ -1044,7 +1043,7 @@ jobs:
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
           BASE_ARGS: ${{ inputs.claude-args }}
-          CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || '2.1.304' }}
+          CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           ISSUE_FILE: ${{ steps.fetch.outputs.issue-file }}

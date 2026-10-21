@@ -603,13 +603,16 @@ consumer to audit it.
   so none of the three lanes double-report).
 - `.github/actions/run-claude-cli` — runs one prompt with headless `claude -p` for
   an agent-mode lane on a Linux runner, installing the Claude Code CLI
-  version `cli-version` names (an exact version, pinned by default, or
-  `latest`). Each invocation runs one leg on one
+  version `cli-version` names (`latest` by default, or an exact version).
+  Each invocation runs one leg on one
   credential: pass exactly one of `api-key` and `subscription-token`, or
-  the action fails closed. A key leg that ends in a credit stop
-  (report-lane-outcome's opt-in `credit-stop` class) sets `lane-class` to
-  `credit-stop`; any other failure sets its own class, so a broken key stays
-  visible instead of spending the subscription. A caller that falls back to
+  the action fails closed. A key leg hands off to the subscription, output
+  `handoff` set to `true`, when it ends in a credit stop (report-lane-outcome's
+  opt-in `credit-stop` class: the role's credits are used up) or with its key
+  rejected (`auth`: the key was disabled or deleted). `lane-class` keeps
+  `credit-stop` or `auth`, so the job summary and the log name the reason and
+  a dead key stays visible. Any other failure hands off nothing. Rotating a
+  key stays the owner's manual step. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
   environment has every credential and workflow file-command variable
@@ -655,12 +658,12 @@ consumer to audit it.
   **Two-job pattern for the subscription fallback.** Two legs in one job
   would share the runner user, the filesystem and the environment, so the
   fallback runs on a new VM. Job A runs the key leg with `api-key` only
-  (`continue-on-error: true` on the step) and exposes `lane-class` as a job
-  output. Job B runs the subscription leg with `subscription-token` only.
-  Only job B references the OAuth secret, and it:
+  (`continue-on-error: true` on the step) and exposes `handoff` and
+  `lane-class` as job outputs. Job B runs the subscription leg with
+  `subscription-token` only. Only job B references the OAuth secret, and it:
 
   - declares `needs: A` and
-    `if: needs.A.outputs.lane-class == 'credit-stop'`, an exact compare,
+    `if: needs.A.outputs.handoff == 'true'`, an exact compare,
     and never writes job A's outputs into a `run:` script;
   - runs on a fixed GitHub-hosted label (`runs-on: ubuntu-24.04`), never a
     caller-supplied runner;
@@ -669,14 +672,16 @@ consumer to audit it.
   - reads only trusted inputs: no artifact download from job A and no
     cache restore.
 
-  Job A skips its outcome step on a credit stop, so whichever job triaged
+  Job A skips its outcome step on a handoff, so whichever job triaged
   reports. Job B passes report-lane-outcome's `fallback-reason`,
   `credit-stop` or `no-key` from job A's `lane-class` and key presence, so
-  its record says why it ran. A status job that needs both reads job B's
-  outcome when it ran, else job A's: one lane record per run. A lane that writes does it in a
+  its record says why it ran; report-lane-outcome takes no `auth` reason
+  yet, so a rejected key shows only in job A's summary, log and annotation.
+  A status job that needs both reads job B's outcome when it ran, else job A's: one lane record per run. A lane that writes does it in a
   separate job with no model that needs both and reads job B's outputs when
   it ran, else job A's, so the write happens once.
-  `intake-triage.yml` is the reference implementation.
+  `intake-triage.yml` is the reference implementation; it still gates job B
+  on `lane-class == 'credit-stop'`, so it does not hand off on `auth` yet.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
@@ -1095,9 +1100,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   is missing, so the result does not depend on whether
   `intake-label-needs-triage` ran first. It runs through
   `.github/actions/run-claude-cli` (lane `intake`, funding `role` default
-  `automations`), which installs the Claude Code CLI at run time
-  (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else the
-  pinned version in the workflow).
+  `automations`), which installs the newest Claude Code CLI at run time
+  (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`).
   `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
   caller grants `contents: read` and `issues: write` and passes the role's
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
