@@ -81,7 +81,7 @@ AI review skipped: usage limit reached; re-run after it resets (Claude review ex
 | `handoff` | no | boolean; true on a key leg's record when this attempt handed off to another credential | `handoff` input |
 | `fallback.reason` | no | `credit-stop`, `auth` or `no-key` | `fallback-reason` input, on the fallback leg's record |
 | `resets.at`, `resets.window` | no | ISO 8601 UTC; `^[a-z0-9_]{1,40}$` | the newest rejected `rate_limit_event`, on `rate-limit` only |
-| `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | the API error body in a run with no model output, on a failure |
+| `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
 | `turns`, `maxTurns` | no | integers 0 to 999999 | the execution file; `max-turns` input |
 | `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
 
