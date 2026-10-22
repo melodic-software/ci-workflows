@@ -26,6 +26,10 @@ name: pr-review-security
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #           # Optional: retried once after a usage limit.
 #           fallback-claude-code-oauth-token: ${{ secrets.<FALLBACK_SECRET> }}
+#         with:
+#           # Optional: the secret names the lane record reports, never values.
+#           credential-name: CLAUDE_CODE_OAUTH_TOKEN
+#           fallback-credential-name: <FALLBACK_SECRET>
 #
 # SECURITY MODEL:
 #   - Call it from `pull_request` only. pull_request_target and workflow_run
@@ -174,6 +178,22 @@ on:
           bot skip, and only that sender's login reaches the action's
           allowed_bots. Empty, or a leading, trailing or doubled comma, skips
           every bot.
+        type: string
+        default: ""
+      credential-name:
+        description: >-
+          Name (never the value) of the secret the caller maps to
+          CLAUDE_CODE_OAUTH_TOKEN. The lane-outcome record
+          (docs/lane-outcome.md) names it as the credential when the first
+          attempt reports.
+        type: string
+        default: CLAUDE_CODE_OAUTH_TOKEN
+      fallback-credential-name:
+        description: >-
+          Name (never the value) of the secret the caller maps to
+          fallback-claude-code-oauth-token. The lane-outcome record names it
+          when the fallback attempt reports; empty writes that attempt's
+          tokens with no record and a warning.
         type: string
         default: ""
     outputs:
@@ -704,8 +724,10 @@ jobs:
       # With a fallback token, a failed first attempt is checked for a usage
       # limit here, by the rule report-lane-outcome's classify.cjs uses for
       # class rate-limit (a test holds the two equal). It leaves a warning with
-      # no `class=` token: only the final report names the run's class, so a
+      # no `class=` token: the final report names the run's class, so a
       # fallback that then fails another way is never read as rate-limited.
+      # When the fallback runs, the first attempt's own handoff notice names
+      # its usage limit and credential.
       # A first attempt that already called the inline-comment tool is not
       # retried, so no finding posts twice.
       - name: Check the first attempt for a usage limit
@@ -1029,6 +1051,25 @@ jobs:
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
           fi
 
+      # When the fallback ran, the first attempt handed off at its usage
+      # limit: its own lane record names the primary credential, as a notice,
+      # since the fallback carries the run. The usage limit was decided in
+      # the first-outcome step, so the class is passed, not reclassified.
+      - name: Report the first attempt's usage limit
+        id: first-attempt-outcome
+        if: >-
+          steps.first-outcome.outputs.rate-limit == 'true'
+          && steps.fallback.outputs.run == 'true'
+        uses: $/.github/actions/report-lane-outcome
+        with:
+          outcome: ${{ steps.claude-review.outcome }}
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          lane: Claude security review
+          lane-id: pr-review-security
+          credential: ${{ inputs.credential-name }}
+          handoff: "true"
+          known-failure-class: rate-limit
+
       - name: Report review outcome
         id: review-outcome
         if: steps.scope.outputs.review != 'false'
@@ -1037,6 +1078,11 @@ jobs:
           outcome: ${{ steps.attempt.outputs.outcome }}
           execution-file: ${{ steps.attempt.outputs.execution-file }}
           lane: Claude security review
+          lane-id: pr-review-security
+          credential: >-
+            ${{ steps.attempt.outputs.account == 'fallback' && inputs.fallback-credential-name
+                || steps.attempt.outputs.account != 'fallback' && inputs.credential-name
+                || '' }}
           step-started-at: ${{ steps.attempt.outputs.started-at }}
           step-timeout-minutes: ${{ steps.attempt.outputs.timeout-minutes }}
           install-outcome: ${{ steps.bun-check.outputs.outcome }}

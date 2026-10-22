@@ -83,3 +83,78 @@ for (const lane of LANES) {
     }
   });
 }
+
+// The review lanes name their credential: the caller supplies the secret
+// name per slot, and the report names the slot that ran, never the
+// lower-case slot itself.
+const { evaluate } = require("./actions-expression.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
+for (const [lane, laneId] of [
+  ["pr-review.yml", "pr-review"],
+  ["pr-review-security.yml", "pr-review-security"],
+]) {
+  const workflow = parseWorkflow(laneSource(lane));
+  const inputs = workflow.on.workflow_call.inputs;
+  const steps = workflow.jobs.claude.steps;
+  const byId = (id) => steps.find((step) => step.id === id);
+
+  test(`${lane}: the caller names the primary and fallback secrets; the primary defaults to the one callers map`, () => {
+    assert.equal(inputs["credential-name"].type, "string");
+    assert.equal(inputs["credential-name"].default, "CLAUDE_CODE_OAUTH_TOKEN");
+    assert.equal(inputs["fallback-credential-name"].type, "string");
+    assert.equal(inputs["fallback-credential-name"].default, "");
+  });
+
+  test(`${lane}: the outcome report names the secret of the attempt that counts, and its lane id`, () => {
+    const outcome = byId("review-outcome");
+    assert.equal(outcome.with["lane-id"], laneId);
+    const credential = (account, names) =>
+      evaluate(outcome.with.credential, {
+        steps: { attempt: { outputs: { account } } },
+        inputs: names,
+      }) || "";
+    const names = {
+      "credential-name": "CLAUDE_CODE_OAUTH_TOKEN",
+      "fallback-credential-name": "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+    };
+    assert.equal(credential("primary", names), "CLAUDE_CODE_OAUTH_TOKEN");
+    assert.equal(credential("fallback", names), "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN");
+    // A fallback with no name is never reported as the primary's secret.
+    assert.equal(
+      credential("fallback", { ...names, "fallback-credential-name": "" }),
+      "",
+    );
+    assert.equal(credential("primary", { ...names, "credential-name": "" }), "");
+    assert.doesNotMatch(outcome.with.credential, /fallback-claude-code-oauth-token/u);
+  });
+
+  test(`${lane}: when the fallback ran, the first attempt writes its own usage-limit record as a handoff`, () => {
+    const first = byId("first-attempt-outcome");
+    assert.equal(first.uses, "$/.github/actions/report-lane-outcome");
+    const runs = (rateLimit, run) =>
+      Boolean(
+        evaluate(first.if, {
+          steps: {
+            "first-outcome": { outputs: { "rate-limit": rateLimit } },
+            fallback: { outputs: { run } },
+          },
+        }),
+      );
+    assert.equal(runs("true", "true"), true);
+    // No fallback attempt: the outcome report covers the first attempt.
+    assert.equal(runs("true", ""), false);
+    assert.equal(runs("false", ""), false);
+    assert.equal(first.with.outcome, "${{ steps.claude-review.outcome }}");
+    assert.equal(
+      first.with["execution-file"],
+      "${{ steps.claude-review.outputs.execution_file }}",
+    );
+    assert.equal(first.with["lane-id"], laneId);
+    assert.equal(first.with.credential, "${{ inputs.credential-name }}");
+    assert.equal(first.with.handoff, "true");
+    assert.equal(first.with["known-failure-class"], "rate-limit");
+    assert.equal(first.with.lane, byId("review-outcome").with.lane);
+    assert.ok(steps.indexOf(first) < steps.indexOf(byId("review-outcome")));
+  });
+}

@@ -338,6 +338,7 @@ jobs:
     outputs:
       lane-class: ${{ steps.claude.outputs.lane-class }}
       handoff: ${{ steps.claude.outputs.handoff }}
+      credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
@@ -718,7 +719,10 @@ jobs:
       # reports by failing this step, from ending the job before the outcome
       # and extract steps run; the status job carries the red. A handoff (key
       # only: a credit stop, or class auth with API status 401 or 402) skips
-      # the outcome and extract steps: the subscription job triages instead. The outcome step's step-timeout-minutes repeats
+      # the extract step: the subscription job triages instead. The outcome
+      # step still writes the leg's record, with handoff true, so the key's
+      # stop is recorded even when the subscription job triages or has no
+      # token. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
       - name: Claude intake triage
@@ -754,7 +758,7 @@ jobs:
 
       - name: Report triage outcome
         id: review-outcome
-        if: steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
+        if: steps.credential.outputs.present == 'true'
         uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude.outcome }}
@@ -766,6 +770,7 @@ jobs:
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
+          handoff: ${{ steps.claude.outputs.handoff }}
 
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
@@ -865,6 +870,7 @@ jobs:
     outputs:
       lane-class: ${{ steps.claude.outputs.lane-class }}
       handoff: ${{ steps.claude.outputs.handoff }}
+      credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
@@ -1245,7 +1251,10 @@ jobs:
       # reports by failing this step, from ending the job before the outcome
       # and extract steps run; the status job carries the red. A handoff (key
       # only: a credit stop, or class auth with API status 401 or 402) skips
-      # the outcome and extract steps: the subscription job triages instead. The outcome step's step-timeout-minutes repeats
+      # the extract step: the subscription job triages instead. The outcome
+      # step still writes the leg's record, with handoff true, so the key's
+      # stop is recorded even when the subscription job triages or has no
+      # token. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
       - name: Claude intake triage
@@ -1281,7 +1290,7 @@ jobs:
 
       - name: Report triage outcome
         id: review-outcome
-        if: steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
+        if: steps.credential.outputs.present == 'true'
         uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude.outcome }}
@@ -1293,6 +1302,7 @@ jobs:
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
+          handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for the run's one lane record (ci-workflows#806).
           fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
 
@@ -1660,12 +1670,14 @@ jobs:
           SUB_PRESENT: ${{ needs.subscription.outputs.credential-present }}
           SUB_FAILED: ${{ needs.subscription.outputs.triage-failed }}
           SUB_CLASS: ${{ needs.subscription.outputs.failure-class }}
+          KEY_CREDENTIAL: ${{ needs.claude.outputs.credential }}
+          SUB_CREDENTIAL: ${{ needs.subscription.outputs.credential }}
           APPLY_RESULT: ${{ needs.apply.result }}
         run: |
           if [ "$SUB_RESULT" != skipped ]; then
-            job=$SUB_RESULT present=$SUB_PRESENT failed=$SUB_FAILED class=$SUB_CLASS
+            job=$SUB_RESULT present=$SUB_PRESENT failed=$SUB_FAILED class=$SUB_CLASS credential=$SUB_CREDENTIAL
           else
-            job=$KEY_RESULT present=$KEY_PRESENT failed=$KEY_FAILED class=$KEY_CLASS
+            job=$KEY_RESULT present=$KEY_PRESENT failed=$KEY_FAILED class=$KEY_CLASS credential=$KEY_CREDENTIAL
           fi
           # An unusable key stays visible even when the subscription job then
           # triaged and the run is green.
@@ -1674,13 +1686,14 @@ jobs:
           fi
           # A triage job with an empty secret did not triage: after a key credit
           # stop that is a limit stop, after an unusable key it is that auth
-          # failure, otherwise both secrets were empty.
+          # failure, otherwise both secrets were empty. The credential is the
+          # key's after its stop, else none.
           if [ "$present" = false ]; then
             failed=true
             case "$KEY_CLASS" in
-              credit-stop) class=rate-limit ;;
-              auth) class=auth ;;
-              *) class=other ;;
+              credit-stop) class=rate-limit credential=$KEY_CREDENTIAL ;;
+              auth) class=auth credential=$KEY_CREDENTIAL ;;
+              *) class=other credential="" ;;
             esac
           fi
           # A failed or cancelled write fails the record like a failed leg.
@@ -1689,6 +1702,13 @@ jobs:
           fi
           case "$job" in success | failure | cancelled | skipped) ;; *) job=unknown ;; esac
           case "$failed" in true | false) ;; *) failed="" ;; esac
+          # The line names the secret, never its value, in the legacy tokens
+          # only: the legs' own records are the lane-outcome contract.
+          if [[ "$credential" =~ ^[A-Z][A-Z0-9_]{0,99}$ ]]; then
+            credential=" credential=$credential"
+          else
+            credential=""
+          fi
           case "$class" in
             "" | auth | rate-limit | overloaded | max-turns | timeout | install-failed | skipped-validation | other) ;;
             credit-stop) class=rate-limit ;;
@@ -1701,7 +1721,7 @@ jobs:
           if [ "$job" = success ] && [ "$failed" = false ] && [ "$class" != skipped-validation ]; then
             exit 0
           fi
-          echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job; read the job log."
+          echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job$credential — read the job log."
           exit 1
 
   # The claude job's if is the author gate, so on an opened issue or a
