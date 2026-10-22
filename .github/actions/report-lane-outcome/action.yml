@@ -26,7 +26,11 @@ description: >-
   rate_limit_event, and on a failure the API error body's `error-type=`,
   `error-code=` and `request-id=` when a run with no model output carries
   them, each checked against a closed pattern; an unknown value is
-  omitted. Runs
+  omitted. With `lane-id` and a credential it maps to a kind, every
+  annotation also carries the lane-outcome record after its first
+  sentence: the marker `lane-outcome ` and one JSON object
+  (docs/lane-outcome.md). Without a record it writes the tokens alone, and
+  adds a warning naming what is missing only when lane-id is set. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
   tool dependency.
 
@@ -108,6 +112,23 @@ inputs:
       non-numeric is omitted.
     required: false
     default: ""
+  lane-id:
+    description: >-
+      The lane's stable machine id for the lane-outcome record, e.g.
+      intake-triage; its rule is `lane` in docs/lane-outcome.md. With a
+      valid lane-id and credential the record is written. A set lane-id
+      with no record possible (it is invalid, or the credential is empty or
+      invalid) writes a warning naming what is missing; an empty lane-id
+      writes no record and no warning.
+    required: false
+    default: ""
+  handoff:
+    description: >-
+      "true" on a key leg's report when this attempt handed off to another
+      credential; the record carries `handoff: true` and a failure is
+      written as a notice, not an error. Anything else changes nothing.
+    required: false
+    default: ""
   known-failure-class:
     description: >-
       A failure class the caller already decided, such as run-claude-cli's
@@ -170,13 +191,21 @@ runs:
         MAX_TURNS: ${{ inputs.max-turns }}
         INSTALL_OUTCOME: ${{ inputs.install-outcome }}
         KNOWN_FAILURE_CLASS: ${{ inputs.known-failure-class }}
+        LANE_ID: ${{ inputs.lane-id }}
+        HANDOFF: ${{ inputs.handoff }}
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
           const fs = require("node:fs");
           const path = require("node:path");
-          const { classifyExecutionFile, FALLBACK_REASONS, readRunRecord, recordTokens } =
-            require(path.join(process.env.ACTION_PATH, "classify.cjs"));
+          const {
+            CLASS_PATTERN,
+            classifyExecutionFile,
+            FALLBACK_REASONS,
+            laneReport,
+            readRunRecord,
+            recordText,
+          } = require(path.join(process.env.ACTION_PATH, "classify.cjs"));
 
           // A caller wiring error, not a lane outcome: fail before reporting.
           const fallbackReason = process.env.FALLBACK_REASON ?? "";
@@ -193,14 +222,42 @@ runs:
           // The run record (turns, max-turns, credential, models, and on a
           // limit stop resets) rides on the same annotation line as class=.
           const runRecord = readRunRecord(executionFile);
-          const record = (failureClass = "") => {
-            const tokens = recordTokens(runRecord, {
+          // One report per annotation: the legacy tokens, which ride on the
+          // same line as class=, and the lane-outcome record, placed after
+          // the message's first sentence and before any free text, so the
+          // runner's 4,096-character cut does not reach it while the
+          // sentence's models= token stays short.
+          const laneId = process.env.LANE_ID ?? "";
+          const credential = process.env.CREDENTIAL ?? "";
+          // `failureClass` builds the tokens as they have always been built;
+          // `recordClass` is the record's class where the tokens carry none.
+          // With no record every message is what it was before the record.
+          const report = (stepOutcome, failureClass = "", recordClass = failureClass) => {
+            const { tokens, record, missing } = laneReport(runRecord, {
+              laneId,
+              outcome: stepOutcome,
               failureClass,
+              recordClass,
               maxTurns: process.env.MAX_TURNS ?? "",
-              credential: process.env.CREDENTIAL ?? "",
+              credential,
               fallbackReason,
+              handoff: process.env.HANDOFF ?? "",
             });
-            return tokens === "" ? "" : ` ${tokens}`;
+            // Only a caller that opted in with lane-id warns; one that
+            // passes only a credential is not wired for the record yet.
+            if (record === null && laneId !== "") {
+              core.warning(
+                `${lane} wrote no lane record: ${missing.join(" and ")} ` +
+                  `${missing.length === 1 ? "is" : "are"} empty or invalid.`,
+              );
+            }
+            const line = recordText(record);
+            return {
+              tokens: tokens === "" ? "" : ` ${tokens}`,
+              before: line === "" ? "" : `${line} `,
+              after: line === "" ? "" : ` ${line}`,
+              written: record !== null,
+            };
           };
 
           if (outcome === "success") {
@@ -211,9 +268,10 @@ runs:
               // "complete" is class `incomplete`, red, with no review-ran.
               const completion = process.env.COMPLETION ?? "";
               if (process.env.REQUIRE_COMPLETION === "true" && completion !== "complete") {
+                const { tokens, after } = report(outcome, "", "incomplete");
                 core.error(
-                  `${lane} concluded: ${outcome} class=incomplete${record()} — no completed ` +
-                    `review was found: ${completion || "the completion check reported nothing"}.`,
+                  `${lane} concluded: ${outcome} class=incomplete${tokens} — no completed ` +
+                    `review was found: ${completion || "the completion check reported nothing"}.${after}`,
                 );
                 core.setOutput("failure_class", "incomplete");
                 core.setOutput("review_detail", "(no completed review was found)");
@@ -222,9 +280,10 @@ runs:
                 return;
               }
               // A notice, so the record reaches the check run on a success too.
+              const { tokens, before } = report(outcome);
               core.notice(
-                `${lane} completed:${record() || " (no run record)"}. ` +
-                  "Findings (if any) are in the PR comments.",
+                `${lane} completed:${tokens || " (no run record)"}. ` +
+                  `${before}Findings (if any) are in the PR comments.`,
               );
               core.setOutput("review_failed", "false");
               core.setOutput("review_ran", "true");
@@ -241,11 +300,12 @@ runs:
             // review_failed stays false: the skip is expected and
             // self-correcting on the PRs that edit the caller. The lanes'
             // status steps still go red on this class, since nothing ran.
+            const { tokens, before } = report(outcome, "", "skipped-validation");
             core.warning(
-              `${lane} concluded: ${outcome} class=skipped-validation${record()} with no ` +
+              `${lane} concluded: ${outcome} class=skipped-validation${tokens} with no ` +
                 "execution evidence — the action skipped itself before running " +
                 "(workflow-validation skip: the caller's workflow file must " +
-                "match the default branch's copy). Nothing was reviewed.",
+                `match the default branch's copy). ${before}Nothing was reviewed.`,
             );
             core.setOutput("failure_class", "skipped-validation");
             core.setOutput("review_detail", "(no execution file was produced)");
@@ -267,7 +327,7 @@ runs:
           const { reviewDetail } = classified;
           // A caller's own decision wins, as a closed kebab token only.
           const known = (process.env.KNOWN_FAILURE_CLASS ?? "").trim();
-          const failureClass = /^[a-z][a-z-]{0,39}$/u.test(known)
+          const failureClass = CLASS_PATTERN.test(known)
             ? known
             : classified.failureClass;
 
@@ -280,19 +340,24 @@ runs:
           // security signal, any other lane's is not a code-quality signal.
           // Derived from the lane name so callers need no extra wiring.
           const signal = /security/iu.test(lane) ? "security" : "code-quality";
+          const { tokens, before, written } = report(outcome, failureClass);
           // A usage limit stays an error (the check goes red) but reads as a
           // skipped run; the `class=rate-limit` token is unchanged. A lane
           // that is not a review (intake triage) names itself instead.
           const skipped = /review/iu.test(lane) ? "AI review" : lane;
-          core.error(
+          // A key leg that handed off is not the run's failure: the next
+          // credential carries the run, so its record is a notice. Without a
+          // record the level is unchanged.
+          const annotate = written && process.env.HANDOFF === "true" ? core.notice : core.error;
+          annotate(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
-                  `(${lane} exited with: ${outcome} class=rate-limit${record(failureClass)}). ` +
-                  `Last SDK result: ${reviewDetail}`
-              : `${lane} exited with: ${outcome} class=${failureClass}${record(failureClass)} ` +
+                  `(${lane} exited with: ${outcome} class=rate-limit${tokens}). ` +
+                  `${before}Last SDK result: ${reviewDetail}`
+              : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
                   `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
                   "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
-                  `Last SDK result: ${reviewDetail}`,
+                  `${before}Last SDK result: ${reviewDetail}`,
           );
 
           core.setOutput("failure_class", failureClass);

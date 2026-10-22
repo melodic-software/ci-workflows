@@ -63,6 +63,10 @@ async function runOutcome({
   maxTurns = "",
   knownFailureClass = "",
   fallbackReason = "",
+  laneId = "",
+  handoff = "",
+  requireCompletion = "",
+  completion = "",
 }) {
   const keys = [
     "LANE_OUTCOME",
@@ -74,6 +78,10 @@ async function runOutcome({
     "MAX_TURNS",
     "KNOWN_FAILURE_CLASS",
     "FALLBACK_REASON",
+    "LANE_ID",
+    "HANDOFF",
+    "REQUIRE_COMPLETION",
+    "COMPLETION",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -89,6 +97,10 @@ async function runOutcome({
     MAX_TURNS: maxTurns,
     KNOWN_FAILURE_CLASS: knownFailureClass,
     FALLBACK_REASON: fallbackReason,
+    LANE_ID: laneId,
+    HANDOFF: handoff,
+    REQUIRE_COMPLETION: requireCompletion,
+    COMPLETION: completion,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -538,4 +550,554 @@ test("a 403 the launcher stopped is recorded with its error type, code and reque
     /\bclass=auth error-type=permission_error error-code=workspace_access_denied request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1\b/u,
   );
   assert.equal(run.errors[0].includes("not permitted"), false);
+});
+
+// The lane-outcome record (docs/lane-outcome.md). A reader finds the marker
+// anywhere in the message and reads exactly one JSON value after it.
+const MARKER = "lane-outcome ";
+
+function readRecord(message) {
+  const start = message.indexOf(MARKER);
+  if (start === -1) return null;
+  const text = message.slice(start + MARKER.length);
+  let depth = 0;
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (character === "\\") index += 1;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) {
+      return JSON.parse(text.slice(0, index + 1));
+    }
+  }
+  return null;
+}
+
+// The contract's examples: every ```json block of docs/lane-outcome.md, a
+// block holding one object or one object per line.
+const contractExamples = [
+  ...fs
+    .readFileSync(path.join(__dirname, "..", "..", "..", "docs", "lane-outcome.md"), "utf8")
+    .matchAll(/^```json\n([\s\S]*?)^```$/gmu),
+].flatMap(([, block]) => {
+  try {
+    return [JSON.parse(block)];
+  } catch {
+    return block.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
+  }
+});
+const [keyLegExample, subscriptionLegExample, reviewLimitExample] = contractExamples;
+
+const schema = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "..", "schemas", "lane-outcome.v1.schema.json"),
+    "utf8",
+  ),
+);
+
+// A JSON Schema 2020-12 check for exactly the keywords the schema uses; any
+// other keyword throws, so the schema cannot outgrow it silently.
+const ANNOTATIONS = new Set(["$schema", "$id", "title", "description"]);
+function schemaErrors(node, value, at = "$") {
+  const errors = [];
+  const typeOf = (v) =>
+    v === null
+      ? "null"
+      : Array.isArray(v)
+        ? "array"
+        : Number.isInteger(v)
+          ? "integer"
+          : typeof v;
+  for (const [keyword, rule] of Object.entries(node)) {
+    if (ANNOTATIONS.has(keyword) || keyword === "then" || keyword === "else") {
+      continue;
+    }
+    const isObject = typeOf(value) === "object";
+    switch (keyword) {
+      case "type": {
+        const actual = typeOf(value);
+        const allowed = [rule].flat();
+        if (
+          !allowed.includes(actual) &&
+          !(actual === "integer" && allowed.includes("number"))
+        ) {
+          errors.push(`${at}: type ${actual}`);
+        }
+        break;
+      }
+      case "const":
+        if (value !== rule) errors.push(`${at}: not ${rule}`);
+        break;
+      case "enum":
+        if (!rule.includes(value)) errors.push(`${at}: ${value} not in enum`);
+        break;
+      case "pattern":
+        if (typeof value === "string" && !new RegExp(rule, "u").test(value)) {
+          errors.push(`${at}: ${value} does not match ${rule}`);
+        }
+        break;
+      case "minimum":
+        if (typeof value === "number" && value < rule) errors.push(`${at}: < ${rule}`);
+        break;
+      case "maximum":
+        if (typeof value === "number" && value > rule) errors.push(`${at}: > ${rule}`);
+        break;
+      case "maxItems":
+        if (Array.isArray(value) && value.length > rule) errors.push(`${at}: > ${rule} items`);
+        break;
+      case "items":
+        if (Array.isArray(value)) {
+          value.forEach((item, i) => errors.push(...schemaErrors(rule, item, `${at}[${i}]`)));
+        }
+        break;
+      case "required":
+        if (isObject) {
+          for (const name of rule) {
+            if (!(name in value)) errors.push(`${at}: missing ${name}`);
+          }
+        }
+        break;
+      case "additionalProperties":
+        assert.equal(rule, true, "only additionalProperties: true is supported");
+        break;
+      case "properties":
+        if (isObject) {
+          for (const [name, child] of Object.entries(rule)) {
+            if (name in value) errors.push(...schemaErrors(child, value[name], `${at}.${name}`));
+          }
+        }
+        break;
+      case "if": {
+        const branch = schemaErrors(rule, value, at).length === 0 ? node.then : node.else;
+        if (branch) errors.push(...schemaErrors(branch, value, at));
+        break;
+      }
+      default:
+        throw new Error(`unsupported schema keyword ${keyword} at ${at}`);
+    }
+  }
+  return errors;
+}
+
+test("the schema accepts the contract's three examples and rejects malformed records", () => {
+  assert.equal(contractExamples.length, 3);
+  for (const example of contractExamples) {
+    assert.deepEqual(schemaErrors(schema, example), [], JSON.stringify(example));
+  }
+  const good = reviewLimitExample;
+  const credential = { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" };
+  for (const bad of [
+    { ...good, v: 2 },
+    { ...good, lane: "PR Review" },
+    { ...good, outcome: "skipped" },
+    { ...good, outcome: "incomplete" },
+    { v: 1, lane: "pr-review", outcome: "failure", credential },
+    { v: 1, lane: "pr-review", outcome: "success" },
+    { ...good, credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "token" } },
+    { ...good, credential: { secret: "lower_case", kind: "oauth-token" } },
+    { ...good, fallback: { reason: "Auth" } },
+    { ...good, turns: -1 },
+    { ...good, models: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
+  ]) {
+    assert.notDeepEqual(schemaErrors(schema, bad), [], JSON.stringify(bad));
+  }
+});
+
+test("with a lane id and a credential, every message carries one record that validates", async () => {
+  const succeeded = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 4 },
+  ]);
+  const runs = [
+    { outcome: "success", executionFile: succeeded },
+    { outcome: "success", executionFile: succeeded, requireCompletion: "true", completion: "no summary" },
+    { outcome: "success", executionFile: "" },
+    { outcome: "skipped", executionFile: "", knownFailureClass: "sandbox-unavailable" },
+    {
+      outcome: "failure",
+      executionFile: writeExecutionFile([
+        { type: "result", subtype: "success", is_error: true, num_turns: 1, api_error_status: 429 },
+      ]),
+    },
+    { outcome: "failure", executionFile: "" },
+  ];
+  for (const run of runs) {
+    const label = JSON.stringify(run);
+    const { errors, warnings, notices } = await runOutcome({
+      ...run,
+      laneId: "pr-review",
+      credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    });
+    const messages = [...errors, ...warnings, ...notices];
+    assert.equal(messages.length, 1, label);
+    assert.equal(messages[0].split(MARKER).length, 2, label);
+    const record = readRecord(messages[0]);
+    assert.deepEqual(schemaErrors(schema, record), [], label);
+    assert.equal(record.lane, "pr-review", label);
+    assert.deepEqual(record.credential, { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" }, label);
+  }
+});
+
+test("the record sits before the free text and survives a 5,000-character SDK result", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "x".repeat(5000), is_error: true, num_turns: 2, api_error_status: 401 },
+  ]);
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0].length > 5000);
+  assert.ok(errors[0].indexOf(MARKER) < errors[0].indexOf("Last SDK result:"));
+  // The runner keeps the first 4,096 characters of a message.
+  const record = readRecord(errors[0].slice(0, 4096));
+  assert.deepEqual(schemaErrors(schema, record), []);
+  assert.deepEqual(record, {
+    v: 1,
+    lane: "pr-review",
+    outcome: "failure",
+    class: "auth",
+    credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" },
+    turns: 2,
+  });
+});
+
+test("the intake subscription leg after a credit stop writes the contract's success example", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 5,
+      modelUsage: { "claude-sonnet-5": {} },
+    },
+  ]);
+  const { notices } = await runOutcome({
+    outcome: "success",
+    executionFile: file,
+    lane: "Claude intake triage",
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "credit-stop",
+  });
+  assert.equal(notices.length, 1);
+  assert.deepEqual(readRecord(notices[0]), subscriptionLegExample);
+});
+
+// 1792645200 is 2026-10-22T05:00:00Z in epoch seconds.
+test("a review lane's usage limit writes the contract's rate-limit example", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "five_hour" },
+    },
+    { type: "result", subtype: "success", is_error: true, api_error_status: 429 },
+  ]);
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.equal(errors.length, 1);
+  assert.deepEqual(readRecord(errors[0]), reviewLimitExample);
+  // The legacy tokens stay in the sentence.
+  assert.match(errors[0], /\bclass=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN\b/u);
+});
+
+test("a key leg that handed off on a credit stop writes the contract's key-leg example", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 1,
+      result:
+        'API Error: 402 {"type":"error","error":{"type":"billing_error",' +
+        '"message":"Your credit balance is too low"},"request_id":"req_fake0000000000000000"}',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: { "claude-sonnet-5": {} },
+    },
+  ]);
+  const handedOff = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude intake triage",
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    knownFailureClass: "credit-stop",
+    maxTurns: "30",
+    handoff: "true",
+  });
+  // The contract: a handoff record is a notice.
+  assert.deepEqual(handedOff.errors, []);
+  assert.equal(handedOff.notices.length, 1);
+  assert.deepEqual(readRecord(handedOff.notices[0]), keyLegExample);
+  const notHandedOff = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    knownFailureClass: "credit-stop",
+    handoff: "false",
+  });
+  assert.equal("handoff" in readRecord(notHandedOff.errors[0]), false);
+});
+
+test("the step outcome and class map to the record's outcome", async () => {
+  const succeeded = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 1 },
+  ]);
+  const startedLongAgo = String(Math.floor(Date.now() / 1000) - 700);
+  for (const [run, expected] of [
+    [{ outcome: "success", executionFile: succeeded }, ["success", undefined]],
+    [{ outcome: "success", executionFile: "" }, ["skip", "skipped-validation"]],
+    [{ outcome: "success", executionFile: succeeded, requireCompletion: "true" }, ["failure", "incomplete"]],
+    [{ outcome: "cancelled", executionFile: "" }, ["cancellation", "no-execution"]],
+    [{ outcome: "skipped", executionFile: "", knownFailureClass: "sandbox-unavailable" }, ["skip", "sandbox-unavailable"]],
+    [{ outcome: "failure", executionFile: "", startedAt: startedLongAgo, timeoutMinutes: "11" }, ["timeout", "timeout"]],
+    [{ outcome: "failure", executionFile: "" }, ["failure", "no-execution"]],
+  ]) {
+    const { errors, warnings, notices } = await runOutcome({
+      ...run,
+      laneId: "pr-review",
+      credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    });
+    const record = readRecord([...errors, ...warnings, ...notices][0]);
+    assert.deepEqual([record.outcome, record.class], expected, JSON.stringify(run));
+  }
+});
+
+test("a caller that sets lane-id but cannot get a record gets the tokens alone and a warning naming what is missing", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
+  ]);
+  for (const [inputs, missing] of [
+    [{ laneId: "Pr Review", credential: "CLAUDE_CODE_OAUTH_TOKEN" }, /\blane-id is empty or invalid\./u],
+    [{ laneId: "pr-review" }, /\bcredential is empty or invalid\./u],
+    [{ laneId: "pr-review", credential: "CLAUDE_API_KEY" }, /\bcredential is empty or invalid\./u],
+    [{ laneId: "Pr Review" }, /\blane-id and credential are empty or invalid\./u],
+  ]) {
+    const label = JSON.stringify(inputs);
+    const { notices, warnings } = await runOutcome({
+      outcome: "success",
+      executionFile: file,
+      ...inputs,
+    });
+    assert.equal(notices.length, 1, label);
+    assert.equal(notices[0].includes(MARKER), false, label);
+    assert.match(notices[0], /\bturns=3\b/u, label);
+    assert.equal(warnings.length, 1, label);
+    assert.match(warnings[0], missing, label);
+    assert.doesNotMatch(warnings[0], /class=|credential=|lane-outcome /u, label);
+  }
+});
+
+test("a caller with no lane-id, credential-only or neither, gets the tokens alone and no warning", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
+  ]);
+  for (const credential of ["", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_API_KEY"]) {
+    const { notices, warnings } = await runOutcome({ outcome: "success", executionFile: file, credential });
+    assert.equal(notices.length, 1, credential);
+    assert.equal(notices[0].includes(MARKER), false, credential);
+    assert.deepEqual(warnings, [], credential);
+  }
+});
+
+test("the schema states the emitter's own patterns, closed sets and limits", () => {
+  const {
+    CLASS_PATTERN,
+    COUNT_MAX,
+    CREDENTIAL_PATTERN,
+    FALLBACK_REASONS,
+    LANE_ID_PATTERN,
+    RECORD_MAX_MODELS,
+    WINDOW_PATTERN,
+  } = require("./classify.cjs");
+  const { properties } = schema;
+  assert.equal(properties.lane.pattern, LANE_ID_PATTERN.source);
+  assert.equal(properties.class.pattern, CLASS_PATTERN.source);
+  assert.equal(properties.credential.properties.secret.pattern, CREDENTIAL_PATTERN.source);
+  assert.equal(properties.credential.properties.role.pattern, CREDENTIAL_PATTERN.source);
+  assert.equal(properties.resets.properties.window.pattern, WINDOW_PATTERN.source);
+  assert.deepEqual(properties.fallback.properties.reason.enum, FALLBACK_REASONS);
+  assert.equal(properties.models.maxItems, RECORD_MAX_MODELS);
+  assert.equal(properties.turns.maximum, COUNT_MAX);
+  assert.equal(properties.maxTurns.maximum, COUNT_MAX);
+});
+
+// A pin, not a correctness check: with no lane-id, every annotation and
+// output must be byte-for-byte what main's step wrote, so no existing reader
+// sees a change. The expected values were recorded from main (df32b1c) for
+// these exact inputs; a handoff input changes nothing without a record.
+const MAIN_OUTPUT = {
+  "success": {
+    "outputs": {
+      "review_failed": "false",
+      "review_ran": "true"
+    },
+    "errors": [],
+    "warnings": [],
+    "notices": [
+      "Claude review completed: credential=CLAUDE_CODE_OAUTH_TOKEN turns=4 max-turns=30 models=claude-sonnet-5. Findings (if any) are in the PR comments."
+    ],
+    "failed": []
+  },
+  "validation skip": {
+    "outputs": {
+      "failure_class": "skipped-validation",
+      "review_detail": "(no execution file was produced)",
+      "review_failed": "false",
+      "review_ran": "false"
+    },
+    "errors": [],
+    "warnings": [
+      "Claude review concluded: success class=skipped-validation credential=CLAUDE_CODE_OAUTH_TOKEN with no execution evidence — the action skipped itself before running (workflow-validation skip: the caller's workflow file must match the default branch's copy). Nothing was reviewed."
+    ],
+    "notices": [],
+    "failed": []
+  },
+  "incomplete": {
+    "outputs": {
+      "failure_class": "incomplete",
+      "review_detail": "(no completed review was found)",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review concluded: success class=incomplete credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 — no completed review was found: no summary."
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "credit stop, handoff set": {
+    "outputs": {
+      "failure_class": "credit-stop",
+      "review_detail": "{\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: failure class=credit-stop error-type=billing_error request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 max-turns=30 models=claude-sonnet-5 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "usage limit": {
+    "outputs": {
+      "failure_class": "rate-limit",
+      "review_detail": "{\"subtype\":\"success\",\"is_error\":true,\"num_turns\":null,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":429,\"error_type\":null,\"class\":\"rate-limit\"}",
+      "resets_at": "2026-10-22T05:00:00Z",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "AI review skipped: usage limit reached; re-run after it resets (Claude review exited with: failure class=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":null,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":429,\"error_type\":null,\"class\":\"rate-limit\"}"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "1,000,000 turns": {
+    "outputs": {
+      "review_failed": "false",
+      "review_ran": "true"
+    },
+    "errors": [],
+    "warnings": [],
+    "notices": [
+      "Claude review completed: credential=CLAUDE_CODE_OAUTH_TOKEN turns=1000000. Findings (if any) are in the PR comments."
+    ],
+    "failed": []
+  },
+  "denied": {
+    "outputs": {
+      "failure_class": "auth",
+      "review_detail": "{\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: failure class=auth error-type=permission_error error-code=abc_def request-id=req_abcdefgh12 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "cancelled": {
+    "outputs": {
+      "failure_class": "no-execution",
+      "review_detail": "(no execution file was produced)",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: cancelled class=no-execution credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: (no execution file was produced)"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "sandbox skip": {
+    "outputs": {
+      "failure_class": "sandbox-unavailable",
+      "review_detail": "(no execution file was produced)",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: skipped class=sandbox-unavailable credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: (no execution file was produced)"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  }
+};
+
+test("with no lane-id, every branch writes exactly what main wrote", async () => {
+  const creditStopText =
+    'API Error: 402 {"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low"},"request_id":"req_fake0000000000000000"}';
+  const files = {};
+  const pinFile = (name, contents) => {
+    files[name] = path.join(temporaryDirectory, `pin-${name}.json`);
+    fs.writeFileSync(files[name], JSON.stringify(contents));
+    return files[name];
+  };
+  pinFile("ok", [{ type: "result", subtype: "success", is_error: false, num_turns: 4, modelUsage: { "claude-sonnet-5": {} } }]);
+  pinFile("creditStop", [{ type: "result", subtype: "success", is_error: true, num_turns: 1, result: creditStopText, usage: { input_tokens: 0, output_tokens: 0 }, modelUsage: { "claude-sonnet-5": {} } }]);
+  pinFile("denied", [{ type: "result", subtype: "success", is_error: true, num_turns: 1, api_error_status: 403, result: 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"x","details":{"error_code":"abc_def"}},"request_id":"req_abcdefgh12"}', usage: { input_tokens: 0, output_tokens: 0 } }]);
+  pinFile("limited", [{ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "five_hour" } }, { type: "result", subtype: "success", is_error: true, api_error_status: 429 }]);
+  pinFile("manyTurns", [{ type: "result", subtype: "success", is_error: false, num_turns: 1000000 }]);
+  const key = "AUTOMATIONS_CLAUDE_API_KEY";
+  const token = "CLAUDE_CODE_OAUTH_TOKEN";
+  const cases = {
+    success: { outcome: "success", executionFile: files.ok, credential: token, maxTurns: "30" },
+    "validation skip": { outcome: "success", executionFile: "", credential: token },
+    incomplete: { outcome: "success", executionFile: files.denied, credential: key, requireCompletion: "true", completion: "no summary" },
+    "credit stop, handoff set": { outcome: "failure", executionFile: files.creditStop, credential: key, knownFailureClass: "credit-stop", maxTurns: "30", handoff: "true" },
+    "usage limit": { outcome: "failure", executionFile: files.limited, credential: token, fallbackReason: "credit-stop" },
+    "1,000,000 turns": { outcome: "success", executionFile: files.manyTurns, credential: token },
+    denied: { outcome: "failure", executionFile: files.denied, credential: key },
+    cancelled: { outcome: "cancelled", executionFile: "", credential: token },
+    "sandbox skip": { outcome: "skipped", executionFile: "", credential: token, knownFailureClass: "sandbox-unavailable" },
+  };
+  assert.deepEqual(Object.keys(cases), Object.keys(MAIN_OUTPUT));
+  for (const [name, inputs] of Object.entries(cases)) {
+    const { outputs, errors, warnings, notices, failed } = await runOutcome(inputs);
+    assert.deepEqual({ outputs, errors, warnings, notices, failed }, MAIN_OUTPUT[name], name);
+  }
+});
+
+test("past six digits of turns the tokens keep the count and the record leaves it out", async () => {
+  const file = writeExecutionFile([{ type: "result", subtype: "success", is_error: false, num_turns: 1000000 }]);
+  const { notices } = await runOutcome({ outcome: "success", executionFile: file, laneId: "pr-review", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
+  assert.match(notices[0], /\bturns=1000000\b/u);
+  assert.equal("turns" in readRecord(notices[0]), false);
 });

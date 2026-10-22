@@ -302,6 +302,10 @@ function classifyExecutionFile(
 const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
 const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
+// The largest count COUNT_PATTERN admits, and the record's bound on turns.
+const COUNT_MAX = 999999;
+// A failure class as a closed kebab token.
+const CLASS_PATTERN = /^[a-z][a-z-]{0,39}$/u;
 const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
 // Why a subscription job ran in the two-job pattern: the key job's credit
 // stop, its key refused with API status 401 or 402, or no key at all.
@@ -354,13 +358,12 @@ function readRunRecord(executionFilePath) {
   };
 }
 
-// The record tokens for one annotation line, unknown values omitted.
-// `resets=` and `resets-window=` are printed only on a limit stop: that
-// stop's reset time and the window (rateLimitType) that stopped it.
-// `error-type=`, `error-code=` and `request-id=` (apiErrorFacts) are printed
-// only on a failure. `fallback=` follows `credential=`, only from
-// FALLBACK_REASONS.
-function recordTokens(
+// The run's facts for one annotation, each gate applied once: resets only on
+// a limit stop (rate-limit), the API error facts only on a failure, the
+// credential and fallback reason only from their closed sets, the max-turns
+// cap only as a count. recordTokens and the lane-outcome record both
+// serialize this one object.
+function runFacts(
   {
     turns = null,
     models = [],
@@ -377,37 +380,162 @@ function recordTokens(
     fallbackReason = "",
   } = {},
 ) {
-  const tokens = [];
-  if (failureClass === "rate-limit" && resetsAt) {
-    tokens.push(`resets=${resetsAt}`);
-    if (resetsWindow) tokens.push(`resets-window=${resetsWindow}`);
-  }
-  if (failureClass !== "") {
-    if (errorType) tokens.push(`error-type=${errorType}`);
-    if (errorCode) tokens.push(`error-code=${errorCode}`);
-    if (requestId) tokens.push(`request-id=${requestId}`);
-  }
-  if (CREDENTIAL_PATTERN.test(credential)) {
-    tokens.push(`credential=${credential}`);
-  }
-  if (FALLBACK_REASONS.includes(fallbackReason)) {
-    tokens.push(`fallback=${fallbackReason}`);
-  }
-  if (turns !== null) tokens.push(`turns=${turns}`);
-  if (COUNT_PATTERN.test(maxTurns)) {
-    tokens.push(`max-turns=${Number(maxTurns)}`);
-  }
-  if (models.length > 0) tokens.push(`models=${models.join(",")}`);
-  return tokens.join(" ");
+  const limitStop = failureClass === "rate-limit" && Boolean(resetsAt);
+  const failed = failureClass !== "";
+  return {
+    failureClass,
+    resetsAt: limitStop ? resetsAt : null,
+    resetsWindow: limitStop ? resetsWindow : null,
+    errorType: failed ? errorType : null,
+    errorCode: failed ? errorCode : null,
+    requestId: failed ? requestId : null,
+    credential: CREDENTIAL_PATTERN.test(credential) ? credential : null,
+    fallbackReason: FALLBACK_REASONS.includes(fallbackReason)
+      ? fallbackReason
+      : null,
+    turns,
+    maxTurns: COUNT_PATTERN.test(maxTurns) ? Number(maxTurns) : null,
+    models,
+  };
+}
+
+// The legacy `key=value` tokens for one annotation line, unknown values
+// omitted. `fallback=` follows `credential=`.
+function factTokens(facts) {
+  return [
+    ["resets", facts.resetsAt],
+    ["resets-window", facts.resetsWindow],
+    ["error-type", facts.errorType],
+    ["error-code", facts.errorCode],
+    ["request-id", facts.requestId],
+    ["credential", facts.credential],
+    ["fallback", facts.fallbackReason],
+    ["turns", facts.turns],
+    ["max-turns", facts.maxTurns],
+    ["models", facts.models.length > 0 ? facts.models.join(",") : null],
+  ]
+    .filter(([, value]) => value !== null && value !== "")
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+}
+
+function recordTokens(run, inputs) {
+  return factTokens(runFacts(run, inputs));
+}
+
+// The lane-outcome record v1 (docs/lane-outcome.md, schemas/
+// lane-outcome.v1.schema.json). Written only when the lane id and a
+// credential that maps to a kind are both present; `missing` names what is not.
+const RECORD_MARKER = "lane-outcome ";
+const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+// Basis: docs/lane-outcome.md, "A record is at most 1,024 characters".
+const RECORD_MAX_LENGTH = 1024;
+const RECORD_MAX_MODELS = 8;
+
+// The credential's kind and role from its secret name, or null.
+function credentialFacts(secret) {
+  if (secret === null) return null;
+  const key = /^([A-Z][A-Z0-9_]*)_CLAUDE_API_KEY$/u.exec(secret);
+  if (key) return { secret, kind: "api-key", role: key[1] };
+  const token = /^(?:([A-Z][A-Z0-9_]*)_)?CLAUDE_CODE_OAUTH_TOKEN$/u.exec(
+    secret,
+  );
+  if (!token) return null;
+  return token[1] === undefined
+    ? { secret, kind: "oauth-token" }
+    : { secret, kind: "oauth-token", role: token[1] };
+}
+
+// The step's `outcome` input and the reported class, as an OpenTelemetry
+// CICD task result.
+function recordOutcome(outcome, failureClass) {
+  if (failureClass === "skipped-validation") return "skip";
+  if (outcome === "success") return failureClass === "" ? "success" : "failure";
+  if (outcome === "cancelled") return "cancellation";
+  if (outcome === "skipped") return "skip";
+  return failureClass === "timeout" ? "timeout" : "failure";
+}
+
+// `recordClass` overrides the class in the record alone, for a branch whose
+// legacy tokens carry no class (incomplete, skipped-validation).
+function factRecord(
+  facts,
+  { laneId = "", outcome = "", handoff = "", recordClass = facts.failureClass },
+) {
+  const credential = credentialFacts(facts.credential);
+  const missing = [
+    ...(LANE_ID_PATTERN.test(laneId) ? [] : ["lane-id"]),
+    ...(credential === null ? ["credential"] : []),
+  ];
+  if (missing.length > 0) return { record: null, missing };
+  const present = (entries) => {
+    const kept = entries.filter(([, value]) => value !== null);
+    return kept.length > 0 ? Object.fromEntries(kept) : null;
+  };
+  const record = present([
+    ["v", 1],
+    ["lane", laneId],
+    ["outcome", recordOutcome(outcome, recordClass)],
+    ["class", recordClass === "" ? null : recordClass],
+    ["credential", credential],
+    ["handoff", handoff === "true" ? true : null],
+    ["fallback", present([["reason", facts.fallbackReason]])],
+    [
+      "resets",
+      facts.resetsAt === null
+        ? null
+        : present([
+            ["at", facts.resetsAt],
+            ["window", facts.resetsWindow],
+          ]),
+    ],
+    [
+      "error",
+      present([
+        ["type", facts.errorType],
+        ["code", facts.errorCode],
+        ["requestId", facts.requestId],
+      ]),
+    ],
+    ["turns", facts.turns !== null && facts.turns <= COUNT_MAX ? facts.turns : null],
+    ["maxTurns", facts.maxTurns],
+    [
+      "models",
+      facts.models.length > 0 ? facts.models.slice(0, RECORD_MAX_MODELS) : null,
+    ],
+  ]);
+  if (JSON.stringify(record).length > RECORD_MAX_LENGTH) delete record.models;
+  return { record, missing };
+}
+
+// One annotation's report, from one facts object: the legacy tokens and the
+// lane-outcome record (null with `missing` when it cannot be written).
+function laneReport(run, inputs = {}) {
+  const facts = runFacts(run, inputs);
+  return { tokens: factTokens(facts), ...factRecord(facts, inputs) };
+}
+
+// The record as it sits in an annotation message: the marker and the JSON,
+// or "" when there is no record.
+function recordText(record) {
+  return record === null ? "" : `${RECORD_MARKER}${JSON.stringify(record)}`;
 }
 
 module.exports = {
   apiErrorFacts,
+  CLASS_PATTERN,
   classifyExecutionFile,
+  COUNT_MAX,
+  CREDENTIAL_PATTERN,
   creditStopResetsAt,
   FALLBACK_REASONS,
   isCreditStop,
+  LANE_ID_PATTERN,
+  laneReport,
   readMessages,
   readRunRecord,
+  RECORD_MAX_MODELS,
+  recordText,
   recordTokens,
+  WINDOW_PATTERN,
 };
