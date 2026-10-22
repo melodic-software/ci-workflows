@@ -21,7 +21,7 @@ description: >-
   records the failure class and detail. Every annotation it writes,
   a success notice included, carries the run record as bare tokens:
   `turns=`, `max-turns=`, `credential=`, `fallback=`, `models=` (the result
-  message's modelUsage keys), on class rate-limit `resets=<ISO>` and
+  message's modelUsage keys, at most 8), on class rate-limit `resets=<ISO>` and
   `resets-window=<rateLimitType>` from the newest rejected
   rate_limit_event, and on a failure the API error body's `error-type=`,
   `error-code=` and `request-id=` when a run with no model output carries
@@ -124,9 +124,11 @@ inputs:
     default: ""
   handoff:
     description: >-
-      "true" on a key leg's report when this attempt handed off to another
-      credential; the record carries `handoff: true` and a failure is
-      written as a notice, not an error. Anything else changes nothing.
+      "true" when this attempt handed off to another credential: an intake
+      key leg's credit stop or rejected key, or a review lane's first token
+      at a usage limit. The record carries `handoff: true`, and with a
+      lane-id set a failure is written as a notice, not an error, even when
+      no record can be written. Anything else changes nothing.
     required: false
     default: ""
   known-failure-class:
@@ -256,7 +258,6 @@ runs:
               tokens: tokens === "" ? "" : ` ${tokens}`,
               before: line === "" ? "" : `${line} `,
               after: line === "" ? "" : ` ${line}`,
-              written: record !== null,
             };
           };
 
@@ -340,15 +341,16 @@ runs:
           // security signal, any other lane's is not a code-quality signal.
           // Derived from the lane name so callers need no extra wiring.
           const signal = /security/iu.test(lane) ? "security" : "code-quality";
-          const { tokens, before, written } = report(outcome, failureClass);
+          const { tokens, before } = report(outcome, failureClass);
           // A usage limit stays an error (the check goes red) but reads as a
           // skipped run; the `class=rate-limit` token is unchanged. A lane
           // that is not a review (intake triage) names itself instead.
           const skipped = /review/iu.test(lane) ? "AI review" : lane;
-          // A key leg that handed off is not the run's failure: the next
-          // credential carries the run, so its record is a notice. Without a
-          // record the level is unchanged.
-          const annotate = written && process.env.HANDOFF === "true" ? core.notice : core.error;
+          // An attempt that handed off is not the run's failure: the next
+          // credential carries the run, so a caller that opted in with
+          // lane-id gets a notice, whether or not its record could be
+          // written. With no lane-id the level is what it always was.
+          const annotate = laneId !== "" && process.env.HANDOFF === "true" ? core.notice : core.error;
           annotate(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +

@@ -686,13 +686,16 @@ consumer to audit it.
   - reads only trusted inputs: no artifact download from job A and no
     cache restore.
 
-  Job A skips its outcome step on a handoff, so whichever job triaged
-  reports. Job B passes report-lane-outcome's `fallback-reason`,
-  `credit-stop`, `auth` or `no-key` from job A's `lane-class` and key
-  presence, so its record says why it ran, a dead key included.
-  A status job that needs both reads job B's outcome when it ran, else job A's: one lane record per run. A lane that writes does it in a
-  separate job with no model that needs both and reads job B's outputs when
-  it ran, else job A's, so the write happens once.
+  Job A's outcome step also runs on a handoff and passes `handoff` from
+  the action's own output, so its record carries `handoff: true`: a
+  handoff run writes two lane records, one per credential attempt. Job B
+  passes report-lane-outcome's `fallback-reason`, `credit-stop`, `auth` or
+  `no-key` from job A's `lane-class` and key presence, so its record says
+  why it ran, a dead key included. A status job that needs both reads job
+  B's outcome when it ran, else job A's, and writes no lane record. A lane
+  that writes does it in a separate job with no model that needs both and
+  reads job B's outputs when it ran, else job A's, so the write happens
+  once.
   `intake-triage.yml` is the reference implementation.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
@@ -1179,9 +1182,11 @@ parent secret.
 `fallback-claude-code-oauth-token`. When the first attempt stops on a usage
 limit (`class=rate-limit`), the job retries the review once on that token, in
 the same job and inside the review step's budget, before the report steps; the
-completion record then ends with the field `account=fallback`. The first attempt's limit leaves only a warning with no
-`class=` token, so the final report alone names the run's class. Without the
-secret the job makes one attempt.
+completion record then ends with the field `account=fallback`. The first
+attempt's usage limit writes its own handoff notice, with `class=rate-limit`
+and the primary's credential (`credential-name`), and the final report covers
+the fallback attempt and names the run's class. Without the secret the job
+makes one attempt.
 
 **Inputs** (both lanes, all optional):
 
@@ -1200,6 +1205,8 @@ secret the job makes one attempt.
 | `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
 | `allowed-bot-sender-ids` | empty | Comma-separated numeric GitHub user ids, no spaces, of bot senders to review; only a listed sender's login reaches the action's `allowed_bots` |
 | `allowed-author-ids` | empty | Code review only. Comma-separated numeric GitHub user ids, no spaces, of people whose closing issues the review reads in full. A same-repository closing issue keeps its title and body only when its author's id is here or, for a bot, in `allowed-bot-sender-ids`; any other gets a placeholder, and a cross-repository one is written as `owner/repo#N` alone |
+| `credential-name` | `CLAUDE_CODE_OAUTH_TOKEN` | Name, never the value, of the secret the caller maps to `CLAUDE_CODE_OAUTH_TOKEN`; the [lane-outcome record](docs/lane-outcome.md) names it as the credential when the first attempt reports. The default is right only when the caller maps a secret of that exact name; set this to the mapped secret's name otherwise |
+| `fallback-credential-name` | empty | Name, never the value, of the secret the caller maps to `fallback-claude-code-oauth-token`; the [lane-outcome record](docs/lane-outcome.md) names it when the fallback attempt reports. Empty writes that attempt's tokens with no record and a warning |
 
 **Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
 fork changes by hand) and every bot actor whose event sender id is not in

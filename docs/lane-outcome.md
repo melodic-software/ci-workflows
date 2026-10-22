@@ -6,9 +6,13 @@ this repository, such as claude-code-account-rotation's limit-stop check, build
 to this page and to the JSON Schema
 [`schemas/lane-outcome.v1.schema.json`](../schemas/lane-outcome.v1.schema.json).
 
-Every lane workflow emits one record per credential attempt. A key-to-subscription
-handoff writes two records: the key leg's, with `handoff: true`, and the
-subscription leg's. The emitter is
+Every lane workflow emits one record per credential attempt. A handoff writes
+two records: the attempt that handed off, with `handoff: true`, and the next
+one. The next attempt's record is written only when its credential is named
+(for the review lanes, `fallback-credential-name` set); otherwise that attempt
+writes the legacy tokens and a warning. Intake's key leg hands off to the
+subscription leg on a credit stop or a rejected key; a review lane's first
+token hands off to its fallback token at a usage limit. The emitter is
 [`report-lane-outcome`](../.github/actions/report-lane-outcome/action.yml).
 
 ## Format
@@ -25,18 +29,19 @@ The record always comes before free text. A reader finds the first marker
 anywhere in the message and reads exactly one JSON value after it. A reader
 does not depend on newlines, because none are required. A success record is
 a notice, a `skipped-validation` record a warning, and any other failure an
-error, except that a failure record with `handoff: true` is a notice. The
-`incomplete` and `skipped-validation` records keep their levels whatever
-`handoff` says.
+error, except that a failure record with `handoff: true` is a notice. A
+handoff stays a notice when the caller sets `lane-id` but no record can be
+written. The `incomplete` and `skipped-validation` records keep their levels
+whatever `handoff` says.
 
 A record is at most 1,024 characters. The runner cuts a workflow-command
 annotation message at 4,096 characters
 ([actions/runner `ExecutionContext.cs`](https://github.com/actions/runner/blob/main/src/Runner.Worker/ExecutionContext.cs)).
 The record comes before the free text, and the legacy sentence before it is
-short, so the cut does not reach the record. The one exception is the
-sentence's `models=` token, which has no length cap yet; a later change caps
-it. An emitter whose record would pass 1,024 characters drops `models` from
-the record.
+short, so the cut does not reach the record. The sentence's `models=` token
+and the record's `models` list each name at most 8 models; the run's other
+models are left out. An emitter whose record would pass 1,024 characters
+drops `models` from the record.
 
 ## Examples
 
@@ -86,12 +91,12 @@ their closed values and where `report-lane-outcome` takes them from.
 | `credential.secret` | yes | string, the secret name the caller mapped, never a slot name | `credential` input |
 | `credential.kind` | yes | `oauth-token` or `api-key` | the secret's suffix: `_CLAUDE_API_KEY` is `api-key`; `CLAUDE_CODE_OAUTH_TOKEN`, alone or as a suffix, is `oauth-token` |
 | `credential.role` | no | the `<ROLE>` prefix | `<ROLE>_CLAUDE_API_KEY` or `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` |
-| `handoff` | no | boolean; true on a key leg's record when this attempt handed off to another credential | `handoff` input |
+| `handoff` | no | boolean; true when this attempt handed off to another credential | `handoff` input |
 | `fallback.reason` | no | `credit-stop`, `auth` or `no-key` | `fallback-reason` input, on the fallback leg's record |
 | `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
 | `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |
-| `models` | no | array of strings | the execution file's `modelUsage` keys |
+| `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
 
 The schema allows unknown properties at every level
 (`additionalProperties: true`).

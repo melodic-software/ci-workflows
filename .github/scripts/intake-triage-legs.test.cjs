@@ -16,6 +16,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const {
+  CREDENTIAL_PATTERN,
+} = require("../actions/report-lane-outcome/classify.cjs");
 const { evaluate } = require("./actions-expression.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
@@ -185,39 +188,70 @@ test("the subscription job's lane record names the credit stop, the rejected key
   );
 });
 
-test("a handoff skips the claude job's outcome and extract steps", () => {
-  const byId = (id) => claude.steps.find((step) => step.id === id);
-  const extract = byId("extract");
+test("a handoff skips the claude job's extract step", () => {
+  const extract = claude.steps.find((step) => step.id === "extract");
   const steps = (handoff, present = "true") => ({
     compose: { outcome: "success" },
     credential: { outputs: { present } },
     claude: { outputs: { handoff } },
   });
-  for (const step of [byId("review-outcome"), extract]) {
+  assert.equal(Boolean(evaluate(extract.if, { steps: steps("true") })), false);
+  // No handoff, or a step that failed before the leg ran: the claude job
+  // extracts.
+  for (const handoff of ["false", ""]) {
     assert.equal(
-      Boolean(evaluate(step.if, { steps: steps("true") })),
-      false,
-      step.name,
-    );
-    // No handoff, or a step that failed before the leg ran: the claude job
-    // reports.
-    for (const handoff of ["false", ""]) {
-      assert.equal(
-        Boolean(evaluate(step.if, { steps: steps(handoff) })),
-        true,
-        `${step.name} ${JSON.stringify(handoff)}`,
-      );
-    }
-    assert.equal(
-      Boolean(evaluate(step.if, { steps: steps("", "false") })),
-      false,
-      step.name,
+      Boolean(evaluate(extract.if, { steps: steps(handoff) })),
+      true,
+      JSON.stringify(handoff),
     );
   }
   assert.equal(
-    Boolean(evaluate(byId("claude").if, { steps: steps("", "false") })),
+    Boolean(evaluate(extract.if, { steps: steps("", "false") })),
     false,
   );
+  assert.equal(
+    Boolean(evaluate(launcher(claude).if, { steps: steps("", "false") })),
+    false,
+  );
+});
+
+test("the key leg's outcome step writes its record on a handoff too, flagged by the launcher's own handoff", () => {
+  const outcome = claude.steps.find((step) => step.id === "review-outcome");
+  const steps = (handoff, present = "true") => ({
+    credential: { outputs: { present } },
+    claude: { outputs: { handoff } },
+  });
+  // A handoff, whether or not the subscription token is set (the key job
+  // cannot see it), and no handoff alike: the key leg reports.
+  for (const handoff of ["true", "false", ""]) {
+    assert.equal(
+      Boolean(evaluate(outcome.if, { steps: steps(handoff) })),
+      true,
+      JSON.stringify(handoff),
+    );
+  }
+  // An empty key ran nothing, so there is nothing to report.
+  assert.equal(
+    Boolean(evaluate(outcome.if, { steps: steps("", "false") })),
+    false,
+  );
+  assert.equal(outcome.with["lane-id"], "intake-triage");
+  assert.equal(
+    outcome.with.credential,
+    `\${{ steps.claude.outputs.credential }}`,
+  );
+  // Only run-claude-cli's handoff output, `true` only when the leg handed
+  // off, sets the flag: a key leg that fails without handing off stays an
+  // error (outcome-step.test.cjs holds the level).
+  assert.equal(outcome.with.handoff, `\${{ steps.claude.outputs.handoff }}`);
+  assert.equal(
+    outcome.with["known-failure-class"],
+    `\${{ steps.claude.outputs.lane-class }}`,
+  );
+  // The subscription leg reports from its own step, with its fallback reason.
+  const sub = subscription.steps.find((step) => step.id === "review-outcome");
+  assert.equal(sub.with["fallback-reason"], FALLBACK_REASON);
+  assert.equal(sub.with["lane-id"], "intake-triage");
 });
 
 // Runs the status step's script; returns its exit code and outputs.
@@ -362,6 +396,84 @@ test("the status job prints and writes only closed values", () => {
     "failure-class": "other",
   });
   assert.equal(forged.stdout.includes("planted"), false);
+});
+
+test("the status line names the credential of the leg it reports, in legacy tokens only", () => {
+  for (const job of [claude, subscription]) {
+    assert.equal(
+      job.outputs.credential,
+      `\${{ steps.claude.outputs.credential }}`,
+      job.name,
+    );
+  }
+  const key = "AUTOMATIONS_CLAUDE_API_KEY";
+  const token = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
+  // The subscription leg ran and hit its limit: its token is named.
+  const limited = report({
+    KEY_CLASS: "credit-stop",
+    KEY_CREDENTIAL: key,
+    SUB_RESULT: "success",
+    SUB_PRESENT: "true",
+    SUB_FAILED: "true",
+    SUB_CLASS: "rate-limit",
+    SUB_CREDENTIAL: token,
+  });
+  assert.equal(limited.code, 1);
+  assert.match(
+    limited.stdout,
+    /failure-class=rate-limit job=success credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN; read the job log\./u,
+  );
+  // The key leg alone failed: the key is named.
+  const keyFailed = report({
+    KEY_FAILED: "true",
+    KEY_CLASS: "other",
+    KEY_CREDENTIAL: key,
+  });
+  assert.match(
+    keyFailed.stdout,
+    /job=success credential=AUTOMATIONS_CLAUDE_API_KEY; read the job log\./u,
+  );
+  // A key credit stop with no subscription token: the stop is the key's.
+  const noToken = report({
+    KEY_CLASS: "credit-stop",
+    KEY_CREDENTIAL: key,
+    SUB_RESULT: "success",
+    SUB_PRESENT: "false",
+  });
+  assert.match(
+    noToken.stdout,
+    /failure-class=rate-limit job=success credential=AUTOMATIONS_CLAUDE_API_KEY; read the job log\./u,
+  );
+  // Both secrets empty: no credential ran.
+  const neither = report({
+    KEY_PRESENT: "false",
+    KEY_CREDENTIAL: key,
+    SUB_RESULT: "success",
+    SUB_PRESENT: "false",
+  });
+  assert.doesNotMatch(neither.stdout, /credential=/u);
+  // With no credential the line is main's, byte for byte.
+  assert.match(
+    neither.stdout,
+    /failure-class=other job=success; read the job log\.$/mu,
+  );
+  // A value that is not a secret name is dropped, never printed.
+  const forged = report({
+    KEY_FAILED: "true",
+    KEY_CLASS: "other",
+    KEY_CREDENTIAL: "KEY\n::error::planted",
+  });
+  assert.doesNotMatch(forged.stdout, /credential=|planted/u);
+  assert.deepEqual(limited.outputs, {
+    "triage-failed": "true",
+    "failure-class": "rate-limit",
+  });
+});
+
+test("the status step checks a secret name with report-lane-outcome's own pattern", () => {
+  const match = /\[\[ "\$credential" =~ (\S+) \]\]/u.exec(status.steps[0].run);
+  assert.notEqual(match, null);
+  assert.equal(match[1], CREDENTIAL_PATTERN.source);
 });
 
 test("a failed or cancelled apply job turns the status red", () => {
