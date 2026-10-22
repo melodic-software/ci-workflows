@@ -35,16 +35,19 @@ test("both lanes run the same subprocess isolation install script", () => {
 // A slow mirror once held one unbounded apt-get attempt past the step limit,
 // so the lane timed out instead of failing with a named cause.
 test("every apt-get call ends before its step limit", () => {
-  const steps = ["pr-review.yml", "pr-review-security.yml", "intake-triage.yml"]
-    .flatMap((file) => {
-      const workflow = parseWorkflow(
-        fs.readFileSync(path.join(workflowsDir, file), "utf8"),
-      );
-      return Object.values(workflow.jobs)
-        .flatMap((job) => job.steps ?? [])
-        .filter((step) => /\bapt-get\b/.test(step.run ?? ""))
-        .map((step) => ({ file, step }));
-    });
+  const steps = [
+    "pr-review.yml",
+    "pr-review-security.yml",
+    "intake-triage.yml",
+  ].flatMap((file) => {
+    const workflow = parseWorkflow(
+      fs.readFileSync(path.join(workflowsDir, file), "utf8"),
+    );
+    return Object.values(workflow.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => /\bapt-get\b/.test(step.run ?? ""))
+      .map((step) => ({ file, step }));
+  });
   assert.equal(steps.length, 4, "two lane steps and two intake-triage steps");
   for (const { file, step } of steps) {
     const label = `${file}: ${step.name}`;
@@ -52,10 +55,19 @@ test("every apt-get call ends before its step limit", () => {
       .split("\n")
       .filter((line) => /\bsudo\b.*\bapt-get\b/.test(line))
       .filter((line) => !/\bsudo timeout -k \d+ "\$left" apt-get\b/.test(line));
-    assert.deepEqual(unbounded, [], `${label} runs apt-get only under the deadline`);
-    const deadline = Number(/deadline=\$\(\(SECONDS \+ (\d+)\)\)/.exec(step.run)?.[1]);
+    assert.deepEqual(
+      unbounded,
+      [],
+      `${label} runs apt-get only under the deadline`,
+    );
+    const deadline = Number(
+      /deadline=\$\(\(SECONDS \+ (\d+)\)\)/.exec(step.run)?.[1],
+    );
     const kill = Number(/timeout -k (\d+)/.exec(step.run)?.[1]);
-    assert.ok(deadline + kill < step["timeout-minutes"] * 60, `${label} deadline fits`);
+    assert.ok(
+      deadline + kill < step["timeout-minutes"] * 60,
+      `${label} deadline fits`,
+    );
     // The skip needs both tools, so the final check must too.
     assert.match(
       step.run,
