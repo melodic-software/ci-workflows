@@ -23,15 +23,20 @@ The record is in a check-run annotation message:
 
 The record always comes before free text. A reader finds the first marker
 anywhere in the message and reads exactly one JSON value after it. A reader
-does not depend on newlines, because none are required. A success or handoff
-record is a notice, a `skipped-validation` record a warning, and any other
-failure an error.
+does not depend on newlines, because none are required. A success record is
+a notice, a `skipped-validation` record a warning, and any other failure an
+error, except that a failure record with `handoff: true` is a notice. The
+`incomplete` and `skipped-validation` records keep their levels whatever
+`handoff` says.
 
 A record is at most 1,024 characters. The runner cuts a workflow-command
 annotation message at 4,096 characters
 ([actions/runner `ExecutionContext.cs`](https://github.com/actions/runner/blob/main/src/Runner.Worker/ExecutionContext.cs)).
-The record comes before the free text, so the cut never reaches it. An emitter
-that would pass 1,024 characters drops `models`.
+The record comes before the free text, and the legacy sentence before it is
+short, so the cut does not reach the record. The one exception is the
+sentence's `models=` token, which has no length cap yet; a later change caps
+it. An emitter whose record would pass 1,024 characters drops `models` from
+the record.
 
 ## Examples
 

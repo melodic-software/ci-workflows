@@ -29,8 +29,8 @@ description: >-
   omitted. With `lane-id` and a credential it maps to a kind, every
   annotation also carries the lane-outcome record after its first
   sentence: the marker `lane-outcome ` and one JSON object
-  (docs/lane-outcome.md); without either it writes the tokens alone and a
-  warning naming what is missing. Runs
+  (docs/lane-outcome.md). Without a record it writes the tokens alone, and
+  adds a warning naming what is missing only when lane-id is set. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
   tool dependency.
 
@@ -224,8 +224,9 @@ runs:
           const runRecord = readRunRecord(executionFile);
           // One report per annotation: the legacy tokens, which ride on the
           // same line as class=, and the lane-outcome record, placed after
-          // the message's first sentence and before any free text so the
-          // runner's 4,096-character cut never reaches it.
+          // the message's first sentence and before any free text, so the
+          // runner's 4,096-character cut does not reach it while the
+          // sentence's models= token stays short.
           const laneId = process.env.LANE_ID ?? "";
           const credential = process.env.CREDENTIAL ?? "";
           // `failureClass` builds the tokens as they have always been built;
