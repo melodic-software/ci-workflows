@@ -1200,6 +1200,8 @@ secret the job makes one attempt.
 | `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
 | `allowed-bot-sender-ids` | empty | Comma-separated numeric GitHub user ids, no spaces, of bot senders to review; only a listed sender's login reaches the action's `allowed_bots` |
 | `allowed-author-ids` | empty | Code review only. Comma-separated numeric GitHub user ids, no spaces, of people whose closing issues the review reads in full. A same-repository closing issue keeps its title and body only when its author's id is here or, for a bot, in `allowed-bot-sender-ids`; any other gets a placeholder, and a cross-repository one is written as `owner/repo#N` alone |
+| `credential-name` | `CLAUDE_CODE_OAUTH_TOKEN` | Name, never the value, of the secret the caller maps to `CLAUDE_CODE_OAUTH_TOKEN`; the [lane-outcome record](docs/lane-outcome.md) names it as the credential when the first attempt reports |
+| `fallback-credential-name` | empty | Name, never the value, of the secret the caller maps to `fallback-claude-code-oauth-token`; the [lane-outcome record](docs/lane-outcome.md) names it when the fallback attempt reports. Empty writes that attempt's tokens with no record and a warning |
 
 **Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
 fork changes by hand) and every bot actor whose event sender id is not in

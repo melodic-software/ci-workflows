@@ -411,7 +411,7 @@ test("the status line names the credential of the leg it reports, in legacy toke
   assert.equal(limited.code, 1);
   assert.match(
     limited.stdout,
-    /failure-class=rate-limit job=success credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN /u,
+    /failure-class=rate-limit job=success credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN; read the job log\./u,
   );
   // The key leg alone failed: the key is named.
   const keyFailed = report({
@@ -419,7 +419,7 @@ test("the status line names the credential of the leg it reports, in legacy toke
     KEY_CLASS: "other",
     KEY_CREDENTIAL: key,
   });
-  assert.match(keyFailed.stdout, /job=success credential=AUTOMATIONS_CLAUDE_API_KEY /u);
+  assert.match(keyFailed.stdout, /job=success credential=AUTOMATIONS_CLAUDE_API_KEY; read the job log\./u);
   // A key credit stop with no subscription token: the stop is the key's.
   const noToken = report({
     KEY_CLASS: "credit-stop",
@@ -429,7 +429,7 @@ test("the status line names the credential of the leg it reports, in legacy toke
   });
   assert.match(
     noToken.stdout,
-    /failure-class=rate-limit job=success credential=AUTOMATIONS_CLAUDE_API_KEY /u,
+    /failure-class=rate-limit job=success credential=AUTOMATIONS_CLAUDE_API_KEY; read the job log\./u,
   );
   // Both secrets empty: no credential ran.
   const neither = report({
@@ -439,6 +439,8 @@ test("the status line names the credential of the leg it reports, in legacy toke
     SUB_PRESENT: "false",
   });
   assert.doesNotMatch(neither.stdout, /credential=/u);
+  // With no credential the line is main's, byte for byte.
+  assert.match(neither.stdout, /failure-class=other job=success; read the job log\.$/mu);
   // A value that is not a secret name is dropped, never printed.
   const forged = report({
     KEY_FAILED: "true",

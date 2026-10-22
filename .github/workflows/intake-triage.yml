@@ -1721,7 +1721,7 @@ jobs:
           if [ "$job" = success ] && [ "$failed" = false ] && [ "$class" != skipped-validation ]; then
             exit 0
           fi
-          echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job$credential — read the job log."
+          echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job$credential; read the job log."
           exit 1
 
   # The claude job's if is the author gate, so on an opened issue or a
