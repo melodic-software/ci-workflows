@@ -776,7 +776,11 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
     const github = {
       paginate: Object.assign(
         async () => [
-          { user: { login: "alice", type: "User", id: 101 }, html_url: "https://github.com/o/r/issues/7#issuecomment-1", body: "first" },
+          {
+            user: { login: "alice", type: "User", id: 101 },
+            html_url: "https://github.com/o/r/issues/7#issuecomment-1",
+            body: "first",
+          },
           { user: { login: "carol", type: "User", id: 102 }, body: null },
         ],
         {
@@ -828,7 +832,11 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
       labels: ["bug", "raw"],
       body: path.join(dir, "body.md"),
       comments: [
-        { author: "alice", url: "https://github.com/o/r/issues/7#issuecomment-1", body: path.join(dir, "comment-1.md") },
+        {
+          author: "alice",
+          url: "https://github.com/o/r/issues/7#issuecomment-1",
+          body: path.join(dir, "comment-1.md"),
+        },
         { author: "carol", url: "", body: path.join(dir, "comment-2.md") },
       ],
     });
