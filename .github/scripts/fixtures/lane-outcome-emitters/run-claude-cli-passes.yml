@@ -1,0 +1,17 @@
+name: Fixture run-claude-cli lane that reports
+on: workflow_call
+jobs:
+  triage:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run Claude
+        id: claude
+        uses: $/.github/actions/run-claude-cli
+        with:
+          prompt-file: prompt.md
+      - name: Report outcome
+        uses: $/.github/actions/report-lane-outcome
+        with:
+          outcome: ${{ steps.claude.outcome }}
+          lane-id: fixture-lane
+          credential: ${{ steps.claude.outputs.credential }}

@@ -1,0 +1,10 @@
+name: Fixture missing call
+on: workflow_call
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run Claude
+        uses: anthropics/claude-code-action@0000000000000000000000000000000000000000 # v1.0.0
+        with:
+          prompt: hello
