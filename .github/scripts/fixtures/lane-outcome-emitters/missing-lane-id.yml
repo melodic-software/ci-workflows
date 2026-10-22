@@ -9,6 +9,7 @@ jobs:
         with:
           prompt: hello
       - name: Report outcome
+        id: report
         uses: $/.github/actions/report-lane-outcome
         with:
           outcome: ${{ steps.claude.outcome }}

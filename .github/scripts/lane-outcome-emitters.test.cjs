@@ -24,9 +24,10 @@ const isNonEmpty = (value) => typeof value === "string" && value.trim() !== "";
 /**
  * Find the lane jobs of a parsed workflow and what each is missing.
  *
- * @returns {{ job: string, missing: string[] }[]} one entry per lane job that
- *   does not emit the record; `missing` holds "report-lane-outcome step",
- *   "credential" or "lane-id".
+ * @returns {{ job: string, step?: string, missing: string[] }[]} one entry per
+ *   lane job with no report-lane-outcome step (`missing` is
+ *   ["report-lane-outcome step"]) and one per report step, named by id or name,
+ *   that leaves `credential` or `lane-id` empty.
  */
 function findMissingEmitters(workflow) {
   const failures = [];
@@ -40,20 +41,19 @@ function findMissingEmitters(workflow) {
     );
     if (reports.length === 0) {
       failures.push({ job, missing: ["report-lane-outcome step"] });
-      continue;
     }
-    // One step must set both inputs; report the closest one when none does.
-    const gaps = reports.map((step) =>
-      ["credential", "lane-id"].filter(
+    reports.forEach((step, index) => {
+      const missing = ["credential", "lane-id"].filter(
         (input) => !isNonEmpty(step.with?.[input]),
-      ),
-    );
-    if (gaps.every((missing) => missing.length > 0)) {
-      failures.push({
-        job,
-        missing: gaps.reduce((a, b) => (b.length < a.length ? b : a)),
-      });
-    }
+      );
+      if (missing.length > 0) {
+        failures.push({
+          job,
+          step: step.id ?? step.name ?? `report step ${index + 1}`,
+          missing,
+        });
+      }
+    });
   }
   return failures;
 }
@@ -68,8 +68,8 @@ test("every lane job in .github/workflows emits the lane-outcome record", () => 
   assert.notEqual(files.length, 0);
   const failures = files.flatMap((name) =>
     findMissingEmitters(parseFile(path.join(workflowsDir, name))).map(
-      ({ job, missing }) =>
-        `${name} job ${job} is missing: ${missing.join(", ")}`,
+      ({ job, step, missing }) =>
+        `${name} job ${job}${step ? ` step ${step}` : ""} is missing: ${missing.join(", ")}`,
     ),
   );
   assert.deepEqual(failures, []);
@@ -105,8 +105,18 @@ for (const [fixture, expected] of [
     "missing-call.yml",
     [{ job: "review", missing: ["report-lane-outcome step"] }],
   ],
-  ["missing-credential.yml", [{ job: "review", missing: ["credential"] }]],
-  ["missing-lane-id.yml", [{ job: "review", missing: ["lane-id"] }]],
+  [
+    "missing-credential.yml",
+    [{ job: "review", step: "report", missing: ["credential"] }],
+  ],
+  [
+    "missing-lane-id.yml",
+    [{ job: "review", step: "report", missing: ["lane-id"] }],
+  ],
+  [
+    "second-report-missing-lane-id.yml",
+    [{ job: "review", step: "second-report", missing: ["lane-id"] }],
+  ],
   ["run-claude-cli-passes.yml", []],
   ["secrets-forwarded.yml", []],
 ]) {
