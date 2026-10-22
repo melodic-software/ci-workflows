@@ -1179,9 +1179,11 @@ parent secret.
 `fallback-claude-code-oauth-token`. When the first attempt stops on a usage
 limit (`class=rate-limit`), the job retries the review once on that token, in
 the same job and inside the review step's budget, before the report steps; the
-completion record then ends with the field `account=fallback`. The first attempt's limit leaves only a warning with no
-`class=` token, so the final report alone names the run's class. Without the
-secret the job makes one attempt.
+completion record then ends with the field `account=fallback`. The first
+attempt's usage limit writes its own handoff notice, with `class=rate-limit`
+and the primary's credential (`credential-name`), and the final report covers
+the fallback attempt and names the run's class. Without the secret the job
+makes one attempt.
 
 **Inputs** (both lanes, all optional):
 
