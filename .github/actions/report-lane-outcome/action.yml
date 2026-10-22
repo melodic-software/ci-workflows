@@ -21,7 +21,7 @@ description: >-
   records the failure class and detail. Every annotation it writes,
   a success notice included, carries the run record as bare tokens:
   `turns=`, `max-turns=`, `credential=`, `fallback=`, `models=` (the result
-  message's modelUsage keys), on class rate-limit `resets=<ISO>` and
+  message's modelUsage keys, at most 8), on class rate-limit `resets=<ISO>` and
   `resets-window=<rateLimitType>` from the newest rejected
   rate_limit_event, and on a failure the API error body's `error-type=`,
   `error-code=` and `request-id=` when a run with no model output carries

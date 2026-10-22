@@ -358,11 +358,16 @@ function readRunRecord(executionFilePath) {
   };
 }
 
+// At most this many models, in the tokens and the record alike: eight
+// 100-character ids keep the sentence before the record short enough that the
+// runner's 4,096-character cut does not reach the record (docs/lane-outcome.md).
+const MAX_MODELS = 8;
+
 // The run's facts for one annotation, each gate applied once: resets only on
 // a limit stop (rate-limit), the API error facts only on a failure, the
 // credential and fallback reason only from their closed sets, the max-turns
-// cap only as a count. recordTokens and the lane-outcome record both
-// serialize this one object.
+// cap only as a count, the models only up to MAX_MODELS. recordTokens and the
+// lane-outcome record both serialize this one object.
 function runFacts(
   {
     turns = null,
@@ -395,7 +400,7 @@ function runFacts(
       : null,
     turns,
     maxTurns: COUNT_PATTERN.test(maxTurns) ? Number(maxTurns) : null,
-    models,
+    models: models.slice(0, MAX_MODELS),
   };
 }
 
@@ -430,7 +435,7 @@ const RECORD_MARKER = "lane-outcome ";
 const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 // Basis: docs/lane-outcome.md, "A record is at most 1,024 characters".
 const RECORD_MAX_LENGTH = 1024;
-const RECORD_MAX_MODELS = 8;
+const RECORD_MAX_MODELS = MAX_MODELS;
 
 // The credential's kind and role from its secret name, or null.
 function credentialFacts(secret) {
@@ -501,7 +506,7 @@ function factRecord(
     ["maxTurns", facts.maxTurns],
     [
       "models",
-      facts.models.length > 0 ? facts.models.slice(0, RECORD_MAX_MODELS) : null,
+      facts.models.length > 0 ? facts.models : null,
     ],
   ]);
   if (JSON.stringify(record).length > RECORD_MAX_LENGTH) delete record.models;

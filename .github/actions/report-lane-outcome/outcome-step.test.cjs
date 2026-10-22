@@ -1101,3 +1101,57 @@ test("past six digits of turns the tokens keep the count and the record leaves i
   assert.match(notices[0], /\bturns=1000000\b/u);
   assert.equal("turns" in readRecord(notices[0]), false);
 });
+
+test("with 45 long model ids the record still ends inside the runner's 4,096-character cut", async () => {
+  // Every token at its pattern's longest: a 100-character credential and
+  // forty-five 100-character model ids on the rate-limit branch.
+  const models = Object.fromEntries(
+    Array.from({ length: 45 }, (_, i) => [`${"m".repeat(98)}${String(i).padStart(2, "0")}`, {}]),
+  );
+  const credential = `${"R".repeat(76)}_CLAUDE_CODE_OAUTH_TOKEN`;
+  const file = writeExecutionFile([
+    { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "five_hour" } },
+    { type: "result", subtype: "x".repeat(5000), is_error: true, num_turns: 999999, api_error_status: 429, modelUsage: models },
+  ]);
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude security review",
+    laneId: "pr-review-security",
+    credential,
+    maxTurns: "999999",
+  });
+  assert.equal(errors.length, 1);
+  const tokenModels = /\bmodels=(\S+)/u.exec(errors[0])[1].split(",");
+  assert.equal(tokenModels.length, 8);
+  const cut = errors[0].slice(0, 4096);
+  const record = readRecord(cut);
+  assert.notEqual(record, null);
+  assert.equal(record.credential.secret, credential);
+  assert.equal(record.class, "rate-limit");
+});
+
+test("a failing key leg that did not hand off stays an error; only handoff \"true\" makes it a notice", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: true, num_turns: 1, usage: { input_tokens: 0, output_tokens: 0 } },
+  ]);
+  const leg = (handoff) =>
+    runOutcome({
+      outcome: "failure",
+      executionFile: file,
+      lane: "Claude intake triage",
+      laneId: "intake-triage",
+      credential: "AUTOMATIONS_CLAUDE_API_KEY",
+      knownFailureClass: "credit-stop",
+      handoff,
+    });
+  for (const handoff of ["false", "", "True", "true "]) {
+    const { errors, notices } = await leg(handoff);
+    assert.equal(errors.length, 1, JSON.stringify(handoff));
+    assert.equal(notices.length, 0, JSON.stringify(handoff));
+    assert.equal("handoff" in readRecord(errors[0]), false, JSON.stringify(handoff));
+  }
+  const handedOff = await leg("true");
+  assert.equal(handedOff.errors.length, 0);
+  assert.equal(readRecord(handedOff.notices[0]).handoff, true);
+});

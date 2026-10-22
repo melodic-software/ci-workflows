@@ -33,10 +33,10 @@ A record is at most 1,024 characters. The runner cuts a workflow-command
 annotation message at 4,096 characters
 ([actions/runner `ExecutionContext.cs`](https://github.com/actions/runner/blob/main/src/Runner.Worker/ExecutionContext.cs)).
 The record comes before the free text, and the legacy sentence before it is
-short, so the cut does not reach the record. The one exception is the
-sentence's `models=` token, which has no length cap yet; a later change caps
-it. An emitter whose record would pass 1,024 characters drops `models` from
-the record.
+short, so the cut does not reach the record. The sentence's `models=` token
+and the record's `models` list each name at most 8 models; the run's other
+models are left out. An emitter whose record would pass 1,024 characters
+drops `models` from the record.
 
 ## Examples
 
@@ -91,7 +91,7 @@ their closed values and where `report-lane-outcome` takes them from.
 | `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
 | `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |
-| `models` | no | array of strings | the execution file's `modelUsage` keys |
+| `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
 
 The schema allows unknown properties at every level
 (`additionalProperties: true`).
