@@ -175,6 +175,12 @@ for (const lane of REVIEW_LANES) {
     assert.equal(first.with.handoff, "true");
     assert.equal(first.with["known-failure-class"], "rate-limit");
     assert.equal(first.with.lane, byId("review-outcome").with.lane);
-    assert.ok(steps.indexOf(first) < steps.indexOf(byId("review-outcome")));
+    // After the fallback is prepared, so its run output is set, and before
+    // the fallback attempt, which overwrites the first attempt's execution
+    // file at claude-code-action's one RUNNER_TEMP path.
+    assert.ok(steps.indexOf(byId("fallback")) < steps.indexOf(first));
+    assert.ok(
+      steps.indexOf(first) < steps.indexOf(byId("claude-review-fallback")),
+    );
   });
 }
