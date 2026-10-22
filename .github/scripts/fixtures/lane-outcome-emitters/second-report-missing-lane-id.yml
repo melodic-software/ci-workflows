@@ -1,0 +1,21 @@
+name: Fixture second report step lacks lane-id
+on: workflow_call
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run Claude
+        uses: anthropics/claude-code-action@0000000000000000000000000000000000000000 # v1.0.0
+        with:
+          prompt: hello
+      - name: Report first attempt
+        id: first-report
+        uses: $/.github/actions/report-lane-outcome
+        with:
+          lane-id: fixture-lane
+          credential: ${{ inputs.credential-name }}
+      - name: Report final outcome
+        id: second-report
+        uses: $/.github/actions/report-lane-outcome
+        with:
+          credential: ${{ inputs.credential-name }}
