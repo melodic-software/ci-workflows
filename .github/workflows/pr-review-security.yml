@@ -642,8 +642,8 @@ jobs:
             [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-          if ! command -v bwrap >/dev/null; then
-            echo "::error::bubblewrap is not installed; Claude Code cannot scrub its subprocess environment"
+          if ! { command -v bwrap && command -v socat; } >/dev/null; then
+            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
             exit 1
           fi
 

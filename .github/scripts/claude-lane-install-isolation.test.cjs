@@ -56,5 +56,11 @@ test("every apt-get call ends before its step limit", () => {
     const deadline = Number(/deadline=\$\(\(SECONDS \+ (\d+)\)\)/.exec(step.run)?.[1]);
     const kill = Number(/timeout -k (\d+)/.exec(step.run)?.[1]);
     assert.ok(deadline + kill < step["timeout-minutes"] * 60, `${label} deadline fits`);
+    // The skip needs both tools, so the final check must too.
+    assert.match(
+      step.run,
+      /if ! \{ command -v bwrap && command -v socat; \} >\/dev\/null; then\n\s*echo "::error::[^\n]*"\n\s*exit 1/,
+      `${label} fails without bwrap or socat`,
+    );
   }
 });
