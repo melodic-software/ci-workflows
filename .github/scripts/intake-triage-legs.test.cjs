@@ -236,14 +236,17 @@ test("the key leg's outcome step writes its record on a handoff too, flagged by 
     false,
   );
   assert.equal(outcome.with["lane-id"], "intake-triage");
-  assert.equal(outcome.with.credential, "${{ steps.claude.outputs.credential }}");
+  assert.equal(
+    outcome.with.credential,
+    `\${{ steps.claude.outputs.credential }}`,
+  );
   // Only run-claude-cli's handoff output, `true` only when the leg handed
   // off, sets the flag: a key leg that fails without handing off stays an
   // error (outcome-step.test.cjs holds the level).
-  assert.equal(outcome.with.handoff, "${{ steps.claude.outputs.handoff }}");
+  assert.equal(outcome.with.handoff, `\${{ steps.claude.outputs.handoff }}`);
   assert.equal(
     outcome.with["known-failure-class"],
-    "${{ steps.claude.outputs.lane-class }}",
+    `\${{ steps.claude.outputs.lane-class }}`,
   );
   // The subscription leg reports from its own step, with its fallback reason.
   const sub = subscription.steps.find((step) => step.id === "review-outcome");
@@ -397,7 +400,11 @@ test("the status job prints and writes only closed values", () => {
 
 test("the status line names the credential of the leg it reports, in legacy tokens only", () => {
   for (const job of [claude, subscription]) {
-    assert.equal(job.outputs.credential, "${{ steps.claude.outputs.credential }}", job.name);
+    assert.equal(
+      job.outputs.credential,
+      `\${{ steps.claude.outputs.credential }}`,
+      job.name,
+    );
   }
   const key = "AUTOMATIONS_CLAUDE_API_KEY";
   const token = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
@@ -422,7 +429,10 @@ test("the status line names the credential of the leg it reports, in legacy toke
     KEY_CLASS: "other",
     KEY_CREDENTIAL: key,
   });
-  assert.match(keyFailed.stdout, /job=success credential=AUTOMATIONS_CLAUDE_API_KEY; read the job log\./u);
+  assert.match(
+    keyFailed.stdout,
+    /job=success credential=AUTOMATIONS_CLAUDE_API_KEY; read the job log\./u,
+  );
   // A key credit stop with no subscription token: the stop is the key's.
   const noToken = report({
     KEY_CLASS: "credit-stop",
@@ -443,7 +453,10 @@ test("the status line names the credential of the leg it reports, in legacy toke
   });
   assert.doesNotMatch(neither.stdout, /credential=/u);
   // With no credential the line is main's, byte for byte.
-  assert.match(neither.stdout, /failure-class=other job=success; read the job log\.$/mu);
+  assert.match(
+    neither.stdout,
+    /failure-class=other job=success; read the job log\.$/mu,
+  );
   // A value that is not a secret name is dropped, never printed.
   const forged = report({
     KEY_FAILED: "true",
@@ -451,7 +464,10 @@ test("the status line names the credential of the leg it reports, in legacy toke
     KEY_CREDENTIAL: "KEY\n::error::planted",
   });
   assert.doesNotMatch(forged.stdout, /credential=|planted/u);
-  assert.deepEqual(limited.outputs, { "triage-failed": "true", "failure-class": "rate-limit" });
+  assert.deepEqual(limited.outputs, {
+    "triage-failed": "true",
+    "failure-class": "rate-limit",
+  });
 });
 
 test("the status step checks a secret name with report-lane-outcome's own pattern", () => {

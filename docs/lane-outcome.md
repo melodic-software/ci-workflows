@@ -8,9 +8,11 @@ to this page and to the JSON Schema
 
 Every lane workflow emits one record per credential attempt. A handoff writes
 two records: the attempt that handed off, with `handoff: true`, and the next
-one. Intake's key leg hands off to the subscription leg on a credit stop or a
-rejected key; a review lane's first token hands off to its fallback token at
-a usage limit. The emitter is
+one. The next attempt's record is written only when its credential is named
+(for the review lanes, `fallback-credential-name` set); otherwise that attempt
+writes the legacy tokens and a warning. Intake's key leg hands off to the
+subscription leg on a credit stop or a rejected key; a review lane's first
+token hands off to its fallback token at a usage limit. The emitter is
 [`report-lane-outcome`](../.github/actions/report-lane-outcome/action.yml).
 
 ## Format

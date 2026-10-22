@@ -1009,6 +1009,27 @@ jobs:
             echo "timeout-minutes=$left"
           } >> "$GITHUB_OUTPUT"
 
+      # When the fallback is about to run, the first attempt handed off at
+      # its usage limit: its own lane record names the primary credential, as
+      # a notice, since the fallback carries the run. It runs before the
+      # fallback attempt, which writes its execution file to the same path.
+      # The usage limit was decided in the first-outcome step, so the class
+      # is passed, not reclassified.
+      - name: Report the first attempt's usage limit
+        id: first-attempt-outcome
+        if: >-
+          steps.first-outcome.outputs.rate-limit == 'true'
+          && steps.fallback.outputs.run == 'true'
+        uses: $/.github/actions/report-lane-outcome
+        with:
+          outcome: ${{ steps.claude-review.outcome }}
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          lane: Claude review
+          lane-id: pr-review
+          credential: ${{ inputs.credential-name }}
+          handoff: "true"
+          known-failure-class: rate-limit
+
       - name: Claude review on the fallback account
         id: claude-review-fallback
         if: steps.fallback.outputs.run == 'true'
@@ -1261,25 +1282,6 @@ jobs:
           else
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
           fi
-
-      # When the fallback ran, the first attempt handed off at its usage
-      # limit: its own lane record names the primary credential, as a notice,
-      # since the fallback carries the run. The usage limit was decided in
-      # the first-outcome step, so the class is passed, not reclassified.
-      - name: Report the first attempt's usage limit
-        id: first-attempt-outcome
-        if: >-
-          steps.first-outcome.outputs.rate-limit == 'true'
-          && steps.fallback.outputs.run == 'true'
-        uses: $/.github/actions/report-lane-outcome
-        with:
-          outcome: ${{ steps.claude-review.outcome }}
-          execution-file: ${{ steps.claude-review.outputs.execution_file }}
-          lane: Claude review
-          lane-id: pr-review
-          credential: ${{ inputs.credential-name }}
-          handoff: "true"
-          known-failure-class: rate-limit
 
       - name: Report review outcome
         id: review-outcome

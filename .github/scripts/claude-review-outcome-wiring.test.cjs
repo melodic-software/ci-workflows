@@ -130,14 +130,23 @@ for (const lane of REVIEW_LANES) {
       "fallback-credential-name": "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
     };
     assert.equal(credential("primary", names), "CLAUDE_CODE_OAUTH_TOKEN");
-    assert.equal(credential("fallback", names), "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN");
+    assert.equal(
+      credential("fallback", names),
+      "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+    );
     // A fallback with no name is never reported as the primary's secret.
     assert.equal(
       credential("fallback", { ...names, "fallback-credential-name": "" }),
       "",
     );
-    assert.equal(credential("primary", { ...names, "credential-name": "" }), "");
-    assert.doesNotMatch(outcome.with.credential, /fallback-claude-code-oauth-token/u);
+    assert.equal(
+      credential("primary", { ...names, "credential-name": "" }),
+      "",
+    );
+    assert.doesNotMatch(
+      outcome.with.credential,
+      /fallback-claude-code-oauth-token/u,
+    );
   });
 
   test(`${lane}: when the fallback ran, the first attempt writes its own usage-limit record as a handoff`, () => {
@@ -156,16 +165,22 @@ for (const lane of REVIEW_LANES) {
     // No fallback attempt: the outcome report covers the first attempt.
     assert.equal(runs("true", ""), false);
     assert.equal(runs("false", ""), false);
-    assert.equal(first.with.outcome, "${{ steps.claude-review.outcome }}");
+    assert.equal(first.with.outcome, `\${{ steps.claude-review.outcome }}`);
     assert.equal(
       first.with["execution-file"],
-      "${{ steps.claude-review.outputs.execution_file }}",
+      `\${{ steps.claude-review.outputs.execution_file }}`,
     );
     assert.equal(first.with["lane-id"], laneId);
-    assert.equal(first.with.credential, "${{ inputs.credential-name }}");
+    assert.equal(first.with.credential, `\${{ inputs.credential-name }}`);
     assert.equal(first.with.handoff, "true");
     assert.equal(first.with["known-failure-class"], "rate-limit");
     assert.equal(first.with.lane, byId("review-outcome").with.lane);
-    assert.ok(steps.indexOf(first) < steps.indexOf(byId("review-outcome")));
+    // After the fallback is prepared, so its run output is set, and before
+    // the fallback attempt, which overwrites the first attempt's execution
+    // file at claude-code-action's one RUNNER_TEMP path.
+    assert.ok(steps.indexOf(byId("fallback")) < steps.indexOf(first));
+    assert.ok(
+      steps.indexOf(first) < steps.indexOf(byId("claude-review-fallback")),
+    );
   });
 }

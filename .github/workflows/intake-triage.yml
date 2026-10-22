@@ -1642,8 +1642,9 @@ jobs:
             await core.summary.addRaw(summary.join("\n")).write();
             if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
 
-  # One lane record: the subscription job's outcome when it ran, else the
-  # claude job's, and red when the apply job failed. Every value arrives
+  # One status for the run, and no lane record (each leg writes its own): the
+  # subscription job's outcome when it ran, else the claude job's, and red
+  # when the apply job failed. Every value arrives
   # through env and is checked against a closed set before it is printed or
   # written.
   status:
