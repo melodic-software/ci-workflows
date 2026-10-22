@@ -228,11 +228,15 @@ runs:
           // runner's 4,096-character cut never reaches it.
           const laneId = process.env.LANE_ID ?? "";
           const credential = process.env.CREDENTIAL ?? "";
-          const report = (stepOutcome, failureClass = "") => {
+          // `failureClass` builds the tokens as they have always been built;
+          // `recordClass` is the record's class where the tokens carry none.
+          // With no record every message is what it was before the record.
+          const report = (stepOutcome, failureClass = "", recordClass = failureClass) => {
             const { tokens, record, missing } = laneReport(runRecord, {
               laneId,
               outcome: stepOutcome,
               failureClass,
+              recordClass,
               maxTurns: process.env.MAX_TURNS ?? "",
               credential,
               fallbackReason,
@@ -246,7 +250,13 @@ runs:
                   `${missing.length === 1 ? "is" : "are"} empty or invalid.`,
               );
             }
-            return { tokens: tokens === "" ? "" : ` ${tokens}`, line: recordText(record) };
+            const line = recordText(record);
+            return {
+              tokens: tokens === "" ? "" : ` ${tokens}`,
+              before: line === "" ? "" : `${line} `,
+              after: line === "" ? "" : ` ${line}`,
+              written: record !== null,
+            };
           };
 
           if (outcome === "success") {
@@ -257,11 +267,10 @@ runs:
               // "complete" is class `incomplete`, red, with no review-ran.
               const completion = process.env.COMPLETION ?? "";
               if (process.env.REQUIRE_COMPLETION === "true" && completion !== "complete") {
-                const { tokens, line } = report(outcome, "incomplete");
+                const { tokens, after } = report(outcome, "", "incomplete");
                 core.error(
-                  `${lane} concluded: ${outcome} class=incomplete${tokens} ` +
-                    `${line}— no completed ` +
-                    `review was found: ${completion || "the completion check reported nothing"}.`,
+                  `${lane} concluded: ${outcome} class=incomplete${tokens} — no completed ` +
+                    `review was found: ${completion || "the completion check reported nothing"}.${after}`,
                 );
                 core.setOutput("failure_class", "incomplete");
                 core.setOutput("review_detail", "(no completed review was found)");
@@ -270,10 +279,10 @@ runs:
                 return;
               }
               // A notice, so the record reaches the check run on a success too.
-              const { tokens, line } = report(outcome);
+              const { tokens, before } = report(outcome);
               core.notice(
                 `${lane} completed:${tokens || " (no run record)"}. ` +
-                  `${line}Findings (if any) are in the PR comments.`,
+                  `${before}Findings (if any) are in the PR comments.`,
               );
               core.setOutput("review_failed", "false");
               core.setOutput("review_ran", "true");
@@ -290,13 +299,12 @@ runs:
             // review_failed stays false: the skip is expected and
             // self-correcting on the PRs that edit the caller. The lanes'
             // status steps still go red on this class, since nothing ran.
-            const { tokens, line } = report(outcome, "skipped-validation");
+            const { tokens, before } = report(outcome, "", "skipped-validation");
             core.warning(
               `${lane} concluded: ${outcome} class=skipped-validation${tokens} with no ` +
-                `execution evidence ${line}` +
-                "— the action skipped itself before running " +
+                "execution evidence — the action skipped itself before running " +
                 "(workflow-validation skip: the caller's workflow file must " +
-                "match the default branch's copy). Nothing was reviewed.",
+                `match the default branch's copy). ${before}Nothing was reviewed.`,
             );
             core.setOutput("failure_class", "skipped-validation");
             core.setOutput("review_detail", "(no execution file was produced)");
@@ -331,23 +339,24 @@ runs:
           // security signal, any other lane's is not a code-quality signal.
           // Derived from the lane name so callers need no extra wiring.
           const signal = /security/iu.test(lane) ? "security" : "code-quality";
-          const { tokens, line } = report(outcome, failureClass);
+          const { tokens, before, written } = report(outcome, failureClass);
           // A usage limit stays an error (the check goes red) but reads as a
           // skipped run; the `class=rate-limit` token is unchanged. A lane
           // that is not a review (intake triage) names itself instead.
           const skipped = /review/iu.test(lane) ? "AI review" : lane;
           // A key leg that handed off is not the run's failure: the next
-          // credential carries the run, so its record is a notice.
-          const annotate = process.env.HANDOFF === "true" ? core.notice : core.error;
+          // credential carries the run, so its record is a notice. Without a
+          // record the level is unchanged.
+          const annotate = written && process.env.HANDOFF === "true" ? core.notice : core.error;
           annotate(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
                   `(${lane} exited with: ${outcome} class=rate-limit${tokens}). ` +
-                  `${line}Last SDK result: ${reviewDetail}`
+                  `${before}Last SDK result: ${reviewDetail}`
               : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
                   `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
                   "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
-                  `${line}Last SDK result: ${reviewDetail}`,
+                  `${before}Last SDK result: ${reviewDetail}`,
           );
 
           core.setOutput("failure_class", failureClass);

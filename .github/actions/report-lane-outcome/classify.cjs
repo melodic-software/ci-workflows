@@ -302,7 +302,7 @@ function classifyExecutionFile(
 const CREDENTIAL_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
 const MODEL_PATTERN = /^[\w.:@[\]-]{1,100}$/u;
 const COUNT_PATTERN = /^\d{1,6}$/u;
-// The largest count COUNT_PATTERN admits, and the bound on turns.
+// The largest count COUNT_PATTERN admits, and the record's bound on turns.
 const COUNT_MAX = 999999;
 // A failure class as a closed kebab token.
 const CLASS_PATTERN = /^[a-z][a-z-]{0,39}$/u;
@@ -348,10 +348,7 @@ function readRunRecord(executionFilePath) {
   const turns = result?.num_turns;
   const usage = result?.modelUsage;
   return {
-    turns:
-      Number.isInteger(turns) && turns >= 0 && turns <= COUNT_MAX
-        ? turns
-        : null,
+    turns: Number.isInteger(turns) && turns >= 0 ? turns : null,
     models:
       usage && typeof usage === "object" && !Array.isArray(usage)
         ? Object.keys(usage).filter((key) => MODEL_PATTERN.test(key))
@@ -459,7 +456,12 @@ function recordOutcome(outcome, failureClass) {
   return failureClass === "timeout" ? "timeout" : "failure";
 }
 
-function factRecord(facts, { laneId = "", outcome = "", handoff = "" }) {
+// `recordClass` overrides the class in the record alone, for a branch whose
+// legacy tokens carry no class (incomplete, skipped-validation).
+function factRecord(
+  facts,
+  { laneId = "", outcome = "", handoff = "", recordClass = facts.failureClass },
+) {
   const credential = credentialFacts(facts.credential);
   const missing = [
     ...(LANE_ID_PATTERN.test(laneId) ? [] : ["lane-id"]),
@@ -473,8 +475,8 @@ function factRecord(facts, { laneId = "", outcome = "", handoff = "" }) {
   const record = present([
     ["v", 1],
     ["lane", laneId],
-    ["outcome", recordOutcome(outcome, facts.failureClass)],
-    ["class", facts.failureClass === "" ? null : facts.failureClass],
+    ["outcome", recordOutcome(outcome, recordClass)],
+    ["class", recordClass === "" ? null : recordClass],
     ["credential", credential],
     ["handoff", handoff === "true" ? true : null],
     ["fallback", present([["reason", facts.fallbackReason]])],
@@ -495,7 +497,7 @@ function factRecord(facts, { laneId = "", outcome = "", handoff = "" }) {
         ["requestId", facts.requestId],
       ]),
     ],
-    ["turns", facts.turns],
+    ["turns", facts.turns !== null && facts.turns <= COUNT_MAX ? facts.turns : null],
     ["maxTurns", facts.maxTurns],
     [
       "models",
@@ -513,10 +515,10 @@ function laneReport(run, inputs = {}) {
   return { tokens: factTokens(facts), ...factRecord(facts, inputs) };
 }
 
-// The record as it sits in an annotation message: the marker, the JSON and
-// one space, or "" when there is no record.
+// The record as it sits in an annotation message: the marker and the JSON,
+// or "" when there is no record.
 function recordText(record) {
-  return record === null ? "" : `${RECORD_MARKER}${JSON.stringify(record)} `;
+  return record === null ? "" : `${RECORD_MARKER}${JSON.stringify(record)}`;
 }
 
 module.exports = {

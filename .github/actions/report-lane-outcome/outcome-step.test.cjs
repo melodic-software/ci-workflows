@@ -930,3 +930,174 @@ test("the schema states the emitter's own patterns, closed sets and limits", () 
   assert.equal(properties.turns.maximum, COUNT_MAX);
   assert.equal(properties.maxTurns.maximum, COUNT_MAX);
 });
+
+// A pin, not a correctness check: with no lane-id, every annotation and
+// output must be byte-for-byte what main's step wrote, so no existing reader
+// sees a change. The expected values were recorded from main (df32b1c) for
+// these exact inputs; a handoff input changes nothing without a record.
+const MAIN_OUTPUT = {
+  "success": {
+    "outputs": {
+      "review_failed": "false",
+      "review_ran": "true"
+    },
+    "errors": [],
+    "warnings": [],
+    "notices": [
+      "Claude review completed: credential=CLAUDE_CODE_OAUTH_TOKEN turns=4 max-turns=30 models=claude-sonnet-5. Findings (if any) are in the PR comments."
+    ],
+    "failed": []
+  },
+  "validation skip": {
+    "outputs": {
+      "failure_class": "skipped-validation",
+      "review_detail": "(no execution file was produced)",
+      "review_failed": "false",
+      "review_ran": "false"
+    },
+    "errors": [],
+    "warnings": [
+      "Claude review concluded: success class=skipped-validation credential=CLAUDE_CODE_OAUTH_TOKEN with no execution evidence — the action skipped itself before running (workflow-validation skip: the caller's workflow file must match the default branch's copy). Nothing was reviewed."
+    ],
+    "notices": [],
+    "failed": []
+  },
+  "incomplete": {
+    "outputs": {
+      "failure_class": "incomplete",
+      "review_detail": "(no completed review was found)",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review concluded: success class=incomplete credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 — no completed review was found: no summary."
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "credit stop, handoff set": {
+    "outputs": {
+      "failure_class": "credit-stop",
+      "review_detail": "{\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: failure class=credit-stop error-type=billing_error request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 max-turns=30 models=claude-sonnet-5 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "usage limit": {
+    "outputs": {
+      "failure_class": "rate-limit",
+      "review_detail": "{\"subtype\":\"success\",\"is_error\":true,\"num_turns\":null,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":429,\"error_type\":null,\"class\":\"rate-limit\"}",
+      "resets_at": "2026-10-22T05:00:00Z",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "AI review skipped: usage limit reached; re-run after it resets (Claude review exited with: failure class=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":null,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":429,\"error_type\":null,\"class\":\"rate-limit\"}"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "1,000,000 turns": {
+    "outputs": {
+      "review_failed": "false",
+      "review_ran": "true"
+    },
+    "errors": [],
+    "warnings": [],
+    "notices": [
+      "Claude review completed: credential=CLAUDE_CODE_OAUTH_TOKEN turns=1000000. Findings (if any) are in the PR comments."
+    ],
+    "failed": []
+  },
+  "denied": {
+    "outputs": {
+      "failure_class": "auth",
+      "review_detail": "{\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: failure class=auth error-type=permission_error error-code=abc_def request-id=req_abcdefgh12 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "cancelled": {
+    "outputs": {
+      "failure_class": "no-execution",
+      "review_detail": "(no execution file was produced)",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: cancelled class=no-execution credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: (no execution file was produced)"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  },
+  "sandbox skip": {
+    "outputs": {
+      "failure_class": "sandbox-unavailable",
+      "review_detail": "(no execution file was produced)",
+      "review_failed": "true",
+      "review_ran": "false"
+    },
+    "errors": [
+      "Claude review exited with: skipped class=sandbox-unavailable credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: (no execution file was produced)"
+    ],
+    "warnings": [],
+    "notices": [],
+    "failed": []
+  }
+};
+
+test("with no lane-id, every branch writes exactly what main wrote", async () => {
+  const creditStopText =
+    'API Error: 402 {"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low"},"request_id":"req_fake0000000000000000"}';
+  const files = {};
+  const pinFile = (name, contents) => {
+    files[name] = path.join(temporaryDirectory, `pin-${name}.json`);
+    fs.writeFileSync(files[name], JSON.stringify(contents));
+    return files[name];
+  };
+  pinFile("ok", [{ type: "result", subtype: "success", is_error: false, num_turns: 4, modelUsage: { "claude-sonnet-5": {} } }]);
+  pinFile("creditStop", [{ type: "result", subtype: "success", is_error: true, num_turns: 1, result: creditStopText, usage: { input_tokens: 0, output_tokens: 0 }, modelUsage: { "claude-sonnet-5": {} } }]);
+  pinFile("denied", [{ type: "result", subtype: "success", is_error: true, num_turns: 1, api_error_status: 403, result: 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"x","details":{"error_code":"abc_def"}},"request_id":"req_abcdefgh12"}', usage: { input_tokens: 0, output_tokens: 0 } }]);
+  pinFile("limited", [{ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "five_hour" } }, { type: "result", subtype: "success", is_error: true, api_error_status: 429 }]);
+  pinFile("manyTurns", [{ type: "result", subtype: "success", is_error: false, num_turns: 1000000 }]);
+  const key = "AUTOMATIONS_CLAUDE_API_KEY";
+  const token = "CLAUDE_CODE_OAUTH_TOKEN";
+  const cases = {
+    success: { outcome: "success", executionFile: files.ok, credential: token, maxTurns: "30" },
+    "validation skip": { outcome: "success", executionFile: "", credential: token },
+    incomplete: { outcome: "success", executionFile: files.denied, credential: key, requireCompletion: "true", completion: "no summary" },
+    "credit stop, handoff set": { outcome: "failure", executionFile: files.creditStop, credential: key, knownFailureClass: "credit-stop", maxTurns: "30", handoff: "true" },
+    "usage limit": { outcome: "failure", executionFile: files.limited, credential: token, fallbackReason: "credit-stop" },
+    "1,000,000 turns": { outcome: "success", executionFile: files.manyTurns, credential: token },
+    denied: { outcome: "failure", executionFile: files.denied, credential: key },
+    cancelled: { outcome: "cancelled", executionFile: "", credential: token },
+    "sandbox skip": { outcome: "skipped", executionFile: "", credential: token, knownFailureClass: "sandbox-unavailable" },
+  };
+  assert.deepEqual(Object.keys(cases), Object.keys(MAIN_OUTPUT));
+  for (const [name, inputs] of Object.entries(cases)) {
+    const { outputs, errors, warnings, notices, failed } = await runOutcome(inputs);
+    assert.deepEqual({ outputs, errors, warnings, notices, failed }, MAIN_OUTPUT[name], name);
+  }
+});
+
+test("past six digits of turns the tokens keep the count and the record leaves it out", async () => {
+  const file = writeExecutionFile([{ type: "result", subtype: "success", is_error: false, num_turns: 1000000 }]);
+  const { notices } = await runOutcome({ outcome: "success", executionFile: file, laneId: "pr-review", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
+  assert.match(notices[0], /\bturns=1000000\b/u);
+  assert.equal("turns" in readRecord(notices[0]), false);
+});

@@ -907,7 +907,7 @@ test("lane record: past 1,024 characters the models list is dropped", () => {
   assert.equal(record.turns, 1);
   const text = recordText(record);
   assert.ok(text.startsWith("lane-outcome {"));
-  assert.ok(text.length <= "lane-outcome ".length + 1024 + 1);
+  assert.ok(text.length <= "lane-outcome ".length + 1024);
   assert.equal(recordText(null), "");
 });
 
@@ -945,9 +945,4 @@ test("one report: the legacy tokens and the record carry the same gated facts", 
   const ok = laneReport(run, { laneId: "pr-review", outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
   assert.equal(ok.tokens, "credential=CLAUDE_CODE_OAUTH_TOKEN turns=2 models=claude-sonnet-5");
   assert.equal("error" in ok.record || "resets" in ok.record, false);
-});
-
-test("run record: a turn count past six digits is unknown", () => {
-  assert.equal(record([{ type: "result", subtype: "success", num_turns: 999999 }]).turns, 999999);
-  assert.equal(record([{ type: "result", subtype: "success", num_turns: 1000000 }]).turns, null);
 });
