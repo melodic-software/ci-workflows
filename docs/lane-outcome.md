@@ -35,7 +35,8 @@ that would pass 1,024 characters drops `models`.
 
 ## Examples
 
-A key leg that hit a credit stop and handed off:
+A key leg that hit a credit stop and handed off to the subscription leg. A
+key leg that hands off writes its own record with `handoff: true`:
 
 ```json
 {
@@ -45,15 +46,13 @@ A key leg that hit a credit stop and handed off:
   "class": "credit-stop",
   "credential": { "secret": "AUTOMATIONS_CLAUDE_API_KEY", "kind": "api-key", "role": "AUTOMATIONS" },
   "handoff": true,
-  "fallback": { "reason": "credit-stop", "from": "AUTOMATIONS_CLAUDE_API_KEY" },
-  "resets": { "at": "2026-10-22T05:00:00Z", "window": "five_hour" },
-  "error": { "type": "billing_error", "code": null, "status": 402, "requestId": "req_..." },
-  "turns": 5, "maxTurns": 30, "models": ["claude-sonnet-5"]
+  "error": { "type": "billing_error", "requestId": "req_fake0000000000000000" },
+  "turns": 1, "maxTurns": 30, "models": ["claude-sonnet-5"]
 }
 ```
 
-The subscription leg after that handoff, then a review lane under the legacy
-single token:
+The subscription leg after that handoff, whose record carries the fallback
+reason, then a review lane under the legacy single token:
 
 ```json
 {"v":1,"lane":"intake-triage","outcome":"success","credential":{"secret":"AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN","kind":"oauth-token","role":"AUTOMATIONS"},"fallback":{"reason":"credit-stop"},"turns":5,"models":["claude-sonnet-5"]}
@@ -69,21 +68,25 @@ AI review skipped: usage limit reached; re-run after it resets (Claude review ex
 
 ## Fields
 
-| Field | Required | Type and rule | Source in `report-lane-outcome` |
+Each field's pattern and numeric limit is in the
+[schema](../schemas/lane-outcome.v1.schema.json); this table names the fields,
+their closed values and where `report-lane-outcome` takes them from.
+
+| Field | Required | Type and values | Source in `report-lane-outcome` |
 |---|---|---|---|
-| `v` | yes | integer; 1 | constant |
-| `lane` | yes | `^[a-z0-9][a-z0-9-]{0,63}$`, stable per lane workflow | `lane-id` input |
+| `v` | yes | integer; `1` | constant |
+| `lane` | yes | string, stable per lane workflow | `lane-id` input |
 | `outcome` | yes | `success`, `failure`, `timeout`, `skip`, `cancellation` or `error`, the OpenTelemetry CICD `cicd.pipeline.task.run.result` values | see [Outcome](#outcome) |
-| `class` | when `outcome` is not `success` | `^[a-z][a-z-]{0,39}$`; an open set | the classifier, or `known-failure-class` |
-| `credential.secret` | yes | `^[A-Z][A-Z0-9_]{0,99}$`, the secret name the caller mapped, never a slot name | `credential` input |
+| `class` | when `outcome` is not `success` | string; an open set | the classifier, or `known-failure-class` |
+| `credential.secret` | yes | string, the secret name the caller mapped, never a slot name | `credential` input |
 | `credential.kind` | yes | `oauth-token` or `api-key` | the secret's suffix: `_CLAUDE_API_KEY` is `api-key`; `CLAUDE_CODE_OAUTH_TOKEN`, alone or as a suffix, is `oauth-token` |
 | `credential.role` | no | the `<ROLE>` prefix | `<ROLE>_CLAUDE_API_KEY` or `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` |
 | `handoff` | no | boolean; true on a key leg's record when this attempt handed off to another credential | `handoff` input |
 | `fallback.reason` | no | `credit-stop`, `auth` or `no-key` | `fallback-reason` input, on the fallback leg's record |
-| `resets.at`, `resets.window` | no | ISO 8601 UTC; `^[a-z0-9_]{1,40}$` | the newest rejected `rate_limit_event`, on `rate-limit` only |
+| `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
-| `turns`, `maxTurns` | no | integers 0 to 999999 | the execution file; `max-turns` input |
-| `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
+| `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |
+| `models` | no | array of strings | the execution file's `modelUsage` keys |
 
 The schema allows unknown properties at every level
 (`additionalProperties: true`).
@@ -112,7 +115,9 @@ reader that warns about limit stops counts both.
 
 `report-lane-outcome` writes the record only when `lane-id` matches its
 pattern and `credential` matches its pattern and maps to a kind. Otherwise it
-writes the legacy tokens alone and a warning naming what is missing.
+writes the legacy tokens alone. When exactly one of the two inputs is set, it
+also writes a warning naming what is missing; with neither set it writes no
+warning.
 
 ## Compatibility
 

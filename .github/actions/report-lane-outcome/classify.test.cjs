@@ -14,7 +14,7 @@ const {
 } = require("../../scripts/temporary-directories.cjs");
 const {
   classifyExecutionFile,
-  laneRecord,
+  laneReport,
   readRunRecord,
   recordText,
   recordTokens,
@@ -837,12 +837,12 @@ test("lane record: the credential's kind and role come from the secret name", ()
     ["PR_REVIEW_CLAUDE_CODE_OAUTH_TOKEN", { secret: "PR_REVIEW_CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token", role: "PR_REVIEW" }],
     ["CLAUDE_CODE_OAUTH_TOKEN", { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" }],
   ]) {
-    const { record, missing } = laneRecord(run, { laneId: "pr-review", outcome: "success", credential: secret });
+    const { record, missing } = laneReport(run, { laneId: "pr-review", outcome: "success", credential: secret });
     assert.deepEqual(missing, [], secret);
     assert.deepEqual(record.credential, expected, secret);
   }
   for (const secret of ["CLAUDE_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "automations_claude_api_key", "fallback-claude-code-oauth-token", ""]) {
-    const { record, missing } = laneRecord(run, { laneId: "pr-review", outcome: "success", credential: secret });
+    const { record, missing } = laneReport(run, { laneId: "pr-review", outcome: "success", credential: secret });
     assert.equal(record, null, secret);
     assert.deepEqual(missing, ["credential"], secret);
   }
@@ -851,18 +851,18 @@ test("lane record: the credential's kind and role come from the secret name", ()
 test("lane record: a lane id outside the pattern writes no record", () => {
   const run = { turns: null, models: [] };
   for (const laneId of ["", "Pr-review", "-pr-review", "pr_review", "a".repeat(65)]) {
-    const { record, missing } = laneRecord(run, { laneId, outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
+    const { record, missing } = laneReport(run, { laneId, outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
     assert.equal(record, null, laneId);
     assert.deepEqual(missing, ["lane-id"], laneId);
   }
   assert.notEqual(
-    laneRecord(run, { laneId: "a".repeat(64), outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" }).record,
+    laneReport(run, { laneId: "a".repeat(64), outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" }).record,
     null,
   );
 });
 
 test("lane record: error facts, resets and max turns on a failure; at most 8 models", () => {
-  const { record } = laneRecord(
+  const { record } = laneReport(
     {
       turns: 1,
       models: ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"],
@@ -885,7 +885,7 @@ test("lane record: error facts, resets and max turns on a failure; at most 8 mod
     maxTurns: 30,
     models: ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"],
   });
-  const limited = laneRecord(
+  const limited = laneReport(
     { turns: null, models: [], resetsAt: "2026-01-01T00:00:00Z", resetsWindow: "five_hour" },
     { laneId: "pr-review", outcome: "failure", failureClass: "rate-limit", credential: "CLAUDE_CODE_OAUTH_TOKEN" },
   ).record;
@@ -898,7 +898,7 @@ test("lane record: past 1,024 characters the models list is dropped", () => {
   const models = Array.from({ length: 8 }, (_, i) => `${"m".repeat(99)}${i}`);
   const credential = `${"R".repeat(76)}_CLAUDE_CODE_OAUTH_TOKEN`;
   assert.equal(credential.length, 100);
-  const { record } = laneRecord(
+  const { record } = laneReport(
     { turns: 1, models },
     { laneId: "pr-review", outcome: "success", credential },
   );
@@ -909,4 +909,45 @@ test("lane record: past 1,024 characters the models list is dropped", () => {
   assert.ok(text.startsWith("lane-outcome {"));
   assert.ok(text.length <= "lane-outcome ".length + 1024 + 1);
   assert.equal(recordText(null), "");
+});
+
+test("one report: the legacy tokens and the record carry the same gated facts", () => {
+  const run = {
+    turns: 2,
+    models: ["claude-sonnet-5"],
+    resetsAt: "2026-01-01T00:00:00Z",
+    resetsWindow: "five_hour",
+    errorType: "permission_error",
+    errorCode: null,
+    requestId: null,
+  };
+  // An auth failure: error facts yes, resets no (they belong to rate-limit).
+  const auth = laneReport(run, {
+    laneId: "pr-review",
+    outcome: "failure",
+    failureClass: "auth",
+    maxTurns: "nope",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "bogus",
+  });
+  assert.equal(auth.tokens, "error-type=permission_error credential=CLAUDE_CODE_OAUTH_TOKEN turns=2 models=claude-sonnet-5");
+  assert.deepEqual(auth.record, {
+    v: 1,
+    lane: "pr-review",
+    outcome: "failure",
+    class: "auth",
+    credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" },
+    error: { type: "permission_error" },
+    turns: 2,
+    models: ["claude-sonnet-5"],
+  });
+  // A success: neither error facts nor resets.
+  const ok = laneReport(run, { laneId: "pr-review", outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
+  assert.equal(ok.tokens, "credential=CLAUDE_CODE_OAUTH_TOKEN turns=2 models=claude-sonnet-5");
+  assert.equal("error" in ok.record || "resets" in ok.record, false);
+});
+
+test("run record: a turn count past six digits is unknown", () => {
+  assert.equal(record([{ type: "result", subtype: "success", num_turns: 999999 }]).turns, 999999);
+  assert.equal(record([{ type: "result", subtype: "success", num_turns: 1000000 }]).turns, null);
 });
