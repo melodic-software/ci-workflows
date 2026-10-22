@@ -16,6 +16,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const {
+  CREDENTIAL_PATTERN,
+} = require("../actions/report-lane-outcome/classify.cjs");
 const { evaluate } = require("./actions-expression.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
@@ -449,6 +452,12 @@ test("the status line names the credential of the leg it reports, in legacy toke
   });
   assert.doesNotMatch(forged.stdout, /credential=|planted/u);
   assert.deepEqual(limited.outputs, { "triage-failed": "true", "failure-class": "rate-limit" });
+});
+
+test("the status step checks a secret name with report-lane-outcome's own pattern", () => {
+  const match = /\[\[ "\$credential" =~ (\S+) \]\]/u.exec(status.steps[0].run);
+  assert.notEqual(match, null);
+  assert.equal(match[1], CREDENTIAL_PATTERN.source);
 });
 
 test("a failed or cancelled apply job turns the status red", () => {

@@ -15,6 +15,7 @@ const test = require("node:test");
 const {
   makeTemporaryDirectory,
 } = require("../../scripts/temporary-directories.cjs");
+const { MAX_MODELS } = require("./classify.cjs");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
@@ -916,7 +917,6 @@ test("the schema states the emitter's own patterns, closed sets and limits", () 
     CREDENTIAL_PATTERN,
     FALLBACK_REASONS,
     LANE_ID_PATTERN,
-    RECORD_MAX_MODELS,
     WINDOW_PATTERN,
   } = require("./classify.cjs");
   const { properties } = schema;
@@ -926,7 +926,7 @@ test("the schema states the emitter's own patterns, closed sets and limits", () 
   assert.equal(properties.credential.properties.role.pattern, CREDENTIAL_PATTERN.source);
   assert.equal(properties.resets.properties.window.pattern, WINDOW_PATTERN.source);
   assert.deepEqual(properties.fallback.properties.reason.enum, FALLBACK_REASONS);
-  assert.equal(properties.models.maxItems, RECORD_MAX_MODELS);
+  assert.equal(properties.models.maxItems, MAX_MODELS);
   assert.equal(properties.turns.maximum, COUNT_MAX);
   assert.equal(properties.maxTurns.maximum, COUNT_MAX);
 });
@@ -1123,7 +1123,7 @@ test("with 45 long model ids the record still ends inside the runner's 4,096-cha
   });
   assert.equal(errors.length, 1);
   const tokenModels = /\bmodels=(\S+)/u.exec(errors[0])[1].split(",");
-  assert.equal(tokenModels.length, 8);
+  assert.equal(tokenModels.length, MAX_MODELS);
   const cut = errors[0].slice(0, 4096);
   const record = readRecord(cut);
   assert.notEqual(record, null);
@@ -1154,4 +1154,26 @@ test("a failing key leg that did not hand off stays an error; only handoff \"tru
   const handedOff = await leg("true");
   assert.equal(handedOff.errors.length, 0);
   assert.equal(readRecord(handedOff.notices[0]).handoff, true);
+});
+
+test("a handoff from a caller with lane-id is a notice even when no record can be written", async () => {
+  const file = writeExecutionFile([
+    { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "five_hour" } },
+    { type: "result", subtype: "success", is_error: true, api_error_status: 429 },
+  ]);
+  for (const credential of ["", "fallback-claude-code-oauth-token"]) {
+    const { errors, notices, warnings } = await runOutcome({
+      outcome: "failure",
+      executionFile: file,
+      laneId: "pr-review",
+      credential,
+      knownFailureClass: "rate-limit",
+      handoff: "true",
+    });
+    assert.equal(errors.length, 0, credential);
+    assert.equal(notices.length, 1, credential);
+    assert.match(notices[0], /\bclass=rate-limit\b/u, credential);
+    assert.equal(readRecord(notices[0]), null, credential);
+    assert.deepEqual(warnings, ["Claude review wrote no lane record: credential is empty or invalid."], credential);
+  }
 });

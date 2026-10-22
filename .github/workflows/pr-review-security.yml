@@ -185,7 +185,9 @@ on:
           Name (never the value) of the secret the caller maps to
           CLAUDE_CODE_OAUTH_TOKEN. The lane-outcome record
           (docs/lane-outcome.md) names it as the credential when the first
-          attempt reports.
+          attempt reports. The default is right only when the caller maps a
+          secret of that exact name; set this to the mapped secret's name
+          otherwise.
         type: string
         default: CLAUDE_CODE_OAUTH_TOKEN
       fallback-credential-name:

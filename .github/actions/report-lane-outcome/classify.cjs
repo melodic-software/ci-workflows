@@ -435,7 +435,6 @@ const RECORD_MARKER = "lane-outcome ";
 const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 // Basis: docs/lane-outcome.md, "A record is at most 1,024 characters".
 const RECORD_MAX_LENGTH = 1024;
-const RECORD_MAX_MODELS = MAX_MODELS;
 
 // The credential's kind and role from its secret name, or null.
 function credentialFacts(secret) {
@@ -537,9 +536,9 @@ module.exports = {
   isCreditStop,
   LANE_ID_PATTERN,
   laneReport,
+  MAX_MODELS,
   readMessages,
   readRunRecord,
-  RECORD_MAX_MODELS,
   recordText,
   recordTokens,
   WINDOW_PATTERN,

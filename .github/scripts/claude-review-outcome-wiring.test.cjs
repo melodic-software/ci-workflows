@@ -11,6 +11,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const { evaluate } = require("./actions-expression.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
 const repositoryRoot = path.join(__dirname, "..", "..");
 
 const COMPOSITE_PATH = ".github/actions/report-lane-outcome/action.yml";
@@ -87,13 +90,21 @@ for (const lane of LANES) {
 // The review lanes name their credential: the caller supplies the secret
 // name per slot, and the report names the slot that ran, never the
 // lower-case slot itself.
-const { evaluate } = require("./actions-expression.cjs");
-const { parseWorkflow } = require("./workflow-yaml.cjs");
+// Every discovered lane with the review fallback slot is a review lane; its
+// lane id is its file name.
+const REVIEW_LANES = LANES.filter(
+  (lane) =>
+    parseWorkflow(laneSource(lane)).on.workflow_call.secrets?.[
+      "fallback-claude-code-oauth-token"
+    ] !== undefined,
+);
 
-for (const [lane, laneId] of [
-  ["pr-review.yml", "pr-review"],
-  ["pr-review-security.yml", "pr-review-security"],
-]) {
+test("review-lane discovery finds both review lanes", () => {
+  assert.deepEqual(REVIEW_LANES, ["pr-review-security.yml", "pr-review.yml"]);
+});
+
+for (const lane of REVIEW_LANES) {
+  const laneId = lane.replace(/\.yml$/u, "");
   const workflow = parseWorkflow(laneSource(lane));
   const inputs = workflow.on.workflow_call.inputs;
   const steps = workflow.jobs.claude.steps;

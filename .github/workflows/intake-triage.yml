@@ -1249,12 +1249,8 @@ jobs:
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
-      # and extract steps run; the status job carries the red. A handoff (key
-      # only: a credit stop, or class auth with API status 401 or 402) skips
-      # the extract step: the subscription job triages instead. The outcome
-      # step still writes the leg's record, with handoff true, so the key's
-      # stop is recorded even when the subscription job triages or has no
-      # token. The outcome step's step-timeout-minutes repeats
+      # and extract steps run; the status job carries the red. A token leg
+      # never hands off. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
       - name: Claude intake triage
@@ -1303,7 +1299,7 @@ jobs:
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
-          # Why this job ran, for the run's one lane record (ci-workflows#806).
+          # Why this job ran, for this leg's lane record (ci-workflows#806).
           fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # No model runs here. It reduces the run to the job outputs the apply
@@ -1704,10 +1700,9 @@ jobs:
           case "$failed" in true | false) ;; *) failed="" ;; esac
           # The line names the secret, never its value, in the legacy tokens
           # only: the legs' own records are the lane-outcome contract.
+          credential_token=""
           if [[ "$credential" =~ ^[A-Z][A-Z0-9_]{0,99}$ ]]; then
-            credential=" credential=$credential"
-          else
-            credential=""
+            credential_token=" credential=$credential"
           fi
           case "$class" in
             "" | auth | rate-limit | overloaded | max-turns | timeout | install-failed | skipped-validation | other) ;;
@@ -1721,7 +1716,7 @@ jobs:
           if [ "$job" = success ] && [ "$failed" = false ] && [ "$class" != skipped-validation ]; then
             exit 0
           fi
-          echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job$credential; read the job log."
+          echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job$credential_token; read the job log."
           exit 1
 
   # The claude job's if is the author gate, so on an opened issue or a

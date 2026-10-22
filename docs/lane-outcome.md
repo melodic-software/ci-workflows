@@ -27,9 +27,10 @@ The record always comes before free text. A reader finds the first marker
 anywhere in the message and reads exactly one JSON value after it. A reader
 does not depend on newlines, because none are required. A success record is
 a notice, a `skipped-validation` record a warning, and any other failure an
-error, except that a failure record with `handoff: true` is a notice. The
-`incomplete` and `skipped-validation` records keep their levels whatever
-`handoff` says.
+error, except that a failure record with `handoff: true` is a notice. A
+handoff stays a notice when the caller sets `lane-id` but no record can be
+written. The `incomplete` and `skipped-validation` records keep their levels
+whatever `handoff` says.
 
 A record is at most 1,024 characters. The runner cuts a workflow-command
 annotation message at 4,096 characters
