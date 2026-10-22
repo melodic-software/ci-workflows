@@ -63,6 +63,10 @@ async function runOutcome({
   maxTurns = "",
   knownFailureClass = "",
   fallbackReason = "",
+  laneId = "",
+  handoff = "",
+  requireCompletion = "",
+  completion = "",
 }) {
   const keys = [
     "LANE_OUTCOME",
@@ -74,6 +78,10 @@ async function runOutcome({
     "MAX_TURNS",
     "KNOWN_FAILURE_CLASS",
     "FALLBACK_REASON",
+    "LANE_ID",
+    "HANDOFF",
+    "REQUIRE_COMPLETION",
+    "COMPLETION",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -89,6 +97,10 @@ async function runOutcome({
     MAX_TURNS: maxTurns,
     KNOWN_FAILURE_CLASS: knownFailureClass,
     FALLBACK_REASON: fallbackReason,
+    LANE_ID: laneId,
+    HANDOFF: handoff,
+    REQUIRE_COMPLETION: requireCompletion,
+    COMPLETION: completion,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -129,6 +141,8 @@ test("a success with execution evidence is a review that ran", async () => {
   const { outputs, errors, warnings, failed } = await runOutcome({
     outcome: "success",
     executionFile: file,
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
   });
   assert.equal(outputs.review_failed, "false");
   assert.equal(outputs.review_ran, "true");
@@ -150,6 +164,8 @@ test("a success with no execution evidence is the validation-skip shape, not a r
     const { outputs, errors, warnings } = await runOutcome({
       outcome: "success",
       executionFile,
+      laneId: "pr-review",
+      credential: "CLAUDE_CODE_OAUTH_TOKEN",
     });
     assert.equal(outputs.review_failed, "false", executionFile);
     assert.equal(outputs.review_ran, "false", executionFile);
@@ -215,6 +231,8 @@ test("a review the sandbox probe kept from starting is a failure of its own clas
     outcome: "skipped",
     executionFile: "",
     knownFailureClass: "sandbox-unavailable",
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
   });
   assert.equal(outputs.review_failed, "true");
   assert.equal(outputs.review_ran, "false");
@@ -538,4 +556,380 @@ test("a 403 the launcher stopped is recorded with its error type, code and reque
     /\bclass=auth error-type=permission_error error-code=workspace_access_denied request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1\b/u,
   );
   assert.equal(run.errors[0].includes("not permitted"), false);
+});
+
+// The lane-outcome record (docs/lane-outcome.md). A reader finds the marker
+// anywhere in the message and reads exactly one JSON value after it.
+const MARKER = "lane-outcome ";
+
+function readRecord(message) {
+  const start = message.indexOf(MARKER);
+  if (start === -1) return null;
+  const text = message.slice(start + MARKER.length);
+  let depth = 0;
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (character === "\\") index += 1;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) {
+      return JSON.parse(text.slice(0, index + 1));
+    }
+  }
+  return null;
+}
+
+const schema = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "..", "schemas", "lane-outcome.v1.schema.json"),
+    "utf8",
+  ),
+);
+
+// A JSON Schema 2020-12 check for exactly the keywords the schema uses; any
+// other keyword throws, so the schema cannot outgrow it silently.
+const ANNOTATIONS = new Set(["$schema", "$id", "title", "description"]);
+function schemaErrors(node, value, at = "$") {
+  const errors = [];
+  const typeOf = (v) =>
+    v === null
+      ? "null"
+      : Array.isArray(v)
+        ? "array"
+        : Number.isInteger(v)
+          ? "integer"
+          : typeof v;
+  for (const [keyword, rule] of Object.entries(node)) {
+    if (ANNOTATIONS.has(keyword) || keyword === "then" || keyword === "else") {
+      continue;
+    }
+    const isObject = typeOf(value) === "object";
+    switch (keyword) {
+      case "type": {
+        const actual = typeOf(value);
+        const allowed = [rule].flat();
+        if (
+          !allowed.includes(actual) &&
+          !(actual === "integer" && allowed.includes("number"))
+        ) {
+          errors.push(`${at}: type ${actual}`);
+        }
+        break;
+      }
+      case "const":
+        if (value !== rule) errors.push(`${at}: not ${rule}`);
+        break;
+      case "enum":
+        if (!rule.includes(value)) errors.push(`${at}: ${value} not in enum`);
+        break;
+      case "pattern":
+        if (typeof value === "string" && !new RegExp(rule, "u").test(value)) {
+          errors.push(`${at}: ${value} does not match ${rule}`);
+        }
+        break;
+      case "minimum":
+        if (typeof value === "number" && value < rule) errors.push(`${at}: < ${rule}`);
+        break;
+      case "maximum":
+        if (typeof value === "number" && value > rule) errors.push(`${at}: > ${rule}`);
+        break;
+      case "maxItems":
+        if (Array.isArray(value) && value.length > rule) errors.push(`${at}: > ${rule} items`);
+        break;
+      case "items":
+        if (Array.isArray(value)) {
+          value.forEach((item, i) => errors.push(...schemaErrors(rule, item, `${at}[${i}]`)));
+        }
+        break;
+      case "required":
+        if (isObject) {
+          for (const name of rule) {
+            if (!(name in value)) errors.push(`${at}: missing ${name}`);
+          }
+        }
+        break;
+      case "additionalProperties":
+        assert.equal(rule, true, "only additionalProperties: true is supported");
+        break;
+      case "properties":
+        if (isObject) {
+          for (const [name, child] of Object.entries(rule)) {
+            if (name in value) errors.push(...schemaErrors(child, value[name], `${at}.${name}`));
+          }
+        }
+        break;
+      case "if": {
+        const branch = schemaErrors(rule, value, at).length === 0 ? node.then : node.else;
+        if (branch) errors.push(...schemaErrors(branch, value, at));
+        break;
+      }
+      default:
+        throw new Error(`unsupported schema keyword ${keyword} at ${at}`);
+    }
+  }
+  return errors;
+}
+
+test("the schema accepts the contract's three examples and rejects malformed records", () => {
+  // docs/lane-outcome.md, Examples.
+  const examples = [
+    {
+      v: 1,
+      lane: "intake-triage",
+      outcome: "failure",
+      class: "credit-stop",
+      credential: { secret: "AUTOMATIONS_CLAUDE_API_KEY", kind: "api-key", role: "AUTOMATIONS" },
+      handoff: true,
+      fallback: { reason: "credit-stop", from: "AUTOMATIONS_CLAUDE_API_KEY" },
+      resets: { at: "2026-10-22T05:00:00Z", window: "five_hour" },
+      error: { type: "billing_error", code: null, status: 402, requestId: "req_..." },
+      turns: 5,
+      maxTurns: 30,
+      models: ["claude-sonnet-5"],
+    },
+    {
+      v: 1,
+      lane: "intake-triage",
+      outcome: "success",
+      credential: { secret: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token", role: "AUTOMATIONS" },
+      fallback: { reason: "credit-stop" },
+      turns: 5,
+      models: ["claude-sonnet-5"],
+    },
+    {
+      v: 1,
+      lane: "pr-review",
+      outcome: "failure",
+      class: "rate-limit",
+      credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" },
+      resets: { at: "2026-10-22T05:00:00Z", window: "five_hour" },
+    },
+  ];
+  for (const example of examples) {
+    assert.deepEqual(schemaErrors(schema, example), [], JSON.stringify(example));
+  }
+  const good = examples[2];
+  const credential = { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" };
+  for (const bad of [
+    { ...good, v: 2 },
+    { ...good, lane: "PR Review" },
+    { ...good, outcome: "skipped" },
+    { ...good, outcome: "incomplete" },
+    { v: 1, lane: "pr-review", outcome: "failure", credential },
+    { v: 1, lane: "pr-review", outcome: "success" },
+    { ...good, credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "token" } },
+    { ...good, credential: { secret: "lower_case", kind: "oauth-token" } },
+    { ...good, fallback: { reason: "Auth" } },
+    { ...good, turns: -1 },
+    { ...good, models: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
+  ]) {
+    assert.notDeepEqual(schemaErrors(schema, bad), [], JSON.stringify(bad));
+  }
+});
+
+test("with a lane id and a credential, every message carries one record that validates", async () => {
+  const succeeded = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 4 },
+  ]);
+  const runs = [
+    { outcome: "success", executionFile: succeeded },
+    { outcome: "success", executionFile: succeeded, requireCompletion: "true", completion: "no summary" },
+    { outcome: "success", executionFile: "" },
+    { outcome: "skipped", executionFile: "", knownFailureClass: "sandbox-unavailable" },
+    {
+      outcome: "failure",
+      executionFile: writeExecutionFile([
+        { type: "result", subtype: "success", is_error: true, num_turns: 1, api_error_status: 429 },
+      ]),
+    },
+    { outcome: "failure", executionFile: "" },
+  ];
+  for (const run of runs) {
+    const label = JSON.stringify(run);
+    const { errors, warnings, notices } = await runOutcome({
+      ...run,
+      laneId: "pr-review",
+      credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    });
+    const messages = [...errors, ...warnings, ...notices];
+    assert.equal(messages.length, 1, label);
+    assert.equal(messages[0].split(MARKER).length, 2, label);
+    const record = readRecord(messages[0]);
+    assert.deepEqual(schemaErrors(schema, record), [], label);
+    assert.equal(record.lane, "pr-review", label);
+    assert.deepEqual(record.credential, { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" }, label);
+  }
+});
+
+test("the record sits before the free text and survives a 5,000-character SDK result", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "x".repeat(5000), is_error: true, num_turns: 2, api_error_status: 401 },
+  ]);
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0].length > 5000);
+  assert.ok(errors[0].indexOf(MARKER) < errors[0].indexOf("Last SDK result:"));
+  // The runner keeps the first 4,096 characters of a message.
+  const record = readRecord(errors[0].slice(0, 4096));
+  assert.deepEqual(schemaErrors(schema, record), []);
+  assert.deepEqual(record, {
+    v: 1,
+    lane: "pr-review",
+    outcome: "failure",
+    class: "auth",
+    credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" },
+    turns: 2,
+  });
+});
+
+test("the intake subscription leg after a credit stop writes the contract's success example", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 5,
+      modelUsage: { "claude-sonnet-5": {} },
+    },
+  ]);
+  const { notices } = await runOutcome({
+    outcome: "success",
+    executionFile: file,
+    lane: "Claude intake triage",
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "credit-stop",
+  });
+  assert.equal(notices.length, 1);
+  assert.deepEqual(readRecord(notices[0]), {
+    v: 1,
+    lane: "intake-triage",
+    outcome: "success",
+    credential: { secret: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token", role: "AUTOMATIONS" },
+    fallback: { reason: "credit-stop" },
+    turns: 5,
+    models: ["claude-sonnet-5"],
+  });
+});
+
+// 1792645200 is 2026-10-22T05:00:00Z in epoch seconds.
+test("a review lane's usage limit writes the contract's rate-limit example", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "five_hour" },
+    },
+    { type: "result", subtype: "success", is_error: true, api_error_status: 429 },
+  ]);
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.equal(errors.length, 1);
+  assert.deepEqual(readRecord(errors[0]), {
+    v: 1,
+    lane: "pr-review",
+    outcome: "failure",
+    class: "rate-limit",
+    credential: { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" },
+    resets: { at: "2026-10-22T05:00:00Z", window: "five_hour" },
+  });
+  // The legacy tokens stay in the sentence.
+  assert.match(errors[0], /\bclass=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN\b/u);
+});
+
+test("a key leg that handed off records handoff, its credit stop and the key's role", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: true, num_turns: 1 },
+  ]);
+  const handedOff = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude intake triage",
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    knownFailureClass: "credit-stop",
+    handoff: "true",
+  });
+  // The contract: a handoff record is a notice.
+  assert.deepEqual(handedOff.errors, []);
+  assert.equal(handedOff.notices.length, 1);
+  assert.deepEqual(readRecord(handedOff.notices[0]), {
+    v: 1,
+    lane: "intake-triage",
+    outcome: "failure",
+    class: "credit-stop",
+    credential: { secret: "AUTOMATIONS_CLAUDE_API_KEY", kind: "api-key", role: "AUTOMATIONS" },
+    handoff: true,
+    turns: 1,
+  });
+  const notHandedOff = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    knownFailureClass: "credit-stop",
+    handoff: "false",
+  });
+  assert.equal("handoff" in readRecord(notHandedOff.errors[0]), false);
+});
+
+test("the step outcome and class map to the record's outcome", async () => {
+  const succeeded = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 1 },
+  ]);
+  const startedLongAgo = String(Math.floor(Date.now() / 1000) - 700);
+  for (const [run, expected] of [
+    [{ outcome: "success", executionFile: succeeded }, ["success", undefined]],
+    [{ outcome: "success", executionFile: "" }, ["skip", "skipped-validation"]],
+    [{ outcome: "success", executionFile: succeeded, requireCompletion: "true" }, ["failure", "incomplete"]],
+    [{ outcome: "cancelled", executionFile: "" }, ["cancellation", "no-execution"]],
+    [{ outcome: "skipped", executionFile: "", knownFailureClass: "sandbox-unavailable" }, ["skip", "sandbox-unavailable"]],
+    [{ outcome: "failure", executionFile: "", startedAt: startedLongAgo, timeoutMinutes: "11" }, ["timeout", "timeout"]],
+    [{ outcome: "failure", executionFile: "" }, ["failure", "no-execution"]],
+  ]) {
+    const { errors, warnings, notices } = await runOutcome({
+      ...run,
+      laneId: "pr-review",
+      credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    });
+    const record = readRecord([...errors, ...warnings, ...notices][0]);
+    assert.deepEqual([record.outcome, record.class], expected, JSON.stringify(run));
+  }
+});
+
+test("without a lane id or a Claude credential, the tokens stand alone and a warning names what is missing", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
+  ]);
+  for (const [inputs, missing] of [
+    [{ credential: "CLAUDE_CODE_OAUTH_TOKEN" }, /\blane-id is empty or invalid\./u],
+    [{ laneId: "Pr Review", credential: "CLAUDE_CODE_OAUTH_TOKEN" }, /\blane-id is empty or invalid\./u],
+    [{ laneId: "pr-review", credential: "CLAUDE_API_KEY" }, /\bcredential is empty or invalid\./u],
+    [{ laneId: "pr-review", credential: "ANTHROPIC_API_KEY" }, /\bcredential is empty or invalid\./u],
+    [{}, /\blane-id and credential are empty or invalid\./u],
+  ]) {
+    const label = JSON.stringify(inputs);
+    const { notices, warnings } = await runOutcome({
+      outcome: "success",
+      executionFile: file,
+      ...inputs,
+    });
+    assert.equal(notices.length, 1, label);
+    assert.equal(notices[0].includes(MARKER), false, label);
+    assert.match(notices[0], /\bturns=3\b/u, label);
+    assert.equal(warnings.length, 1, label);
+    assert.match(warnings[0], missing, label);
+    assert.doesNotMatch(warnings[0], /class=|credential=|lane-outcome /u, label);
+  }
 });

@@ -760,6 +760,7 @@ jobs:
           outcome: ${{ steps.claude.outcome }}
           execution-file: ${{ steps.claude.outputs.execution-file }}
           lane: Claude intake triage
+          lane-id: intake-triage
           step-started-at: ${{ steps.compose.outputs.started-at }}
           step-timeout-minutes: 12
           credential: ${{ steps.claude.outputs.credential }}
@@ -1286,6 +1287,7 @@ jobs:
           outcome: ${{ steps.claude.outcome }}
           execution-file: ${{ steps.claude.outputs.execution-file }}
           lane: Claude intake triage
+          lane-id: intake-triage
           step-started-at: ${{ steps.compose.outputs.started-at }}
           step-timeout-minutes: 12
           credential: ${{ steps.claude.outputs.credential }}

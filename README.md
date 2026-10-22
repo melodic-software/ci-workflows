@@ -1140,6 +1140,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
 ## Claude lanes — shared consumption contract
 
+The lane-outcome record in `report-lane-outcome`'s annotations is a public
+contract: [docs/lane-outcome.md](docs/lane-outcome.md).
+
 `pr-review.yml` and `pr-review-security.yml` share one consumption
 shape. Each is a whole-job concern (job `permissions:` plus a `secrets:`
 interface), which is why each is a reusable workflow rather than a composite

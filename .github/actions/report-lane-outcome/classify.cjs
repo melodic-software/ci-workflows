@@ -401,13 +401,114 @@ function recordTokens(
   return tokens.join(" ");
 }
 
+// The lane-outcome record v1 (docs/lane-outcome.md, schemas/
+// lane-outcome.v1.schema.json): the values recordTokens prints, as one JSON
+// object after RECORD_MARKER. Written only when the lane id and a credential
+// that maps to a kind are both present; `missing` names what is not.
+const RECORD_MARKER = "lane-outcome ";
+const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+// Basis: docs/lane-outcome.md, "A record is at most 1,024 characters".
+const RECORD_MAX_LENGTH = 1024;
+const RECORD_MAX_MODELS = 8;
+
+// The credential's kind and role from its secret name, or null.
+function credentialFacts(secret) {
+  if (!CREDENTIAL_PATTERN.test(secret)) return null;
+  const key = /^([A-Z][A-Z0-9_]*)_CLAUDE_API_KEY$/u.exec(secret);
+  if (key) return { secret, kind: "api-key", role: key[1] };
+  const token = /^(?:([A-Z][A-Z0-9_]*)_)?CLAUDE_CODE_OAUTH_TOKEN$/u.exec(
+    secret,
+  );
+  if (!token) return null;
+  return token[1] === undefined
+    ? { secret, kind: "oauth-token" }
+    : { secret, kind: "oauth-token", role: token[1] };
+}
+
+// The step's `outcome` input and the reported class, as an OpenTelemetry
+// CICD task result.
+function recordOutcome(outcome, failureClass) {
+  if (failureClass === "skipped-validation") return "skip";
+  if (outcome === "success") return failureClass === "" ? "success" : "failure";
+  if (outcome === "cancelled") return "cancellation";
+  if (outcome === "skipped") return "skip";
+  return failureClass === "timeout" ? "timeout" : "failure";
+}
+
+function laneRecord(
+  {
+    turns = null,
+    models = [],
+    resetsAt = null,
+    resetsWindow = null,
+    errorType = null,
+    errorCode = null,
+    requestId = null,
+  },
+  {
+    laneId = "",
+    outcome = "",
+    failureClass = "",
+    maxTurns = "",
+    credential = "",
+    fallbackReason = "",
+    handoff = "",
+  } = {},
+) {
+  const facts = credentialFacts(credential);
+  const missing = [
+    ...(LANE_ID_PATTERN.test(laneId) ? [] : ["lane-id"]),
+    ...(facts === null ? ["credential"] : []),
+  ];
+  if (missing.length > 0) return { record: null, missing };
+  const record = {
+    v: 1,
+    lane: laneId,
+    outcome: recordOutcome(outcome, failureClass),
+  };
+  if (failureClass !== "") record.class = failureClass;
+  record.credential = facts;
+  if (handoff === "true") record.handoff = true;
+  if (FALLBACK_REASONS.includes(fallbackReason)) {
+    record.fallback = { reason: fallbackReason };
+  }
+  if (failureClass === "rate-limit" && resetsAt) {
+    record.resets = resetsWindow
+      ? { at: resetsAt, window: resetsWindow }
+      : { at: resetsAt };
+  }
+  if (failureClass !== "") {
+    const error = Object.fromEntries(
+      [
+        ["type", errorType],
+        ["code", errorCode],
+        ["requestId", requestId],
+      ].filter(([, value]) => value !== null),
+    );
+    if (Object.keys(error).length > 0) record.error = error;
+  }
+  if (turns !== null) record.turns = turns;
+  if (COUNT_PATTERN.test(maxTurns)) record.maxTurns = Number(maxTurns);
+  if (models.length > 0) record.models = models.slice(0, RECORD_MAX_MODELS);
+  if (JSON.stringify(record).length > RECORD_MAX_LENGTH) delete record.models;
+  return { record, missing };
+}
+
+// The record as it sits in an annotation message: the marker, the JSON and
+// one space, or "" when there is no record.
+function recordText(record) {
+  return record === null ? "" : `${RECORD_MARKER}${JSON.stringify(record)} `;
+}
+
 module.exports = {
   apiErrorFacts,
   classifyExecutionFile,
   creditStopResetsAt,
   FALLBACK_REASONS,
   isCreditStop,
+  laneRecord,
   readMessages,
   readRunRecord,
+  recordText,
   recordTokens,
 };
