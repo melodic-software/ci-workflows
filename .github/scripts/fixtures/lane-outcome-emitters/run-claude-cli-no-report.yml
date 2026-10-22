@@ -1,0 +1,10 @@
+name: Fixture run-claude-cli lane with no report step
+on: workflow_call
+jobs:
+  triage:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run Claude
+        uses: $/.github/actions/run-claude-cli
+        with:
+          prompt-file: prompt.md

@@ -9,10 +9,18 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const {
+  LANE_ID_PATTERN,
+} = require("../actions/report-lane-outcome/classify.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const workflowsDir = path.join(__dirname, "..", "workflows");
 const fixturesDir = path.join(__dirname, "fixtures", "lane-outcome-emitters");
+
+const workflowFiles = fs
+  .readdirSync(workflowsDir)
+  .filter((name) => name.endsWith(".yml"))
+  .sort();
 
 const RUNS_CLAUDE =
   /(?:^|\/)anthropics\/claude-code-action@[^@]+$|(?:^|\/)\.github\/actions\/run-claude-cli(?:@[^@]*)?$/u;
@@ -21,21 +29,46 @@ const REPORTS_OUTCOME =
 
 const isNonEmpty = (value) => typeof value === "string" && value.trim() !== "";
 
+/** The [jobId, steps] pairs of a workflow's lane jobs: jobs that run Claude. */
+function laneJobs(workflow) {
+  return Object.entries(workflow.jobs ?? {})
+    .map(([job, definition]) => [
+      job,
+      Array.isArray(definition?.steps) ? definition.steps : [],
+    ])
+    .filter(([, steps]) =>
+      steps.some((step) => RUNS_CLAUDE.test(String(step?.uses ?? ""))),
+    );
+}
+
+/** The inputs of a report step that are empty, or a literal lane-id the record rejects. */
+function reportGaps(step) {
+  const missing = ["credential", "lane-id"].filter(
+    (input) => !isNonEmpty(step.with?.[input]),
+  );
+  const laneId = step.with?.["lane-id"];
+  if (
+    isNonEmpty(laneId) &&
+    !laneId.includes("${{") &&
+    !LANE_ID_PATTERN.test(laneId)
+  ) {
+    missing.push("lane-id (invalid literal)");
+  }
+  return missing;
+}
+
 /**
  * Find the lane jobs of a parsed workflow and what each is missing.
  *
  * @returns {{ job: string, step?: string, missing: string[] }[]} one entry per
  *   lane job with no report-lane-outcome step (`missing` is
  *   ["report-lane-outcome step"]) and one per report step, named by id or name,
- *   that leaves `credential` or `lane-id` empty.
+ *   that leaves `credential` or `lane-id` empty or sets an invalid literal
+ *   `lane-id`.
  */
 function findMissingEmitters(workflow) {
   const failures = [];
-  for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
-    const steps = Array.isArray(definition?.steps) ? definition.steps : [];
-    if (!steps.some((step) => RUNS_CLAUDE.test(String(step?.uses ?? "")))) {
-      continue;
-    }
+  for (const [job, steps] of laneJobs(workflow)) {
     const reports = steps.filter((step) =>
       REPORTS_OUTCOME.test(String(step?.uses ?? "")),
     );
@@ -43,9 +76,7 @@ function findMissingEmitters(workflow) {
       failures.push({ job, missing: ["report-lane-outcome step"] });
     }
     reports.forEach((step, index) => {
-      const missing = ["credential", "lane-id"].filter(
-        (input) => !isNonEmpty(step.with?.[input]),
-      );
+      const missing = reportGaps(step);
       if (missing.length > 0) {
         failures.push({
           job,
@@ -61,12 +92,8 @@ function findMissingEmitters(workflow) {
 const parseFile = (file) => parseWorkflow(fs.readFileSync(file, "utf8"));
 
 test("every lane job in .github/workflows emits the lane-outcome record", () => {
-  const files = fs
-    .readdirSync(workflowsDir)
-    .filter((name) => name.endsWith(".yml"))
-    .sort();
-  assert.notEqual(files.length, 0);
-  const failures = files.flatMap((name) =>
+  assert.notEqual(workflowFiles.length, 0);
+  const failures = workflowFiles.flatMap((name) =>
     findMissingEmitters(parseFile(path.join(workflowsDir, name))).map(
       ({ job, step, missing }) =>
         `${name} job ${job}${step ? ` step ${step}` : ""} is missing: ${missing.join(", ")}`,
@@ -75,29 +102,19 @@ test("every lane job in .github/workflows emits the lane-outcome record", () => 
   assert.deepEqual(failures, []);
 });
 
-test("the check detects the known lanes in the real workflows", () => {
-  const lanes = [];
-  for (const name of fs.readdirSync(workflowsDir).sort()) {
-    if (!name.endsWith(".yml")) continue;
-    const workflow = parseFile(path.join(workflowsDir, name));
-    for (const [job, definition] of Object.entries(workflow.jobs ?? {})) {
-      if (
-        (definition?.steps ?? []).some((s) =>
-          RUNS_CLAUDE.test(String(s?.uses ?? "")),
-        )
-      ) {
-        lanes.push(`${name}:${job}`);
-      }
-    }
-  }
-  for (const lane of [
+test("the check detects exactly the lanes in the real workflows", () => {
+  const lanes = workflowFiles.flatMap((name) =>
+    laneJobs(parseFile(path.join(workflowsDir, name))).map(
+      ([job]) => `${name}:${job}`,
+    ),
+  );
+  // Source: the Claude-running jobs of intake-triage.yml, pr-review.yml and pr-review-security.yml.
+  assert.deepEqual(lanes.sort(), [
     "intake-triage.yml:claude",
     "intake-triage.yml:subscription",
     "pr-review-security.yml:claude",
     "pr-review.yml:claude",
-  ]) {
-    assert.ok(lanes.includes(lane), `${lane} not detected as a lane`);
-  }
+  ]);
 });
 
 for (const [fixture, expected] of [
@@ -116,6 +133,14 @@ for (const [fixture, expected] of [
   [
     "second-report-missing-lane-id.yml",
     [{ job: "review", step: "second-report", missing: ["lane-id"] }],
+  ],
+  [
+    "run-claude-cli-no-report.yml",
+    [{ job: "triage", missing: ["report-lane-outcome step"] }],
+  ],
+  [
+    "invalid-lane-id.yml",
+    [{ job: "review", step: "report", missing: ["lane-id (invalid literal)"] }],
   ],
   ["run-claude-cli-passes.yml", []],
   ["secrets-forwarded.yml", []],
