@@ -872,15 +872,15 @@ test("the step outcome and class map to the record's outcome", async () => {
   }
 });
 
-test("a half-wired caller gets the tokens alone and a warning naming what is missing", async () => {
+test("a caller that sets lane-id but cannot get a record gets the tokens alone and a warning naming what is missing", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
   ]);
   for (const [inputs, missing] of [
-    [{ credential: "CLAUDE_CODE_OAUTH_TOKEN" }, /\blane-id is empty or invalid\./u],
+    [{ laneId: "Pr Review", credential: "CLAUDE_CODE_OAUTH_TOKEN" }, /\blane-id is empty or invalid\./u],
     [{ laneId: "pr-review" }, /\bcredential is empty or invalid\./u],
+    [{ laneId: "pr-review", credential: "CLAUDE_API_KEY" }, /\bcredential is empty or invalid\./u],
     [{ laneId: "Pr Review" }, /\blane-id and credential are empty or invalid\./u],
-    [{ credential: "CLAUDE_API_KEY" }, /\blane-id and credential are empty or invalid\./u],
   ]) {
     const label = JSON.stringify(inputs);
     const { notices, warnings } = await runOutcome({
@@ -897,14 +897,16 @@ test("a half-wired caller gets the tokens alone and a warning naming what is mis
   }
 });
 
-test("a caller that sets neither lane-id nor credential gets the tokens alone and no warning", async () => {
+test("a caller with no lane-id, credential-only or neither, gets the tokens alone and no warning", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
   ]);
-  const { notices, warnings } = await runOutcome({ outcome: "success", executionFile: file });
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].includes(MARKER), false);
-  assert.deepEqual(warnings, []);
+  for (const credential of ["", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_API_KEY"]) {
+    const { notices, warnings } = await runOutcome({ outcome: "success", executionFile: file, credential });
+    assert.equal(notices.length, 1, credential);
+    assert.equal(notices[0].includes(MARKER), false, credential);
+    assert.deepEqual(warnings, [], credential);
+  }
 });
 
 test("the schema states the emitter's own patterns, closed sets and limits", () => {

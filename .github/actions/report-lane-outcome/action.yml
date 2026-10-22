@@ -116,9 +116,10 @@ inputs:
     description: >-
       The lane's stable machine id for the lane-outcome record, e.g.
       intake-triage; its rule is `lane` in docs/lane-outcome.md. With a
-      valid lane-id and credential the record is written. Exactly one of
-      the two set writes no record and a warning; neither set writes no
-      record and no warning.
+      valid lane-id and credential the record is written. A set lane-id
+      with no record possible (it is invalid, or the credential is empty or
+      invalid) writes a warning naming what is missing; an empty lane-id
+      writes no record and no warning.
     required: false
     default: ""
   handoff:
@@ -237,8 +238,9 @@ runs:
               fallbackReason,
               handoff: process.env.HANDOFF ?? "",
             });
-            // Only a half-wired caller warns: one of the two inputs set.
-            if (record === null && (laneId === "") !== (credential === "")) {
+            // Only a caller that opted in with lane-id warns; one that
+            // passes only a credential is not wired for the record yet.
+            if (record === null && laneId !== "") {
               core.warning(
                 `${lane} wrote no lane record: ${missing.join(" and ")} ` +
                   `${missing.length === 1 ? "is" : "are"} empty or invalid.`,

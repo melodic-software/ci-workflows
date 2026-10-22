@@ -115,9 +115,9 @@ reader that warns about limit stops counts both.
 
 `report-lane-outcome` writes the record only when `lane-id` matches its
 pattern and `credential` matches its pattern and maps to a kind. Otherwise it
-writes the legacy tokens alone. When exactly one of the two inputs is set, it
-also writes a warning naming what is missing; with neither set it writes no
-warning.
+writes the legacy tokens alone. When `lane-id` is set, it also writes a
+warning naming what is missing; with `lane-id` empty it writes no warning,
+whether or not `credential` is set.
 
 ## Compatibility
 
