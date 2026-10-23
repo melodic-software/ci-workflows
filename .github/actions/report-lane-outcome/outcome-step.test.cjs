@@ -701,6 +701,8 @@ test("the schema accepts the contract's three examples and rejects malformed rec
     { ...good, credential: { secret: "lower_case", kind: "oauth-token" } },
     { ...good, fallback: { reason: "Auth" } },
     { ...good, turns: -1 },
+    { ...good, costUsd: -1 },
+    { ...good, costUsd: "0.25" },
     { ...good, models: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
   ]) {
     assert.notDeepEqual(schemaErrors(schema, bad), [], JSON.stringify(bad));
@@ -738,6 +740,23 @@ test("with a lane id and a credential, every message carries one record that val
     assert.deepEqual(schemaErrors(schema, record), [], label);
     assert.equal(record.lane, "pr-review", label);
     assert.deepEqual(record.credential, { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" }, label);
+  }
+});
+
+test("the run's list-price cost reaches the record on a success and a failure, and validates", async () => {
+  for (const [outcome, result] of [
+    ["success", { type: "result", subtype: "success", is_error: false, num_turns: 4, total_cost_usd: 0.5 }],
+    ["failure", { type: "result", subtype: "success", is_error: true, num_turns: 1, api_error_status: 429, total_cost_usd: 0 }],
+  ]) {
+    const { errors, notices } = await runOutcome({
+      outcome,
+      executionFile: writeExecutionFile([result]),
+      laneId: "pr-verify",
+      credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    });
+    const record = readRecord([...errors, ...notices][0]);
+    assert.deepEqual(schemaErrors(schema, record), [], outcome);
+    assert.equal(record.costUsd, result.total_cost_usd, outcome);
   }
 });
 

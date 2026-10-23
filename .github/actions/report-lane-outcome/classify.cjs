@@ -347,8 +347,14 @@ function readRunRecord(executionFilePath) {
   const result = messages.findLast((message) => message?.type === "result");
   const turns = result?.num_turns;
   const usage = result?.modelUsage;
+  const cost = result?.total_cost_usd;
   return {
     turns: Number.isInteger(turns) && turns >= 0 ? turns : null,
+    // The CLI's own list-price estimate of the run, not what was billed.
+    costUsd:
+      typeof cost === "number" && Number.isFinite(cost) && cost >= 0
+        ? cost
+        : null,
     models:
       usage && typeof usage === "object" && !Array.isArray(usage)
         ? Object.keys(usage).filter((key) => MODEL_PATTERN.test(key))
@@ -371,6 +377,7 @@ const MAX_MODELS = 8;
 function runFacts(
   {
     turns = null,
+    costUsd = null,
     models = [],
     resetsAt = null,
     resetsWindow = null,
@@ -399,6 +406,7 @@ function runFacts(
       ? fallbackReason
       : null,
     turns,
+    costUsd,
     maxTurns: COUNT_PATTERN.test(maxTurns) ? Number(maxTurns) : null,
     models: models.slice(0, MAX_MODELS),
   };
@@ -503,6 +511,7 @@ function factRecord(
     ],
     ["turns", facts.turns !== null && facts.turns <= COUNT_MAX ? facts.turns : null],
     ["maxTurns", facts.maxTurns],
+    ["costUsd", facts.costUsd],
     [
       "models",
       facts.models.length > 0 ? facts.models : null,
