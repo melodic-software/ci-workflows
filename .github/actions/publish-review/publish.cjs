@@ -263,6 +263,68 @@ function scan(findSecret, texts) {
 
 const commentKey = (c) => `${c.path}\n${c.line}\n${c.side}\n${c.body}`;
 
+// The lines one patch's hunk ranges ("<old> <new>", each "<start>[,<count>]"
+// as in its @@ line) cover, the same sets commentableLines reads from the
+// patch; null for a malformed range.
+function hunkLines(hunks) {
+  const lines = { RIGHT: new Set(), LEFT: new Set() };
+  for (const hunk of hunks) {
+    const m = /^(\d+)(?:,(\d+))? (\d+)(?:,(\d+))?$/u.exec(hunk);
+    if (!m) return null;
+    for (const [side, start, count] of [
+      ["LEFT", m[1], m[2]],
+      ["RIGHT", m[3], m[4]],
+    ]) {
+      const n = Number(count ?? 1);
+      if (n > 100000) return null;
+      for (let i = 0; i < n; i += 1) lines[side].add(Number(start) + i);
+    }
+  }
+  return lines;
+}
+
+// The pull request's files as the scope step listed them at HEAD_SHA
+// (PR_FILES), as [{ n, p?, h? }] with the PR's changed-file count, or null
+// when that list is absent, malformed or for another head.
+function scopedFiles(env) {
+  let data;
+  try {
+    data = JSON.parse(env.PR_FILES || "null");
+  } catch {
+    return null;
+  }
+  const valid = (f) =>
+    typeof f?.n === "string" &&
+    f.n !== "" &&
+    (f.p === undefined || typeof f.p === "string") &&
+    (f.h === undefined ||
+      (Array.isArray(f.h) && f.h.every((h) => typeof h === "string")));
+  if (
+    !/^[0-9a-f]{40}$/u.test(env.HEAD_SHA ?? "") ||
+    data?.head !== env.HEAD_SHA ||
+    !Number.isSafeInteger(data.changed) ||
+    data.changed < 0 ||
+    !Array.isArray(data.files) ||
+    !data.files.every(valid)
+  ) {
+    return null;
+  }
+  return { changed: data.changed, files: data.files };
+}
+
+// The diff's commentable lines per file, from the scope step's list.
+function scopedLines(env) {
+  const scoped = scopedFiles(env);
+  if (!scoped) return null;
+  const files = new Map();
+  for (const f of scoped.files.filter((file) => file.h !== undefined)) {
+    const lines = hunkLines(f.h);
+    if (!lines) return null;
+    files.set(f.n, lines);
+  }
+  return files;
+}
+
 // The diff's commentable lines per file, from a fresh read at the head.
 async function diffLines(github, owner, repo, number) {
   const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -421,8 +483,11 @@ async function publish({ github, context, core, env }) {
   const live = (
     await github.rest.pulls.get({ owner, repo, pull_number: number })
   ).data.head.sha;
+  // The scope step's list holds while the head has not moved.
   const files =
-    live === head ? await diffLines(github, owner, repo, number) : new Map();
+    live === head
+      ? (scopedLines(env) ?? (await diffLines(github, owner, repo, number)))
+      : new Map();
   const placed = placeComments(review, files, lane);
   if (live !== head)
     placed.problems.unshift(`the pull request's head moved to ${live}`);
@@ -465,21 +530,25 @@ async function publish({ github, context, core, env }) {
 
   let inline = 0;
   try {
-    // A rerun posts only what this lane has not posted on this head.
+    // A rerun posts only what this lane has not posted on this head. With
+    // nothing to post inline there is nothing to compare.
     const posted = new Set(
-      (
-        await github.paginate(github.rest.pulls.listReviewComments, {
-          owner,
-          repo,
-          pull_number: number,
-          per_page: 100,
-        })
-      )
-        .filter(
-          (c) =>
-            c.user?.login === "github-actions[bot]" && c.commit_id === head,
-        )
-        .map((c) => commentKey({ ...c, side: c.side ?? "RIGHT" })),
+      placed.inline.length === 0
+        ? []
+        : (
+            await github.paginate(github.rest.pulls.listReviewComments, {
+              owner,
+              repo,
+              pull_number: number,
+              per_page: 100,
+            })
+          )
+            .filter(
+              (c) =>
+                c.user?.login === "github-actions[bot]" &&
+                c.commit_id === head,
+            )
+            .map((c) => commentKey({ ...c, side: c.side ?? "RIGHT" })),
     );
     const fresh = placed.inline.filter((c) => !posted.has(commentKey(c)));
     inline = placed.inline.length;
@@ -549,12 +618,14 @@ module.exports = {
   anchorProblem,
   commentBody,
   commentableLines,
+  hunkLines,
   judge,
   loadGate,
   parseReview,
   placeComments,
   run,
   scan,
+  scopedFiles,
   stripHtml,
   summaryText,
 };

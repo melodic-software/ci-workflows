@@ -1,0 +1,586 @@
+"use strict";
+
+// The GitHub API requests one pr-review-cli run spends on the job token, in
+// the key and status jobs, for each shape of run. Every step that calls the
+// API runs as shipped against one counting fake: the scope, full-diff and
+// gate steps from the workflow, then publish-review and apply-review-hold
+// with the env the workflow passes them, the job outputs evaluated from the
+// workflow's own expressions. The pull request's file list and pulls.get are
+// each read once per run, but for publish's check that the head has not moved.
+
+const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+
+const { evaluate } = require("./actions-expression.cjs");
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
+const ROOT = path.join(__dirname, "..", "..");
+const workflow = parseWorkflow(
+  fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "pr-review-cli.yml"),
+    "utf8",
+  ),
+);
+const { "review-key": key, status } = workflow.jobs;
+const publishReview = require(
+  path.join(ROOT, ".github", "actions", "publish-review", "publish.cjs"),
+);
+const applyHold = require(
+  path.join(ROOT, ".github", "actions", "apply-review-hold", "hold.cjs"),
+);
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+const stepId = (job, id) => job.steps.find((s) => s.id === id);
+
+const HEAD = "a".repeat(40);
+const LAST = "b".repeat(40);
+const MB_OLD = "c".repeat(40);
+const MB_NEW = "d".repeat(40);
+const TIP = "e".repeat(40);
+const BOT = "github-actions[bot]";
+const PATCH = "@@ -1,3 +1,4 @@\n a\n-b\n+B\n+C\n c";
+const INPUTS = {
+  lane: "code",
+  publish: "comments",
+  "incremental-review": true,
+  "docs-only-paths": "",
+  "hold-label": "needs-human",
+  "hold-paths": "**/CODEOWNERS\n.github/standards/trusted-actors/**",
+};
+
+// One fake API for the whole run: every call counts as `<group>.<method>`,
+// a paginated list as one page.
+function fakeApi({ prFiles, comments = [], compares = {} }) {
+  const calls = [];
+  const data = {
+    "issues.listComments": () => comments,
+    "pulls.listFiles": () => prFiles,
+    "pulls.get": () => ({ head: { sha: HEAD }, changed_files: prFiles.length }),
+    "pulls.listReviewComments": () => [],
+    "repos.compareCommitsWithBasehead": ({ basehead }) => {
+      assert.ok(basehead in compares, `unexpected compare ${basehead}`);
+      return compares[basehead];
+    },
+    "repos.get": () => ({ default_branch: "main" }),
+    "repos.getBranch": () => ({ commit: { sha: TIP } }),
+    "repos.getContent": () => ({
+      content: Buffer.from(GATE).toString("base64"),
+    }),
+    "issues.addLabels": () => [],
+  };
+  const rest = new Proxy(
+    {},
+    {
+      get: (_, group) =>
+        new Proxy(
+          {},
+          {
+            get: (__, method) => async (params) => {
+              const name = `${group}.${method}`;
+              calls.push(name);
+              return { data: (data[name] ?? (() => ({})))(params) };
+            },
+          },
+        ),
+    },
+  );
+  return {
+    calls,
+    github: {
+      rest,
+      hook: { error: () => {} },
+      paginate: async (method, params) => (await method(params)).data,
+    },
+  };
+}
+
+const GATE = "export const findSecret = () => null;\n";
+
+// `${{ ... }}` in a workflow value, rendered against the run's contexts.
+function render(value, contexts) {
+  return String(value)
+    .replace(/\$\{\{ runner\.temp \}\}/gu, contexts.runnerTemp ?? "")
+    .replace(/\$\{\{([\s\S]*?)\}\}/gu, (_, expression) => {
+      const result = evaluate(expression, contexts);
+      return result === null || result === undefined ? "" : String(result);
+    });
+}
+const renderEnv = (s, contexts) =>
+  Object.fromEntries(
+    Object.entries(s.env ?? {}).map(([k, v]) => [k, render(v, contexts)]),
+  );
+
+async function withEnv(values, fn) {
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+const quietCore = (outputs = {}) => ({
+  setOutput: (k, v) => {
+    outputs[k] = v;
+  },
+  setSecret: () => {},
+  setFailed: (m) => {
+    throw new Error(`setFailed: ${m}`);
+  },
+  info: () => {},
+  notice: () => {},
+  warning: () => {},
+  summary: { addRaw: () => quietCore().summary, write: async () => {} },
+});
+
+// The gate step's git calls: the clone, the tip and the one file.
+const fakeGit = (name) =>
+  name === "node:child_process"
+    ? {
+        execFileSync: (command, args) => {
+          assert.equal(command, "git");
+          if (args.includes("rev-parse")) return `${TIP}\n`;
+          if (args.includes("show")) return GATE;
+          return "";
+        },
+      }
+    : require(name);
+
+// The full-diff step under a `gh` that counts its calls and a quiet `git`.
+function runFullDiff(env, dir) {
+  const bin = path.join(dir, "bin");
+  const log = path.join(dir, "gh.log");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(
+    path.join(bin, "gh"),
+    `#!/usr/bin/env bash\necho "$*" >> "${log}"\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n${MB_OLD}\\n'\n`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, "git"),
+    '#!/usr/bin/env bash\n[ "$1" = diff ] && [ "$2" = --name-only ] && echo a.js\nexit 0\n',
+    { mode: 0o755 },
+  );
+  const output = path.join(dir, "full-diff.out");
+  const result = spawnSync("bash", ["-e", "-c", stepId(key, "full-diff").run], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...env,
+      PATH: `${bin}:${process.env.PATH}`,
+      RUNNER_TEMP: dir,
+      GITHUB_OUTPUT: output,
+      GITHUB_SERVER_URL: "https://github.com",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return fs.existsSync(log)
+    ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean)
+    : [];
+}
+
+// One run: the requests it spends, by method, with gh calls as `gh api`.
+async function spend({ action, prFiles, comments, compares, review }) {
+  const dir = makeTemporaryDirectory("pr-review-cli-calls-");
+  const api = fakeApi({ prFiles, comments, compares });
+  const github = {
+    token: "job-token",
+    repository: "o/r",
+    repository_owner: "o",
+    event_name: "pull_request",
+    event: {
+      action,
+      repository: { name: "r" },
+      pull_request: {
+        number: 7,
+        head: { sha: HEAD },
+        base: { ref: "main", sha: MB_OLD },
+      },
+    },
+  };
+  const contexts = {
+    github,
+    inputs: INPUTS,
+    vars: {},
+    secrets: {},
+    runnerTemp: dir,
+  };
+
+  // The key job: scope, then the full diff when it reviews.
+  const scope = stepId(key, "scope");
+  const scopeOutputs = {};
+  await withEnv(
+    {
+      ...renderEnv(scope, { ...contexts, steps: {} }),
+      DIFF_FILE: path.join(dir, "incremental.diff"),
+      GITHUB_SERVER_URL: "https://github.com",
+    },
+    () =>
+      new AsyncFunction(
+        "require",
+        "github",
+        "context",
+        "core",
+        scope.with.script,
+      )(
+        require,
+        api.github,
+        { repo: { owner: "o", repo: "r" } },
+        quietCore(scopeOutputs),
+      ),
+  );
+  const gh =
+    scopeOutputs.review === "false"
+      ? []
+      : runFullDiff(
+          renderEnv(stepId(key, "full-diff"), {
+            ...contexts,
+            steps: { scope: { outputs: scopeOutputs } },
+          }),
+          dir,
+        );
+  const keySteps = {
+    scope: { outputs: scopeOutputs },
+    claude: { outputs: {} },
+    credential: { outputs: { present: "true" } },
+    "review-outcome": { outputs: { "review-failed": "false" } },
+    extract: {
+      outputs: { verdict: "complete", review: JSON.stringify(review) },
+    },
+  };
+  const keyOutputs = Object.fromEntries(
+    Object.entries(key.outputs).map(([k, v]) => [
+      k,
+      render(v, { ...contexts, steps: keySteps }),
+    ]),
+  );
+
+  // The status job: the gate, publish, then the hold.
+  const gateStep = stepId(status, "gate");
+  const gateOutputs = {};
+  await withEnv({ RUNNER_TEMP: dir }, () =>
+    new AsyncFunction(
+      "require",
+      "github",
+      "context",
+      "core",
+      gateStep.with.script,
+    )(
+      fakeGit,
+      api.github,
+      { repo: { owner: "o", repo: "r" } },
+      quietCore(gateOutputs),
+    ),
+  );
+  const statusContexts = {
+    ...contexts,
+    needs: {
+      "review-key": { result: "success", outputs: keyOutputs },
+      "review-subscription": { result: "skipped", outputs: {} },
+    },
+    steps: { gate: { outputs: gateOutputs } },
+  };
+  const named = (name) => status.steps.find((s) => s.name === name);
+  const runner = (s) => renderEnv(s, statusContexts);
+  const context = { repo: { owner: "o", repo: "r" } };
+  await publishReview.run({
+    github: api.github,
+    context,
+    core: quietCore(),
+    env: runner(named("Publish the review")),
+  });
+  const holdOutputs = {};
+  await applyHold.run({
+    github: api.github,
+    context,
+    core: quietCore(holdOutputs),
+    env: runner(stepId(status, "hold")),
+  });
+
+  const counts = {};
+  for (const name of [...api.calls, ...gh.map(() => "gh api")])
+    counts[name] = (counts[name] ?? 0) + 1;
+  const total = api.calls.length + gh.length;
+  return { counts, total, hold: holdOutputs.hold };
+}
+
+const INLINE = {
+  findings: 1,
+  summary: "One finding.",
+  comments: [{ path: "a.js", line: 2, side: "RIGHT", body: "Off by one." }],
+};
+const NONE = { findings: 0, summary: "Nothing found.", comments: [] };
+const A = { filename: "a.js", status: "modified", patch: PATCH, changes: 3 };
+const marker = {
+  id: 41,
+  user: { login: BOT },
+  body: [
+    `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`,
+    `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} -->`,
+    "**claude-review** reviewed it.",
+    "",
+    "Earlier summary.",
+  ].join("\n"),
+};
+
+const SHAPES = {
+  "a whole review with an inline comment": {
+    action: "opened",
+    prFiles: [A],
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    review: INLINE,
+  },
+  "a whole review with no inline comment": {
+    action: "opened",
+    prFiles: [A],
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    review: NONE,
+  },
+  "an incremental review with an inline comment": {
+    action: "synchronize",
+    prFiles: [A],
+    comments: [marker],
+    compares: {
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } },
+      [`${LAST}...${HEAD}`]: { status: "ahead", files: [A] },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
+    },
+    review: INLINE,
+  },
+  "a no-change skip after a base-branch merge": {
+    action: "synchronize",
+    prFiles: [A],
+    comments: [marker],
+    compares: {
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+      [`${LAST}...${HEAD}`]: {
+        status: "ahead",
+        files: [{ filename: "z.md", patch: "@@ -1 +1 @@\n-x\n+y", changes: 2 }],
+      },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
+      [`${MB_OLD}...${MB_NEW}`]: { files: [{ filename: "z.md" }] },
+    },
+    review: NONE,
+  },
+  "a whole review that holds on a hold-paths file": {
+    action: "opened",
+    prFiles: [
+      A,
+      {
+        filename: "CODEOWNERS",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-a\n+b",
+        changes: 2,
+      },
+    ],
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    review: INLINE,
+  },
+};
+
+test("each run shape spends the requests pinned here, reading the file list once", async () => {
+  const totals = {};
+  for (const [name, shape] of Object.entries(SHAPES)) {
+    const { counts, total, hold } = await spend(shape);
+    totals[name] = total;
+    assert.equal(counts["pulls.listFiles"], 1, `${name}: files`);
+    assert.ok((counts["pulls.get"] ?? 0) <= 2, `${name}: pulls.get`);
+    assert.equal(
+      counts["issues.listComments"] ?? 0,
+      hold === "true" ? 2 : 1,
+      `${name}: comments`,
+    );
+    for (const gone of [
+      "repos.get",
+      "repos.getBranch",
+      "repos.getContent",
+      "gh api",
+    ])
+      assert.equal(counts[gone], undefined, `${name}: ${gone}`);
+  }
+  assert.deepEqual(totals, {
+    "a whole review with an inline comment": 8,
+    "a whole review with no inline comment": 6,
+    "an incremental review with an inline comment": 10,
+    "a no-change skip after a base-branch merge": 8,
+    "a whole review that holds on a hold-paths file": 11,
+  });
+});
+
+test("a whole review reads pulls.get in scope and once more in publish, and nowhere else", async () => {
+  const { counts } = await spend(
+    SHAPES["a whole review with an inline comment"],
+  );
+  assert.deepEqual(counts, {
+    "issues.listComments": 1,
+    "pulls.listFiles": 1,
+    "pulls.get": 2,
+    "repos.compareCommitsWithBasehead": 1,
+    "pulls.listReviewComments": 1,
+    "pulls.createReview": 1,
+    "issues.createComment": 1,
+  });
+});
+
+test("the scope step's hunk ranges give the lines commentableLines reads from the patch", () => {
+  const patches = [
+    PATCH,
+    "@@ -1,3 +1,4 @@\n a\n-b\n+B\n+C\n c\n@@ -10 +11 @@\n-x\n+y\n\\ No newline at end of file",
+    "@@ -0,0 +1,2 @@\n+new\n+file",
+    "@@ -1,2 +0,0 @@\n-gone\n-file",
+    "@@ -5,3 +5,3 @@ function f() {\n a\n-b\n+c\n d",
+  ];
+  // The scope step's own extraction, as it writes PR_FILES.
+  const script = stepId(key, "scope").with.script;
+  const pattern = /matchAll\((\/\^@@[^\n]*?\/gmu)\)/u.exec(script)[1];
+  const re = new Function(`return ${pattern};`)();
+  for (const patch of patches) {
+    const hunks = [...patch.matchAll(re)].map((m) => `${m[1]} ${m[2]}`);
+    assert.deepEqual(
+      publishReview.hunkLines(hunks),
+      publishReview.commentableLines(patch),
+      patch,
+    );
+  }
+  assert.equal(publishReview.hunkLines(["1,2 x"]), null);
+});
+
+test("publish and the hold read the file list themselves without a usable scope list", async () => {
+  const good = JSON.stringify({
+    head: HEAD,
+    changed: 1,
+    files: [{ n: "a.js", h: ["1,3 1,4"] }],
+  });
+  for (const [value, usable] of [
+    [good, true],
+    ["", false],
+    ["{not json", false],
+    [JSON.stringify({ head: LAST, changed: 1, files: [{ n: "a.js" }] }), false],
+    [JSON.stringify({ head: HEAD, changed: -1, files: [] }), false],
+    [JSON.stringify({ head: HEAD, changed: 1, files: [{ n: 3 }] }), false],
+    [
+      JSON.stringify({
+        head: HEAD,
+        changed: 1,
+        files: [{ n: "a.js", h: [1] }],
+      }),
+      false,
+    ],
+  ]) {
+    assert.equal(
+      publishReview.scopedFiles({ HEAD_SHA: HEAD, PR_FILES: value }) !== null,
+      usable,
+      value,
+    );
+  }
+});
+
+test("without the scope list a hold-paths file still holds, from the hold's own read", async () => {
+  const api = fakeApi({
+    prFiles: [{ filename: "CODEOWNERS" }],
+  });
+  const outputs = {};
+  await applyHold.run({
+    github: api.github,
+    context: { repo: { owner: "o", repo: "r" } },
+    core: quietCore(outputs),
+    env: {
+      HOLD_LABEL: "needs-human",
+      HOLD_PATHS: "**/CODEOWNERS",
+      LANE_ID: "claude-review",
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      PR_FILES: "",
+      SUB_RESULT: "skipped",
+      KEY_PRESENT: "true",
+      KEY_FAILED: "false",
+      KEY_CLASS: "",
+      KEY_VERDICT: "complete",
+      KEY_REVIEW: JSON.stringify(NONE),
+    },
+  });
+  assert.equal(outputs.hold, "true");
+  assert.equal(api.calls.filter((c) => c === "pulls.listFiles").length, 1);
+});
+
+test("a scope list shorter than the pull request's changed files holds", async () => {
+  const api = fakeApi({ prFiles: [] });
+  const outputs = {};
+  await applyHold.run({
+    github: api.github,
+    context: { repo: { owner: "o", repo: "r" } },
+    core: quietCore(outputs),
+    env: {
+      HOLD_LABEL: "needs-human",
+      HOLD_PATHS: "**/CODEOWNERS",
+      LANE_ID: "claude-review",
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      PR_FILES: JSON.stringify({
+        head: HEAD,
+        changed: 3001,
+        files: [{ n: "a.js" }],
+      }),
+      SUB_RESULT: "skipped",
+      KEY_PRESENT: "true",
+      KEY_FAILED: "false",
+      KEY_CLASS: "",
+      KEY_VERDICT: "complete",
+      KEY_REVIEW: JSON.stringify(NONE),
+    },
+  });
+  assert.equal(outputs.hold, "true");
+  assert.ok(!api.calls.includes("pulls.listFiles"));
+  assert.ok(!api.calls.includes("pulls.get"));
+});
+
+test("the scope step passes on no file list larger than one environment string", async () => {
+  const big = Array.from({ length: 3000 }, (_, i) => ({
+    filename: `${"d/".repeat(20)}file-${i}.js`,
+    patch: PATCH,
+  }));
+  const outputs = {};
+  const api = fakeApi({
+    prFiles: big,
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+  });
+  const scope = stepId(key, "scope");
+  await withEnv(
+    {
+      LANE: "claude-review",
+      INCREMENTAL: "true",
+      DOCS_ONLY_PATHS: "",
+      EVENT_ACTION: "opened",
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      BASE_REF: "main",
+      DIFF_FILE: path.join(makeTemporaryDirectory("scope-big-"), "x.diff"),
+      GIT_TOKEN: "t",
+    },
+    () =>
+      new AsyncFunction(
+        "require",
+        "github",
+        "context",
+        "core",
+        scope.with.script,
+      )(
+        require,
+        api.github,
+        { repo: { owner: "o", repo: "r" } },
+        quietCore(outputs),
+      ),
+  );
+  assert.equal(outputs.review, "true");
+  assert.equal(outputs["pr-files"], undefined);
+});

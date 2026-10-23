@@ -3,8 +3,10 @@ description: >-
   pr-review-cli's publish step, with no model: reads the review of the leg
   that counts (the subscription job's when it ran, else the key job's) from
   the calling step's env and checks it. With PUBLISH=comments it validates
-  every inline comment's anchor against the pull request's diff at the head
-  (one bad anchor sends the whole batch to the summary), strips HTML
+  every inline comment's anchor against the pull request's diff at the head,
+  from the scope step's file list (PR_FILES) while a fresh read shows the
+  head has not moved, else from a read of its own (one bad anchor sends the
+  whole batch to the summary), strips HTML
   comments, foots each comment `claude-lane: <lane>`, withholds everything on
   a credential-shaped hit from the publish gate, posts one COMMENT review
   (skipping comments this lane already posted on the head), updates the
