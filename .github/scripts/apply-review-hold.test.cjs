@@ -205,6 +205,11 @@ test("a changed file matching hold-paths adds trust-gate whatever the review say
     assert.match(writes[1][1].body, /criteria=trust-gate -->/u);
     assert.match(writes[1][1].body, /Changed files match hold-paths/u);
   }
+  // File names cannot break out of their code span or mention anyone.
+  const { writes } = await apply(baseEnv(), {
+    files: ["a`b@team/CODEOWNERS"],
+  });
+  assert.match(writes[1][1].body, /`a\?b@\u200bteam\/CODEOWNERS`/u);
 });
 
 test("a model hold and a path match combine their criteria", async () => {
@@ -255,8 +260,22 @@ test("a failed comment or file listing fails the step", async () => {
     fail: { createComment: true },
   });
   assert.match(comment.error.message, /could not post the hold comment/u);
-  const listing = await apply(baseEnv(), { fail: { listFiles: true } });
-  assert.match(listing.error.message, /HTTP 502/u);
+  // A failed listing still holds with trust-gate, then fails the step.
+  const listing = await apply(
+    baseEnv({
+      KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
+    }),
+    { fail: { listFiles: true } },
+  );
+  assert.match(
+    listing.error.message,
+    /could not list the changed files: HTTP 502/u,
+  );
+  assert.equal(listing.core.outputs.criteria, "cost,trust-gate");
+  assert.deepEqual(
+    listing.writes.map(([name]) => name),
+    ["addLabels", "createComment"],
+  );
 });
 
 test("a rerun posts no second marker for the same head and criteria", async () => {

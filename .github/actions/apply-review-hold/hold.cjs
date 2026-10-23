@@ -77,7 +77,10 @@ async function pathHold(github, owner, repo, number, globs) {
     ),
   ];
   if (matched.length > 0) {
-    const shown = matched.slice(0, MAX_LISTED).map((name) => `\`${name}\``);
+    // File names are the author's text: no backticks, line breaks or mentions.
+    const shown = matched
+      .slice(0, MAX_LISTED)
+      .map((name) => `\`${name.replace(/[`\r\n]/gu, "?").replaceAll("@", "@\u200b")}\``);
     if (matched.length > shown.length)
       shown.push(`and ${matched.length - shown.length} more`);
     return `Changed files match hold-paths: ${shown.join(", ")}.`;
@@ -117,13 +120,16 @@ async function run({ github, context, core, env = process.env }) {
     for (const c of model.criteria) found.add(c);
     reasons.push(model.reason);
   }
-  const byPath = await pathHold(
-    github,
-    owner,
-    repo,
-    number,
-    patterns(env.HOLD_PATHS),
-  );
+  // A listing that fails holds too, so a model hold is never lost to it;
+  // the error still fails the step after the writes.
+  const errors = [];
+  let byPath;
+  try {
+    byPath = await pathHold(github, owner, repo, number, patterns(env.HOLD_PATHS));
+  } catch (error) {
+    errors.push(`could not list the changed files: ${error.message}`);
+    byPath = "The changed files could not be listed, so hold-paths could not be checked.";
+  }
   if (byPath) {
     found.add("trust-gate");
     reasons.push(byPath);
@@ -147,7 +153,6 @@ async function run({ github, context, core, env = process.env }) {
   }
 
   // Both writes are tried; either failing fails the step afterwards.
-  const errors = [];
   try {
     await github.rest.issues.addLabels({
       owner,
