@@ -824,7 +824,7 @@ jobs:
                 line: { type: "integer", minimum: 1 },
                 side: { type: "string", enum: ["RIGHT", "LEFT"] },
                 start_line: { type: "integer", minimum: 1 },
-                body: { type: "string", minLength: 1, maxLength: 8000 },
+                body: { type: "string", minLength: 1, maxLength: 3000 },
               },
               required: ["path", "line", "side", "body"],
             };
@@ -834,7 +834,7 @@ jobs:
               properties: {
                 findings: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
-                comments: { type: "array", maxItems: 50, items: comment },
+                comments: { type: "array", maxItems: 25, items: comment },
               },
               required: ["findings", "summary", "comments"],
             };
@@ -1021,7 +1021,7 @@ jobs:
             const summary = typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, 20000) : "";
             if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return incomplete("the review returned no findings count");
             if (!summary) return incomplete("the review returned no summary");
-            if (!Array.isArray(raw.comments) || raw.comments.length > 50) return incomplete("the review returned no comment list");
+            if (!Array.isArray(raw.comments) || raw.comments.length > 25) return incomplete("the review returned no comment list");
             const comments = [];
             for (const c of raw.comments) {
               const ok =
@@ -1039,14 +1039,19 @@ jobs:
                 line: c.line,
                 side: c.side,
                 ...(c.start_line === undefined ? {} : { start_line: c.start_line }),
-                body: c.body.slice(0, 8000),
+                body: c.body.slice(0, 3000),
               });
             }
             // Every comment and every `manifest <field>: flag` summary line is
             // a finding, so a lower count is raised to them, never trusted.
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length, flags);
-            core.setOutput("review", JSON.stringify({ findings, summary, comments }));
+            // The status job receives the review as one environment string, which
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
+            // ASCII review near 100 KB, and anything over that is not passed on.
+            const review = JSON.stringify({ findings, summary, comments });
+            if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
               .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
@@ -1716,7 +1721,7 @@ jobs:
                 line: { type: "integer", minimum: 1 },
                 side: { type: "string", enum: ["RIGHT", "LEFT"] },
                 start_line: { type: "integer", minimum: 1 },
-                body: { type: "string", minLength: 1, maxLength: 8000 },
+                body: { type: "string", minLength: 1, maxLength: 3000 },
               },
               required: ["path", "line", "side", "body"],
             };
@@ -1726,7 +1731,7 @@ jobs:
               properties: {
                 findings: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
-                comments: { type: "array", maxItems: 50, items: comment },
+                comments: { type: "array", maxItems: 25, items: comment },
               },
               required: ["findings", "summary", "comments"],
             };
@@ -1913,7 +1918,7 @@ jobs:
             const summary = typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, 20000) : "";
             if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return incomplete("the review returned no findings count");
             if (!summary) return incomplete("the review returned no summary");
-            if (!Array.isArray(raw.comments) || raw.comments.length > 50) return incomplete("the review returned no comment list");
+            if (!Array.isArray(raw.comments) || raw.comments.length > 25) return incomplete("the review returned no comment list");
             const comments = [];
             for (const c of raw.comments) {
               const ok =
@@ -1931,14 +1936,19 @@ jobs:
                 line: c.line,
                 side: c.side,
                 ...(c.start_line === undefined ? {} : { start_line: c.start_line }),
-                body: c.body.slice(0, 8000),
+                body: c.body.slice(0, 3000),
               });
             }
             // Every comment and every `manifest <field>: flag` summary line is
             // a finding, so a lower count is raised to them, never trusted.
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length, flags);
-            core.setOutput("review", JSON.stringify({ findings, summary, comments }));
+            // The status job receives the review as one environment string, which
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
+            // ASCII review near 100 KB, and anything over that is not passed on.
+            const review = JSON.stringify({ findings, summary, comments });
+            if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
               .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}\n- Turns: ${record.num_turns ?? "?"}\n`)

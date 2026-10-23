@@ -594,3 +594,26 @@ test("the extract step calls a review incomplete on every gap it checks", async 
   );
   assert.equal(outputs.verdict, "complete");
 });
+
+// Linux refuses an environment string over 128 KiB (MAX_ARG_STRLEN), and the
+// status job receives the review as one.
+test("the extract step passes on a review no larger than one environment string can hold", async () => {
+  const comment = (body) => ({ ...COMMENT, body });
+  const largest = {
+    findings: 25,
+    summary: "s".repeat(20000),
+    comments: Array.from({ length: 25 }, () => comment("b".repeat(3000))),
+  };
+  const fits = await extract({ structured: JSON.stringify(largest) });
+  assert.equal(fits.verdict, "complete");
+  assert.ok(Buffer.byteLength(fits.review) < 128 * 1024);
+  // Three-byte characters at the schema's caps pass 100,000 bytes.
+  const wide = {
+    ...largest,
+    summary: "€".repeat(20000),
+    comments: Array.from({ length: 25 }, () => comment("€".repeat(3000))),
+  };
+  const refused = await extract({ structured: JSON.stringify(wide) });
+  assert.match(refused.verdict, /too large to pass on/u);
+  assert.equal(refused.review, undefined);
+});
