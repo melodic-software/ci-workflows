@@ -73,9 +73,13 @@ name: pr-review-cli
 #     outputs.
 #   - Only the status job writes, and it runs no model. It reads the
 #     subscription job's outputs when that job ran, else the key job's. It
-#     checks every inline anchor against a fresh read of the pull request's
-#     diff at the head (one bad anchor sends the whole batch to the
-#     summary), strips HTML comments, foots every comment with
+#     checks every inline anchor against the pull request's diff at the head
+#     (one bad anchor sends the whole batch to the summary): the hunk ranges
+#     the key job's scope step read before any model step ran, used only
+#     when a fresh read shows the head has not moved, else a read of its
+#     own. Each step writes its own outputs file, so the later model step
+#     cannot rewrite the scope step's outputs; the status job already trusts
+#     them for its skips. It strips HTML comments, foots every comment with
 #     `claude-lane: <lane>`, and withholds the whole review when
 #     claude-code-plugins' lib/publish-gate.mjs, read at that repository's
 #     default-branch tip, finds a credential format. It posts with its own
@@ -87,7 +91,9 @@ name: pr-review-cli
 #     hold-label and one `<!-- claude-lane-hold lane=<lane> sha=<head>
 #     criteria=<list> -->` comment when the counted leg's checked review
 #     returned a hold, or when a changed file (or a renamed file's old path)
-#     matches hold-paths, which adds trust-gate whatever the model says. It
+#     matches hold-paths, which adds trust-gate whatever the model says. The
+#     file list is the scope step's at the head; without it (scope failed,
+#     the head moved, or the list was too large) the step reads it. It
 #     only adds, through the same pull-requests: write grant, and fails the
 #     job when a write fails. The reason is model text: HTML comments are
 #     stripped and the publish gate withholds a credential-shaped one.
@@ -265,6 +271,7 @@ jobs:
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
       last-summary: ${{ steps.scope.outputs.last-summary }}
+      pr-files: ${{ steps.scope.outputs.pr-files }}
     steps:
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
@@ -538,6 +545,26 @@ jobs:
               };
             };
 
+            // The file list at the head, for the status job's anchor check and
+            // hold-paths, so neither reads it again: each name, a rename's old
+            // name, and each patch's hunk ranges ("<old> <new>", as in its @@
+            // line). Dropped when it would not fit one environment string.
+            const writePrFiles = (files, changed) => {
+              const payload = JSON.stringify({
+                head,
+                changed,
+                files: files.map((file) => ({
+                  n: file.filename,
+                  ...(file.previous_filename ? { p: file.previous_filename } : {}),
+                  ...(typeof file.patch === "string"
+                    ? { h: [...file.patch.matchAll(/^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@/gmu)].map((m) => `${m[1]} ${m[2]}`) }
+                    : {}),
+                })),
+              });
+              if (Buffer.byteLength(payload, "utf8") > 100000) core.info("The file list is too large to pass on; the status job reads it.");
+              else core.setOutput("pr-files", payload);
+            };
+
             const incremental = env.INCREMENTAL === "true";
             try {
               // Read first, so a later failure still updates the one comment.
@@ -550,10 +577,11 @@ jobs:
               });
               // The file list is the live pull request's; a skip trusts it only
               // while the live head is still the head this run was started for.
-              const live = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) })).data.head
-                .sha;
+              const pull = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) })).data;
+              const live = pull.head.sha;
               const current = live === head;
               if (!current) core.info(`The pull request's head moved to ${live}; this run skips nothing.`);
+              else writePrFiles(prFiles, pull.changed_files);
               let scope = prFiles;
               let last = "";
               let now = "";
@@ -609,7 +637,9 @@ jobs:
 
       # The whole pull request's diff from the merge base, for every review:
       # the API returns only part of a large one, and the model has no gh.
-      # A whole review that lacks it is incomplete.
+      # A whole review that lacks it is incomplete. The merge base is the
+      # one the scope step read (and the marker records); without it, one
+      # compare reads it.
       - name: Write the full diff
         id: full-diff
         if: steps.scope.outputs.review != 'false'
@@ -620,15 +650,20 @@ jobs:
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
-          # `-i` keeps the response headers, so a failed call logs its rate limit.
-          response="$RUNNER_TEMP/compare.http"
-          if ! gh api -i "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha > "$response"; then
-            echo "::warning::The compare call failed: $(tr -d '\r' < "$response" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
-            exit 1
+          if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            base="$MERGE_BASE"
+          else
+            # `-i` keeps the response headers, so a failed call logs its rate limit.
+            response="$RUNNER_TEMP/compare.http"
+            if ! gh api -i "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha > "$response"; then
+              echo "::warning::The compare call failed: $(tr -d '\r' < "$response" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
+              exit 1
+            fi
+            base="$(tr -d '\r' < "$response" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }')"
           fi
-          base="$(tr -d '\r' < "$response" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }')"
           if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::warning::No merge base was found for the full diff."
             exit 1
@@ -1217,6 +1252,7 @@ jobs:
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
       last-summary: ${{ steps.scope.outputs.last-summary }}
+      pr-files: ${{ steps.scope.outputs.pr-files }}
     steps:
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
@@ -1490,6 +1526,26 @@ jobs:
               };
             };
 
+            // The file list at the head, for the status job's anchor check and
+            // hold-paths, so neither reads it again: each name, a rename's old
+            // name, and each patch's hunk ranges ("<old> <new>", as in its @@
+            // line). Dropped when it would not fit one environment string.
+            const writePrFiles = (files, changed) => {
+              const payload = JSON.stringify({
+                head,
+                changed,
+                files: files.map((file) => ({
+                  n: file.filename,
+                  ...(file.previous_filename ? { p: file.previous_filename } : {}),
+                  ...(typeof file.patch === "string"
+                    ? { h: [...file.patch.matchAll(/^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@/gmu)].map((m) => `${m[1]} ${m[2]}`) }
+                    : {}),
+                })),
+              });
+              if (Buffer.byteLength(payload, "utf8") > 100000) core.info("The file list is too large to pass on; the status job reads it.");
+              else core.setOutput("pr-files", payload);
+            };
+
             const incremental = env.INCREMENTAL === "true";
             try {
               // Read first, so a later failure still updates the one comment.
@@ -1502,10 +1558,11 @@ jobs:
               });
               // The file list is the live pull request's; a skip trusts it only
               // while the live head is still the head this run was started for.
-              const live = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) })).data.head
-                .sha;
+              const pull = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) })).data;
+              const live = pull.head.sha;
               const current = live === head;
               if (!current) core.info(`The pull request's head moved to ${live}; this run skips nothing.`);
+              else writePrFiles(prFiles, pull.changed_files);
               let scope = prFiles;
               let last = "";
               let now = "";
@@ -1561,7 +1618,9 @@ jobs:
 
       # The whole pull request's diff from the merge base, for every review:
       # the API returns only part of a large one, and the model has no gh.
-      # A whole review that lacks it is incomplete.
+      # A whole review that lacks it is incomplete. The merge base is the
+      # one the scope step read (and the marker records); without it, one
+      # compare reads it.
       - name: Write the full diff
         id: full-diff
         if: steps.scope.outputs.review != 'false'
@@ -1572,15 +1631,20 @@ jobs:
           REPO: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
-          # `-i` keeps the response headers, so a failed call logs its rate limit.
-          response="$RUNNER_TEMP/compare.http"
-          if ! gh api -i "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha > "$response"; then
-            echo "::warning::The compare call failed: $(tr -d '\r' < "$response" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
-            exit 1
+          if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            base="$MERGE_BASE"
+          else
+            # `-i` keeps the response headers, so a failed call logs its rate limit.
+            response="$RUNNER_TEMP/compare.http"
+            if ! gh api -i "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha > "$response"; then
+              echo "::warning::The compare call failed: $(tr -d '\r' < "$response" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
+              exit 1
+            fi
+            base="$(tr -d '\r' < "$response" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }')"
           fi
-          base="$(tr -d '\r' < "$response" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }')"
           if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::warning::No merge base was found for the full diff."
             exit 1
@@ -2139,8 +2203,9 @@ jobs:
     steps:
       # lib/publish-gate.mjs from claude-code-plugins at its default
       # branch's tip, resolved here, into a fresh directory; it must import
-      # only node: builtins. A failed read leaves no gate, and the publish
-      # step then publishes nothing.
+      # only node: builtins. It comes through an anonymous git clone, as the
+      # review plugin does, which spends no REST API request. A failed read
+      # leaves no gate, and the publish step then publishes nothing.
       - name: Fetch the publish gate
         id: gate
         continue-on-error: true
@@ -2150,12 +2215,17 @@ jobs:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
-            const source = { owner: "melodic-software", repo: "claude-code-plugins" };
-            const { data: repository } = await github.rest.repos.get(source);
-            const tip = (await github.rest.repos.getBranch({ ...source, branch: repository.default_branch })).data?.commit?.sha;
-            if (!/^[0-9a-f]{40}$/u.test(tip ?? "")) throw new Error("no default branch tip");
-            const { data } = await github.rest.repos.getContent({ ...source, path: "lib/publish-gate.mjs", ref: tip });
-            const text = Buffer.from(data.content, "base64").toString("utf8");
+            const source = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "claude-code-plugins-"));
+            const git = (...args) =>
+              require("node:child_process").execFileSync("git", args, {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+                env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+              });
+            git("clone", "--quiet", "--depth=1", "--filter=blob:none", "--no-checkout", "https://github.com/melodic-software/claude-code-plugins.git", source);
+            const tip = git("-C", source, "rev-parse", "HEAD").trim();
+            if (!/^[0-9a-f]{40}$/u.test(tip)) throw new Error("no default branch tip");
+            const text = git("-C", source, "show", `${tip}:lib/publish-gate.mjs`);
             const specifiers = [...text.matchAll(/\bfrom\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]?([^'")]*)/gmu)].map(
               (match) => match[1] ?? match[2] ?? match[3],
             );
@@ -2185,6 +2255,7 @@ jobs:
           MARKER_ID: ${{ needs.review-key.outputs.marker-id }}
           MERGE_BASE: ${{ needs.review-key.outputs.merge-base }}
           LAST_SUMMARY: ${{ needs.review-key.outputs.last-summary }}
+          PR_FILES: ${{ needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
           SUB_RESULT: ${{ needs.review-subscription.result }}
           KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}
@@ -2226,6 +2297,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
+          PR_FILES: ${{ needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
           SUB_RESULT: ${{ needs.review-subscription.result }}
           KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}

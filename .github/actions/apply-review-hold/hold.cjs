@@ -1,7 +1,7 @@
 // pr-review-cli's hold step. No model runs here. It reads, from env:
 // HOLD_LABEL, HOLD_PATHS (newline-separated globs), LANE_ID, PR_NUMBER,
-// HEAD_SHA, PUBLISH_GATE, and the legs' KEY_* and SUB_* outputs that
-// publish-review's judge reads. It only adds: the label and one marker
+// HEAD_SHA, PUBLISH_GATE, PR_FILES (the scope step's file list), and the
+// legs' KEY_* and SUB_* outputs that publish-review's judge reads. It only adds: the label and one marker
 // comment. Every write goes through issues.addLabels or issues.createComment.
 "use strict";
 
@@ -9,6 +9,7 @@ const {
   judge,
   loadGate,
   scan,
+  scopedFiles,
   stripHtml,
 } = require("../publish-review/publish.cjs");
 
@@ -63,14 +64,18 @@ function modelHold(env) {
 
 // trust-gate when a changed file, or a renamed file's old path, matches a
 // hold path, or when GitHub listed fewer files than the pull request changed.
-async function pathHold(github, owner, repo, number, globs) {
+// The list is the scope step's at the head (PR_FILES); without one it is read.
+async function pathHold(github, owner, repo, number, globs, env) {
   if (globs.length === 0) return null;
-  const files = await github.paginate(github.rest.pulls.listFiles, {
-    owner,
-    repo,
-    pull_number: number,
-    per_page: 100,
-  });
+  const scoped = scopedFiles(env);
+  const files = scoped
+    ? scoped.files.map((f) => ({ filename: f.n, previous_filename: f.p }))
+    : await github.paginate(github.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: number,
+        per_page: 100,
+      });
   const matched = [
     ...new Set(
       files.flatMap(names).filter((name) => globs.some((re) => re.test(name))),
@@ -85,13 +90,12 @@ async function pathHold(github, owner, repo, number, globs) {
       shown.push(`and ${matched.length - shown.length} more`);
     return `Changed files match hold-paths: ${shown.join(", ")}.`;
   }
-  const { data } = await github.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: number,
-  });
-  if (files.length < (data.changed_files ?? 0)) {
-    return `GitHub listed ${files.length} of the pull request's ${data.changed_files} changed files, so hold-paths could not be checked against every file.`;
+  const changed = scoped
+    ? scoped.changed
+    : ((await github.rest.pulls.get({ owner, repo, pull_number: number })).data
+        .changed_files ?? 0);
+  if (files.length < changed) {
+    return `GitHub listed ${files.length} of the pull request's ${changed} changed files, so hold-paths could not be checked against every file.`;
   }
   return null;
 }
@@ -125,7 +129,14 @@ async function run({ github, context, core, env = process.env }) {
   const errors = [];
   let byPath;
   try {
-    byPath = await pathHold(github, owner, repo, number, patterns(env.HOLD_PATHS));
+    byPath = await pathHold(
+      github,
+      owner,
+      repo,
+      number,
+      patterns(env.HOLD_PATHS),
+      env,
+    );
   } catch (error) {
     errors.push(`could not list the changed files: ${error.message}`);
     byPath = "The changed files could not be listed, so hold-paths could not be checked.";
