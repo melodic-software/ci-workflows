@@ -509,6 +509,7 @@ module.exports = {
   commentBody,
   commentableLines,
   judge,
+  loadGate,
   parseReview,
   placeComments,
   run,

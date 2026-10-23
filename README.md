@@ -710,6 +710,9 @@ consumer to audit it.
 - `.github/actions/publish-review` — `pr-review-cli.yml`'s publish step,
   with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
+- `.github/actions/apply-review-hold` — `pr-review-cli.yml`'s add-only hold
+  step, with no model; internal to that workflow, which passes it
+  everything through env (its `action.yml` describes what it does).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
@@ -1125,7 +1128,18 @@ GitHub continues the normal weekly patching of each hosted image generation.
   lane id, and no job ever red. The caller grants `contents: read` and
   `pull-requests: write` in both modes and, in summary mode, does not cancel
   in-progress runs. The workflow header carries the canonical caller and
-  the security model. `pr-review.yml` and `pr-review-security.yml` are
+  the security model. With `hold-label` set, comments mode also holds the
+  pull request for a person: when the review returns a `hold` (criteria
+  `cost`, `trust-gate` or `critical-security`, and a reason) or a changed
+  file matches a `hold-paths` glob (criterion `trust-gate`, whatever the
+  review says), the status job adds that label and one
+  `<!-- claude-lane-hold lane=<lane> sha=<head> criteria=<list> -->`
+  comment through `.github/actions/apply-review-hold`. It never removes a
+  label, and a failed write turns the check red. The workflow outputs
+  `hold` and `hold-criteria`. The hold needs no permission beyond
+  `pull-requests: write`; create the label in the repository first. The checks stay
+  advisory: a caller that wants a hold enforced reads the label in its own
+  required check. `pr-review.yml` and `pr-review-security.yml` are
   unchanged.
 - `.github/workflows/intake-triage.yml` — the intake-triage lane. On
   `issues: [opened]`, a script step fetches the issue, its trusted comments and the

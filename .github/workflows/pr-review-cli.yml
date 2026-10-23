@@ -83,6 +83,14 @@ name: pr-review-cli
 #     `pull-requests: write` could write a marker and narrow a later
 #     incremental review; same-repository writers already receive this
 #     lane's secrets, so the lane trusts them.
+#   - Holds (hold-label set, comments mode only): the status job adds
+#     hold-label and one `<!-- claude-lane-hold lane=<lane> sha=<head>
+#     criteria=<list> -->` comment when the counted leg's checked review
+#     returned a hold, or when a changed file (or a renamed file's old path)
+#     matches hold-paths, which adds trust-gate whatever the model says. It
+#     only adds, through the same pull-requests: write grant, and fails the
+#     job when a write fails. The reason is model text: HTML comments are
+#     stripped and the publish gate withholds a credential-shaped one.
 #
 # REVIEW CADENCE: as pr-review.yml's header states, with this lane's marker:
 # whole pull request on open, reopen and ready; after a push, the files
@@ -175,6 +183,26 @@ on:
           closing issues the review reads in full, as pr-review.yml's input.
         type: string
         default: ""
+      hold-label:
+        description: >-
+          The label the status job adds when the review or hold-paths holds
+          the pull request for a person. Empty turns holds off.
+        type: string
+        default: ""
+      hold-paths:
+        description: >-
+          Newline-separated path globs, as docs-only-paths. A changed file
+          matching one holds the pull request with criterion trust-gate,
+          whatever the review says. Used only when hold-label is set.
+        type: string
+        default: ""
+    outputs:
+      hold:
+        description: "`true` when this run held the pull request, else `false`."
+        value: ${{ jobs.status.outputs.hold }}
+      hold-criteria:
+        description: The hold's criteria, comma-separated (cost, trust-gate, critical-security), or empty.
+        value: ${{ jobs.status.outputs.hold-criteria }}
     secrets:
       CLAUDE_API_KEY:
         description: The role's Console API key. Tried first, in the review-key job; empty skips it.
@@ -837,6 +865,20 @@ jobs:
                 findings: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
                 comments: { type: "array", maxItems: 25, items: comment },
+                hold: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    criteria: {
+                      type: "array",
+                      minItems: 1,
+                      uniqueItems: true,
+                      items: { type: "string", enum: ["cost", "trust-gate", "critical-security"] },
+                    },
+                    reason: { type: "string", minLength: 1, maxLength: 2000 },
+                  },
+                  required: ["criteria", "reason"],
+                },
               },
               required: ["findings", "summary", "comments"],
             };
@@ -864,6 +906,8 @@ jobs:
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
               "- summary: your review summary in Markdown.",
+              "- hold: only when the review command says to hold the pull request for a person: criteria",
+              "  (cost, trust-gate or critical-security) and reason. Omit it otherwise.",
             ]
               .filter((line) => line !== undefined)
               .join("\n");
@@ -1046,12 +1090,30 @@ jobs:
             }
             // Every comment and every `manifest <field>: flag` summary line is
             // a finding, so a lower count is raised to them, never trusted.
+            // An optional hold for a person: known criteria, each once, and a
+            // reason. A malformed hold makes the review incomplete.
+            let hold;
+            if (raw.hold !== undefined) {
+              const criteria = raw.hold?.criteria;
+              const reason =
+                typeof raw.hold?.reason === "string" ? raw.hold.reason.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, 2000) : "";
+              if (
+                !Array.isArray(criteria) ||
+                criteria.length === 0 ||
+                new Set(criteria).size !== criteria.length ||
+                !criteria.every((c) => ["cost", "trust-gate", "critical-security"].includes(c)) ||
+                !reason
+              ) {
+                return incomplete("the review's hold is malformed");
+              }
+              hold = { criteria, reason };
+            }
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length, flags);
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
             // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({ findings, summary, comments });
+            const review = JSON.stringify({ findings, summary, comments, ...(hold ? { hold } : {}) });
             if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
@@ -1734,6 +1796,20 @@ jobs:
                 findings: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
                 comments: { type: "array", maxItems: 25, items: comment },
+                hold: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    criteria: {
+                      type: "array",
+                      minItems: 1,
+                      uniqueItems: true,
+                      items: { type: "string", enum: ["cost", "trust-gate", "critical-security"] },
+                    },
+                    reason: { type: "string", minLength: 1, maxLength: 2000 },
+                  },
+                  required: ["criteria", "reason"],
+                },
               },
               required: ["findings", "summary", "comments"],
             };
@@ -1761,6 +1837,8 @@ jobs:
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
               "- summary: your review summary in Markdown.",
+              "- hold: only when the review command says to hold the pull request for a person: criteria",
+              "  (cost, trust-gate or critical-security) and reason. Omit it otherwise.",
             ]
               .filter((line) => line !== undefined)
               .join("\n");
@@ -1943,12 +2021,30 @@ jobs:
             }
             // Every comment and every `manifest <field>: flag` summary line is
             // a finding, so a lower count is raised to them, never trusted.
+            // An optional hold for a person: known criteria, each once, and a
+            // reason. A malformed hold makes the review incomplete.
+            let hold;
+            if (raw.hold !== undefined) {
+              const criteria = raw.hold?.criteria;
+              const reason =
+                typeof raw.hold?.reason === "string" ? raw.hold.reason.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, 2000) : "";
+              if (
+                !Array.isArray(criteria) ||
+                criteria.length === 0 ||
+                new Set(criteria).size !== criteria.length ||
+                !criteria.every((c) => ["cost", "trust-gate", "critical-security"].includes(c)) ||
+                !reason
+              ) {
+                return incomplete("the review's hold is malformed");
+              }
+              hold = { criteria, reason };
+            }
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length, flags);
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
             // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({ findings, summary, comments });
+            const review = JSON.stringify({ findings, summary, comments, ...(hold ? { hold } : {}) });
             if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
@@ -1986,10 +2082,13 @@ jobs:
     needs: [review-key, review-subscription]
     if: always() && needs.review-key.result != 'skipped'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 17
     permissions:
       contents: read
-      pull-requests: write # the review, its inline comments and the lane's marker comment
+      pull-requests: write # the review, its inline comments, the lane's marker comment and the hold label
+    outputs:
+      hold: ${{ steps.hold.outputs.hold || 'false' }}
+      hold-criteria: ${{ steps.hold.outputs.criteria }}
     steps:
       # lib/publish-gate.mjs from claude-code-plugins at its default
       # branch's tip, resolved here, into a fresh directory; it must import
@@ -2061,6 +2160,36 @@ jobs:
           SUB_COST: ${{ needs.review-subscription.outputs.cost }}
           SUB_LEG_MS: ${{ needs.review-subscription.outputs.leg-ms }}
           SUB_WALL_MS: ${{ needs.review-subscription.outputs.wall-ms }}
+
+      # Add-only: in comments mode with hold-label set, the label and one
+      # marker comment when the counted leg's review returned a hold or a
+      # changed file matches hold-paths, even when the review failed. It never
+      # removes a label. A failed write fails the job.
+      - name: Apply the hold
+        id: hold
+        if: always() && inputs.hold-label != '' && inputs.publish == 'comments'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 2
+        uses: $/.github/actions/apply-review-hold
+        env:
+          HOLD_LABEL: ${{ inputs.hold-label }}
+          HOLD_PATHS: ${{ inputs.hold-paths }}
+          LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUBLISH_GATE: ${{ steps.gate.outputs.path }}
+          KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
+          SUB_RESULT: ${{ needs.review-subscription.result }}
+          KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}
+          KEY_FAILED: ${{ needs.review-key.outputs.review-failed }}
+          KEY_CLASS: ${{ needs.review-key.outputs.failure-class }}
+          KEY_VERDICT: ${{ needs.review-key.outputs.verdict }}
+          KEY_REVIEW: ${{ needs.review-key.outputs.review }}
+          SUB_PRESENT: ${{ needs.review-subscription.outputs.credential-present }}
+          SUB_FAILED: ${{ needs.review-subscription.outputs.review-failed }}
+          SUB_CLASS: ${{ needs.review-subscription.outputs.failure-class }}
+          SUB_VERDICT: ${{ needs.review-subscription.outputs.verdict }}
+          SUB_REVIEW: ${{ needs.review-subscription.outputs.review }}
 
       - name: Upload the shadow report
         if: inputs.publish != 'comments'

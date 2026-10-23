@@ -617,3 +617,118 @@ test("the extract step passes on a review no larger than one environment string 
   assert.match(refused.verdict, /too large to pass on/u);
   assert.equal(refused.review, undefined);
 });
+
+test("the extract step carries a well-formed hold and calls a malformed one incomplete", async () => {
+  const good = { findings: 0, summary: "S", comments: [] };
+  const held = await extract({
+    structured: JSON.stringify({
+      ...good,
+      hold: { criteria: ["cost", "trust-gate"], reason: "Why<!-- x -->." },
+    }),
+  });
+  assert.equal(held.verdict, "complete");
+  assert.deepEqual(JSON.parse(held.review).hold, {
+    criteria: ["cost", "trust-gate"],
+    reason: "Why.",
+  });
+  const none = await extract({ structured: JSON.stringify(good) });
+  assert.equal("hold" in JSON.parse(none.review), false);
+  for (const hold of [
+    null,
+    { criteria: [], reason: "R" },
+    { criteria: ["cost", "cost"], reason: "R" },
+    { criteria: ["style"], reason: "R" },
+    { criteria: ["cost"], reason: "<!-- only hidden -->" },
+    { criteria: "cost", reason: "R" },
+  ]) {
+    const outputs = await extract({
+      structured: JSON.stringify({ ...good, hold }),
+    });
+    assert.match(outputs.verdict, /hold is malformed/u, JSON.stringify(hold));
+    assert.equal(outputs.review, undefined);
+  }
+});
+
+test("the schema offers the hold criteria the extract step accepts, in both lanes", () => {
+  for (const job of [key, subscription]) {
+    const script = step(job, "compose").with.script;
+    assert.match(
+      script,
+      /enum: \["cost", "trust-gate", "critical-security"\]/u,
+    );
+    assert.match(
+      script,
+      /reason: \{ type: "string", minLength: 1, maxLength: 2000 \}/u,
+    );
+    assert.doesNotMatch(
+      script,
+      /required: \["findings", "summary", "comments", "hold"\]/u,
+    );
+    assert.match(
+      step(job, "extract").with.script,
+      /\["cost", "trust-gate", "critical-security"\]\.includes\(c\)/u,
+    );
+  }
+});
+
+test("the review with the largest hold still fits one environment string", async () => {
+  const largest = {
+    findings: 25,
+    summary: "s".repeat(20000),
+    comments: Array.from({ length: 25 }, () => ({
+      ...COMMENT,
+      body: "b".repeat(3000),
+    })),
+    hold: {
+      criteria: ["cost", "trust-gate", "critical-security"],
+      reason: "r".repeat(2000),
+    },
+  };
+  const fits = await extract({ structured: JSON.stringify(largest) });
+  assert.equal(fits.verdict, "complete");
+});
+
+test("the hold step runs only in comments mode with hold-label set, even after a red publish", () => {
+  const hold = step(status, "hold");
+  const names = status.steps.map((s) => s.name);
+  assert.ok(
+    names.indexOf("Publish the review") < names.indexOf("Apply the hold"),
+  );
+  assert.equal(hold.uses, "$/.github/actions/apply-review-hold");
+  const runs = (inputs) => Boolean(evaluate(hold.if, { inputs }));
+  assert.equal(
+    runs({ "hold-label": "needs-human", publish: "comments" }),
+    true,
+  );
+  assert.equal(runs({ "hold-label": "", publish: "comments" }), false);
+  assert.equal(
+    runs({ "hold-label": "needs-human", publish: "summary" }),
+    false,
+  );
+  assert.match(hold.if, /^always\(\) && /u);
+  assert.equal(
+    evaluate(hold["continue-on-error"], { inputs: { publish: "comments" } }),
+    false,
+  );
+  // Every input reaches the script through env, never an expression in it.
+  for (const name of [
+    "HOLD_LABEL",
+    "HOLD_PATHS",
+    "HEAD_SHA",
+    "KEY_REVIEW",
+    "SUB_REVIEW",
+    "SUB_RESULT",
+  ]) {
+    assert.ok(hold.env[name], name);
+  }
+  assert.deepEqual(status.outputs, {
+    hold: `\${{ steps.hold.outputs.hold || 'false' }}`,
+    "hold-criteria": `\${{ steps.hold.outputs.criteria }}`,
+  });
+  assert.equal(
+    evaluate("steps.hold.outputs.hold || 'false'", {
+      steps: { hold: { outputs: {} } },
+    }),
+    "false",
+  );
+});
