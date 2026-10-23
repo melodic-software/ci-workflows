@@ -1,7 +1,7 @@
 "use strict";
 
 // Evaluates the subset of the Actions expression language the lanes' job
-// and step gates use: github, inputs, needs and steps context paths (a
+// and step gates use: github, inputs, needs, steps, vars and secrets context paths (a
 // missing property is null), string literals, ! && || == != and parentheses,
 // the case-insensitive contains/startsWith/endsWith (contains also over an
 // array, by element), format, fromJSON, always(), and cancelled(), which is
@@ -26,14 +26,14 @@ const functions = {
   always: () => true,
   cancelled: () => false,
 };
-const CONTEXTS = ["github", "inputs", "needs", "steps"];
+const CONTEXTS = ["github", "inputs", "needs", "steps", "vars", "secrets"];
 
 const evaluate = (expression, contexts) => {
   const body = expression
     .trim()
     .replace(/^\$\{\{([\s\S]*)\}\}$/u, "$1")
     .replace(
-      /\b(github|inputs|needs|steps)((?:\.[A-Za-z_][\w-]*)+)/gu,
+      /\b(github|inputs|needs|steps|vars|secrets)((?:\.[A-Za-z_][\w-]*)+)/gu,
       (_, root, rest) =>
         `${root}${rest
           .slice(1)
