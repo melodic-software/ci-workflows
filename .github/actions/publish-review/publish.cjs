@@ -89,6 +89,24 @@ function commentBody(body, lane) {
   return `${stripHtml(body).slice(0, MAX_BODY)}\n\nclaude-lane: ${lane}`;
 }
 
+// The comments the extract step could not place (path, line or side
+// malformed), each with a readable location where it had one.
+function malformedComments(review) {
+  return (review.malformed ?? [])
+    .filter((c) => typeof c?.body === "string" && c.body.trim() !== "")
+    .map((c) => ({
+      location: [
+        typeof c.path === "string" && /^[^\0\r\n`]{1,500}$/u.test(c.path)
+          ? c.path
+          : "",
+        Number.isSafeInteger(c.line) && c.line >= 1 ? String(c.line) : "",
+      ]
+        .filter(Boolean)
+        .join(":"),
+      body: stripHtml(c.body).slice(0, MAX_BODY),
+    }));
+}
+
 // The review the model job extracted, or null when it is not one.
 function parseReview(text) {
   let review;
@@ -101,7 +119,8 @@ function parseReview(text) {
     !Number.isSafeInteger(review?.findings) ||
     review.findings < 0 ||
     typeof review.summary !== "string" ||
-    !Array.isArray(review.comments)
+    !Array.isArray(review.comments) ||
+    !(review.malformed === undefined || Array.isArray(review.malformed))
   ) {
     return null;
   }
@@ -171,13 +190,15 @@ function isCritical(body) {
 }
 
 // The model's summary, its one critical-findings line raised by the CRITICAL
-// findings moved out of the inline batch, which that line leaves out. With no
-// line, one is added that counts every summary finding as CRITICAL; with more
-// than one, a gate already counts them all, so the text stays as written.
-function countedSummary(review, unanchored) {
+// findings moved out of the inline batch or malformed, which that line leaves
+// out. With no line, one is added that counts every summary finding as
+// CRITICAL; with more than one, a gate already counts them all, so the text
+// stays as written.
+function countedSummary(review, unanchored, malformed) {
   const text = stripHtml(review.summary);
-  if (unanchored.length === 0) return text;
-  const demoted = unanchored.filter((c) => isCritical(c.body)).length;
+  const moved = [...unanchored, ...malformed];
+  if (moved.length === 0) return text;
+  const demoted = moved.filter((c) => isCritical(c.body)).length;
   const lines = [...text.matchAll(CRITICAL_LINE)].length;
   if (lines === 1)
     return text.replace(
@@ -185,25 +206,41 @@ function countedSummary(review, unanchored) {
       (_, before, count, after) => `${before}${Number(count) + demoted}${after}`,
     );
   if (lines > 1) return text;
-  const rest = Math.max(review.findings - review.comments.length, 0);
+  const rest = Math.max(
+    review.findings - review.comments.length - malformed.length,
+    0,
+  );
   return `${text}\n\ncritical-findings: ${rest + demoted}`;
 }
 
 // The summary as posted: the model's summary, then any finding that could not
 // sit on a line, with its location.
 function summaryText(review, unanchored, lane) {
+  const malformed = malformedComments(review);
   const extra = unanchored.map(
     (comment) =>
       `- \`${comment.path}:${comment.line}\` (${comment.side}): ${comment.body.replace(`\n\nclaude-lane: ${lane}`, "")}`,
   );
+  const unplaced = malformed.map(
+    (comment) =>
+      `- ${comment.location ? `\`${comment.location}\`: ` : ""}${comment.body}`,
+  );
   return [
-    countedSummary(review, unanchored),
+    countedSummary(review, unanchored, malformed),
     ...(extra.length > 0
       ? [
           "",
           "Findings not posted inline (their lines are not in the diff):",
           "",
           ...extra,
+        ]
+      : []),
+    ...(unplaced.length > 0
+      ? [
+          "",
+          "Findings not posted inline (their path, line or side is malformed):",
+          "",
+          ...unplaced,
         ]
       : []),
   ]
@@ -390,7 +427,10 @@ async function publish({ github, context, core, env }) {
   if (live !== head)
     placed.problems.unshift(`the pull request's head moved to ${live}`);
   const summary = summaryText(review, placed.unanchored, lane);
-  const findings = Math.max(review.findings, review.comments.length);
+  const findings = Math.max(
+    review.findings,
+    review.comments.length + malformedComments(review).length,
+  );
 
   const findSecret = await loadGate(env);
   if (!findSecret)
@@ -417,6 +457,7 @@ async function publish({ github, context, core, env }) {
         findings: review.findings,
         summary,
         comments: [...placed.inline, ...placed.unanchored],
+        malformed: malformedComments(review),
       },
     });
     return { findings, inline: placed.inline.length };
