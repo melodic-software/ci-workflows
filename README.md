@@ -655,8 +655,12 @@ consumer to audit it.
   `NODE_TLS_REJECT_UNAUTHORIZED` or a `*_PROXY` variable other than
   `NO_PROXY`. The CLI installs from the public npm registry, outside any
   checkout's `.npmrc`. Its outputs match report-check-run's `lane-*` inputs, plus
-  `credential` (a secret name), `execution-file` and a JSONL `log-file` that is
-  written only after a credential scan; every log line records the `lane` and
+  `credential` (a secret name), `execution-file`, a JSONL `log-file`, and,
+  on a successful leg with `json-schema-file`, a `structured-output-file`
+  holding the result's `structured_output`; the action writes each of the
+  last two only after a credential scan, and a hit on the structured output
+  fails the step. Read the structured output from that file, never from the
+  unscanned `execution-file`. Every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names are
   always the role's, `<ROLE>_CLAUDE_API_KEY` and
   `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake. The job summary

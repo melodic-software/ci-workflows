@@ -1156,6 +1156,19 @@ function install(
   });
 }
 
+// The final result's structured_output as JSON text, when the leg ran with
+// json-schema-file and succeeded; else null.
+function structuredOutputText(config, laneClass, executionFile) {
+  if (config.jsonSchema === "" || laneClass !== "") return null;
+  const result = (readMessages(executionFile) ?? []).findLast(
+    (message) => message?.type === "result",
+  );
+  const value = result?.structured_output;
+  return value !== null && typeof value === "object"
+    ? JSON.stringify(value)
+    : null;
+}
+
 function run(env) {
   verifyEnvironment(env);
   const config = readConfig(env);
@@ -1171,9 +1184,21 @@ function run(env) {
   const logText = `${outcome.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
   const clean = !holdsCredential(logText, [config.leg.value]);
   if (clean) fs.writeFileSync(logFile, logText);
+  const structuredText = structuredOutputText(
+    config,
+    outcome.outputs["lane-class"],
+    outcome.outputs["execution-file"],
+  );
+  const structuredClean =
+    structuredText === null ||
+    !holdsCredential(structuredText, [config.leg.value]);
+  const structuredFile = path.join(config.workDir, "structured-output.json");
+  const structuredWritten = structuredText !== null && structuredClean;
+  if (structuredWritten) fs.writeFileSync(structuredFile, structuredText);
   writeOutputs(env.GITHUB_OUTPUT, {
     ...outcome.outputs,
     "log-file": clean ? logFile : "",
+    "structured-output-file": structuredWritten ? structuredFile : "",
   });
   if (env.GITHUB_STEP_SUMMARY && clean) {
     fs.appendFileSync(
@@ -1184,6 +1209,11 @@ function run(env) {
   if (!clean) {
     throw new LaneError(
       "the execution log held a credential and was not written",
+    );
+  }
+  if (!structuredClean) {
+    throw new LaneError(
+      "the structured output held a credential and was not written",
     );
   }
   const laneClass = outcome.outputs["lane-class"];
