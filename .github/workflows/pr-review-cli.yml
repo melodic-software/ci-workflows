@@ -100,8 +100,10 @@ name: pr-review-cli
 # PUBLISH: `comments` posts one COMMENT review of inline comments, keeps the
 # lane's marker comment (head, base and summary) and leaves the
 # `claude-lane-review-complete lane=<lane> sha=<head> findings=<N> inline=<K>
-# scope=<...>` notice, ending ` account=fallback` when the subscription leg
-# reviewed. Its status job is named `claude-review-status` (code) or
+# scope=<...>` notice (title `claude-lane-review-complete`), ending
+# ` account=fallback` when the subscription leg reviewed. When one bad anchor
+# moves every comment to the summary, the summary's `critical-findings:` line
+# counts the moved CRITICAL findings too. Its status job is named `claude-review-status` (code) or
 # `security-review` (security) and goes red, naming the class, when no
 # review happened. Any other value is summary mode: no comment, no review,
 # no marker and no notice; the status job writes a job summary and uploads
