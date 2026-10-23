@@ -918,7 +918,7 @@ test("a process the leg leaves behind cannot add a lane-class after the launcher
     lines.filter((line) => line.startsWith("lane-class=")),
     ["lane-class="],
   );
-  assert.equal(lines.at(-1).startsWith("log-file="), true);
+  assert.equal(lines.at(-1), "structured-output-file=");
 });
 
 test("stdout is captured in memory and a maxBuffer overflow is class other", () => {
@@ -1372,6 +1372,98 @@ test("run on a 403 key stops with no handoff and names the error in the log, sum
     [record.class, record.next, record.request_id],
     ["auth", null, REQUEST_ID],
   );
+});
+
+function structuredRun(name, messages, exit, overrides = {}) {
+  const dir = path.join(root, name);
+  const schema = path.join(root, `${name}-schema.json`);
+  fs.writeFileSync(schema, '{"type":"object"}');
+  const env = runEnv(dir, { LANE_JSON_SCHEMA_FILE: schema, ...overrides });
+  env.FAKE_KEY = legFile(dir, "key.jsonl", messages);
+  env.FAKE_KEY_EXIT = String(exit);
+  return env;
+}
+
+const FINDINGS = { findings: 2, summary: "Two findings.", comments: [] };
+
+test("a successful leg with json-schema-file writes the structured output to its own file", () => {
+  const env = structuredRun(
+    "run-structured",
+    [
+      { type: "system", subtype: "init" },
+      result({ structured_output: FINDINGS }),
+    ],
+    0,
+  );
+  run(env);
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(outputs["structured-output-file"], "utf8")),
+    FINDINGS,
+  );
+  assert.notEqual(outputs["log-file"], "");
+});
+
+test("no structured-output-file without json-schema-file, on a failed leg, or with no object", () => {
+  const maxTurns = result({
+    subtype: "error_max_turns",
+    is_error: true,
+    structured_output: FINDINGS,
+  });
+  for (const [name, messages, exit, overrides] of [
+    [
+      "run-structured-no-schema",
+      [result({ structured_output: FINDINGS })],
+      0,
+      { LANE_JSON_SCHEMA_FILE: "" },
+    ],
+    ["run-structured-max-turns", [maxTurns], 1, {}],
+    [
+      "run-structured-string",
+      [result({ structured_output: "not an object" })],
+      0,
+      {},
+    ],
+  ]) {
+    const env = structuredRun(name, messages, exit, overrides);
+    try {
+      run(env);
+    } catch (error) {
+      assert.equal(name, "run-structured-max-turns", error.message);
+    }
+    const outputs = readOutputs(env.GITHUB_OUTPUT);
+    assert.equal(outputs["structured-output-file"], "", name);
+    assert.equal(
+      fs.existsSync(path.join(env.LANE_WORK_DIR, "structured-output.json")),
+      false,
+      name,
+    );
+  }
+});
+
+test("a structured output holding the credential or a key shape is not written and fails the step", () => {
+  for (const planted of [KEY, "sk-ant-api03-abcdefghijkl"]) {
+    const env = structuredRun(
+      `run-structured-leak-${planted.length}`,
+      [
+        result({
+          structured_output: { ...FINDINGS, summary: `see ${planted}` },
+        }),
+      ],
+      0,
+    );
+    assert.throws(
+      () => run(env),
+      /the structured output held a credential and was not written/u,
+    );
+    const outputs = readOutputs(env.GITHUB_OUTPUT);
+    assert.equal(outputs["structured-output-file"], "");
+    assert.equal(
+      fs.existsSync(path.join(env.LANE_WORK_DIR, "structured-output.json")),
+      false,
+    );
+    assert.notEqual(outputs["log-file"], "");
+  }
 });
 
 test("run refuses both credentials before any leg starts", () => {

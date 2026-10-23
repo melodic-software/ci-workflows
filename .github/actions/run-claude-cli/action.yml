@@ -31,7 +31,8 @@ description: >-
   step environment sets NODE_OPTIONS, LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV,
   NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED or a `*_PROXY` variable
   other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
-  execution log (one object for the leg) written only after a scan finds no
+  execution log (one object for the leg) and, with json-schema-file, the
+  result's structured output, each written only after a scan finds no
   credential in it, and a job summary table of closed tokens. Uploading the
   log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
@@ -119,7 +120,8 @@ inputs:
   json-schema-file:
     description: >-
       Path to a JSON Schema the final result must match (`--json-schema`); the
-      result's `structured_output` is in execution-file. Empty passes none.
+      result's `structured_output` is in structured-output-file. Empty passes
+      none.
     required: false
     default: ""
   cli-version:
@@ -201,6 +203,13 @@ outputs:
   log-file:
     description: JSONL execution log, one object for the leg; empty when the credential scan failed.
     value: ${{ steps.run.outputs.log-file }}
+  structured-output-file:
+    description: >-
+      The final result's `structured_output` as a JSON file, written only when
+      json-schema-file is set, lane-class is empty, the result carries an
+      object, and a scan finds no credential in it; else empty. A scan hit
+      fails the step.
+    value: ${{ steps.run.outputs.structured-output-file }}
   cli-version:
     description: The Claude Code CLI version that ran.
     value: ${{ steps.install.outputs.cli-version }}
