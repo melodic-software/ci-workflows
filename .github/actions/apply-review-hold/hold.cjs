@@ -144,9 +144,12 @@ async function run({ github, context, core, env = process.env }) {
     2 * MAX_REASON,
   );
   const findSecret = await loadGate(env);
-  const withheld = findSecret
-    ? scan(findSecret, [["the hold reason", reason]]).withheld
-    : "the publish gate could not be loaded";
+  const scanned = findSecret
+    ? scan(findSecret, [["the hold reason", reason]])
+    : { withheld: "the publish gate could not be loaded", warnings: [] };
+  for (const warning of scanned.warnings)
+    core.warning(`${lane}: ${warning}; published anyway.`);
+  const { withheld } = scanned;
   if (withheld) {
     core.warning(`${lane}: the hold reason was withheld: ${withheld}.`);
     reason = `The reason was withheld: ${withheld}.`;

@@ -18,7 +18,11 @@ const gate = path.join(root, "publish-gate.mjs");
 fs.writeFileSync(
   gate,
   `export const findSecret = (text) =>
-  /sk-ant-[A-Za-z0-9_-]{20,}/.test(text) ? ["Anthropic key", 1] : null;
+  /sk-ant-[A-Za-z0-9_-]{20,}/.test(text)
+    ? ["Anthropic key", 1]
+    : /password\\s*=\\s*"[^"]{8,}"/.test(text)
+      ? ["password or secret assignment", 1]
+      : null;
 `,
 );
 // Key-shaped, built at run time so no scanner reads a key in this file.
@@ -337,4 +341,19 @@ test("hold.cjs converts globs exactly as the scope step does", () => {
   assert.equal(body(source), body(scope));
   assert.ok(globToRegExp("**/CODEOWNERS").test("CODEOWNERS"));
   assert.ok(!globToRegExp("**/CODEOWNERS").test("CODEOWNERS.md"));
+});
+
+test("a warn-only hit in the reason posts it with a warning", async () => {
+  const { writes, core } = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["cost"], reason: 'password = "hunter2hunter2"' },
+      }),
+    }),
+    { files: [] },
+  );
+  assert.match(writes[1][1].body, /hunter2hunter2/u);
+  assert.deepEqual(core.warnings, [
+    "claude-review: password or secret assignment in the hold reason; published anyway.",
+  ]);
 });
