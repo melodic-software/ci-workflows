@@ -707,6 +707,9 @@ consumer to audit it.
   `allowManagedHooksOnly` (or the caller's `disableAllHooks`), so head code
   cannot repoint the lane's credential or add a hook. Needs sudo, so it runs
   before runner isolation; run-claude-cli refuses to run without the file.
+- `.github/actions/publish-review` — `pr-review-cli.yml`'s publish step,
+  with no model; internal to that workflow, which passes it everything
+  through env (its `action.yml` describes what it does).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
@@ -1098,6 +1101,32 @@ GitHub continues the normal weekly patching of each hosted image generation.
   misses and reports findings as a PR review. Findings are advisory: they never
   fail the job. It skips a pull request whose files in scope are all
   documentation (`docs-only-paths`).
+- `.github/workflows/pr-review-cli.yml` — one Claude review lane, `lane:
+  code` (`/review:code-review`) or `lane: security`
+  (`/review:security-review`), on `.github/actions/run-claude-cli` with the
+  two-job pattern above: the funding `role` (default `reviews`) API key in
+  the `review-key` job, its subscription token in `review-subscription`
+  after a handoff, with no key, or when the caller repository's
+  `REVIEWS_KEY_EXHAUSTED` variable is `true`. The model jobs are read-only
+  (`contents: read`, `pull-requests: read`, `cache-mode: none`, no
+  `id-token`), and the model gets Read, Grep, Glob, Skill and Agent under
+  `--permission-mode dontAsk`, the review plugin from claude-code-plugins'
+  default-branch tip, and the diff and pull request context as files whose
+  `FULL DIFF:`, `REVIEW SCOPE: incremental` and `PR CONTEXT:` prompt lines
+  name them. It returns its findings, summary and inline comments as
+  structured output. The status job (`claude-review-status` or
+  `security-review`), with no model, posts them through
+  `.github/actions/publish-review`. `publish: comments` posts one COMMENT
+  review as `github-actions[bot]`, the lane's marker comment and the
+  `claude-lane-review-complete` notice, and goes red when no review
+  happened. Any other `publish` value is summary mode, for a shadow run: no
+  comment, review, marker or notice, a job summary and a
+  credential-scanned JSON artifact instead, lane records under a `-shadow`
+  lane id, and no job ever red. The caller grants `contents: read` and
+  `pull-requests: write` in both modes and, in summary mode, does not cancel
+  in-progress runs. The workflow header carries the canonical caller and
+  the security model. `pr-review.yml` and `pr-review-security.yml` are
+  unchanged.
 - `.github/workflows/intake-triage.yml` — the intake-triage lane. On
   `issues: [opened]`, a script step fetches the issue, its trusted comments and the
   newest 200 open issues into the checkout; a read-only Claude run

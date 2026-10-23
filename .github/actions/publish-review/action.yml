@@ -1,0 +1,28 @@
+name: publish-review
+description: >-
+  pr-review-cli's publish step, with no model: reads the review of the leg
+  that counts (the subscription job's when it ran, else the key job's) from
+  the calling step's env and checks it. With PUBLISH=comments it validates
+  every inline comment's anchor against the pull request's diff at the head
+  (one bad anchor sends the whole batch to the summary), strips HTML
+  comments, foots each comment `claude-lane: <lane>`, withholds everything on
+  a credential-shaped hit from the publish gate, posts one COMMENT review
+  (skipping comments this lane already posted on the head), updates the
+  lane's marker comment, writes the `claude-lane-review-complete` notice, and
+  fails the step when no review happened. With any other PUBLISH it posts
+  nothing and never fails: it writes a job summary and, when that scans
+  clean, `<ARTIFACT_DIR>/<lane>.json`. publish.cjs documents the env it
+  reads.
+
+runs:
+  using: composite
+  steps:
+    - name: Publish the review
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          const { run } = require(path.join(process.env.ACTION_PATH, "publish.cjs"));
+          await run({ github, context, core });
