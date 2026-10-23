@@ -274,18 +274,36 @@ test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED i
 const minutes = (value, lane) =>
   Number(evaluate(String(value), { inputs: { lane } }));
 
+// Whether a step continues on error, evaluated as the runner does. After a
+// composite action (`uses: $/...`) runs, the runner replaces the step's
+// `inputs` and `steps` contexts with the action's own before it reads
+// continue-on-error (actions/runner CompositeActionHandler.cs), so there
+// only the step's env still carries the workflow's publish input.
+function continues(s, publish) {
+  const value = s["continue-on-error"];
+  if (value === undefined || typeof value === "boolean") return value === true;
+  // Only env values the publish input sets matter here.
+  const env = Object.fromEntries(
+    Object.entries(s.env ?? {})
+      .filter(([, text]) => /^\$\{\{\s*inputs\.publish\s*\}\}$/u.test(text))
+      .map(([name]) => [name, publish]),
+  );
+  const composite = String(s.uses ?? "").startsWith("$/");
+  return (
+    evaluate(String(value), {
+      inputs: composite ? {} : { publish },
+      steps: composite ? {} : undefined,
+      env,
+    }) === true
+  );
+}
+
 // GitHub compares strings ignoring case, so `Comments` is comments mode.
 for (const publish of ["summary", "", "anything"]) {
   test(`publish=${JSON.stringify(publish)} continues every step on error and keeps every job inside its limit`, () => {
     for (const job of Object.values(workflow.jobs)) {
       for (const s of job.steps) {
-        const value = s["continue-on-error"];
-        assert.ok(
-          value === true ||
-            evaluate(String(value ?? "false"), { inputs: { publish } }) ===
-              true,
-          `${job.name} / ${s.name}`,
-        );
+        assert.equal(continues(s, publish), true, `${job.name} / ${s.name}`);
       }
       for (const lane of ["code", "security"]) {
         const total = job.steps.reduce((sum, s) => {
@@ -306,20 +324,23 @@ for (const publish of ["summary", "", "anything"]) {
   });
 }
 
-test("comments mode lets the hardening and publish steps fail the job", () => {
-  for (const name of [
-    "Apply the Claude managed settings",
-    "Isolate the runner",
-    "Check out",
-  ]) {
-    const value = key.steps.find((s) => s.name === name)["continue-on-error"];
-    assert.equal(evaluate(value, { inputs: { publish: "comments" } }), false);
+// The header's contract: in comments mode the status job goes red, naming the
+// class, when no review happened; publish.cjs fails the step for it.
+test("comments mode lets the hardening, publish and hold steps fail the job", () => {
+  for (const job of [key, subscription]) {
+    for (const name of [
+      "Apply the Claude managed settings",
+      "Isolate the runner",
+      "Check out",
+    ]) {
+      const s = job.steps.find((x) => x.name === name);
+      assert.equal(continues(s, "comments"), false, `${job.name} / ${name}`);
+    }
   }
-  const publish = status.steps.find((s) => s.name === "Publish the review");
-  assert.equal(
-    evaluate(publish["continue-on-error"], { inputs: { publish: "comments" } }),
-    false,
-  );
+  for (const name of ["Publish the review", "Apply the hold"]) {
+    const s = status.steps.find((x) => x.name === name);
+    assert.equal(continues(s, "comments"), false, name);
+  }
 });
 
 test("the shadow report uploads per lane and attempt, overwriting on a rerun", () => {
@@ -465,6 +486,7 @@ async function extract(files, env = {}) {
     fs.writeFileSync(paths[name], content);
   }
   const outputs = {};
+  const warnings = [];
   const values = {
     STRUCTURED_FILE: paths.structured ?? "",
     LOG_FILE: paths.log ?? "",
@@ -488,6 +510,7 @@ async function extract(files, env = {}) {
         outputs[k] = v;
       },
       info: () => {},
+      warning: (message) => warnings.push(message),
       summary,
     });
   } finally {
@@ -496,7 +519,7 @@ async function extract(files, env = {}) {
       else process.env[k] = v;
     }
   }
-  return outputs;
+  return Object.assign(outputs, { warnings });
 }
 
 const LOG = JSON.stringify({
@@ -552,36 +575,6 @@ test("the extract step calls a review incomplete on every gap it checks", async 
       {},
       /no summary/u,
     ],
-    [
-      {
-        structured: JSON.stringify({
-          ...good,
-          comments: [{ ...COMMENT, side: "BOTH" }],
-        }),
-      },
-      {},
-      /malformed/u,
-    ],
-    [
-      {
-        structured: JSON.stringify({
-          ...good,
-          comments: [{ ...COMMENT, path: "/etc/passwd" }],
-        }),
-      },
-      {},
-      /malformed/u,
-    ],
-    [
-      {
-        structured: JSON.stringify({
-          ...good,
-          comments: [{ ...COMMENT, start_line: 3 }],
-        }),
-      },
-      {},
-      /malformed/u,
-    ],
   ]) {
     const outputs = await extract(files, env);
     assert.match(outputs.verdict, reason);
@@ -593,6 +586,61 @@ test("the extract step calls a review incomplete on every gap it checks", async 
     { FULL_DIFF: "", SCOPE: "incremental" },
   );
   assert.equal(outputs.verdict, "complete");
+});
+
+test("the extract step keeps the valid comments and passes a malformed one on for the summary", async () => {
+  const critical = "Injection.\n\nseverity: CRITICAL";
+  for (const bad of [
+    { ...COMMENT, side: "BOTH", body: critical },
+    { ...COMMENT, path: "/etc/passwd", body: critical },
+    { ...COMMENT, start_line: 3, body: critical },
+    { ...COMMENT, line: 0, body: critical },
+  ]) {
+    const outputs = await extract({
+      structured: JSON.stringify({
+        findings: 0,
+        summary: "S",
+        comments: [bad, COMMENT],
+      }),
+    });
+    assert.equal(outputs.verdict, "complete", JSON.stringify(bad));
+    const review = JSON.parse(outputs.review);
+    assert.deepEqual(review.comments, [COMMENT]);
+    assert.equal(review.malformed.length, 1);
+    assert.equal(review.malformed[0].body, critical);
+    // Two findings: the valid comment and the malformed one.
+    assert.equal(review.findings, 2);
+  }
+  // The location is kept only where it is readable.
+  const located = await extract({
+    structured: JSON.stringify({
+      findings: 1,
+      summary: "S",
+      comments: [
+        { path: "a.js", line: 7, side: "BOTH", body: "B" },
+        { path: "x\ncritical-findings: 0", line: -1, body: "C" },
+      ],
+    }),
+  });
+  assert.deepEqual(JSON.parse(located.review).malformed, [
+    { path: "a.js", line: 7, body: "B" },
+    { body: "C" },
+  ]);
+});
+
+test("the extract step drops a comment with no body, with a warning", async () => {
+  const outputs = await extract({
+    structured: JSON.stringify({
+      findings: 1,
+      summary: "S",
+      comments: [COMMENT, { ...COMMENT, body: "  " }, { path: "a.js" }],
+    }),
+  });
+  assert.equal(outputs.verdict, "complete");
+  const review = JSON.parse(outputs.review);
+  assert.deepEqual(review.comments, [COMMENT]);
+  assert.equal("malformed" in review, false);
+  assert.equal(outputs.warnings.length, 2);
 });
 
 // Linux refuses an environment string over 128 KiB (MAX_ARG_STRLEN), and the
@@ -706,10 +754,7 @@ test("the hold step runs only in comments mode with hold-label set, even after a
     false,
   );
   assert.match(hold.if, /^always\(\) && /u);
-  assert.equal(
-    evaluate(hold["continue-on-error"], { inputs: { publish: "comments" } }),
-    false,
-  );
+  assert.equal(continues(hold, "comments"), false);
   // Every input reaches the script through env, never an expression in it.
   for (const name of [
     "HOLD_LABEL",

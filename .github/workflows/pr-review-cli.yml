@@ -103,7 +103,10 @@ name: pr-review-cli
 # scope=<...>` notice (title `claude-lane-review-complete`), ending
 # ` account=fallback` when the subscription leg reviewed. When one bad anchor
 # moves every comment to the summary, the summary's `critical-findings:` line
-# counts the moved CRITICAL findings too. Its status job is named `claude-review-status` (code) or
+# counts the moved CRITICAL findings too. A comment whose path, line or side
+# is malformed goes to the summary the same way, and the other comments still
+# post inline; one with no body is dropped with a warning. Its status job is
+# named `claude-review-status` (code) or
 # `security-review` (security) and goes red, naming the class, when no
 # review happened. Any other value is summary mode: no comment, no review,
 # no marker and no notice; the status job writes a job summary and uploads
@@ -267,9 +270,11 @@ jobs:
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
       - name: Apply the Claude managed settings
-        continue-on-error: ${{ inputs.publish != 'comments' }}
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 2
         uses: $/.github/actions/apply-claude-managed-settings
+        env:
+          PUBLISH: ${{ inputs.publish }}
 
       # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, Claude Code on Linux will not
       # start without bubblewrap. The AppArmor sysctl is lifted only on
@@ -1068,18 +1073,31 @@ jobs:
             if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return incomplete("the review returned no findings count");
             if (!summary) return incomplete("the review returned no summary");
             if (!Array.isArray(raw.comments) || raw.comments.length > 25) return incomplete("the review returned no comment list");
+            // A comment with no body is dropped. One whose path, line, side or
+            // start_line is malformed goes on in `malformed`, with its path and
+            // line where readable, and the status job lists it in the summary.
             const comments = [];
+            const malformed = [];
             for (const c of raw.comments) {
+              if (typeof c?.body !== "string" || c.body.trim() === "") {
+                core.warning("a review comment with no body was dropped");
+                continue;
+              }
               const ok =
-                typeof c?.path === "string" &&
+                typeof c.path === "string" &&
                 /^[^/\0][^\0]{0,499}$/u.test(c.path) &&
                 Number.isSafeInteger(c.line) &&
                 c.line >= 1 &&
                 (c.side === "RIGHT" || c.side === "LEFT") &&
-                (c.start_line === undefined || (Number.isSafeInteger(c.start_line) && c.start_line >= 1 && c.start_line < c.line)) &&
-                typeof c.body === "string" &&
-                c.body.trim() !== "";
-              if (!ok) return incomplete("a comment's path, line, side or body is malformed");
+                (c.start_line === undefined || (Number.isSafeInteger(c.start_line) && c.start_line >= 1 && c.start_line < c.line));
+              if (!ok) {
+                malformed.push({
+                  ...(typeof c.path === "string" && /^[^\0\r\n`]{1,500}$/u.test(c.path) ? { path: c.path } : {}),
+                  ...(Number.isSafeInteger(c.line) && c.line >= 1 ? { line: c.line } : {}),
+                  body: c.body.slice(0, 3000),
+                });
+                continue;
+              }
               comments.push({
                 path: c.path,
                 line: c.line,
@@ -1109,16 +1127,22 @@ jobs:
               hold = { criteria, reason };
             }
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
-            const findings = Math.max(raw.findings, comments.length, flags);
+            const findings = Math.max(raw.findings, comments.length + malformed.length, flags);
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
             // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({ findings, summary, comments, ...(hold ? { hold } : {}) });
+            const review = JSON.stringify({
+              findings,
+              summary,
+              comments,
+              ...(malformed.length > 0 ? { malformed } : {}),
+              ...(hold ? { hold } : {}),
+            });
             if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
-              .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
+              .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}; malformed: ${malformed.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
               .write();
 
       - name: Report review outcome
@@ -1198,9 +1222,11 @@ jobs:
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
       - name: Apply the Claude managed settings
-        continue-on-error: ${{ inputs.publish != 'comments' }}
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 2
         uses: $/.github/actions/apply-claude-managed-settings
+        env:
+          PUBLISH: ${{ inputs.publish }}
 
       # With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, Claude Code on Linux will not
       # start without bubblewrap. The AppArmor sysctl is lifted only on
@@ -1999,18 +2025,31 @@ jobs:
             if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return incomplete("the review returned no findings count");
             if (!summary) return incomplete("the review returned no summary");
             if (!Array.isArray(raw.comments) || raw.comments.length > 25) return incomplete("the review returned no comment list");
+            // A comment with no body is dropped. One whose path, line, side or
+            // start_line is malformed goes on in `malformed`, with its path and
+            // line where readable, and the status job lists it in the summary.
             const comments = [];
+            const malformed = [];
             for (const c of raw.comments) {
+              if (typeof c?.body !== "string" || c.body.trim() === "") {
+                core.warning("a review comment with no body was dropped");
+                continue;
+              }
               const ok =
-                typeof c?.path === "string" &&
+                typeof c.path === "string" &&
                 /^[^/\0][^\0]{0,499}$/u.test(c.path) &&
                 Number.isSafeInteger(c.line) &&
                 c.line >= 1 &&
                 (c.side === "RIGHT" || c.side === "LEFT") &&
-                (c.start_line === undefined || (Number.isSafeInteger(c.start_line) && c.start_line >= 1 && c.start_line < c.line)) &&
-                typeof c.body === "string" &&
-                c.body.trim() !== "";
-              if (!ok) return incomplete("a comment's path, line, side or body is malformed");
+                (c.start_line === undefined || (Number.isSafeInteger(c.start_line) && c.start_line >= 1 && c.start_line < c.line));
+              if (!ok) {
+                malformed.push({
+                  ...(typeof c.path === "string" && /^[^\0\r\n`]{1,500}$/u.test(c.path) ? { path: c.path } : {}),
+                  ...(Number.isSafeInteger(c.line) && c.line >= 1 ? { line: c.line } : {}),
+                  body: c.body.slice(0, 3000),
+                });
+                continue;
+              }
               comments.push({
                 path: c.path,
                 line: c.line,
@@ -2040,16 +2079,22 @@ jobs:
               hold = { criteria, reason };
             }
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
-            const findings = Math.max(raw.findings, comments.length, flags);
+            const findings = Math.max(raw.findings, comments.length + malformed.length, flags);
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
             // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({ findings, summary, comments, ...(hold ? { hold } : {}) });
+            const review = JSON.stringify({
+              findings,
+              summary,
+              comments,
+              ...(malformed.length > 0 ? { malformed } : {}),
+              ...(hold ? { hold } : {}),
+            });
             if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
-              .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
+              .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}; malformed: ${malformed.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
               .write();
 
       - name: Report review outcome
@@ -2076,7 +2121,9 @@ jobs:
 
   # The one job that writes, and no lane record (each leg writes its own).
   # No model runs here and nothing is checked out. Every value arrives
-  # through env.
+  # through env. A `uses: $/...` step reads publish from its own env in
+  # continue-on-error: once the composite has run, the runner evaluates that
+  # with the action's inputs, not the workflow's.
   status:
     name: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
     needs: [review-key, review-subscription]
@@ -2119,7 +2166,7 @@ jobs:
             core.info(`publish gate from claude-code-plugins@${tip}`);
 
       - name: Publish the review
-        continue-on-error: ${{ inputs.publish != 'comments' }}
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 5
         uses: $/.github/actions/publish-review
         env:
@@ -2168,10 +2215,11 @@ jobs:
       - name: Apply the hold
         id: hold
         if: always() && inputs.hold-label != '' && inputs.publish == 'comments'
-        continue-on-error: ${{ inputs.publish != 'comments' }}
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 2
         uses: $/.github/actions/apply-review-hold
         env:
+          PUBLISH: ${{ inputs.publish }}
           HOLD_LABEL: ${{ inputs.hold-label }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}

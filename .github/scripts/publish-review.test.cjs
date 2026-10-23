@@ -570,3 +570,52 @@ test("an inline batch and a summary with two count lines keep the model's text",
   );
   assert.deepEqual(criticalLines(twice), [0, 1]);
 });
+
+// A comment the extract step could not place (its path, line or side is
+// malformed) arrives in `malformed` and goes to the summary as a bullet.
+test("a malformed comment beside a valid one posts the valid one inline and the other in the summary", async () => {
+  const review = {
+    findings: 2,
+    summary: "Summary.",
+    comments: [REVIEW.comments[0]],
+    malformed: [{ path: "b.js", line: 4, body: "Wrong side.<!-- x -->" }],
+  };
+  const { writes, log } = await publish({ KEY_REVIEW: JSON.stringify(review) });
+  assert.deepEqual(log.failed, []);
+  const [posted, marker] = writes;
+  assert.equal(posted[0], "createReview");
+  assert.equal(posted[1].comments.length, 1);
+  assert.equal(posted[1].comments[0].path, "a.js");
+  assert.match(marker[1].body, /^- `b\.js:4`: Wrong side\.$/mu);
+  assert.match(marker[1].body, /2 finding\(s\), 1 as inline comments\./u);
+  assert.match(log.notices[0], / findings=2 inline=1 /u);
+});
+
+test("a malformed CRITICAL comment raises the summary's critical-findings line", async () => {
+  const review = (summary) => ({
+    findings: 2,
+    summary,
+    comments: [REVIEW.comments[0]],
+    malformed: [{ body: "Injection.\n\nseverity: CRITICAL" }],
+  });
+  const raised = await publish({
+    KEY_REVIEW: JSON.stringify(review("Summary.\n\ncritical-findings: 0")),
+  });
+  const marker = raised.writes.find(([name]) => name === "createComment");
+  assert.deepEqual(criticalLines(marker[1].body), [1]);
+  // With no line, one is added; the malformed finding counts once.
+  const added = await publish({
+    KEY_REVIEW: JSON.stringify(review("Summary.")),
+  });
+  const addedMarker = added.writes.find(([name]) => name === "createComment");
+  assert.deepEqual(criticalLines(addedMarker[1].body), [1]);
+  // A malformed SUGGESTION leaves the line as written.
+  const suggestion = await publish({
+    KEY_REVIEW: JSON.stringify({
+      ...review("Summary.\n\ncritical-findings: 0"),
+      malformed: [{ body: "Naming.\n\nseverity: SUGGESTION" }],
+    }),
+  });
+  const kept = suggestion.writes.find(([name]) => name === "createComment");
+  assert.deepEqual(criticalLines(kept[1].body), [0]);
+});
