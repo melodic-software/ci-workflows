@@ -27,6 +27,12 @@ const CLASSES = new Set([
 // The workflow compares publish with `!=`, which GitHub evaluates ignoring case.
 const isComments = (env) => (env.PUBLISH ?? "").toLowerCase() === "comments";
 
+// The completion notice's annotation title, which a merge gate filters on.
+const RECORD = { title: "claude-lane-review-complete" };
+// The severity and summary-count lines a merge gate reads, in its own shapes.
+const SEVERITY = /^\s*`?severity: (CRITICAL|IMPORTANT|SUGGESTION)`?\s*$/gmu;
+const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+
 // The head-side (RIGHT) and base-side (LEFT) line numbers a review comment
 // can sit on in one file's unified-diff patch.
 function commentableLines(patch) {
@@ -157,6 +163,32 @@ function placeComments(review, files, lane) {
     : { inline: [], unanchored: prepared, problems };
 }
 
+// Whether a finding counts as CRITICAL the way a merge gate reads a thread:
+// anything but exactly one IMPORTANT or SUGGESTION severity line.
+function isCritical(body) {
+  const severities = [...body.matchAll(SEVERITY)].map((m) => m[1]);
+  return severities.length !== 1 || severities[0] === "CRITICAL";
+}
+
+// The model's summary, its one critical-findings line raised by the CRITICAL
+// findings moved out of the inline batch, which that line leaves out. With no
+// line, one is added that counts every summary finding as CRITICAL; with more
+// than one, a gate already counts them all, so the text stays as written.
+function countedSummary(review, unanchored) {
+  const text = stripHtml(review.summary);
+  if (unanchored.length === 0) return text;
+  const demoted = unanchored.filter((c) => isCritical(c.body)).length;
+  const lines = [...text.matchAll(CRITICAL_LINE)].length;
+  if (lines === 1)
+    return text.replace(
+      CRITICAL_LINE,
+      (_, before, count, after) => `${before}${Number(count) + demoted}${after}`,
+    );
+  if (lines > 1) return text;
+  const rest = Math.max(review.findings - review.comments.length, 0);
+  return `${text}\n\ncritical-findings: ${rest + demoted}`;
+}
+
 // The summary as posted: the model's summary, then any finding that could not
 // sit on a line, with its location.
 function summaryText(review, unanchored, lane) {
@@ -165,7 +197,7 @@ function summaryText(review, unanchored, lane) {
       `- \`${comment.path}:${comment.line}\` (${comment.side}): ${comment.body.replace(`\n\nclaude-lane: ${lane}`, "")}`,
   );
   return [
-    stripHtml(review.summary),
+    countedSummary(review, unanchored),
     ...(extra.length > 0
       ? [
           "",
@@ -320,8 +352,9 @@ async function publish({ github, context, core, env }) {
       stripHtml(env.LAST_SUMMARY).slice(0, MAX_SUMMARY),
     );
     if (env.SKIP === "no-change")
-      core.notice(`${record} skip=no-change through=${env.SINCE}`);
-    else if (env.SKIP === "docs-only") core.notice(`${record} skip=docs-only`);
+      core.notice(`${record} skip=no-change through=${env.SINCE}`, RECORD);
+    else if (env.SKIP === "docs-only")
+      core.notice(`${record} skip=docs-only`, RECORD);
     return { skipped: true };
   }
 
@@ -438,6 +471,7 @@ async function publish({ github, context, core, env }) {
   const account = verdict.leg === "SUB" ? " account=fallback" : "";
   core.notice(
     `${record} findings=${findings} inline=${inline} ${scope}${account}`,
+    RECORD,
   );
   return { findings, inline };
 }

@@ -143,7 +143,13 @@ function fakeGithub({ head = HEAD, posted = [], throws = false } = {}) {
 }
 
 function fakeCore() {
-  const log = { failed: [], notices: [], warnings: [], summary: "" };
+  const log = {
+    failed: [],
+    notices: [],
+    titles: [],
+    warnings: [],
+    summary: "",
+  };
   const summary = {
     addRaw: (text) => {
       log.summary += text;
@@ -155,7 +161,10 @@ function fakeCore() {
     log,
     core: {
       setFailed: (m) => log.failed.push(m),
-      notice: (m) => log.notices.push(m),
+      notice: (m, properties) => {
+        log.notices.push(m);
+        log.titles.push(properties?.title);
+      },
       warning: (m) => log.warnings.push(m),
       info: () => {},
       summary,
@@ -475,4 +484,89 @@ test("summary mode writes a scanned shadow report with the review and the leg's 
   );
   assert.equal(JSON.parse(withheld).failure_class, "withheld");
   assert.doesNotMatch(withheld, /sk-ant|Off by one/u);
+});
+
+test("every completion notice carries the title a merge gate filters on", async () => {
+  const runs = [
+    await publish({}),
+    await publish({ KEY_REVIEW: JSON.stringify({ ...REVIEW, comments: [] }) }),
+    await publish({
+      SCOPE_REVIEW: "false",
+      SKIP: "no-change",
+      SINCE: "c".repeat(40),
+      SKIP_REASON: "nothing changed",
+    }),
+    await publish({
+      SCOPE_REVIEW: "false",
+      SKIP: "docs-only",
+      SKIP_REASON: "docs only",
+    }),
+  ];
+  for (const { log } of runs) {
+    const records = log.notices
+      .map((notice, i) => [notice, log.titles[i]])
+      .filter(([notice]) => notice.startsWith("claude-lane-review-complete"));
+    assert.equal(records.length, 1, JSON.stringify(log.notices));
+    assert.equal(records[0][1], "claude-lane-review-complete");
+  }
+});
+
+// The marker body a demoted batch posts, for a review whose comments carry
+// the given bodies and whose summary is `summary`.
+async function demotedMarker(summary, bodies, findings = bodies.length) {
+  const review = {
+    findings,
+    summary,
+    comments: bodies.map((body, i) => ({
+      path: "a.js",
+      line: 9 + i,
+      side: "RIGHT",
+      body,
+    })),
+  };
+  const { writes } = await publish({ KEY_REVIEW: JSON.stringify(review) });
+  assert.deepEqual(
+    writes.map(([name]) => name),
+    ["createComment"],
+  );
+  return writes[0][1].body;
+}
+
+const criticalLines = (body) =>
+  [...body.matchAll(/^\s*`?critical-findings: (\d{1,6})`?\s*$/gmu)].map((m) =>
+    Number(m[1]),
+  );
+
+test("a demoted CRITICAL batch raises the summary's critical-findings line in place", async () => {
+  const body = await demotedMarker("Summary.\n\ncritical-findings: 0", [
+    "Injection.\n\nseverity: CRITICAL",
+    "Naming.\n\nseverity: SUGGESTION",
+    "Unmarked.",
+  ]);
+  assert.deepEqual(criticalLines(body), [2]);
+});
+
+test("a demoted CRITICAL batch adds a critical-findings line the model left out", async () => {
+  const body = await demotedMarker(
+    "Summary.",
+    ["Injection.\n\nseverity: CRITICAL", "Naming.\n\nseverity: IMPORTANT"],
+    3,
+  );
+  assert.deepEqual(criticalLines(body), [2]);
+});
+
+test("an inline batch and a summary with two count lines keep the model's text", async () => {
+  const inline = await publish({
+    KEY_REVIEW: JSON.stringify({
+      ...REVIEW,
+      summary: "Summary.\n\ncritical-findings: 0",
+    }),
+  });
+  const marker = inline.writes.find(([name]) => name === "createComment");
+  assert.deepEqual(criticalLines(marker[1].body), [0]);
+  const twice = await demotedMarker(
+    "critical-findings: 0\ncritical-findings: 1",
+    ["Injection.\n\nseverity: CRITICAL"],
+  );
+  assert.deepEqual(criticalLines(twice), [0, 1]);
 });
