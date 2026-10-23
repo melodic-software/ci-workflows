@@ -1,0 +1,31 @@
+name: apply-review-hold
+description: >-
+  pr-review-cli's hold step, with no model: holds the pull request for a
+  person when the review of the leg that counts (the subscription job's when
+  it ran, else the key job's) returned a hold, or when a changed file matches
+  HOLD_PATHS, which adds criterion trust-gate whatever the review says. A hold
+  adds HOLD_LABEL and posts one `claude-lane-hold` marker comment with the
+  reason. It only adds: it never removes or replaces a label. A failed write
+  fails the step. hold.cjs documents the env it reads.
+
+outputs:
+  hold:
+    description: "`true` when the pull request is held, else `false`."
+    value: ${{ steps.hold.outputs.hold }}
+  criteria:
+    description: The hold's criteria, comma-separated, or empty.
+    value: ${{ steps.hold.outputs.criteria }}
+
+runs:
+  using: composite
+  steps:
+    - name: Apply the hold
+      id: hold
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          const { run } = require(path.join(process.env.ACTION_PATH, "hold.cjs"));
+          await run({ github, context, core });
