@@ -132,8 +132,15 @@ function linkedIssue(pull, owner, repo) {
   return refs === null ? null : { number: refs, refs: true };
 }
 
-const names_ = (number) =>
-  new RegExp(`(?<![A-Za-z0-9_#&/])#${number}(?![0-9])`, "u");
+// Whether `text` names pull request `number` as `#<number>`: not part of a
+// longer number, and not after a letter, digit, `_`, `#`, `&`, `/`, `.` or
+// `-`, so `owner/repo#<number>` and `&#<number>;` do not count
+// (claude-code-plugins .github/scripts/pr-merge/merge-holds.mjs:436-438
+// namesPull at #9569's head 6c3b6ae9).
+const namesPull = (text, number) =>
+  new RegExp(`(?:^|[^A-Za-z0-9_#&/.-])#${number}(?:[^0-9]|$)`, "u").test(
+    String(text ?? ""),
+  );
 
 // Whether a trusted person recorded a cost decision for pull request
 // `number`. `prComments` is the pull request's comment list. Reads only
@@ -173,7 +180,9 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       const read = (
         await github.rest.issues.get({ owner, repo, issue_number: issue.number })
       ).data;
-      if (read?.pull_request) return false;
+      // An issue whose number is the Refs number (merge-holds.mjs:484 at
+      // #9569's head 6c3b6ae9), never a pull request.
+      if (read?.number !== issue.number || read.pull_request != null) return false;
     }
     const opened = Date.parse(pull.createdAt);
     const comments = await github.paginate(github.rest.issues.listComments, {
@@ -186,7 +195,7 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       (c) =>
         candidate(c) &&
         Date.parse(c.created_at) > opened &&
-        names_(number).test(String(c.body ?? "")),
+        namesPull(c.body, number),
     ))
       if (await unedited(c)) return true;
   } catch {
@@ -367,4 +376,12 @@ async function run({ github, context, core, env = process.env }) {
   return { hold: true, criteria };
 }
 
-module.exports = { CRITERIA, globToRegExp, linkedIssue, modelHold, refsIssue, run };
+module.exports = {
+  CRITERIA,
+  globToRegExp,
+  linkedIssue,
+  modelHold,
+  namesPull,
+  refsIssue,
+  run,
+};

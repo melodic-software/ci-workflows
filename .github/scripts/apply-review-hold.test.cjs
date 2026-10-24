@@ -9,7 +9,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { globToRegExp, run } = require("../actions/apply-review-hold/hold.cjs");
+const {
+  globToRegExp,
+  namesPull,
+  run,
+} = require("../actions/apply-review-hold/hold.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -40,7 +44,8 @@ const TRUST_PATHS = [
 // `comments` are the pull request's (#7); `issueComments` maps another
 // issue number to its comments; `pull` is the GraphQL pull request;
 // `edited` holds the node ids of edited comments; `pullNumbers` the numbers
-// that are pull requests, not issues.
+// that are pull requests, not issues; `misnumbered` the numbers whose read
+// answers another number.
 function fakeGithub({
   files = [],
   changedFiles,
@@ -54,6 +59,7 @@ function fakeGithub({
   },
   edited = new Set(),
   pullNumbers = new Set([7]),
+  misnumbered = new Set(),
 }) {
   const calls = [];
   const refuse = (name) => () => {
@@ -103,6 +109,8 @@ function fakeGithub({
         },
         get: async (params) => {
           calls.push(["issues.get", params]);
+          if (misnumbered.has(params.issue_number))
+            return { data: { number: params.issue_number + 1 } };
           return {
             data: pullNumbers.has(params.issue_number)
               ? { number: params.issue_number, pull_request: {} }
@@ -551,6 +559,16 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
       },
     ],
     [
+      "a Refs read that answers another number",
+      {
+        pull: refsPull("Refs: #9436"),
+        misnumbered: new Set([9436]),
+        issueComments: {
+          9436: [decision({ body: "**Decision recorded.** Cost: #7" })],
+        },
+      },
+    ],
+    [
       "two Refs issues",
       {
         pull: refsPull("Refs: #9436\nRefs: #9437"),
@@ -592,4 +610,44 @@ test("a hold with no cost criterion reads no cost decision", async () => {
     github.calls.filter(([name]) => name === "listComments").length,
     1,
   );
+});
+
+// The same cases merge-holds.mjs namesPull reads, so both halves agree.
+test("a decision names the pull request as #<number> the way merge-holds reads it", () => {
+  for (const [text, named] of [
+    ["approved for #7.", true],
+    ["#7", true],
+    ["(#7)", true],
+    ["##7", false],
+    ["&#7;", false],
+    ["#70", false],
+    ["#77", false],
+    ["o/r#7", false],
+    ["x.#7", false],
+    ["x-#7", false],
+    ["a#7", false],
+    ["_#7", false],
+  ])
+    assert.equal(namesPull(text, 7), named, text);
+});
+
+// #9436: the owner lifted the cost hold at head A; a base-only merge makes
+// head B, and the review holds for cost again. The decision covers B.
+test("a cost decision recorded at an earlier head keeps the cost hold off at a later one", async () => {
+  const later = "b".repeat(40);
+  const atA = decision({
+    body: `**Decision recorded.** Cost: approve the schedule at ${HEAD}.`,
+  });
+  const { core, writes } = await apply(costEnv(["cost"], { HEAD_SHA: later }), {
+    comments: [
+      atA,
+      {
+        id: 2,
+        user: { login: "github-actions[bot]", type: "Bot" },
+        body: `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost -->`,
+      },
+    ],
+  });
+  assert.equal(core.outputs.hold, "false");
+  assert.deepEqual(writes, []);
 });
