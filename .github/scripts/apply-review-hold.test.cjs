@@ -43,7 +43,8 @@ const TRUST_PATHS = [
 
 // `comments` are the pull request's (#7); `issueComments` maps another
 // issue number to its comments; `pull` is the GraphQL pull request;
-// `edited` holds the node ids of edited comments; `pullNumbers` the numbers
+// `edited` holds the node ids of edited comments; `failEdited` those whose
+// edit read fails; `pullNumbers` the numbers
 // that are pull requests, not issues; `misnumbered` the numbers whose read
 // answers another number; `compares` maps a basehead to its compare
 // response data.
@@ -59,6 +60,7 @@ function fakeGithub({
     closingIssuesReferences: { totalCount: 0, nodes: [] },
   },
   edited = new Set(),
+  failEdited = new Set(),
   pullNumbers = new Set([7]),
   misnumbered = new Set(),
   compares = {},
@@ -71,6 +73,8 @@ function fakeGithub({
     calls,
     graphql: async (query, variables) => {
       calls.push(["graphql", variables]);
+      if (/lastEditedAt/u.test(query) && failEdited.has(variables.id))
+        throw new Error("HTTP 502");
       if (/lastEditedAt/u.test(query))
         return {
           node: {
@@ -471,12 +475,16 @@ test("a cost decision on the pull request keeps the cost hold from coming back",
   assert.equal(error, undefined);
   assert.equal(core.outputs.hold, "false");
   assert.deepEqual(writes, []);
-  // The lookup's reads, the pull request's comments and one edit check,
-  // then hold-paths' own file list: the head is the decided head, so no
-  // compare.
+  // The lookup's reads, the pull request's comments and the decision's edit
+  // check, then the marker's edit check, then hold-paths' own file list: the
+  // head is the decided head, so no compare.
   assert.deepEqual(
     github.calls.map(([name]) => name),
-    ["listComments", "graphql", "listFiles", "get"],
+    ["listComments", "graphql", "graphql", "listFiles", "get"],
+  );
+  assert.deepEqual(
+    github.calls.filter(([name]) => name === "graphql").map(([, v]) => v.id),
+    ["IC_1", "IC_100"],
   );
 });
 
@@ -499,6 +507,7 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
       "graphql",
       "issues.get",
       "listComments",
+      "graphql",
       "graphql",
       "listFiles",
       "get",
@@ -889,14 +898,69 @@ test("an unusable base branch name reads no compare and keeps the cost hold", as
 test("the carry check reads at most two compares and nothing else", async () => {
   const { github } = await carryCase(atDecided);
   const names = github.calls.map(([name]) => name);
-  // The pull request's comments, one edit check, two compares, then
-  // hold-paths' own file list.
+  // The pull request's comments, the decision's and the marker's edit
+  // checks, two compares, then hold-paths' own file list.
   assert.deepEqual(names, [
     "listComments",
+    "graphql",
     "graphql",
     "compare",
     "compare",
     "listFiles",
     "get",
   ]);
+});
+
+// The decided head comes from a marker comment, which a writer can edit:
+// an edited marker is not trusted.
+test("an edited marker at the head's sha keeps the cost hold, though the decision exists", async () => {
+  const { core, writes, github } = await apply(costEnv(), {
+    comments: [marker(), decision()],
+    edited: new Set(["IC_100"]),
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(core.outputs.criteria, "cost");
+  // The label comes back; the marker for this head and criteria exists.
+  assert.deepEqual(
+    writes.map(([name]) => name),
+    ["addLabels"],
+  );
+  assert.equal(compares(github).length, 0);
+  assert.match(
+    core.infos.join("\n"),
+    /no recorded cost decision carries \(the decided-head marker was edited\)/u,
+  );
+});
+
+test("an edited newest marker keeps the cost hold, with no fallback to an older unedited one", async () => {
+  const { core, github } = await carryCase(atDecided, {
+    comments: [
+      // Would carry: at the head, unedited, before the decision.
+      marker({ id: 101, sha: LATER, createdAt: "2026-10-23T10:30:00Z" }),
+      marker({ id: 102 }),
+      decision(),
+    ],
+    edited: new Set(["IC_102"]),
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(compares(github).length, 0);
+  assert.deepEqual(
+    github.calls.filter(([name]) => name === "graphql").map(([, v]) => v.id),
+    ["IC_1", "IC_102"],
+  );
+  assert.match(core.infos.join("\n"), /the decided-head marker was edited/u);
+});
+
+test("a failed marker edit check keeps the cost hold", async () => {
+  const { core, error, github } = await apply(costEnv(), {
+    comments: [marker(), decision()],
+    failEdited: new Set(["IC_100"]),
+  });
+  assert.equal(error, undefined);
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(compares(github).length, 0);
+  assert.match(
+    core.infos.join("\n"),
+    /no recorded cost decision carries \(could not confirm the marker is unedited\)/u,
+  );
 });
