@@ -777,3 +777,44 @@ test("the hold step runs only in comments mode with hold-label set, even after a
     "false",
   );
 });
+
+test("the review leaves each leg as an artifact named for the run, head and leg, and only its sha256 as an output", () => {
+  const name = `pr-review-cli-handoff-\${{ inputs.lane }}-\${{ github.job }}-\${{ github.run_id }}-\${{ github.event.pull_request.head.sha }}`;
+  for (const job of [key, subscription]) {
+    assert.equal(job.outputs.review, undefined);
+    assert.equal(job.outputs["last-summary"], undefined);
+    assert.equal(
+      job.outputs["handoff-sha256"],
+      `\${{ steps.handoff-file.outputs.sha256 }}`,
+    );
+    const names = job.steps.map((s) => s.id ?? s.name);
+    assert.ok(names.indexOf("claude") < names.indexOf("handoff-file"));
+    const upload = job.steps.find(
+      (s) => s.name === "Upload the review handoff",
+    );
+    assert.equal(names.indexOf("handoff-file") + 1, job.steps.indexOf(upload));
+    assert.equal(upload.with.name, name);
+    assert.equal(upload.with.overwrite, true);
+    assert.equal(upload.with["retention-days"], 1);
+    assert.match(step(job, "handoff-file").if, /^always\(\)$/u);
+  }
+  const download = status.steps.find(
+    (s) => s.name === "Download the review handoffs",
+  );
+  assert.equal(download.with.pattern, name.replace(`\${{ github.job }}`, "*"));
+  // No token or run id: this run only, and no REST request.
+  assert.deepEqual(Object.keys(download.with).sort(), [
+    "merge-multiple",
+    "path",
+    "pattern",
+  ]);
+  for (const s of ["Publish the review", "Apply the hold"]) {
+    const env = status.steps.find((x) => x.name === s).env;
+    assert.equal(env.KEY_REVIEW, `\${{ steps.handoffs.outputs.key-review }}`);
+    assert.equal(env.SUB_REVIEW, `\${{ steps.handoffs.outputs.sub-review }}`);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(status),
+    /needs\.[\w-]+\.outputs\.(review|last-summary)(?![\w-])/u,
+  );
+});

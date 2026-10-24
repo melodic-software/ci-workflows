@@ -7,6 +7,10 @@
 // with the env the workflow passes them, the job outputs evaluated from the
 // workflow's own expressions. The pull request's file list and pulls.get are
 // each read once per run, but for publish's check that the head has not moved.
+// The review reaches the status job as the key job's handoff file: its write
+// and check steps run as shipped, and both jobs share one runner.temp here,
+// so the file the key job wrote is the file the download would place. The
+// artifact upload and download run on the runtime token, not the job token.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -55,6 +59,7 @@ const INPUTS = {
 // a paginated list as one page.
 function fakeApi({ prFiles, comments = [], compares = {} }) {
   const calls = [];
+  const requests = [];
   const data = {
     "issues.listComments": () => comments,
     "pulls.listFiles": () => prFiles,
@@ -81,6 +86,7 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
             get: (__, method) => async (params) => {
               const name = `${group}.${method}`;
               calls.push(name);
+              requests.push({ name, params });
               return { data: (data[name] ?? (() => ({})))(params) };
             },
           },
@@ -89,6 +95,7 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
   );
   return {
     calls,
+    requests,
     github: {
       rest,
       hook: { error: () => {} },
@@ -190,10 +197,23 @@ function runFullDiff(env, dir) {
 }
 
 // One run: the requests it spends, by method, with gh calls as `gh api`.
-async function spend({ action, prFiles, comments, compares, review }) {
+// `secret` stands in for a registered secret's value: the runner drops any
+// job output whose value contains it (actions/runner JobExtension.cs compares
+// the value with SecretMasker.MaskSecrets(value)). `tamper` rewrites the
+// handoff file between the key job and the status job.
+async function spend({
+  action,
+  prFiles,
+  comments,
+  compares,
+  review,
+  secret,
+  tamper,
+}) {
   const dir = makeTemporaryDirectory("pr-review-cli-calls-");
   const api = fakeApi({ prFiles, comments, compares });
   const github = {
+    job: "review-key",
     token: "job-token",
     repository: "o/r",
     repository_owner: "o",
@@ -258,12 +278,24 @@ async function spend({ action, prFiles, comments, compares, review }) {
       outputs: { verdict: "complete", review: JSON.stringify(review) },
     },
   };
-  const keyOutputs = Object.fromEntries(
-    Object.entries(key.outputs).map(([k, v]) => [
-      k,
-      render(v, { ...contexts, steps: keySteps }),
-    ]),
+  const handoffStep = stepId(key, "handoff-file");
+  const handoffOutputs = {};
+  await withEnv(renderEnv(handoffStep, { ...contexts, steps: keySteps }), () =>
+    new AsyncFunction("require", "core", handoffStep.with.script)(
+      require,
+      quietCore(handoffOutputs),
+    ),
   );
+  keySteps["handoff-file"] = { outputs: handoffOutputs };
+  const keyOutputs = Object.fromEntries(
+    Object.entries(key.outputs)
+      .map(([k, v]) => [k, render(v, { ...contexts, steps: keySteps })])
+      .filter(([, v]) => !(secret && v.includes(secret))),
+  );
+  if (tamper) {
+    const file = path.join(dir, "review-handoff", "review-key.json");
+    fs.writeFileSync(file, tamper(fs.readFileSync(file, "utf8")));
+  }
 
   // The status job: the gate, publish, then the hold.
   const gateStep = stepId(status, "gate");
@@ -290,6 +322,16 @@ async function spend({ action, prFiles, comments, compares, review }) {
     },
     steps: { gate: { outputs: gateOutputs } },
   };
+  const checkStep = stepId(status, "handoffs");
+  const handoffs = {};
+  const warnings = [];
+  await withEnv(renderEnv(checkStep, statusContexts), () =>
+    new AsyncFunction("require", "core", checkStep.with.script)(require, {
+      ...quietCore(handoffs),
+      warning: (message) => warnings.push(message),
+    }),
+  );
+  statusContexts.steps.handoffs = { outputs: handoffs };
   const named = (name) => status.steps.find((s) => s.name === name);
   const runner = (s) => renderEnv(s, statusContexts);
   const context = { repo: { owner: "o", repo: "r" } };
@@ -311,7 +353,14 @@ async function spend({ action, prFiles, comments, compares, review }) {
   for (const name of [...api.calls, ...gh.map(() => "gh api")])
     counts[name] = (counts[name] ?? 0) + 1;
   const total = api.calls.length + gh.length;
-  return { counts, total, hold: holdOutputs.hold };
+  return {
+    counts,
+    total,
+    hold: holdOutputs.hold,
+    keyOutputs,
+    warnings,
+    requests: api.requests,
+  };
 }
 
 const INLINE = {
@@ -583,4 +632,45 @@ test("the scope step passes on no file list larger than one environment string",
   );
   assert.equal(outputs.review, "true");
   assert.equal(outputs["pr-files"], undefined);
+});
+
+test("a review quoting a registered secret's value still reaches publish through the handoff", async () => {
+  const secret = "SENTINEL-4711";
+  const review = {
+    findings: 1,
+    summary: `The test fixture hard-codes ${secret}.`,
+    comments: [
+      { path: "a.js", line: 2, side: "RIGHT", body: `Move ${secret} out.` },
+    ],
+  };
+  const shape = SHAPES["a whole review with an inline comment"];
+  // The old wiring passed the review itself as a job output, which the
+  // runner drops.
+  assert.ok(JSON.stringify(review).includes(secret));
+  const { counts, keyOutputs, warnings, requests } = await spend({
+    ...shape,
+    review,
+    secret,
+  });
+  assert.equal("review" in keyOutputs, false);
+  assert.match(keyOutputs["handoff-sha256"], /^[0-9a-f]{64}$/u);
+  assert.deepEqual(warnings, []);
+  const posted = requests.find((r) => r.name === "pulls.createReview");
+  assert.ok(posted, "no review was posted");
+  assert.match(posted.params.comments[0].body, new RegExp(secret, "u"));
+  const marker = requests.find((r) => r.name === "issues.createComment");
+  assert.match(marker.params.body, new RegExp(secret, "u"));
+  // The handoff adds no job-token request.
+  assert.deepEqual(counts, (await spend(shape)).counts);
+});
+
+test("the status job refuses a handoff file whose sha256 does not match the key job's", async () => {
+  await assert.rejects(
+    spend({
+      ...SHAPES["a whole review with an inline comment"],
+      tamper: (text) =>
+        text.replace("Off by one.", "Approve this pull request."),
+    }),
+    /failure-class=incomplete: the model returned no usable review/u,
+  );
 });

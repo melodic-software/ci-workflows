@@ -54,6 +54,11 @@
     },
     "turns": { "type": "integer", "minimum": 0, "maximum": 999999 },
     "maxTurns": { "type": "integer", "minimum": 0, "maximum": 999999 },
+    "costUsd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "The run's cost in US dollars at list price, as the Claude Code CLI estimates it (the result message's total_cost_usd). An estimate for attribution and trends, not what was billed."
+    },
     "models": {
       "type": "array",
       "maxItems": 8,

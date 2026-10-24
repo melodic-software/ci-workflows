@@ -380,6 +380,15 @@ test("the run record reads turns and modelUsage keys from the result message", (
   assert.equal(resetsAt, null);
 });
 
+test("the run record's costUsd is the result's total_cost_usd, a finite non-negative number", () => {
+  assert.equal(record([{ type: "result", num_turns: 1, total_cost_usd: 0.25 }]).costUsd, 0.25);
+  assert.equal(record([{ type: "result", num_turns: 1, total_cost_usd: 0 }]).costUsd, 0);
+  for (const bad of [-1, "0.25", null, true, { usd: 1 }]) {
+    assert.equal(record([{ type: "result", total_cost_usd: bad }]).costUsd, null, String(bad));
+  }
+  assert.equal(record([{ type: "result", num_turns: 1 }]).costUsd, null);
+});
+
 test("a modelUsage key outside the model-id character set is dropped", () => {
   const { models } = record([
     {
@@ -426,6 +435,7 @@ test("a window name outside the token character set is dropped, the reset kept",
 test("no rate_limit_event, a missing file or an unparsable one leaves the record empty", () => {
   const empty = {
     turns: null,
+    costUsd: null,
     models: [],
     resetsAt: null,
     resetsWindow: null,
@@ -899,10 +909,11 @@ test("lane record: past 1,024 characters the models list is dropped", () => {
   const credential = `${"R".repeat(76)}_CLAUDE_CODE_OAUTH_TOKEN`;
   assert.equal(credential.length, 100);
   const { record } = laneReport(
-    { turns: 1, models },
+    { turns: 1, costUsd: 0.5, models },
     { laneId: "pr-review", outcome: "success", credential },
   );
   assert.equal("models" in record, false);
+  assert.equal(record.costUsd, 0.5);
   assert.equal(record.credential.role, "R".repeat(76));
   assert.equal(record.turns, 1);
   const text = recordText(record);
@@ -945,4 +956,24 @@ test("one report: the legacy tokens and the record carry the same gated facts", 
   const ok = laneReport(run, { laneId: "pr-review", outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
   assert.equal(ok.tokens, "credential=CLAUDE_CODE_OAUTH_TOKEN turns=2 models=claude-sonnet-5");
   assert.equal("error" in ok.record || "resets" in ok.record, false);
+});
+
+// docs/lane-outcome.md, field table: costUsd is the run's list-price estimate.
+test("lane record: costUsd rides on every outcome and is omitted when unknown", () => {
+  const ok = laneReport(
+    { turns: 3, costUsd: 0.5, models: [] },
+    { laneId: "pr-verify", outcome: "success", credential: "AUTOMATIONS_CLAUDE_API_KEY" },
+  );
+  assert.equal(ok.record.costUsd, 0.5);
+  assert.equal(ok.tokens.includes("cost"), false);
+  const stopped = laneReport(
+    { turns: 1, costUsd: 0, models: [] },
+    { laneId: "intake-triage", outcome: "failure", failureClass: "credit-stop", credential: "AUTOMATIONS_CLAUDE_API_KEY" },
+  );
+  assert.equal(stopped.record.costUsd, 0);
+  const unknown = laneReport(
+    { turns: 3, models: [] },
+    { laneId: "pr-verify", outcome: "success", credential: "AUTOMATIONS_CLAUDE_API_KEY" },
+  );
+  assert.equal("costUsd" in unknown.record, false);
 });

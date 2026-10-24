@@ -96,6 +96,7 @@ their closed values and where `report-lane-outcome` takes them from.
 | `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
 | `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |
+| `costUsd` | no | number, at least 0; US dollars at list price, never what was billed | the execution file's result message `total_cost_usd`, the CLI's own estimate, on every outcome |
 | `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
 
 The schema allows unknown properties at every level
