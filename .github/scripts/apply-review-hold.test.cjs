@@ -9,13 +9,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const {
-  globToRegExp,
-  namesPull,
-  run,
-} = require("../actions/apply-review-hold/hold.cjs");
+const { namesPull, run } = require("../actions/apply-review-hold/hold.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
-const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const root = makeTemporaryDirectory("apply-review-hold-");
 const gate = path.join(root, "publish-gate.mjs");
@@ -274,51 +269,69 @@ test("the review's hold adds the label and one marker comment with the reason", 
   assert.equal(writes.length, 2);
 });
 
-test("a changed file matching hold-paths adds trust-gate whatever the review says", async () => {
+// Owner decision Q52: a trusted path is a reason for extra security
+// scrutiny, never a stop by itself. Only the security review's CRITICAL
+// finding (critical-security) or a real-charge cost hold stops a pull request.
+test("a changed file matching hold-paths holds nothing and reads no file list", async () => {
   for (const [file, failed] of [
     ["CODEOWNERS", false],
     [".github/CODEOWNERS", false],
     ["vendor/x/.gitmodules", false],
     [".github/standards/trusted-actors/trusted-actors.json", false],
     [{ filename: "moved.txt", previous_filename: ".gitmodules" }, false],
-    // A failed or incomplete review still holds by path.
     [".github/actions/check-trusted-trigger/action.yml", true],
   ]) {
     const env = failed
       ? baseEnv({ KEY_FAILED: "true", KEY_CLASS: "timeout", KEY_REVIEW: "" })
       : baseEnv({ KEY_REVIEW: review({ hold: undefined }) });
-    const { core, error, writes } = await apply(env, {
+    const { core, error, writes, github } = await apply(env, {
       files: ["src/a.js", file],
     });
     assert.equal(error, undefined, JSON.stringify(file));
-    assert.deepEqual(core.outputs, { hold: "true", criteria: "trust-gate" });
-    assert.equal(writes[0][0], "addLabels");
-    assert.match(writes[1][1].body, /criteria=trust-gate -->/u);
-    assert.match(writes[1][1].body, /Changed files match hold-paths/u);
+    assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(github.calls, [], JSON.stringify(file));
   }
-  // File names cannot break out of their code span or mention anyone.
-  const { writes } = await apply(baseEnv(), {
-    files: ["a`b@team/CODEOWNERS"],
-  });
-  assert.match(writes[1][1].body, /`a\?b@\u200bteam\/CODEOWNERS`/u);
 });
 
-test("a model hold and a path match combine their criteria", async () => {
-  const { core } = await apply(
+test("a model trust-gate criterion alone holds nothing; the others still hold", async () => {
+  const alone = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["trust-gate"], reason: "Touches CODEOWNERS." },
+      }),
+    }),
+    { files: ["CODEOWNERS"] },
+  );
+  assert.equal(alone.error, undefined);
+  assert.deepEqual(alone.core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(alone.writes, []);
+  assert.match(alone.core.infos.join("\n"), /trust-gate is not a hold/u);
+  const security = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["trust-gate", "critical-security"], reason: "R" },
+      }),
+    }),
+    { files: ["CODEOWNERS"] },
+  );
+  assert.equal(security.core.outputs.criteria, "critical-security");
+  assert.match(security.writes[1][1].body, /criteria=critical-security -->/u);
+  const cost = await apply(
     baseEnv({
       KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
     }),
     { files: ["CODEOWNERS"] },
   );
-  assert.equal(core.outputs.criteria, "cost,trust-gate");
+  assert.equal(cost.core.outputs.criteria, "cost");
 });
 
-test("a file list shorter than the pull request's changed files holds", async () => {
+test("a file list shorter than the pull request's changed files holds nothing", async () => {
   const { core } = await apply(baseEnv(), {
     files: ["src/a.js"],
     changedFiles: 3001,
   });
-  assert.equal(core.outputs.criteria, "trust-gate");
+  assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
 });
 
 test("the subscription leg's review counts when it ran", async () => {
@@ -337,47 +350,49 @@ test("the subscription leg's review counts when it ran", async () => {
 });
 
 test("a failed label write fails the step and the marker is still tried", async () => {
-  const { error, github } = await apply(baseEnv(), {
-    files: ["CODEOWNERS"],
-    fail: { addLabels: true },
-  });
+  const { error, github } = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["critical-security"], reason: "R" },
+      }),
+    }),
+    {
+      fail: { addLabels: true },
+    },
+  );
   assert.match(error.message, /could not add the needs-human label/u);
   assert.ok(github.calls.some(([name]) => name === "createComment"));
 });
 
-test("a failed comment or file listing fails the step", async () => {
-  const comment = await apply(baseEnv(), {
-    files: ["CODEOWNERS"],
-    fail: { createComment: true },
-  });
-  assert.match(comment.error.message, /could not post the hold comment/u);
-  // A failed listing still holds with trust-gate, then fails the step.
-  const listing = await apply(
+test("a failed comment fails the step", async () => {
+  const comment = await apply(
     baseEnv({
-      KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
+      KEY_REVIEW: review({
+        hold: { criteria: ["critical-security"], reason: "R" },
+      }),
     }),
-    { fail: { listFiles: true } },
+    {
+      fail: { createComment: true },
+    },
   );
-  assert.match(
-    listing.error.message,
-    /could not list the changed files: HTTP 502/u,
-  );
-  assert.equal(listing.core.outputs.criteria, "cost,trust-gate");
-  assert.deepEqual(
-    listing.writes.map(([name]) => name),
-    ["addLabels", "createComment"],
-  );
+  assert.match(comment.error.message, /could not post the hold comment/u);
 });
 
 test("a rerun posts no second marker for the same head and criteria", async () => {
-  const marker = `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=trust-gate -->`;
-  const { writes } = await apply(baseEnv(), {
-    files: ["CODEOWNERS"],
-    comments: [
-      { user: { login: "someone" }, body: "x" },
-      { user: { login: "github-actions[bot]" }, body: `${marker}\nwhy` },
-    ],
-  });
+  const marker = `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=critical-security -->`;
+  const { writes } = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["critical-security"], reason: "R" },
+      }),
+    }),
+    {
+      comments: [
+        { user: { login: "someone" }, body: "x" },
+        { user: { login: "github-actions[bot]" }, body: `${marker}\nwhy` },
+      ],
+    },
+  );
   assert.deepEqual(
     writes.map(([name]) => name),
     ["addLabels"],
@@ -406,28 +421,6 @@ test("the hold step never names a label removal or replacement API", () => {
     source,
     /removeLabel|removeAllLabels|setLabels|deleteLabel|updateLabel|\bDELETE\b|\bPUT\b/u,
   );
-});
-
-test("hold.cjs converts globs exactly as the scope step does", () => {
-  const workflow = parseWorkflow(
-    fs.readFileSync(
-      path.join(__dirname, "..", "workflows", "pr-review-cli.yml"),
-      "utf8",
-    ),
-  );
-  const scope = workflow.jobs["review-key"].steps.find((s) => s.id === "scope")
-    .with.script;
-  const body = (text) =>
-    /const globToRegExp = \(glob\) => \{[\s\S]*?\n\s*return new RegExp\(`\^\$\{out\}\$`, "u"\);\n\s*\};/u
-      .exec(text)[0]
-      .replace(/^\s+/gmu, "");
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "actions", "apply-review-hold", "hold.cjs"),
-    "utf8",
-  );
-  assert.equal(body(source), body(scope));
-  assert.ok(globToRegExp("**/CODEOWNERS").test("CODEOWNERS"));
-  assert.ok(!globToRegExp("**/CODEOWNERS").test("CODEOWNERS.md"));
 });
 
 test("a warn-only hit in the reason posts it with a warning", async () => {
@@ -497,11 +490,11 @@ test("a cost decision on the pull request keeps the cost hold from coming back",
   assert.equal(core.outputs.hold, "false");
   assert.deepEqual(writes, []);
   // The lookup's reads, the pull request's comments and the decision's edit
-  // check, then the marker's edit check and the deletion read, then
-  // hold-paths' own file list: the head is the decided head, so no compare.
+  // check, then the marker's edit check and the deletion read: the head is
+  // the decided head, so no compare.
   assert.deepEqual(
     github.calls.map(([name]) => name),
-    ["listComments", "graphql", "graphql", "graphql", "listFiles", "get"],
+    ["listComments", "graphql", "graphql", "graphql"],
   );
   assert.deepEqual(github.calls[3][1], { owner: "o", name: "r", number: 7 });
   assert.deepEqual(
@@ -534,8 +527,6 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
       "graphql",
       "graphql",
       "graphql",
-      "listFiles",
-      "get",
     ],
   );
 });
@@ -648,18 +639,17 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
   }
 });
 
-test("a trust-gate hold still holds when a cost decision exists", async () => {
+test("a carried cost decision leaves only critical-security to hold", async () => {
   const both = await apply(costEnv(["cost", "trust-gate"]), {
     comments: [marker(), decision()],
   });
-  assert.equal(both.core.outputs.hold, "true");
-  assert.equal(both.core.outputs.criteria, "trust-gate");
+  assert.equal(both.core.outputs.hold, "false");
   const byPath = await apply(costEnv(), {
     comments: [marker(), decision()],
     files: ["CODEOWNERS"],
   });
-  assert.equal(byPath.core.outputs.criteria, "trust-gate");
-  assert.equal(byPath.writes.length, 2);
+  assert.equal(byPath.core.outputs.hold, "false");
+  assert.deepEqual(byPath.writes, []);
   const security = await apply(costEnv(["cost", "critical-security"]), {
     comments: [marker(), decision()],
   });
@@ -667,7 +657,7 @@ test("a trust-gate hold still holds when a cost decision exists", async () => {
 });
 
 test("a hold with no cost criterion reads no cost decision", async () => {
-  const { github } = await apply(costEnv(["trust-gate"]), {
+  const { github } = await apply(costEnv(["critical-security"]), {
     comments: [decision()],
   });
   assert.ok(!github.calls.some(([name]) => name === "graphql"));
@@ -924,7 +914,7 @@ test("the carry check reads one deletion list, at most two compares and nothing 
   const { github } = await carryCase(atDecided);
   const names = github.calls.map(([name]) => name);
   // The pull request's comments, the decision's and the marker's edit
-  // checks, the deletion read, two compares, then hold-paths' own file list.
+  // checks, the deletion read and two compares.
   assert.deepEqual(names, [
     "listComments",
     "graphql",
@@ -932,8 +922,6 @@ test("the carry check reads one deletion list, at most two compares and nothing 
     "graphql",
     "compare",
     "compare",
-    "listFiles",
-    "get",
   ]);
 });
 

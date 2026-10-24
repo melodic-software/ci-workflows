@@ -464,6 +464,12 @@ const INLINE = {
 };
 const NONE = { findings: 0, summary: "Nothing found.", comments: [] };
 const A = { filename: "a.js", status: "modified", patch: PATCH, changes: 3 };
+const CODEOWNERS = {
+  filename: "CODEOWNERS",
+  status: "modified",
+  patch: "@@ -1 +1 @@\n-a\n+b",
+  changes: 2,
+};
 const marker = {
   id: 41,
   user: { login: BOT },
@@ -515,19 +521,20 @@ const SHAPES = {
     },
     review: NONE,
   },
-  "a whole review that holds on a hold-paths file": {
+  "a whole review that changes a hold-paths file and holds nothing": {
     action: "opened",
-    prFiles: [
-      A,
-      {
-        filename: "CODEOWNERS",
-        status: "modified",
-        patch: "@@ -1 +1 @@\n-a\n+b",
-        changes: 2,
-      },
-    ],
+    prFiles: [A, CODEOWNERS],
     compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
     review: INLINE,
+  },
+  "a whole review that returns a critical-security hold": {
+    action: "opened",
+    prFiles: [A, CODEOWNERS],
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    review: {
+      ...INLINE,
+      hold: { criteria: ["critical-security"], reason: "A CRITICAL finding." },
+    },
   },
 };
 
@@ -556,7 +563,8 @@ test("each run shape spends the requests pinned here, reading the file list once
     "a whole review with no inline comment": 6,
     "an incremental review with an inline comment": 10,
     "a no-change skip after a base-branch merge": 8,
-    "a whole review that holds on a hold-paths file": 11,
+    "a whole review that changes a hold-paths file and holds nothing": 8,
+    "a whole review that returns a critical-security hold": 11,
   });
 });
 
@@ -631,7 +639,7 @@ test("the scope step's hunk ranges give the lines commentableLines reads from th
   assert.equal(publishReview.hunkLines(["1,2 x"]), null);
 });
 
-test("publish and the hold read the file list themselves without a usable scope list", async () => {
+test("publish reads the file list itself without a usable scope list", async () => {
   const good = JSON.stringify({
     head: HEAD,
     changed: 1,
@@ -661,63 +669,35 @@ test("publish and the hold read the file list themselves without a usable scope 
   }
 });
 
-test("without the scope list a hold-paths file still holds, from the hold's own read", async () => {
-  const api = fakeApi({
-    prFiles: [{ filename: "CODEOWNERS" }],
-  });
-  const outputs = {};
-  await applyHold.run({
-    github: api.github,
-    context: { repo: { owner: "o", repo: "r" } },
-    core: quietCore(outputs),
-    env: {
-      HOLD_LABEL: "needs-human",
-      HOLD_PATHS: "**/CODEOWNERS",
-      LANE_ID: "claude-review",
-      PR_NUMBER: "7",
-      HEAD_SHA: HEAD,
-      PR_FILES: "",
-      SUB_RESULT: "skipped",
-      KEY_PRESENT: "true",
-      KEY_FAILED: "false",
-      KEY_CLASS: "",
-      KEY_VERDICT: "complete",
-      KEY_REVIEW: JSON.stringify(NONE),
-    },
-  });
-  assert.equal(outputs.hold, "true");
-  assert.equal(api.calls.filter((c) => c === "pulls.listFiles").length, 1);
-});
-
-test("a scope list shorter than the pull request's changed files holds", async () => {
-  const api = fakeApi({ prFiles: [] });
-  const outputs = {};
-  await applyHold.run({
-    github: api.github,
-    context: { repo: { owner: "o", repo: "r" } },
-    core: quietCore(outputs),
-    env: {
-      HOLD_LABEL: "needs-human",
-      HOLD_PATHS: "**/CODEOWNERS",
-      LANE_ID: "claude-review",
-      PR_NUMBER: "7",
-      HEAD_SHA: HEAD,
-      PR_FILES: JSON.stringify({
-        head: HEAD,
-        changed: 3001,
-        files: [{ n: "a.js" }],
-      }),
-      SUB_RESULT: "skipped",
-      KEY_PRESENT: "true",
-      KEY_FAILED: "false",
-      KEY_CLASS: "",
-      KEY_VERDICT: "complete",
-      KEY_REVIEW: JSON.stringify(NONE),
-    },
-  });
-  assert.equal(outputs.hold, "true");
-  assert.ok(!api.calls.includes("pulls.listFiles"));
-  assert.ok(!api.calls.includes("pulls.get"));
+test("the hold reads no file list, with or without the scope list", async () => {
+  for (const PR_FILES of [
+    "",
+    JSON.stringify({ head: HEAD, changed: 3001, files: [{ n: "CODEOWNERS" }] }),
+  ]) {
+    const api = fakeApi({ prFiles: [{ filename: "CODEOWNERS" }] });
+    const outputs = {};
+    await applyHold.run({
+      github: api.github,
+      context: { repo: { owner: "o", repo: "r" } },
+      core: quietCore(outputs),
+      env: {
+        HOLD_LABEL: "needs-human",
+        HOLD_PATHS: "**/CODEOWNERS",
+        LANE_ID: "claude-review",
+        PR_NUMBER: "7",
+        HEAD_SHA: HEAD,
+        PR_FILES,
+        SUB_RESULT: "skipped",
+        KEY_PRESENT: "true",
+        KEY_FAILED: "false",
+        KEY_CLASS: "",
+        KEY_VERDICT: "complete",
+        KEY_REVIEW: JSON.stringify(NONE),
+      },
+    });
+    assert.equal(outputs.hold, "false");
+    assert.deepEqual(api.calls, []);
+  }
 });
 
 test("the scope step passes on no file list larger than one environment string", async () => {
