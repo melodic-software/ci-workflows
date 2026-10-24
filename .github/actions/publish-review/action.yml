@@ -26,5 +26,6 @@ runs:
       with:
         script: |
           const path = require("node:path");
+          require(path.join(process.env.ACTION_PATH, "..", "log-api-budget", "api-budget.cjs")).watch(github, "github-token");
           const { run } = require(path.join(process.env.ACTION_PATH, "publish.cjs"));
           await run({ github, context, core });

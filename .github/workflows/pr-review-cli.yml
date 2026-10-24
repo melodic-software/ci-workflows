@@ -237,7 +237,7 @@ jobs:
   review-key:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 44 || 42 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 45 || 43 }}
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.state == 'open'
@@ -372,9 +372,27 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
+            // Each response's rate-limit reading, the line log-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
+              if (error.response) budget(error.status, error.response.headers);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)
@@ -1245,6 +1263,20 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
 
+      # The job token's api-budget notice, from the readings the scope
+      # step's requests and the shell steps' `gh api -i` files left. It
+      # spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/log-api-budget
+        with:
+          tokens: github-token
+          responses: |
+            ${{ runner.temp }}/compare.http
+            ${{ runner.temp }}/pr-context.json.http
+
   # The subscription leg, as its own job on a fresh VM. Its steps repeat the
   # key job's but for the credential and the fallback reason (a test holds
   # them equal). It reads only compared outputs of the key job and never
@@ -1253,7 +1285,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
     needs: review-key
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 44 || 42 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 45 || 43 }}
     if: >-
       (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false')
       &&
@@ -1390,9 +1422,27 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
+            // Each response's rate-limit reading, the line log-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
+              if (error.response) budget(error.status, error.response.headers);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)
@@ -2265,6 +2315,20 @@ jobs:
           # Why this job ran, for this leg's lane record.
           fallback-reason: ${{ needs.review-key.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.review-key.outputs.lane-class == 'auth' && 'auth' || needs.review-key.outputs.credential-present == 'false' && 'no-key' || '' }}
 
+      # The job token's api-budget notice, from the readings the scope
+      # step's requests and the shell steps' `gh api -i` files left. It
+      # spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/log-api-budget
+        with:
+          tokens: github-token
+          responses: |
+            ${{ runner.temp }}/compare.http
+            ${{ runner.temp }}/pr-context.json.http
+
   # The one job that writes, and no lane record (each leg writes its own).
   # No model runs here and nothing is checked out. Every value arrives
   # through env. A `uses: $/...` step reads publish from its own env in
@@ -2275,7 +2339,7 @@ jobs:
     needs: [review-key, review-subscription]
     if: always() && needs.review-key.result != 'skipped'
     runs-on: ubuntu-24.04
-    timeout-minutes: 19
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write # the review, its inline comments, the lane's marker comment and the hold label
@@ -2457,3 +2521,13 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
           retention-days: 30
+
+      # The job token's api-budget notice, from the readings the publish and
+      # hold steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/log-api-budget
+        with:
+          tokens: github-token
