@@ -28,6 +28,8 @@ fs.writeFileSync(
 // Key-shaped, built at run time so no scanner reads a key in this file.
 const FAKE_KEY = ["sk", "ant", "api03", "x".repeat(26)].join("-");
 const HEAD = "a".repeat(40);
+const OPENED = "2026-10-23T10:00:00Z";
+const OWNER_ID = 153232337;
 const TRUST_PATHS = [
   ".github/standards/trusted-actors/**",
   ".github/actions/check-trusted-trigger/**",
@@ -35,13 +37,42 @@ const TRUST_PATHS = [
   "**/.gitmodules",
 ].join("\n");
 
-function fakeGithub({ files = [], changedFiles, comments = [], fail = {} }) {
+// `comments` are the pull request's (#7); `issueComments` maps another
+// issue number to its comments; `pull` is the GraphQL pull request;
+// `edited` holds the node ids of edited comments; `pullNumbers` the numbers
+// that are pull requests, not issues.
+function fakeGithub({
+  files = [],
+  changedFiles,
+  comments = [],
+  fail = {},
+  issueComments = {},
+  pull = {
+    createdAt: OPENED,
+    body: "",
+    closingIssuesReferences: { totalCount: 0, nodes: [] },
+  },
+  edited = new Set(),
+  pullNumbers = new Set([7]),
+}) {
   const calls = [];
   const refuse = (name) => () => {
     throw new Error(`${name} must never be called`);
   };
   const github = {
     calls,
+    graphql: async (query, variables) => {
+      calls.push(["graphql", variables]);
+      if (/lastEditedAt/u.test(query))
+        return {
+          node: {
+            lastEditedAt: edited.has(variables.id)
+              ? "2026-10-24T00:00:00Z"
+              : null,
+          },
+        };
+      return { repository: { pullRequest: pull } };
+    },
     paginate: async (method, params) => method(params),
     rest: {
       pulls: {
@@ -66,7 +97,17 @@ function fakeGithub({ files = [], changedFiles, comments = [], fail = {} }) {
         },
         listComments: (params) => {
           calls.push(["listComments", params]);
-          return comments;
+          return params.issue_number === 7
+            ? comments
+            : (issueComments[params.issue_number] ?? []);
+        },
+        get: async (params) => {
+          calls.push(["issues.get", params]);
+          return {
+            data: pullNumbers.has(params.issue_number)
+              ? { number: params.issue_number, pull_request: {} }
+              : { number: params.issue_number },
+          };
         },
         createComment: async (params) => {
           calls.push(["createComment", params]);
@@ -91,6 +132,7 @@ function fakeCore() {
   };
   core.warning = (m) => core.warnings.push(m);
   core.notice = (m) => core.notices.push(m);
+  core.info = () => {};
   return core;
 }
 
@@ -356,4 +398,198 @@ test("a warn-only hit in the reason posts it with a warning", async () => {
   assert.deepEqual(core.warnings, [
     "claude-review: password or secret assignment in the hold reason; published anyway.",
   ]);
+});
+
+// A cost decision binds to the pull request and covers every head of it.
+const decision = ({
+  id = 1,
+  userId = OWNER_ID,
+  body = "**Decision recorded.** Cost: approve the larger runner.",
+  createdAt = "2026-10-23T12:00:00Z",
+  type = "User",
+  app = null,
+} = {}) => ({
+  id,
+  node_id: `IC_${id}`,
+  user: { login: userId === OWNER_ID ? "owner" : "someone", id: userId, type },
+  performed_via_github_app: app,
+  created_at: createdAt,
+  body,
+});
+const costEnv = (criteria = ["cost"], extra = {}) =>
+  baseEnv({
+    TRUSTED_AUTHOR_IDS: String(OWNER_ID),
+    KEY_REVIEW: review({ hold: { criteria, reason: "It adds a schedule." } }),
+    ...extra,
+  });
+const refsPull = (body) => ({
+  createdAt: OPENED,
+  body,
+  closingIssuesReferences: { totalCount: 0, nodes: [] },
+});
+
+test("a cost decision on the pull request keeps the cost hold from coming back", async () => {
+  const { core, error, writes, github } = await apply(costEnv(), {
+    comments: [decision()],
+  });
+  assert.equal(error, undefined);
+  assert.equal(core.outputs.hold, "false");
+  assert.deepEqual(writes, []);
+  // The lookup's reads, the pull request's comments and one edit check,
+  // then hold-paths' own file list.
+  assert.deepEqual(
+    github.calls.map(([name]) => name),
+    ["listComments", "graphql", "listFiles", "get"],
+  );
+});
+
+test("a cost decision on the Refs issue that names the pull request keeps the cost hold off", async () => {
+  const { core, writes, github } = await apply(costEnv(), {
+    pull: refsPull("Refs: #9436\n\n## Summary"),
+    issueComments: {
+      9436: [
+        decision({ body: "**Decision recorded.** Cost: approved for #7." }),
+      ],
+    },
+  });
+  assert.equal(core.outputs.hold, "false");
+  assert.deepEqual(writes, []);
+  assert.deepEqual(
+    github.calls.map(([name]) => name),
+    [
+      "listComments",
+      "graphql",
+      "issues.get",
+      "listComments",
+      "graphql",
+      "listFiles",
+      "get",
+    ],
+  );
+});
+
+test("a cost decision on the closing issue that names the pull request keeps the cost hold off", async () => {
+  const { core } = await apply(costEnv(), {
+    pull: {
+      createdAt: OPENED,
+      body: "Closes #9436",
+      closingIssuesReferences: {
+        totalCount: 1,
+        nodes: [{ number: 9436, repository: { nameWithOwner: "O/R" } }],
+      },
+    },
+    issueComments: {
+      9436: [decision({ body: "**Decision recorded.** Cost: yes, #7." })],
+    },
+  });
+  assert.equal(core.outputs.hold, "false");
+});
+
+test("a cost decision on the Refs issue that names another pull request still holds", async () => {
+  const { core, writes } = await apply(costEnv(), {
+    pull: refsPull("Refs: #9436"),
+    issueComments: {
+      9436: [
+        decision({ body: "**Decision recorded.** Cost: approved for #70." }),
+      ],
+    },
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(core.outputs.criteria, "cost");
+  assert.equal(writes.length, 2);
+});
+
+test("a cost decision by anyone but a trusted person still holds", async () => {
+  for (const comment of [
+    decision({ userId: 42 }),
+    decision({ type: "Bot" }),
+    decision({ app: { slug: "lanes" } }),
+  ]) {
+    const { core } = await apply(costEnv(), { comments: [comment] });
+    assert.equal(core.outputs.hold, "true", JSON.stringify(comment.user));
+  }
+  // With no trusted ids nobody's decision counts.
+  const { core } = await apply(costEnv(["cost"], { TRUSTED_AUTHOR_IDS: "" }), {
+    comments: [decision()],
+  });
+  assert.equal(core.outputs.hold, "true");
+});
+
+test("an edited, quoted, older or non-cost decision still holds", async () => {
+  for (const [name, options] of [
+    ["edited", { comments: [decision()], edited: new Set(["IC_1"]) }],
+    [
+      "quoted",
+      { comments: [decision({ body: "> **Decision recorded.** Cost: yes" })] },
+    ],
+    [
+      "not a cost decision",
+      { comments: [decision({ body: "**Decision recorded.** Option 2." })] },
+    ],
+    [
+      "older than the pull request",
+      {
+        pull: refsPull("Refs: #9436"),
+        issueComments: {
+          9436: [
+            decision({
+              body: "**Decision recorded.** Cost: #7",
+              createdAt: "2026-10-22T00:00:00Z",
+            }),
+          ],
+        },
+      },
+    ],
+    [
+      "a Refs line naming a pull request",
+      {
+        pull: refsPull("Refs: #9436"),
+        pullNumbers: new Set([7, 9436]),
+        issueComments: {
+          9436: [decision({ body: "**Decision recorded.** Cost: #7" })],
+        },
+      },
+    ],
+    [
+      "two Refs issues",
+      {
+        pull: refsPull("Refs: #9436\nRefs: #9437"),
+        issueComments: {
+          9436: [decision({ body: "**Decision recorded.** Cost: #7" })],
+        },
+      },
+    ],
+  ]) {
+    const { core } = await apply(costEnv(), options);
+    assert.equal(core.outputs.hold, "true", name);
+  }
+});
+
+test("a trust-gate hold still holds when a cost decision exists", async () => {
+  const both = await apply(costEnv(["cost", "trust-gate"]), {
+    comments: [decision()],
+  });
+  assert.equal(both.core.outputs.hold, "true");
+  assert.equal(both.core.outputs.criteria, "trust-gate");
+  const byPath = await apply(costEnv(), {
+    comments: [decision()],
+    files: ["CODEOWNERS"],
+  });
+  assert.equal(byPath.core.outputs.criteria, "trust-gate");
+  assert.equal(byPath.writes.length, 2);
+  const security = await apply(costEnv(["cost", "critical-security"]), {
+    comments: [decision()],
+  });
+  assert.equal(security.core.outputs.criteria, "critical-security");
+});
+
+test("a hold with no cost criterion reads no cost decision", async () => {
+  const { github } = await apply(costEnv(["trust-gate"]), {
+    comments: [decision()],
+  });
+  assert.ok(!github.calls.some(([name]) => name === "graphql"));
+  assert.equal(
+    github.calls.filter(([name]) => name === "listComments").length,
+    1,
+  );
 });

@@ -103,7 +103,11 @@ name: pr-review-cli
 #     file list is the scope step's at the head; without it (scope failed,
 #     the head moved, or the list was too large) the step reads it. It
 #     only adds, through the same pull-requests: write grant, and fails the
-#     job when a write fails. The reason is model text: HTML comments are
+#     job when a write fails. A cost criterion is not added again once a
+#     person in allowed-author-ids recorded an unedited comment opening
+#     `**Decision recorded.** Cost:` on the pull request, or on its one
+#     closing issue (else its one `Refs:` issue) naming `#<number>` after
+#     the pull request opened; the other criteria still hold. The reason is model text: HTML comments are
 #     stripped and the publish gate withholds a credential-shaped one.
 #
 # REVIEW CADENCE: as pr-review.yml's header states, with this lane's marker:
@@ -197,7 +201,9 @@ on:
       allowed-author-ids:
         description: >-
           Comma-separated numeric GitHub user ids, no spaces, of people whose
-          closing issues the review reads in full, as pr-review.yml's input.
+          closing issues the review reads in full, as pr-review.yml's input,
+          and whose recorded cost decision keeps the hold step from adding
+          the cost hold again on a later head.
         type: string
         default: ""
       hold-label:
@@ -2492,6 +2498,7 @@ jobs:
           PUBLISH: ${{ inputs.publish }}
           HOLD_LABEL: ${{ inputs.hold-label }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
+          TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

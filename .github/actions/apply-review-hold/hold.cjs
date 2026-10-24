@@ -1,6 +1,7 @@
 // pr-review-cli's hold step. No model runs here. It reads, from env:
 // HOLD_LABEL, HOLD_PATHS (newline-separated globs), LANE_ID, PR_NUMBER,
-// HEAD_SHA, PUBLISH_GATE, PR_FILES (the scope step's file list), and the
+// HEAD_SHA, PUBLISH_GATE, PR_FILES (the scope step's file list),
+// TRUSTED_AUTHOR_IDS (the people whose cost decision counts), and the
 // legs' KEY_* and SUB_* outputs that publish-review's judge reads. It only adds: the label and one marker
 // comment. Every write goes through issues.addLabels or issues.createComment.
 "use strict";
@@ -62,6 +63,138 @@ function modelHold(env) {
   };
 }
 
+// A cost decision: an unedited comment by a trusted person whose first line
+// opens `**Decision recorded.** Cost:` (claude-code-plugins@eda837d4c8
+// .github/scripts/pr-merge/merge-holds.mjs:422 DECISION_LINE, read after
+// trimStart as at :470; author, App and edit checks as at :466-476). It binds to one pull request and covers every head
+// of it: one on the pull request counts, and so does one on its linked issue
+// that names `#<number>` and is newer than the pull request.
+const DECISION_LINE = /^\*\*Decision recorded\.\*\*[ \t]+Cost:/u;
+const PULL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { createdAt body closingIssuesReferences(first: 2) { totalCount nodes { number repository { nameWithOwner } } } }
+  }
+}`;
+const EDITED_QUERY =
+  "query($id: ID!) { node(id: $id) { ... on IssueComment { lastEditedAt } } }";
+
+// The issue one plain `Refs: #<n>` line names, or null: claude-code-plugins@eda837d4c8
+// plugins/source-control/skills/babysit-prs/scripts/babysit_merge_policy.py:1851-1895
+// refs_issue. A line counts from its first column, outside an HTML comment
+// and a fenced code block; any `Refs:` line in another form, or two issues,
+// name none.
+const HTML_COMMENT = /<!--[\s\S]*?(?:-->|$)/gu;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/u;
+function refsIssue(body) {
+  const numbers = new Set();
+  let fence = "";
+  for (const line of String(body ?? "")
+    .replace(HTML_COMMENT, "")
+    .split(/\r\n|\r|\n/u)) {
+    const marker = FENCE.exec(line);
+    if (fence) {
+      if (
+        marker &&
+        marker[1][0] === fence[0] &&
+        marker[1].length >= fence.length &&
+        line.slice(marker[0].length).replace(/[ \t]/gu, "") === ""
+      )
+        fence = "";
+      continue;
+    }
+    if (marker) {
+      fence = marker[1];
+      continue;
+    }
+    if (!/^[Rr][Ee][Ff][Ss]:/u.test(line)) continue;
+    const plain = /^Refs:[ \t]*#([1-9][0-9]{0,8})[ \t]*$/u.exec(line);
+    if (!plain) return null;
+    numbers.add(Number(plain[1]));
+  }
+  return numbers.size === 1 ? [...numbers][0] : null;
+}
+
+// The pull request's linked issue: its one closing issue in this repository,
+// else, with no closing issue at all, its one `Refs:` issue
+// (babysit_merge_policy.py:1905-1931 _linked_issue, :1934-1947
+// _closing_issue). `refs` is checked to be an issue, not a pull request.
+function linkedIssue(pull, owner, repo) {
+  const closing = pull?.closingIssuesReferences;
+  if (closing?.totalCount === 1 && closing.nodes?.length === 1) {
+    const node = closing.nodes[0];
+    return String(node?.repository?.nameWithOwner).toLowerCase() ===
+      `${owner}/${repo}`.toLowerCase() && Number.isInteger(node?.number)
+      ? { number: node.number }
+      : null;
+  }
+  if (closing?.totalCount !== 0) return null;
+  const refs = refsIssue(pull.body);
+  return refs === null ? null : { number: refs, refs: true };
+}
+
+const names_ = (number) =>
+  new RegExp(`(?<![A-Za-z0-9_#&/])#${number}(?![0-9])`, "u");
+
+// Whether a trusted person recorded a cost decision for pull request
+// `number`. `prComments` is the pull request's comment list. Reads only
+// when a cost hold would be added; a read that fails decides nothing.
+async function costDecided(github, owner, repo, number, env, prComments) {
+  const trusted = new Set(
+    String(env.TRUSTED_AUTHOR_IDS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => /^[1-9][0-9]*$/u.test(id))
+      .map(Number),
+  );
+  if (trusted.size === 0) return false;
+  const candidate = (c) =>
+    c?.user?.type === "User" &&
+    c.performed_via_github_app == null &&
+    trusted.has(c.user.id) &&
+    DECISION_LINE.test(String(c.body ?? "").trimStart());
+  const unedited = async (c) => {
+    try {
+      const node = (await github.graphql(EDITED_QUERY, { id: String(c.node_id) }))
+        ?.node;
+      return Boolean(node) && "lastEditedAt" in node && node.lastEditedAt === null;
+    } catch {
+      return false;
+    }
+  };
+  for (const c of prComments.filter(candidate))
+    if (await unedited(c)) return true;
+  try {
+    const pull = (
+      await github.graphql(PULL_QUERY, { owner, name: repo, number })
+    )?.repository?.pullRequest;
+    const issue = linkedIssue(pull, owner, repo);
+    if (!issue) return false;
+    if (issue.refs) {
+      const read = (
+        await github.rest.issues.get({ owner, repo, issue_number: issue.number })
+      ).data;
+      if (read?.pull_request) return false;
+    }
+    const opened = Date.parse(pull.createdAt);
+    const comments = await github.paginate(github.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number: issue.number,
+      per_page: 100,
+    });
+    for (const c of comments.filter(
+      (c) =>
+        candidate(c) &&
+        Date.parse(c.created_at) > opened &&
+        names_(number).test(String(c.body ?? "")),
+    ))
+      if (await unedited(c)) return true;
+  } catch {
+    // Nothing read, nothing decided: the cost hold stays.
+  }
+  return false;
+}
+
 // trust-gate when a changed file, or a renamed file's old path, matches a
 // hold path, or when GitHub listed fewer files than the pull request changed.
 // The list is the scope step's at the head (PR_FILES); without one it is read.
@@ -120,7 +253,31 @@ async function run({ github, context, core, env = process.env }) {
   const found = new Set();
   const reasons = [];
   const model = modelHold(env);
-  if (model) {
+  // The pull request's comments, read once: for the cost decision and for
+  // the marker this step posts.
+  let prComments;
+  const listPrComments = async () => {
+    prComments ??= await github.paginate(github.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number: number,
+      per_page: 100,
+    });
+    return prComments;
+  };
+  if (model?.criteria.includes("cost")) {
+    let decided = false;
+    try {
+      decided = await costDecided(github, owner, repo, number, env, await listPrComments());
+    } catch {
+      // The comments could not be listed: the cost hold stays.
+    }
+    if (decided) {
+      core.info(`${lane}: a recorded cost decision covers this pull request; the cost hold is not added again.`);
+      model.criteria = model.criteria.filter((c) => c !== "cost");
+    }
+  }
+  if (model && model.criteria.length > 0) {
     for (const c of model.criteria) found.add(c);
     reasons.push(model.reason);
   }
@@ -179,12 +336,7 @@ async function run({ github, context, core, env = process.env }) {
   }
   const marker = `<!-- claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} -->`;
   try {
-    const comments = await github.paginate(github.rest.issues.listComments, {
-      owner,
-      repo,
-      issue_number: number,
-      per_page: 100,
-    });
+    const comments = await listPrComments();
     const posted = comments.some(
       (c) =>
         c.user?.login === "github-actions[bot]" &&
@@ -215,4 +367,4 @@ async function run({ github, context, core, env = process.env }) {
   return { hold: true, criteria };
 }
 
-module.exports = { CRITERIA, globToRegExp, modelHold, run };
+module.exports = { CRITERIA, globToRegExp, linkedIssue, modelHold, refsIssue, run };
