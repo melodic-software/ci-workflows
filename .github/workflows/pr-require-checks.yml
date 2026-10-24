@@ -177,9 +177,8 @@ jobs:
       check-jsonschema-files: .github/dependabot.yml
       check-jsonschema-builtin-schema: vendor.dependabot
       # Each scan skips its own action's source, whose pattern script and
-      # marker policy contain the literal bodies it matches; the guardrails
-      # git-hook copies carry the same pattern sources.
-      machine-specific-paths-exclude: ':(exclude).github/actions/check-machine-paths/** :(exclude).githooks/guardrails/**'
+      # marker policy contain the literal bodies it matches.
+      machine-specific-paths-exclude: ':(exclude).github/actions/check-machine-paths/**'
       comment-hygiene-exclude: ':(exclude).github/actions/check-comment-markers/**'
       # Composites without a group here run ungated.
       filters: |
@@ -501,9 +500,6 @@ jobs:
           persist-credentials: false
       - name: Lint shell scripts
         uses: ./.github/actions/shellcheck
-        with:
-          # Plugin-owned copies the guardrails installer writes; linted upstream.
-          exclude: .githooks/guardrails/
       - name: Test ShellCheck discovery and scoped exclusions
         run: bash .github/actions/shellcheck/run.test.sh
       - name: Test exec-bit shebang mode scan
