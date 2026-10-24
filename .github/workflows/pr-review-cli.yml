@@ -22,6 +22,7 @@ name: pr-review-cli
 #         # request against this grant at startup, so summary mode needs it
 #         # too, though it writes nothing.
 #         permissions:
+#           actions: read         # the check-key-credit job reads this workflow's runs
 #           contents: read
 #           pull-requests: write
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@<sha>
@@ -48,6 +49,14 @@ name: pr-review-cli
 #     That job runs on a fresh ubuntu-24.04 runner, repeats every hardening
 #     step and takes no artifact or cache from the key job. Either secret
 #     may be empty.
+#   - The check-key-credit job runs first, holds no secret and no write, and reads
+#     only this workflow's own runs with the job token (actions: read, so
+#     the caller grants it). When the key job ended in a credit stop
+#     (lane-class `credit-stop`) in a run created inside
+#     key-credit-window-hours, the key job is skipped and the subscription
+#     job reviews, its scope read by the status job in the key job's place.
+#     A failed or unclear read runs the key job as before
+#     (.github/actions/check-key-credit).
 #   - The model jobs cannot write: contents: read and pull-requests: read,
 #     no id-token, and `cache-mode: none`. The launcher step's env holds the
 #     one Claude credential and no GitHub token. Before the checkout the job
@@ -83,7 +92,8 @@ name: pr-review-cli
 #     output; it downloads from this run only, with no token. It
 #     checks every inline anchor against the pull request's diff at the head
 #     (one bad anchor sends the whole batch to the summary): the hunk ranges
-#     the key job's scope step read before any model step ran, used only
+#     the key job's scope step (the subscription job's when check-key-credit
+#     skipped the key job) read before any model step ran, used only
 #     when a fresh read shows the head has not moved, else a read of its
 #     own. Each step writes its own outputs file, so the later model step
 #     cannot rewrite the scope step's outputs; the status job already trusts
@@ -237,6 +247,14 @@ on:
           scrutiny. A match never holds the pull request by itself.
         type: string
         default: ""
+      key-credit-window-hours:
+        description: >-
+          Hours a key's credit stop in this workflow keeps later runs off the
+          key: their key job is skipped and the subscription job reviews.
+          The first run after the window tries the key again, so a new cycle
+          or a replaced key is picked up. 0 always tries the key.
+        type: number
+        default: 6
     outputs:
       hold:
         description: "`true` when this run held the pull request, else `false`."
@@ -258,11 +276,70 @@ permissions:
   contents: read
 
 jobs:
+  # Whether the key is still out of credits: a key-job credit stop in this
+  # workflow inside the window skips the key job. Its record step carries the
+  # origin run forward in its name, which the next run's read finds, so the
+  # window counts from the credit stop, not the last skip. Every failure runs
+  # the key job: its `if` starts with !cancelled().
+  check-key-credit:
+    name: ${{ inputs.lane == 'security' && 'security-review-key-credit' || 'claude-review-key-credit' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.state == 'open'
+      && github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+      && (!endsWith(github.actor, '[bot]')
+          || (inputs.allowed-bot-sender-ids != ''
+              && !startsWith(inputs.allowed-bot-sender-ids, ',')
+              && !endsWith(inputs.allowed-bot-sender-ids, ',')
+              && !contains(inputs.allowed-bot-sender-ids, ',,')
+              && github.event.sender.id
+              && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                          format(',{0},', github.event.sender.id))))
+    permissions:
+      actions: read
+    cache-mode: none
+    outputs:
+      skip-key: ${{ steps.gate.outputs.skip-key }}
+    steps:
+      - name: Read the key's credit history
+        id: gate
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/check-key-credit
+        with:
+          key-job: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
+          window-hours: ${{ inputs.key-credit-window-hours }}
+
+      - name: Record the key's credit stop in run ${{ steps.gate.outputs.origin-run }}
+        if: steps.gate.outputs.skip-key == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: echo "carried to the next run's check-key-credit read"
+
+      # The job token's api-budget notice, from the readings the gate's
+      # requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   review-key:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
+    needs: check-key-credit
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 45 || 43 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
     if: >-
+      needs.check-key-credit.outputs.skip-key != 'true'
+      && !cancelled()
+      &&
       github.event_name == 'pull_request'
       && github.event.pull_request.state == 'open'
       && github.event.pull_request.draft == false
@@ -1101,6 +1178,16 @@ jobs:
           cli-version: ${{ steps.compose.outputs.cli-version }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
+      # Read by the next runs' check-key-credit job: a step named for this run that
+      # succeeds only after the launcher's credit stop, which only the key
+      # leg can end in. Its name is the record; keep it equal to
+      # check-key-credit's RECORD_PATTERN.
+      - name: Record the key's credit stop in run ${{ github.run_id }}
+        if: always() && steps.claude.outputs.lane-class == 'credit-stop'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: echo "the key ended in a credit stop"
+
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
       # makes deny every call no rule allows, as dontAsk does. A mismatch, or
@@ -1329,11 +1416,14 @@ jobs:
   # writes them into a script.
   review-subscription:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
-    needs: review-key
+    needs: [check-key-credit, review-key]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 45 || 43 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
     if: >-
-      (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false')
+      ((needs.review-key.result == 'success'
+        && (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false'))
+       || (needs.review-key.result == 'skipped' && needs.check-key-credit.outputs.skip-key == 'true'))
+      && !cancelled()
       &&
       github.event_name == 'pull_request'
       && github.event.pull_request.state == 'open'
@@ -2173,6 +2263,16 @@ jobs:
           cli-version: ${{ steps.compose.outputs.cli-version }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
+      # Read by the next runs' check-key-credit job: a step named for this run that
+      # succeeds only after the launcher's credit stop, which only the key
+      # leg can end in. Its name is the record; keep it equal to
+      # check-key-credit's RECORD_PATTERN.
+      - name: Record the key's credit stop in run ${{ github.run_id }}
+        if: always() && steps.claude.outputs.lane-class == 'credit-stop'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: echo "the key ended in a credit stop"
+
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
       # makes deny every call no rule allows, as dontAsk does. A mismatch, or
@@ -2381,7 +2481,7 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record.
-          fallback-reason: ${{ needs.review-key.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.review-key.outputs.lane-class == 'auth' && 'auth' || needs.review-key.outputs.credential-present == 'false' && 'no-key' || '' }}
+          fallback-reason: ${{ (needs.review-key.result == 'skipped' || needs.review-key.outputs.lane-class == 'credit-stop') && 'credit-stop' || needs.review-key.outputs.lane-class == 'auth' && 'auth' || needs.review-key.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # The job token's api-budget notice, from the readings the scope
       # step's requests and the shell steps' `gh api -i` files left. It
@@ -2405,7 +2505,7 @@ jobs:
   status:
     name: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
     needs: [review-key, review-subscription]
-    if: always() && needs.review-key.result != 'skipped'
+    if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -2481,6 +2581,9 @@ jobs:
           script: |
             const fs = require("node:fs");
             const env = process.env;
+            // The key leg's last summary, else the subscription leg's (both
+            // read the same marker; the key job is skipped after a credit stop).
+            let lastSummary = false;
             for (const [leg, prefix, expected] of [
               ["review-key", "key", env.KEY_SHA256],
               ["review-subscription", "sub", env.SUB_SHA256],
@@ -2499,7 +2602,10 @@ jobs:
               }
               const data = JSON.parse(bytes.toString("utf8"));
               if (typeof data?.review === "string") core.setOutput(`${prefix}-review`, data.review);
-              if (prefix === "key" && typeof data?.["last-summary"] === "string") core.setOutput("last-summary", data["last-summary"]);
+              if (!lastSummary && typeof data?.["last-summary"] === "string") {
+                core.setOutput("last-summary", data["last-summary"]);
+                lastSummary = true;
+              }
             }
 
       - name: Publish the review
@@ -2514,15 +2620,15 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
           ARTIFACT_DIR: ${{ runner.temp }}/shadow-report
-          SCOPE_REVIEW: ${{ needs.review-key.outputs.scope-review }}
-          SKIP: ${{ needs.review-key.outputs.skip }}
-          SKIP_REASON: ${{ needs.review-key.outputs.skip-reason }}
-          SINCE: ${{ needs.review-key.outputs.since }}
-          SCOPE: ${{ needs.review-key.outputs.scope }}
-          MARKER_ID: ${{ needs.review-key.outputs.marker-id }}
-          MERGE_BASE: ${{ needs.review-key.outputs.merge-base }}
+          SCOPE_REVIEW: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.scope-review || needs.review-key.outputs.scope-review }}
+          SKIP: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.skip || needs.review-key.outputs.skip }}
+          SKIP_REASON: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.skip-reason || needs.review-key.outputs.skip-reason }}
+          SINCE: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.since || needs.review-key.outputs.since }}
+          SCOPE: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.scope || needs.review-key.outputs.scope }}
+          MARKER_ID: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.marker-id || needs.review-key.outputs.marker-id }}
+          MERGE_BASE: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.merge-base || needs.review-key.outputs.merge-base }}
           LAST_SUMMARY: ${{ steps.handoffs.outputs.last-summary }}
-          PR_FILES: ${{ needs.review-key.outputs.pr-files }}
+          PR_FILES: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.pr-files || needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
           SUB_RESULT: ${{ needs.review-subscription.result }}
           KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}
@@ -2565,7 +2671,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
-          PR_FILES: ${{ needs.review-key.outputs.pr-files }}
+          PR_FILES: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.pr-files || needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
           SUB_RESULT: ${{ needs.review-subscription.result }}
           KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}

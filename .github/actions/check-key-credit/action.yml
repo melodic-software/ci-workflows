@@ -1,0 +1,46 @@
+name: Key credit gate
+description: >
+  Before a keyed lane's key job: whether that job should skip its key because
+  the key ended in a credit stop in this workflow inside the window. Reads
+  the workflow's completed runs created inside the window (one list call)
+  and at most three of their job lists, with the job token, which needs
+  actions: read. Any failure or an unclear answer leaves skip-key `false`,
+  so the key job runs as before. Writes one log line either way; a skip is a
+  notice naming the run whose credit stop caused it. See gate.cjs.
+
+inputs:
+  key-job:
+    description: >-
+      The key job's display name, lower-case kebab (for example
+      claude-review-key). The record steps are looked up in this job and in
+      `<key-job>-credit`, the job that runs this action.
+    required: true
+  window-hours:
+    description: How far back a credit stop counts, in hours (0 turns the gate off; at most 168).
+    required: false
+    default: "6"
+  github-token:
+    description: "The job token, with actions: read."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  skip-key:
+    description: "`true` when the key job should skip its key, else `false` or empty."
+    value: ${{ steps.gate.outputs.skip-key }}
+  origin-run:
+    description: The run id whose credit stop caused the skip, or empty.
+    value: ${{ steps.gate.outputs.origin-run }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the key's credit history
+      id: gate
+      shell: bash
+      env:
+        KEY_JOB: ${{ inputs.key-job }}
+        WINDOW_HOURS: ${{ inputs.window-hours }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/gate.cjs" || true
