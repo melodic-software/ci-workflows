@@ -717,7 +717,7 @@ consumer to audit it.
   step: the `api-budget` notice (`token=github-token ... cost=N`) the hub
   collector reads, built from the `x-ratelimit-*` headers of the job's own
   requests, so it spends none (its `action.yml` describes what it does).
-- `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `key-credit`
+- `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
   inside `key-credit-window-hours` (default 6), reading the workflow's runs
   with the job token (one list call, at most three job-list calls), and runs
