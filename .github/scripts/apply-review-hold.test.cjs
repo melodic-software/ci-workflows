@@ -47,7 +47,9 @@ const TRUST_PATHS = [
 // edit read fails; `pullNumbers` the numbers
 // that are pull requests, not issues; `misnumbered` the numbers whose read
 // answers another number; `compares` maps a basehead to its compare
-// response data.
+// response data; `deletions` the created_at of each COMMENT_DELETED_EVENT
+// on the pull request, `deletedItems` a raw timelineItems answer in their
+// place, and `failDeleted` fails that read.
 function fakeGithub({
   files = [],
   changedFiles,
@@ -64,6 +66,9 @@ function fakeGithub({
   pullNumbers = new Set([7]),
   misnumbered = new Set(),
   compares = {},
+  deletions = [],
+  deletedItems,
+  failDeleted = false,
 }) {
   const calls = [];
   const refuse = (name) => () => {
@@ -75,6 +80,22 @@ function fakeGithub({
       calls.push(["graphql", variables]);
       if (/lastEditedAt/u.test(query) && failEdited.has(variables.id))
         throw new Error("HTTP 502");
+      if (/COMMENT_DELETED_EVENT/u.test(query)) {
+        if (failDeleted) throw new Error("HTTP 502");
+        return {
+          repository: {
+            pullRequest: {
+              timelineItems:
+                deletedItems !== undefined
+                  ? deletedItems
+                  : {
+                      filteredCount: deletions.length,
+                      nodes: deletions.map((createdAt) => ({ createdAt })),
+                    },
+            },
+          },
+        };
+      }
       if (/lastEditedAt/u.test(query))
         return {
           node: {
@@ -476,14 +497,17 @@ test("a cost decision on the pull request keeps the cost hold from coming back",
   assert.equal(core.outputs.hold, "false");
   assert.deepEqual(writes, []);
   // The lookup's reads, the pull request's comments and the decision's edit
-  // check, then the marker's edit check, then hold-paths' own file list: the
-  // head is the decided head, so no compare.
+  // check, then the marker's edit check and the deletion read, then
+  // hold-paths' own file list: the head is the decided head, so no compare.
   assert.deepEqual(
     github.calls.map(([name]) => name),
-    ["listComments", "graphql", "graphql", "listFiles", "get"],
+    ["listComments", "graphql", "graphql", "graphql", "listFiles", "get"],
   );
+  assert.deepEqual(github.calls[3][1], { owner: "o", name: "r", number: 7 });
   assert.deepEqual(
-    github.calls.filter(([name]) => name === "graphql").map(([, v]) => v.id),
+    github.calls
+      .filter(([name, v]) => name === "graphql" && "id" in v)
+      .map(([, v]) => v.id),
     ["IC_1", "IC_100"],
   );
 });
@@ -507,6 +531,7 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
       "graphql",
       "issues.get",
       "listComments",
+      "graphql",
       "graphql",
       "graphql",
       "listFiles",
@@ -895,13 +920,14 @@ test("an unusable base branch name reads no compare and keeps the cost hold", as
   assert.equal(compares(github).length, 0);
 });
 
-test("the carry check reads at most two compares and nothing else", async () => {
+test("the carry check reads one deletion list, at most two compares and nothing else", async () => {
   const { github } = await carryCase(atDecided);
   const names = github.calls.map(([name]) => name);
   // The pull request's comments, the decision's and the marker's edit
-  // checks, two compares, then hold-paths' own file list.
+  // checks, the deletion read, two compares, then hold-paths' own file list.
   assert.deepEqual(names, [
     "listComments",
+    "graphql",
     "graphql",
     "graphql",
     "compare",
@@ -963,4 +989,99 @@ test("a failed marker edit check keeps the cost hold", async () => {
     core.infos.join("\n"),
     /no recorded cost decision carries \(could not confirm the marker is unedited\)/u,
   );
+});
+
+// A deleted comment can remove the newest marker, which would make an older
+// one the decided head (as merge-holds.mjs deletedSince reads it): any
+// comment deleted at or after the decided-head marker was posted carries
+// nothing. The pull request timeline's COMMENT_DELETED_EVENT
+// items give the deletion times.
+test("a comment deleted after the decided-head marker keeps the cost hold, with no older marker standing in", async () => {
+  // The newer marker, at 11:00, was deleted; the one left, at 10:30, holds
+  // the head's sha and would carry with no compare.
+  const { core, writes, github } = await carryCase(atDecided, {
+    comments: [
+      marker({ id: 101, sha: LATER, createdAt: "2026-10-23T10:30:00Z" }),
+      decision(),
+    ],
+    deletions: ["2026-10-23T11:05:00Z"],
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(core.outputs.criteria, "cost");
+  // The label comes back; the remaining marker already names this head.
+  assert.deepEqual(
+    writes.map(([name]) => name),
+    ["addLabels"],
+  );
+  assert.equal(compares(github).length, 0);
+  assert.match(
+    core.infos.join("\n"),
+    /no recorded cost decision carries \(a comment was deleted since the decided-head marker was posted\)/u,
+  );
+});
+
+test("a deletion at the marker's own time keeps the cost hold, and one before it does not", async () => {
+  const at = await apply(costEnv(), {
+    comments: [marker(), decision()],
+    deletions: ["2026-10-23T10:00:00Z", "2026-10-23T11:00:00Z"],
+  });
+  assert.equal(at.core.outputs.hold, "true");
+  const before = await apply(costEnv(), {
+    comments: [marker(), decision()],
+    deletions: ["2026-10-23T10:59:59Z"],
+  });
+  assert.equal(before.core.outputs.hold, "false");
+  assert.match(
+    before.core.infos.join("\n"),
+    /the recorded cost decision carries \(the head is the decided head/u,
+  );
+});
+
+test("a deletion list that cannot show no comment was deleted keeps the cost hold", async () => {
+  const listed = (filteredCount, nodes) => ({ filteredCount, nodes });
+  for (const [name, options] of [
+    ["a failed read", { failDeleted: true }],
+    ["no timeline", { deletedItems: null }],
+    ["no node list", { deletedItems: { filteredCount: 0 } }],
+    ["no count", { deletedItems: { nodes: [] } }],
+    ["a count that is not a number", { deletedItems: listed("0", []) }],
+    [
+      "more deletions than listed",
+      {
+        deletedItems: listed(
+          101,
+          Array.from({ length: 100 }, () => ({
+            createdAt: "2026-10-23T09:00:00Z",
+          })),
+        ),
+      },
+    ],
+    [
+      "a time that does not parse",
+      { deletedItems: listed(1, [{ createdAt: "yesterday" }]) },
+    ],
+    ["an event with no time", { deletedItems: listed(1, [{}]) }],
+  ]) {
+    const { core, error, github } = await apply(costEnv(), {
+      comments: [marker(), decision()],
+      ...options,
+    });
+    assert.equal(error, undefined, name);
+    assert.equal(core.outputs.hold, "true", name);
+    assert.equal(compares(github).length, 0, name);
+    assert.match(
+      core.infos.join("\n"),
+      /no recorded cost decision carries \(could not confirm no comment was deleted since the decided-head marker was posted\)/u,
+      name,
+    );
+  }
+});
+
+test("an edited marker reads no deletion list", async () => {
+  const { github } = await apply(costEnv(), {
+    comments: [marker(), decision()],
+    edited: new Set(["IC_100"]),
+    failDeleted: true,
+  });
+  assert.equal(github.calls.filter(([name]) => name === "graphql").length, 2);
 });
