@@ -11,6 +11,8 @@
 // and check steps run as shipped, and both jobs share one runner.temp here,
 // so the file the key job wrote is the file the download would place. The
 // artifact upload and download run on the runtime token, not the job token.
+// Each job's last step, report-api-budget, reads the rate-limit headers those
+// requests returned and spends none of its own.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -56,10 +58,14 @@ const INPUTS = {
 };
 
 // One fake API for the whole run: every call counts as `<group>.<method>`,
-// a paginated list as one page.
+// a paginated list as one page. Each response carries the job token's
+// rate-limit headers, `used` rising by one per request, and goes through the
+// request hooks the client's steps registered, as Octokit's does.
 function fakeApi({ prFiles, comments = [], compares = {} }) {
   const calls = [];
   const requests = [];
+  let hooks = { after: [], error: [] };
+  let used = 0;
   const data = {
     "issues.listComments": () => comments,
     "pulls.listFiles": () => prFiles,
@@ -87,7 +93,14 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
               const name = `${group}.${method}`;
               calls.push(name);
               requests.push({ name, params });
-              return { data: (data[name] ?? (() => ({})))(params) };
+              used += 1;
+              const response = {
+                status: 200,
+                headers: rateLimit(used),
+                data: (data[name] ?? (() => ({})))(params),
+              };
+              for (const fn of hooks.after) await fn(response, params);
+              return response;
             },
           },
         ),
@@ -96,11 +109,73 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
   return {
     calls,
     requests,
+    used: () => used,
+    // A new step's client: github-script builds one per step.
+    newClient: () => {
+      hooks = { after: [], error: [] };
+    },
     github: {
       rest,
-      hook: { error: () => {} },
+      hook: {
+        after: (_name, fn) => hooks.after.push(fn),
+        error: (_name, fn) => hooks.error.push(fn),
+      },
       paginate: async (method, params) => (await method(params)).data,
     },
+  };
+}
+
+const RESET = 1792748042;
+const rateLimit = (used) => ({
+  "x-ratelimit-limit": "1000",
+  "x-ratelimit-remaining": String(1000 - used),
+  "x-ratelimit-used": String(used),
+  "x-ratelimit-reset": String(RESET),
+  "x-ratelimit-resource": "core",
+});
+
+// The job-end step, run as shipped: report-api-budget's action against the
+// readings this job left. Returns the notice lines and the readings file.
+const LOG_ACTION = parseWorkflow(
+  fs.readFileSync(
+    path.join(ROOT, ".github", "actions", "report-api-budget", "action.yml"),
+    "utf8",
+  ),
+);
+function logBudget(job, contexts, dir) {
+  const logStep = job.steps.at(-1);
+  const readings = path.join(dir, "api-budget", "github-token");
+  const lines = fs.existsSync(readings)
+    ? fs.readFileSync(readings, "utf8").split("\n").filter(Boolean)
+    : [];
+  fs.writeFileSync(path.join(dir, "summary"), "");
+  fs.writeFileSync(path.join(dir, "output"), "");
+  const result = spawnSync("bash", ["-c", LOG_ACTION.runs.steps[0].run], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      RUNNER_TEMP: dir,
+      GITHUB_ACTION_PATH: path.join(
+        ROOT,
+        ".github",
+        "actions",
+        "report-api-budget",
+      ),
+      GITHUB_STEP_SUMMARY: path.join(dir, "summary"),
+      GITHUB_OUTPUT: path.join(dir, "output"),
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
+      GITHUB_JOB: contexts.github.job,
+      GITHUB_RUN_ID: "1",
+      GITHUB_RUN_ATTEMPT: "1",
+      TOKENS: render(logStep.with.tokens, contexts),
+      RESPONSES: render(logStep.with.responses ?? "", contexts),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  fs.rmSync(path.join(dir, "api-budget"), { recursive: true, force: true });
+  return {
+    readings: lines,
+    notices: result.stdout.split("\n").filter(Boolean),
   };
 }
 
@@ -239,11 +314,13 @@ async function spend({
   // The key job: scope, then the full diff when it reviews.
   const scope = stepId(key, "scope");
   const scopeOutputs = {};
+  api.newClient();
   await withEnv(
     {
       ...renderEnv(scope, { ...contexts, steps: {} }),
       DIFF_FILE: path.join(dir, "incremental.diff"),
       GITHUB_SERVER_URL: "https://github.com",
+      RUNNER_TEMP: dir,
     },
     () =>
       new AsyncFunction(
@@ -287,6 +364,8 @@ async function spend({
     ),
   );
   keySteps["handoff-file"] = { outputs: handoffOutputs };
+  const keyRequests = api.calls.length + gh.length;
+  const keyBudget = logBudget(key, contexts, dir);
   const keyOutputs = Object.fromEntries(
     Object.entries(key.outputs)
       .map(([k, v]) => [k, render(v, { ...contexts, steps: keySteps })])
@@ -298,8 +377,10 @@ async function spend({
   }
 
   // The status job: the gate, publish, then the hold.
+  github.job = "status";
   const gateStep = stepId(status, "gate");
   const gateOutputs = {};
+  api.newClient();
   await withEnv({ RUNNER_TEMP: dir }, () =>
     new AsyncFunction(
       "require",
@@ -335,19 +416,29 @@ async function spend({
   const named = (name) => status.steps.find((s) => s.name === name);
   const runner = (s) => renderEnv(s, statusContexts);
   const context = { repo: { owner: "o", repo: "r" } };
-  await publishReview.run({
-    github: api.github,
-    context,
-    core: quietCore(),
-    env: runner(named("Publish the review")),
-  });
+  // Each composite's own github-script step, with the env the workflow
+  // passes it.
+  const composite = async (s, core) => {
+    const action = s.uses.replace(/^\$\//u, "");
+    const script = parseWorkflow(
+      fs.readFileSync(path.join(ROOT, action, "action.yml"), "utf8"),
+    ).runs.steps[0].with.script;
+    api.newClient();
+    await withEnv(
+      { ...runner(s), ACTION_PATH: path.join(ROOT, action), RUNNER_TEMP: dir },
+      () =>
+        new AsyncFunction("require", "github", "context", "core", script)(
+          require,
+          api.github,
+          context,
+          core,
+        ),
+    );
+  };
+  await composite(named("Publish the review"), quietCore());
   const holdOutputs = {};
-  await applyHold.run({
-    github: api.github,
-    context,
-    core: quietCore(holdOutputs),
-    env: runner(stepId(status, "hold")),
-  });
+  await composite(stepId(status, "hold"), quietCore(holdOutputs));
+  const statusBudget = logBudget(status, statusContexts, dir);
 
   const counts = {};
   for (const name of [...api.calls, ...gh.map(() => "gh api")])
@@ -356,6 +447,9 @@ async function spend({
   return {
     counts,
     total,
+    keyRequests,
+    keyBudget,
+    statusBudget,
     hold: holdOutputs.hold,
     keyOutputs,
     warnings,
@@ -464,6 +558,39 @@ test("each run shape spends the requests pinned here, reading the file list once
     "a no-change skip after a base-branch merge": 8,
     "a whole review that holds on a hold-paths file": 11,
   });
+});
+
+// The api-budget notice reads the headers of the requests above and adds
+// none: one reading per job-token request, and the key and status jobs each
+// end with one core line whose cost is the rise in used since the job's
+// first reading, na when the job made one request.
+test("each job logs one reading per request it made and its api-budget line, adding no request", async () => {
+  for (const [name, shape] of Object.entries(SHAPES)) {
+    const { total, keyRequests, keyBudget, statusBudget } = await spend(shape);
+    assert.equal(
+      keyBudget.readings.length,
+      keyRequests,
+      `${name}: key readings`,
+    );
+    assert.equal(
+      statusBudget.readings.length,
+      total - keyRequests,
+      `${name}: status readings`,
+    );
+    for (const [job, budget, first, last] of [
+      ["review-key", keyBudget, 1, keyRequests],
+      ["status", statusBudget, keyRequests + 1, total],
+    ]) {
+      assert.deepEqual(
+        budget.notices,
+        [
+          `::notice title=api-budget::token=github-token workflow=.github/workflows/review.yml job=${job} run=1 attempt=1 ` +
+            `limit=1000 remaining=${1000 - last} used=${last} reset=${RESET} resource=core cost=${last === first ? "na" : last - first}`,
+        ],
+        `${name}: ${job}`,
+      );
+    }
+  }
 });
 
 test("a whole review reads pulls.get in scope and once more in publish, and nowhere else", async () => {

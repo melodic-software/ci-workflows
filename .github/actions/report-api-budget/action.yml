@@ -1,0 +1,60 @@
+name: Log API budget
+description: >
+  At the end of a job, write the hub collector's api-budget notice for each
+  named token, from the rate-limit readings the job's own API responses left
+  in $RUNNER_TEMP/api-budget: Octokit's, through api-budget.cjs's watch, and
+  the `gh api -i` output files named in `responses`. One notice per refused
+  (403/429) response and one for the last of each resource; no rate-limit
+  endpoint is read, so the step spends no request. Also writes each line and
+  a `<name>-cost=N` line to the step summary. A token with no reading gets
+  no line. Never fails the job.
+
+inputs:
+  tokens:
+    description: >
+      Token names, space or newline separated, in lower-case kebab case:
+      `github-token` for the job token.
+    required: true
+  responses:
+    description: >
+      `gh api -i` output files, space or newline separated, from job-token
+      calls made after every Octokit reading, read as `github-token`
+      readings in order before the notice. A missing file is skipped.
+    required: false
+    default: ""
+
+outputs:
+  costs:
+    description: "`<name>-cost=N` for each named token with a reading, `unknown` when its cost is na."
+    value: ${{ steps.log.outputs.costs }}
+
+runs:
+  using: composite
+  steps:
+    - name: Log the API budget
+      id: log
+      shell: bash
+      env:
+        TOKENS: ${{ inputs.tokens }}
+        RESPONSES: ${{ inputs.responses }}
+      run: |
+        # shellcheck source=/dev/null
+        . "$GITHUB_ACTION_PATH/api-budget.bash" || exit 0
+        for file in $RESPONSES; do
+          [[ -f $file ]] && api_budget_read github-token "$file" >/dev/null
+        done
+        costs=()
+        for name in $TOKENS; do
+          [[ $name =~ ^[a-z][a-z0-9-]{0,39}$ ]] || { echo "::warning::api-budget: skipped a token name that is not lower-case kebab case"; continue; }
+          lines=$(api_budget_emit "$name")
+          [[ -n $lines ]] || continue
+          printf '%s\n' "$lines"
+          printf '%s\n' "${lines//::notice title=api-budget::/api-budget: }" >>"$GITHUB_STEP_SUMMARY"
+          cost=${lines##*cost=}
+          costs+=("$name-cost=${cost/na/unknown}")
+        done
+        if ((${#costs[@]} > 0)); then
+          echo "${costs[*]}" >>"$GITHUB_STEP_SUMMARY"
+          echo "costs=${costs[*]}" >>"$GITHUB_OUTPUT"
+        fi
+        exit 0
