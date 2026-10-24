@@ -119,7 +119,9 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
         github,
         inputs: { "allowed-bot-sender-ids": "", ...inputs },
         needs: {
+          "key-credit": { result: "success", outputs: {} },
           "review-key": {
+            result: "success",
             outputs: {
               handoff: "true",
               "credential-present": "true",
@@ -129,7 +131,7 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
         },
       }),
     );
-  for (const job of [key, subscription]) {
+  for (const job of [workflow.jobs["key-credit"], key, subscription]) {
     assert.equal(passes(job, PR), true, job.name);
     const refused = [
       withPr((g) => {
@@ -176,15 +178,32 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
   }
 });
 
-test("the subscription job starts only on an exact handoff or a key job with no key", () => {
-  const starts = (outputs) =>
+test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
+  const starts = (outputs, result = "success", skipKey = "") =>
     Boolean(
       evaluate(subscription.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
-        needs: { "review-key": { outputs } },
+        needs: {
+          "key-credit": { outputs: { "skip-key": skipKey } },
+          "review-key": { result, outputs },
+        },
       }),
     );
+  // A key job skipped by key-credit's exact `true`, and no other skip.
+  assert.equal(starts({}, "skipped", "true"), true);
+  for (const skipKey of ["", "false", "True", "true ", "1"]) {
+    assert.equal(
+      starts({}, "skipped", skipKey),
+      false,
+      JSON.stringify(skipKey),
+    );
+  }
+  // A key job that failed or was cancelled starts nothing, as before.
+  for (const result of ["failure", "cancelled"]) {
+    assert.equal(starts({ handoff: "true" }, result, "true"), false, result);
+  }
+  assert.deepEqual(subscription.needs, ["key-credit", "review-key"]);
   assert.equal(starts({ handoff: "true", "credential-present": "true" }), true);
   assert.equal(starts({ handoff: "", "credential-present": "false" }), true);
   for (const handoff of ["", "false", "True", "true ", "1"]) {
@@ -196,8 +215,173 @@ test("the subscription job starts only on an exact handoff or a key job with no 
   }
   // A review the scope step skipped sets no credential-present at all.
   assert.equal(starts({ handoff: "", "credential-present": "" }), false);
-  assert.equal(subscription.needs, "review-key");
   assert.doesNotMatch(subscription.if, /always\(\)|failure\(\)/u);
+});
+
+test("the key job runs unless key-credit says exactly true, a failed key-credit included", () => {
+  const runs = (skipKey, result = "success") =>
+    Boolean(
+      evaluate(key.if, {
+        github: PR,
+        inputs: { "allowed-bot-sender-ids": "" },
+        needs: { "key-credit": { result, outputs: { "skip-key": skipKey } } },
+      }),
+    );
+  assert.equal(runs("true"), false);
+  for (const skipKey of ["", "false", "True"]) {
+    assert.equal(runs(skipKey), true, JSON.stringify(skipKey));
+  }
+  assert.equal(runs("", "failure"), true);
+  assert.equal(runs("", "skipped"), true);
+  assert.equal(key.needs, "key-credit");
+  const gate = workflow.jobs["key-credit"];
+  assert.deepEqual(gate.permissions, { actions: "read" });
+  assert.equal(gate.steps[0].uses, "$/.github/actions/key-credit-gate");
+  assert.equal(gate.outputs["skip-key"], `\${{ steps.gate.outputs.skip-key }}`);
+  assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
+});
+
+test("the credit record steps carry the names and conditions key-credit-gate reads", () => {
+  const {
+    MODEL_STEP,
+    RECORD_PATTERN,
+  } = require("../actions/key-credit-gate/gate.cjs");
+  const render = (name, context) =>
+    name.replace(/\$\{\{\s*([^}]+?)\s*\}\}/gu, (_, expr) =>
+      String(evaluate(expr, context)),
+    );
+  for (const job of [key, subscription]) {
+    const record = job.steps.find((s) => s.name.startsWith("Record the key"));
+    assert.match(
+      render(record.name, { github: { run_id: "123" } }),
+      RECORD_PATTERN,
+    );
+    assert.equal(step(job, "claude").name, MODEL_STEP);
+    const runsAfter = (laneClass) =>
+      Boolean(
+        evaluate(record.if, {
+          steps: { claude: { outputs: { "lane-class": laneClass } } },
+        }),
+      );
+    assert.equal(runsAfter("credit-stop"), true);
+    for (const laneClass of ["auth", "rate-limit", "", "other"]) {
+      assert.equal(runsAfter(laneClass), false, laneClass);
+    }
+  }
+  const carry = workflow.jobs["key-credit"].steps[1];
+  const context = (skip) => ({
+    steps: { gate: { outputs: { "skip-key": skip, "origin-run": "99" } } },
+  });
+  assert.match(render(carry.name, context("true")), RECORD_PATTERN);
+  assert.equal(
+    render(carry.name, context("true")).match(RECORD_PATTERN)[1],
+    "99",
+  );
+  assert.equal(Boolean(evaluate(carry.if, context("true"))), true);
+  assert.equal(Boolean(evaluate(carry.if, context(""))), false);
+});
+
+test("after a credit skip the status job runs and reads the subscription job's scope", () => {
+  const needs = (keyResult, subResult) => ({
+    "review-key": {
+      result: keyResult,
+      outputs:
+        keyResult === "skipped"
+          ? {}
+          : { "scope-review": "key", "pr-files": "k" },
+    },
+    "review-subscription": {
+      result: subResult,
+      outputs:
+        subResult === "skipped"
+          ? {}
+          : { "scope-review": "sub", "pr-files": "s" },
+    },
+  });
+  const runs = (k, s) => Boolean(evaluate(status.if, { needs: needs(k, s) }));
+  assert.equal(runs("skipped", "success"), true);
+  assert.equal(runs("success", "skipped"), true);
+  assert.equal(runs("skipped", "skipped"), false);
+  for (const name of ["Publish the review", "Apply the hold"]) {
+    const env = status.steps.find((s) => s.name === name).env;
+    const read = (k, s, v) => evaluate(env[v], { needs: needs(k, s) });
+    assert.equal(read("skipped", "success", "PR_FILES"), "s", name);
+    assert.equal(read("success", "success", "PR_FILES"), "k", name);
+    assert.equal(read("success", "skipped", "PR_FILES"), "k", name);
+  }
+  const publish = status.steps.find((s) => s.name === "Publish the review").env;
+  for (const v of [
+    "SCOPE_REVIEW",
+    "SKIP",
+    "SKIP_REASON",
+    "SINCE",
+    "SCOPE",
+    "MARKER_ID",
+    "MERGE_BASE",
+  ]) {
+    assert.match(
+      publish[v],
+      /needs\.review-key\.result == 'skipped' && needs\.review-subscription\.outputs\./u,
+      v,
+    );
+  }
+  assert.equal(
+    evaluate(publish.SCOPE_REVIEW, { needs: needs("skipped", "success") }),
+    "sub",
+  );
+  // The subscription leg records the skip as the credit stop it follows.
+  assert.equal(
+    evaluate(step(subscription, "review-outcome").with["fallback-reason"], {
+      needs: { "review-key": { result: "skipped", outputs: {} } },
+    }),
+    "credit-stop",
+  );
+});
+
+test("the status job takes the last summary from the subscription leg when the key leg left none", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-handoffs-");
+  const crypto = require("node:crypto");
+  const write = (leg, data) => {
+    const bytes = Buffer.from(JSON.stringify(data));
+    fs.writeFileSync(path.join(dir, `${leg}.json`), bytes);
+    return crypto.createHash("sha256").update(bytes).digest("hex");
+  };
+  const check = status.steps.find((s) => s.id === "handoffs");
+  const run = async (env) => {
+    const outputs = {};
+    const core = {
+      setOutput: (k, v) => {
+        outputs[k] = v;
+      },
+      warning: () => {},
+    };
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      HANDOFF_DIR: dir,
+      KEY_SHA256: "",
+      SUB_SHA256: "",
+      ...env,
+    });
+    try {
+      await new AsyncFunction("require", "core", check.with.script)(
+        require,
+        core,
+      );
+    } finally {
+      for (const k of ["HANDOFF_DIR", "KEY_SHA256", "SUB_SHA256"]) {
+        if (k in saved) process.env[k] = saved[k];
+        else delete process.env[k];
+      }
+    }
+    return outputs;
+  };
+  const sub = write("review-subscription", { "last-summary": "from sub" });
+  assert.equal((await run({ SUB_SHA256: sub }))["last-summary"], "from sub");
+  const keyLeg = write("review-key", { "last-summary": "from key" });
+  assert.equal(
+    (await run({ KEY_SHA256: keyLeg, SUB_SHA256: sub }))["last-summary"],
+    "from key",
+  );
 });
 
 test("the subscription job repeats the key job's steps but for the credential and the fallback reason", () => {
