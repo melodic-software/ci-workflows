@@ -45,7 +45,8 @@ const TRUST_PATHS = [
 // issue number to its comments; `pull` is the GraphQL pull request;
 // `edited` holds the node ids of edited comments; `pullNumbers` the numbers
 // that are pull requests, not issues; `misnumbered` the numbers whose read
-// answers another number.
+// answers another number; `compares` maps a basehead to its compare
+// response data.
 function fakeGithub({
   files = [],
   changedFiles,
@@ -60,6 +61,7 @@ function fakeGithub({
   edited = new Set(),
   pullNumbers = new Set([7]),
   misnumbered = new Set(),
+  compares = {},
 }) {
   const calls = [];
   const refuse = (name) => () => {
@@ -81,6 +83,15 @@ function fakeGithub({
     },
     paginate: async (method, params) => method(params),
     rest: {
+      repos: {
+        compareCommitsWithBasehead: async (params) => {
+          calls.push(["compare", params]);
+          if (fail.compare) throw new Error("HTTP 404");
+          if (!(params.basehead in compares))
+            throw new Error(`unexpected compare ${params.basehead}`);
+          return { data: compares[params.basehead] };
+        },
+      },
       pulls: {
         listFiles: (params) => {
           calls.push(["listFiles", params]);
@@ -134,13 +145,13 @@ function fakeGithub({
 }
 
 function fakeCore() {
-  const core = { outputs: {}, warnings: [], notices: [] };
+  const core = { outputs: {}, warnings: [], notices: [], infos: [] };
   core.setOutput = (k, v) => {
     core.outputs[k] = v;
   };
   core.warning = (m) => core.warnings.push(m);
   core.notice = (m) => core.notices.push(m);
-  core.info = () => {};
+  core.info = (m) => core.infos.push(m);
   return core;
 }
 
@@ -153,6 +164,7 @@ const baseEnv = (extra = {}) => ({
   LANE_ID: "claude-review",
   PR_NUMBER: "7",
   HEAD_SHA: HEAD,
+  BASE_REF: "main",
   PUBLISH_GATE: gate,
   SUB_RESULT: "skipped",
   KEY_PRESENT: "true",
@@ -408,7 +420,8 @@ test("a warn-only hit in the reason posts it with a warning", async () => {
   ]);
 });
 
-// A cost decision binds to the pull request and covers every head of it.
+// A cost decision binds to the pull request and covers the net diff it was
+// made at: the head of this lane's newest cost hold marker before it.
 const decision = ({
   id = 1,
   userId = OWNER_ID,
@@ -430,6 +443,21 @@ const costEnv = (criteria = ["cost"], extra = {}) =>
     KEY_REVIEW: review({ hold: { criteria, reason: "It adds a schedule." } }),
     ...extra,
   });
+// This lane's hold marker, posted by github-actions[bot] before the decision.
+const marker = ({
+  id = 100,
+  sha = HEAD,
+  criteria = "cost",
+  lane = "claude-review",
+  createdAt = "2026-10-23T11:00:00Z",
+  login = "github-actions[bot]",
+} = {}) => ({
+  id,
+  node_id: `IC_${id}`,
+  user: { login, type: "Bot" },
+  created_at: createdAt,
+  body: `<!-- claude-lane-hold lane=${lane} sha=${sha} criteria=${criteria} -->\n**${lane}** holds this pull request.`,
+});
 const refsPull = (body) => ({
   createdAt: OPENED,
   body,
@@ -438,13 +466,14 @@ const refsPull = (body) => ({
 
 test("a cost decision on the pull request keeps the cost hold from coming back", async () => {
   const { core, error, writes, github } = await apply(costEnv(), {
-    comments: [decision()],
+    comments: [marker(), decision()],
   });
   assert.equal(error, undefined);
   assert.equal(core.outputs.hold, "false");
   assert.deepEqual(writes, []);
   // The lookup's reads, the pull request's comments and one edit check,
-  // then hold-paths' own file list.
+  // then hold-paths' own file list: the head is the decided head, so no
+  // compare.
   assert.deepEqual(
     github.calls.map(([name]) => name),
     ["listComments", "graphql", "listFiles", "get"],
@@ -453,6 +482,7 @@ test("a cost decision on the pull request keeps the cost hold from coming back",
 
 test("a cost decision on the Refs issue that names the pull request keeps the cost hold off", async () => {
   const { core, writes, github } = await apply(costEnv(), {
+    comments: [marker()],
     pull: refsPull("Refs: #9436\n\n## Summary"),
     issueComments: {
       9436: [
@@ -478,6 +508,7 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
 
 test("a cost decision on the closing issue that names the pull request keeps the cost hold off", async () => {
   const { core } = await apply(costEnv(), {
+    comments: [marker()],
     pull: {
       createdAt: OPENED,
       body: "Closes #9436",
@@ -585,18 +616,18 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
 
 test("a trust-gate hold still holds when a cost decision exists", async () => {
   const both = await apply(costEnv(["cost", "trust-gate"]), {
-    comments: [decision()],
+    comments: [marker(), decision()],
   });
   assert.equal(both.core.outputs.hold, "true");
   assert.equal(both.core.outputs.criteria, "trust-gate");
   const byPath = await apply(costEnv(), {
-    comments: [decision()],
+    comments: [marker(), decision()],
     files: ["CODEOWNERS"],
   });
   assert.equal(byPath.core.outputs.criteria, "trust-gate");
   assert.equal(byPath.writes.length, 2);
   const security = await apply(costEnv(["cost", "critical-security"]), {
-    comments: [decision()],
+    comments: [marker(), decision()],
   });
   assert.equal(security.core.outputs.criteria, "critical-security");
 });
@@ -631,23 +662,241 @@ test("a decision names the pull request as #<number> the way merge-holds reads i
     assert.equal(namesPull(text, 7), named, text);
 });
 
-// #9436: the owner lifted the cost hold at head A; a base-only merge makes
-// head B, and the review holds for cost again. The decision covers B.
-test("a cost decision recorded at an earlier head keeps the cost hold off at a later one", async () => {
-  const later = "b".repeat(40);
-  const atA = decision({
-    body: `**Decision recorded.** Cost: approve the schedule at ${HEAD}.`,
+// #9436, option d: the owner lifted the cost hold at head A (the decided
+// head, from this lane's cost marker before the decision); at head B the
+// review holds for cost again. The decision carries only when compare
+// main...A and main...B list the same files with the same status,
+// previous_filename and patch. The fixtures are hand-written compare
+// responses in GitHub's shape (docs.github.com/en/rest/commits/commits
+// #compare-two-commits: files[].filename, status, previous_filename, patch).
+const LATER = "b".repeat(40);
+const APP_PATCH =
+  "@@ -10,3 +10,4 @@ function main() {\n   start();\n+  log();\n   stop();";
+const WORKFLOW_PATCH =
+  "@@ -3,3 +3,3 @@ on:\n concurrency:\n-  group: old\n+  group: new";
+const prFile = (extra = {}) => ({
+  filename: "src/app.js",
+  status: "modified",
+  sha: "1".repeat(40),
+  patch: APP_PATCH,
+  ...extra,
+});
+const workflowFile = (extra = {}) => ({
+  filename: ".github/workflows/ci.yml",
+  status: "modified",
+  sha: "2".repeat(40),
+  patch: WORKFLOW_PATCH,
+  ...extra,
+});
+const atDecided = [prFile(), workflowFile()];
+const carryCase = (laterFiles, options = {}) =>
+  apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
+    comments: [marker(), decision()],
+    compares: {
+      [`main...${HEAD}`]: { status: "ahead", files: atDecided },
+      [`main...${LATER}`]: { status: "ahead", files: laterFiles },
+    },
+    ...options,
   });
-  const { core, writes } = await apply(costEnv(["cost"], { HEAD_SHA: later }), {
-    comments: [
-      atA,
-      {
-        id: 2,
-        user: { login: "github-actions[bot]", type: "Bot" },
-        body: `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost -->`,
-      },
-    ],
-  });
+const compares = (github) =>
+  github.calls
+    .filter(([name]) => name === "compare")
+    .map(([, p]) => p.basehead);
+
+test("a base-only merge that leaves the pull request's patches alone carries the decision", async () => {
+  // The base changed src/app.js below the hunk, so the blob sha moved and
+  // the patch did not.
+  const { core, writes, github } = await carryCase([
+    prFile({ sha: "3".repeat(40) }),
+    workflowFile(),
+  ]);
   assert.equal(core.outputs.hold, "false");
   assert.deepEqual(writes, []);
+  assert.deepEqual(compares(github), [`main...${HEAD}`, `main...${LATER}`]);
+  assert.match(
+    core.infos.join("\n"),
+    /the recorded cost decision carries \(the net diff against main is the same/u,
+  );
+});
+
+test("a rebase onto a newer base with the same patches carries the decision", async () => {
+  const renamedThen = {
+    filename: "lib/b.js",
+    previous_filename: "lib/a.js",
+    status: "renamed",
+    patch: "@@ -1 +1 @@\n-a\n+b",
+  };
+  const { core } = await apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
+    comments: [marker(), decision()],
+    compares: {
+      [`main...${HEAD}`]: { status: "ahead", files: [renamedThen, prFile()] },
+      // Listed in another order, with new blob shas: still the same diff.
+      [`main...${LATER}`]: {
+        status: "ahead",
+        files: [
+          prFile({ sha: "4".repeat(40) }),
+          { ...renamedThen, sha: "5".repeat(40) },
+        ],
+      },
+    },
+  });
+  assert.equal(core.outputs.hold, "false");
+});
+
+test("the #9509 shape, a later cancel-in-progress edit, keeps the cost hold", async () => {
+  const { core, writes } = await carryCase([
+    prFile(),
+    workflowFile({
+      patch: `${WORKFLOW_PATCH}\n@@ -5,1 +5,1 @@\n-  cancel-in-progress: false\n+  cancel-in-progress: true`,
+    }),
+  ]);
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(core.outputs.criteria, "cost");
+  assert.equal(writes.length, 2);
+  assert.match(
+    core.infos.join("\n"),
+    /no recorded cost decision carries \(the net diff against main differs/u,
+  );
+});
+
+test("a merge that hand-edits the pull request's own lines keeps the cost hold", async () => {
+  const { core } = await carryCase([
+    prFile({ patch: APP_PATCH.replace("+  log();", "+  log(resolved);") }),
+    workflowFile(),
+  ]);
+  assert.equal(core.outputs.hold, "true");
+  assert.match(core.infos.join("\n"), /differs from the decided head/u);
+});
+
+test("a base change that shifts a patch's context keeps the cost hold", async () => {
+  const { core } = await carryCase([
+    prFile({
+      patch: APP_PATCH.replace("@@ -10,3 +10,4 @@", "@@ -12,3 +12,4 @@"),
+    }),
+    workflowFile(),
+  ]);
+  assert.equal(core.outputs.hold, "true");
+  assert.match(core.infos.join("\n"), /differs from the decided head/u);
+});
+
+test("an added or dropped file keeps the cost hold", async () => {
+  for (const files of [
+    [prFile()],
+    [...atDecided, prFile({ filename: "src/extra.js" })],
+    [prFile({ status: "added" }), workflowFile()],
+  ]) {
+    const { core } = await carryCase(files);
+    assert.equal(
+      core.outputs.hold,
+      "true",
+      JSON.stringify(files.map((f) => f.filename)),
+    );
+  }
+});
+
+test("a file with no patch, or a list of 300 or more files, keeps the cost hold", async () => {
+  const binary = {
+    filename: "logo.png",
+    status: "modified",
+    sha: "6".repeat(40),
+  };
+  const many = Array.from({ length: 300 }, (_, i) =>
+    prFile({ filename: `f${i}.js` }),
+  );
+  for (const [name, then, later] of [
+    ["no patch at either head", [...atDecided, binary], [...atDecided, binary]],
+    ["300 files", many, many],
+  ]) {
+    const { core } = await apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
+      comments: [marker(), decision()],
+      compares: {
+        [`main...${HEAD}`]: { status: "ahead", files: then },
+        [`main...${LATER}`]: { status: "ahead", files: later },
+      },
+    });
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(
+      core.infos.join("\n"),
+      /300 or more files, or a file without a patch/u,
+      name,
+    );
+  }
+});
+
+test("a failed compare keeps the cost hold", async () => {
+  const { core, error, github } = await carryCase(atDecided, {
+    fail: { compare: true },
+  });
+  assert.equal(error, undefined);
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(compares(github).length, 1);
+  assert.match(core.infos.join("\n"), /a compare read failed/u);
+});
+
+test("a decision with no cost marker of this lane before it keeps the cost hold, even at the same head", async () => {
+  for (const [name, comments] of [
+    ["no marker", [decision()]],
+    [
+      "a marker after the decision",
+      [marker({ createdAt: "2026-10-23T13:00:00Z" }), decision()],
+    ],
+    [
+      "another lane's marker",
+      [marker({ lane: "claude-security-review" }), decision()],
+    ],
+    ["a marker without cost", [marker({ criteria: "trust-gate" }), decision()]],
+    ["a marker by someone else", [marker({ login: "someone" }), decision()]],
+  ]) {
+    const { core, github } = await apply(costEnv(), { comments });
+    assert.equal(core.outputs.hold, "true", name);
+    assert.equal(compares(github).length, 0, name);
+    assert.match(
+      core.infos.join("\n"),
+      /no cost hold marker of this lane precedes the decision/u,
+      name,
+    );
+  }
+});
+
+test("the decided head is the newest cost marker before the newest decision", async () => {
+  const older = "c".repeat(40);
+  const { github } = await carryCase(atDecided, {
+    comments: [
+      marker({ id: 101, sha: older, createdAt: "2026-10-23T10:30:00Z" }),
+      marker({ id: 102, sha: HEAD, criteria: "cost,trust-gate" }),
+      marker({
+        id: 103,
+        sha: older,
+        criteria: "trust-gate",
+        createdAt: "2026-10-23T11:30:00Z",
+      }),
+      decision({ id: 1, createdAt: "2026-10-23T10:45:00Z" }),
+      decision({ id: 2 }),
+    ],
+  });
+  assert.deepEqual(compares(github), [`main...${HEAD}`, `main...${LATER}`]);
+});
+
+test("an unusable base branch name reads no compare and keeps the cost hold", async () => {
+  const { core, github } = await apply(
+    costEnv(["cost"], { HEAD_SHA: LATER, BASE_REF: "main..x" }),
+    { comments: [marker(), decision()] },
+  );
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(compares(github).length, 0);
+});
+
+test("the carry check reads at most two compares and nothing else", async () => {
+  const { github } = await carryCase(atDecided);
+  const names = github.calls.map(([name]) => name);
+  // The pull request's comments, one edit check, two compares, then
+  // hold-paths' own file list.
+  assert.deepEqual(names, [
+    "listComments",
+    "graphql",
+    "compare",
+    "compare",
+    "listFiles",
+    "get",
+  ]);
 });

@@ -1,6 +1,6 @@
 // pr-review-cli's hold step. No model runs here. It reads, from env:
 // HOLD_LABEL, HOLD_PATHS (newline-separated globs), LANE_ID, PR_NUMBER,
-// HEAD_SHA, PUBLISH_GATE, PR_FILES (the scope step's file list),
+// HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, PR_FILES (the scope step's file list),
 // TRUSTED_AUTHOR_IDS (the people whose cost decision counts), and the
 // legs' KEY_* and SUB_* outputs that publish-review's judge reads. It only adds: the label and one marker
 // comment. Every write goes through issues.addLabels or issues.createComment.
@@ -66,9 +66,10 @@ function modelHold(env) {
 // A cost decision: an unedited comment by a trusted person whose first line
 // opens `**Decision recorded.** Cost:` (claude-code-plugins@eda837d4c8
 // .github/scripts/pr-merge/merge-holds.mjs:422 DECISION_LINE, read after
-// trimStart as at :470; author, App and edit checks as at :466-476). It binds to one pull request and covers every head
-// of it: one on the pull request counts, and so does one on its linked issue
-// that names `#<number>` and is newer than the pull request.
+// trimStart as at :470; author, App and edit checks as at :466-476). It binds
+// to one pull request: one on the pull request counts, and so does one on its
+// linked issue that names `#<number>` and is newer than the pull request. It
+// covers only the net diff it was made at (carryDecision).
 const DECISION_LINE = /^\*\*Decision recorded\.\*\*[ \t]+Cost:/u;
 const PULL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -142,9 +143,10 @@ const namesPull = (text, number) =>
     String(text ?? ""),
   );
 
-// Whether a trusted person recorded a cost decision for pull request
-// `number`. `prComments` is the pull request's comment list. Reads only
-// when a cost hold would be added; a read that fails decides nothing.
+// The newest unedited cost decision a trusted person recorded for pull
+// request `number`, or null: the pull request's own first, else its linked
+// issue's. `prComments` is the pull request's comment list. Reads only when a
+// cost hold would be added; a read that fails decides nothing.
 async function costDecided(github, owner, repo, number, env, prComments) {
   const trusted = new Set(
     String(env.TRUSTED_AUTHOR_IDS ?? "")
@@ -153,7 +155,7 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       .filter((id) => /^[1-9][0-9]*$/u.test(id))
       .map(Number),
   );
-  if (trusted.size === 0) return false;
+  if (trusted.size === 0) return null;
   const candidate = (c) =>
     c?.user?.type === "User" &&
     c.performed_via_github_app == null &&
@@ -168,21 +170,28 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       return false;
     }
   };
-  for (const c of prComments.filter(candidate))
-    if (await unedited(c)) return true;
+  const newest = async (list) => {
+    for (const c of list
+      .filter(candidate)
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)))
+      if (await unedited(c)) return c;
+    return null;
+  };
+  const own = await newest(prComments);
+  if (own) return own;
   try {
     const pull = (
       await github.graphql(PULL_QUERY, { owner, name: repo, number })
     )?.repository?.pullRequest;
     const issue = linkedIssue(pull, owner, repo);
-    if (!issue) return false;
+    if (!issue) return null;
     if (issue.refs) {
       const read = (
         await github.rest.issues.get({ owner, repo, issue_number: issue.number })
       ).data;
       // An issue whose number is the Refs number (merge-holds.mjs:484 at
       // #9569's head 6c3b6ae9), never a pull request.
-      if (read?.number !== issue.number || read.pull_request != null) return false;
+      if (read?.number !== issue.number || read.pull_request != null) return null;
     }
     const opened = Date.parse(pull.createdAt);
     const comments = await github.paginate(github.rest.issues.listComments, {
@@ -191,17 +200,96 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       issue_number: issue.number,
       per_page: 100,
     });
-    for (const c of comments.filter(
-      (c) =>
-        candidate(c) &&
-        Date.parse(c.created_at) > opened &&
-        namesPull(c.body, number),
-    ))
-      if (await unedited(c)) return true;
+    return await newest(
+      comments.filter(
+        (c) => Date.parse(c.created_at) > opened && namesPull(c.body, number),
+      ),
+    );
   } catch {
     // Nothing read, nothing decided: the cost hold stays.
   }
-  return false;
+  return null;
+}
+
+// GitHub's compare lists at most 300 files
+// (https://docs.github.com/en/rest/commits/commits#compare-two-commits).
+const MAX_COMPARE_FILES = 300;
+const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/u;
+
+// Whether `decision` covers the head: { carry, why }. The decided head is
+// the sha of this lane's newest cost hold marker posted before the decision.
+// The decision carries when the head is that sha, or when the pull request's
+// net diff against its base branch is the same at both: compare
+// base...decided and base...head (three-dot, so each is the diff from its
+// merge base) list the same files, each with the same status,
+// previous_filename and patch text. So a base-only merge or a rebase that
+// leaves every patch as it was carries, and any other change does not. At
+// most two compare reads; any failure, a missing patch, or a list of 300 or
+// more files carries nothing.
+async function carryDecision(github, owner, repo, env, prComments, decision) {
+  const cutoff = Date.parse(decision.created_at);
+  if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
+  const markerLine = new RegExp(
+    `^<!-- claude-lane-hold lane=${env.LANE_ID} sha=([0-9a-f]{40}) criteria=([a-z,-]+) -->(?:\n|$)`,
+    "u",
+  );
+  let decided = null;
+  let at = -Infinity;
+  for (const c of prComments) {
+    if (c?.user?.login !== "github-actions[bot]") continue;
+    const m = markerLine.exec(String(c.body ?? ""));
+    const t = Date.parse(c.created_at);
+    if (!m || !m[2].split(",").includes("cost")) continue;
+    if (!(t < cutoff) || t <= at) continue;
+    decided = m[1];
+    at = t;
+  }
+  if (!decided)
+    return { carry: false, why: "no cost hold marker of this lane precedes the decision" };
+  if (decided === env.HEAD_SHA)
+    return { carry: true, why: `the head is the decided head ${decided}` };
+  const base = String(env.BASE_REF ?? "");
+  if (!BRANCH.test(base)) return { carry: false, why: "the base branch name is not usable" };
+  const files = async (sha) => {
+    const data = (
+      await github.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${base}...${sha}`,
+      })
+    ).data;
+    const list = data?.files;
+    if (!Array.isArray(list) || list.length >= MAX_COMPARE_FILES) return null;
+    const byName = new Map();
+    for (const f of list) {
+      if (typeof f?.filename !== "string" || typeof f.patch !== "string") return null;
+      if (byName.has(f.filename)) return null;
+      byName.set(f.filename, [f.status, f.previous_filename ?? null, f.patch]);
+    }
+    return byName;
+  };
+  let then;
+  let now;
+  try {
+    then = await files(decided);
+    now = await files(env.HEAD_SHA);
+  } catch {
+    return { carry: false, why: "a compare read failed" };
+  }
+  if (!then || !now)
+    return {
+      carry: false,
+      why: `a compare listed ${MAX_COMPARE_FILES} or more files, or a file without a patch`,
+    };
+  const same =
+    then.size === now.size &&
+    [...then].every(([name, v]) => {
+      const w = now.get(name);
+      return w !== undefined && v.every((x, i) => x === w[i]);
+    });
+  return same
+    ? { carry: true, why: `the net diff against ${base} is the same as at the decided head ${decided}` }
+    : { carry: false, why: `the net diff against ${base} differs from the decided head ${decided}` };
 }
 
 // trust-gate when a changed file, or a renamed file's old path, matches a
@@ -275,15 +363,20 @@ async function run({ github, context, core, env = process.env }) {
     return prComments;
   };
   if (model?.criteria.includes("cost")) {
-    let decided = false;
+    let result = { carry: false, why: "no recorded cost decision" };
     try {
-      decided = await costDecided(github, owner, repo, number, env, await listPrComments());
+      const comments = await listPrComments();
+      const decision = await costDecided(github, owner, repo, number, env, comments);
+      if (decision)
+        result = await carryDecision(github, owner, repo, env, comments, decision);
     } catch {
-      // The comments could not be listed: the cost hold stays.
+      result = { carry: false, why: "a read failed" };
     }
-    if (decided) {
-      core.info(`${lane}: a recorded cost decision covers this pull request; the cost hold is not added again.`);
+    if (result.carry) {
+      core.info(`${lane}: the recorded cost decision carries (${result.why}); the cost hold is not added again.`);
       model.criteria = model.criteria.filter((c) => c !== "cost");
+    } else {
+      core.info(`${lane}: no recorded cost decision carries (${result.why}); the cost hold stays.`);
     }
   }
   if (model && model.criteria.length > 0) {
