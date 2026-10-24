@@ -11,7 +11,7 @@
 // and check steps run as shipped, and both jobs share one runner.temp here,
 // so the file the key job wrote is the file the download would place. The
 // artifact upload and download run on the runtime token, not the job token.
-// Each job's last step, log-api-budget, reads the rate-limit headers those
+// Each job's last step, report-api-budget, reads the rate-limit headers those
 // requests returned and spends none of its own.
 
 const assert = require("node:assert/strict");
@@ -134,11 +134,11 @@ const rateLimit = (used) => ({
   "x-ratelimit-resource": "core",
 });
 
-// The job-end step, run as shipped: log-api-budget's action against the
+// The job-end step, run as shipped: report-api-budget's action against the
 // readings this job left. Returns the notice lines and the readings file.
 const LOG_ACTION = parseWorkflow(
   fs.readFileSync(
-    path.join(ROOT, ".github", "actions", "log-api-budget", "action.yml"),
+    path.join(ROOT, ".github", "actions", "report-api-budget", "action.yml"),
     "utf8",
   ),
 );
@@ -159,7 +159,7 @@ function logBudget(job, contexts, dir) {
         ROOT,
         ".github",
         "actions",
-        "log-api-budget",
+        "report-api-budget",
       ),
       GITHUB_STEP_SUMMARY: path.join(dir, "summary"),
       GITHUB_OUTPUT: path.join(dir, "output"),

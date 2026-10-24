@@ -372,7 +372,7 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
-            // Each response's rate-limit reading, the line log-api-budget's
+            // Each response's rate-limit reading, the line report-api-budget's
             // api-budget.cjs writes (a test holds them equal), for the job's
             // api-budget notice. A failed write only drops the reading.
             const budget = (status, headers) => {
@@ -1270,7 +1270,7 @@ jobs:
         if: always()
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/log-api-budget
+        uses: $/.github/actions/report-api-budget
         with:
           tokens: github-token
           responses: |
@@ -1422,7 +1422,7 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
-            // Each response's rate-limit reading, the line log-api-budget's
+            // Each response's rate-limit reading, the line report-api-budget's
             // api-budget.cjs writes (a test holds them equal), for the job's
             // api-budget notice. A failed write only drops the reading.
             const budget = (status, headers) => {
@@ -2322,7 +2322,7 @@ jobs:
         if: always()
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/log-api-budget
+        uses: $/.github/actions/report-api-budget
         with:
           tokens: github-token
           responses: |
@@ -2528,6 +2528,6 @@ jobs:
         if: always()
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/log-api-budget
+        uses: $/.github/actions/report-api-budget
         with:
           tokens: github-token

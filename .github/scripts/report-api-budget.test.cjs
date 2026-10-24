@@ -1,6 +1,6 @@
 "use strict";
 
-// log-api-budget: the job-end api-budget notice from the rate-limit readings
+// report-api-budget: the job-end api-budget notice from the rate-limit readings
 // a job's own API responses left, in the line the hub collector reads. The
 // readings come from Octokit's request hooks (api-budget.cjs, and the scope
 // step's inline copy) and from `gh api -i` output files; nothing reads
@@ -16,7 +16,7 @@ const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const ROOT = path.join(__dirname, "..", "..");
-const ACTION_DIR = path.join(ROOT, ".github", "actions", "log-api-budget");
+const ACTION_DIR = path.join(ROOT, ".github", "actions", "report-api-budget");
 const LIB = path.join(ACTION_DIR, "api-budget.bash");
 const ACTION_TEXT = fs.readFileSync(
   path.join(ACTION_DIR, "action.yml"),
@@ -353,7 +353,7 @@ for (const job of ["review-key", "review-subscription"]) {
 test("every pr-review-cli job ends by logging the job token's budget", () => {
   for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
     const last = job.steps.at(-1);
-    assert.equal(last.uses, "$/.github/actions/log-api-budget", name);
+    assert.equal(last.uses, "$/.github/actions/report-api-budget", name);
     assert.equal(last.if, "always()", name);
     assert.equal(last["continue-on-error"], true, name);
     assert.equal(last.with.tokens, "github-token", name);
@@ -378,7 +378,7 @@ for (const action of ["publish-review", "apply-review-hold"]) {
     ).runs.steps[0].with.script;
     assert.match(
       script,
-      /require\(path\.join\(process\.env\.ACTION_PATH, "\.\.", "log-api-budget", "api-budget\.cjs"\)\)\.watch\(github, "github-token"\);\n[^\n]*\nawait run\(/u,
+      /require\(path\.join\(process\.env\.ACTION_PATH, "\.\.", "report-api-budget", "api-budget\.cjs"\)\)\.watch\(github, "github-token"\);\n[^\n]*\nawait run\(/u,
     );
   });
 }
