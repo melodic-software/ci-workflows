@@ -133,11 +133,12 @@ function linkedIssue(pull, owner, repo) {
 }
 
 // Whether `text` names pull request `number` as `#<number>`: not part of a
-// longer number, and not after a letter, digit, `_`, `/`, `.` or `-`, so
-// `owner/repo#<number>` does not count (claude-code-plugins
-// .github/scripts/pr-merge/merge-holds.mjs namesPull, from #9569).
+// longer number, and not after a letter, digit, `_`, `#`, `&`, `/`, `.` or
+// `-`, so `owner/repo#<number>` and `&#<number>;` do not count
+// (claude-code-plugins .github/scripts/pr-merge/merge-holds.mjs:436-438
+// namesPull at #9569's head 6c3b6ae9).
 const namesPull = (text, number) =>
-  new RegExp(`(?:^|[^A-Za-z0-9_/.-])#${number}(?:[^0-9]|$)`, "u").test(
+  new RegExp(`(?:^|[^A-Za-z0-9_#&/.-])#${number}(?:[^0-9]|$)`, "u").test(
     String(text ?? ""),
   );
 
@@ -179,7 +180,9 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       const read = (
         await github.rest.issues.get({ owner, repo, issue_number: issue.number })
       ).data;
-      if (read?.pull_request) return false;
+      // An issue whose number is the Refs number (merge-holds.mjs:484 at
+      // #9569's head 6c3b6ae9), never a pull request.
+      if (read?.number !== issue.number || read.pull_request != null) return false;
     }
     const opened = Date.parse(pull.createdAt);
     const comments = await github.paginate(github.rest.issues.listComments, {
