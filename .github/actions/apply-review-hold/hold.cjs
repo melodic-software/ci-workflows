@@ -78,6 +78,11 @@ const PULL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
 }`;
 const EDITED_QUERY =
   "query($id: ID!) { node(id: $id) { ... on IssueComment { lastEditedAt } } }";
+const DELETED_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { timelineItems(itemTypes: [COMMENT_DELETED_EVENT], last: 100) { filteredCount nodes { ... on CommentDeletedEvent { createdAt } } } }
+  }
+}`;
 
 // Whether comment `c` was ever edited: "unedited" when GraphQL answers
 // lastEditedAt null, "edited" when it answers a time, else "unknown" (a
@@ -91,6 +96,34 @@ async function editState(github, c) {
   } catch {
     return "unknown";
   }
+}
+
+// Whether a comment on pull request `number` was deleted at or after `at`
+// (merge-holds.mjs deletedSince at claude-code-plugins#9569's head
+// 149f3214): "deleted", "none", or "unknown" when the read fails, lists
+// fewer deletions than its filteredCount, has no list or integer count, or
+// holds a time that does not parse. A deleted newer marker would otherwise
+// make an older one the decided head.
+async function deletedSince(github, owner, repo, number, at) {
+  let items;
+  try {
+    items = (await github.graphql(DELETED_QUERY, { owner, name: repo, number }))
+      ?.repository?.pullRequest?.timelineItems;
+  } catch {
+    return "unknown";
+  }
+  const when = Date.parse(at);
+  const nodes = items?.nodes;
+  if (
+    !Number.isFinite(when) ||
+    !Array.isArray(nodes) ||
+    !Number.isInteger(items.filteredCount) ||
+    items.filteredCount > nodes.length
+  )
+    return "unknown";
+  const times = nodes.map((node) => Date.parse(node?.createdAt));
+  if (!times.every(Number.isFinite)) return "unknown";
+  return times.some((t) => t >= when) ? "deleted" : "none";
 }
 
 // The issue one plain `Refs: #<n>` line names, or null: claude-code-plugins@eda837d4c8
@@ -225,14 +258,17 @@ const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/u;
 // the sha of this lane's newest cost hold marker posted before the decision,
 // and only while that marker is unedited: an edited marker, or one whose
 // edit state cannot be read, carries nothing, and no older marker is used.
-// The decision carries when the head is that sha, or when the pull request's
+// It carries nothing either when any comment on the pull request was
+// deleted at or after that marker was posted, or the deletion list cannot
+// show none was (deletedSince), read before the head check so deleting a
+// newer marker cannot promote an older head. The decision carries when the head is that sha, or when the pull request's
 // net diff against its base branch is the same at both: compare
 // base...decided and base...head (three-dot, so each is the diff from its
 // merge base) list the same files, each with the same status,
 // previous_filename and patch text. So a base-only merge or a rebase that
 // leaves every patch as it was carries, and any other change does not. One
-// edit read and at most two compare reads; any failure, a missing patch, or
-// a list of 300 or more files carries nothing.
+// edit read, one deletion read and at most two compare reads; any failure,
+// a missing patch, or a list of 300 or more files carries nothing.
 async function carryDecision(github, owner, repo, env, prComments, decision) {
   const cutoff = Date.parse(decision.created_at);
   if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
@@ -260,6 +296,14 @@ async function carryDecision(github, owner, repo, env, prComments, decision) {
     return { carry: false, why: "the decided-head marker was edited" };
   if (state !== "unedited")
     return { carry: false, why: "could not confirm the marker is unedited" };
+  const deleted = await deletedSince(github, owner, repo, Number(env.PR_NUMBER), held.created_at);
+  if (deleted === "deleted")
+    return { carry: false, why: "a comment was deleted since the decided-head marker was posted" };
+  if (deleted !== "none")
+    return {
+      carry: false,
+      why: "could not confirm no comment was deleted since the decided-head marker was posted",
+    };
   if (decided === env.HEAD_SHA)
     return { carry: true, why: `the head is the decided head ${decided}` };
   const base = String(env.BASE_REF ?? "");

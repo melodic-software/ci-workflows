@@ -112,7 +112,10 @@ name: pr-review-cli
 #     before the decision; with none, nothing carries. That marker must be
 #     unedited (GraphQL lastEditedAt null): an edited marker, or one whose
 #     edit state cannot be read, carries nothing, and no older marker is
-#     used. It covers the head when the head is that sha, or when the pull
+#     used. Nor does it carry when the pull request timeline shows a
+#     comment deleted at or after that marker was posted
+#     (COMMENT_DELETED_EVENT), or cannot show none was: a failed read, more
+#     deletions than it lists, or a time that does not parse. It covers the head when the head is that sha, or when the pull
 #     request's net diff is the same at both: the three-dot compares
 #     base...decided and base...head list the same files with the same
 #     status, previous_filename and patch text. A base-only merge or a rebase that leaves every patch alone
