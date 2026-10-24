@@ -398,7 +398,7 @@ jobs:
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
-              if (error.response) budget(error.status, error.response.headers);
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)
@@ -1448,7 +1448,7 @@ jobs:
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
-              if (error.response) budget(error.status, error.response.headers);
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)

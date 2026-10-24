@@ -335,16 +335,23 @@ for (const job of ["review-key", "review-subscription"]) {
         },
       },
     });
+    // An error whose status is only on its response, as a wrapper may build one.
+    const bare = Object.assign(new Error("rate limited"), {
+      response: { status: 403, headers: octokitHeaders({ used: 10 }) },
+    });
     await withRunnerTemp(dir, () => {
       hooks.after[0][1](ok);
-      assert.throws(
-        () => hooks.error[0][1](refused, { method: "GET", url: "/x" }),
-        (e) => e === refused,
-      );
+      for (const error of [refused, bare])
+        assert.throws(
+          () => hooks.error[0][1](error, { method: "GET", url: "/x" }),
+          (e) => e === error,
+        );
     });
     assert.equal(
       state(dir),
-      readingLine(200, ok.headers) + readingLine(429, refused.response.headers),
+      readingLine(200, ok.headers) +
+        readingLine(429, refused.response.headers) +
+        readingLine(403, bare.response.headers),
     );
   });
 }
