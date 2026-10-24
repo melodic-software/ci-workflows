@@ -616,3 +616,24 @@ test("a decision names the pull request as #<number> the way merge-holds reads i
   ])
     assert.equal(namesPull(text, 7), named, text);
 });
+
+// #9436: the owner lifted the cost hold at head A; a base-only merge makes
+// head B, and the review holds for cost again. The decision covers B.
+test("a cost decision recorded at an earlier head keeps the cost hold off at a later one", async () => {
+  const later = "b".repeat(40);
+  const atA = decision({
+    body: `**Decision recorded.** Cost: approve the schedule at ${HEAD}.`,
+  });
+  const { core, writes } = await apply(costEnv(["cost"], { HEAD_SHA: later }), {
+    comments: [
+      atA,
+      {
+        id: 2,
+        user: { login: "github-actions[bot]", type: "Bot" },
+        body: `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost -->`,
+      },
+    ],
+  });
+  assert.equal(core.outputs.hold, "false");
+  assert.deepEqual(writes, []);
+});
