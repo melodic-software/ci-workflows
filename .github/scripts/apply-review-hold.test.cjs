@@ -992,10 +992,9 @@ test("a failed marker edit check keeps the cost hold", async () => {
 });
 
 // A deleted comment can remove the newest marker, which would make an older
-// one the decided head (owner decision Q18 d on
-// melodic-software/claude-code-plugins#9436, as merge-holds.mjs deletedSince
-// reads it): any comment deleted at or after the decided-head marker was
-// posted carries nothing. The pull request timeline's COMMENT_DELETED_EVENT
+// one the decided head (as merge-holds.mjs deletedSince reads it): any
+// comment deleted at or after the decided-head marker was posted carries
+// nothing. The pull request timeline's COMMENT_DELETED_EVENT
 // items give the deletion times.
 test("a comment deleted after the decided-head marker keeps the cost hold, with no older marker standing in", async () => {
   // The newer marker, at 11:00, was deleted; the one left, at 10:30, holds
