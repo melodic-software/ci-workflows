@@ -1105,3 +1105,73 @@ test("the review leaves each leg as an artifact named for the run, head and leg,
     /needs\.[\w-]+\.outputs\.(review|last-summary)(?![\w-])/u,
   );
 });
+
+test("the full diff shows text the head marks -diff or binary, or hides behind a NUL byte, in both lanes", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-full-diff-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    fs.writeFileSync(path.join(origin, "README"), "base\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    fs.writeFileSync(
+      path.join(origin, ".gitattributes"),
+      "hidden.sh -diff\nopaque.sh binary\n",
+    );
+    fs.writeFileSync(path.join(origin, "hidden.sh"), "echo NO-DIFF-PAYLOAD\n");
+    fs.writeFileSync(path.join(origin, "opaque.sh"), "echo BINARY-PAYLOAD\n");
+    fs.writeFileSync(path.join(origin, "nul.sh"), "\0\necho NUL-PAYLOAD\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const fullDiff = step(job, "full-diff");
+    const result = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", fullDiff.run],
+      {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: path.join(dir, "output"),
+          REPO: "o/r",
+          BASE_SHA: base,
+          HEAD_SHA: head,
+          MERGE_BASE: base,
+          DIFF_FILE: fullDiff.env.DIFF_FILE,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const diff = fs.readFileSync(
+      path.join(work, fullDiff.env.DIFF_FILE),
+      "utf8",
+    );
+    for (const payload of [
+      "NO-DIFF-PAYLOAD",
+      "BINARY-PAYLOAD",
+      "NUL-PAYLOAD",
+    ]) {
+      assert.match(diff, new RegExp(`^\\+echo ${payload}$`, "mu"), payload);
+    }
+    assert.match(
+      fs.readFileSync(path.join(dir, "output"), "utf8"),
+      /^written=true$/mu,
+    );
+  }
+});
