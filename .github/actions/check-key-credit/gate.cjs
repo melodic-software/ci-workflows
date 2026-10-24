@@ -1,4 +1,4 @@
-// key-credit-gate: whether a keyed lane's key job should skip the model
+// check-key-credit: whether a keyed lane's key job should skip the model
 // because the key ended in a credit stop inside the window.
 //
 // It reads the calling workflow's completed runs created inside the window
@@ -207,10 +207,10 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
   }
   if (verdict.skip) {
     lines.push(
-      `::notice title=key-credit-gate::${config.keyJob} skips the key: the key's credit stop in run ${verdict.origin} (${config.server}/${config.repository}/actions/runs/${verdict.origin}) is inside the ${config.hours}-hour window; the subscription job reviews`,
+      `::notice title=check-key-credit::${config.keyJob} skips the key: the key's credit stop in run ${verdict.origin} (${config.server}/${config.repository}/actions/runs/${verdict.origin}) is inside the ${config.hours}-hour window; the subscription job reviews`,
     );
   } else {
-    lines.push(`key-credit-gate: ${config.keyJob || "the key job"} runs the key: ${verdict.reason}`);
+    lines.push(`check-key-credit: ${config.keyJob || "the key job"} runs the key: ${verdict.reason}`);
   }
   if (env.GITHUB_OUTPUT) {
     fs.appendFileSync(
@@ -226,7 +226,7 @@ if (require.main === module) {
     .then(({ lines }) => process.stdout.write(`${lines.join("\n")}\n`))
     .catch(() => {
       // Fail open: no output leaves skip-key empty, so the key runs.
-      process.stdout.write("key-credit-gate: the check failed; the key runs\n");
+      process.stdout.write("check-key-credit: the check failed; the key runs\n");
     });
 }
 

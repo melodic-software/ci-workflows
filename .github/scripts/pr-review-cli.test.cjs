@@ -119,7 +119,7 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
         github,
         inputs: { "allowed-bot-sender-ids": "", ...inputs },
         needs: {
-          "key-credit": { result: "success", outputs: {} },
+          "check-key-credit": { result: "success", outputs: {} },
           "review-key": {
             result: "success",
             outputs: {
@@ -131,7 +131,7 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
         },
       }),
     );
-  for (const job of [workflow.jobs["key-credit"], key, subscription]) {
+  for (const job of [workflow.jobs["check-key-credit"], key, subscription]) {
     assert.equal(passes(job, PR), true, job.name);
     const refused = [
       withPr((g) => {
@@ -185,12 +185,12 @@ test("the subscription job starts only on an exact handoff, a key job with no ke
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
-          "key-credit": { outputs: { "skip-key": skipKey } },
+          "check-key-credit": { outputs: { "skip-key": skipKey } },
           "review-key": { result, outputs },
         },
       }),
     );
-  // A key job skipped by key-credit's exact `true`, and no other skip.
+  // A key job skipped by check-key-credit's exact `true`, and no other skip.
   assert.equal(starts({}, "skipped", "true"), true);
   for (const skipKey of ["", "false", "True", "true ", "1"]) {
     assert.equal(
@@ -203,7 +203,7 @@ test("the subscription job starts only on an exact handoff, a key job with no ke
   for (const result of ["failure", "cancelled"]) {
     assert.equal(starts({ handoff: "true" }, result, "true"), false, result);
   }
-  assert.deepEqual(subscription.needs, ["key-credit", "review-key"]);
+  assert.deepEqual(subscription.needs, ["check-key-credit", "review-key"]);
   assert.equal(starts({ handoff: "true", "credential-present": "true" }), true);
   assert.equal(starts({ handoff: "", "credential-present": "false" }), true);
   for (const handoff of ["", "false", "True", "true ", "1"]) {
@@ -218,13 +218,13 @@ test("the subscription job starts only on an exact handoff, a key job with no ke
   assert.doesNotMatch(subscription.if, /always\(\)|failure\(\)/u);
 });
 
-test("the key job runs unless key-credit says exactly true, a failed key-credit included", () => {
+test("the key job runs unless check-key-credit says exactly true, a failed check-key-credit included", () => {
   const runs = (skipKey, result = "success") =>
     Boolean(
       evaluate(key.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
-        needs: { "key-credit": { result, outputs: { "skip-key": skipKey } } },
+        needs: { "check-key-credit": { result, outputs: { "skip-key": skipKey } } },
       }),
     );
   assert.equal(runs("true"), false);
@@ -233,19 +233,19 @@ test("the key job runs unless key-credit says exactly true, a failed key-credit 
   }
   assert.equal(runs("", "failure"), true);
   assert.equal(runs("", "skipped"), true);
-  assert.equal(key.needs, "key-credit");
-  const gate = workflow.jobs["key-credit"];
+  assert.equal(key.needs, "check-key-credit");
+  const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  assert.equal(gate.steps[0].uses, "$/.github/actions/key-credit-gate");
+  assert.equal(gate.steps[0].uses, "$/.github/actions/check-key-credit");
   assert.equal(gate.outputs["skip-key"], `\${{ steps.gate.outputs.skip-key }}`);
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
 });
 
-test("the credit record steps carry the names and conditions key-credit-gate reads", () => {
+test("the credit record steps carry the names and conditions check-key-credit reads", () => {
   const {
     MODEL_STEP,
     RECORD_PATTERN,
-  } = require("../actions/key-credit-gate/gate.cjs");
+  } = require("../actions/check-key-credit/gate.cjs");
   const render = (name, context) =>
     name.replace(/\$\{\{\s*([^}]+?)\s*\}\}/gu, (_, expr) =>
       String(evaluate(expr, context)),
@@ -268,7 +268,7 @@ test("the credit record steps carry the names and conditions key-credit-gate rea
       assert.equal(runsAfter(laneClass), false, laneClass);
     }
   }
-  const carry = workflow.jobs["key-credit"].steps[1];
+  const carry = workflow.jobs["check-key-credit"].steps[1];
   const context = (skip) => ({
     steps: { gate: { outputs: { "skip-key": skip, "origin-run": "99" } } },
   });

@@ -1,6 +1,6 @@
 "use strict";
 
-// key-credit-gate reads a keyed lane's own recent runs and skips the key job
+// check-key-credit reads a keyed lane's own recent runs and skips the key job
 // only on a credit-stop record inside the window; every other answer, and
 // every failure, runs the key. Its calls: one run list, then at most
 // MAX_JOB_READS job lists.
@@ -15,7 +15,7 @@ const {
   decide,
   judgeRun,
   main,
-} = require("../actions/key-credit-gate/gate.cjs");
+} = require("../actions/check-key-credit/gate.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
 const KEY = "claude-review-key";
@@ -196,7 +196,7 @@ function fakeFetch(routes) {
 }
 
 test("main skips on a credit stop in the window with one list call and one jobs call, and says which run", async () => {
-  const dir = makeTemporaryDirectory("key-credit-gate-");
+  const dir = makeTemporaryDirectory("check-key-credit-");
   const { urls, fetchImpl } = fakeFetch([
     [
       /\/workflows\/pr-review-hosted\.yml\/runs\?/u,
@@ -213,7 +213,7 @@ test("main skips on a credit stop in the window with one list call and one jobs 
   assert.equal(lines.length, 1);
   assert.match(
     lines[0],
-    /^::notice title=key-credit-gate::claude-review-key skips the key: the key's credit stop in run 98 \(https:\/\/example\/o\/r\/actions\/runs\/98\)/u,
+    /^::notice title=check-key-credit::claude-review-key skips the key: the key's credit stop in run 98 \(https:\/\/example\/o\/r\/actions\/runs\/98\)/u,
   );
   assert.equal(
     fs.readFileSync(path.join(dir, "output"), "utf8"),
@@ -234,12 +234,12 @@ test("main runs the key on a refused read, an unreadable ref or a window of 0, s
     [{ WORKFLOW_REF: "nonsense" }, 0],
     [{ GITHUB_TOKEN: "" }, 0],
   ]) {
-    const dir = makeTemporaryDirectory("key-credit-gate-");
+    const dir = makeTemporaryDirectory("check-key-credit-");
     const { urls, fetchImpl } = fakeFetch([]);
     const { verdict, lines } = await main(env(dir, extra), fetchImpl);
     assert.equal(verdict.skip, false, JSON.stringify(extra));
     assert.equal(urls.length, calls, JSON.stringify(extra));
-    assert.match(lines[0], /^key-credit-gate: .* runs the key: /u);
+    assert.match(lines[0], /^check-key-credit: .* runs the key: /u);
     assert.equal(
       fs.readFileSync(path.join(dir, "output"), "utf8"),
       "skip-key=false\norigin-run=\n",
@@ -251,7 +251,7 @@ test("the action passes the caller's workflow ref and the window to the gate", (
   const { parseWorkflow } = require("./workflow-yaml.cjs");
   const action = parseWorkflow(
     fs.readFileSync(
-      path.join(__dirname, "..", "actions", "key-credit-gate", "action.yml"),
+      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
       "utf8",
     ),
   );

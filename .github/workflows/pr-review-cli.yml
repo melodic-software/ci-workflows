@@ -22,7 +22,7 @@ name: pr-review-cli
 #         # request against this grant at startup, so summary mode needs it
 #         # too, though it writes nothing.
 #         permissions:
-#           actions: read         # the key-credit job reads this workflow's runs
+#           actions: read         # the check-key-credit job reads this workflow's runs
 #           contents: read
 #           pull-requests: write
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@<sha>
@@ -49,14 +49,14 @@ name: pr-review-cli
 #     That job runs on a fresh ubuntu-24.04 runner, repeats every hardening
 #     step and takes no artifact or cache from the key job. Either secret
 #     may be empty.
-#   - The key-credit job runs first, holds no secret and no write, and reads
+#   - The check-key-credit job runs first, holds no secret and no write, and reads
 #     only this workflow's own runs with the job token (actions: read, so
 #     the caller grants it). When the key job ended in a credit stop
 #     (lane-class `credit-stop`) in a run created inside
 #     key-credit-window-hours, the key job is skipped and the subscription
 #     job reviews, its scope read by the status job in the key job's place.
 #     A failed or unclear read runs the key job as before
-#     (.github/actions/key-credit-gate).
+#     (.github/actions/check-key-credit).
 #   - The model jobs cannot write: contents: read and pull-requests: read,
 #     no id-token, and `cache-mode: none`. The launcher step's env holds the
 #     one Claude credential and no GitHub token. Before the checkout the job
@@ -92,7 +92,7 @@ name: pr-review-cli
 #     output; it downloads from this run only, with no token. It
 #     checks every inline anchor against the pull request's diff at the head
 #     (one bad anchor sends the whole batch to the summary): the hunk ranges
-#     the key job's scope step (the subscription job's when key-credit
+#     the key job's scope step (the subscription job's when check-key-credit
 #     skipped the key job) read before any model step ran, used only
 #     when a fresh read shows the head has not moved, else a read of its
 #     own. Each step writes its own outputs file, so the later model step
@@ -281,7 +281,7 @@ jobs:
   # origin run forward in its name, which the next run's read finds, so the
   # window counts from the credit stop, not the last skip. Every failure runs
   # the key job: its `if` starts with !cancelled().
-  key-credit:
+  check-key-credit:
     name: ${{ inputs.lane == 'security' && 'security-review-key-credit' || 'claude-review-key-credit' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -310,7 +310,7 @@ jobs:
         id: gate
         continue-on-error: true
         timeout-minutes: 2
-        uses: $/.github/actions/key-credit-gate
+        uses: $/.github/actions/check-key-credit
         with:
           key-job: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
           window-hours: ${{ inputs.key-credit-window-hours }}
@@ -319,7 +319,7 @@ jobs:
         if: steps.gate.outputs.skip-key == 'true'
         continue-on-error: true
         timeout-minutes: 1
-        run: echo "carried to the next run's key-credit read"
+        run: echo "carried to the next run's check-key-credit read"
 
       # The job token's api-budget notice, from the readings the gate's
       # requests left. It spends no request.
@@ -333,11 +333,11 @@ jobs:
 
   review-key:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
-    needs: key-credit
+    needs: check-key-credit
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
     if: >-
-      needs.key-credit.outputs.skip-key != 'true'
+      needs.check-key-credit.outputs.skip-key != 'true'
       && !cancelled()
       &&
       github.event_name == 'pull_request'
@@ -1178,10 +1178,10 @@ jobs:
           cli-version: ${{ steps.compose.outputs.cli-version }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # Read by the next runs' key-credit job: a step named for this run that
+      # Read by the next runs' check-key-credit job: a step named for this run that
       # succeeds only after the launcher's credit stop, which only the key
       # leg can end in. Its name is the record; keep it equal to
-      # key-credit-gate's RECORD_PATTERN.
+      # check-key-credit's RECORD_PATTERN.
       - name: Record the key's credit stop in run ${{ github.run_id }}
         if: always() && steps.claude.outputs.lane-class == 'credit-stop'
         continue-on-error: true
@@ -1416,13 +1416,13 @@ jobs:
   # writes them into a script.
   review-subscription:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
-    needs: [key-credit, review-key]
+    needs: [check-key-credit, review-key]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
     if: >-
       ((needs.review-key.result == 'success'
         && (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false'))
-       || (needs.review-key.result == 'skipped' && needs.key-credit.outputs.skip-key == 'true'))
+       || (needs.review-key.result == 'skipped' && needs.check-key-credit.outputs.skip-key == 'true'))
       && !cancelled()
       &&
       github.event_name == 'pull_request'
@@ -2263,10 +2263,10 @@ jobs:
           cli-version: ${{ steps.compose.outputs.cli-version }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # Read by the next runs' key-credit job: a step named for this run that
+      # Read by the next runs' check-key-credit job: a step named for this run that
       # succeeds only after the launcher's credit stop, which only the key
       # leg can end in. Its name is the record; keep it equal to
-      # key-credit-gate's RECORD_PATTERN.
+      # check-key-credit's RECORD_PATTERN.
       - name: Record the key's credit stop in run ${{ github.run_id }}
         if: always() && steps.claude.outputs.lane-class == 'credit-stop'
         continue-on-error: true

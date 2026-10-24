@@ -717,7 +717,7 @@ consumer to audit it.
   step: the `api-budget` notice (`token=github-token ... cost=N`) the hub
   collector reads, built from the `x-ratelimit-*` headers of the job's own
   requests, so it spends none (its `action.yml` describes what it does).
-- `.github/actions/key-credit-gate` — `pr-review-cli.yml`'s `key-credit`
+- `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
   inside `key-credit-window-hours` (default 6), reading the workflow's runs
   with the job token (one list call, at most three job-list calls), and runs
@@ -1139,7 +1139,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   credential-scanned JSON artifact instead, lane records under a `-shadow`
   lane id, and no job ever red. The caller grants `contents: read` and
   `pull-requests: write` in both modes and, in summary mode, does not cancel
-  in-progress runs, and grants `actions: read` for the `key-credit` job,
+  in-progress runs, and grants `actions: read` for the `check-key-credit` job,
   which skips the key job for `key-credit-window-hours` after the key's
   credit stop. The workflow header carries the canonical caller and
   the security model. With `hold-label` set, comments mode also holds the

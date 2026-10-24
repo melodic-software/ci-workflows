@@ -20,7 +20,7 @@ inputs:
     required: false
     default: "6"
   github-token:
-    description: The job token, with actions: read.
+    description: "The job token, with actions: read."
     required: false
     default: ${{ github.token }}
 
