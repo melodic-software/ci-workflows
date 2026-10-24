@@ -103,12 +103,23 @@ name: pr-review-cli
 #     file list is the scope step's at the head; without it (scope failed,
 #     the head moved, or the list was too large) the step reads it. It
 #     only adds, through the same pull-requests: write grant, and fails the
-#     job when a write fails. A cost criterion is not added again once a
+#     job when a write fails. A cost criterion is not added again when a
 #     person in allowed-author-ids recorded an unedited comment opening
 #     `**Decision recorded.** Cost:` on the pull request, or on its one
 #     closing issue (else its one `Refs:` issue) naming `#<number>` after
-#     the pull request opened; the other criteria still hold. The reason is model text: HTML comments are
-#     stripped and the publish gate withholds a credential-shaped one.
+#     the pull request opened, and that decision covers the head. The
+#     decided head is the sha of this lane's newest cost hold marker posted
+#     before the decision; with none, nothing carries. It covers the head
+#     when the head is that sha, or when the pull request's net diff is the
+#     same at both: the three-dot compares base...decided and base...head
+#     list the same files with the same status, previous_filename and patch
+#     text. A base-only merge or a rebase that leaves every patch alone
+#     carries; any edit of the pull request's own diff, or a base change
+#     that shifts a patch's context, does not. Two compare reads at most;
+#     a failed read, a file with no patch or a list of 300 or more files
+#     keeps the cost hold. The other criteria still hold. The reason is
+#     model text: HTML comments are stripped and the publish gate withholds
+#     a credential-shaped one.
 #
 # REVIEW CADENCE: as pr-review.yml's header states, with this lane's marker:
 # whole pull request on open, reopen and ready; after a push, the files
@@ -203,7 +214,8 @@ on:
           Comma-separated numeric GitHub user ids, no spaces, of people whose
           closing issues the review reads in full, as pr-review.yml's input,
           and whose recorded cost decision keeps the hold step from adding
-          the cost hold again on a later head.
+          the cost hold again on a later head whose net diff against the
+          base is the one decided.
         type: string
         default: ""
       hold-label:
@@ -2502,6 +2514,7 @@ jobs:
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
           PR_FILES: ${{ needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
