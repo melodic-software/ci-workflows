@@ -719,6 +719,106 @@ test("the schema offers the hold criteria the extract step accepts, in both lane
   }
 });
 
+async function compose(env) {
+  const dir = makeTemporaryDirectory("pr-review-cli-compose-");
+  const outputs = {};
+  const values = {
+    LANE: "security",
+    MODEL: "sonnet",
+    EFFORT: "high",
+    MAX_TURNS: "30",
+    MODEL_ARGS: "",
+    CLI_VERSION: "latest",
+    REPOSITORY: "o/r",
+    PR_NUMBER: "7",
+    HEAD_SHA: "a".repeat(40),
+    SCOPE_NOTE: "",
+    FULL_DIFF_NOTE: "",
+    CONTEXT_NOTE: "",
+    HOLD_PATHS: "",
+    RUNNER_TEMP: dir,
+    ...env,
+  };
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    await new AsyncFunction(
+      "require",
+      "core",
+      step(key, "compose").with.script,
+    )(require, {
+      setOutput: (k, v) => {
+        outputs[k] = v;
+      },
+      setFailed: (m) => {
+        throw new Error(m);
+      },
+    });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  return fs.readFileSync(outputs["prompt-file"], "utf8");
+}
+
+// Owner decisions Q52 and Q53 (2026-10-24): only a real security issue or a
+// real charge stops a pull request. A trusted path gets extra security
+// scrutiny; spend from prepaid credits or subscription usage is a summary line.
+test("the prompt sends hold-paths to extra security scrutiny and holds cost only for a real charge, in both lanes", async () => {
+  for (const job of [key, subscription]) {
+    assert.equal(
+      step(job, "compose").env.HOLD_PATHS,
+      `\${{ inputs.hold-paths }}`,
+    );
+    assert.equal(
+      step(job, "compose").with.script,
+      step(key, "compose").with.script,
+    );
+  }
+  const prompt = await compose({
+    HOLD_PATHS: "**/CODEOWNERS\n\n  .github/standards/trusted-actors/**  \n",
+  });
+  assert.match(
+    prompt,
+    /TRUSTED PATHS: give every changed file matching one of these globs extra security scrutiny[^\n]*\n- \*\*\/CODEOWNERS\n- \.github\/standards\/trusted-actors\/\*\*\n/u,
+  );
+  const flat = prompt.replace(/\n +/gu, " ");
+  assert.match(
+    flat,
+    /A trusted-path match alone is never a hold: do not return trust-gate\./u,
+  );
+  assert.match(
+    flat,
+    /replace the review command's own "Hold for a person" classes/u,
+  );
+  for (const charge of [
+    "enabling or changing a paid plan, extra usage, auto-reload or a payment method",
+    "Azure resources or deploys that bill",
+    "GitHub billing (paid seats, paid Actions minutes, larger runners, Codespaces, storage)",
+  ])
+    assert.ok(prompt.replace(/\n +/gu, " ").includes(charge), charge);
+  for (const spend of [
+    "turn limits",
+    "timeouts",
+    "model or effort choice",
+    "more or longer lane runs",
+    "extra review runs",
+    "schedule frequency",
+  ])
+    assert.ok(prompt.replace(/\n +/gu, " ").includes(spend), spend);
+  assert.match(
+    prompt.replace(/\n +/gu, " "),
+    /is not a hold: name what it spends in one summary line, not an inline comment, and do not count it in findings\./u,
+  );
+  const plain = await compose({ HOLD_PATHS: "" });
+  assert.doesNotMatch(plain, /TRUSTED PATHS/u);
+  assert.match(plain, /real charge/u);
+});
+
 test("the review with the largest hold still fits one environment string", async () => {
   const largest = {
     findings: 25,
@@ -756,9 +856,10 @@ test("the hold step runs only in comments mode with hold-label set, even after a
   assert.match(hold.if, /^always\(\) && /u);
   assert.equal(continues(hold, "comments"), false);
   // Every input reaches the script through env, never an expression in it.
+  // hold-paths reaches the prompt, never the hold: a path is not a stop.
+  assert.equal(hold.env.HOLD_PATHS, undefined);
   for (const name of [
     "HOLD_LABEL",
-    "HOLD_PATHS",
     "HEAD_SHA",
     "KEY_REVIEW",
     "SUB_REVIEW",

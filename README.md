@@ -1133,15 +1133,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pull-requests: write` in both modes and, in summary mode, does not cancel
   in-progress runs. The workflow header carries the canonical caller and
   the security model. With `hold-label` set, comments mode also holds the
-  pull request for a person: when the review returns a `hold` (criteria
-  `cost`, `trust-gate` or `critical-security`, and a reason) or a changed
-  file matches a `hold-paths` glob (criterion `trust-gate`, whatever the
-  review says), the status job adds that label and one
+  pull request for a person: when the review returns a `hold` with criterion
+  `cost` (only a change that can cause a real charge, as the compose step's
+  prompt lists) or `critical-security`, and a reason, the status job adds
+  that label and one
   `<!-- claude-lane-hold lane=<lane> sha=<head> criteria=<list> -->`
   comment through `.github/actions/apply-review-hold`. It never removes a
   label, and a failed write turns the check red. The workflow outputs
   `hold` and `hold-criteria`. The hold needs no permission beyond
-  `pull-requests: write`; create the label in the repository first. The checks stay
+  `pull-requests: write`; create the label in the repository first. A
+  `hold-paths` glob never holds: the prompt asks the review to give a
+  matching changed file extra security scrutiny. The checks stay
   advisory: a caller that wants a hold enforced reads the label in its own
   required check. `pr-review.yml` and `pr-review-security.yml` are
   unchanged.

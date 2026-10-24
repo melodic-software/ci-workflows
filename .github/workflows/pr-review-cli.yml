@@ -98,10 +98,10 @@ name: pr-review-cli
 #   - Holds (hold-label set, comments mode only): the status job adds
 #     hold-label and one `<!-- claude-lane-hold lane=<lane> sha=<head>
 #     criteria=<list> -->` comment when the counted leg's checked review
-#     returned a hold, or when a changed file (or a renamed file's old path)
-#     matches hold-paths, which adds trust-gate whatever the model says. The
-#     file list is the scope step's at the head; without it (scope failed,
-#     the head moved, or the list was too large) the step reads it. It
+#     returned a hold with criterion cost (a real charge, as the compose
+#     step's prompt defines it) or critical-security. A trust-gate criterion
+#     holds nothing: hold-paths goes to the prompt as paths for extra
+#     security scrutiny, and a match is never a stop by itself. It
 #     only adds, through the same pull-requests: write grant, and fails the
 #     job when a write fails. A cost criterion is not added again when a
 #     person in allowed-author-ids recorded an unedited comment opening
@@ -225,15 +225,16 @@ on:
         default: ""
       hold-label:
         description: >-
-          The label the status job adds when the review or hold-paths holds
-          the pull request for a person. Empty turns holds off.
+          The label the status job adds when the review holds the pull
+          request for a person: a real-charge cost or a CRITICAL security
+          finding. Empty turns holds off.
         type: string
         default: ""
       hold-paths:
         description: >-
-          Newline-separated path globs, as docs-only-paths. A changed file
-          matching one holds the pull request with criterion trust-gate,
-          whatever the review says. Used only when hold-label is set.
+          Newline-separated path globs, as docs-only-paths. The prompt asks
+          the review to give a changed file matching one extra security
+          scrutiny. A match never holds the pull request by itself.
         type: string
         default: ""
     outputs:
@@ -241,7 +242,7 @@ on:
         description: "`true` when this run held the pull request, else `false`."
         value: ${{ jobs.status.outputs.hold }}
       hold-criteria:
-        description: The hold's criteria, comma-separated (cost, trust-gate, critical-security), or empty.
+        description: The hold's criteria, comma-separated (cost, critical-security), or empty.
         value: ${{ jobs.status.outputs.hold-criteria }}
     secrets:
       CLAUDE_API_KEY:
@@ -593,8 +594,8 @@ jobs:
               };
             };
 
-            // The file list at the head, for the status job's anchor check and
-            // hold-paths, so neither reads it again: each name, a rename's old
+            // The file list at the head, for the status job's anchor check, so
+            // it does not read it again: each name, a rename's old
             // name, and each patch's hunk ranges ("<old> <new>", as in its @@
             // line). Dropped when it would not fit one environment string.
             const writePrFiles = (files, changed) => {
@@ -894,6 +895,7 @@ jobs:
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
+          HOLD_PATHS: ${{ inputs.hold-paths }}
         with:
           script: |
             const fs = require("node:fs");
@@ -970,6 +972,12 @@ jobs:
               },
               required: ["findings", "summary", "comments"],
             };
+            // Owner decisions Q52 and Q53 (2026-10-24): only a real security
+            // issue or a real charge stops a pull request for a person.
+            const trusted = String(env.HOLD_PATHS ?? "")
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean);
             const prompt = [
               `REPO: ${env.REPOSITORY}`,
               `PR NUMBER: ${env.PR_NUMBER}`,
@@ -977,6 +985,12 @@ jobs:
               env.SCOPE_NOTE,
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
+              ...(trusted.length > 0
+                ? [
+                    "TRUSTED PATHS: give every changed file matching one of these globs extra security scrutiny (read its whole change and what it gates):",
+                    ...trusted.map((glob) => `- ${glob}`),
+                  ]
+                : []),
               "",
               `Invoke /${skill} now and follow its instructions exactly for this pull request.`,
               "The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.",
@@ -994,8 +1008,17 @@ jobs:
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
               "- summary: your review summary in Markdown.",
-              "- hold: only when the review command says to hold the pull request for a person: criteria",
-              "  (cost, trust-gate or critical-security) and reason. Omit it otherwise.",
+              "- hold: criteria and reason, only for the classes below, which replace the review command's own",
+              "  \"Hold for a person\" classes. Omit it otherwise.",
+              "  - critical-security: as the review command defines it (a CRITICAL security finding).",
+              "  - cost: only when the change can cause a real charge: enabling or changing a paid plan, extra",
+              "    usage, auto-reload or a payment method; Azure resources or deploys that bill; or",
+              "    GitHub billing (paid seats, paid Actions minutes, larger runners, Codespaces, storage).",
+              "  A change that only spends prepaid API credits or subscription usage (turn limits, timeouts,",
+              "  model or effort choice, more or longer lane runs, extra review runs, schedule frequency)",
+              "  is not a hold: name what it spends in one summary line, not an inline comment, and do not",
+              "  count it in findings.",
+              "  A trusted-path match alone is never a hold: do not return trust-gate.",
             ]
               .filter((line) => line !== undefined)
               .join("\n");
@@ -1643,8 +1666,8 @@ jobs:
               };
             };
 
-            // The file list at the head, for the status job's anchor check and
-            // hold-paths, so neither reads it again: each name, a rename's old
+            // The file list at the head, for the status job's anchor check, so
+            // it does not read it again: each name, a rename's old
             // name, and each patch's hunk ranges ("<old> <new>", as in its @@
             // line). Dropped when it would not fit one environment string.
             const writePrFiles = (files, changed) => {
@@ -1944,6 +1967,7 @@ jobs:
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
+          HOLD_PATHS: ${{ inputs.hold-paths }}
         with:
           script: |
             const fs = require("node:fs");
@@ -2020,6 +2044,12 @@ jobs:
               },
               required: ["findings", "summary", "comments"],
             };
+            // Owner decisions Q52 and Q53 (2026-10-24): only a real security
+            // issue or a real charge stops a pull request for a person.
+            const trusted = String(env.HOLD_PATHS ?? "")
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean);
             const prompt = [
               `REPO: ${env.REPOSITORY}`,
               `PR NUMBER: ${env.PR_NUMBER}`,
@@ -2027,6 +2057,12 @@ jobs:
               env.SCOPE_NOTE,
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
+              ...(trusted.length > 0
+                ? [
+                    "TRUSTED PATHS: give every changed file matching one of these globs extra security scrutiny (read its whole change and what it gates):",
+                    ...trusted.map((glob) => `- ${glob}`),
+                  ]
+                : []),
               "",
               `Invoke /${skill} now and follow its instructions exactly for this pull request.`,
               "The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.",
@@ -2044,8 +2080,17 @@ jobs:
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
               "- summary: your review summary in Markdown.",
-              "- hold: only when the review command says to hold the pull request for a person: criteria",
-              "  (cost, trust-gate or critical-security) and reason. Omit it otherwise.",
+              "- hold: criteria and reason, only for the classes below, which replace the review command's own",
+              "  \"Hold for a person\" classes. Omit it otherwise.",
+              "  - critical-security: as the review command defines it (a CRITICAL security finding).",
+              "  - cost: only when the change can cause a real charge: enabling or changing a paid plan, extra",
+              "    usage, auto-reload or a payment method; Azure resources or deploys that bill; or",
+              "    GitHub billing (paid seats, paid Actions minutes, larger runners, Codespaces, storage).",
+              "  A change that only spends prepaid API credits or subscription usage (turn limits, timeouts,",
+              "  model or effort choice, more or longer lane runs, extra review runs, schedule frequency)",
+              "  is not a hold: name what it spends in one summary line, not an inline comment, and do not",
+              "  count it in findings.",
+              "  A trusted-path match alone is never a hold: do not return trust-gate.",
             ]
               .filter((line) => line !== undefined)
               .join("\n");
@@ -2502,9 +2547,9 @@ jobs:
           SUB_WALL_MS: ${{ needs.review-subscription.outputs.wall-ms }}
 
       # Add-only: in comments mode with hold-label set, the label and one
-      # marker comment when the counted leg's review returned a hold or a
-      # changed file matches hold-paths, even when the review failed. It never
-      # removes a label. A failed write fails the job.
+      # marker comment when the counted leg's review returned a cost or
+      # critical-security hold. It never removes a label. A failed write
+      # fails the job.
       - name: Apply the hold
         id: hold
         if: always() && inputs.hold-label != '' && inputs.publish == 'comments'
@@ -2514,7 +2559,6 @@ jobs:
         env:
           PUBLISH: ${{ inputs.publish }}
           HOLD_LABEL: ${{ inputs.hold-label }}
-          HOLD_PATHS: ${{ inputs.hold-paths }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
