@@ -132,8 +132,14 @@ function linkedIssue(pull, owner, repo) {
   return refs === null ? null : { number: refs, refs: true };
 }
 
-const names_ = (number) =>
-  new RegExp(`(?<![A-Za-z0-9_#&/])#${number}(?![0-9])`, "u");
+// Whether `text` names pull request `number` as `#<number>`: not part of a
+// longer number, and not after a letter, digit, `_`, `/`, `.` or `-`, so
+// `owner/repo#<number>` does not count (claude-code-plugins
+// .github/scripts/pr-merge/merge-holds.mjs namesPull, from #9569).
+const namesPull = (text, number) =>
+  new RegExp(`(?:^|[^A-Za-z0-9_/.-])#${number}(?:[^0-9]|$)`, "u").test(
+    String(text ?? ""),
+  );
 
 // Whether a trusted person recorded a cost decision for pull request
 // `number`. `prComments` is the pull request's comment list. Reads only
@@ -186,7 +192,7 @@ async function costDecided(github, owner, repo, number, env, prComments) {
       (c) =>
         candidate(c) &&
         Date.parse(c.created_at) > opened &&
-        names_(number).test(String(c.body ?? "")),
+        namesPull(c.body, number),
     ))
       if (await unedited(c)) return true;
   } catch {
@@ -367,4 +373,12 @@ async function run({ github, context, core, env = process.env }) {
   return { hold: true, criteria };
 }
 
-module.exports = { CRITERIA, globToRegExp, linkedIssue, modelHold, refsIssue, run };
+module.exports = {
+  CRITERIA,
+  globToRegExp,
+  linkedIssue,
+  modelHold,
+  namesPull,
+  refsIssue,
+  run,
+};

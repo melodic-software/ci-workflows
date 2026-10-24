@@ -9,7 +9,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { globToRegExp, run } = require("../actions/apply-review-hold/hold.cjs");
+const {
+  globToRegExp,
+  namesPull,
+  run,
+} = require("../actions/apply-review-hold/hold.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -592,4 +596,23 @@ test("a hold with no cost criterion reads no cost decision", async () => {
     github.calls.filter(([name]) => name === "listComments").length,
     1,
   );
+});
+
+// The same cases merge-holds.mjs namesPull reads, so both halves agree.
+test("a decision names the pull request as #<number> the way merge-holds reads it", () => {
+  for (const [text, named] of [
+    ["approved for #7.", true],
+    ["#7", true],
+    ["(#7)", true],
+    ["##7", true],
+    ["&#7;", true],
+    ["#70", false],
+    ["#77", false],
+    ["o/r#7", false],
+    ["x.#7", false],
+    ["x-#7", false],
+    ["a#7", false],
+    ["_#7", false],
+  ])
+    assert.equal(namesPull(text, 7), named, text);
 });
