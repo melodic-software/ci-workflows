@@ -79,6 +79,20 @@ const PULL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
 const EDITED_QUERY =
   "query($id: ID!) { node(id: $id) { ... on IssueComment { lastEditedAt } } }";
 
+// Whether comment `c` was ever edited: "unedited" when GraphQL answers
+// lastEditedAt null, "edited" when it answers a time, else "unknown" (a
+// failed read, no node, or no lastEditedAt).
+async function editState(github, c) {
+  try {
+    const node = (await github.graphql(EDITED_QUERY, { id: String(c.node_id) }))
+      ?.node;
+    if (!node || !("lastEditedAt" in node)) return "unknown";
+    return node.lastEditedAt === null ? "unedited" : "edited";
+  } catch {
+    return "unknown";
+  }
+}
+
 // The issue one plain `Refs: #<n>` line names, or null: claude-code-plugins@eda837d4c8
 // plugins/source-control/skills/babysit-prs/scripts/babysit_merge_policy.py:1851-1895
 // refs_issue. A line counts from its first column, outside an HTML comment
@@ -161,20 +175,11 @@ async function costDecided(github, owner, repo, number, env, prComments) {
     c.performed_via_github_app == null &&
     trusted.has(c.user.id) &&
     DECISION_LINE.test(String(c.body ?? "").trimStart());
-  const unedited = async (c) => {
-    try {
-      const node = (await github.graphql(EDITED_QUERY, { id: String(c.node_id) }))
-        ?.node;
-      return Boolean(node) && "lastEditedAt" in node && node.lastEditedAt === null;
-    } catch {
-      return false;
-    }
-  };
   const newest = async (list) => {
     for (const c of list
       .filter(candidate)
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)))
-      if (await unedited(c)) return c;
+      if ((await editState(github, c)) === "unedited") return c;
     return null;
   };
   const own = await newest(prComments);
@@ -217,15 +222,17 @@ const MAX_COMPARE_FILES = 300;
 const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/u;
 
 // Whether `decision` covers the head: { carry, why }. The decided head is
-// the sha of this lane's newest cost hold marker posted before the decision.
+// the sha of this lane's newest cost hold marker posted before the decision,
+// and only while that marker is unedited: an edited marker, or one whose
+// edit state cannot be read, carries nothing, and no older marker is used.
 // The decision carries when the head is that sha, or when the pull request's
 // net diff against its base branch is the same at both: compare
 // base...decided and base...head (three-dot, so each is the diff from its
 // merge base) list the same files, each with the same status,
 // previous_filename and patch text. So a base-only merge or a rebase that
-// leaves every patch as it was carries, and any other change does not. At
-// most two compare reads; any failure, a missing patch, or a list of 300 or
-// more files carries nothing.
+// leaves every patch as it was carries, and any other change does not. One
+// edit read and at most two compare reads; any failure, a missing patch, or
+// a list of 300 or more files carries nothing.
 async function carryDecision(github, owner, repo, env, prComments, decision) {
   const cutoff = Date.parse(decision.created_at);
   if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
@@ -234,6 +241,7 @@ async function carryDecision(github, owner, repo, env, prComments, decision) {
     "u",
   );
   let decided = null;
+  let held = null;
   let at = -Infinity;
   for (const c of prComments) {
     if (c?.user?.login !== "github-actions[bot]") continue;
@@ -242,10 +250,16 @@ async function carryDecision(github, owner, repo, env, prComments, decision) {
     if (!m || !m[2].split(",").includes("cost")) continue;
     if (!(t < cutoff) || t <= at) continue;
     decided = m[1];
+    held = c;
     at = t;
   }
   if (!decided)
     return { carry: false, why: "no cost hold marker of this lane precedes the decision" };
+  const state = await editState(github, held);
+  if (state === "edited")
+    return { carry: false, why: "the decided-head marker was edited" };
+  if (state !== "unedited")
+    return { carry: false, why: "could not confirm the marker is unedited" };
   if (decided === env.HEAD_SHA)
     return { carry: true, why: `the head is the decided head ${decided}` };
   const base = String(env.BASE_REF ?? "");

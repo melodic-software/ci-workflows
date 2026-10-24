@@ -109,11 +109,13 @@ name: pr-review-cli
 #     closing issue (else its one `Refs:` issue) naming `#<number>` after
 #     the pull request opened, and that decision covers the head. The
 #     decided head is the sha of this lane's newest cost hold marker posted
-#     before the decision; with none, nothing carries. It covers the head
-#     when the head is that sha, or when the pull request's net diff is the
-#     same at both: the three-dot compares base...decided and base...head
-#     list the same files with the same status, previous_filename and patch
-#     text. A base-only merge or a rebase that leaves every patch alone
+#     before the decision; with none, nothing carries. That marker must be
+#     unedited (GraphQL lastEditedAt null): an edited marker, or one whose
+#     edit state cannot be read, carries nothing, and no older marker is
+#     used. It covers the head when the head is that sha, or when the pull
+#     request's net diff is the same at both: the three-dot compares
+#     base...decided and base...head list the same files with the same
+#     status, previous_filename and patch text. A base-only merge or a rebase that leaves every patch alone
 #     carries; any edit of the pull request's own diff, or a base change
 #     that shifts a patch's context, does not. Two compare reads at most;
 #     a failed read, a file with no patch or a list of 300 or more files
