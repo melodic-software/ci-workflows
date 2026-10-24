@@ -802,7 +802,9 @@ jobs:
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
           git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base"
           mkdir -p "$(dirname "$DIFF_FILE")"
-          git diff --no-color --no-ext-diff "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
+          # turn a changed file into "Binary files differ" the model cannot read.
+          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
@@ -1887,7 +1889,9 @@ jobs:
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
           git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base"
           mkdir -p "$(dirname "$DIFF_FILE")"
-          git diff --no-color --no-ext-diff "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
+          # turn a changed file into "Binary files differ" the model cannot read.
+          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
