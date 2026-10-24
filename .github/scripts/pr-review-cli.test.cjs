@@ -224,7 +224,9 @@ test("the key job runs unless check-key-credit says exactly true, a failed check
       evaluate(key.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
-        needs: { "check-key-credit": { result, outputs: { "skip-key": skipKey } } },
+        needs: {
+          "check-key-credit": { result, outputs: { "skip-key": skipKey } },
+        },
       }),
     );
   assert.equal(runs("true"), false);
