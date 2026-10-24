@@ -62,6 +62,9 @@ test("a run settles nothing without a finished key job whose model or record ran
     [keyJob([credit(10).name].map((name) => step(name, "skipped")))],
     [keyJob([RAN], "pr-review / security-review-key")],
     [keyJob([RAN], `pr-review / not-${KEY}`)],
+    // The jobs API sometimes returns every job of a run with no steps.
+    [keyJob([]), keyJob([], `pr-review / ${KEY}-credit`)],
+    [{ name: `pr-review / ${KEY}`, status: "completed" }],
   ]) {
     assert.equal(judgeRun(jobs, KEY, ids), null, JSON.stringify(jobs));
   }
@@ -120,6 +123,21 @@ test("decide reads newest first, skips the current run and caps its job reads", 
   });
   assert.deepEqual(skip, { skip: true, origin: "3", run: "6" });
   assert.deepEqual(read2, [7, 6]);
+});
+
+test("runs whose jobs all come back with empty steps run the key after the cap", async () => {
+  const read = [];
+  const verdict = await decide({
+    currentRunId: "9",
+    keyJob: KEY,
+    listRuns: async () => [{ id: 8 }, { id: 7 }, { id: 6 }, { id: 5 }],
+    listJobs: async (id) => {
+      read.push(id);
+      return [keyJob([]), keyJob([], `r / ${KEY}-credit`)];
+    },
+  });
+  assert.equal(verdict.skip, false);
+  assert.deepEqual(read, [8, 7, 6]);
 });
 
 test("decide fails open on every read failure", async () => {
