@@ -69,10 +69,18 @@ name: pr-review-cli
 #     .lane fails the job).
 #   - The model returns JSON only. An extract step with no model reads it
 #     from run-claude-cli's credential-scanned structured-output-file and
-#     the scanned log, checks its shape and sizes, and passes it on as job
-#     outputs.
+#     the scanned log, checks its shape and sizes, and passes the closed
+#     facts on as job outputs. The review and the last marker's summary are
+#     model text: the runner drops a job output that contains a registered
+#     secret's value anywhere in it, so a later script step writes them to
+#     one file, uploads it as an artifact named for the run, head and leg
+#     (kept one day), and emits only the file's sha256 as a job output. The
+#     model reads only the checkout and the files the lane writes for it,
+#     so a value it quotes is one the pull request already shows.
 #   - Only the status job writes, and it runs no model. It reads the
-#     subscription job's outputs when that job ran, else the key job's. It
+#     subscription job's outputs when that job ran, else the key job's, and
+#     takes a leg's handoff file only when its sha256 matches that leg's
+#     output; it downloads from this run only, with no token. It
 #     checks every inline anchor against the pull request's diff at the head
 #     (one bad anchor sends the whole batch to the summary): the hunk ranges
 #     the key job's scope step read before any model step ran, used only
@@ -229,7 +237,7 @@ jobs:
   review-key:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 42 || 40 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 44 || 42 }}
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.state == 'open'
@@ -257,7 +265,7 @@ jobs:
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       verdict: ${{ steps.extract.outputs.verdict }}
-      review: ${{ steps.extract.outputs.review }}
+      handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
       cost: ${{ steps.extract.outputs.cost }}
@@ -270,7 +278,6 @@ jobs:
       scope: ${{ steps.scope.outputs.scope }}
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
-      last-summary: ${{ steps.scope.outputs.last-summary }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
     steps:
       # Managed settings need sudo, so they come first; isolation then removes
@@ -1180,6 +1187,44 @@ jobs:
               .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}; malformed: ${malformed.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
               .write();
 
+      # No model runs here. The review and the last marker's summary are
+      # model text, and the runner drops a job output whose value contains a
+      # registered secret's value anywhere in it, so both leave the job as
+      # one file in an artifact, written after the model step. Only the
+      # file's sha256 is a job output; the status job checks the file
+      # against it. It runs on a skip too, for the summary a skip carries.
+      - name: Write the review handoff
+        id: handoff-file
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REVIEW: ${{ steps.extract.outputs.review }}
+          LAST_SUMMARY: ${{ steps.scope.outputs.last-summary }}
+          HANDOFF_FILE: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
+        with:
+          script: |
+            const fs = require("node:fs");
+            const env = process.env;
+            const text = JSON.stringify({ review: env.REVIEW ?? "", "last-summary": env.LAST_SUMMARY ?? "" });
+            fs.mkdirSync(require("node:path").dirname(env.HANDOFF_FILE), { recursive: true });
+            fs.writeFileSync(env.HANDOFF_FILE, text);
+            core.setOutput("sha256", require("node:crypto").createHash("sha256").update(text).digest("hex"));
+
+      # Named for this run, head and leg; a re-run of the leg replaces it.
+      - name: Upload the review handoff
+        if: always() && steps.handoff-file.outputs.sha256 != ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
       - name: Report review outcome
         id: review-outcome
         if: always() && steps.credential.outputs.present == 'true'
@@ -1208,7 +1253,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
     needs: review-key
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 42 || 40 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 44 || 42 }}
     if: >-
       (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false')
       &&
@@ -1238,7 +1283,7 @@ jobs:
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       verdict: ${{ steps.extract.outputs.verdict }}
-      review: ${{ steps.extract.outputs.review }}
+      handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
       cost: ${{ steps.extract.outputs.cost }}
@@ -1251,7 +1296,6 @@ jobs:
       scope: ${{ steps.scope.outputs.scope }}
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
-      last-summary: ${{ steps.scope.outputs.last-summary }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
     steps:
       # Managed settings need sudo, so they come first; isolation then removes
@@ -2161,6 +2205,44 @@ jobs:
               .addRaw(`### review leg\n\n- Findings: ${findings}; comments: ${comments.length}; malformed: ${malformed.length}\n- Turns: ${record.num_turns ?? "?"}\n`)
               .write();
 
+      # No model runs here. The review and the last marker's summary are
+      # model text, and the runner drops a job output whose value contains a
+      # registered secret's value anywhere in it, so both leave the job as
+      # one file in an artifact, written after the model step. Only the
+      # file's sha256 is a job output; the status job checks the file
+      # against it. It runs on a skip too, for the summary a skip carries.
+      - name: Write the review handoff
+        id: handoff-file
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REVIEW: ${{ steps.extract.outputs.review }}
+          LAST_SUMMARY: ${{ steps.scope.outputs.last-summary }}
+          HANDOFF_FILE: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
+        with:
+          script: |
+            const fs = require("node:fs");
+            const env = process.env;
+            const text = JSON.stringify({ review: env.REVIEW ?? "", "last-summary": env.LAST_SUMMARY ?? "" });
+            fs.mkdirSync(require("node:path").dirname(env.HANDOFF_FILE), { recursive: true });
+            fs.writeFileSync(env.HANDOFF_FILE, text);
+            core.setOutput("sha256", require("node:crypto").createHash("sha256").update(text).digest("hex"));
+
+      # Named for this run, head and leg; a re-run of the leg replaces it.
+      - name: Upload the review handoff
+        if: always() && steps.handoff-file.outputs.sha256 != ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
       - name: Report review outcome
         id: review-outcome
         if: always() && steps.credential.outputs.present == 'true'
@@ -2193,7 +2275,7 @@ jobs:
     needs: [review-key, review-subscription]
     if: always() && needs.review-key.result != 'skipped'
     runs-on: ubuntu-24.04
-    timeout-minutes: 17
+    timeout-minutes: 19
     permissions:
       contents: read
       pull-requests: write # the review, its inline comments, the lane's marker comment and the hold label
@@ -2235,6 +2317,59 @@ jobs:
             core.setOutput("path", path.join(directory, "publish-gate.mjs"));
             core.info(`publish gate from claude-code-plugins@${tip}`);
 
+      # The legs' review handoffs, from this run only: with no github-token
+      # or run-id the download spends no REST API request.
+      - name: Download the review handoffs
+        if: >-
+          always()
+          && (needs.review-key.outputs.handoff-sha256 != ''
+              || needs.review-subscription.outputs.handoff-sha256 != '')
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pr-review-cli-handoff-${{ inputs.lane }}-*-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/review-handoff
+          merge-multiple: true
+
+      # A leg's file counts only when its sha256 is the one that leg's job
+      # output names; any other file is refused, and publish then finds no
+      # review from that leg.
+      - name: Check the review handoffs
+        id: handoffs
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          HANDOFF_DIR: ${{ runner.temp }}/review-handoff
+          KEY_SHA256: ${{ needs.review-key.outputs.handoff-sha256 }}
+          SUB_SHA256: ${{ needs.review-subscription.outputs.handoff-sha256 }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const env = process.env;
+            for (const [leg, prefix, expected] of [
+              ["review-key", "key", env.KEY_SHA256],
+              ["review-subscription", "sub", env.SUB_SHA256],
+            ]) {
+              if (!/^[0-9a-f]{64}$/u.test(expected ?? "")) continue;
+              let bytes;
+              try {
+                bytes = fs.readFileSync(require("node:path").join(env.HANDOFF_DIR, `${leg}.json`));
+              } catch {
+                core.warning(`${leg} uploaded no review handoff this job could read`);
+                continue;
+              }
+              if (require("node:crypto").createHash("sha256").update(bytes).digest("hex") !== expected) {
+                core.warning(`${leg}'s review handoff does not match the sha256 that job reported; it is refused`);
+                continue;
+              }
+              const data = JSON.parse(bytes.toString("utf8"));
+              if (typeof data?.review === "string") core.setOutput(`${prefix}-review`, data.review);
+              if (prefix === "key" && typeof data?.["last-summary"] === "string") core.setOutput("last-summary", data["last-summary"]);
+            }
+
       - name: Publish the review
         continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 5
@@ -2254,7 +2389,7 @@ jobs:
           SCOPE: ${{ needs.review-key.outputs.scope }}
           MARKER_ID: ${{ needs.review-key.outputs.marker-id }}
           MERGE_BASE: ${{ needs.review-key.outputs.merge-base }}
-          LAST_SUMMARY: ${{ needs.review-key.outputs.last-summary }}
+          LAST_SUMMARY: ${{ steps.handoffs.outputs.last-summary }}
           PR_FILES: ${{ needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
           SUB_RESULT: ${{ needs.review-subscription.result }}
@@ -2262,7 +2397,7 @@ jobs:
           KEY_FAILED: ${{ needs.review-key.outputs.review-failed }}
           KEY_CLASS: ${{ needs.review-key.outputs.failure-class }}
           KEY_VERDICT: ${{ needs.review-key.outputs.verdict }}
-          KEY_REVIEW: ${{ needs.review-key.outputs.review }}
+          KEY_REVIEW: ${{ steps.handoffs.outputs.key-review }}
           KEY_TURNS: ${{ needs.review-key.outputs.turns }}
           KEY_MODELS: ${{ needs.review-key.outputs.models }}
           KEY_COST: ${{ needs.review-key.outputs.cost }}
@@ -2272,7 +2407,7 @@ jobs:
           SUB_FAILED: ${{ needs.review-subscription.outputs.review-failed }}
           SUB_CLASS: ${{ needs.review-subscription.outputs.failure-class }}
           SUB_VERDICT: ${{ needs.review-subscription.outputs.verdict }}
-          SUB_REVIEW: ${{ needs.review-subscription.outputs.review }}
+          SUB_REVIEW: ${{ steps.handoffs.outputs.sub-review }}
           SUB_TURNS: ${{ needs.review-subscription.outputs.turns }}
           SUB_MODELS: ${{ needs.review-subscription.outputs.models }}
           SUB_COST: ${{ needs.review-subscription.outputs.cost }}
@@ -2304,12 +2439,12 @@ jobs:
           KEY_FAILED: ${{ needs.review-key.outputs.review-failed }}
           KEY_CLASS: ${{ needs.review-key.outputs.failure-class }}
           KEY_VERDICT: ${{ needs.review-key.outputs.verdict }}
-          KEY_REVIEW: ${{ needs.review-key.outputs.review }}
+          KEY_REVIEW: ${{ steps.handoffs.outputs.key-review }}
           SUB_PRESENT: ${{ needs.review-subscription.outputs.credential-present }}
           SUB_FAILED: ${{ needs.review-subscription.outputs.review-failed }}
           SUB_CLASS: ${{ needs.review-subscription.outputs.failure-class }}
           SUB_VERDICT: ${{ needs.review-subscription.outputs.verdict }}
-          SUB_REVIEW: ${{ needs.review-subscription.outputs.review }}
+          SUB_REVIEW: ${{ steps.handoffs.outputs.sub-review }}
 
       - name: Upload the shadow report
         if: inputs.publish != 'comments'
