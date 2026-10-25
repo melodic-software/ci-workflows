@@ -472,7 +472,7 @@ test("a permission denial with another escalation reason still escalates", async
   assert.ok(labels.includes(ESCALATION_LABEL));
 });
 
-test("extract logs each denied tool and input with workflow commands and credentials neutralized", async () => {
+test("extract logs each denied tool and input inside stop-commands, with credentials redacted", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-extract-"));
   const executionFile = path.join(directory, "execution.json");
   fs.writeFileSync(
@@ -481,7 +481,7 @@ test("extract logs each denied tool and input with workflow commands and credent
       {
         ...SUCCESS,
         structured_output: triaged(),
-        permission_denials: [{ tool_name: "Bash", tool_input: { command: "x\n::error::forged sk-ant-abcdefghijkl" } }],
+        permission_denials: [{ tool_name: "Bash", tool_input: { command: "x\n::error::forged ##[add-mask]y sk-ant-abcdefghijkl" } }],
       },
     ]),
   );
@@ -495,9 +495,14 @@ test("extract logs each denied tool and input with workflow commands and credent
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
-  const line = infos.find((l) => l.startsWith("Permission denied: Bash "));
+  const start = infos.findIndex((l) => /^::stop-commands::[0-9a-f-]{36}$/u.test(l));
+  assert.ok(start >= 0, infos.join("\n"));
+  const token = infos[start].slice("::stop-commands::".length);
+  const end = infos.indexOf(`::${token}::`);
+  assert.ok(end > start + 1, infos.join("\n"));
+  const line = infos.slice(start + 1, end).find((l) => l.startsWith("Permission denied: Bash "));
   assert.ok(line, infos.join("\n"));
-  assert.ok(!line.includes("::"), line);
+  assert.ok(!/[\n\r]/u.test(line), line);
   assert.ok(!line.includes("sk-ant-abcdefghijkl"), line);
   assert.match(line, /\[REDACTED\]/);
 });

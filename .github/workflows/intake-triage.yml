@@ -853,16 +853,22 @@ jobs:
             core.setOutput("denials", String(denials.length));
             core.setOutput("triage", triage ? JSON.stringify(triage) : "");
             // Each denied tool and its input, on one line apiece. The input is
-            // model-chosen, so control characters and `::` are neutralized and
-            // it cannot issue a workflow command.
-            for (const denial of denials.slice(0, 20)) {
+            // model-chosen, so the lines sit inside stop-commands with a
+            // per-run random token (the runner also parses `##[` anywhere in
+            // a line), control characters cannot end a line early, and
+            // credential-shaped text is redacted.
+            if (denials.length > 0) {
+              const token = require("node:crypto").randomUUID();
               const clean = (value) =>
                 String(value ?? "")
                   .replace(/[\u0000-\u001f\u007f]/gu, " ")
                   .replace(/sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/gu, "[REDACTED]")
-                  .replaceAll("::", ": :")
                   .slice(0, 300);
-              core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+              core.info(`::stop-commands::${token}`);
+              for (const denial of denials.slice(0, 20)) {
+                core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+              }
+              core.info(`::${token}::`);
             }
 
             const summary = [
@@ -1407,16 +1413,22 @@ jobs:
             core.setOutput("denials", String(denials.length));
             core.setOutput("triage", triage ? JSON.stringify(triage) : "");
             // Each denied tool and its input, on one line apiece. The input is
-            // model-chosen, so control characters and `::` are neutralized and
-            // it cannot issue a workflow command.
-            for (const denial of denials.slice(0, 20)) {
+            // model-chosen, so the lines sit inside stop-commands with a
+            // per-run random token (the runner also parses `##[` anywhere in
+            // a line), control characters cannot end a line early, and
+            // credential-shaped text is redacted.
+            if (denials.length > 0) {
+              const token = require("node:crypto").randomUUID();
               const clean = (value) =>
                 String(value ?? "")
                   .replace(/[\u0000-\u001f\u007f]/gu, " ")
                   .replace(/sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/gu, "[REDACTED]")
-                  .replaceAll("::", ": :")
                   .slice(0, 300);
-              core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+              core.info(`::stop-commands::${token}`);
+              for (const denial of denials.slice(0, 20)) {
+                core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+              }
+              core.info(`::${token}::`);
             }
 
             const summary = [
