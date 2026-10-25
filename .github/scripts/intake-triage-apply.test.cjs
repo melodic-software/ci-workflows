@@ -46,6 +46,7 @@ async function runScript(script, env, github) {
   Object.assign(process.env, env);
   const failed = [];
   const warnings = [];
+  const infos = [];
   const outputs = {};
   let summary = "";
   try {
@@ -58,7 +59,7 @@ async function runScript(script, env, github) {
       },
       setFailed: (message) => failed.push(message),
       warning: (message) => warnings.push(message),
-      info: () => {},
+      info: (line) => infos.push(line),
       setOutput: (key, value) => {
         outputs[key] = value;
       },
@@ -72,7 +73,7 @@ async function runScript(script, env, github) {
       "process",
       script,
     )(github, context, core, require, process);
-    return { failed, warnings, outputs, summary };
+    return { failed, warnings, infos, outputs, summary };
   } finally {
     for (const [key, value] of Object.entries(original)) {
       if (value === undefined) delete process.env[key];
@@ -129,6 +130,7 @@ async function runApply(
   env,
   {
     keptType,
+    existingType,
     floorLabel = FLOOR_LABEL,
     escalationLabel = ESCALATION_LABEL,
     allowed = ["bug", "priority: high", "priority: low"],
@@ -194,6 +196,7 @@ async function runApply(
             data: {
               number: request.issue_number,
               node_id: `I_node${request.issue_number}`,
+              type: existingType ? { name: existingType } : null,
             },
           };
         },
@@ -223,7 +226,7 @@ async function runApply(
       },
     },
   };
-  const { failed, warnings, summary } = await runScript(
+  const { failed, warnings, summary, outputs } = await runScript(
     applyStep.with.script,
     {
       REQUESTED: "7",
@@ -246,6 +249,7 @@ async function runApply(
     warnings,
     summary,
     issueCalls,
+    outputs,
   };
 }
 
@@ -332,13 +336,33 @@ test("a success subtype with a valid triage does not escalate", async () => {
 });
 
 test("a confident run sets the type and removes the floor label", async () => {
-  const { labels, typeCalls, removed, failed } = await apply(SUCCESS, {
+  const { labels, typeCalls, removed, failed, outputs } = await apply(SUCCESS, {
     output: triaged(),
   });
   assert.deepEqual(labels, ["priority: high"]);
   assert.deepEqual(typeCalls, [{ id: "I_node7", type: "IT_bug" }]);
   assert.deepEqual(removed, [FLOOR_LABEL]);
   assert.deepEqual(failed, []);
+  assert.equal(outputs.deferred, undefined);
+});
+
+test("a type the issue already has is kept and counts as typed for the floor", async () => {
+  const { typeCalls, removed, failed } = await apply(SUCCESS, {
+    output: triaged({ type: "Bug" }),
+    existingType: "Task",
+  });
+  assert.deepEqual(typeCalls, []);
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+  assert.deepEqual(failed, []);
+});
+
+test("an existing type on an unusable run keeps the floor", async () => {
+  const { typeCalls, removed } = await apply(SUCCESS, {
+    output: triaged({ type: "none" }),
+    existingType: "Task",
+  });
+  assert.deepEqual(typeCalls, []);
+  assert.deepEqual(removed, []);
 });
 
 test("a usable escalated triage sets the type, proposes the class and removes the floor", async () => {
@@ -417,14 +441,88 @@ test("a confident run with no class still records none", async () => {
   assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
 });
 
-test("a permission denial keeps the floor even with a typed output", async () => {
-  const { labels, typeCalls, removed } = await apply(
-    { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
-    { output: triaged() },
-  );
-  assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL]);
+test("a permission denial on an otherwise clean triage applies nothing, so a later run retries", async () => {
+  const { labels, comments, typeCalls, removed, failed, warnings, outputs } =
+    await apply(
+      { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
+      { output: triaged() },
+    );
+  assert.equal(outputs.deferred, "true");
+  assert.deepEqual(labels, []);
+  assert.deepEqual(comments, []);
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
+  assert.deepEqual(failed, []);
+  assert.match(warnings.join("\n"), /nothing applied/);
+});
+
+test("a permission denial on a triage that asks for a person still escalates", async () => {
+  const { labels, typeCalls } = await apply(
+    { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
+    { output: triaged({ needs_human: true }) },
+  );
+  assert.ok(labels.includes(ESCALATION_LABEL));
+  assert.deepEqual(typeCalls, []);
+});
+
+test("a permission denial with another escalation reason still escalates", async () => {
+  const { labels } = await apply(
+    { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
+    { output: triaged({ comment: "token sk-ant-abcdefghijkl" }) },
+  );
+  assert.ok(labels.includes(ESCALATION_LABEL));
+});
+
+test("extract logs each denied tool and input inside stop-commands, with credentials redacted", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-extract-"));
+  const executionFile = path.join(directory, "execution.json");
+  fs.writeFileSync(
+    executionFile,
+    JSON.stringify([
+      {
+        ...SUCCESS,
+        structured_output: triaged(),
+        permission_denials: [
+          {
+            tool_name: "Bash",
+            tool_input: {
+              command: "x\n::error::forged ##[add-mask]y sk-ant-abcdefghijkl",
+            },
+          },
+        ],
+      },
+    ]),
+  );
+  let infos;
+  try {
+    ({ infos } = await runScript(
+      extractStep.with.script,
+      {
+        EXECUTION_FILE: executionFile,
+        ALLOWED: "[]",
+        TYPES: JSON.stringify(TYPES),
+        CLASSES: "[]",
+        CLI_VERSION: "",
+      },
+      {},
+    ));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  const start = infos.findIndex((l) =>
+    /^::stop-commands::[0-9a-f-]{36}$/u.test(l),
+  );
+  assert.ok(start >= 0, infos.join("\n"));
+  const token = infos[start].slice("::stop-commands::".length);
+  const end = infos.indexOf(`::${token}::`);
+  assert.ok(end > start + 1, infos.join("\n"));
+  const line = infos
+    .slice(start + 1, end)
+    .find((l) => l.startsWith("Permission denied: Bash "));
+  assert.ok(line, infos.join("\n"));
+  assert.ok(!/[\n\r]/u.test(line), line);
+  assert.ok(!line.includes("sk-ant-abcdefghijkl"), line);
+  assert.match(line, /\[REDACTED\]/);
 });
 
 test("a class outside the repository's work classes is not proposed", async () => {
@@ -1207,4 +1305,18 @@ test("compose leaves the type out when Issue Types are unreadable", async () => 
   assert.equal(outputs.types, "{}");
   assert.doesNotMatch(outputs["type-instruction"], /type: the issue's kind/u);
   assert.equal(warnings.length, 1);
+});
+
+test("triage-deferred reaches the caller from the apply step's deferred output", () => {
+  assert.equal(
+    workflow.on.workflow_call.outputs["triage-deferred"].value,
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    "${{ jobs.apply.outputs.deferred }}",
+  );
+  assert.equal(
+    workflow.jobs.apply.outputs.deferred,
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    "${{ steps.apply.outputs.deferred }}",
+  );
+  assert.equal(applyStep.id, "apply");
 });

@@ -260,6 +260,12 @@ on:
           auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.status.outputs.failure-class }}
+      triage-deferred:
+        description: >-
+          'true' when a permission denial on an otherwise clean triage left
+          the issue untouched for a later run to retry; else empty. A caller
+          step that reads the lane comment skips on it.
+        value: ${{ jobs.apply.outputs.deferred }}
     secrets:
       CLAUDE_API_KEY:
         description: >-
@@ -846,6 +852,24 @@ jobs:
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
             core.setOutput("denials", String(denials.length));
             core.setOutput("triage", triage ? JSON.stringify(triage) : "");
+            // Each denied tool and its input, on one line apiece. The input is
+            // model-chosen, so the lines sit inside stop-commands with a
+            // per-run random token (the runner also parses `##[` anywhere in
+            // a line), control characters cannot end a line early, and
+            // credential-shaped text is redacted.
+            if (denials.length > 0) {
+              const token = require("node:crypto").randomUUID();
+              const clean = (value) =>
+                String(value ?? "")
+                  .replace(/[\u0000-\u001f\u007f]/gu, " ")
+                  .replace(/sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/gu, "[REDACTED]")
+                  .slice(0, 300);
+              core.info(`::stop-commands::${token}`);
+              for (const denial of denials.slice(0, 20)) {
+                core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+              }
+              core.info(`::${token}::`);
+            }
 
             const summary = [
               "### claude-intake-triage run",
@@ -1388,6 +1412,24 @@ jobs:
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
             core.setOutput("denials", String(denials.length));
             core.setOutput("triage", triage ? JSON.stringify(triage) : "");
+            // Each denied tool and its input, on one line apiece. The input is
+            // model-chosen, so the lines sit inside stop-commands with a
+            // per-run random token (the runner also parses `##[` anywhere in
+            // a line), control characters cannot end a line early, and
+            // credential-shaped text is redacted.
+            if (denials.length > 0) {
+              const token = require("node:crypto").randomUUID();
+              const clean = (value) =>
+                String(value ?? "")
+                  .replace(/[\u0000-\u001f\u007f]/gu, " ")
+                  .replace(/sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/gu, "[REDACTED]")
+                  .slice(0, 300);
+              core.info(`::stop-commands::${token}`);
+              for (const denial of denials.slice(0, 20)) {
+                core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+              }
+              core.info(`::${token}::`);
+            }
 
             const summary = [
               "### claude-intake-triage run",
@@ -1418,8 +1460,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write # apply labels, the Issue Type and the triage comment
+    outputs:
+      deferred: ${{ steps.apply.outputs.deferred }}
     steps:
       - name: Apply the triage
+        id: apply
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
@@ -1535,6 +1580,20 @@ jobs:
             if (CREDENTIAL.test(comment)) escalate.push("the comment looked like it carried a credential");
             comment = comment.replace(/@(?=[A-Za-z0-9])/gu, "@​");
 
+            // A permission denial on an otherwise clean run (success, a
+            // complete verdict, no person asked for, nothing else to escalate)
+            // applies nothing and escalates nothing: the caller's triage sweep
+            // runs the issue again within its own attempt bound. The denied
+            // tools are in the extract step's log.
+            if (escalate.length === 1 && denials > 0 && subtype === "success" && pick("ERROR") !== "true" && output && !output.needs_human) {
+              core.warning(`${denials} permission denial(s) on an otherwise clean triage: nothing applied, so a later triage run retries the issue.`);
+              core.setOutput("deferred", "true");
+              await core.summary
+                .addRaw(["### claude-intake-triage", "", `- Leg: ${legName}`, `- Permission denials: ${denials}`, "- Applied: nothing (deferred for a retry)"].join("\n"))
+                .write();
+              return;
+            }
+
             // A usable triage is a clean run with no permission denial whose
             // output names one of the repository's Issue Types. Only the type
             // and the proposed class, both checked against enums, survive an
@@ -1584,8 +1643,9 @@ jobs:
             }
 
             // The type and the floor follow a clean write of a usable triage.
-            // GitHub can drop a type change it does not allow without an
-            // error, so the result is read back.
+            // A type the issue already has is kept, whoever set it, and
+            // counts as typed for the floor. GitHub can drop a type change it
+            // does not allow without an error, so the result is read back.
             const priorities = [...labels].filter((label) => label.startsWith("priority:"));
             // On a run that was not escalated, a status or security label
             // means a person still has to act, so the floor stays. An
@@ -1593,11 +1653,12 @@ jobs:
             // which replaces the floor.
             const personNeeded = [...labels].some((label) => label.startsWith("status:") || label === "area: security");
             const routed = escalated || (priorities.length === 1 && !personNeeded);
-            let typeSet = "";
+            const existingType = typeof issue.type?.name === "string" ? issue.type.name : "";
+            let typeSet = !failure && usable && existingType ? existingType : "";
             let floorCleared = false;
             // A failed type write still lets the floor be added below.
             let typeFailure;
-            if (!failure && usable) {
+            if (!failure && usable && !existingType) {
               try {
                 const updated = await github.graphql(
                   "mutation($id: ID!, $type: ID!) { updateIssue(input: { id: $id, issueTypeId: $type }) { issue { issueType { name } } } }",
