@@ -995,6 +995,7 @@ test("the log has one object for the leg with the documented fields and no crede
     "message",
     "resets",
     "usage",
+    "rate_limits",
     "denials",
     "next",
   ]);
@@ -2019,3 +2020,117 @@ for (const [name, options, pattern] of [
     assert.equal(fs.existsSync(world.output), false);
   });
 }
+
+// Subscription headroom (code.claude.com/docs/en/agent-sdk/typescript.md,
+// SDKRateLimitEvent; python.md, RateLimitInfo).
+const { usageWarning } = require("./lane.cjs");
+
+const limitEvent = (status, rateLimitType, utilization, resetsAt = 1767225600) => ({
+  type: "rate_limit_event",
+  rate_limit_info: { status, resetsAt, rateLimitType, utilization },
+});
+
+const WARNED = [
+  { type: "system", subtype: "init" },
+  limitEvent("allowed", "five_hour", 0.61),
+  limitEvent("allowed_warning", "five_hour", 0.8249),
+  limitEvent("allowed", "seven_day", 0.3, 1767830400),
+  result({
+    usage: {
+      input_tokens: 10,
+      output_tokens: 20,
+      cache_read_input_tokens: 2_500_000,
+      cache_creation_input_tokens: 400,
+    },
+  }),
+];
+
+test("the log records each window's max utilization, reset and last status, and the leg's tokens", () => {
+  const [record] = runCase({ sub: WARNED }).records;
+  assert.deepEqual(record.rate_limits, {
+    five_hour: { utilization: 0.82, resets_at: "2026-01-01T00:00:00Z", status: "allowed_warning" },
+    seven_day: { utilization: 0.3, resets_at: "2026-01-08T00:00:00Z", status: "allowed" },
+  });
+  assert.deepEqual(record.usage, {
+    input_tokens: 10,
+    output_tokens: 20,
+    cache_read_input_tokens: 2_500_000,
+    cache_creation_input_tokens: 400,
+  });
+  assert.deepEqual(runCase({ key: SUCCESS }).records[0].rate_limits, {});
+});
+
+test("usageWarning names the secret and every window at a warning or at 0.70 or more", () => {
+  const record = (rateLimits) => ({ secret: TOKEN_NAME, rate_limits: rateLimits });
+  const at = "2026-01-01T00:00:00Z";
+  assert.equal(
+    usageWarning(
+      record({
+        five_hour: { utilization: 0.5, resets_at: at, status: "allowed_warning" },
+        seven_day: { utilization: 0.7, resets_at: "2026-01-08T00:00:00Z", status: "allowed" },
+        seven_day_opus: { utilization: 0.69, resets_at: at, status: "allowed" },
+        overage: { utilization: null, resets_at: null, status: "rejected" },
+      }),
+    ),
+    "::warning title=run-claude-cli usage::AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN is near a subscription usage limit: " +
+      "window=five_hour utilization=0.5 status=allowed_warning resets=2026-01-01T00:00:00Z; " +
+      "window=seven_day utilization=0.7 status=allowed resets=2026-01-08T00:00:00Z; " +
+      "window=overage status=rejected",
+  );
+  assert.equal(
+    usageWarning(record({ five_hour: { utilization: 0.69, resets_at: at, status: "allowed" } })),
+    null,
+  );
+  assert.equal(usageWarning(record({})), null);
+});
+
+function captureStdout(action) {
+  const written = [];
+  const write = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  try {
+    action();
+  } catch {
+    // A lane class throws; the lines before it are what is checked.
+  } finally {
+    process.stdout.write = write;
+  }
+  return written.join("").split("\n");
+}
+
+test("run writes one usage warning after the stop-commands block ends, on a stop too", () => {
+  for (const [name, messages, exit] of [
+    ["run-warned", WARNED, "0"],
+    ["run-warned-stop", [limitEvent("allowed_warning", "five_hour", 0.9), ...SESSION_LIMIT], "1"],
+  ]) {
+    const dir = path.join(root, name);
+    const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
+    env.FAKE_SUB = legFile(dir, "sub.jsonl", messages);
+    env.FAKE_SUB_EXIT = exit;
+    const lines = captureStdout(() => run(env));
+    const opened = lines.findIndex((l) => l.startsWith("::stop-commands::"));
+    const token = lines[opened].slice("::stop-commands::".length);
+    const closed = lines.indexOf(`::${token}::`);
+    const warnings = lines.map((l, i) => [l, i]).filter(([l]) => l.startsWith("::warning title=run-claude-cli usage::"));
+    assert.equal(warnings.length, 1, name);
+    assert.ok(closed > opened && warnings[0][1] > closed, name);
+    assert.match(warnings[0][0], /AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN .* window=five_hour /u, name);
+    assert.equal(holdsCredential(warnings[0][0], [TOKEN]), false);
+  }
+});
+
+test("a rejected window below 0.70 still gets the warning line", () => {
+  assert.equal(
+    usageWarning({
+      secret: TOKEN_NAME,
+      rate_limits: {
+        seven_day: { utilization: 0.5, resets_at: "2026-01-08T00:00:00Z", status: "rejected" },
+      },
+    }),
+    "::warning title=run-claude-cli usage::AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN is near a subscription usage limit: " +
+      "window=seven_day utilization=0.5 status=rejected resets=2026-01-08T00:00:00Z",
+  );
+});

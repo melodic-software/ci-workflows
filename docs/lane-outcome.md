@@ -41,7 +41,7 @@ The record comes before the free text, and the legacy sentence before it is
 short, so the cut does not reach the record. The sentence's `models=` token
 and the record's `models` list each name at most 8 models; the run's other
 models are left out. An emitter whose record would pass 1,024 characters
-drops `models` from the record.
+drops `models`, then `usage`, then `windows`, until it fits.
 
 ## Examples
 
@@ -98,6 +98,10 @@ their closed values and where `report-lane-outcome` takes them from.
 | `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |
 | `costUsd` | no | number, at least 0; US dollars at list price, never what was billed | the execution file's result message `total_cost_usd`, the CLI's own estimate, on every outcome |
 | `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
+| `usage.input`, `usage.output`, `usage.cacheRead`, `usage.cacheCreation` | no | integers, at least 0; the leg's input, output, cache-read and cache-creation tokens | the `log-file` input, run-claude-cli's credential-scanned log; never the execution file |
+| `windows.<window>` | no | object per subscription window: `five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet` or `overage` | the `log-file` input, from the leg's `rate_limit_event` messages |
+| `windows.<window>.utilization` | no | number from 0 to 1, rounded to 2 decimals; the highest fraction used during the leg, absent when no event gave one | as above |
+| `windows.<window>.resetsAt`, `windows.<window>.status` | `status` yes | ISO 8601 UTC time; `allowed`, `allowed_warning` or `rejected`, from the window's newest event | as above |
 
 The schema allows unknown properties at every level
 (`additionalProperties: true`).
@@ -115,6 +119,22 @@ The schema allows unknown properties at every level
 | `failure` or anything else | any other | `failure` |
 
 `error` is reserved; v1 maps nothing to it.
+
+## Usage warning
+
+run-claude-cli writes one `::warning::` annotation per leg when any window's
+status is `allowed_warning` or `rejected`, or its utilization is 0.70 or more.
+It names the leg's secret (never its value) and, for each such window, the
+window, utilization, status and reset time, for example:
+
+```text
+AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN is near a subscription usage limit: window=five_hour utilization=0.82 status=allowed_warning resets=2026-10-22T05:00:00Z
+```
+
+The window fields follow the Agent SDK's
+[`RateLimitInfo`](https://code.claude.com/docs/en/agent-sdk/python.md);
+each is read in camelCase (`rateLimitType`, `resetsAt`) or snake_case
+(`rate_limit_type`, `resets_at`).
 
 ## Limit classes
 

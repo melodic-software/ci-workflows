@@ -63,6 +63,7 @@ const {
   apiErrorFacts,
   classifyExecutionFile,
   creditStopResetsAt,
+  rateLimitWindows,
   readMessages,
   readRunRecord,
 } = require("../report-lane-outcome/classify.cjs");
@@ -538,6 +539,17 @@ function legRecord({
       cache_read_input_tokens: count(usage.cache_read_input_tokens),
       cache_creation_input_tokens: count(usage.cache_creation_input_tokens),
     },
+    // Each subscription window's highest utilization, newest reset and status.
+    rate_limits: Object.fromEntries(
+      Object.entries(rateLimitWindows(messages)).map(([window, info]) => [
+        window,
+        {
+          utilization: info.utilization,
+          resets_at: info.resetsAt,
+          status: info.status,
+        },
+      ]),
+    ),
     denials: {
       count: denials.length,
       tools: [
@@ -550,6 +562,32 @@ function legRecord({
     },
     next,
   };
+}
+
+// At or past this utilization a window warns, as an allowed_warning or
+// rejected status does.
+const USAGE_WARNING_UTILIZATION = 0.7;
+
+// One warning annotation naming the leg's secret and every window near its
+// limit, from the logged record's closed values; null when none is.
+function usageWarning(record) {
+  const near = Object.entries(record.rate_limits ?? {}).filter(
+    ([, info]) =>
+      info.status !== "allowed" ||
+      (info.utilization ?? 0) >= USAGE_WARNING_UTILIZATION,
+  );
+  if (near.length === 0) return null;
+  const windows = near.map(([window, info]) =>
+    [
+      `window=${window}`,
+      info.utilization === null ? "" : `utilization=${info.utilization}`,
+      `status=${info.status}`,
+      info.resets_at === null ? "" : `resets=${info.resets_at}`,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+  return `::warning title=run-claude-cli usage::${record.secret} is near a subscription usage limit: ${windows.join("; ")}`;
 }
 
 // True when the text holds any credential value or anything shaped like an
@@ -1206,6 +1244,10 @@ function run(env) {
       `### run-claude-cli: ${config.lane} (${config.role})\n\n${summaryTable(outcome.records)}\n`,
     );
   }
+  // After the stop-commands block, so the runner reads it, and before a
+  // lane class ends the step, so a stopped leg still warns.
+  const warning = clean ? usageWarning(outcome.records[0]) : null;
+  if (warning !== null) process.stdout.write(`${warning}\n`);
   if (!clean) {
     throw new LaneError(
       "the execution log held a credential and was not written",
@@ -1267,6 +1309,7 @@ module.exports = {
   run,
   runLeg,
   summaryTable,
+  usageWarning,
   verifyEnvironment,
   verifyIsolation,
   verifyManagedSettings,
