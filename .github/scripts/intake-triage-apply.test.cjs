@@ -129,6 +129,7 @@ async function runApply(
   env,
   {
     keptType,
+    existingType,
     floorLabel = FLOOR_LABEL,
     escalationLabel = ESCALATION_LABEL,
     allowed = ["bug", "priority: high", "priority: low"],
@@ -194,6 +195,7 @@ async function runApply(
             data: {
               number: request.issue_number,
               node_id: `I_node${request.issue_number}`,
+              type: existingType ? { name: existingType } : null,
             },
           };
         },
@@ -339,6 +341,25 @@ test("a confident run sets the type and removes the floor label", async () => {
   assert.deepEqual(typeCalls, [{ id: "I_node7", type: "IT_bug" }]);
   assert.deepEqual(removed, [FLOOR_LABEL]);
   assert.deepEqual(failed, []);
+});
+
+test("a type the issue already has is kept and counts as typed for the floor", async () => {
+  const { typeCalls, removed, failed } = await apply(SUCCESS, {
+    output: triaged({ type: "Bug" }),
+    existingType: "Task",
+  });
+  assert.deepEqual(typeCalls, []);
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+  assert.deepEqual(failed, []);
+});
+
+test("an existing type on an unusable run keeps the floor", async () => {
+  const { typeCalls, removed } = await apply(SUCCESS, {
+    output: triaged({ type: "none" }),
+    existingType: "Task",
+  });
+  assert.deepEqual(typeCalls, []);
+  assert.deepEqual(removed, []);
 });
 
 test("a usable escalated triage sets the type, proposes the class and removes the floor", async () => {

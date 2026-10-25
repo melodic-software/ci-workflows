@@ -1584,8 +1584,9 @@ jobs:
             }
 
             // The type and the floor follow a clean write of a usable triage.
-            // GitHub can drop a type change it does not allow without an
-            // error, so the result is read back.
+            // A type the issue already has is kept, whoever set it, and
+            // counts as typed for the floor. GitHub can drop a type change it
+            // does not allow without an error, so the result is read back.
             const priorities = [...labels].filter((label) => label.startsWith("priority:"));
             // On a run that was not escalated, a status or security label
             // means a person still has to act, so the floor stays. An
@@ -1593,11 +1594,12 @@ jobs:
             // which replaces the floor.
             const personNeeded = [...labels].some((label) => label.startsWith("status:") || label === "area: security");
             const routed = escalated || (priorities.length === 1 && !personNeeded);
-            let typeSet = "";
+            const existingType = typeof issue.type?.name === "string" ? issue.type.name : "";
+            let typeSet = !failure && usable && existingType ? existingType : "";
             let floorCleared = false;
             // A failed type write still lets the floor be added below.
             let typeFailure;
-            if (!failure && usable) {
+            if (!failure && usable && !existingType) {
               try {
                 const updated = await github.graphql(
                   "mutation($id: ID!, $type: ID!) { updateIssue(input: { id: $id, issueTypeId: $type }) { issue { issueType { name } } } }",
