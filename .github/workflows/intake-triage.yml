@@ -260,6 +260,12 @@ on:
           auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
         value: ${{ jobs.status.outputs.failure-class }}
+      triage-deferred:
+        description: >-
+          'true' when a permission denial on an otherwise clean triage left
+          the issue untouched for a later run to retry; else empty. A caller
+          step that reads the lane comment skips on it.
+        value: ${{ jobs.apply.outputs.deferred }}
     secrets:
       CLAUDE_API_KEY:
         description: >-
@@ -1442,8 +1448,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write # apply labels, the Issue Type and the triage comment
+    outputs:
+      deferred: ${{ steps.apply.outputs.deferred }}
     steps:
       - name: Apply the triage
+        id: apply
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
@@ -1566,6 +1575,7 @@ jobs:
             // tools are in the extract step's log.
             if (escalate.length === 1 && denials > 0 && subtype === "success" && pick("ERROR") !== "true" && output && !output.needs_human) {
               core.warning(`${denials} permission denial(s) on an otherwise clean triage: nothing applied, so a later triage run retries the issue.`);
+              core.setOutput("deferred", "true");
               await core.summary
                 .addRaw(["### claude-intake-triage", "", `- Leg: ${legName}`, `- Permission denials: ${denials}`, "- Applied: nothing (deferred for a retry)"].join("\n"))
                 .write();

@@ -226,7 +226,7 @@ async function runApply(
       },
     },
   };
-  const { failed, warnings, summary } = await runScript(
+  const { failed, warnings, summary, outputs } = await runScript(
     applyStep.with.script,
     {
       REQUESTED: "7",
@@ -249,6 +249,7 @@ async function runApply(
     warnings,
     summary,
     issueCalls,
+    outputs,
   };
 }
 
@@ -335,13 +336,14 @@ test("a success subtype with a valid triage does not escalate", async () => {
 });
 
 test("a confident run sets the type and removes the floor label", async () => {
-  const { labels, typeCalls, removed, failed } = await apply(SUCCESS, {
+  const { labels, typeCalls, removed, failed, outputs } = await apply(SUCCESS, {
     output: triaged(),
   });
   assert.deepEqual(labels, ["priority: high"]);
   assert.deepEqual(typeCalls, [{ id: "I_node7", type: "IT_bug" }]);
   assert.deepEqual(removed, [FLOOR_LABEL]);
   assert.deepEqual(failed, []);
+  assert.equal(outputs.deferred, undefined);
 });
 
 test("a type the issue already has is kept and counts as typed for the floor", async () => {
@@ -440,10 +442,11 @@ test("a confident run with no class still records none", async () => {
 });
 
 test("a permission denial on an otherwise clean triage applies nothing, so a later run retries", async () => {
-  const { labels, comments, typeCalls, removed, failed, warnings } = await apply(
+  const { labels, comments, typeCalls, removed, failed, warnings, outputs } = await apply(
     { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
     { output: triaged() },
   );
+  assert.equal(outputs.deferred, "true");
   assert.deepEqual(labels, []);
   assert.deepEqual(comments, []);
   assert.deepEqual(typeCalls, []);
