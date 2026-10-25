@@ -1106,7 +1106,10 @@ test("the review leaves each leg as an artifact named for the run, head and leg,
   );
 });
 
-test("the full diff shows text the head marks -diff or binary, or hides behind a NUL byte, in both lanes", () => {
+// The base marks lock files -diff, as main's own .gitattributes does, so a
+// changed resolved URL in one would otherwise reach the reviewer as
+// "Binary files differ".
+test("the full diff shows text the base or head marks -diff or binary, or hides behind a NUL byte, in both lanes", () => {
   const { spawnSync } = require("node:child_process");
   const git = (cwd, ...args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -1120,17 +1123,30 @@ test("the full diff shows text the head marks -diff or binary, or hides behind a
     git(origin, "init", "--quiet", "--initial-branch=main");
     git(origin, "config", "user.email", "t@example.com");
     git(origin, "config", "user.name", "t");
+    const lockAttributes =
+      "package-lock.json -diff\npackages.lock.json -diff\n*.lock -diff\n";
+    const lock = (url) =>
+      `{\n  "packages": {\n    "node_modules/a": {\n      "resolved": "${url}"\n    }\n  }\n}\n`;
     fs.writeFileSync(path.join(origin, "README"), "base\n");
+    fs.writeFileSync(path.join(origin, ".gitattributes"), lockAttributes);
+    fs.writeFileSync(
+      path.join(origin, "package-lock.json"),
+      lock("https://registry.npmjs.org/a/-/a-1.0.0.tgz"),
+    );
     git(origin, "add", ".");
     git(origin, "commit", "--quiet", "-m", "base");
     const base = git(origin, "rev-parse", "HEAD");
     fs.writeFileSync(
       path.join(origin, ".gitattributes"),
-      "hidden.sh -diff\nopaque.sh binary\n",
+      `${lockAttributes}hidden.sh -diff\nopaque.sh binary\n`,
     );
     fs.writeFileSync(path.join(origin, "hidden.sh"), "echo NO-DIFF-PAYLOAD\n");
     fs.writeFileSync(path.join(origin, "opaque.sh"), "echo BINARY-PAYLOAD\n");
     fs.writeFileSync(path.join(origin, "nul.sh"), "\0\necho NUL-PAYLOAD\n");
+    fs.writeFileSync(
+      path.join(origin, "package-lock.json"),
+      lock("https://lockfile.example/a-1.0.0.tgz"),
+    );
     git(origin, "add", ".");
     git(origin, "commit", "--quiet", "-m", "head");
     const head = git(origin, "rev-parse", "HEAD");
@@ -1169,6 +1185,14 @@ test("the full diff shows text the head marks -diff or binary, or hides behind a
     ]) {
       assert.match(diff, new RegExp(`^\\+echo ${payload}$`, "mu"), payload);
     }
+    assert.match(
+      diff,
+      /^- {6}"resolved": "https:\/\/registry\.npmjs\.org\/a\/-\/a-1\.0\.0\.tgz"$/mu,
+    );
+    assert.match(
+      diff,
+      /^\+ {6}"resolved": "https:\/\/lockfile\.example\/a-1\.0\.0\.tgz"$/mu,
+    );
     assert.match(
       fs.readFileSync(path.join(dir, "output"), "utf8"),
       /^written=true$/mu,
