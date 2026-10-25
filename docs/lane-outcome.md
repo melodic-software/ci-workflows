@@ -132,7 +132,9 @@ AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN is near a subscription usage limit: window=f
 ```
 
 The window fields follow the Agent SDK's
-[`RateLimitInfo`](https://code.claude.com/docs/en/agent-sdk/python.md).
+[`RateLimitInfo`](https://code.claude.com/docs/en/agent-sdk/python.md);
+each is read in camelCase (`rateLimitType`, `resetsAt`) or snake_case
+(`rate_limit_type`, `resets_at`).
 
 ## Limit classes
 

@@ -322,17 +322,32 @@ function isoFromEpoch(value) {
     : date.toISOString().replace(/\.000Z$/u, "Z");
 }
 
+// A rate_limit_event's info with each field read in either form: camelCase
+// as the TypeScript reference (SDKRateLimitEvent) and the CLI's events seen
+// so far name them, snake_case as python.md (RateLimitInfo) does. Null for
+// any other message.
+function limitInfo(message) {
+  const info = message?.type === "rate_limit_event" && message.rate_limit_info;
+  if (!info || typeof info !== "object") return null;
+  return {
+    status: info.status,
+    resetsAt: info.resetsAt ?? info.resets_at,
+    rateLimitType: info.rateLimitType ?? info.rate_limit_type,
+    utilization: info.utilization,
+  };
+}
+
 // The limit that stopped the run: the newest `rate_limit_event` whose status
 // is `rejected`. Only a rejected event names the window that stopped the run;
 // an allowed or warning event's reset is another window's and would bring the
 // restart too early, so with none the caller's fallback delay applies.
 function limitStopFrom(messages) {
-  const info = messages.findLast(
-    (message) =>
-      message?.type === "rate_limit_event" &&
-      message.rate_limit_info?.status === "rejected" &&
-      isoFromEpoch(message.rate_limit_info.resetsAt) !== null,
-  )?.rate_limit_info;
+  const info = messages
+    .map(limitInfo)
+    .findLast(
+      (event) =>
+        event?.status === "rejected" && isoFromEpoch(event.resetsAt) !== null,
+    );
   if (!info) return { resetsAt: null, resetsWindow: null };
   return {
     resetsAt: isoFromEpoch(info.resetsAt),
@@ -367,7 +382,7 @@ function fraction(value) {
 function rateLimitWindows(messages) {
   const windows = {};
   for (const message of messages) {
-    const info = message?.type === "rate_limit_event" && message.rate_limit_info;
+    const info = limitInfo(message);
     if (
       !info ||
       !RATE_LIMIT_WINDOWS.includes(info.rateLimitType) ||

@@ -1157,3 +1157,39 @@ test("lane record: past 1,024 characters models go first, then usage, and the re
   assert.ok(!("usage" in large) || "windows" in large);
   assert.equal(large.credential.secret, credential);
 });
+
+// python.md documents RateLimitInfo in snake_case (rate_limit_type,
+// resets_at); the TypeScript reference and this module's older reads use
+// camelCase. No real CI stream has shown which one the CLI emits, so both
+// forms count, field by field.
+test("rate-limit windows read the snake_case form as well as the camelCase one", () => {
+  const snake = (status, rate_limit_type, utilization, resets_at = NEW_YEAR) => ({
+    type: "rate_limit_event",
+    rate_limit_info: { status, rate_limit_type, utilization, resets_at },
+  });
+  assert.deepEqual(
+    rateLimitWindows([
+      snake("allowed", "five_hour", 0.4),
+      snake("allowed_warning", "five_hour", 0.77, NEW_YEAR + 3600),
+      windowEvent("allowed", "seven_day", 0.2, NEW_YEAR + 86400),
+    ]),
+    {
+      five_hour: { utilization: 0.77, resetsAt: "2026-01-01T01:00:00Z", status: "allowed_warning" },
+      seven_day: { utilization: 0.2, resetsAt: "2026-01-02T00:00:00Z", status: "allowed" },
+    },
+  );
+});
+
+test("resets and its window come from a rejected event in either field form", () => {
+  const snakeStop = record([
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resets_at: NEW_YEAR, rate_limit_type: "seven_day" },
+    },
+  ]);
+  assert.equal(snakeStop.resetsAt, "2026-01-01T00:00:00Z");
+  assert.equal(snakeStop.resetsWindow, "seven_day");
+  const camelStop = record([rateLimitEvent("rejected", NEW_YEAR, "five_hour")]);
+  assert.equal(camelStop.resetsAt, "2026-01-01T00:00:00Z");
+  assert.equal(camelStop.resetsWindow, "five_hour");
+});

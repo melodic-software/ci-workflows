@@ -2121,3 +2121,16 @@ test("run writes one usage warning after the stop-commands block ends, on a stop
     assert.equal(holdsCredential(warnings[0][0], [TOKEN]), false);
   }
 });
+
+test("a rejected window below 0.70 still gets the warning line", () => {
+  assert.equal(
+    usageWarning({
+      secret: TOKEN_NAME,
+      rate_limits: {
+        seven_day: { utilization: 0.5, resets_at: "2026-01-08T00:00:00Z", status: "rejected" },
+      },
+    }),
+    "::warning title=run-claude-cli usage::AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN is near a subscription usage limit: " +
+      "window=seven_day utilization=0.5 status=rejected resets=2026-01-08T00:00:00Z",
+  );
+});
