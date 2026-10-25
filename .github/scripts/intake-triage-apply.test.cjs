@@ -442,10 +442,11 @@ test("a confident run with no class still records none", async () => {
 });
 
 test("a permission denial on an otherwise clean triage applies nothing, so a later run retries", async () => {
-  const { labels, comments, typeCalls, removed, failed, warnings, outputs } = await apply(
-    { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
-    { output: triaged() },
-  );
+  const { labels, comments, typeCalls, removed, failed, warnings, outputs } =
+    await apply(
+      { ...SUCCESS, permission_denials: [{ tool_name: "Bash" }] },
+      { output: triaged() },
+    );
   assert.equal(outputs.deferred, "true");
   assert.deepEqual(labels, []);
   assert.deepEqual(comments, []);
@@ -481,7 +482,14 @@ test("extract logs each denied tool and input inside stop-commands, with credent
       {
         ...SUCCESS,
         structured_output: triaged(),
-        permission_denials: [{ tool_name: "Bash", tool_input: { command: "x\n::error::forged ##[add-mask]y sk-ant-abcdefghijkl" } }],
+        permission_denials: [
+          {
+            tool_name: "Bash",
+            tool_input: {
+              command: "x\n::error::forged ##[add-mask]y sk-ant-abcdefghijkl",
+            },
+          },
+        ],
       },
     ]),
   );
@@ -489,18 +497,28 @@ test("extract logs each denied tool and input inside stop-commands, with credent
   try {
     ({ infos } = await runScript(
       extractStep.with.script,
-      { EXECUTION_FILE: executionFile, ALLOWED: "[]", TYPES: JSON.stringify(TYPES), CLASSES: "[]", CLI_VERSION: "" },
+      {
+        EXECUTION_FILE: executionFile,
+        ALLOWED: "[]",
+        TYPES: JSON.stringify(TYPES),
+        CLASSES: "[]",
+        CLI_VERSION: "",
+      },
       {},
     ));
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
-  const start = infos.findIndex((l) => /^::stop-commands::[0-9a-f-]{36}$/u.test(l));
+  const start = infos.findIndex((l) =>
+    /^::stop-commands::[0-9a-f-]{36}$/u.test(l),
+  );
   assert.ok(start >= 0, infos.join("\n"));
   const token = infos[start].slice("::stop-commands::".length);
   const end = infos.indexOf(`::${token}::`);
   assert.ok(end > start + 1, infos.join("\n"));
-  const line = infos.slice(start + 1, end).find((l) => l.startsWith("Permission denied: Bash "));
+  const line = infos
+    .slice(start + 1, end)
+    .find((l) => l.startsWith("Permission denied: Bash "));
   assert.ok(line, infos.join("\n"));
   assert.ok(!/[\n\r]/u.test(line), line);
   assert.ok(!line.includes("sk-ant-abcdefghijkl"), line);
@@ -1287,4 +1305,18 @@ test("compose leaves the type out when Issue Types are unreadable", async () => 
   assert.equal(outputs.types, "{}");
   assert.doesNotMatch(outputs["type-instruction"], /type: the issue's kind/u);
   assert.equal(warnings.length, 1);
+});
+
+test("triage-deferred reaches the caller from the apply step's deferred output", () => {
+  assert.equal(
+    workflow.on.workflow_call.outputs["triage-deferred"].value,
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    "${{ jobs.apply.outputs.deferred }}",
+  );
+  assert.equal(
+    workflow.jobs.apply.outputs.deferred,
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    "${{ steps.apply.outputs.deferred }}",
+  );
+  assert.equal(applyStep.id, "apply");
 });
