@@ -846,6 +846,18 @@ jobs:
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
             core.setOutput("denials", String(denials.length));
             core.setOutput("triage", triage ? JSON.stringify(triage) : "");
+            // Each denied tool and its input, on one line apiece. The input is
+            // model-chosen, so control characters and `::` are neutralized and
+            // it cannot issue a workflow command.
+            for (const denial of denials.slice(0, 20)) {
+              const clean = (value) =>
+                String(value ?? "")
+                  .replace(/[\u0000-\u001f\u007f]/gu, " ")
+                  .replace(/sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/gu, "[REDACTED]")
+                  .replaceAll("::", ": :")
+                  .slice(0, 300);
+              core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+            }
 
             const summary = [
               "### claude-intake-triage run",
@@ -1388,6 +1400,18 @@ jobs:
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
             core.setOutput("denials", String(denials.length));
             core.setOutput("triage", triage ? JSON.stringify(triage) : "");
+            // Each denied tool and its input, on one line apiece. The input is
+            // model-chosen, so control characters and `::` are neutralized and
+            // it cannot issue a workflow command.
+            for (const denial of denials.slice(0, 20)) {
+              const clean = (value) =>
+                String(value ?? "")
+                  .replace(/[\u0000-\u001f\u007f]/gu, " ")
+                  .replace(/sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/gu, "[REDACTED]")
+                  .replaceAll("::", ": :")
+                  .slice(0, 300);
+              core.info(`Permission denied: ${clean(denial?.tool_name)} ${clean(JSON.stringify(denial?.tool_input ?? {}))}`);
+            }
 
             const summary = [
               "### claude-intake-triage run",
@@ -1534,6 +1558,19 @@ jobs:
             const CREDENTIAL = /(sk-ant-[A-Za-z0-9_-]{8,}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/u;
             if (CREDENTIAL.test(comment)) escalate.push("the comment looked like it carried a credential");
             comment = comment.replace(/@(?=[A-Za-z0-9])/gu, "@​");
+
+            // A permission denial on an otherwise clean run (success, a
+            // complete verdict, no person asked for, nothing else to escalate)
+            // applies nothing and escalates nothing: the caller's triage sweep
+            // runs the issue again within its own attempt bound. The denied
+            // tools are in the extract step's log.
+            if (escalate.length === 1 && denials > 0 && subtype === "success" && pick("ERROR") !== "true" && output && !output.needs_human) {
+              core.warning(`${denials} permission denial(s) on an otherwise clean triage: nothing applied, so a later triage run retries the issue.`);
+              await core.summary
+                .addRaw(["### claude-intake-triage", "", `- Leg: ${legName}`, `- Permission denials: ${denials}`, "- Applied: nothing (deferred for a retry)"].join("\n"))
+                .write();
+              return;
+            }
 
             // A usable triage is a clean run with no permission denial whose
             // output names one of the repository's Issue Types. Only the type
