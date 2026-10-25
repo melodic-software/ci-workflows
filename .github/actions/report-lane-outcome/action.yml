@@ -47,6 +47,14 @@ inputs:
       unparsable degrades to `other`.
     required: false
     default: ""
+  log-file:
+    description: >-
+      run-claude-cli's `log-file` output, the leg's credential-scanned JSONL
+      log. When set, the record carries the leg's token usage and its
+      subscription rate-limit windows (docs/lane-outcome.md), read from this
+      log only, never the execution file. Empty or missing adds neither.
+    required: false
+    default: ""
   lane:
     description: >-
       Human-readable lane name used in the annotation text, e.g.
@@ -183,6 +191,7 @@ runs:
       env:
         LANE_OUTCOME: ${{ inputs.outcome }}
         EXECUTION_FILE: ${{ inputs.execution-file }}
+        LOG_FILE: ${{ inputs.log-file }}
         LANE_NAME: ${{ inputs.lane }}
         STEP_STARTED_AT: ${{ inputs.step-started-at }}
         STEP_TIMEOUT_MINUTES: ${{ inputs.step-timeout-minutes }}
@@ -205,6 +214,7 @@ runs:
             classifyExecutionFile,
             FALLBACK_REASONS,
             laneReport,
+            readLegLog,
             readRunRecord,
             recordText,
           } = require(path.join(process.env.ACTION_PATH, "classify.cjs"));
@@ -223,7 +233,11 @@ runs:
           const executionFile = process.env.EXECUTION_FILE ?? "";
           // The run record (turns, max-turns, credential, models, and on a
           // limit stop resets) rides on the same annotation line as class=.
-          const runRecord = readRunRecord(executionFile);
+          // Token usage and windows come from the scanned log alone.
+          const runRecord = {
+            ...readRunRecord(executionFile),
+            ...readLegLog(process.env.LOG_FILE ?? ""),
+          };
           // One report per annotation: the legacy tokens, which ride on the
           // same line as class=, and the lane-outcome record, placed after
           // the message's first sentence and before any free text, so the

@@ -57,6 +57,7 @@ function writeExecutionFile(contents) {
 async function runOutcome({
   outcome,
   executionFile,
+  logFile = "",
   lane = "Claude review",
   startedAt = "",
   timeoutMinutes = "",
@@ -72,6 +73,7 @@ async function runOutcome({
   const keys = [
     "LANE_OUTCOME",
     "EXECUTION_FILE",
+    "LOG_FILE",
     "LANE_NAME",
     "STEP_STARTED_AT",
     "STEP_TIMEOUT_MINUTES",
@@ -91,6 +93,7 @@ async function runOutcome({
   Object.assign(process.env, {
     LANE_OUTCOME: outcome,
     EXECUTION_FILE: executionFile,
+    LOG_FILE: logFile,
     LANE_NAME: lane,
     STEP_STARTED_AT: startedAt,
     STEP_TIMEOUT_MINUTES: timeoutMinutes,
@@ -613,7 +616,12 @@ function schemaErrors(node, value, at = "$") {
           ? "integer"
           : typeof v;
   for (const [keyword, rule] of Object.entries(node)) {
-    if (ANNOTATIONS.has(keyword) || keyword === "then" || keyword === "else") {
+    if (
+      ANNOTATIONS.has(keyword) ||
+      keyword === "$defs" ||
+      keyword === "then" ||
+      keyword === "else"
+    ) {
       continue;
     }
     const isObject = typeOf(value) === "object";
@@ -627,6 +635,12 @@ function schemaErrors(node, value, at = "$") {
         ) {
           errors.push(`${at}: type ${actual}`);
         }
+        break;
+      }
+      case "$ref": {
+        const name = /^#\/\$defs\/(\w+)$/u.exec(rule)?.[1];
+        assert.ok(name && schema.$defs[name], `unsupported $ref ${rule}`);
+        errors.push(...schemaErrors(schema.$defs[name], value, at));
         break;
       }
       case "const":
@@ -704,6 +718,12 @@ test("the schema accepts the contract's three examples and rejects malformed rec
     { ...good, costUsd: -1 },
     { ...good, costUsd: "0.25" },
     { ...good, models: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
+    { ...good, usage: { input: -1 } },
+    { ...good, usage: { cacheRead: 1.5 } },
+    { ...good, windows: { five_hour: { utilization: 1.2, status: "allowed" } } },
+    { ...good, windows: { seven_day: { status: "ok" } } },
+    { ...good, windows: { overage: { utilization: 0.5 } } },
+    { ...good, windows: { five_hour: { resetsAt: "soon", status: "allowed" } } },
   ]) {
     assert.notDeepEqual(schemaErrors(schema, bad), [], JSON.stringify(bad));
   }
@@ -1195,4 +1215,39 @@ test("a handoff from a caller with lane-id is a notice even when no record can b
     assert.equal(readRecord(notices[0]), null, credential);
     assert.deepEqual(warnings, ["Claude review wrote no lane record: credential is empty or invalid."], credential);
   }
+});
+
+test("with log-file the record carries the leg's token usage and windows from that log alone", async () => {
+  const executionFile = writeExecutionFile([
+    // An execution-file window the record must not read.
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed", rateLimitType: "seven_day", utilization: 0.1, resetsAt: 1767225600 },
+    },
+    { type: "result", subtype: "success", is_error: false, num_turns: 4, usage: { input_tokens: 999 } },
+  ]);
+  const logFile = path.join(temporaryDirectory, "run-claude-cli-log.jsonl");
+  fs.writeFileSync(
+    logFile,
+    `${JSON.stringify({
+      usage: { input_tokens: 12, output_tokens: 340, cache_read_input_tokens: 1_200_000, cache_creation_input_tokens: 0 },
+      rate_limits: { five_hour: { utilization: 0.75, resets_at: "2026-01-01T05:00:00Z", status: "allowed_warning" } },
+    })}\n`,
+  );
+  const inputs = {
+    outcome: "success",
+    executionFile,
+    lane: "Claude intake triage",
+    laneId: "intake-triage",
+    credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+  };
+  const { notices } = await runOutcome({ ...inputs, logFile });
+  const record = readRecord(notices[0]);
+  assert.deepEqual(record.usage, { input: 12, output: 340, cacheRead: 1_200_000, cacheCreation: 0 });
+  assert.deepEqual(record.windows, {
+    five_hour: { utilization: 0.75, resetsAt: "2026-01-01T05:00:00Z", status: "allowed_warning" },
+  });
+  assert.deepEqual(schemaErrors(schema, record), []);
+  const without = readRecord((await runOutcome(inputs)).notices[0]);
+  assert.equal("usage" in without || "windows" in without, false);
 });

@@ -781,6 +781,7 @@ jobs:
         with:
           outcome: ${{ steps.claude.outcome }}
           execution-file: ${{ steps.claude.outputs.execution-file }}
+          log-file: ${{ steps.claude.outputs.log-file }}
           lane: Claude intake triage
           lane-id: intake-triage
           step-started-at: ${{ steps.compose.outputs.started-at }}
@@ -1339,6 +1340,7 @@ jobs:
         with:
           outcome: ${{ steps.claude.outcome }}
           execution-file: ${{ steps.claude.outputs.execution-file }}
+          log-file: ${{ steps.claude.outputs.log-file }}
           lane: Claude intake triage
           lane-id: intake-triage
           step-started-at: ${{ steps.compose.outputs.started-at }}

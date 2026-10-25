@@ -977,3 +977,183 @@ test("lane record: costUsd rides on every outcome and is omitted when unknown", 
   );
   assert.equal("costUsd" in unknown.record, false);
 });
+
+// Subscription headroom: the rate_limit_event fields the Agent SDK documents
+// (code.claude.com/docs/en/agent-sdk/typescript.md, SDKRateLimitEvent:
+// status, resetsAt, utilization; python.md, RateLimitInfo: the five
+// rate_limit_type windows and utilization as a 0.0-1.0 fraction).
+const { rateLimitWindows, readLegLog } = require("./classify.cjs");
+
+const windowEvent = (status, rateLimitType, utilization, resetsAt = NEW_YEAR) => ({
+  type: "rate_limit_event",
+  rate_limit_info: { status, resetsAt, rateLimitType, utilization },
+});
+
+test("rate-limit windows: the max utilization per window, its newest status and reset", () => {
+  assert.deepEqual(
+    rateLimitWindows([
+      windowEvent("allowed", "five_hour", 0.41),
+      windowEvent("allowed_warning", "five_hour", 0.8237),
+      // Newest five_hour event: its status and reset win, the max stays.
+      windowEvent("allowed", "five_hour", 0.5, NEW_YEAR + 3600),
+      // No utilization on any seven_day event: none is reported, never 0.
+      windowEvent("allowed", "seven_day", undefined, NEW_YEAR + 86400),
+      { type: "result", num_turns: 1 },
+    ]),
+    {
+      five_hour: { utilization: 0.82, resetsAt: "2026-01-01T01:00:00Z", status: "allowed" },
+      seven_day: { utilization: null, resetsAt: "2026-01-02T00:00:00Z", status: "allowed" },
+    },
+  );
+});
+
+test("rate-limit windows: only the documented windows, statuses and 0-1 fractions count", () => {
+  assert.deepEqual(
+    rateLimitWindows([
+      windowEvent("allowed", "five hour\n", 0.9),
+      windowEvent("allowed", "weekly", 0.9),
+      windowEvent("allowed", undefined, 0.9),
+      windowEvent("ok", "seven_day_opus", 0.9),
+      windowEvent("allowed", "overage", 1.5),
+      windowEvent("allowed", "overage", -0.1),
+      windowEvent("allowed", "overage", "0.9"),
+      windowEvent("rejected", "seven_day_sonnet", 1, "soon"),
+    ]),
+    {
+      overage: { utilization: null, resetsAt: "2026-01-01T00:00:00Z", status: "allowed" },
+      seven_day_sonnet: { utilization: 1, resetsAt: null, status: "rejected" },
+    },
+  );
+  assert.deepEqual(rateLimitWindows([{ type: "result" }]), {});
+});
+
+const legLogFile = path.join(temporaryDirectory, "run-claude-cli-log.jsonl");
+function legLog(...records) {
+  fs.writeFileSync(legLogFile, `${records.map((r) => JSON.stringify(r)).join("\n")}\n`);
+  return readLegLog(legLogFile);
+}
+
+test("the leg log gives the leg's token usage and windows, from its last record", () => {
+  assert.deepEqual(
+    legLog(
+      { usage: { input_tokens: 1 }, rate_limits: {} },
+      {
+        usage: {
+          input_tokens: 12,
+          output_tokens: 3400,
+          cache_read_input_tokens: 2_345_678,
+          cache_creation_input_tokens: 9100,
+        },
+        rate_limits: {
+          five_hour: { utilization: 0.82, resets_at: "2026-01-01T00:00:00Z", status: "allowed_warning" },
+          seven_day: { utilization: null, resets_at: null, status: "allowed" },
+        },
+      },
+    ),
+    {
+      usage: { input: 12, output: 3400, cacheRead: 2_345_678, cacheCreation: 9100 },
+      windows: {
+        five_hour: { utilization: 0.82, resetsAt: "2026-01-01T00:00:00Z", status: "allowed_warning" },
+        seven_day: { status: "allowed" },
+      },
+    },
+  );
+});
+
+test("the leg log's values are re-checked: a forged value is dropped, the rest kept", () => {
+  assert.deepEqual(
+    legLog({
+      usage: {
+        input_tokens: -1,
+        output_tokens: 1.5,
+        cache_read_input_tokens: "12",
+        cache_creation_input_tokens: 7,
+      },
+      rate_limits: {
+        "evil\n::error::x": { utilization: 0.5, resets_at: null, status: "allowed" },
+        five_hour: { utilization: 2, resets_at: "tomorrow", status: "allowed" },
+        seven_day: { utilization: 0.3, resets_at: null, status: "ok" },
+      },
+    }),
+    { usage: { cacheCreation: 7 }, windows: { five_hour: { status: "allowed" } } },
+  );
+  const none = { usage: null, windows: null };
+  assert.deepEqual(legLog({ usage: {}, rate_limits: {} }), none);
+  fs.writeFileSync(legLogFile, "not json\n");
+  assert.deepEqual(readLegLog(legLogFile), none);
+  assert.deepEqual(readLegLog(""), none);
+  assert.deepEqual(readLegLog(path.join(temporaryDirectory, "never-written.jsonl")), none);
+});
+
+test("lane record: usage and windows ride on the record, never as legacy tokens", () => {
+  const usage = { input: 12, output: 3400, cacheRead: 2_345_678, cacheCreation: 9100 };
+  const windows = {
+    five_hour: { utilization: 0.82, resetsAt: "2026-01-01T00:00:00Z", status: "allowed_warning" },
+  };
+  const { tokens, record } = laneReport(
+    { turns: 3, models: [], usage, windows },
+    { laneId: "intake-triage", outcome: "success", credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN" },
+  );
+  assert.deepEqual(record.usage, usage);
+  assert.deepEqual(record.windows, windows);
+  assert.equal(tokens, "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN turns=3");
+  const bare = laneReport(
+    { turns: 3, models: [], usage: null, windows: null },
+    { laneId: "intake-triage", outcome: "success", credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN" },
+  ).record;
+  assert.equal("usage" in bare || "windows" in bare, false);
+});
+
+test("lane record: past 1,024 characters models go first, then usage, and the record fits", () => {
+  const models = Array.from({ length: 8 }, (_, i) => `${"m".repeat(99)}${i}`);
+  const usage = {
+    input: Number.MAX_SAFE_INTEGER,
+    output: Number.MAX_SAFE_INTEGER,
+    cacheRead: Number.MAX_SAFE_INTEGER,
+    cacheCreation: Number.MAX_SAFE_INTEGER,
+  };
+  const windows = Object.fromEntries(
+    ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "overage"].map((w) => [
+      w,
+      { utilization: 0.99, resetsAt: "2026-01-01T00:00:00Z", status: "allowed_warning" },
+    ]),
+  );
+  // A small record: dropping models alone makes it fit.
+  const small = laneReport(
+    { turns: 1, models, usage, windows },
+    { laneId: "intake-triage", outcome: "success", credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN" },
+  ).record;
+  assert.equal("models" in small, false);
+  assert.deepEqual(small.usage, usage);
+  assert.deepEqual(small.windows, windows);
+  // The largest record: every fact at its longest.
+  const credential = `${"R".repeat(76)}_CLAUDE_CODE_OAUTH_TOKEN`;
+  const large = laneReport(
+    {
+      turns: 999999,
+      costUsd: 0.123456789012345,
+      models,
+      usage,
+      windows,
+      resetsAt: "2026-01-01T00:00:00Z",
+      resetsWindow: "seven_day_sonnet",
+      errorType: "e".repeat(40),
+      errorCode: "c".repeat(64),
+      requestId: `req_${"a".repeat(64)}`,
+    },
+    {
+      laneId: "l".repeat(64),
+      outcome: "failure",
+      failureClass: "rate-limit",
+      maxTurns: "999999",
+      credential,
+      fallbackReason: "credit-stop",
+      handoff: "true",
+    },
+  ).record;
+  assert.ok(JSON.stringify(large).length <= 1024);
+  assert.equal("models" in large, false);
+  // Windows outlast usage.
+  assert.ok(!("usage" in large) || "windows" in large);
+  assert.equal(large.credential.secret, credential);
+});

@@ -342,6 +342,98 @@ function limitStopFrom(messages) {
   };
 }
 
+// The subscription windows and statuses `rate_limit_event` names, per the
+// Agent SDK reference (code.claude.com/docs/en/agent-sdk/python.md,
+// RateLimitInfo). Any other value is dropped.
+const RATE_LIMIT_WINDOWS = [
+  "five_hour",
+  "seven_day",
+  "seven_day_opus",
+  "seven_day_sonnet",
+  "overage",
+];
+const RATE_LIMIT_STATUSES = ["allowed", "allowed_warning", "rejected"];
+const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
+
+// A 0-1 fraction rounded to 2 decimals, or null.
+function fraction(value) {
+  return typeof value === "number" && value >= 0 && value <= 1
+    ? Math.round(value * 100) / 100
+    : null;
+}
+
+// Each window's highest utilization over the run, and its newest event's
+// status and reset. A window no event gave a utilization has none, never 0.
+function rateLimitWindows(messages) {
+  const windows = {};
+  for (const message of messages) {
+    const info = message?.type === "rate_limit_event" && message.rate_limit_info;
+    if (
+      !info ||
+      !RATE_LIMIT_WINDOWS.includes(info.rateLimitType) ||
+      !RATE_LIMIT_STATUSES.includes(info.status)
+    ) {
+      continue;
+    }
+    const seen = windows[info.rateLimitType]?.utilization ?? null;
+    const now = fraction(info.utilization);
+    windows[info.rateLimitType] = {
+      utilization: seen === null || (now !== null && now > seen) ? now : seen,
+      resetsAt: isoFromEpoch(info.resetsAt),
+      status: info.status,
+    };
+  }
+  return windows;
+}
+
+// The token usage and windows of the leg, from the last record of
+// run-claude-cli's credential-scanned JSONL log, each value checked again
+// (a process the leg left could have touched the file). Nulls when absent.
+function readLegLog(logFilePath) {
+  const none = { usage: null, windows: null };
+  if (!logFilePath || !fs.existsSync(logFilePath)) return none;
+  let leg;
+  try {
+    const lines = fs.readFileSync(logFilePath, "utf8").trim().split("\n");
+    leg = JSON.parse(lines.at(-1));
+  } catch {
+    return none;
+  }
+  const kept = (entries) => {
+    const present = entries.filter(([, value]) => value !== null);
+    return present.length > 0 ? Object.fromEntries(present) : null;
+  };
+  const count = (value) =>
+    Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const usage = leg?.usage ?? {};
+  const limits = leg?.rate_limits ?? {};
+  return {
+    usage: kept([
+      ["input", count(usage.input_tokens)],
+      ["output", count(usage.output_tokens)],
+      ["cacheRead", count(usage.cache_read_input_tokens)],
+      ["cacheCreation", count(usage.cache_creation_input_tokens)],
+    ]),
+    windows: kept(
+      RATE_LIMIT_WINDOWS.filter((window) =>
+        RATE_LIMIT_STATUSES.includes(limits[window]?.status),
+      ).map((window) => [
+        window,
+        kept([
+          ["utilization", fraction(limits[window].utilization)],
+          [
+            "resetsAt",
+            ISO_PATTERN.test(limits[window].resets_at ?? "")
+              ? limits[window].resets_at
+              : null,
+          ],
+          ["status", limits[window].status],
+        ]),
+      ]),
+    ),
+  };
+}
+
 function readRunRecord(executionFilePath) {
   const messages = readMessages(executionFilePath) ?? [];
   const result = messages.findLast((message) => message?.type === "result");
@@ -384,6 +476,8 @@ function runFacts(
     errorType = null,
     errorCode = null,
     requestId = null,
+    usage = null,
+    windows = null,
   },
   {
     failureClass = "",
@@ -409,6 +503,8 @@ function runFacts(
     costUsd,
     maxTurns: COUNT_PATTERN.test(maxTurns) ? Number(maxTurns) : null,
     models: models.slice(0, MAX_MODELS),
+    usage,
+    windows,
   };
 }
 
@@ -512,12 +608,18 @@ function factRecord(
     ["turns", facts.turns !== null && facts.turns <= COUNT_MAX ? facts.turns : null],
     ["maxTurns", facts.maxTurns],
     ["costUsd", facts.costUsd],
+    ["usage", facts.usage],
+    ["windows", facts.windows],
     [
       "models",
       facts.models.length > 0 ? facts.models : null,
     ],
   ]);
-  if (JSON.stringify(record).length > RECORD_MAX_LENGTH) delete record.models;
+  // Past the limit the least needed facts go first, the windows last.
+  for (const field of ["models", "usage", "windows"]) {
+    if (JSON.stringify(record).length <= RECORD_MAX_LENGTH) break;
+    delete record[field];
+  }
   return { record, missing };
 }
 
@@ -546,6 +648,9 @@ module.exports = {
   LANE_ID_PATTERN,
   laneReport,
   MAX_MODELS,
+  RATE_LIMIT_WINDOWS,
+  rateLimitWindows,
+  readLegLog,
   readMessages,
   readRunRecord,
   recordText,
