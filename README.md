@@ -1346,8 +1346,7 @@ the cause, whenever no review happened: a failed attempt (`auth`,
 skipping itself because the
 PR edits the caller workflow (`skipped-validation`), bubblewrap unable to
 create a namespace so no review ran (`sandbox-unavailable`), a review that did
-not complete (`incomplete`), a failed subprocess isolation install
-(`install-failed`), or a job that ended before the review reported
+not complete (`incomplete`), or a job that ended before the review reported
 (`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
 
