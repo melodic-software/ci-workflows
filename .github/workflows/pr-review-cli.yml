@@ -2250,10 +2250,11 @@ jobs:
           fi
 
       # continue-on-error keeps a failed leg from ending the job before the
-      # check, extract and outcome steps; the status job carries the red. A
-      # handoff skips the extract step: the subscription job reviews
-      # instead. The step's env holds no GitHub token. Background tasks are
-      # off so every subagent reports before the result
+      # check, extract and outcome steps; the status job carries the red. With
+      # the fallback token set, a limit stop, a credit stop or a 401 or 402
+      # hands off to the fallback job and skips the extract step. The step's
+      # env holds no GitHub token. Background tasks are off so every subagent
+      # reports before the result
       # (code.claude.com/docs/en/env-vars, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
       # row, as of 2026-10-16; recheck when the row stops naming
       # run_in_background).
@@ -3351,10 +3352,9 @@ jobs:
           fi
 
       # continue-on-error keeps a failed leg from ending the job before the
-      # check, extract and outcome steps; the status job carries the red. A
-      # handoff skips the extract step: the subscription job reviews
-      # instead. The step's env holds no GitHub token. Background tasks are
-      # off so every subagent reports before the result
+      # check, extract and outcome steps; the status job carries the red. The
+      # fallback leg never hands off. The step's env holds no GitHub token.
+      # Background tasks are off so every subagent reports before the result
       # (code.claude.com/docs/en/env-vars, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
       # row, as of 2026-10-16; recheck when the row stops naming
       # run_in_background).

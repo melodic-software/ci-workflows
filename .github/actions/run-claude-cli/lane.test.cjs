@@ -555,6 +555,18 @@ test("with a fallback ready, a subscription leg hands off on no other stop", () 
   }
 });
 
+test("a key leg hands off only to the subscription job, fallback ready or not", () => {
+  for (const [name, key, reason] of [
+    ["limit stop", SESSION_LIMIT, ""],
+    ["credit stop", CREDIT_STOP, "credit-stop"],
+    ["401", AUTH, "auth"],
+  ]) {
+    const { outputs, records } = runCase({ key, fallbackReady: true });
+    assert.equal(outputs["handoff-reason"], reason, name);
+    assert.equal(records[0].next, reason === "" ? null : "subscription", name);
+  }
+});
+
 test("with no fallback ready, a subscription leg stops as before", () => {
   for (const [name, sub, laneClass] of [
     ["limit stop", SESSION_LIMIT, "rate-limit"],
@@ -1211,7 +1223,7 @@ test("readConfig takes exactly one credential, named after the role, never from 
     () => readConfig(configEnv({ LANE_SUBSCRIPTION_TOKEN: TOKEN })),
     (error) =>
       error instanceof LaneError &&
-      /^two credentials: set exactly one/u.test(error.message),
+      /^2 credentials: set exactly one/u.test(error.message),
   );
   assert.throws(
     () => readConfig(configEnv({ LANE_API_KEY: "" })),
@@ -1226,13 +1238,16 @@ test("readConfig takes the fallback token under its fixed name, one credential o
     configEnv({ LANE_ROLE: "issue-lane", LANE_API_KEY: "", LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }),
   );
   assert.deepEqual(fallback.leg, { leg: "fallback", name: FALLBACK_NAME, value: FALLBACK_TOKEN });
-  for (const overrides of [
-    { LANE_FALLBACK_TOKEN: FALLBACK_TOKEN },
-    { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN, LANE_FALLBACK_TOKEN: FALLBACK_TOKEN },
+  for (const [overrides, count] of [
+    [{ LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }, 2],
+    [{ LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN, LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }, 2],
+    [{ LANE_SUBSCRIPTION_TOKEN: TOKEN, LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }, 3],
   ]) {
     assert.throws(
       () => readConfig(configEnv(overrides)),
-      (error) => error instanceof LaneError && /^two credentials: set exactly one/u.test(error.message),
+      (error) =>
+        error instanceof LaneError &&
+        error.message.startsWith(`${count} credentials: set exactly one`),
     );
   }
   assert.equal(readConfig(configEnv()).fallbackReady, false);
@@ -1593,7 +1608,7 @@ test("run refuses both credentials before any leg starts", () => {
   const env = runEnv(dir, { LANE_SUBSCRIPTION_TOKEN: TOKEN });
   env.FAKE_KEY = legFile(dir, "key.jsonl", SUCCESS);
   env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
-  assert.throws(() => run(env), /two credentials/u);
+  assert.throws(() => run(env), /2 credentials/u);
   assert.equal(fs.existsSync(env.FAKE_CALLS), false);
   assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
 });

@@ -147,15 +147,13 @@ const UNSAFE_VARIABLES = new Set([
   "NODE_EXTRA_CA_CERTS",
   "NODE_TLS_REJECT_UNAUTHORIZED",
 ]);
-// What each class means for the run. `handoff`: a key leg that ends in it
-// hands the run to the caller's subscription job; `statuses`, when set,
-// narrows that to these numeric api_error_status values, never an error-type
-// string, which errors[] text could carry. `note`: the job summary's closed
-// token, the named stop and what happens next.
+// What each class means for the run. `statuses`: the numeric
+// api_error_status values of an auth class that hand off (handoffReason),
+// never an error-type string, which errors[] text could carry. `note`: the
+// job summary's closed token, the named stop and what happens next.
 const NEXT_STEPS = {
-  "": { handoff: false, note: "" },
+  "": { note: "" },
   "credit-stop": {
-    handoff: true,
     note: "credits used up: the subscription job runs; the owner rotates a key by hand when needed",
   },
   // 401 (key disabled or deleted) and 402 (billing) hand off. 403
@@ -163,21 +161,18 @@ const NEXT_STEPS = {
   // resource, a setting the owner fixes, and handing off would hide it. An
   // auth class with no numeric status does not hand off either.
   auth: {
-    handoff: true,
     statuses: [401, 402],
     note: "credential unusable: 401 or 402 hands off to the subscription job, 403 (permission) stops the run; the owner fixes the key by hand",
   },
-  "rate-limit": { handoff: false, note: "limit stop: rerun after the reset" },
-  overloaded: { handoff: false, note: "API overloaded: rerun later" },
+  "rate-limit": { note: "limit stop: rerun after the reset" },
+  overloaded: { note: "API overloaded: rerun later" },
   "max-turns": {
-    handoff: false,
     note: "turn cap: raise max-turns or narrow the task",
   },
   timeout: {
-    handoff: false,
     note: "leg timeout: raise leg-timeout-minutes or narrow the task",
   },
-  other: { handoff: false, note: "see the step log" },
+  other: { note: "see the step log" },
 };
 
 function nextStep(failureClass) {
@@ -239,7 +234,7 @@ function readConfig(env) {
   ].filter(([, value]) => value !== "");
   if (supplied.length !== 1) {
     throw new LaneError(
-      `${supplied.length === 0 ? "no credential" : "two credentials"}: set exactly one of api-key, subscription-token and fallback-token, and run each leg as its own job`,
+      `${supplied.length === 0 ? "no credential" : `${supplied.length} credentials`}: set exactly one of api-key, subscription-token and fallback-token, and run each leg as its own job`,
     );
   }
   const [[legName, value, suffix]] = supplied;
