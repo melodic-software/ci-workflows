@@ -1,14 +1,19 @@
 name: run-claude-cli
 description: >-
   Run one prompt with headless `claude -p` for an agent-mode CI lane, on a
-  Linux runner, on exactly one credential: set `api-key` or
-  `subscription-token`, never both (the action fails closed otherwise). A
+  Linux runner, on exactly one credential: set one of `api-key`,
+  `subscription-token` and `fallback-token` (the action fails closed
+  otherwise). A
   key leg that ends in a credit stop (classify.cjs isCreditStop, lane-class
   `credit-stop`) or a key the API refused with status 401 or 402
   (lane-class `auth`) sets handoff `true`; a 403 stops the run;
   a caller that falls back to the subscription runs it as a second job on a
   fixed GitHub-hosted runner, gated on that exact value (see the README's
-  two-job pattern), never in this job.
+  two-job pattern), never in this job. With `fallback-ready: true`, a
+  subscription leg that ends in a limit stop (a rejected rate_limit_event
+  with its reset), a credit stop, or a 401 or 402 sets handoff `true` too,
+  and the caller runs the fallback leg on `fallback-token` as a third job;
+  that leg never hands off. handoff-reason names the stop.
   The leg's CLI environment has every credential and file-command variable
   removed and its one credential set, and the CLI runs with `--restricted`
   and `--strict-mcp-config`; the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
@@ -72,6 +77,22 @@ inputs:
     description: >-
       The role's subscription OAuth token secret. Set exactly one of this and
       api-key; pass it only in the job that runs the subscription leg.
+    required: false
+    default: ""
+  fallback-token:
+    description: >-
+      The central fallback subscription's OAuth token, the org secret
+      FALLBACK_CLAUDE_CODE_OAUTH_TOKEN, recorded under that name for every
+      role. Set it instead of the other two, only in the job that runs the
+      fallback leg after a subscription leg handed off.
+    required: false
+    default: ""
+  fallback-ready:
+    description: >-
+      `true` when the caller runs a fallback leg after this one, so a
+      subscription leg may hand off to it; pass
+      `secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != ''`. `false` or empty
+      keeps the subscription leg the last. Any other value fails the step.
     required: false
     default: ""
   model:
@@ -175,7 +196,10 @@ outputs:
     description: >-
       `true` when a key leg ended in `credit-stop`, or in `auth` with the
       numeric API status 401 or 402, so the caller may run the subscription
-      leg in a separate job; `false` otherwise; empty when the step failed
+      leg in a separate job; `true` when a subscription leg with
+      fallback-ready `true` ended in a limit stop, a credit stop, or a 401
+      or 402, so the caller may run the fallback leg in a third job (403
+      stops it the same way); `false` otherwise; empty when the step failed
       before the leg ran. A 403 (permission_error) does not hand off: a
       Console key is bound to a workspace, or acts across several, and
       carries its identity's workspace role
@@ -195,6 +219,13 @@ outputs:
   lane-models:
     description: Comma list of models in the leg's modelUsage.
     value: ${{ steps.run.outputs.lane-models }}
+  handoff-reason:
+    description: >-
+      Why the leg handed off, a closed token: `credit-stop` or `auth` from a
+      key leg; `limit-stop`, `credit-stop` or `auth` from a subscription leg
+      with fallback-ready; empty when handoff is not `true`. The next job
+      passes it as report-lane-outcome's fallback-reason.
+    value: ${{ steps.run.outputs.handoff-reason }}
   credential:
     description: Secret NAME the leg ran on, never its value.
     value: ${{ steps.run.outputs.credential }}
@@ -253,6 +284,8 @@ runs:
         LANE_PREAMBLE: ${{ inputs.preamble }}
         LANE_API_KEY: ${{ inputs.api-key }}
         LANE_SUBSCRIPTION_TOKEN: ${{ inputs.subscription-token }}
+        LANE_FALLBACK_TOKEN: ${{ inputs.fallback-token }}
+        LANE_FALLBACK_READY: ${{ inputs.fallback-ready }}
         LANE_MODEL: ${{ inputs.model }}
         LANE_EFFORT: ${{ inputs.effort }}
         LANE_MAX_TURNS: ${{ inputs.max-turns }}

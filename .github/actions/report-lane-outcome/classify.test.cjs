@@ -505,6 +505,14 @@ test("record tokens: a fallback reason prints right after the credential, only f
     recordTokens(run, { credential, fallbackReason: "auth" }),
     "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=auth turns=4",
   );
+  // The fallback leg after a subscription limit stop.
+  assert.equal(
+    recordTokens(run, {
+      credential: "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+      fallbackReason: "limit-stop",
+    }),
+    "credential=FALLBACK_CLAUDE_CODE_OAUTH_TOKEN fallback=limit-stop turns=4",
+  );
   for (const forged of [
     "",
     "Auth",

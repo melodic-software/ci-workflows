@@ -307,9 +307,10 @@ const COUNT_MAX = 999999;
 // A failure class as a closed kebab token.
 const CLASS_PATTERN = /^[a-z][a-z-]{0,39}$/u;
 const WINDOW_PATTERN = /^[a-z0-9_]{1,40}$/u;
-// Why a subscription job ran in the two-job pattern: the key job's credit
-// stop, its key refused with API status 401 or 402, or no key at all.
-const FALLBACK_REASONS = ["credit-stop", "auth", "no-key"];
+// Why a later leg ran: the leg before it credit-stopped or had its
+// credential refused with API status 401 or 402, the key job had no key, or
+// (for the fallback leg) the subscription leg hit a usage limit.
+const FALLBACK_REASONS = ["credit-stop", "auth", "no-key", "limit-stop"];
 
 // SDK `resetsAt` is epoch time; a value past 1e12 can only be milliseconds.
 function isoFromEpoch(value) {

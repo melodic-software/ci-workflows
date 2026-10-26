@@ -28,7 +28,7 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "reason": { "enum": ["credit-stop", "auth", "no-key"] }
+        "reason": { "enum": ["credit-stop", "auth", "no-key", "limit-stop"] }
       }
     },
     "resets": {

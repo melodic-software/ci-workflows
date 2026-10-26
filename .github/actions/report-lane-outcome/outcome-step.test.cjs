@@ -593,7 +593,7 @@ const contractExamples = [
     return block.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
   }
 });
-const [keyLegExample, subscriptionLegExample, reviewLimitExample] = contractExamples;
+const [keyLegExample, subscriptionLegExample, reviewLimitExample, fallbackLegExample] = contractExamples;
 
 const schema = JSON.parse(
   fs.readFileSync(
@@ -697,8 +697,8 @@ function schemaErrors(node, value, at = "$") {
   return errors;
 }
 
-test("the schema accepts the contract's three examples and rejects malformed records", () => {
-  assert.equal(contractExamples.length, 3);
+test("the schema accepts the contract's four examples and rejects malformed records", () => {
+  assert.equal(contractExamples.length, 4);
   for (const example of contractExamples) {
     assert.deepEqual(schemaErrors(schema, example), [], JSON.stringify(example));
   }
@@ -947,6 +947,29 @@ test("a caller with no lane-id, credential-only or neither, gets the tokens alon
     assert.equal(notices[0].includes(MARKER), false, credential);
     assert.deepEqual(warnings, [], credential);
   }
+});
+
+test("the fallback leg after a subscription limit stop writes the contract's fallback example", async () => {
+  const file = writeExecutionFile([
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 4,
+      modelUsage: { "claude-sonnet-5": {} },
+    },
+  ]);
+  const { notices } = await runOutcome({
+    outcome: "success",
+    executionFile: file,
+    lane: "Claude intake triage",
+    laneId: "intake-triage",
+    credential: "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+    fallbackReason: "limit-stop",
+  });
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], / credential=FALLBACK_CLAUDE_CODE_OAUTH_TOKEN fallback=limit-stop turns=4\b/u);
+  assert.deepEqual(readRecord(notices[0]), fallbackLegExample);
 });
 
 test("the schema states the emitter's own patterns, closed sets and limits", () => {
