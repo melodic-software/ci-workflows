@@ -20,7 +20,7 @@ name: release-tag
 # `claude-lanes-repin.yml` lane for the callers `repin-callers.sh` enumerates,
 # this repository's `github-actions` Dependabot group for its self-pins,
 # github-iac's Dependabot `github-actions` updates for the composite actions it
-# uses (it ignores only `melodic-software/ci-workflows/.github/workflows/*`),
+# uses (it ignores all of `melodic-software/ci-workflows/*`),
 # and by hand everywhere else.
 #
 # Cut a release whenever main changes by something worth pinning to, so a
