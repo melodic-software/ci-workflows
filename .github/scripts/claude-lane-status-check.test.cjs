@@ -270,4 +270,37 @@ for (const lane of lanes) {
       );
     }
   });
+
+  test(`${lane.file}: a failed isolation install goes red as install-failed, not no-outcome`, () => {
+    const isolate = job.steps.find((candidate) => candidate.id === "isolate");
+    assert.equal(isolate?.name, "Install subprocess isolation");
+    assert.equal(step.env.ISOLATE_OUTCOME, `\${{ steps.isolate.outcome }}`);
+    for (const [outcome, named] of [
+      ["failure", "install-failed"],
+      ["cancelled", "install-failed"],
+      ["success", "no-outcome"],
+    ]) {
+      const result = runStep(step, {
+        REVIEW_FAILED: "",
+        FAILURE_CLASS: "",
+        ISOLATE_OUTCOME: outcome,
+      });
+      assert.equal(result.status, 1, outcome);
+      assert.match(result.summary, new RegExp(`failed: \`${named}\``, "u"));
+      assert.match(
+        result.stdout,
+        new RegExp(`^::error .*failure-class=${named}:`, "mu"),
+      );
+    }
+  });
+
+  test(`${lane.file}: a reported outcome keeps its class whatever the isolation step did`, () => {
+    const result = runStep(step, {
+      REVIEW_FAILED: "true",
+      FAILURE_CLASS: "timeout",
+      ISOLATE_OUTCOME: "failure",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.summary, /failed: `timeout`/u);
+  });
 }

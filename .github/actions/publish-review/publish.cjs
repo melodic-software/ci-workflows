@@ -147,8 +147,10 @@ function judge(env) {
     return { ok: false, leg, failureClass: "no-credential" };
   }
   const failed = value("FAILED");
-  if (failed === "") return { ok: false, leg, failureClass: "no-outcome" };
   const failureClass = value("CLASS");
+  // A leg stopped before its outcome step (runner isolation) names its class.
+  if (failed === "" && failureClass === "")
+    return { ok: false, leg, failureClass: "no-outcome" };
   if (failed === "true" || failureClass !== "") {
     return {
       ok: false,
@@ -375,7 +377,8 @@ const WHY = {
   overloaded: "the Claude service was overloaded (5xx); re-run later",
   "max-turns": "the review used every turn before finishing",
   timeout: "the review leg reached its time limit",
-  "install-failed": "the Claude Code CLI install or its integrity check failed",
+  "install-failed":
+    "the runner isolation or the Claude Code CLI install or its integrity check failed",
   incomplete:
     "the model returned no usable review (findings, summary and comments)",
   "no-credential": "both secrets were empty, so no review ran",

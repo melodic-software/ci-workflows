@@ -773,6 +773,49 @@ test("the subscription job repeats the key job's steps but for the credential an
   );
 });
 
+test("a leg whose runner isolation failed reports install-failed, not no-outcome", () => {
+  const { judge } = require("../actions/publish-review/publish.cjs");
+  for (const [name, job, prefix] of [
+    ["review-key", key, "KEY"],
+    ["review-subscription", subscription, "SUB"],
+    ["review-fallback", fallback, "SUB"],
+  ]) {
+    assert.ok(step(job, "isolate"), `${name} has an isolate step`);
+    // The isolate step stops the job, so no later step ran or set an output.
+    const leg = (isolate, outcomeClass = "") => {
+      const context = {
+        steps: {
+          isolate: { outcome: isolate },
+          claude: { outputs: {} },
+          "review-outcome": { outputs: { "failure-class": outcomeClass } },
+        },
+      };
+      const out = (field) =>
+        String(evaluate(job.outputs[field], context) ?? "");
+      return { FAILED: out("review-failed"), CLASS: out("failure-class") };
+    };
+    for (const outcome of ["failure", "cancelled"]) {
+      const { FAILED, CLASS } = leg(outcome);
+      assert.equal(CLASS, "install-failed", `${name} ${outcome}`);
+      const env =
+        prefix === "KEY"
+          ? { KEY_FAILED: FAILED, KEY_CLASS: CLASS }
+          : { SUB_RESULT: "failure", SUB_FAILED: FAILED, SUB_CLASS: CLASS };
+      assert.equal(
+        judge(env).failureClass,
+        "install-failed",
+        `${name} ${outcome}`,
+      );
+    }
+    assert.equal(leg("success").CLASS, "", `${name} success`);
+    assert.equal(
+      leg("failure", "timeout").CLASS,
+      "timeout",
+      `${name} reported class`,
+    );
+  }
+});
+
 test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED is true", () => {
   const present = (secret, exhausted) =>
     evaluate(step(key, "credential").env.PRESENT, {
