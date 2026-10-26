@@ -21,7 +21,7 @@ const {
 } = require("../actions/report-lane-outcome/classify.cjs");
 
 const workflowsRoot = path.join(__dirname, "..", "workflows");
-const SECRET = "fallback-claude-code-oauth-token";
+const SECRET = "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN";
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // Parses $GITHUB_OUTPUT as the runner does: name=value lines and

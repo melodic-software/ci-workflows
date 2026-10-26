@@ -22,7 +22,7 @@ name: pr-review
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #           # Optional: retried once after a usage limit.
-#           fallback-claude-code-oauth-token: ${{ secrets.<FALLBACK_SECRET> }}
+#           FALLBACK_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.<FALLBACK_SECRET> }}
 #         with:
 #           # Optional: the secret names the lane record reports, never values.
 #           credential-name: CLAUDE_CODE_OAUTH_TOKEN
@@ -92,7 +92,7 @@ name: pr-review
 # `docs-only-paths`) stays green and leaves `... skip=no-change
 # through=<head>` or `... skip=docs-only`. Never make that check required.
 #
-# USAGE LIMIT: with `fallback-claude-code-oauth-token` set, a first attempt
+# USAGE LIMIT: with `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` set, a first attempt
 # that stops on a usage limit (class rate-limit) is retried once in the same
 # job on that token, inside the review step's budget, before the report
 # steps. Without it the job makes one attempt.
@@ -215,7 +215,7 @@ on:
       fallback-credential-name:
         description: >-
           Name (never the value) of the secret the caller maps to
-          fallback-claude-code-oauth-token. The lane-outcome record names it
+          FALLBACK_CLAUDE_CODE_OAUTH_TOKEN. The lane-outcome record names it
           when the fallback attempt reports; empty writes that attempt's
           tokens with no record and a warning.
         type: string
@@ -239,7 +239,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token (from `claude setup-token`).
         required: true
-      fallback-claude-code-oauth-token:
+      FALLBACK_CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           Optional second Claude Code OAuth token. When the first attempt
           stops on a usage limit (class rate-limit), the job retries the
@@ -755,7 +755,7 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           MODEL_ARGS: ${{ inputs.model-args }}
           PLUGIN_COMMAND: ${{ inputs.plugin-command }}
-          HAS_FALLBACK: ${{ secrets.fallback-claude-code-oauth-token != '' }}
+          HAS_FALLBACK: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           if ! [[ "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$ ]]; then
             echo "::error::The model input must be a model alias or ID."
@@ -1062,7 +1062,7 @@ jobs:
           # row, as of 2026-10-17; recheck when the row changes what it keeps).
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
-          claude_code_oauth_token: ${{ secrets.fallback-claude-code-oauth-token }}
+          claude_code_oauth_token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
           # No track_progress: on a pull_request event with a prompt the action
           # runs in agent mode, which posts no tracking comment and gives the
           # model no comment tool (claude-code-action src/modes/detector.ts,

@@ -88,16 +88,19 @@ for (const lane of LANES) {
 }
 
 // The review lanes name their credential: the caller supplies the secret
-// name per slot, and the report names the slot that ran, never the
-// lower-case slot itself.
-// Every discovered lane with the review fallback slot is a review lane; its
-// lane id is its file name.
-const REVIEW_LANES = LANES.filter(
-  (lane) =>
-    parseWorkflow(laneSource(lane)).on.workflow_call.secrets?.[
-      "fallback-claude-code-oauth-token"
-    ] !== undefined,
-);
+// name per slot, and the report names the slot that ran from that input,
+// never from a slot name written into the step.
+// Every discovered lane with the in-job review fallback (the fallback secret
+// and its fallback-credential-name input) is a review lane; its lane id is
+// its file name. pr-review-cli.yml shares the secret name but runs its
+// fallback in a separate job.
+const REVIEW_LANES = LANES.filter((lane) => {
+  const call = parseWorkflow(laneSource(lane)).on.workflow_call;
+  return (
+    call.secrets?.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN !== undefined &&
+    call.inputs?.["fallback-credential-name"] !== undefined
+  );
+});
 
 test("review-lane discovery finds both review lanes", () => {
   assert.deepEqual(REVIEW_LANES, ["pr-review-security.yml", "pr-review.yml"]);
@@ -145,7 +148,7 @@ for (const lane of REVIEW_LANES) {
     );
     assert.doesNotMatch(
       outcome.with.credential,
-      /fallback-claude-code-oauth-token/u,
+      /FALLBACK_CLAUDE_CODE_OAUTH_TOKEN/u,
     );
   });
 
