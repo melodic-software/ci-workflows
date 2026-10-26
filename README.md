@@ -1200,8 +1200,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   The lane then sets that type and reads it back. When the type took, it
   removes `floor-label` (default `needs-triage`; empty or missing turns floor
   handling off) if the run
-  escalated or applied exactly one `priority:` label and no `status:` or
-  `area: security` label. An escalated usable triage also posts the run's
+  escalated or picked exactly one `priority:` label and no `status:` or
+  `area: security` label. `priority:` is exclusive: a priority already on
+  the issue whose last labeled event came from a person in
+  `allowed-author-ids` stands over the pick, any other is replaced by it,
+  and two picks apply neither. An escalated usable triage also posts the run's
   `Proposed work class:` in its note. The lane never applies a `work-class:`
   label or `agent-ready`. After any other run the lane adds the floor if it
   is missing, so the result does not depend on whether
