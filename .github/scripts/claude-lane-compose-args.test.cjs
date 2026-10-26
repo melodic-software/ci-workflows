@@ -198,7 +198,7 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
   test(`${fileName}: the compose step reports whether the caller passed a fallback token`, () => {
     assert.equal(
       composeStep.env.HAS_FALLBACK,
-      `\${{ secrets.fallback-claude-code-oauth-token != '' }}`,
+      `\${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}`,
     );
     for (const value of ["true", "false"]) {
       const { output } = runCompose(composeStep.run, {

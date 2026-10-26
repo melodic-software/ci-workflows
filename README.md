@@ -1274,7 +1274,7 @@ named secret explicitly rather than `secrets: inherit`, which forwards every
 parent secret.
 
 **Usage-limit fallback.** Both lanes accept an optional second secret,
-`fallback-claude-code-oauth-token`. When the first attempt stops on a usage
+`FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`. When the first attempt stops on a usage
 limit (`class=rate-limit`), the job retries the review once on that token, in
 the same job and inside the review step's budget, before the report steps; the
 completion record then ends with the field `account=fallback`. The first
@@ -1301,7 +1301,7 @@ makes one attempt.
 | `allowed-bot-sender-ids` | empty | Comma-separated numeric GitHub user ids, no spaces, of bot senders to review; only a listed sender's login reaches the action's `allowed_bots` |
 | `allowed-author-ids` | empty | Code review only. Comma-separated numeric GitHub user ids, no spaces, of people whose closing issues the review reads in full. A same-repository closing issue keeps its title and body only when its author's id is here or, for a bot, in `allowed-bot-sender-ids`; any other gets a placeholder, and a cross-repository one is written as `owner/repo#N` alone |
 | `credential-name` | `CLAUDE_CODE_OAUTH_TOKEN` | Name, never the value, of the secret the caller maps to `CLAUDE_CODE_OAUTH_TOKEN`; the [lane-outcome record](docs/lane-outcome.md) names it as the credential when the first attempt reports. The default is right only when the caller maps a secret of that exact name; set this to the mapped secret's name otherwise |
-| `fallback-credential-name` | empty | Name, never the value, of the secret the caller maps to `fallback-claude-code-oauth-token`; the [lane-outcome record](docs/lane-outcome.md) names it when the fallback attempt reports. Empty writes that attempt's tokens with no record and a warning |
+| `fallback-credential-name` | empty | Name, never the value, of the secret the caller maps to `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`; the [lane-outcome record](docs/lane-outcome.md) names it when the fallback attempt reports. Empty writes that attempt's tokens with no record and a warning |
 
 **Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
 fork changes by hand) and every bot actor whose event sender id is not in
