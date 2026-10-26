@@ -19,9 +19,8 @@ name: release-tag
 # consumer. Repins are separate reviewed pull requests: the standards
 # `claude-lanes-repin.yml` lane for the callers `repin-callers.sh` enumerates,
 # this repository's `github-actions` Dependabot group for its self-pins,
-# github-iac's Dependabot `github-actions` updates for the composite actions it
-# uses (it ignores all of `melodic-software/ci-workflows/*`),
-# and by hand everywhere else.
+# and by hand everywhere else. github-iac's Dependabot ignores all of
+# `melodic-software/ci-workflows/*`, so it repins none of them.
 #
 # Cut a release whenever main changes by something worth pinning to, so a
 # repinner has a released SHA for the `# vX.Y.Z` comment form instead of the
