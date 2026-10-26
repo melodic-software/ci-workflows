@@ -1649,6 +1649,85 @@ test("the summary shows a closed token per class and never a record's message", 
   assert.doesNotMatch(table, /spend limit/iu);
 });
 
+test("a handoff to the fallback job says the fallback job runs instead, whatever the class", () => {
+  const record = (failureClass, next) => ({
+    leg: 1,
+    secret: TOKEN_NAME,
+    class: failureClass,
+    num_turns: 0,
+    denials: { count: 0 },
+    resets: null,
+    next,
+  });
+  // A subscription credit stop keeps class other; only the reason names it.
+  for (const [failureClass, reason, note] of [
+    ["auth", "auth", "credential refused: the fallback job runs instead; the owner replaces the secret"],
+    ["other", "credit-stop", "credits used up: the fallback job runs instead"],
+    ["rate-limit", "limit-stop", "limit stop: the fallback job runs instead"],
+  ]) {
+    const table = summaryTable([record(failureClass, "fallback")], reason);
+    assert.match(table, new RegExp(`\\| fallback \\| ${note} \\|$`, "mu"), reason);
+  }
+  // With no handoff to the fallback job the class note stands.
+  assert.match(
+    summaryTable([record("rate-limit", null)], ""),
+    /\| rate-limit \| .* \| limit stop: rerun after the reset \|$/mu,
+  );
+  assert.match(
+    summaryTable([record("auth", "subscription")], "auth"),
+    /\| subscription \| credential unusable: 401 or 402 hands off to the subscription job/u,
+  );
+});
+
+test("run on a refused subscription token with a fallback ready warns the owner once, after the stop-commands block", () => {
+  const dir = path.join(root, "run-fallback-auth");
+  const env = runEnv(dir, {
+    LANE_API_KEY: "",
+    LANE_SUBSCRIPTION_TOKEN: TOKEN,
+    LANE_FALLBACK_READY: "true",
+  });
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", AUTH);
+  env.FAKE_SUB_EXIT = "1";
+  const lines = captureStdout(() => run(env));
+  const opened = lines.findIndex((l) => l.startsWith("::stop-commands::"));
+  const closed = lines.indexOf(`::${lines[opened].slice("::stop-commands::".length)}::`);
+  const warnings = lines
+    .map((l, i) => [l, i])
+    .filter(([l]) => l.startsWith("::warning") && l.includes("class=auth"));
+  assert.deepEqual(
+    warnings.map(([l]) => l),
+    [
+      "::warning title=run-claude-cli credential::class=auth: the API refused AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN; the owner must replace the secret. The fallback job runs instead.",
+    ],
+  );
+  assert.ok(warnings[0][1] > closed);
+  assert.equal(readOutputs(env.GITHUB_OUTPUT)["handoff-reason"], "auth");
+  assert.match(
+    fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8"),
+    /\| fallback \| credential refused: the fallback job runs instead; the owner replaces the secret \|/u,
+  );
+});
+
+test("no refused-credential warning without an auth handoff to the fallback job", () => {
+  for (const [name, overrides, leg, messages] of [
+    ["key auth", {}, "KEY", AUTH],
+    ["no fallback", { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN }, "SUB", AUTH],
+    [
+      "limit stop",
+      { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN, LANE_FALLBACK_READY: "true" },
+      "SUB",
+      SESSION_LIMIT,
+    ],
+  ]) {
+    const dir = path.join(root, `run-no-auth-warning-${name.replace(" ", "-")}`);
+    const env = runEnv(dir, overrides);
+    env[`FAKE_${leg}`] = legFile(dir, "leg.jsonl", messages);
+    env[`FAKE_${leg}_EXIT`] = "1";
+    const lines = captureStdout(() => run(env));
+    assert.equal(lines.some((l) => l.includes("run-claude-cli credential")), false, name);
+  }
+});
+
 test("run refuses a loader, TLS or proxy variable before any leg", () => {
   const dir = path.join(root, "run-unsafe");
   fs.mkdirSync(dir);

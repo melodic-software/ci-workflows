@@ -635,6 +635,10 @@ consumer to audit it.
   other stop hands off nothing, and the fallback leg never hands off. The
   `handoff-reason` output names the stop: `credit-stop` or `auth` from a key
   leg, `limit-stop`, `credit-stop` or `auth` from a subscription leg. A
+  subscription leg's `auth` handoff adds a warning annotation naming the
+  refused secret, so the owner replaces it even when the fallback job
+  succeeds, and the job summary's Stop note for any handoff to the fallback
+  job says the fallback job runs instead. A
   subscription leg's credit stop keeps its class. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI

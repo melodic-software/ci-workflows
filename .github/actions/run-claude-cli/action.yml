@@ -42,7 +42,11 @@ description: >-
   the leg's token usage and each subscription window's highest utilization,
   reset and last status; pass it to report-lane-outcome's log-file for the
   lane-outcome record. A window at allowed_warning or rejected, or at 0.70
-  utilization or more, adds one warning annotation naming the secret.
+  utilization or more, adds one warning annotation naming the secret. A
+  subscription token the API refused (401 or 402) that hands off to the
+  fallback job adds one warning annotation naming the secret, so a green
+  run still shows the dead token; that leg's summary row says the fallback
+  job runs instead.
   Uploading the log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
 
