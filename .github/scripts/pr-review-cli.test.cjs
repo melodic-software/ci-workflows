@@ -26,6 +26,7 @@ const workflow = parseWorkflow(
 const {
   "review-key": key,
   "review-subscription": subscription,
+  "review-fallback": fallback,
   status,
 } = workflow.jobs;
 const step = (job, id) => job.steps.find((s) => s.id === id);
@@ -69,10 +70,270 @@ test("only the subscription job references the OAuth token, only the key job the
     Object.keys(step(job, "claude").with).filter((k) => /key|token/u.test(k));
   assert.deepEqual(credentials(key), ["api-key"]);
   assert.deepEqual(credentials(subscription), ["subscription-token"]);
+  assert.deepEqual(credentials(fallback), ["fallback-token"]);
+  // The fallback token's value reaches only the fallback job; the other
+  // model jobs read only whether it is set.
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    assert.equal(
+      JSON.stringify(job).includes(
+        "secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}",
+      ),
+      name === "review-fallback",
+      name,
+    );
+  }
+  assert.equal(
+    workflow.on.workflow_call.secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN.required,
+    false,
+  );
+});
+
+test("every model job tells its launcher whether the fallback token is set, never its value", () => {
+  for (const job of [key, subscription, fallback]) {
+    assert.equal(
+      step(job, "credential").env.FALLBACK_PRESENT,
+      `\${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}`,
+      job.name,
+    );
+    assert.equal(
+      step(job, "claude").with["fallback-ready"],
+      `\${{ steps.credential.outputs.fallback-ready }}`,
+      job.name,
+    );
+    assert.equal(
+      job.outputs["handoff-reason"],
+      `\${{ steps.claude.outputs.handoff-reason }}`,
+      job.name,
+    );
+  }
+  const dir = makeTemporaryDirectory("pr-review-cli-credential-");
+  const ready = (present) => {
+    const output = path.join(dir, `out-${present}`);
+    fs.writeFileSync(output, "");
+    require("node:child_process").spawnSync(
+      "bash",
+      ["-e", "-c", step(subscription, "credential").run],
+      {
+        env: {
+          PATH: process.env.PATH,
+          PRESENT: "true",
+          SECRET_NAME: "X",
+          FALLBACK_PRESENT: present,
+          GITHUB_OUTPUT: output,
+        },
+      },
+    );
+    return fs.readFileSync(output, "utf8");
+  };
+  assert.match(ready("true"), /^fallback-ready=true$/mu);
+  for (const present of ["false", "", "True"]) {
+    assert.match(
+      ready(present),
+      /^fallback-ready=false$/mu,
+      JSON.stringify(present),
+    );
+  }
+});
+
+test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
+  assert.deepEqual(fallback.needs, [
+    "check-key-credit",
+    "review-key",
+    "review-subscription",
+  ]);
+  assert.equal(
+    fallback.name,
+    `\${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}`,
+  );
+  const starts = (outputs, result = "success", keyResult = "success") =>
+    Boolean(
+      evaluate(fallback.if, {
+        github: PR,
+        inputs: { "allowed-bot-sender-ids": "" },
+        needs: {
+          "review-key": { result: keyResult, outputs: {} },
+          "review-subscription": { result, outputs },
+        },
+      }),
+    );
+  assert.equal(starts({ handoff: "true" }), true);
+  // After a credit skip of the key job too.
+  assert.equal(starts({ handoff: "true" }, "success", "skipped"), true);
+  for (const handoff of ["", "false", "True", "true ", "1"]) {
+    assert.equal(starts({ handoff }), false, JSON.stringify(handoff));
+  }
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(starts({ handoff: "true" }, result), false, result);
+  }
+  // A fork, a draft or Dependabot never reaches it either.
+  assert.equal(
+    Boolean(
+      evaluate(fallback.if, {
+        github: withPr((g) => {
+          g.event.pull_request.head.repo.full_name = "fork/r";
+        }),
+        inputs: { "allowed-bot-sender-ids": "" },
+        needs: {
+          "review-subscription": {
+            result: "success",
+            outputs: { handoff: "true" },
+          },
+        },
+      }),
+    ),
+    false,
+  );
+  assert.doesNotMatch(fallback.if, /always\(\)|failure\(\)/u);
+});
+
+const FALLBACK_LEG_REASON =
+  `\${{ needs.review-subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || ` +
+  "needs.review-subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || " +
+  "needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}";
+
+test("the fallback job repeats the subscription job's steps but for the credential and the fallback reason", () => {
+  const strip = (steps, secret, input) =>
+    steps.map((s) => {
+      const copy = structuredClone(s);
+      if (copy.id === "credential") {
+        assert.equal(copy.env.SECRET_NAME, secret);
+        assert.equal(copy.env.PRESENT, `\${{ secrets.${secret} != '' }}`);
+        delete copy.env.PRESENT;
+        delete copy.env.SECRET_NAME;
+      }
+      if (copy.id === "claude") {
+        assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
+        delete copy.with[input];
+      }
+      if (copy.id === "review-outcome") delete copy.with["fallback-reason"];
+      return copy;
+    });
+  assert.deepEqual(
+    strip(fallback.steps, "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN", "fallback-token"),
+    strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
+  );
+  for (const field of [
+    "permissions",
+    "outputs",
+    "timeout-minutes",
+    "cache-mode",
+    "runs-on",
+  ]) {
+    assert.deepEqual(fallback[field], subscription[field], field);
+  }
+  const value = step(fallback, "review-outcome").with["fallback-reason"];
+  assert.equal(value, FALLBACK_LEG_REASON);
+  const reason = (handoffReason) =>
+    evaluate(value, {
+      needs: {
+        "review-subscription": { outputs: { "handoff-reason": handoffReason } },
+      },
+    });
+  for (const known of ["limit-stop", "credit-stop", "auth"])
+    assert.equal(reason(known), known);
+  for (const forged of ["", "no-key", "Auth"])
+    assert.equal(reason(forged), "", forged);
+});
+
+test("the status job counts the fallback leg when it ran, else the subscription leg", async () => {
+  assert.deepEqual(status.needs, [
+    "review-key",
+    "review-subscription",
+    "review-fallback",
+  ]);
+  const pick = step(status, "token-leg");
+  const names = status.steps.map((s) => s.id ?? s.name);
+  assert.ok(names.indexOf("handoffs") < names.indexOf("token-leg"));
+  assert.ok(names.indexOf("token-leg") < names.indexOf("Publish the review"));
+  assert.doesNotMatch(pick.with.script, /\$\{\{/u);
+  const run = async (env) => {
+    const outputs = {};
+    const core = {
+      setOutput: (k, v) => {
+        outputs[k] = v;
+      },
+    };
+    const saved = { ...process.env };
+    Object.assign(process.env, env);
+    try {
+      await new AsyncFunction("require", "core", pick.with.script)(
+        require,
+        core,
+      );
+    } finally {
+      for (const k of Object.keys(env)) {
+        if (k in saved) process.env[k] = saved[k];
+        else delete process.env[k];
+      }
+    }
+    return outputs;
+  };
+  const legs = {
+    SUB_RESULT: "success",
+    SUB_PRESENT: "true",
+    SUB_FAILED: "true",
+    SUB_CLASS: "rate-limit",
+    SUB_VERDICT: "",
+    SUB_REVIEW: "",
+    SUB_TURNS: "1",
+    FB_PRESENT: "true",
+    FB_FAILED: "false",
+    FB_CLASS: "",
+    FB_VERDICT: "complete",
+    FB_REVIEW: '{"findings":0}',
+    FB_TURNS: "7",
+  };
+  const ran = await run({ ...legs, FB_RESULT: "success" });
+  assert.deepEqual(
+    [
+      ran.result,
+      ran.present,
+      ran.failed,
+      ran.class,
+      ran.verdict,
+      ran.review,
+      ran.turns,
+    ],
+    ["success", "true", "false", "", "complete", '{"findings":0}', "7"],
+  );
+  for (const result of ["skipped", ""]) {
+    const before = await run({ ...legs, FB_RESULT: result });
+    assert.deepEqual(
+      [before.result, before.failed, before.class, before.turns],
+      ["success", "true", "rate-limit", "1"],
+      JSON.stringify(result),
+    );
+  }
+  for (const name of ["Publish the review", "Apply the hold"]) {
+    const env = status.steps.find((s) => s.name === name).env;
+    for (const field of [
+      "RESULT",
+      "PRESENT",
+      "FAILED",
+      "CLASS",
+      "VERDICT",
+      "REVIEW",
+    ]) {
+      assert.equal(
+        env[`SUB_${field}`],
+        `\${{ steps.token-leg.outputs.${field.toLowerCase()} }}`,
+        `${name} SUB_${field}`,
+      );
+    }
+  }
+  const handoffs = step(status, "handoffs");
+  assert.equal(
+    handoffs.env.FB_SHA256,
+    `\${{ needs.review-fallback.outputs.handoff-sha256 }}`,
+  );
+  assert.match(
+    handoffs.with.script,
+    /\["review-fallback", "fb", env\.FB_SHA256\]/u,
+  );
 });
 
 test("the model jobs cannot write and give the model no shell, GitHub token or second secret", () => {
-  for (const job of [key, subscription]) {
+  for (const job of [key, subscription, fallback]) {
     assert.deepEqual(job.permissions, {
       contents: "read",
       "pull-requests": "read",
@@ -1067,7 +1328,7 @@ test("the hold step runs only in comments mode with hold-label set, even after a
 
 test("the review leaves each leg as an artifact named for the run, head and leg, and only its sha256 as an output", () => {
   const name = `pr-review-cli-handoff-\${{ inputs.lane }}-\${{ github.job }}-\${{ github.run_id }}-\${{ github.event.pull_request.head.sha }}`;
-  for (const job of [key, subscription]) {
+  for (const job of [key, subscription, fallback]) {
     assert.equal(job.outputs.review, undefined);
     assert.equal(job.outputs["last-summary"], undefined);
     assert.equal(
@@ -1098,7 +1359,7 @@ test("the review leaves each leg as an artifact named for the run, head and leg,
   for (const s of ["Publish the review", "Apply the hold"]) {
     const env = status.steps.find((x) => x.name === s).env;
     assert.equal(env.KEY_REVIEW, `\${{ steps.handoffs.outputs.key-review }}`);
-    assert.equal(env.SUB_REVIEW, `\${{ steps.handoffs.outputs.sub-review }}`);
+    assert.equal(env.SUB_REVIEW, `\${{ steps.token-leg.outputs.review }}`);
   }
   assert.doesNotMatch(
     JSON.stringify(status),

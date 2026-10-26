@@ -605,8 +605,8 @@ consumer to audit it.
   an agent-mode lane on a Linux runner, installing the Claude Code CLI
   version `cli-version` names (`latest` by default, or an exact version).
   Each invocation runs one leg on one
-  credential: pass exactly one of `api-key` and `subscription-token`, or
-  the action fails closed. A key leg hands off to the subscription, output
+  credential: pass exactly one of `api-key`, `subscription-token` and
+  `fallback-token`, or the action fails closed. A key leg hands off to the subscription, output
   `handoff` set to `true`, when it ends in a credit stop (report-lane-outcome's
   opt-in `credit-stop` class: the role's credits are used up) or with its key
   refused by the API with numeric status 401 (disabled or deleted) or 402
@@ -626,7 +626,16 @@ consumer to audit it.
   them. `lane-class` keeps `credit-stop` or `auth`, so the job summary and
   the log name the reason and a dead key stays visible.
   Any other failure hands off nothing. Rotating a
-  key stays the owner's manual step. A caller that falls back to
+  key stays the owner's manual step. With `fallback-ready: true`, a
+  subscription leg hands off too, to the fallback leg on the central
+  fallback subscription's org secret `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`
+  (`fallback-token`, recorded under that name for every role), when it ends
+  in a limit stop (a `rejected` `rate_limit_event` with its reset), a credit
+  stop, or a 401 or 402; a 403, a throttle with no rejected event, or any
+  other stop hands off nothing, and the fallback leg never hands off. The
+  `handoff-reason` output names the stop: `credit-stop` or `auth` from a key
+  leg, `limit-stop`, `credit-stop` or `auth` from a subscription leg. A
+  subscription leg's credit stop keeps its class. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
   environment has every credential and workflow file-command variable
@@ -663,7 +672,8 @@ consumer to audit it.
   unscanned `execution-file`. Every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names are
   always the role's, `<ROLE>_CLAUDE_API_KEY` and
-  `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake. The job summary
+  `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake, or the fixed
+  `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`. The job summary
   shows only closed tokens; the CLI's own error line stays in the log. Each
   leg stops after `leg-timeout-minutes`, 30 by default. `tools`,
   `allowed-tools`, `disallowed-tools` and `json-schema-file` pass through to
@@ -700,7 +710,17 @@ consumer to audit it.
   that writes does it in a separate job with no model that needs both and
   reads job B's outputs when it ran, else job A's, so the write happens
   once.
-  `intake-triage.yml` is the reference implementation.
+
+  A third job C, the fallback leg, follows the same rules after job B: job
+  B's credential step outputs `fallback-ready` from
+  `secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != ''` (never the value) and
+  passes it to the action; job C declares `needs` on job B,
+  `if: needs.B.outputs.handoff == 'true'`, runs with `fallback-token` only,
+  and passes `fallback-reason` from job B's `handoff-reason` through fixed
+  compares. The status and write jobs read job C's outputs when it ran,
+  else job B's, else job A's. With the fallback secret empty, job B never
+  hands off and job C never runs. `intake-triage.yml` is the reference
+  implementation.
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
@@ -1122,7 +1142,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   two-job pattern above: the funding `role` (default `reviews`) API key in
   the `review-key` job, its subscription token in `review-subscription`
   after a handoff, with no key, or when the caller repository's
-  `REVIEWS_KEY_EXHAUSTED` variable is `true`. The model jobs are read-only
+  `REVIEWS_KEY_EXHAUSTED` variable is `true`, and the optional
+  `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` secret in `review-fallback` after the
+  subscription job hands off. The model jobs are read-only
   (`contents: read`, `pull-requests: read`, `cache-mode: none`, no
   `id-token`), and the model gets Read, Grep, Glob, Skill and Agent under
   `--permission-mode dontAsk`, the review plugin from claude-code-plugins'
@@ -1185,7 +1207,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`cli-version`, else the `CLAUDE_LANE_CLI_VERSION` variable, else `latest`).
   `claude-args` may set only `--model`, `--effort` and `--max-turns`. The
   caller grants `contents: read` and `issues: write` and passes the role's
-  `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one). The key
+  `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one), and
+  optionally the org secret `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`, which the
+  `claude-intake-triage-fallback` job runs after the subscription job hands
+  off (the third job of the pattern above). The key
   runs in the `claude-intake-triage` job; after it hands off (a credit stop
   or a rejected key), or with no key, the token runs in the `claude-intake-triage-subscription` job on
   `ubuntu-24.04` (the two-job pattern above);

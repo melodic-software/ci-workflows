@@ -48,7 +48,7 @@ test("every apt-get call ends before its step limit", () => {
       .filter((step) => /\bapt-get\b/.test(step.run ?? ""))
       .map((step) => ({ file, step }));
   });
-  assert.equal(steps.length, 4, "two lane steps and two intake-triage steps");
+  assert.equal(steps.length, 5, "two lane steps and three intake-triage steps");
   for (const { file, step } of steps) {
     const label = `${file}: ${step.name}`;
     const unbounded = step.run

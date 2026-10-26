@@ -234,8 +234,10 @@ async function runApply(
       ESCALATION_LABEL: escalationLabel,
       FLOOR_LABEL: floorLabel,
       SUB_RESULT: "skipped",
+      FB_RESULT: "skipped",
       ...legEnv("KEY"),
       ...legEnv("SUB"),
+      ...legEnv("FB"),
       ...env,
     },
     github,
@@ -1287,6 +1289,29 @@ test("a credit stop applies the triage once, from the subscription leg", async (
     assert.deepEqual(run.labels, ["priority: high"]);
     assert.match(run.summary, /- Leg: subscription/u);
   }
+});
+
+test("after a subscription handoff the triage applies once, from the fallback leg", async () => {
+  const fb = await extract(SUCCESS, {
+    output: triaged({ comment: "From the fallback leg." }),
+    allowed: ["priority: high"],
+  });
+  const forged = {
+    ...fb,
+    triage: JSON.stringify(triaged({ comment: "From the subscription leg." })),
+  };
+  const run = await runApply(
+    {
+      SUB_RESULT: "success",
+      FB_RESULT: "success",
+      ...legEnv("SUB", forged),
+      ...legEnv("FB", fb),
+    },
+    { allowed: ["priority: high"] },
+  );
+  assert.equal(run.comments.length, 1);
+  assert.match(run.comments[0], /From the fallback leg\./u);
+  assert.match(run.summary, /- Leg: fallback/u);
 });
 
 test("compose never offers admission labels to the model", async () => {
