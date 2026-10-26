@@ -379,7 +379,7 @@ jobs:
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
-      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
+      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
       verdict: ${{ steps.extract.outputs.verdict }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
@@ -411,6 +411,7 @@ jobs:
       # GitHub-hosted runners, which are discarded after the job. The docker
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
+        id: isolate
         continue-on-error: ${{ inputs.publish != 'comments' }}
         timeout-minutes: 2
         env:
@@ -1476,7 +1477,7 @@ jobs:
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
-      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
+      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
       verdict: ${{ steps.extract.outputs.verdict }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
@@ -1508,6 +1509,7 @@ jobs:
       # GitHub-hosted runners, which are discarded after the job. The docker
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
+        id: isolate
         continue-on-error: ${{ inputs.publish != 'comments' }}
         timeout-minutes: 2
         env:
@@ -2578,7 +2580,7 @@ jobs:
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
-      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
+      failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
       verdict: ${{ steps.extract.outputs.verdict }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
@@ -2610,6 +2612,7 @@ jobs:
       # GitHub-hosted runners, which are discarded after the job. The docker
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
+        id: isolate
         continue-on-error: ${{ inputs.publish != 'comments' }}
         timeout-minutes: 2
         env:

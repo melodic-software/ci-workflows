@@ -802,6 +802,7 @@ jobs:
       # AppArmor sysctl is lifted only on GitHub-hosted runners, which are
       # discarded after the job, so no reused host keeps the change.
       - name: Install subprocess isolation
+        id: isolate
         if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
         timeout-minutes: 1
         env:
@@ -1393,6 +1394,7 @@ jobs:
           SKIP_REASON: ${{ steps.scope.outputs.skip-reason }}
           REVIEW_FAILED: ${{ steps.review-outcome.outputs.review-failed }}
           FAILURE_CLASS: ${{ steps.review-outcome.outputs.failure-class }}
+          ISOLATE_OUTCOME: ${{ steps.isolate.outcome }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SKIP_KIND: ${{ steps.scope.outputs.skip }}
           SINCE: ${{ steps.scope.outputs.since }}
@@ -1416,7 +1418,11 @@ jobs:
             exit 0
           fi
           if [ -z "$REVIEW_FAILED" ]; then
-            FAILURE_CLASS=no-outcome
+            # A failed isolation install stops the job before the outcome step.
+            case "$ISOLATE_OUTCOME" in
+              failure | cancelled) FAILURE_CLASS=install-failed ;;
+              *) FAILURE_CLASS=no-outcome ;;
+            esac
           elif [ "$REVIEW_FAILED" != "true" ] && [ "$FAILURE_CLASS" != "skipped-validation" ]; then
             echo "$LANE: no failure reported." >> "$GITHUB_STEP_SUMMARY"
             if [ -n "$FINDINGS" ]; then
@@ -1434,7 +1440,7 @@ jobs:
             overloaded) why="the Claude service was overloaded (5xx); re-run later" ;;
             max-turns) why="the review used every turn --max-turns allows before finishing; raise it in claude-args" ;;
             timeout) why="the review step reached its timeout-minutes and was stopped before it finished" ;;
-            install-failed) why="the Bun install failed (often an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
+            install-failed) why="the subprocess isolation or Bun install failed (often a slow package mirror or an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
             no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
