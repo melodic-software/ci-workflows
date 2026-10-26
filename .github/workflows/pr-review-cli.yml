@@ -3752,7 +3752,9 @@ jobs:
             }
 
       # The token leg that counts: the fallback job's when it ran, else the
-      # subscription job's. Publish and hold read it as their SUB_ leg.
+      # subscription job's. Publish and hold read it as their SUB_ leg. The
+      # job result goes out as leg-result: github-script overwrites a step
+      # output named result with the script's return value.
       - name: Pick the token leg
         id: token-leg
         if: always()
@@ -3787,7 +3789,7 @@ jobs:
             const env = process.env;
             const leg = env.FB_RESULT && env.FB_RESULT !== "skipped" ? "FB" : "SUB";
             for (const name of ["RESULT", "PRESENT", "FAILED", "CLASS", "VERDICT", "REVIEW", "TURNS", "MODELS", "COST", "LEG_MS", "WALL_MS"]) {
-              core.setOutput(name.toLowerCase().replaceAll("_", "-"), env[`${leg}_${name}`] ?? "");
+              core.setOutput(name === "RESULT" ? "leg-result" : name.toLowerCase().replaceAll("_", "-"), env[`${leg}_${name}`] ?? "");
             }
 
       - name: Publish the review
@@ -3812,7 +3814,7 @@ jobs:
           LAST_SUMMARY: ${{ steps.handoffs.outputs.last-summary }}
           PR_FILES: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.pr-files || needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
-          SUB_RESULT: ${{ steps.token-leg.outputs.result }}
+          SUB_RESULT: ${{ steps.token-leg.outputs.leg-result }}
           KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}
           KEY_FAILED: ${{ needs.review-key.outputs.review-failed }}
           KEY_CLASS: ${{ needs.review-key.outputs.failure-class }}
@@ -3855,7 +3857,7 @@ jobs:
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
           PR_FILES: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.pr-files || needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}
-          SUB_RESULT: ${{ steps.token-leg.outputs.result }}
+          SUB_RESULT: ${{ steps.token-leg.outputs.leg-result }}
           KEY_PRESENT: ${{ needs.review-key.outputs.credential-present }}
           KEY_FAILED: ${{ needs.review-key.outputs.review-failed }}
           KEY_CLASS: ${{ needs.review-key.outputs.failure-class }}
