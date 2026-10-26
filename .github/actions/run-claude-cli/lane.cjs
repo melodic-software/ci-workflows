@@ -175,6 +175,14 @@ const NEXT_STEPS = {
   other: { note: "see the step log" },
 };
 
+// The Stop note when a leg hands off to the fallback job, by handoff reason.
+// A subscription credit stop keeps class other, so the reason picks the note.
+const FALLBACK_NOTES = {
+  auth: "credential refused: the fallback job runs instead; the owner replaces the secret",
+  "credit-stop": "credits used up: the fallback job runs instead",
+  "limit-stop": "limit stop: the fallback job runs instead",
+};
+
 function nextStep(failureClass) {
   return Object.hasOwn(NEXT_STEPS, failureClass)
     ? NEXT_STEPS[failureClass]
@@ -863,15 +871,21 @@ function errorTokens(record) {
     .join(" ");
 }
 
+function stopNote(record, reason) {
+  return record.next === "fallback" && Object.hasOwn(FALLBACK_NOTES, reason)
+    ? FALLBACK_NOTES[reason]
+    : nextStep(record.class).note;
+}
+
 // Every cell is a closed token or a value lane.cjs checked; no CLI text.
-function summaryTable(records) {
+function summaryTable(records, reason = "") {
   const cell = (value) =>
     String(value ?? "")
       .replaceAll("|", "\\|")
       .replaceAll("`", "'");
   const rows = records.map(
     (r) =>
-      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(errorTokens(r))} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(nextStep(r.class).note)} |`,
+      `| ${r.leg} | ${cell(r.secret)} | ${cell(r.class || "success")} | ${cell(errorTokens(r))} | ${cell(r.num_turns)} | ${cell(r.denials.count)} | ${cell(r.resets)} | ${cell(r.next)} | ${cell(stopNote(r, reason))} |`,
   );
   return [
     "| Leg | Secret | Class | Error | Turns | Denials | Resets | Next | Stop |",
@@ -1287,13 +1301,23 @@ function run(env) {
   if (env.GITHUB_STEP_SUMMARY && clean) {
     fs.appendFileSync(
       env.GITHUB_STEP_SUMMARY,
-      `### run-claude-cli: ${config.lane} (${config.role})\n\n${summaryTable(outcome.records)}\n`,
+      `### run-claude-cli: ${config.lane} (${config.role})\n\n${summaryTable(outcome.records, outcome.outputs["handoff-reason"])}\n`,
     );
   }
   // After the stop-commands block, so the runner reads it, and before a
   // lane class ends the step, so a stopped leg still warns.
   const warning = clean ? usageWarning(outcome.records[0]) : null;
   if (warning !== null) process.stdout.write(`${warning}\n`);
+  // A refused subscription token hands off and the run can go green, so the
+  // dead secret is named here.
+  if (
+    outcome.outputs["handoff-reason"] === "auth" &&
+    outcome.records[0].next === "fallback"
+  ) {
+    process.stdout.write(
+      `::warning title=run-claude-cli credential::class=auth: the API refused ${outcome.outputs.credential}; the owner must replace the secret. The fallback job runs instead.\n`,
+    );
+  }
   if (!clean) {
     throw new LaneError(
       "the execution log held a credential and was not written",
