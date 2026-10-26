@@ -286,7 +286,7 @@ test("the status job counts the fallback leg when it ran, else the subscription 
   const ran = await run({ ...legs, FB_RESULT: "success" });
   assert.deepEqual(
     [
-      ran.result,
+      ran["leg-result"],
       ran.present,
       ran.failed,
       ran.class,
@@ -299,7 +299,7 @@ test("the status job counts the fallback leg when it ran, else the subscription 
   for (const result of ["skipped", ""]) {
     const before = await run({ ...legs, FB_RESULT: result });
     assert.deepEqual(
-      [before.result, before.failed, before.class, before.turns],
+      [before["leg-result"], before.failed, before.class, before.turns],
       ["success", "true", "rate-limit", "1"],
       JSON.stringify(result),
     );
@@ -316,7 +316,7 @@ test("the status job counts the fallback leg when it ran, else the subscription 
     ]) {
       assert.equal(
         env[`SUB_${field}`],
-        `\${{ steps.token-leg.outputs.${field.toLowerCase()} }}`,
+        `\${{ steps.token-leg.outputs.${field === "RESULT" ? "leg-result" : field.toLowerCase()} }}`,
         `${name} SUB_${field}`,
       );
     }
@@ -330,6 +330,91 @@ test("the status job counts the fallback leg when it ran, else the subscription 
     handoffs.with.script,
     /\["review-fallback", "fb", env\.FB_SHA256\]/u,
   );
+});
+
+test("after a key-credit skip, publish reads the counted token leg's success, not no-outcome", async () => {
+  // actions/github-script sets the step output `result` to the script's
+  // return value after the script runs (src/main.ts:106 at the pinned sha),
+  // so a script's own setOutput("result", ...) never reaches a later step.
+  const { judge } = require("../actions/publish-review/publish.cjs");
+  const pick = step(status, "token-leg");
+  assert.equal(pick.with["result-encoding"] ?? "json", "json");
+  const REVIEW = '{"findings":0,"summary":"No findings.","comments":[]}';
+  const ok = {
+    PRESENT: "true",
+    FAILED: "false",
+    CLASS: "",
+    VERDICT: "complete",
+    REVIEW,
+  };
+  const legEnv = (prefix, values) =>
+    Object.fromEntries(
+      Object.entries(values).map(([k, v]) => [`${prefix}_${k}`, v]),
+    );
+  // The key job skipped by the key-credit window: every KEY_ value empty.
+  for (const [label, env] of [
+    [
+      "subscription",
+      { SUB_RESULT: "success", ...legEnv("SUB", ok), FB_RESULT: "skipped" },
+    ],
+    [
+      "fallback",
+      {
+        SUB_RESULT: "success",
+        ...legEnv("SUB", {
+          ...ok,
+          FAILED: "true",
+          CLASS: "rate-limit",
+          VERDICT: "",
+        }),
+        FB_RESULT: "success",
+        ...legEnv("FB", ok),
+      },
+    ],
+  ]) {
+    const outputs = {};
+    const core = {
+      setOutput: (k, v) => {
+        outputs[k] = v == null ? "" : String(v);
+      },
+    };
+    const saved = { ...process.env };
+    Object.assign(process.env, env);
+    let returned;
+    try {
+      returned = await new AsyncFunction("require", "core", pick.with.script)(
+        require,
+        core,
+      );
+    } finally {
+      for (const k of Object.keys(env)) {
+        if (k in saved) process.env[k] = saved[k];
+        else delete process.env[k];
+      }
+    }
+    core.setOutput("result", JSON.stringify(returned));
+    for (const name of ["Publish the review", "Apply the hold"]) {
+      const stepEnv = status.steps.find((s) => s.name === name).env;
+      const resolved = Object.fromEntries(
+        Object.entries(stepEnv)
+          .filter(([k]) => k.startsWith("SUB_") || k.startsWith("KEY_"))
+          .map(([k, v]) => [
+            k,
+            String(
+              evaluate(v, { steps: { "token-leg": { outputs } }, needs: {} }) ??
+                "",
+            ),
+          ]),
+      );
+      assert.equal(resolved.SUB_RESULT, "success", `${label} ${name}`);
+      const verdict = judge(resolved);
+      assert.deepEqual(
+        [verdict.ok, verdict.leg, verdict.review?.findings],
+        [true, "SUB", 0],
+        `${label} ${name}`,
+      );
+    }
+  }
 });
 
 test("the model jobs cannot write and give the model no shell, GitHub token or second secret", () => {
