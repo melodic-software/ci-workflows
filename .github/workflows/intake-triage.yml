@@ -104,10 +104,15 @@ name: intake-triage
 #     work class or `agent-ready`. A triage is usable when the run was clean,
 #     had no permission denial, and named a type; then the apply job sets
 #     the type and reads it back. When the type took, it removes
-#     `floor-label`, the one label it ever removes, if the run escalated or
-#     applied exactly one `priority:` label and no `status:` or
-#     `area: security` label. Otherwise it adds `floor-label` if missing, so
-#     the outcome does not depend on whether the floor labeler ran first.
+#     `floor-label` if the run escalated or picked exactly one `priority:`
+#     label and no `status:` or `area: security` label. Otherwise it adds
+#     `floor-label` if missing, so the outcome does not depend on whether
+#     the floor labeler ran first.
+#   - `priority:` is exclusive: the issue keeps at most one. A priority whose
+#     last labeled event came from a person in allowed-author-ids stands and
+#     the pick is dropped; any other priority on the issue is removed for
+#     the pick. Two picks apply neither. These and the floor are the only
+#     labels the lane removes.
 #   - Any permission denial, a max-turns stop, unusable output, a
 #     credential-like comment or `needs_human: true` escalates: the run's
 #     labels and text are dropped, and only the escalation label and a fixed
@@ -189,7 +194,7 @@ on:
       floor-label:
         description: >-
           Triage floor label the lane removes once a usable triage has set
-          the Issue Type and either escalated or applied exactly one
+          the Issue Type and either escalated or picked exactly one
           `priority:` label, and adds after any other run. Empty, or a label
           missing from the repository, leaves the floor alone.
         type: string
@@ -2079,6 +2084,7 @@ jobs:
           ALLOWED_LABELS: ${{ inputs.allowed-labels }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
+          AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           SUB_RESULT: ${{ needs.subscription.result }}
           KEY_SUBTYPE: ${{ needs.claude.outputs.result-subtype }}
           KEY_ERROR: ${{ needs.claude.outputs.result-error }}
@@ -2241,6 +2247,20 @@ jobs:
             // that ran writes it, so a rerun always replaces an earlier
             // proposal line.
             const MARKER = "<!-- claude-lane intake-triage -->";
+            // The floor reads the model's priority picks, before the
+            // exclusive groups below settle which label the issue keeps.
+            const priorities = [...labels].filter((label) => label.startsWith("priority:"));
+            // An exclusive group leaves the issue at most one of its labels.
+            // A label the issue holds whose last labeled event came from a
+            // person in allowed-author-ids (the fetch step's rule) stands over
+            // the pick, the latest such one when there are several; any other
+            // is replaced by the pick. Two picks apply neither. An escalated
+            // run has no pick, so it touches no group.
+            const EXCLUSIVE = ["priority:"];
+            const people = /^[^,]+(,[^,]+)*$/u.test(env.AUTHOR_IDS ?? "") ? new Set(env.AUTHOR_IDS.split(",")) : new Set();
+            const held = (issue.labels ?? []).map((label) => (typeof label === "string" ? label : label?.name)).filter((name) => typeof name === "string");
+            const replaced = [];
+            const exclusive = [];
             let failure;
             try {
               const body = [MARKER + "\n" + proposal, comment, "<sub>Automated triage. A maintainer reviews it.</sub>"].filter(Boolean).join("\n\n");
@@ -2249,8 +2269,47 @@ jobs:
               ).find((c) => c.user?.login === "github-actions[bot]" && c.body?.startsWith(MARKER));
               if (earlier) await github.rest.issues.updateComment({ ...context.repo, comment_id: earlier.id, body });
               else await github.rest.issues.createComment({ ...context.repo, issue_number, body });
+              let setters;
+              for (const prefix of EXCLUSIVE) {
+                const picks = [...labels].filter((label) => label.startsWith(prefix));
+                if (picks.length === 0) continue;
+                for (const label of picks) labels.delete(label);
+                if (picks.length > 1) {
+                  exclusive.push(`${picks.join(" and ")} picked, neither applied`);
+                  continue;
+                }
+                const on = held.filter((label) => label.startsWith(prefix));
+                if (on.length === 0) {
+                  labels.add(picks[0]);
+                  continue;
+                }
+                if (!setters) {
+                  setters = new Map();
+                  const events = await github.paginate(github.rest.issues.listEvents, { ...context.repo, issue_number, per_page: 100 });
+                  events.forEach((event, at) => {
+                    if (event.event === "labeled" && typeof event.label?.name === "string") setters.set(event.label.name, { actor: event.actor, at });
+                  });
+                }
+                const byPerson = (label) => {
+                  const actor = setters.get(label)?.actor;
+                  return actor?.type === "User" && Number.isInteger(actor.id) && people.has(String(actor.id));
+                };
+                const keep = on.filter(byPerson).sort((a, b) => setters.get(b).at - setters.get(a).at)[0] ?? picks[0];
+                if (on.includes(keep)) exclusive.push(`kept ${keep}${keep === picks[0] ? "" : `, set by a listed person, over ${picks[0]}`}`);
+                else labels.add(keep);
+                replaced.push(...on.filter((label) => label !== keep));
+              }
               if (labels.size > 0) {
                 await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [...labels] });
+              }
+              // The pick goes on first, so a failed removal leaves an extra
+              // label rather than none.
+              for (const name of replaced) {
+                try {
+                  await github.rest.issues.removeLabel({ ...context.repo, issue_number, name });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
               }
             } catch (error) {
               failure = error;
@@ -2260,7 +2319,6 @@ jobs:
             // A type the issue already has is kept, whoever set it, and
             // counts as typed for the floor. GitHub can drop a type change it
             // does not allow without an error, so the result is read back.
-            const priorities = [...labels].filter((label) => label.startsWith("priority:"));
             // On a run that was not escalated, a status or security label
             // means a person still has to act, so the floor stays. An
             // escalated run is routed to a person by its escalation label,
@@ -2329,6 +2387,8 @@ jobs:
               `- Permission denials: ${Number.isNaN(denials) ? "unreadable" : denials}`,
               `- Labels applied: ${[...labels].join(", ") || "none"}`,
               `- Labels rejected: ${rejected.join(", ") || "none"}`,
+              `- Labels replaced: ${replaced.join(", ") || "none"}`,
+              `- Priority: ${exclusive.join("; ") || "as applied"}`,
               `- Issue Type: ${typeSet || "not set"} (requested: ${Object.hasOwn(types, wanted) ? wanted : "none"})`,
               `- Proposed work class: ${proposed || "none"}`,
               `- Floor label: ${floorCleared ? "removed" : floorAdded ? "added" : "unchanged"}`,

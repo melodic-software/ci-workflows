@@ -139,6 +139,9 @@ async function runApply(
     typeFails = false,
     floorDeleted = false,
     floorAbsent = false,
+    issueLabels = [],
+    events = [],
+    authorIds = "",
   } = {},
 ) {
   const labels = [];
@@ -162,6 +165,7 @@ async function runApply(
       record(request);
       if (method === github.rest.issues.listLabelsForRepo)
         return live.map((name) => ({ name }));
+      if (method === github.rest.issues.listEvents) return events;
       return [];
     },
     graphql: async (query, variables) => {
@@ -197,11 +201,13 @@ async function runApply(
               number: request.issue_number,
               node_id: `I_node${request.issue_number}`,
               type: existingType ? { name: existingType } : null,
+              labels: issueLabels.map((name) => ({ name })),
             },
           };
         },
         listLabelsForRepo: () => {},
         listComments: () => {},
+        listEvents: () => {},
         createComment: async (request) => {
           record(request);
           comments.push(request.body);
@@ -233,6 +239,7 @@ async function runApply(
       ALLOWED_LABELS: allowed.join("\n"),
       ESCALATION_LABEL: escalationLabel,
       FLOOR_LABEL: floorLabel,
+      AUTHOR_IDS: authorIds,
       SUB_RESULT: "skipped",
       FB_RESULT: "skipped",
       ...legEnv("KEY"),
@@ -620,11 +627,12 @@ test("type none sets nothing and keeps the floor label", async () => {
 
 test("a failed type write still adds the floor and fails the job", async () => {
   // Two priorities is not routed, so a late floor labeler would skip it.
+  // Neither pick is applied: priority is an exclusive group.
   const { labels, failed } = await apply(SUCCESS, {
     output: triaged({ labels: ["priority: high", "priority: low"] }),
     typeFails: true,
   });
-  assert.deepEqual(labels, ["priority: high", "priority: low", FLOOR_LABEL]);
+  assert.deepEqual(labels, [FLOOR_LABEL]);
   assert.equal(failed.length, 1);
 });
 
@@ -1344,4 +1352,181 @@ test("triage-deferred reaches the caller from the apply step's deferred output",
     "${{ steps.apply.outputs.deferred }}",
   );
   assert.equal(applyStep.id, "apply");
+});
+
+// `priority:` is an exclusive group: the issue ends with at most one priority
+// label. A priority a listed person (allowed-author-ids) set stands over the
+// model's pick; any other is replaced. Shaped on claude-code-plugins#9695:
+// `priority: high` set by a maintainer, then `priority: medium` added by the
+// lane beside it.
+const PRIORITIES = [
+  "bug",
+  "priority: high",
+  "priority: medium",
+  "priority: low",
+];
+const MAINTAINER = { id: 1001, type: "User", login: "maintainer" };
+const OUTSIDER = { id: 2002, type: "User", login: "outsider" };
+const LANE_BOT = { id: 41898282, type: "Bot", login: "github-actions[bot]" };
+const labeled = (name, actor) => ({ event: "labeled", label: { name }, actor });
+const priorityRun = (pick, options) =>
+  apply(SUCCESS, {
+    output: triaged({ labels: [pick] }),
+    allowed: PRIORITIES,
+    authorIds: "1001,3003",
+    ...options,
+  });
+
+test("a priority a listed person set is kept and the model's pick is not added", async () => {
+  const { labels, removed, failed, summary } = await priorityRun(
+    "priority: medium",
+    {
+      issueLabels: ["priority: high", FLOOR_LABEL],
+      events: [labeled("priority: high", MAINTAINER)],
+    },
+  );
+  assert.deepEqual(labels, []);
+  // The floor still goes: the model picked exactly one priority.
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+  assert.deepEqual(failed, []);
+  assert.match(summary, /Priority: kept priority: high/u);
+});
+
+test("a priority set by anyone else is replaced by the model's pick", async () => {
+  // Unlisted person, the lane's own bot (even when listed as a bot sender),
+  // and a label with no labeled event all count as not set by a listed person.
+  for (const [what, events, authorIds] of [
+    ["an unlisted person", [labeled("priority: high", OUTSIDER)], "1001"],
+    ["a bot", [labeled("priority: high", LANE_BOT)], "1001,41898282"],
+    ["no event", [], "1001"],
+  ]) {
+    const { labels, removed, failed } = await priorityRun("priority: medium", {
+      issueLabels: ["priority: high"],
+      events,
+      authorIds,
+    });
+    assert.deepEqual(labels, ["priority: medium"], what);
+    assert.deepEqual(removed, ["priority: high", FLOOR_LABEL], what);
+    assert.deepEqual(failed, [], what);
+  }
+});
+
+test("a malformed author list trusts no one, so the pick replaces", async () => {
+  const { labels, removed } = await priorityRun("priority: medium", {
+    issueLabels: ["priority: high"],
+    events: [labeled("priority: high", MAINTAINER)],
+    authorIds: ",1001",
+  });
+  assert.deepEqual(labels, ["priority: medium"]);
+  assert.deepEqual(removed, ["priority: high", FLOOR_LABEL]);
+});
+
+test("a pick the issue already carries is a no-op", async () => {
+  const { labels, removed } = await priorityRun("priority: high", {
+    issueLabels: ["priority: high"],
+    events: [labeled("priority: high", LANE_BOT)],
+  });
+  assert.deepEqual(labels, []);
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+});
+
+test("two priorities already on the issue resolve to the listed person's", async () => {
+  const { labels, removed } = await priorityRun("priority: low", {
+    issueLabels: ["priority: high", "priority: medium"],
+    events: [
+      labeled("priority: high", MAINTAINER),
+      labeled("priority: medium", LANE_BOT),
+    ],
+  });
+  assert.deepEqual(labels, []);
+  assert.deepEqual(removed, ["priority: medium", FLOOR_LABEL]);
+});
+
+test("two priorities no listed person set resolve to the model's pick", async () => {
+  const { labels, removed } = await priorityRun("priority: low", {
+    issueLabels: ["priority: high", "priority: medium"],
+    events: [
+      labeled("priority: high", OUTSIDER),
+      labeled("priority: medium", LANE_BOT),
+    ],
+  });
+  assert.deepEqual(labels, ["priority: low"]);
+  assert.deepEqual(removed, [
+    "priority: high",
+    "priority: medium",
+    FLOOR_LABEL,
+  ]);
+});
+
+test("two priorities listed people set resolve to the latest one", async () => {
+  const OTHER = { id: 3003, type: "User", login: "other" };
+  for (const [first, second, keptLabel, removedLabel] of [
+    [
+      "priority: high",
+      "priority: medium",
+      "priority: medium",
+      "priority: high",
+    ],
+    [
+      "priority: medium",
+      "priority: high",
+      "priority: high",
+      "priority: medium",
+    ],
+  ]) {
+    const { labels, removed, summary } = await priorityRun("priority: low", {
+      issueLabels: ["priority: high", "priority: medium"],
+      events: [labeled(first, MAINTAINER), labeled(second, OTHER)],
+    });
+    assert.deepEqual(labels, [], keptLabel);
+    assert.deepEqual(removed, [removedLabel, FLOOR_LABEL], keptLabel);
+    assert.match(summary, new RegExp(`Priority: kept ${keptLabel},`, "u"));
+  }
+});
+
+test("the last labeled event names who set a priority", async () => {
+  // A listed person set it once, then the lane labeled it again.
+  const { labels, removed } = await priorityRun("priority: low", {
+    issueLabels: ["priority: high"],
+    events: [
+      labeled("priority: high", MAINTAINER),
+      labeled("priority: high", LANE_BOT),
+    ],
+  });
+  assert.deepEqual(labels, ["priority: low"]);
+  assert.deepEqual(removed, ["priority: high", FLOOR_LABEL]);
+});
+
+test("a priority pick leaves other label groups alone", async () => {
+  const { labels, removed } = await apply(SUCCESS, {
+    output: triaged({ labels: ["bug", "priority: medium"] }),
+    allowed: PRIORITIES,
+    authorIds: "1001",
+    issueLabels: ["question", "priority: high"],
+    events: [labeled("priority: high", LANE_BOT)],
+  });
+  assert.deepEqual(labels, ["bug", "priority: medium"]);
+  assert.deepEqual(removed, ["priority: high", FLOOR_LABEL]);
+});
+
+test("an escalated run leaves existing priorities alone", async () => {
+  const { labels, removed } = await apply(SUCCESS, {
+    output: triaged({ labels: ["priority: medium"], needs_human: true }),
+    allowed: PRIORITIES,
+    issueLabels: ["priority: high", "priority: low"],
+    events: [labeled("priority: high", LANE_BOT)],
+  });
+  assert.deepEqual(labels, [ESCALATION_LABEL]);
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+});
+
+test("two priority picks apply neither and keep the floor", async () => {
+  const { labels, removed } = await apply(SUCCESS, {
+    output: triaged({ labels: ["priority: high", "priority: low"] }),
+    allowed: PRIORITIES,
+    issueLabels: ["priority: medium"],
+    events: [labeled("priority: medium", LANE_BOT)],
+  });
+  assert.deepEqual(labels, [FLOOR_LABEL]);
+  assert.deepEqual(removed, []);
 });
