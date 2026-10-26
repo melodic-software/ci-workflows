@@ -96,11 +96,12 @@ inputs:
     default: ""
   fallback-reason:
     description: >-
-      Why this run used a fallback credential: `credit-stop` (the key job
-      credit-stopped), `auth` (the API refused the key job's key with status
-      401, disabled or deleted, or 402, billing; a 403 hands off nothing) or
-      `no-key`
-      (the key was empty). Printed as
+      Why this run used a fallback credential: `credit-stop` (the previous
+      leg credit-stopped), `auth` (the API refused the previous leg's
+      credential with status 401, disabled or deleted, or 402, billing; a
+      403 hands off nothing), `no-key` (the key was empty) or `limit-stop`
+      (the subscription leg hit a usage limit, so the fallback leg ran);
+      run-claude-cli's handoff-reason output gives it. Printed as
       `fallback=<reason>` right after `credential=`. Empty prints nothing;
       any other value fails the step before it reports.
     required: false

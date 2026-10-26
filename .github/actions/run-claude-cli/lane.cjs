@@ -1,5 +1,6 @@
 // run-claude-cli: run one prompt with headless `claude -p` on exactly one
-// credential, the lane's API key or its subscription token, never both.
+// credential: the lane's API key, its subscription token, or the central
+// fallback subscription token.
 //
 // Subcommands (argv[2]):
 //   verify-isolation  fail closed unless managed settings are root-owned and
@@ -14,11 +15,16 @@
 //
 // Security contract:
 //   - One leg per invocation: readConfig fails closed unless exactly one of
-//     the two credentials is set. A caller that falls back to the
+//     the three credentials is set. A caller that falls back to the
 //     subscription after a key leg hands off (a credit stop, or class auth
 //     with api_error_status 401 or 402, NEXT_STEPS) runs a second job, on a
 //     fresh runner, gated on this one's handoff output being `true`. A 403
 //     stops the run with its error type, error_code and request_id.
+//   - A subscription leg hands off only when fallback-ready is `true`: on a
+//     limit stop (a rejected rate_limit_event with its reset), a credit stop
+//     (classify.cjs isCreditStop) or a 401 or 402. The caller then runs the
+//     fallback leg, on FALLBACK_SECRET, as a third job; that leg is the last
+//     and never hands off. handoff-reason names the stop.
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
@@ -45,8 +51,10 @@
 //     tools input names them, no user, project or local settings, file tools
 //     confined to the working directories, no bypassPermissions.
 //   - Only the key leg can end in `credit-stop` (classify.cjs isCreditStop),
-//     judged from structured fields.
-//   - Secret names are derived from the role and never taken from input.
+//     judged from structured fields; a subscription leg's credit stop keeps
+//     its class and shows only as handoff-reason.
+//   - Secret names are derived from the role, or are FALLBACK_SECRET, and
+//     never taken from input.
 //   - The CLI's stdout is captured in memory and written to files only after
 //     the leg exits. Its stderr and closed-pattern tokens reach the job log,
 //     inside ::stop-commands::; the job summary shows only closed tokens.
@@ -63,6 +71,7 @@ const {
   apiErrorFacts,
   classifyExecutionFile,
   creditStopResetsAt,
+  isCreditStop,
   rateLimitWindows,
   readMessages,
   readRunRecord,
@@ -96,7 +105,11 @@ const CREDENTIAL_VARIABLES = [
   "CLAUDE_CODE_ENTRYPOINT",
   "LANE_API_KEY",
   "LANE_SUBSCRIPTION_TOKEN",
+  "LANE_FALLBACK_TOKEN",
 ];
+// The org secret holding the central fallback subscription's token, the same
+// for every role.
+const FALLBACK_SECRET = "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN";
 const KEY_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}/u;
 // Workflow file-command variables. legEnv removes them, so a leg cannot set
 // environment, path, outputs, state or summary for later steps.
@@ -134,15 +147,13 @@ const UNSAFE_VARIABLES = new Set([
   "NODE_EXTRA_CA_CERTS",
   "NODE_TLS_REJECT_UNAUTHORIZED",
 ]);
-// What each class means for the run. `handoff`: a key leg that ends in it
-// hands the run to the caller's subscription job; `statuses`, when set,
-// narrows that to these numeric api_error_status values, never an error-type
-// string, which errors[] text could carry. `note`: the job summary's closed
-// token, the named stop and what happens next.
+// What each class means for the run. `statuses`: the numeric
+// api_error_status values of an auth class that hand off (handoffReason),
+// never an error-type string, which errors[] text could carry. `note`: the
+// job summary's closed token, the named stop and what happens next.
 const NEXT_STEPS = {
-  "": { handoff: false, note: "" },
+  "": { note: "" },
   "credit-stop": {
-    handoff: true,
     note: "credits used up: the subscription job runs; the owner rotates a key by hand when needed",
   },
   // 401 (key disabled or deleted) and 402 (billing) hand off. 403
@@ -150,21 +161,18 @@ const NEXT_STEPS = {
   // resource, a setting the owner fixes, and handing off would hide it. An
   // auth class with no numeric status does not hand off either.
   auth: {
-    handoff: true,
     statuses: [401, 402],
     note: "credential unusable: 401 or 402 hands off to the subscription job, 403 (permission) stops the run; the owner fixes the key by hand",
   },
-  "rate-limit": { handoff: false, note: "limit stop: rerun after the reset" },
-  overloaded: { handoff: false, note: "API overloaded: rerun later" },
+  "rate-limit": { note: "limit stop: rerun after the reset" },
+  overloaded: { note: "API overloaded: rerun later" },
   "max-turns": {
-    handoff: false,
     note: "turn cap: raise max-turns or narrow the task",
   },
   timeout: {
-    handoff: false,
     note: "leg timeout: raise leg-timeout-minutes or narrow the task",
   },
-  other: { handoff: false, note: "see the step log" },
+  other: { note: "see the step log" },
 };
 
 function nextStep(failureClass) {
@@ -173,12 +181,31 @@ function nextStep(failureClass) {
     : NEXT_STEPS.other;
 }
 
-// Only a key leg hands off: the subscription leg is the last one.
-// `apiErrorStatus` is the last message's numeric api_error_status.
-function handsOff(leg, failureClass, apiErrorStatus) {
-  const step = nextStep(failureClass);
-  if (leg.leg !== "api-key" || !step.handoff) return false;
-  return step.statuses === undefined || step.statuses.includes(apiErrorStatus);
+// Why the leg hands off, or "" when it does not. A key leg hands off on a
+// credit stop or a 401 or 402 (NEXT_STEPS). A subscription leg hands off
+// only when the caller has a fallback leg (fallbackReady): on a limit stop, a
+// rejected rate_limit_event with its reset (`limitStop`), on a credit stop
+// whatever its class (`creditStop`), or on a 401 or 402. The fallback leg is
+// the last one. `apiErrorStatus` is the last message's numeric
+// api_error_status.
+function handoffReason(
+  leg,
+  failureClass,
+  apiErrorStatus,
+  { fallbackReady = false, limitStop = false, creditStop = false } = {},
+) {
+  const refused =
+    failureClass === "auth" && NEXT_STEPS.auth.statuses.includes(apiErrorStatus);
+  if (leg.leg === "api-key") {
+    if (failureClass === "credit-stop") return "credit-stop";
+    return refused ? "auth" : "";
+  }
+  if (leg.leg !== "subscription" || !fallbackReady || failureClass === "") {
+    return "";
+  }
+  if (creditStop) return "credit-stop";
+  if (refused) return "auth";
+  return failureClass === "rate-limit" && limitStop ? "limit-stop" : "";
 }
 
 class LaneError extends Error {
@@ -203,16 +230,20 @@ function readConfig(env) {
   const supplied = [
     ["api-key", env.LANE_API_KEY ?? "", "CLAUDE_API_KEY"],
     ["subscription", env.LANE_SUBSCRIPTION_TOKEN ?? "", "CLAUDE_CODE_OAUTH_TOKEN"],
+    ["fallback", env.LANE_FALLBACK_TOKEN ?? "", null],
   ].filter(([, value]) => value !== "");
   if (supplied.length !== 1) {
     throw new LaneError(
-      `${supplied.length === 0 ? "no credential" : "two credentials"}: set exactly one of api-key and subscription-token, and run the subscription leg as its own job`,
+      `${supplied.length === 0 ? "no credential" : `${supplied.length} credentials`}: set exactly one of api-key, subscription-token and fallback-token, and run each leg as its own job`,
     );
   }
   const [[legName, value, suffix]] = supplied;
   // The role's name, `<ROLE>_<suffix>` with the role upper-snake, is the only
-  // one.
-  const name = `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
+  // one; the fallback leg's is FALLBACK_SECRET.
+  const name =
+    suffix === null
+      ? FALLBACK_SECRET
+      : `${role.toUpperCase().replaceAll("-", "_")}_${suffix}`;
   if (!NAME_PATTERN.test(name)) {
     throw new LaneError(
       `${legName} secret name ${JSON.stringify(name)} is not an upper-case secret name`,
@@ -222,6 +253,12 @@ function readConfig(env) {
   if (!PERMISSION_MODES.has(permissionMode)) {
     throw new LaneError(
       `permission-mode ${JSON.stringify(permissionMode)} is not one of ${[...PERMISSION_MODES].join(", ")}`,
+    );
+  }
+  const fallbackReady = (env.LANE_FALLBACK_READY ?? "").trim();
+  if (!["", "true", "false"].includes(fallbackReady)) {
+    throw new LaneError(
+      `fallback-ready ${JSON.stringify(fallbackReady)} is not true, false or empty`,
     );
   }
   const legTimeout = (env.LANE_LEG_TIMEOUT_MINUTES ?? "").trim();
@@ -263,6 +300,7 @@ function readConfig(env) {
   }
   return {
     leg: { leg: legName, name, value },
+    fallbackReady: fallbackReady === "true",
     lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
     role,
     model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
@@ -718,7 +756,7 @@ function runLeg(
   const modes = [];
   let record;
   let judged;
-  let handoff = false;
+  let reason = "";
   try {
     const readOnly = readOnlyPaths(
       config,
@@ -765,10 +803,17 @@ function runLeg(
     }
     // The same message classify.cjs reads its status from.
     const status = judged.messages.at(-1)?.api_error_status;
-    handoff = handsOff(
+    reason = handoffReason(
       leg,
       judged.failureClass,
       Number.isInteger(status) ? status : null,
+      {
+        fallbackReady: config.fallbackReady === true,
+        limitStop: judged.failureClass === "rate-limit" && judged.resets !== null,
+        creditStop:
+          leg.leg === "subscription" &&
+          isCreditStop(judged.messages, { exitCode }),
+      },
     );
     record = legRecord({
       config,
@@ -779,7 +824,7 @@ function runLeg(
       messages: judged.messages,
       failureClass: judged.failureClass,
       resets: judged.resets,
-      next: handoff ? "subscription" : null,
+      next: reason === "" ? null : leg.leg === "api-key" ? "subscription" : "fallback",
       message,
     });
   } finally {
@@ -794,11 +839,12 @@ function runLeg(
     records: [record],
     outputs: {
       "lane-class": judged.failureClass,
-      handoff: String(handoff),
+      handoff: String(reason !== ""),
       "lane-resets": judged.resets ?? "",
       "lane-turns": run.turns === null ? "" : String(run.turns),
       "lane-models": run.models.join(","),
       credential: leg.name,
+      "handoff-reason": reason,
       "execution-file": executionFile,
     },
   };
@@ -1292,6 +1338,7 @@ if (require.main === module) {
 
 module.exports = {
   CREDENTIAL_VARIABLES,
+  FALLBACK_SECRET,
   FILE_COMMAND_VARIABLES,
   LaneError,
   MAX_LEG_STDOUT_BYTES,

@@ -6,13 +6,16 @@ this repository, such as claude-code-account-rotation's limit-stop check, build
 to this page and to the JSON Schema
 [`schemas/lane-outcome.v1.schema.json`](../schemas/lane-outcome.v1.schema.json).
 
-Every lane workflow emits one record per credential attempt. A handoff writes
-two records: the attempt that handed off, with `handoff: true`, and the next
-one. The next attempt's record is written only when its credential is named
+Every lane workflow emits one record per credential attempt. Each handoff
+adds one: the attempt that handed off writes its record with
+`handoff: true`, and the next attempt writes its own. The next attempt's record is written only when its credential is named
 (for the review lanes, `fallback-credential-name` set); otherwise that attempt
 writes the legacy tokens and a warning. Intake's key leg hands off to the
 subscription leg on a credit stop or a rejected key; a review lane's first
-token hands off to its fallback token at a usage limit. The emitter is
+token hands off to its fallback token at a usage limit. On the run-claude-cli
+lanes, a subscription leg hands off to the fallback leg, on the org secret
+`FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`, at a usage limit, a credit stop or a
+rejected token, when the caller passes that secret. The emitter is
 [`report-lane-outcome`](../.github/actions/report-lane-outcome/action.yml).
 
 ## Format
@@ -69,6 +72,13 @@ reason, then a review lane under the legacy single token:
 {"v":1,"lane":"pr-review","outcome":"failure","class":"rate-limit","credential":{"secret":"CLAUDE_CODE_OAUTH_TOKEN","kind":"oauth-token"},"resets":{"at":"2026-10-22T05:00:00Z","window":"five_hour"}}
 ```
 
+The fallback leg after the subscription leg hit a usage limit. The secret's
+`FALLBACK` prefix reads as its role:
+
+```json
+{"v":1,"lane":"intake-triage","outcome":"success","credential":{"secret":"FALLBACK_CLAUDE_CODE_OAUTH_TOKEN","kind":"oauth-token","role":"FALLBACK"},"fallback":{"reason":"limit-stop"},"turns":4,"models":["claude-sonnet-5"]}
+```
+
 A whole annotation message, with the record between the sentence and the free
 text:
 
@@ -92,7 +102,7 @@ their closed values and where `report-lane-outcome` takes them from.
 | `credential.kind` | yes | `oauth-token` or `api-key` | the secret's suffix: `_CLAUDE_API_KEY` is `api-key`; `CLAUDE_CODE_OAUTH_TOKEN`, alone or as a suffix, is `oauth-token` |
 | `credential.role` | no | the `<ROLE>` prefix | `<ROLE>_CLAUDE_API_KEY` or `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` |
 | `handoff` | no | boolean; true when this attempt handed off to another credential | `handoff` input |
-| `fallback.reason` | no | `credit-stop`, `auth` or `no-key` | `fallback-reason` input, on the fallback leg's record |
+| `fallback.reason` | no | `credit-stop`, `auth`, `no-key` or `limit-stop` | `fallback-reason` input, on the record of the leg that ran after a handoff; `limit-stop` only on the fallback leg's |
 | `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
 | `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |

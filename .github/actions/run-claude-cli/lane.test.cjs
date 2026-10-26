@@ -42,6 +42,9 @@ const KEY = "key-value-for-tests-1234";
 const TOKEN = "oauth-value-for-tests-5678";
 const KEY_NAME = "AUTOMATIONS_CLAUDE_API_KEY";
 const TOKEN_NAME = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
+const FALLBACK_TOKEN = "fallback-value-for-tests-9012";
+// The org secret the owner named for the central fallback subscription.
+const FALLBACK_NAME = "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN";
 
 const root = makeTemporaryDirectory("run-claude-cli-");
 const fakeCli = path.join(root, "claude");
@@ -230,11 +233,14 @@ const SESSION_LIMIT = [
   }),
 ];
 
-// Runs the one leg against the fake CLI. Set exactly one of `key` and `sub`,
-// the message list that leg prints.
+// Runs the one leg against the fake CLI. Set exactly one of `key`, `sub` and
+// `fallback`, the message list that leg prints; `fallbackReady` is the
+// fallback-ready input a token leg reads.
 function runCase({
   key = null,
   sub = null,
+  fallback = null,
+  fallbackReady = false,
   keyExit = 1,
   subExit = 1,
   keySleep = false,
@@ -260,7 +266,7 @@ function runCase({
   };
   for (const [leg, messages, exit] of [
     ["KEY", key, keyExit],
-    ["SUB", sub, subExit],
+    ["SUB", sub ?? fallback, subExit],
   ]) {
     if (!messages) continue;
     const file = path.join(dir, `${leg}.jsonl`);
@@ -274,7 +280,10 @@ function runCase({
   const config = {
     leg: key
       ? { leg: "api-key", name: KEY_NAME, value: KEY }
-      : { leg: "subscription", name: TOKEN_NAME, value: TOKEN },
+      : fallback
+        ? { leg: "fallback", name: FALLBACK_NAME, value: FALLBACK_TOKEN }
+        : { leg: "subscription", name: TOKEN_NAME, value: TOKEN },
+    fallbackReady,
     lane: "fix-ci",
     role: "automations",
     model: "claude-sonnet-5",
@@ -499,6 +508,94 @@ test("a key leg hands off on no other failure class", () => {
   }
 });
 
+test("a key leg's handoff names its reason: credit-stop or auth", () => {
+  assert.equal(runCase({ key: CREDIT_STOP }).outputs["handoff-reason"], "credit-stop");
+  assert.equal(runCase({ key: AUTH }).outputs["handoff-reason"], "auth");
+  assert.equal(runCase({ key: SESSION_LIMIT }).outputs["handoff-reason"], "");
+});
+
+// A 429 with no rejected rate_limit_event: a throttle, not a usage limit.
+const THROTTLE = SESSION_LIMIT.filter((m) => m.type !== "rate_limit_event");
+const WARNED_THROTTLE = [
+  {
+    type: "rate_limit_event",
+    rate_limit_info: { status: "allowed_warning", resetsAt: 1767225600, rateLimitType: "five_hour" },
+  },
+  ...THROTTLE,
+];
+
+test("with a fallback ready, a subscription leg hands off on a limit stop, a credit stop or a 401 or 402", () => {
+  for (const [name, sub, reason, laneClass] of [
+    ["limit stop", SESSION_LIMIT, "limit-stop", "rate-limit"],
+    ["credit stop", CREDIT_STOP, "credit-stop", "other"],
+    ["401", authLeg({ status: 401 }), "auth", "auth"],
+    ["402", authLeg({ status: 402 }), "auth", "auth"],
+  ]) {
+    const { outputs, records } = runCase({ sub, fallbackReady: true });
+    assert.equal(outputs.handoff, "true", name);
+    assert.equal(outputs["handoff-reason"], reason, name);
+    assert.equal(outputs["lane-class"], laneClass, name);
+    assert.equal(outputs.credential, TOKEN_NAME, name);
+    assert.equal(records[0].next, "fallback", name);
+  }
+});
+
+test("with a fallback ready, a subscription leg hands off on no other stop", () => {
+  for (const [name, sub, extra] of [
+    ["403", authLeg({ status: 403, text: PERMISSION_TEXT }), {}],
+    ["throttle", THROTTLE, {}],
+    ["warning only", WARNED_THROTTLE, {}],
+    ["max-turns", MAX_TURNS, {}],
+    ["success", SUCCESS, {}],
+  ]) {
+    const { outputs, records } = runCase({ sub, fallbackReady: true, ...extra });
+    assert.equal(outputs.handoff, "false", name);
+    assert.equal(outputs["handoff-reason"], "", name);
+    assert.equal(records[0].next, null, name);
+  }
+});
+
+test("a key leg hands off only to the subscription job, fallback ready or not", () => {
+  for (const [name, key, reason] of [
+    ["limit stop", SESSION_LIMIT, ""],
+    ["credit stop", CREDIT_STOP, "credit-stop"],
+    ["401", AUTH, "auth"],
+  ]) {
+    const { outputs, records } = runCase({ key, fallbackReady: true });
+    assert.equal(outputs["handoff-reason"], reason, name);
+    assert.equal(records[0].next, reason === "" ? null : "subscription", name);
+  }
+});
+
+test("with no fallback ready, a subscription leg stops as before", () => {
+  for (const [name, sub, laneClass] of [
+    ["limit stop", SESSION_LIMIT, "rate-limit"],
+    ["credit stop", CREDIT_STOP, "other"],
+    ["401", AUTH, "auth"],
+  ]) {
+    const { outputs, records } = runCase({ sub });
+    assert.equal(outputs.handoff, "false", name);
+    assert.equal(outputs["handoff-reason"], "", name);
+    assert.equal(outputs["lane-class"], laneClass, name);
+    assert.equal(records[0].next, null, name);
+  }
+});
+
+test("the fallback leg runs on the fallback secret and never hands off", () => {
+  for (const fallback of [SESSION_LIMIT, AUTH, CREDIT_STOP]) {
+    const { outputs, records, calls } = runCase({ fallback, fallbackReady: true });
+    assert.deepEqual(calls.map((c) => c.seen), [["CLAUDE_CODE_OAUTH_TOKEN"]]);
+    assert.equal(outputs.handoff, "false");
+    assert.equal(outputs["handoff-reason"], "");
+    assert.equal(outputs.credential, FALLBACK_NAME);
+    assert.deepEqual(
+      [records[0].credential, records[0].secret, records[0].next],
+      ["fallback", FALLBACK_NAME, null],
+    );
+  }
+  assert.equal(runCase({ fallback: SUCCESS }).outputs["lane-class"], "");
+});
+
 test("max-turns and timeout on the key leg end the run with their class", () => {
   const maxTurns = runCase({ key: MAX_TURNS });
   assert.equal(maxTurns.calls.length, 1);
@@ -525,6 +622,7 @@ test("a key-leg success writes the outputs from that leg", () => {
     "lane-turns": "3",
     "lane-models": "claude-sonnet-5",
     credential: KEY_NAME,
+    "handoff-reason": "",
     "execution-file": outputs["execution-file"],
   });
   const messages = JSON.parse(
@@ -592,6 +690,15 @@ test("legEnv removes every inherited credential and sets exactly one", () => {
     "CLAUDE_CODE_ENTRYPOINT" in key || "CLAUDE_CODE_ENTRYPOINT" in sub,
     false,
   );
+  const fallback = legEnv(
+    { LANE_FALLBACK_TOKEN: FALLBACK_TOKEN, LANE_SUBSCRIPTION_TOKEN: TOKEN },
+    { leg: "fallback", value: FALLBACK_TOKEN },
+    config,
+  );
+  assert.equal(fallback.CLAUDE_CODE_OAUTH_TOKEN, FALLBACK_TOKEN);
+  assert.equal("LANE_FALLBACK_TOKEN" in fallback, false);
+  assert.equal("LANE_SUBSCRIPTION_TOKEN" in fallback, false);
+  assert.equal("ANTHROPIC_API_KEY" in fallback, false);
 });
 
 test("legEnv removes every workflow file-command variable", () => {
@@ -1116,7 +1223,7 @@ test("readConfig takes exactly one credential, named after the role, never from 
     () => readConfig(configEnv({ LANE_SUBSCRIPTION_TOKEN: TOKEN })),
     (error) =>
       error instanceof LaneError &&
-      /^two credentials: set exactly one/u.test(error.message),
+      /^2 credentials: set exactly one/u.test(error.message),
   );
   assert.throws(
     () => readConfig(configEnv({ LANE_API_KEY: "" })),
@@ -1124,6 +1231,35 @@ test("readConfig takes exactly one credential, named after the role, never from 
       error instanceof LaneError &&
       /^no credential: set exactly one/u.test(error.message),
   );
+});
+
+test("readConfig takes the fallback token under its fixed name, one credential of three, and a closed fallback-ready", () => {
+  const fallback = readConfig(
+    configEnv({ LANE_ROLE: "issue-lane", LANE_API_KEY: "", LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }),
+  );
+  assert.deepEqual(fallback.leg, { leg: "fallback", name: FALLBACK_NAME, value: FALLBACK_TOKEN });
+  for (const [overrides, count] of [
+    [{ LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }, 2],
+    [{ LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN, LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }, 2],
+    [{ LANE_SUBSCRIPTION_TOKEN: TOKEN, LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }, 3],
+  ]) {
+    assert.throws(
+      () => readConfig(configEnv(overrides)),
+      (error) =>
+        error instanceof LaneError &&
+        error.message.startsWith(`${count} credentials: set exactly one`),
+    );
+  }
+  assert.equal(readConfig(configEnv()).fallbackReady, false);
+  assert.equal(readConfig(configEnv({ LANE_FALLBACK_READY: "false" })).fallbackReady, false);
+  assert.equal(readConfig(configEnv({ LANE_FALLBACK_READY: "true" })).fallbackReady, true);
+  for (const value of ["True", "1", "yes"]) {
+    assert.throws(
+      () => readConfig(configEnv({ LANE_FALLBACK_READY: value })),
+      (error) => error instanceof LaneError && /fallback-ready/u.test(error.message),
+      JSON.stringify(value),
+    );
+  }
 });
 
 test("readConfig refuses bypass and bad values", () => {
@@ -1472,7 +1608,7 @@ test("run refuses both credentials before any leg starts", () => {
   const env = runEnv(dir, { LANE_SUBSCRIPTION_TOKEN: TOKEN });
   env.FAKE_KEY = legFile(dir, "key.jsonl", SUCCESS);
   env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
-  assert.throws(() => run(env), /two credentials/u);
+  assert.throws(() => run(env), /2 credentials/u);
   assert.equal(fs.existsSync(env.FAKE_CALLS), false);
   assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
 });
