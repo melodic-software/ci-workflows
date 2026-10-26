@@ -6,9 +6,9 @@ this repository, such as claude-code-account-rotation's limit-stop check, build
 to this page and to the JSON Schema
 [`schemas/lane-outcome.v1.schema.json`](../schemas/lane-outcome.v1.schema.json).
 
-Every lane workflow emits one record per credential attempt. A handoff writes
-two records: the attempt that handed off, with `handoff: true`, and the next
-one. The next attempt's record is written only when its credential is named
+Every lane workflow emits one record per credential attempt. Each handoff
+adds one: the attempt that handed off writes its record with
+`handoff: true`, and the next attempt writes its own. The next attempt's record is written only when its credential is named
 (for the review lanes, `fallback-credential-name` set); otherwise that attempt
 writes the legacy tokens and a warning. Intake's key leg hands off to the
 subscription leg on a credit stop or a rejected key; a review lane's first
