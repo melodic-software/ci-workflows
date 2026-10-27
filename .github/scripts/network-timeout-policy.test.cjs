@@ -5,6 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
 const root = path.join(__dirname, "..", "..");
 
 function read(relativePath) {
@@ -105,25 +107,83 @@ test("every shared-installer consumer caches its verified release asset", () => 
       installs,
       `${dir}: every install-release.sh step must set ASSET_CACHE_DIR`,
     );
-    assert.equal(
-      occurrences(
-        content,
-        /uses: actions\/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6\.1\.0/gu,
+    // Restore on every ref, save only from the default branch after a miss.
+    // A pull-request or merge-group ref can restore the default branch's
+    // caches but no other ref's, so an entry such a ref saves serves that ref
+    // alone and only fills the repository's cache quota. A schedule run has
+    // no webhook payload, so github.event.repository is not guaranteed there,
+    // but its ref is always the default branch.
+    const steps = parseWorkflow(content).runs.steps;
+    assert.ok(
+      steps.every(
+        (step) => !String(step.uses ?? "").startsWith("actions/cache@"),
       ),
-      installs,
-      `${dir}: every cached install needs a paired actions/cache step`,
+      `${dir}: the combined actions/cache step saves on every ref`,
     );
-    // The key must change whenever the pin changes, so a stale asset can
-    // never be restored under a fresh pin (it would only cost a re-verify
-    // and re-download anyway, but a keyed miss is cheaper and clearer).
-    assert.equal(
-      occurrences(
-        content,
-        /key: [a-z-]+-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ inputs\.[a-z-]*version \}\}-\$\{\{ inputs\.[a-z-]*sha256 \}\}/gu,
-      ),
-      installs,
-      `${dir}: every cache key must pin os, arch, version, and sha256`,
-    );
+    for (const [pattern, kind] of [
+      [
+        /uses: actions\/cache\/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6\.1\.0/gu,
+        "restore",
+      ],
+      [
+        /uses: actions\/cache\/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6\.1\.0/gu,
+        "save",
+      ],
+    ]) {
+      assert.equal(
+        occurrences(content, pattern),
+        installs,
+        `${dir}: every cached install needs one pinned actions/cache/${kind} step`,
+      );
+    }
+    steps.forEach((install, index) => {
+      if (!/_shared\/install-release\.sh/u.test(String(install.run ?? ""))) {
+        return;
+      }
+      const cacheDir = install.env.ASSET_CACHE_DIR;
+      const restore = steps
+        .slice(0, index)
+        .find(
+          (step) =>
+            String(step.uses).startsWith("actions/cache/restore@") &&
+            step.with.path === cacheDir,
+        );
+      assert.ok(restore, `${dir}: no restore before installing ${cacheDir}`);
+      assert.match(
+        restore.id ?? "",
+        /^[a-z][a-z0-9-]*$/u,
+        `${dir}: restore id`,
+      );
+      // The key must change whenever the pin changes, so a stale asset can
+      // never be restored under a fresh pin (it would only cost a re-verify
+      // and re-download anyway, but a keyed miss is cheaper and clearer).
+      assert.match(
+        restore.with.key,
+        /^[a-z-]+-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ inputs\.[a-z-]*version \}\}-\$\{\{ inputs\.[a-z-]*sha256 \}\}$/u,
+        `${dir}: every cache key must pin os, arch, version, and sha256`,
+      );
+      // The save follows the install directly, so a scan that fails the job
+      // later still keeps the verified asset, and a failed install saves
+      // nothing (a composite step's if carries an implicit success()).
+      const save = steps[index + 1];
+      assert.ok(
+        String(save?.uses).startsWith("actions/cache/save@"),
+        `${dir}: the save must directly follow the install of ${cacheDir}`,
+      );
+      assert.equal(save.with.path, cacheDir, `${dir}: save path`);
+      assert.equal(
+        save.with.key,
+        `\${{ steps.${restore.id}.outputs.cache-primary-key }}`,
+        `${dir}: save key`,
+      );
+      assert.equal(
+        save.if,
+        "(github.event_name == 'schedule' || " +
+          "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && " +
+          `steps.${restore.id}.outputs.cache-hit != 'true'`,
+        `${dir}: save only from the default branch, and only after a miss`,
+      );
+    });
   }
   assert.deepEqual(cachedActions.sort(), [
     "actionlint",
