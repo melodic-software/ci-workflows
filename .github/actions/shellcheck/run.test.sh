@@ -14,13 +14,15 @@ cat >"$fake_bin/shellcheck" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 # Batches run concurrently under the fan-out, so the invocation counter is
-# taken under a mkdir lock (atomic on every filesystem the runners use).
-until mkdir "$CAPTURE_DIR/.lock" 2>/dev/null; do sleep 0.01; done
+# taken under a lock file that bash's noclobber creates with O_EXCL. A mkdir
+# lock is not exclusive: uutils mkdir stats first and reports success when a
+# concurrent mkdir wins the race.
+until (set -C && : >"$CAPTURE_DIR/.lock") 2>/dev/null; do sleep 0.01; done
 count=0
 [[ ! -f "$CAPTURE_DIR/count" ]] || read -r count <"$CAPTURE_DIR/count"
 count=$((count + 1))
 printf '%s\n' "$count" >"$CAPTURE_DIR/count"
-rmdir "$CAPTURE_DIR/.lock"
+rm -f -- "$CAPTURE_DIR/.lock"
 printf '%s\0' "$@" >"$CAPTURE_DIR/$count.args"
 printf 'fake shellcheck invocation %s\n' "$count"
 # FAKE_STATUS applies to every invocation. With FAKE_STATUS_MATCH set to
