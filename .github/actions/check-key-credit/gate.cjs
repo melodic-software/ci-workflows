@@ -121,7 +121,9 @@ async function decide({
     (run) => Number.isSafeInteger(run?.id) && String(run.id) !== currentRunId,
   );
   const windowIds = new Set(candidates.map((run) => String(run.id)));
-  for (const run of candidates.slice(0, maxJobReads)) {
+  // A skipped run has no key job to settle anything, so it spends no read.
+  const readable = candidates.filter((run) => run.conclusion !== "skipped");
+  for (const run of readable.slice(0, maxJobReads)) {
     let jobs;
     try {
       jobs = await listJobs(run.id);
@@ -137,9 +139,9 @@ async function decide({
   return {
     skip: false,
     reason:
-      candidates.length === 0
-        ? "no completed run in the window"
-        : `no run of the newest ${Math.min(candidates.length, maxJobReads)} settles it`,
+      readable.length === 0
+        ? "no completed, unskipped run in the window"
+        : `no run of the newest ${Math.min(readable.length, maxJobReads)} settles it`,
   };
 }
 
