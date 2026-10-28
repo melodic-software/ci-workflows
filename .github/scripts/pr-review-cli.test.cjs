@@ -444,7 +444,12 @@ test("the model jobs cannot write and give the model no shell, GitHub token or s
       "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
     ]);
   }
+  // Read-only actions and checks let the hold step read its earlier runs'
+  // cost notices (claude-code-plugins#9635); the only write stays
+  // pull-requests.
   assert.deepEqual(status.permissions, {
+    actions: "read",
+    checks: "read",
     contents: "read",
     "pull-requests": "write",
   });

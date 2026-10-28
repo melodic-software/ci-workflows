@@ -22,7 +22,8 @@ name: pr-review-cli
 #         # request against this grant at startup, so summary mode needs it
 #         # too, though it writes nothing.
 #         permissions:
-#           actions: read         # the check-key-credit job reads this workflow's runs
+#           actions: read         # the check-key-credit and status jobs read this workflow's runs
+#           checks: read          # the status job reads its earlier runs' cost notices
 #           contents: read
 #           pull-requests: write
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@<sha>
@@ -125,20 +126,26 @@ name: pr-review-cli
 #     `**Decision recorded.** Cost:` on the pull request, or on its one
 #     closing issue (else its one `Refs:` issue) naming `#<number>` after
 #     the pull request opened, and that decision covers the head. The
-#     decided head is the sha of this lane's newest cost hold marker posted
-#     before the decision; with none, nothing carries. That marker must be
-#     unedited (GraphQL lastEditedAt null): an edited marker, or one whose
-#     edit state cannot be read, carries nothing, and no older marker is
-#     used. Nor does it carry when the pull request timeline shows a
-#     comment deleted at or after that marker was posted
-#     (COMMENT_DELETED_EVENT), or cannot show none was: a failed read, more
-#     deletions than it lists, or a time that does not parse. It covers the head when the head is that sha, or when the pull
-#     request's net diff is the same at both: the three-dot compares
-#     base...decided and base...head list the same files with the same
-#     status, previous_filename and patch text. A base-only merge or a rebase that leaves every patch alone
-#     carries; any edit of the pull request's own diff, or a base change
-#     that shifts a patch's context, does not. Two compare reads at most;
-#     a failed read, a file with no patch or a list of 300 or more files
+#     decided head comes from this lane's own check-run notices, never a
+#     comment: any workflow on GITHUB_TOKEN posts as github-actions[bot].
+#     With the job token (actions: read, checks: read) the status job reads
+#     every pull_request run of this run's workflow on the pull request's
+#     branch of this repository started before the decision, vets each
+#     run's head (base...head lists under 300 files and does not change the
+#     caller's workflow file, which such a run takes from the head), and
+#     takes the newest `claude-lane-hold lane=<lane> sha=<sha> criteria=...`
+#     cost notice that a status job done before the decision recorded
+#     naming its own run's head. Two heads at that time, or none, carry
+#     nothing; nor does a head the branch's push history (the activity API,
+#     which deleting a run leaves) shows pushed after the decided head with
+#     no run of this lane before the decision. It covers the head when the
+#     head is that sha, or when the pull request's net diff is the same at
+#     both: the three-dot compares base...decided and base...head list the
+#     same files with the same status, previous_filename and patch text. A
+#     base-only merge or a rebase that leaves every patch alone carries; any
+#     edit of the pull request's own diff, or a base change that shifts a
+#     patch's context, does not. Any failed read, a file with no patch or a
+#     list of 300 or more files
 #     keeps the cost hold. The other criteria still hold. The reason is
 #     model text: HTML comments are stripped and the publish gate withholds
 #     a credential-shaped one.
@@ -3651,6 +3658,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 21
     permissions:
+      actions: read # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head
+      checks: read # and those status jobs' cost notices (check-run annotations)
       contents: read
       pull-requests: write # the review, its inline comments, the lane's marker comment and the hold label
     outputs:
@@ -3854,6 +3863,7 @@ jobs:
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+          STATUS_JOB: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
