@@ -125,6 +125,26 @@ test("decide reads newest first, skips the current run and caps its job reads", 
   assert.deepEqual(read2, [7, 6]);
 });
 
+test("skipped runs spend no job read, so a record behind them still settles it", async () => {
+  const read = [];
+  const verdict = await decide({
+    currentRunId: "9",
+    keyJob: KEY,
+    listRuns: async () => [
+      { id: 8, conclusion: "skipped" },
+      { id: 7, conclusion: "skipped" },
+      { id: 6, conclusion: "skipped" },
+      { id: 5, conclusion: "success" },
+    ],
+    listJobs: async (id) => {
+      read.push(id);
+      return id === 5 ? [keyJob([credit(5)])] : [];
+    },
+  });
+  assert.deepEqual(verdict, { skip: true, origin: "5", run: "5" });
+  assert.deepEqual(read, [5]);
+});
+
 test("runs whose jobs all come back with empty steps run the key after the cap", async () => {
   const read = [];
   const verdict = await decide({
