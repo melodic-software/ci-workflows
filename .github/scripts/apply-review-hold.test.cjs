@@ -1013,8 +1013,8 @@ test("a failed compare keeps the cost hold", async () => {
   assert.match(core.infos.join("\n"), /a read failed/u);
 });
 
-// melodic-software/claude-code-plugins#9635: the decided head comes from
-// this lane's own check-run notices, never a comment. Any workflow on
+// The decided head comes from this lane's own check-run notices, never a
+// comment. Any workflow on
 // GITHUB_TOKEN posts as github-actions[bot], so a marker comment by that
 // login, at any head and any time, decides nothing.
 test("a github-actions[bot] marker comment with no notice of this lane keeps the cost hold", async () => {
