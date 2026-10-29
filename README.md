@@ -737,10 +737,12 @@ consumer to audit it.
 - `.github/actions/apply-review-hold` — `pr-review-cli.yml`'s add-only hold
   step, with no model; internal to that workflow, which passes it
   everything through env (its `action.yml` describes what it does).
-- `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
-  step: the `api-budget` notice (`token=github-token ... cost=N`) the hub
-  collector reads, built from the `x-ratelimit-*` headers of the job's own
-  requests, so it spends none (its `action.yml` describes what it does).
+- `.github/actions/report-api-budget` — the last step of each
+  `pr-review-cli.yml` and `pr-require-checks-trust-paths.yml` job: the
+  `api-budget` notice (`token=github-token ... cost=N`) and the `api-calls`
+  notice (`github-token=N not-modified=M graphql=K`, the job's own requests)
+  the hub collector reads, built from the `x-ratelimit-*` headers of the job's
+  own requests, so it spends none (its `action.yml` describes what it does).
 - `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
   inside `key-credit-window-hours` (default 6), reading the workflow's runs

@@ -43,6 +43,7 @@ const RUNNER = {
 const WHERE =
   "workflow=.github/workflows/pr-review-cli.yml job=status run=39931677333 attempt=2";
 const NOTICE = "::notice title=api-budget::";
+const CALLS = "::notice title=api-calls::";
 const RESET = 1792748042;
 
 // A `gh api -i` header block, CRLF header lines as gh prints them.
@@ -259,20 +260,55 @@ test("the action reads the named gh api -i files, then emits each token with the
   });
   const graphql = `token=github-token ${WHERE} limit=1000 remaining=993 used=7 reset=${RESET} resource=graphql cost=na`;
   const core = `token=github-token ${WHERE} limit=1000 remaining=958 used=42 reset=${RESET} resource=core cost=29`;
-  assert.equal(out, `${NOTICE}${graphql}\n${NOTICE}${core}\n`);
+  // Four requests: two Octokit readings and two files, one of them GraphQL.
+  const calls = "github-token=4 not-modified=0 graphql=1";
+  assert.equal(
+    out,
+    `${CALLS}lanes-app=0 not-modified=0 graphql=0\n${NOTICE}${graphql}\n${NOTICE}${core}\n${CALLS}${calls}\n`,
+  );
   assert.equal(
     summary,
-    `api-budget: ${graphql}\napi-budget: ${core}\ngithub-token-cost=29\n`,
+    `api-calls lanes-app=0 not-modified=0 graphql=0\napi-budget: ${graphql}\napi-budget: ${core}\napi-calls ${calls}\ngithub-token-cost=29\n`,
   );
   assert.equal(output, "costs=github-token-cost=29\n");
 });
 
-test("the action writes nothing for a job that made no request, and never fails", () => {
+test("the action writes only an api-calls count of 0 for a job that made no request, and never fails", () => {
   const dir = makeTemporaryDirectory("api-budget-none-");
   const { out, summary, output } = runAction(dir, {
     responses: path.join(dir, "missing.http"),
   });
-  assert.deepEqual([out, summary, output], ["", "", ""]);
+  assert.deepEqual(
+    [out, summary, output],
+    [
+      `${CALLS}github-token=0 not-modified=0 graphql=0\n`,
+      "api-calls github-token=0 not-modified=0 graphql=0\n",
+      "",
+    ],
+  );
+});
+
+// One request per reading line, whatever its status: a 304 is counted apart,
+// as GitHub does not count it, and a GraphQL reading again as graphql.
+test("api_budget_emit_calls counts each reading as a request, a 304 as not-modified and a graphql one as graphql", () => {
+  const dir = makeTemporaryDirectory("api-budget-calls-");
+  record(
+    dir,
+    { used: 1 },
+    { status: 304, used: 1 },
+    { used: 3, resource: "graphql" },
+    { status: 403, used: 1000 },
+  );
+  assert.equal(
+    bash(dir, "api_budget_emit_calls github-token lanes-app 'Bad Name'").stdout,
+    `${CALLS}github-token=3 not-modified=1 graphql=1\n${CALLS}lanes-app=0 not-modified=0 graphql=0\n`,
+  );
+  assert.equal(
+    bash(dir, "api_budget_emit_calls github-token", {
+      env: { RUNNER_TEMP: "" },
+    }).stdout,
+    "",
+  );
 });
 
 test("nothing in the action or the workflow reads GET /rate_limit", () => {
