@@ -3,8 +3,9 @@
 // check-trust-paths posts `ci-status` on the head SHA: `failure` when a
 // listed agent App touched a pull request that changes a privileged path, or
 // when the data that decides it is incomplete; `success` otherwise. Its
-// config is read at the base SHA, and commits and activity are read only
-// once a path matched.
+// config is read at the default branch's last commit, not the pull
+// request's recorded base, and commits and activity are read only once a
+// path matched.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -30,6 +31,7 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const APP = "melodic-agent[bot]";
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
+const MAIN = "d".repeat(40);
 const SHA_C = "c".repeat(40);
 const PERSON_MAIL = "583231+octocat@users.noreply.github.com";
 const CONFIG = {
@@ -303,6 +305,7 @@ const context = (extra = {}) => ({
   repo: { owner: "o", repo: "r" },
   serverUrl: "https://github.com",
   runId: 9,
+  sha: MAIN,
   payload: {
     pull_request: {
       number: 7,
@@ -337,7 +340,7 @@ const env = {
   GITHUB_WORKFLOW_REF: "o/r/.github/workflows/pr-hold.yml@refs/heads/main",
 };
 
-test("run reads the config at the base SHA and posts pending, then the verdict, on the head", async () => {
+test("run reads the config at the default branch's last commit and posts pending, then the verdict, on the head", async () => {
   const github = fakeGithub({
     files: [file(".github/workflows/ci.yml")],
     commits: [commit(HEAD, "octocat", "web-flow")],
@@ -348,7 +351,7 @@ test("run reads the config at the base SHA and posts pending, then the verdict, 
   assert.equal(verdict.state, "failure");
   assert.deepEqual(github.calls[0], [
     "getContent",
-    { owner: "o", repo: "r", path: env.CONFIG_PATH, ref: BASE },
+    { owner: "o", repo: "r", path: env.CONFIG_PATH, ref: MAIN },
   ]);
   assert.deepEqual(
     github.statuses.map(({ sha, state, context: name }) => [sha, state, name]),
@@ -371,6 +374,22 @@ test("run reads the config at the base SHA and posts pending, then the verdict, 
   });
   assert.equal(log.outputs.state, "failure");
   assert.equal(log.lines[0][0], "error");
+});
+
+test("run decides a pull request whose recorded base predates the config", async () => {
+  const github = fakeGithub({
+    files: [file("README.md")],
+    commits: [],
+    activity: [],
+  });
+  const { getContent } = github.rest.repos;
+  github.rest.repos.getContent = async (params) => {
+    if (params.ref === BASE) throw new Error("HTTP 404");
+    return getContent(params);
+  };
+  const verdict = await run({ github, context: context(), core: core(), env });
+  assert.equal(verdict.state, "success");
+  assert.equal(github.calls[0][1].ref, MAIN);
 });
 
 test("run reads no commit or activity when no privileged path changed", async () => {
@@ -454,6 +473,7 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
     ["activity", { ...base, fail: { activity: true } }, context(), env],
     ["event", base, context({ eventName: "pull_request" }), env],
     ["config path", base, context(), { ...env, CONFIG_PATH: "" }],
+    ["default-branch SHA", base, context({ sha: undefined }), env],
   ]) {
     const github = fakeGithub(options);
     await assert.rejects(

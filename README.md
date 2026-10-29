@@ -1038,13 +1038,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `ci-status`, a check run and a commit status of that name must both pass, so
   the failure blocks the merge while the pull request's own `ci-status` check
   run passes. The caller runs on `pull_request_target`, so the workflow, the
-  caller and the config all come from the base branch and the pull request
+  caller and the config all come from the default branch and the pull request
   cannot edit its hold away; nothing from the head is checked out or run. The
   job uses GITHUB_TOKEN with `contents: read`, `pull-requests: read` and
   `statuses: write`, and no secret.
 
-  The config is JSON, read at the base SHA over the contents API from the
-  `config-path` input (default `.github/trust-path-hold.json`):
+  The config is JSON, read at the default branch's last commit over the
+  contents API from the `config-path` input (default
+  `.github/trust-path-hold.json`):
 
   ```json
   {

@@ -1,5 +1,5 @@
 // check-trust-paths: holds a pull request for a person when an agent App
-// named in the base commit's config touched it and it changes a privileged
+// named in the default branch's config touched it and it changes a privileged
 // path. It posts the commit status `ci-status` on the head SHA: `pending`
 // first, then `failure` on a hold or on data it cannot trust, else
 // `success`. When a ruleset requires `ci-status`, both the check run and this
@@ -7,9 +7,10 @@
 // the pull request's own workflows report.
 //
 // It runs from a `pull_request_target` caller, so this file and the caller
-// come from the base branch. The config is read at the base SHA through the
-// contents API, never from the head. Nothing from the head is checked out or
-// run: file names, logins and emails are data, compared and logged as JSON.
+// come from the default branch. The config is read at the default branch's last
+// commit (GITHUB_SHA) through the contents API, never from the head. Nothing
+// from the head is checked out or run: file names, logins and emails are
+// data, compared and logged as JSON.
 //
 // An App counts as involved when it is the pull request's author, the author
 // or committer (account login or noreply address) of one of its commits, or
@@ -203,14 +204,16 @@ async function readConfig({ github, owner, repo, path, ref }) {
 async function run({ github, context, core, env = process.env }) {
   if (context.eventName !== "pull_request_target")
     throw new Error(
-      `the caller must run on pull_request_target, not ${context.eventName}: only a base-branch run keeps the hold out of the pull request's reach`,
+      `the caller must run on pull_request_target, not ${context.eventName}: only a default-branch run keeps the hold out of the pull request's reach`,
     );
   const pr = context.payload.pull_request;
   const { owner, repo } = context.repo;
   const sha = pr?.head?.sha;
-  const baseSha = pr?.base?.sha;
-  if (!SHA.test(String(sha)) || !SHA.test(String(baseSha)))
-    throw new Error("the event has no head or base SHA");
+  // The default branch's last commit, which this run's workflow came from. A
+  // pull request's recorded base can predate the config file.
+  const configSha = context.sha;
+  if (!SHA.test(String(sha)) || !SHA.test(String(configSha)))
+    throw new Error("the event has no head SHA or default-branch SHA");
   const configPath = env.CONFIG_PATH;
   if (!configPath) throw new Error("CONFIG_PATH is empty");
   const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
@@ -218,7 +221,7 @@ async function run({ github, context, core, env = process.env }) {
     postStatus({ github, owner, repo, sha, state, description, targetUrl });
 
   await post("pending", "Checking whether an agent App changed a privileged path.");
-  const config = await readConfig({ github, owner, repo, path: configPath, ref: baseSha });
+  const config = await readConfig({ github, owner, repo, path: configPath, ref: configSha });
   const files = await github.paginate(github.rest.pulls.listFiles, {
     owner,
     repo,
