@@ -83,6 +83,7 @@ const laneOf = ({
   jobs = { 11: [statusJob()] },
   annotations = { 111: [notice()] },
   activity = [push("a".repeat(40))],
+  link,
 } = {}) => ({
   current: {
     id: RUN_ID,
@@ -97,6 +98,7 @@ const laneOf = ({
   jobs,
   annotations,
   activity,
+  link,
 });
 
 // `comments` are the pull request's (#7); `issueComments` maps another
@@ -179,16 +181,19 @@ function fakeGithub({
         throw new Error(
           typeof fail.activity === "string" ? fail.activity : "HTTP 502",
         );
-      if (!Array.isArray(lane.activity)) return { data: lane.activity, headers: {} };
+      if (!Array.isArray(lane.activity))
+        return { data: lane.activity, headers: {} };
       const start = Number(String(params.after ?? "c0").slice(1));
       const end = start + params.per_page;
       const url = (cursor) =>
         `https://api.github.com/repositories/1/activity?ref=refs%2Fheads%2Ffeat%2Fcost&per_page=100&${cursor}`;
       const links = [`<${url(`before=c${start}`)}>; rel="prev"`];
-      if (end < lane.activity.length) links.push(`<${url(`after=c${end}`)}>; rel="next"`);
+      if (end < lane.activity.length)
+        links.push(`<${url(`after=c${end}`)}>; rel="next"`);
+      // `lane.link`, when set, is the Link header verbatim ("" for none).
       return {
         data: lane.activity.slice(start, end),
-        headers: { link: links.join(", ") },
+        headers: { link: lane.link ?? links.join(", ") },
       };
     },
     rest: {
@@ -1255,7 +1260,9 @@ test("a head pushed after the decided head with no run of this lane carries noth
 // decision, HEAD's 10:45 push, then `older` entries from earlier lives of
 // the name (deletions and pushes of other commits, no run of this lane).
 const reused = (later, older = 0) => [
-  ...Array.from({ length: later }, () => push("e".repeat(40), "2026-10-23T12:30:00Z")),
+  ...Array.from({ length: later }, () =>
+    push("e".repeat(40), "2026-10-23T12:30:00Z"),
+  ),
   push(HEAD),
   ...Array.from({ length: older }, (_, i) =>
     push(i % 2 ? "0".repeat(40) : "f".repeat(40), "2026-10-01T00:00:00Z"),
@@ -1274,10 +1281,10 @@ test("a reused branch's push history is read past one page, by the Link cursor, 
   assert.deepEqual(activityReads(github), [undefined, "c100"]);
 });
 
-test("push history up to 2,000 entries carries; past 20 pages it keeps the cost hold", async () => {
+test("push history ending within 20 pages carries; past 20 pages it keeps the cost hold", async () => {
   const full = await apply(costEnv(), {
     comments: [decision()],
-    lane: laneOf({ activity: reused(1999) }),
+    lane: laneOf({ activity: reused(1998) }),
   });
   assert.equal(full.core.outputs.hold, "false");
   assert.equal(activityReads(full.github).length, 20);
@@ -1291,6 +1298,41 @@ test("push history up to 2,000 entries carries; past 20 pages it keeps the cost 
     over.core.infos.join("\n"),
     /the branch's push history runs past 20 pages/u,
   );
+});
+
+test("only a short page ends the push history; a full page with no next cursor keeps the cost hold", async () => {
+  const prev =
+    '<https://api.github.com/repositories/1/activity?ref=refs%2Fheads%2Ffeat%2Fcost&per_page=100&before=c0>; rel="prev"';
+  for (const [name, lane, hold] of [
+    [
+      "a full page with no Link",
+      laneOf({ activity: reused(99), link: "" }),
+      "true",
+    ],
+    [
+      "a full page with only rel=prev",
+      laneOf({ activity: reused(99), link: prev }),
+      "true",
+    ],
+    [
+      "a short page with no Link",
+      laneOf({ activity: reused(98), link: "" }),
+      "false",
+    ],
+  ]) {
+    const { core, github } = await apply(costEnv(), {
+      comments: [decision()],
+      lane,
+    });
+    assert.equal(core.outputs.hold, hold, name);
+    assert.deepEqual(activityReads(github), [undefined], name);
+    if (hold === "true")
+      assert.match(
+        core.infos.join("\n"),
+        /the branch's activity page is full but carries no next cursor/u,
+        name,
+      );
+  }
 });
 
 test("a 409 or a push history page that is not a list keeps the cost hold", async () => {

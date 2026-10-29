@@ -224,24 +224,28 @@ function decidedHead(notices, cutoff) {
 // the link, never its URL. Twenty pages hold 2,000 entries; past them the
 // history counts as unreadable.
 const MAX_ACTIVITY_PAGES = 20;
+const ACTIVITY_PAGE = 100;
 const NEXT_LINK = /<([^>]+)>;\s*rel="next"/u;
 
 // The branch's push history, newest first, read page by page until a page
 // reaches an entry older than the last push of `decided` before `cutoff`
-// (no older entry changes unranHead), or no rel="next" link follows. Null
-// when a next page would pass MAX_ACTIVITY_PAGES. A failed read, a page that
-// is not a list, or a next link with no cursor throws.
+// (no older entry changes unranHead), or a page shorter than 100 ends it,
+// as { activity }. { why } when a full page carries no next cursor (a
+// dropped or changed Link header is not the end of the history) or a next
+// page would pass MAX_ACTIVITY_PAGES. A failed read, a page that is not a
+// list, or a next link with no cursor throws.
 async function branchActivity(github, owner, repo, branch, decided, cutoff) {
   const activity = [];
   let after;
   for (let pages = 0; ; pages += 1) {
-    if (pages === MAX_ACTIVITY_PAGES) return null;
+    if (pages === MAX_ACTIVITY_PAGES)
+      return { why: `the branch's push history runs past ${MAX_ACTIVITY_PAGES} pages` };
     const { data, headers } = await github.request("GET /repos/{owner}/{repo}/activity", {
       owner,
       repo,
       ref: `refs/heads/${branch}`,
       direction: "desc",
-      per_page: 100,
+      per_page: ACTIVITY_PAGE,
       ...(after === undefined ? {} : { after }),
     });
     if (!Array.isArray(data)) throw new Error("an activity page is not a list");
@@ -251,9 +255,12 @@ async function branchActivity(github, owner, repo, branch, decided, cutoff) {
         .filter((m) => m?.after === decided && Date.parse(m.timestamp) < cutoff)
         .map((m) => Date.parse(m.timestamp)),
     );
-    if (data.some((m) => Date.parse(m?.timestamp) < last)) return activity;
+    if (data.some((m) => Date.parse(m?.timestamp) < last)) return { activity };
     const next = NEXT_LINK.exec(String(headers?.link ?? ""));
-    if (!next) return activity;
+    if (!next) {
+      if (data.length < ACTIVITY_PAGE) return { activity };
+      return { why: "the branch's activity page is full but carries no next cursor" };
+    }
     after = new URL(next[1]).searchParams.get("after");
     if (!after) throw new Error("the next activity page has no cursor");
   }
@@ -394,12 +401,8 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     return { carry: false, why: "two heads were noticed at the newest time before the decision" };
   if (decided === null)
     return { carry: false, why: "no cost hold notice of this lane precedes the decision" };
-  const activity = await branchActivity(github, owner, repo, branch, decided, cutoff);
-  if (activity === null)
-    return {
-      carry: false,
-      why: `the branch's push history runs past ${MAX_ACTIVITY_PAGES} pages`,
-    };
+  const { activity, why } = await branchActivity(github, owner, repo, branch, decided, cutoff);
+  if (why) return { carry: false, why };
   const gap = unranHead(activity, ran, decided, cutoff);
   if (gap) return { carry: false, why: gap };
   if (decided === env.HEAD_SHA)
