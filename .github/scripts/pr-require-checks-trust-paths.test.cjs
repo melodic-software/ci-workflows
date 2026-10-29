@@ -657,3 +657,171 @@ test("the reusable grants only the three permissions, checks out nothing and pos
   assert.ok(scripts.length > 0);
   for (const body of scripts) assert.doesNotMatch(body, /\$\{\{/u);
 });
+
+// The job's api-calls notice: every job-token request leaves one rate-limit
+// reading, through api-budget.cjs's watch in the check and the fallback's
+// inline recorder, and the last step counts them without a request of its own.
+const { spawnSync } = require("node:child_process");
+const { readingLine } = require("../actions/report-api-budget/api-budget.cjs");
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
+
+const ACTIONS = path.join(__dirname, "..", "actions");
+const JOB = parseWorkflow(
+  fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "workflows",
+      "pr-require-checks-trust-paths.yml",
+    ),
+    "utf8",
+  ),
+).jobs["check-trust-paths"];
+const scriptOf = (file) =>
+  parseWorkflow(fs.readFileSync(file, "utf8")).runs.steps[0];
+const CHECK_STEP = scriptOf(
+  path.join(ACTIONS, "pr-require-checks", "check-trust-paths", "action.yml"),
+);
+const LOG_STEP = scriptOf(
+  path.join(ACTIONS, "report-api-budget", "action.yml"),
+);
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+const rateLimit = (used) => ({
+  "x-ratelimit-limit": "1000",
+  "x-ratelimit-remaining": String(1000 - used),
+  "x-ratelimit-used": String(used),
+  "x-ratelimit-reset": "1792748042",
+  "x-ratelimit-resource": "core",
+});
+
+// fakeGithub with Octokit's request hooks: each call is one request whose
+// response, or refusal, goes through the hooks the step registered.
+function hooked(github) {
+  const hooks = { after: [], error: [] };
+  let used = 0;
+  const wrap =
+    (fn) =>
+    async (...args) => {
+      used += 1;
+      const headers = rateLimit(used);
+      let response;
+      try {
+        response = await fn(...args);
+      } catch (error) {
+        error.response = { status: error.status ?? 502, headers };
+        for (const hook of hooks.error) await hook(error);
+        throw error;
+      }
+      const full = { status: 200, headers, ...response };
+      full.headers = { ...headers, ...response?.headers };
+      for (const hook of hooks.after) await hook(full);
+      return full;
+    };
+  github.request = wrap(github.request);
+  for (const group of Object.values(github.rest))
+    for (const name of Object.keys(group)) group[name] = wrap(group[name]);
+  github.hook = {
+    after: (_name, fn) => hooks.after.push(fn),
+    error: (_name, fn) => hooks.error.push(fn),
+  };
+  github.used = () => used;
+  return github;
+}
+
+async function runStep(script, github, dir, stepEnv = {}) {
+  const saved = { ...process.env };
+  Object.assign(process.env, { RUNNER_TEMP: dir, ...stepEnv });
+  try {
+    await new AsyncFunction("require", "github", "context", "core", script)(
+      require,
+      github,
+      context(),
+      core(),
+    );
+  } finally {
+    for (const key of Object.keys(process.env))
+      if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+}
+
+function logBudget(dir) {
+  fs.writeFileSync(path.join(dir, "summary"), "");
+  fs.writeFileSync(path.join(dir, "output"), "");
+  const result = spawnSync("bash", ["-c", LOG_STEP.run], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      RUNNER_TEMP: dir,
+      GITHUB_ACTION_PATH: path.join(ACTIONS, "report-api-budget"),
+      GITHUB_STEP_SUMMARY: path.join(dir, "summary"),
+      GITHUB_OUTPUT: path.join(dir, "output"),
+      TOKENS: JOB.steps.at(-1).with.tokens,
+      RESPONSES: "",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout
+    .split("\n")
+    .filter((line) => line.includes("title=api-calls::"));
+}
+
+test("the job ends by logging the job token's budget, whatever failed", () => {
+  const last = JOB.steps.at(-1);
+  assert.equal(last.uses, "$/.github/actions/report-api-budget");
+  assert.equal(last.if, "always()");
+  assert.equal(last["continue-on-error"], true);
+  assert.equal(last.with.tokens, "github-token");
+  assert.equal(last.with.responses, undefined);
+  assert.match(
+    CHECK_STEP.with.script,
+    /require\(path\.join\(process\.env\.ACTION_PATH, "\.\.", "\.\.", "report-api-budget", "api-budget\.cjs"\)\)\.watch\(github, "github-token"\);\n[^\n]*\nawait run\(/u,
+  );
+});
+
+test("the check's requests each leave one reading, and the api-calls notice counts them", async () => {
+  const dir = makeTemporaryDirectory("trust-paths-calls-");
+  const github = hooked(
+    fakeGithub({
+      files: [file(".github/workflows/ci.yml")],
+      commits: [commit(HEAD, "octocat", "web-flow")],
+      activity: [push("octocat")],
+    }),
+  );
+  await runStep(CHECK_STEP.with.script, github, dir, {
+    ACTION_PATH: path.join(ACTIONS, "pr-require-checks", "check-trust-paths"),
+    CONFIG_PATH: env.CONFIG_PATH,
+    GITHUB_WORKFLOW_REF: env.GITHUB_WORKFLOW_REF,
+  });
+  // The config, the file list, the commit list, one activity page and the
+  // pending and verdict statuses.
+  assert.equal(github.used(), 6);
+  assert.equal(github.calls.length + github.statuses.length, 6);
+  assert.deepEqual(logBudget(dir), [
+    "::notice title=api-calls::github-token=6 not-modified=0 graphql=0",
+  ]);
+});
+
+test("the fallback status records its response and refusal as api-budget.cjs does", async () => {
+  const fallback = JOB.steps.find((s) => s.with?.script?.includes("HEAD_SHA"));
+  for (const status of [200, 403]) {
+    const dir = makeTemporaryDirectory("trust-paths-fallback-");
+    const fake = fakeGithub({});
+    if (status !== 200)
+      fake.rest.repos.createCommitStatus = async () => {
+        throw Object.assign(new Error(`HTTP ${status}`), { status });
+      };
+    const step = runStep(fallback.with.script, hooked(fake), dir, {
+      HEAD_SHA: HEAD,
+    });
+    if (status === 200) await step;
+    else await assert.rejects(step, /HTTP 403/u);
+    assert.equal(
+      fs.readFileSync(path.join(dir, "api-budget", "github-token"), "utf8"),
+      readingLine(status, rateLimit(1)),
+    );
+    assert.deepEqual(logBudget(dir), [
+      "::notice title=api-calls::github-token=1 not-modified=0 graphql=0",
+    ]);
+  }
+});

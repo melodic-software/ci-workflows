@@ -78,6 +78,27 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:
           script: |
+            // The response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal). A failed write
+            // only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error?.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const sha = process.env.HEAD_SHA;
             if (!/^[0-9a-f]{40}$/u.test(sha)) throw new Error("the event has no head SHA");
             await github.rest.repos.createCommitStatus({
@@ -88,3 +109,13 @@ jobs:
               description: "The privileged-path check did not finish; re-run it, or a person merges.",
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
+
+      # The job token's api-budget and api-calls notices, from the readings
+      # the two steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token

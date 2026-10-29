@@ -571,8 +571,9 @@ test("each run shape spends the requests pinned here, reading the file list once
 // The api-budget notice reads the headers of the requests above and adds
 // none: one reading per job-token request, and the key and status jobs each
 // end with one core line whose cost is the rise in used since the job's
-// first reading, na when the job made one request.
-test("each job logs one reading per request it made and its api-budget line, adding no request", async () => {
+// first reading, na when the job made one request, then the api-calls line
+// with the job's own request count.
+test("each job logs one reading per request it made, its api-budget line and its api-calls count, adding no request", async () => {
   for (const [name, shape] of Object.entries(SHAPES)) {
     const { total, keyRequests, keyBudget, statusBudget } = await spend(shape);
     assert.equal(
@@ -594,6 +595,7 @@ test("each job logs one reading per request it made and its api-budget line, add
         [
           `::notice title=api-budget::token=github-token workflow=.github/workflows/review.yml job=${job} run=1 attempt=1 ` +
             `limit=1000 remaining=${1000 - last} used=${last} reset=${RESET} resource=core cost=${last === first ? "na" : last - first}`,
+          `::notice title=api-calls::github-token=${last - first + 1} not-modified=0 graphql=0`,
         ],
         `${name}: ${job}`,
       );
