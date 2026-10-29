@@ -1,0 +1,89 @@
+name: pr-require-checks-trust-paths
+
+# Reusable workflow: holds a pull request for a person when an agent GitHub
+# App touched it and it changes a privileged path. It posts the commit status
+# `ci-status` on the head SHA. When a ruleset requires `ci-status`, a check
+# run and a commit status of that name must both pass, so a `failure` status
+# blocks the merge even while the pull request's own `ci-status` check run
+# passes.
+#
+# Canonical caller, on the consumer's default branch:
+#
+#     on:
+#       pull_request_target:
+#         types: [opened, synchronize, reopened, edited]
+#     concurrency:
+#       group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+#       cancel-in-progress: false
+#     permissions: {}
+#     jobs:
+#       pr-require-checks-trust-paths:
+#         permissions:
+#           contents: read
+#           pull-requests: read
+#           statuses: write
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@<sha>
+#
+# The config (input `config-path`, default `.github/trust-path-hold.json`) is
+# read at the pull request's base SHA:
+#
+#     {"paths": [".github/workflows/**", "CODEOWNERS"], "apps": ["melodic-agent[bot]"]}
+#
+# The rules are in .github/actions/pr-require-checks/check-trust-paths/check.cjs.
+#
+# TRUST: `pull_request_target` runs this workflow, the caller and the config
+# from the base branch, so a pull request cannot edit its own hold. Nothing
+# from the head is checked out or run; the check reads the pull request over
+# the API and treats file names, logins and emails as data. The composite is
+# referenced with `$/`, which resolves to this repository at the caller's
+# pinned commit. The token is GITHUB_TOKEN with the three permissions above;
+# no secret is used. A caller with `cancel-in-progress: true` would let a
+# cancelled run's fallback `failure` land after a newer run on the same head.
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Path of the JSON config, read at the pull request's base SHA.
+        type: string
+        default: .github/trust-path-hold.json
+      runner:
+        description: Runner label selected by the caller. It needs Node only through actions/github-script.
+        type: string
+        default: ubuntu-24.04
+
+permissions: {}
+
+jobs:
+  check-trust-paths:
+    name: Hold agent App changes to privileged paths
+    runs-on: ${{ inputs.runner }}
+    # A config read, one file listing and, on a match, one commit listing and
+    # one activity read. Ten minutes bounds a hung call.
+    timeout-minutes: 10
+    permissions:
+      contents: read # Read the config at the base SHA.
+      pull-requests: read # List the pull request's files and commits.
+      statuses: write # Post `ci-status` on the head SHA.
+    steps:
+      - name: Check privileged paths and post ci-status
+        uses: $/.github/actions/pr-require-checks/check-trust-paths
+        with:
+          config-path: ${{ inputs.config-path }}
+
+      - name: Post a failed ci-status when the check did not finish
+        if: ${{ failure() || cancelled() }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const sha = process.env.HEAD_SHA;
+            if (!/^[0-9a-f]{40}$/u.test(sha)) throw new Error("the event has no head SHA");
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha,
+              state: "failure",
+              context: "ci-status",
+              description: "The privileged-path check did not finish; re-run it, or a person merges.",
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
