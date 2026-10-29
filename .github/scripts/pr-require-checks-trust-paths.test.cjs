@@ -486,6 +486,30 @@ test("run fails closed on activity longer than the page cap", async () => {
   assert.equal(reads.length, MAX_ACTIVITY_PAGES);
 });
 
+test("only a short activity page ends the history; a full one needs a next cursor", async () => {
+  const full = Array.from({ length: ACTIVITY_PAGE }, () => push("octocat"));
+  for (const link of [
+    undefined,
+    '<https://api.github.com/x?before=b>; rel="prev"',
+  ]) {
+    const github = fakeGithub({
+      files: [file(".github/workflows/ci.yml")],
+      commits: [commit(HEAD, "octocat", "web-flow")],
+      pages: [{ data: full, link }],
+    });
+    await assert.rejects(
+      run({ github, context: context(), core: core(), env }),
+      /full but carries no next cursor/u,
+      String(link),
+    );
+    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+  }
+  const { verdict } = await runWithPages([
+    { data: Array.from({ length: ACTIVITY_PAGE - 1 }, () => push("octocat")) },
+  ]);
+  assert.equal(verdict.state, "success");
+});
+
 test("run throws on a non-list activity page or an HTTP error past the first page", async () => {
   for (const bad of [
     { data: { message: "x" } },

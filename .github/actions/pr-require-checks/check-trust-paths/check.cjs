@@ -230,7 +230,12 @@ async function readActivity({ github, owner, repo, ref, apps }) {
     if (involvement({ apps, author: undefined, commits: [], activity: response.data }).length > 0)
       return { activity, capped: false };
     const next = nextCursor(response.headers?.link);
-    if (next === null) return { activity, capped: false };
+    if (next === null) {
+      // Only a short page ends the history: a full one without a cursor may
+      // be a dropped or changed Link header hiding older entries.
+      if (response.data.length < ACTIVITY_PAGE) return { activity, capped: false };
+      throw new Error("the activity page is full but carries no next cursor");
+    }
     after = next;
   }
   return { activity, capped: true };
