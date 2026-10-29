@@ -211,7 +211,7 @@ function nextCursor(link) {
 // page comes from `request`, which throws on an HTTP error, never `paginate`,
 // which answers some errors with an empty page. The cursor parameters are
 // documented at
-// https://docs.github.com/en/rest/repos/repos#list-repository-activity.
+// https://docs.github.com/en/rest/repos/repos#list-repository-activities.
 async function readActivity({ github, owner, repo, ref, apps }) {
   const activity = [];
   let after;

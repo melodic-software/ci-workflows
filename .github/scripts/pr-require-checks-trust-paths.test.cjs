@@ -265,7 +265,14 @@ test("a status description fits GitHub's 140 characters", () => {
 });
 
 // `activity` is one page, or `pages` several, each { data, link }.
-function fakeGithub({ config = CONFIG, files, commits, activity, pages, fail = {} }) {
+function fakeGithub({
+  config = CONFIG,
+  files,
+  commits,
+  activity,
+  pages,
+  fail = {},
+}) {
   const calls = [];
   const statuses = [];
   const github = {
@@ -277,9 +284,13 @@ function fakeGithub({ config = CONFIG, files, commits, activity, pages, fail = {
       assert.equal(route, "GET /repos/{owner}/{repo}/activity");
       if (fail.activity) throw new Error("HTTP 502");
       if (!pages) return { data: activity, headers: {} };
-      const index = params.after === undefined ? 0 : Number(params.after.slice(1));
+      const index =
+        params.after === undefined ? 0 : Number(params.after.slice(1));
       const page = pages[index];
-      if (page.status) throw Object.assign(new Error(`HTTP ${page.status}`), { status: page.status });
+      if (page.status)
+        throw Object.assign(new Error(`HTTP ${page.status}`), {
+          status: page.status,
+        });
       return { data: page.data, headers: page.link ? { link: page.link } : {} };
     },
     rest: {
@@ -424,17 +435,29 @@ const runWithPages = async (pages) => {
     pages,
   });
   const verdict = await run({ github, context: context(), core: core(), env });
-  return { github, verdict, reads: github.calls.filter(([name]) => name === "activity") };
+  return {
+    github,
+    verdict,
+    reads: github.calls.filter(([name]) => name === "activity"),
+  };
 };
 
 test("the next cursor comes from the rel=next link's after parameter alone", () => {
   assert.equal(nextCursor(undefined), null);
-  assert.equal(nextCursor('<https://api.github.com/x?before=b>; rel="prev"'), null);
   assert.equal(
-    nextCursor(`<https://api.github.com/x?before=b>; rel="prev", ${nextLink(4)}`),
+    nextCursor('<https://api.github.com/x?before=b>; rel="prev"'),
+    null,
+  );
+  assert.equal(
+    nextCursor(
+      `<https://api.github.com/x?before=b>; rel="prev", ${nextLink(4)}`,
+    ),
     "p4",
   );
-  assert.throws(() => nextCursor('<https://evil.example/x>; rel="next"'), Error);
+  assert.throws(
+    () => nextCursor('<https://evil.example/x>; rel="next"'),
+    Error,
+  );
 });
 
 test("run reads a clean multi-page activity to its end with the after cursor", async () => {
@@ -455,14 +478,20 @@ test("run holds an App entry past the first page and reads no further", async ()
 });
 
 test("run fails closed on activity longer than the page cap", async () => {
-  const { verdict, reads } = await runWithPages(activityPages(MAX_ACTIVITY_PAGES + 1));
+  const { verdict, reads } = await runWithPages(
+    activityPages(MAX_ACTIVITY_PAGES + 1),
+  );
   assert.equal(verdict.state, "failure");
   assert.match(verdict.detail, /activity too long/u);
   assert.equal(reads.length, MAX_ACTIVITY_PAGES);
 });
 
 test("run throws on a non-list activity page or an HTTP error past the first page", async () => {
-  for (const bad of [{ data: { message: "x" } }, { data: null }, { status: 409 }]) {
+  for (const bad of [
+    { data: { message: "x" } },
+    { data: null },
+    { status: 409 },
+  ]) {
     const pages = activityPages(2);
     pages[1] = bad;
     const github = fakeGithub({
