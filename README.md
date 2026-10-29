@@ -89,10 +89,11 @@ API" milestone ([SemVer, item 5][semver]) — is a deliberate, separate decision
 this document defers rather than resolves; nothing here should be read as an
 implicit 1.0 commitment or a timeline toward one.
 
-**A caller's SHA pin does not cascade.** Pinning this repository by SHA proves
-only that the one referenced file's bytes are fixed at that commit; GitHub
-resolves a reusable workflow's own nested calls to further reusable workflows
-or actions independently, at their own `{ref}`
+**A caller's ref does not cascade.** melodic-software callers reference this
+repository at `@main` and run whatever main holds; outside callers pin a full
+commit SHA. A SHA pin proves only that the one referenced file's bytes are
+fixed at that commit; GitHub resolves a reusable workflow's own nested calls
+to further reusable workflows or actions independently, at their own `{ref}`
 ([Reusing workflow configurations][reusing-workflow-configurations]). GitHub's
 docs do not call this out directly, but it follows structurally from that
 per-reference resolution model, and it is exactly the gap reported in a
@@ -102,8 +103,9 @@ workflow file to a commit. This repository closes that gap on its own side,
 not the consumer's: every external reference its own actions and workflows
 make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
-itself pinned to a full commit SHA with the same dual-form trailing comment
-consumers use (`melodic-software/standards#248`). A consumer's pin on this
+itself pinned to a full commit SHA with a dual-form trailing comment
+(`melodic-software/standards#248`), and a bump to one waits for a person,
+since it reaches every `@main` caller on merge. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
 down, and this repository keeps that chain closed rather than asking every
 consumer to audit it.
@@ -871,8 +873,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   The composites run through `$/.github/actions/<x>`, which resolves against
   the repository and commit that host the called workflow, not the caller's
-  checkout. A consumer pinned to a tag therefore runs the composite bodies at
-  that tag, and this repository's own `./` call runs them at the commit under
+  checkout. A consumer therefore runs the composite bodies at the ref it
+  calls (`@main` or a SHA), and this repository's own `./` call runs them at the commit under
   test.
 
   ```yaml
