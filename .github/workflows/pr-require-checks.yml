@@ -154,7 +154,8 @@ jobs:
               **/action.yml
 
   # A local reusable-workflow reference executes pr-run-checks.yml from this exact
-  # commit, so the dogfood proves the contract a consumer pins by tag.
+  # commit, so the dogfood proves the contract a consumer reaches at `@main`
+  # (melodic-software callers) or at a SHA (outside callers).
   pr-run-checks:
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
@@ -619,17 +620,19 @@ jobs:
       working-directory: fixtures/go/windows-race
       go-version-file: fixtures/go/windows-race/go.mod
 
-  # Dogfood of the Claude lanes and the issue labeler, pinned to a merged SHA
-  # rather than `./` so a pull request cannot redefine the reusable that
-  # reviews it. Advisory: none of the three is in `ci-status`. Each passes only
-  # the one named secret its reusable declares.
+  # Dogfood of the Claude lanes and the issue labeler, at `@main` rather than
+  # `./`: an unmodified caller reviews a pull request with main's reusable,
+  # not the head's. A same-repository pull request can still edit these
+  # caller lines, so branch-push rights are the boundary. Advisory: none of
+  # the three is in `ci-status`. Each passes only the one named secret its
+  # reusable declares.
   pr-review:
     if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
     permissions:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@4cfd14e8b6f8b740f5f0af27f80139a0d40a596d # v0.42.1
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -639,7 +642,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@4cfd14e8b6f8b740f5f0af27f80139a0d40a596d # v0.42.1
+    uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -649,19 +652,12 @@ jobs:
     if: ${{ github.event_name == 'issues' }}
     permissions:
       issues: write
-    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@4cfd14e8b6f8b740f5f0af27f80139a0d40a596d # v0.42.1
+    uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@main
 
-  # Arms auto-merge on this repo's vendor Dependabot bumps, pinned so a bump
-  # cannot redefine the code holding the write token. Never in `ci-status`:
-  # the arm waits on it, so a dependency would deadlock.
-  pr-automerge-dependabot:
-    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
-    permissions:
-      contents: write # enablePullRequestAutoMerge
-      pull-requests: write # Arm or disarm auto-merge; list the PR's commits.
-    uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@4cfd14e8b6f8b740f5f0af27f80139a0d40a596d # v0.42.1
-    with:
-      runner: ubuntu-24.04
+  # No pr-automerge-dependabot job: melodic-software callers float on this
+  # repository's main, so an action bump merged here runs next in every
+  # consumer's secret-holding lanes. This repository's Dependabot pull requests
+  # wait for a person.
 
   ci-status:
     if: ${{ github.event_name != 'issues' && always() }}

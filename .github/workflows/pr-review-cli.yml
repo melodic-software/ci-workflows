@@ -26,7 +26,7 @@ name: pr-review-cli
 #           checks: read          # the status job reads its earlier runs' cost notices
 #           contents: read
 #           pull-requests: write
-#         uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@main
 #         with:
 #           lane: code            # or security
 #           publish: comments     # or summary

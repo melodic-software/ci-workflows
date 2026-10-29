@@ -1,9 +1,9 @@
 version: 2
 updates:
-  # Keep SHA-pinned actions current. Merge lanes per the standards
-  # dependabot-policy component: the vendor-actions group (non-major only) is
-  # the auto-merge lane once its shared workflow is wired in; every other PR is
-  # reviewed by hand. The "/"
+  # Keep SHA-pinned actions current. Every PR here is reviewed by hand, the
+  # vendor-actions group included: melodic-software callers float on this
+  # repository's main, so a merged bump runs next in their secret-holding
+  # lanes, and no workflow here arms auto-merge. The "/"
   # target scans .github/workflows; the glob target is required to also scan
   # the composite actions' own action.yml files (Dependabot does not descend
   # into .github/actions/<name>/ from "/" alone).
@@ -26,8 +26,8 @@ updates:
     # SHA-rewrite supply-chain risk that motivates SHA-pinning (architecture D5).
     cooldown:
       default-days: 3
-    # Vendor bumps get their own PR so a community bump never blocks the
-    # auto-merge lane; a dependency joins the first group that matches it.
+    # Vendor bumps get their own PR so a community bump never blocks a vendor
+    # one; a dependency joins the first group that matches it.
     groups:
       vendor-actions:
         patterns:

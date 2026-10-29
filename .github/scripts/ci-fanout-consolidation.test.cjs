@@ -211,7 +211,6 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
   for (const name of [
     "pr-review",
     "pr-review-security",
-    "pr-automerge-dependabot",
     "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
@@ -236,7 +235,6 @@ test("the advisory lanes and issue labeler stay out of ci-status", () => {
   for (const job of [
     "pr-review",
     "pr-review-security",
-    "pr-automerge-dependabot",
     "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
