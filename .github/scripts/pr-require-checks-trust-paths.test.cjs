@@ -5,7 +5,8 @@
 // when the data that decides it is incomplete; `success` otherwise. Its
 // config is read at the default branch's last commit, not the pull
 // request's recorded base, and commits and activity are read only once a
-// path matched.
+// path matched. Activity is paged newest first only back to the pull
+// request's window, and only entries that pushed one of its commits count.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -14,7 +15,9 @@ const test = require("node:test");
 
 const {
   ACTIVITY_PAGE,
+  CLOCK_SKEW_MS,
   HOLD,
+  MAX_ACTIVITY_PAGES,
   MAX_COMMITS,
   MAX_FILES,
   callerWorkflowPath,
@@ -25,6 +28,7 @@ const {
   matchedPaths,
   parseConfig,
   run,
+  windowStart,
 } = require("../actions/pr-require-checks/check-trust-paths/check.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -39,17 +43,37 @@ const CONFIG = {
   apps: [APP],
 };
 
-const commit = (sha, author, committer, email = PERSON_MAIL) => ({
+// The pull request opens at OPENED; its commits are made at OPENED; pushes
+// default to a minute later.
+const OPENED = "2026-10-29T17:00:00Z";
+const at = (minutes) =>
+  new Date(Date.parse(OPENED) + minutes * 60 * 1000).toISOString();
+const commit = (
+  sha,
+  author,
+  committer,
+  email = PERSON_MAIL,
+  date = OPENED,
+) => ({
   sha,
   author: author === null ? null : { login: author },
   committer: committer === null ? null : { login: committer },
-  commit: { author: { email }, committer: { email } },
+  commit: { author: { email }, committer: { email, date } },
 });
-const push = (login, after = HEAD, type = "push") => ({
+const push = (login, after = HEAD, type = "push", timestamp = at(1)) => ({
   activity_type: type,
   after,
+  timestamp,
   actor: { login },
 });
+const sha = (index) => index.toString(16).padStart(40, "e");
+// `count` entries newest first, a minute apart, from `newest` minutes after
+// OPENED, each a push of another commit by `login`.
+const history = (count, newest, login = "octocat") =>
+  Array.from({ length: count }, (_, index) =>
+    push(login, sha(index), "push", at(newest - index)),
+  );
+const complete = (entries) => ({ entries, complete: true });
 const file = (filename, previous) =>
   previous === undefined
     ? { filename }
@@ -165,18 +189,72 @@ test("an App is involved as author, commit author or committer by login or norep
 const pr = (extra = {}) => ({
   changed_files: 1,
   commits: 1,
+  created_at: OPENED,
+  head: { sha: HEAD },
   user: { login: "octocat" },
   ...extra,
 });
-const decideWith = ({ pr: prExtra, ...extra } = {}) =>
+const decideWith = ({ pr: prExtra, activity, ...extra } = {}) =>
   decide({
     config: parseConfig(JSON.stringify(CONFIG)),
     files: [file(".github/workflows/ci.yml")],
     commits: [commit(HEAD, "octocat", "web-flow")],
-    activity: [push("octocat")],
+    activity:
+      activity === undefined
+        ? complete([push("octocat")])
+        : Array.isArray(activity)
+          ? complete(activity)
+          : activity,
     ...extra,
     pr: pr(prExtra),
   });
+
+test("the window opens at the earliest of the pull request and its committer dates, less the skew margin", () => {
+  const start = (created, ...dates) =>
+    windowStart({
+      pr: { created_at: created },
+      commits: dates.map((date) =>
+        commit(HEAD, "octocat", "web-flow", PERSON_MAIL, date),
+      ),
+    });
+  assert.equal(start(at(5), at(2), at(9)), Date.parse(at(2)) - CLOCK_SKEW_MS);
+  assert.equal(start(at(1), at(2)), Date.parse(at(1)) - CLOCK_SKEW_MS);
+  assert.ok(Number.isNaN(start(undefined, at(2))));
+  assert.ok(Number.isNaN(start(at(1), null)));
+  assert.ok(Number.isNaN(start(at(1), "not a date")));
+});
+
+test("decide counts only activity in the window that pushed one of the pull request's commits", () => {
+  // An App's push older than the window, on a reused branch, passes.
+  assert.equal(
+    decideWith({
+      activity: [push("octocat"), push(APP, SHA_C, "push", at(-30))],
+    }).state,
+    "success",
+  );
+  // An App's push of the head inside the skew margin holds.
+  assert.equal(
+    decideWith({ activity: [push(APP, HEAD, "push", at(-2))] }).state,
+    "failure",
+  );
+  // An App's push in the window whose commit a later push rewrote away holds.
+  const stray = decideWith({
+    activity: [push("octocat"), push(APP, SHA_C, "push", at(0))],
+  });
+  assert.equal(stray.state, "failure");
+  assert.equal(stray.description, HOLD);
+  assert.match(stray.detail, /not a commit of this pull request/u);
+  // An App's branch deletion adds nothing.
+  assert.equal(
+    decideWith({
+      activity: [
+        push("octocat"),
+        push(APP, "0".repeat(40), "branch_deletion", at(0)),
+      ],
+    }).state,
+    "success",
+  );
+});
 
 test("decide holds a privileged change an App touched and passes one it did not", () => {
   assert.equal(decideWith().state, "success");
@@ -239,11 +317,23 @@ test("decide fails closed on data that may hide a path, a commit or a push", () 
     { pr: { commits: MAX_COMMITS + 1 } },
     { pr: { commits: undefined } },
     { activity: null },
-    {
-      activity: Array.from({ length: ACTIVITY_PAGE }, () => push("octocat")),
-    },
+    { activity: { entries: [push("octocat")], complete: false } },
+    { pr: { created_at: undefined } },
+    { commits: [commit(HEAD, "octocat", "web-flow", PERSON_MAIL, null)] },
+    { activity: [{ ...push("octocat"), timestamp: undefined }] },
+    { activity: [{ ...push("octocat"), after: undefined }] },
   ])
     assert.equal(decideWith(extra).state, "failure", JSON.stringify(extra));
+  // A field missing on an entry older than the window does not matter.
+  assert.equal(
+    decideWith({
+      activity: [
+        push("octocat"),
+        { ...push("octocat", SHA_C, "push", at(-30)), after: undefined },
+      ],
+    }).state,
+    "success",
+  );
 });
 
 test("a status description fits GitHub's 140 characters", () => {
@@ -252,19 +342,31 @@ test("a status description fits GitHub's 140 characters", () => {
   for (const text of [HOLD]) assert.ok(text.length <= 140);
 });
 
+// `activity` is served newest first in pages of ACTIVITY_PAGE, each but the
+// last with a Link header naming the next page.
 function fakeGithub({ config = CONFIG, files, commits, activity, fail = {} }) {
   const calls = [];
   const statuses = [];
+  const paginate = async (method, params) => (await method(params)).data;
+  paginate.iterator = async function* (route, params) {
+    assert.equal(route, "GET /repos/{owner}/{repo}/activity");
+    for (let offset = 0; ; offset += params.per_page) {
+      calls.push(["activity", params]);
+      if (fail.activity) throw new Error("HTTP 502");
+      const more = offset + params.per_page < activity.length;
+      yield {
+        data: activity.slice(offset, offset + params.per_page),
+        headers: more
+          ? { link: `<https://api.github.com/x?after=c${offset}>; rel="next"` }
+          : {},
+      };
+      if (!more) return;
+    }
+  };
   const github = {
     calls,
     statuses,
-    paginate: async (method, params) => (await method(params)).data,
-    request: async (route, params) => {
-      calls.push(["activity", params]);
-      assert.equal(route, "GET /repos/{owner}/{repo}/activity");
-      if (fail.activity) throw new Error("HTTP 502");
-      return { data: activity };
-    },
+    paginate,
     rest: {
       repos: {
         getContent: async (params) => {
@@ -311,6 +413,7 @@ const context = (extra = {}) => ({
       number: 7,
       changed_files: 1,
       commits: 1,
+      created_at: OPENED,
       user: { login: "octocat" },
       head: {
         sha: HEAD,
@@ -486,6 +589,88 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
       `${label} posted ${JSON.stringify(github.statuses)}`,
     );
   }
+});
+
+test("run pages past a reused branch's history to the window and passes when no App pushed", async () => {
+  // 150 entries: the newest 2 push this pull request's commits; the rest
+  // predate it, and some of those are an App's.
+  const activity = [
+    push("octocat", HEAD, "push", at(3)),
+    push("octocat", SHA_C, "branch_creation", at(2)),
+    ...history(148, -60).map((entry, index) =>
+      index % 3 === 0 ? { ...entry, actor: { login: APP } } : entry,
+    ),
+  ];
+  const github = fakeGithub({
+    files: [file("CODEOWNERS")],
+    commits: [
+      commit(SHA_C, "octocat", "web-flow"),
+      commit(HEAD, "octocat", "web-flow"),
+    ],
+    activity,
+  });
+  const ctx = context();
+  ctx.payload.pull_request.commits = 2;
+  const verdict = await run({ github, context: ctx, core: core(), env });
+  assert.equal(verdict.state, "success", verdict.detail);
+  assert.equal(github.calls.filter(([name]) => name === "activity").length, 1);
+});
+
+test("run holds an App's push of one of the pull request's commits on page 2", async () => {
+  // A pull request opened long after its commits, on a busy branch: its
+  // window reaches past the first page.
+  const activity = history(150, 200);
+  activity[120] = push(APP, SHA_C, "push", activity[120].timestamp);
+  const github = fakeGithub({
+    files: [file("CODEOWNERS")],
+    commits: [
+      commit(SHA_C, "octocat", "web-flow"),
+      commit(HEAD, "octocat", "web-flow"),
+    ],
+    activity,
+  });
+  const ctx = context();
+  ctx.payload.pull_request.commits = 2;
+  ctx.payload.pull_request.created_at = at(500);
+  const verdict = await run({ github, context: ctx, core: core(), env });
+  assert.equal(verdict.state, "failure");
+  assert.equal(verdict.description, HOLD);
+  assert.match(
+    verdict.detail,
+    new RegExp(
+      `${APP.replace(/[[\]]/gu, "\\$&")} push ${SHA_C.slice(0, 12)}`,
+      "u",
+    ),
+  );
+  assert.equal(github.calls.filter(([name]) => name === "activity").length, 2);
+});
+
+test("run fails closed when the window is still open after the page cap", async () => {
+  const github = fakeGithub({
+    files: [file("CODEOWNERS")],
+    commits: [commit(HEAD, "octocat", "web-flow")],
+    activity: history(ACTIVITY_PAGE * MAX_ACTIVITY_PAGES + 1, 5000),
+  });
+  const verdict = await run({ github, context: context(), core: core(), env });
+  assert.equal(verdict.state, "failure");
+  assert.match(
+    verdict.detail,
+    new RegExp(`in ${MAX_ACTIVITY_PAGES} pages of ${ACTIVITY_PAGE}`, "u"),
+  );
+  assert.equal(
+    github.calls.filter(([name]) => name === "activity").length,
+    MAX_ACTIVITY_PAGES,
+  );
+  // Exactly the cap, with no next page, is complete.
+  const full = fakeGithub({
+    files: [file("CODEOWNERS")],
+    commits: [commit(HEAD, "octocat", "web-flow")],
+    activity: history(ACTIVITY_PAGE * MAX_ACTIVITY_PAGES, 5000),
+  });
+  assert.equal(
+    (await run({ github: full, context: context(), core: core(), env })).state,
+    "success",
+  );
 });
 
 test("the reusable grants only the three permissions, checks out nothing and posts failure when the check does not finish", () => {

@@ -1062,13 +1062,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
   is involved when it opened the pull request, is the author or committer of
   one of its commits (by login or noreply address), or is the actor of an
   entry in the head branch's activity (`repos/<o>/<r>/activity`, the fork's
-  for a fork). Commits and activity are read only after a path matched.
+  for a fork) whose `after` SHA is one of its commits. Activity is paged
+  newest first only back to the pull request's window: the earliest of its
+  `created_at` and its commits' committer dates, less five minutes. A reused
+  branch's older pushes, from earlier pull requests, do not count. Commits
+  and activity are read only after a path matched.
 
   It fails closed. A missing or invalid config, a failed read, or a job that
   errors or is cancelled posts `failure` (the fallback step). So does a
   privileged change with more than 250 commits, a commit list shorter than
-  the pull request, a deleted head repository or a full page (100) of
-  activity. A file list shorter than the pull request, or at GitHub's
+  the pull request, a deleted head repository, a missing date, timestamp or
+  `after` SHA, a window still open after 10 pages of 100 entries, or a
+  listed App's entry in the window that pushed no commit of the pull request
+  (its commits were rewritten away). A file list shorter than the pull request, or at GitHub's
   3000-file cap, counts as a match. The caller:
 
   ```yaml
