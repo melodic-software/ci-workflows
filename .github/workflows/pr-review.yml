@@ -629,7 +629,7 @@ jobs:
       # allowed-bot-sender-ids); otherwise a placeholder line names it. A
       # cross-repository closing issue is written as its repository and
       # number only. An issue comment is kept only when GitHub reports its
-      # author as the repository's OWNER, MEMBER or COLLABORATOR; the file
+      # author as the repository's OWNER or MEMBER; the file
       # opens by calling its text data. On a private repository the job token
       # may read no issue, and the file then holds the description alone (or
       # is not written).
@@ -727,7 +727,7 @@ jobs:
                         "Title and body omitted: the author is not in allowed-author-ids or allowed-bot-sender-ids."
                       end),
                       (.comments.nodes // []
-                        | map(select(. != null and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))))[]
+                        | map(select(. != null and (.authorAssociation | IN("OWNER", "MEMBER"))))[]
                         | "",
                           "### Comment by \(.author.login // "unknown") (\(.authorAssociation))",
                           "",
