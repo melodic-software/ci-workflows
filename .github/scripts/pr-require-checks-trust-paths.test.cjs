@@ -60,8 +60,16 @@ const commit = (
   committer: committer === null ? null : { login: committer },
   commit: { author: { email }, committer: { email, date } },
 });
-const push = (login, after = HEAD, type = "push", timestamp = at(1)) => ({
+const ZERO = "0".repeat(40);
+const push = (
+  login,
+  after = HEAD,
+  type = "push",
+  timestamp = at(1),
+  before = ZERO,
+) => ({
   activity_type: type,
+  before,
   after,
   timestamp,
   actor: { login },
@@ -253,6 +261,44 @@ test("decide counts only activity in the window that pushed one of the pull requ
       ],
     }).state,
     "success",
+  );
+});
+
+test("decide follows the head's history back through a rewrite to an App's push of any age", () => {
+  // The App pushed SHA_C long before; a person force-pushed it away, keeping
+  // its content, then opened the pull request.
+  const rewrite = push("octocat", HEAD, "force_push", at(1), SHA_C);
+  const held = decideWith({
+    activity: [rewrite, push(APP, SHA_C, "push", at(-600))],
+  });
+  assert.equal(held.state, "failure");
+  assert.equal(held.description, HOLD);
+  assert.match(held.detail, /in the head's history/u);
+  // The same chain through a person's push, back to a branch creation, passes.
+  assert.equal(
+    decideWith({
+      activity: [
+        rewrite,
+        push("octocat", SHA_C, "push", at(-600), BASE),
+        push("octocat", BASE, "branch_creation", at(-700)),
+        push(APP, MAIN, "push", at(-800)),
+      ],
+    }).state,
+    "success",
+  );
+  // A traced SHA whose push is not listed fails closed.
+  const open = decideWith({ activity: [rewrite] });
+  assert.equal(open.state, "failure");
+  assert.match(open.detail, /reaches a branch creation/u);
+  // A traced entry with no before fails closed.
+  assert.equal(
+    decideWith({
+      activity: [
+        rewrite,
+        { ...push("octocat", SHA_C, "push", at(-600)), before: undefined },
+      ],
+    }).state,
+    "failure",
   );
 });
 
@@ -643,6 +689,23 @@ test("run holds an App's push of one of the pull request's commits on page 2", a
     ),
   );
   assert.equal(github.calls.filter(([name]) => name === "activity").length, 2);
+});
+
+test("run reads past the window to trace a rewrite, and holds an App's push found on page 3", async () => {
+  const activity = [
+    push("octocat", HEAD, "force_push", at(1), SHA_C),
+    ...history(250, -60),
+  ];
+  activity[230] = push(APP, SHA_C, "push", activity[230].timestamp);
+  const github = fakeGithub({
+    files: [file("CODEOWNERS")],
+    commits: [commit(HEAD, "octocat", "web-flow")],
+    activity,
+  });
+  const verdict = await run({ github, context: context(), core: core(), env });
+  assert.equal(verdict.state, "failure");
+  assert.equal(verdict.description, HOLD);
+  assert.equal(github.calls.filter(([name]) => name === "activity").length, 3);
 });
 
 test("run fails closed when the window is still open after the page cap", async () => {

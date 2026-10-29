@@ -14,16 +14,15 @@
 //
 // An App counts as involved when it is the pull request's author, the author
 // or committer (account login or noreply address) of one of its commits, or
-// the actor of an entry in the head branch's activity, inside this pull
-// request's window (see windowStart), whose `after` is one of its commits.
+// the actor of an entry in the head branch's activity that bears on it (see
+// relevantActivity) whose `after` is one of its commits.
 // Commits and activity are read only once a path matched. A path matches on a
 // changed file's path or a renamed file's old path. Data that may hide a
 // match or an App fails closed: a file list shorter than the pull request or
 // at GitHub's 3000-file cap counts as a match; more than 250 commits, a
 // commit list shorter than the pull request, a deleted head repository, a
-// missing date or field, an activity window still open after 10 pages, or an
-// App entry in the window whose `after` is not one of its commits posts
-// `failure`. A read that errors throws, and the caller's fallback step posts
+// missing date or field, history not traced within 10 pages, or an App entry
+// that bears on it whose `after` is not one of its commits posts `failure`. A read that errors throws, and the caller's fallback step posts
 // `failure`.
 "use strict";
 
@@ -140,11 +139,13 @@ function involvement({ apps, author, commits, activity }) {
 // request's `created_at` and each commit's committer date, less a clock-skew
 // margin. A push of one of its commits comes after that commit was made, and
 // a push that predates both the pull request and every one of its commits
-// cannot have put one of them on the branch. The activity list sorts by
-// `direction` (`desc` newest first) and gives each entry a server-set
-// `timestamp` ("List repository activities",
-// https://docs.github.com/en/rest/repos/repos#list-repository-activities),
-// so reading newest first can stop at the first entry older than this. A
+// cannot have put one of them on the branch. The activity list takes
+// `direction` (default `desc`) and gives each entry a `timestamp`, "the time
+// when the activity occurred" ("List repository activities",
+// https://docs.github.com/en/rest/repos/repos#list-repository-activities).
+// The page does not name the sort key; its Link-header cursor encodes an
+// entry's timestamp and id, so `desc` is read as newest first, and reading
+// stops at the first page that holds an entry older than this. A
 // committer date is set by the client: a commit dated later than its push
 // narrows the window, which the margin covers for clock skew only. Author
 // dates are not used: a rebase keeps them, which would reach back into a
@@ -157,25 +158,49 @@ function windowStart({ pr, commits }) {
   return Math.min(...times) - CLOCK_SKEW_MS;
 }
 
-// The activity entries that bear on this pull request: those at or after
-// `start`. Returns { entries, unknown }: `unknown` lists entries in the
-// window that lack a readable `timestamp` or `after`.
-function activityWindow(activity, start) {
+// The activity entries, newest first, that bear on this pull request: those
+// at or after `start`, and, at any age, the push that put on the branch each
+// `before` SHA that is not one of `ours` (the pull request's commits and
+// head). Following those SHAs traces the head's history back through force
+// pushes to a branch creation, so an App's push that a later rewrite
+// replaced still counts however long before the pull request it came; the
+// time window bounds only the pushes of commits still in the pull request.
+// Returns { entries, unknown, open, reachedStart }: `unknown` lists entries
+// without a readable `timestamp`, or bearing ones without `before` and
+// `after`; `open` is true while a traced SHA's push is not yet listed.
+function relevantActivity(activity, start, ours) {
   const entries = [];
   const unknown = [];
+  const wanted = new Set();
+  let reachedStart = false;
   for (const entry of activity) {
     const time = typeof entry?.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
-    if (time < start) continue;
-    if (Number.isNaN(time) || typeof entry?.after !== "string") unknown.push(entry);
-    else entries.push(entry);
+    if (Number.isNaN(time)) {
+      unknown.push(entry);
+      continue;
+    }
+    const traced = typeof entry?.after === "string" && wanted.delete(entry.after);
+    if (time < start) reachedStart = true;
+    if (time < start && !traced) continue;
+    if (typeof entry?.after !== "string" || typeof entry?.before !== "string") {
+      unknown.push(entry);
+      continue;
+    }
+    entries.push(entry);
+    if (entry.before !== ZERO_SHA && !ours.has(entry.before)) wanted.add(entry.before);
   }
-  return { entries, unknown };
+  return { entries, unknown, open: wanted.size > 0, reachedStart };
+}
+
+// The pull request's commits and head.
+function ownShas(pr, commits) {
+  return new Set([pr?.head?.sha, ...commits.map((c) => c?.sha)].filter(Boolean));
 }
 
 // The verdict from what was read: { state, description, detail }.
 // `files` and `commits` are the listed arrays; `activity` is
-// { entries, complete } (complete: the window closed or the list ended
-// within the page cap), or null when it was not read.
+// { entries, complete } (complete: reading stopped within the page cap), or
+// null when it was not read.
 function decide({ config, pr, files, commits, activity, extraPaths = [] }) {
   const globs = [...config.paths, ...extraPaths];
   const matched = matchedPaths(files, globs);
@@ -209,16 +234,17 @@ function decide({ config, pr, files, commits, activity, extraPaths = [] }) {
   const since = new Date(start).toISOString();
   if (!activity.complete)
     return unreadable(
-      `reached no entry before ${since} in ${MAX_ACTIVITY_PAGES} pages of ${ACTIVITY_PAGE}`,
+      `was not traced back past ${since} in ${MAX_ACTIVITY_PAGES} pages of ${ACTIVITY_PAGE}`,
     );
-  const window = activityWindow(activity.entries, start);
+  const ours = ownShas(pr, commits);
+  const window = relevantActivity(activity.entries, start, ours);
   if (window.unknown.length > 0)
-    return unreadable(`has ${window.unknown.length} entries without a timestamp or after SHA`);
-  // Only a push that put one of this pull request's commits on the branch
-  // counts. An App entry in the window that did not (it pushed commits a
-  // later push rewrote away) may still have added a commit that survived, so
-  // it holds; a branch deletion adds nothing.
-  const ours = new Set([pr.head?.sha, ...commits.map((c) => c?.sha)].filter(Boolean));
+    return unreadable(`has ${window.unknown.length} entries without a timestamp, before or after SHA`);
+  if (window.open) return unreadable("ends before the head's history reaches a branch creation");
+  // A push that put one of this pull request's commits on the branch counts.
+  // An App entry that bears on it but did not (it pushed commits a later push
+  // rewrote away) may still have added content that survived, so it holds; a
+  // branch deletion adds nothing.
   const isApp = (entry) =>
     typeof entry?.actor?.login === "string" &&
     config.apps.includes(entry.actor.login.toLowerCase());
@@ -229,7 +255,7 @@ function decide({ config, pr, files, commits, activity, extraPaths = [] }) {
     return {
       state: "failure",
       description: HOLD,
-      detail: `paths ${JSON.stringify(paths)}; an agent App pushed ${JSON.stringify(stray.map((e) => String(e.after).slice(0, 12)))} since ${since}, not a commit of this pull request`,
+      detail: `paths ${JSON.stringify(paths)}; an agent App pushed ${JSON.stringify(stray.map((e) => String(e.after).slice(0, 12)))} in the head's history or since ${since}, not a commit of this pull request`,
     };
   const reasons = involvement({
     apps: config.apps,
@@ -274,10 +300,11 @@ async function readConfig({ github, owner, repo, path, ref }) {
 }
 
 // The head branch's activity, newest first, page by page through the Link
-// header's next cursor, until a page holds an entry older than `start` or
-// the list ends: { entries, complete }. `complete` is false when
-// MAX_ACTIVITY_PAGES pages were read and GitHub still offers a next one.
-async function readActivity({ github, owner, repo, ref, start }) {
+// header's next cursor, until it has passed `start` with no traced SHA left
+// open (see relevantActivity) or the list ends: { entries, complete }.
+// `complete` is false when MAX_ACTIVITY_PAGES pages were read and GitHub
+// still offers a next one.
+async function readActivity({ github, owner, repo, ref, start, ours }) {
   const entries = [];
   let pages = 0;
   for await (const response of github.paginate.iterator("GET /repos/{owner}/{repo}/activity", {
@@ -290,12 +317,9 @@ async function readActivity({ github, owner, repo, ref, start }) {
     pages += 1;
     const page = Array.isArray(response.data) ? response.data : [];
     entries.push(...page);
+    const read = relevantActivity(entries, start, ours);
     const closed =
-      Number.isNaN(start) ||
-      page.some((entry) => {
-        const time = Date.parse(String(entry?.timestamp));
-        return Number.isNaN(time) || time < start;
-      });
+      Number.isNaN(start) || read.unknown.length > 0 || (read.reachedStart && !read.open);
     if (closed) return { entries, complete: true };
     if (pages >= MAX_ACTIVITY_PAGES)
       return { entries, complete: !/rel="next"/u.test(String(response.headers?.link ?? "")) };
@@ -352,6 +376,7 @@ async function run({ github, context, core, env = process.env }) {
         repo: head.name,
         ref: `refs/heads/${pr.head.ref}`,
         start: windowStart({ pr, commits }),
+        ours: ownShas(pr, commits),
       });
   }
   const verdict = decide({ config, pr, files, commits, activity, extraPaths });
@@ -370,7 +395,6 @@ module.exports = {
   MAX_ACTIVITY_PAGES,
   MAX_COMMITS,
   MAX_FILES,
-  activityWindow,
   callerWorkflowPath,
   clip,
   decide,
@@ -379,6 +403,7 @@ module.exports = {
   matchedPaths,
   parseConfig,
   readActivity,
+  relevantActivity,
   run,
   windowStart,
 };
