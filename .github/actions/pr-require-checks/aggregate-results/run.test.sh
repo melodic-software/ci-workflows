@@ -2682,10 +2682,10 @@ expect_log "::error::the own-job lookup failed, so the ci-lanes success on ${sha
 expect_no_log 'no successful ci-lanes status'
 
 # Without retrying a 5xx, a jobs API outage of a few reads fails the run.
-echo 'case: the own-job lookup reads again past six 5xx answers'
+echo 'case: the own-job lookup reads again past eight 5xx answers, to its last read'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
-printf '6\n' >"$fixtures/${own_jobs_key}.fail-times"
+printf '8\n' >"$fixtures/${own_jobs_key}.fail-times"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${own_jobs_key}.fail-times"

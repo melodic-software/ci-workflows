@@ -510,12 +510,19 @@ OWN_GATE_RETRY_DELAYS='1 2 4 8 15 30 30 30'
 # warning naming the cause and ending in `consequence`.
 resolve_own_gate() {
   local need="$1" consequence="$2" endpoint
-  local delay reads=0 verdict job_name job_id step_name count cause=""
+  local delay reads=0 own_gate_retries verdict job_name job_id step_name count cause=""
   if [[ -n "$own_gate_job" && ("$need" == job || -n "$own_gate_step") ]]; then
     return 0
   fi
   own_job_identity
   endpoint="$own_job_endpoint"
+  # A lookup that already failed in this run fails again at once: the yield
+  # listing and the writer check must not each spend the whole retry.
+  if [[ -n "$own_gate_cause" ]]; then
+    echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${own_gate_cause} ${consequence}"
+    return 1
+  fi
+  own_gate_retries=$(wc -w <<<"$OWN_GATE_RETRY_DELAYS")
   if [[ -n "$own_job_key_cause" ]]; then
     own_gate_cause="${own_job_key_cause}"
     echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${own_job_key_cause} ${consequence}"
@@ -528,7 +535,7 @@ resolve_own_gate() {
     reads=$((reads + 1))
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
     if ! gh_api GET "${endpoint}${own_job_query}"; then
-      if [[ "$GH_HTTP_STATUS" == 403 || "$GH_FAILURE" == rate-limit || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
+      if [[ "$GH_HTTP_STATUS" == 403 || "$GH_FAILURE" == rate-limit || "$reads" -gt "$own_gate_retries" ]]; then
         own_gate_cause="${endpoint} could not be read (HTTP ${GH_HTTP_STATUS:-unknown}) after ${reads} reads."
         warn_actions_failed "$endpoint" 'actions: read' "$consequence"
         return 1
