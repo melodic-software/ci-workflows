@@ -22,7 +22,7 @@ name: pr-automerge-dependabot
 #         permissions:
 #           contents: write        # enablePullRequestAutoMerge
 #           pull-requests: write   # enable/disable auto-merge on the PR
-#         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@main
 #
 # A repository where a merge can lead to a deploy passes
 # `package-auto-merge: false`, which leaves only the GitHub Actions path.

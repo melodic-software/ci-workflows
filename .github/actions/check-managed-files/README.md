@@ -64,8 +64,8 @@ standards `main` push, updates the PR, and CI re-runs.
 
 The action is a trust boundary only when the PR cannot change it:
 
-- Pin it by full commit SHA
-  (`uses: melodic-software/ci-workflows/.github/actions/check-managed-files@<sha>`)
+- Reference it at `@main`
+  (`uses: melodic-software/ci-workflows/.github/actions/check-managed-files@main`)
   from a workflow file that CODEOWNERS protects. With `uses: ./...`, as in
   ci-workflows' own dogfood job, the PR edits the code that grades it.
 - Grant the job `pull-requests: read` (sync and Dependabot modes list the PR's
