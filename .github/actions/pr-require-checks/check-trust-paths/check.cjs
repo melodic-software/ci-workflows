@@ -15,12 +15,14 @@
 // An App counts as involved when it is the pull request's author, the author
 // or committer (account login or noreply address) of one of its commits, or
 // the actor of an entry in the head branch's activity (a push, force push or
-// branch creation). Commits and activity are read only once a path matched.
+// branch creation), read to its end: the activity API keeps a branch name's
+// history across deletions, so a name recreated for each sync fills any one
+// page. Commits and activity are read only once a path matched.
 // A path matches on a changed file's path or a renamed file's old path. Data
 // that may hide a match or an App fails closed: a file list shorter than the
 // pull request or at GitHub's 3000-file cap counts as a match; more than 250
-// commits, a commit list shorter than the pull request, a deleted head
-// repository or a full page of activity posts `failure`. A read that errors
+// commits, a commit list shorter than the pull request or a deleted head
+// repository posts `failure`. A read that errors
 // throws, and the caller's fallback step posts `failure`.
 "use strict";
 
@@ -152,12 +154,12 @@ function decide({ config, pr, files, commits, activity, extraPaths = [] }) {
         "Privileged paths changed and the commit list is incomplete; a person must merge.",
       detail: `paths ${JSON.stringify(paths)}; ${commits.length} of ${pr.commits} commits listed (at most ${MAX_COMMITS})`,
     };
-  if (!Array.isArray(activity) || activity.length >= ACTIVITY_PAGE)
+  if (!Array.isArray(activity))
     return {
       state: "failure",
       description:
         "Privileged paths changed and the push history is unreadable; a person must merge.",
-      detail: `paths ${JSON.stringify(paths)}; activity ${Array.isArray(activity) ? `fills a page of ${ACTIVITY_PAGE}` : "was not readable"}`,
+      detail: `paths ${JSON.stringify(paths)}; activity was not readable`,
     };
   const reasons = involvement({
     apps: config.apps,
@@ -244,15 +246,13 @@ async function run({ github, context, core, env = process.env }) {
     });
     const head = pr.head.repo;
     if (head?.owner?.login && head?.name) {
-      activity = (
-        await github.request("GET /repos/{owner}/{repo}/activity", {
-          owner: head.owner.login,
-          repo: head.name,
-          ref: `refs/heads/${pr.head.ref}`,
-          direction: "desc",
-          per_page: ACTIVITY_PAGE,
-        })
-      ).data;
+      activity = await github.paginate("GET /repos/{owner}/{repo}/activity", {
+        owner: head.owner.login,
+        repo: head.name,
+        ref: `refs/heads/${pr.head.ref}`,
+        direction: "desc",
+        per_page: ACTIVITY_PAGE,
+      });
     }
   }
   const verdict = decide({ config, pr, files, commits, activity, extraPaths });

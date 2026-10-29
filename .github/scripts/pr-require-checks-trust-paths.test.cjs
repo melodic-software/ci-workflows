@@ -233,17 +233,25 @@ test("decide fails closed on data that may hide a path, a commit or a push", () 
     decideWith({ files: [file("README.md")], pr: { changed_files: 2 } }).state,
     "success",
   );
-  // Incomplete commits or activity hold whoever touched it.
+  // Incomplete commits or unread activity hold whoever touched it.
   for (const extra of [
     { pr: { commits: 2 } },
     { pr: { commits: MAX_COMMITS + 1 } },
     { pr: { commits: undefined } },
     { activity: null },
-    {
-      activity: Array.from({ length: ACTIVITY_PAGE }, () => push("octocat")),
-    },
   ])
     assert.equal(decideWith(extra).state, "failure", JSON.stringify(extra));
+});
+
+test("decide reads every activity entry, past one page, of a reused branch name", () => {
+  // The activity API keeps a branch name's history across deletions, so a
+  // branch recreated for each sync passes a page of entries no App made.
+  const long = Array.from({ length: ACTIVITY_PAGE + 50 }, (_, index) =>
+    push("octocat", HEAD, index % 2 ? "branch_deletion" : "branch_creation"),
+  );
+  assert.equal(decideWith({ activity: long }).state, "success");
+  const late = long.map((entry, index) => (index === 130 ? push(APP) : entry));
+  assert.equal(decideWith({ activity: late }).description, HOLD);
 });
 
 test("a status description fits GitHub's 140 characters", () => {
@@ -258,7 +266,11 @@ function fakeGithub({ config = CONFIG, files, commits, activity, fail = {} }) {
   const github = {
     calls,
     statuses,
-    paginate: async (method, params) => (await method(params)).data,
+    paginate: async (method, params) =>
+      (typeof method === "string"
+        ? await github.request(method, params)
+        : await method(params)
+      ).data,
     request: async (route, params) => {
       calls.push(["activity", params]);
       assert.equal(route, "GET /repos/{owner}/{repo}/activity");
@@ -390,6 +402,25 @@ test("run decides a pull request whose recorded base predates the config", async
   const verdict = await run({ github, context: context(), core: core(), env });
   assert.equal(verdict.state, "success");
   assert.equal(github.calls[0][1].ref, MAIN);
+});
+
+test("run pages through the head branch's whole activity", async () => {
+  const github = fakeGithub({
+    files: [file(".github/workflows/ci.yml")],
+    commits: [commit(HEAD, "octocat", "web-flow")],
+    activity: Array.from({ length: ACTIVITY_PAGE + 50 }, (_, index) =>
+      push(index === 130 ? APP : "octocat"),
+    ),
+  });
+  const paged = [];
+  const { paginate } = github;
+  github.paginate = async (method, params) => {
+    paged.push(method);
+    return paginate(method, params);
+  };
+  const verdict = await run({ github, context: context(), core: core(), env });
+  assert.equal(verdict.description, HOLD);
+  assert.ok(paged.includes("GET /repos/{owner}/{repo}/activity"));
 });
 
 test("run reads no commit or activity when no privileged path changed", async () => {
