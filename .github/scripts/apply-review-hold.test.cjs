@@ -168,12 +168,28 @@ function fakeGithub({
       return { repository: { pullRequest: pull } };
     },
     paginate: async (method, params) => method(params),
+    // The activity a page at a time: per_page entries from the `after`
+    // cursor, and a Link header with rel="prev" and, while entries remain,
+    // rel="next" carrying the next cursor.
     request: async (route, params) => {
       calls.push(["activity", params]);
       if (route !== "GET /repos/{owner}/{repo}/activity")
         throw new Error(`unexpected request ${route}`);
-      if (fail.activity) throw new Error("HTTP 502");
-      return { data: lane.activity };
+      if (fail.activity)
+        throw new Error(
+          typeof fail.activity === "string" ? fail.activity : "HTTP 502",
+        );
+      if (!Array.isArray(lane.activity)) return { data: lane.activity, headers: {} };
+      const start = Number(String(params.after ?? "c0").slice(1));
+      const end = start + params.per_page;
+      const url = (cursor) =>
+        `https://api.github.com/repositories/1/activity?ref=refs%2Fheads%2Ffeat%2Fcost&per_page=100&${cursor}`;
+      const links = [`<${url(`before=c${start}`)}>; rel="prev"`];
+      if (end < lane.activity.length) links.push(`<${url(`after=c${end}`)}>; rel="next"`);
+      return {
+        data: lane.activity.slice(start, end),
+        headers: { link: links.join(", ") },
+      };
     },
     rest: {
       actions: {
@@ -1142,11 +1158,6 @@ test("the notice fixture carries, and each one-field change to it keeps the cost
       laneOf({ activity: [push(HEAD, "2026-10-23T12:05:00Z")] }),
       /the branch shows no push of a{40} before the decision/u,
     ],
-    [
-      "a full page of push history",
-      laneOf({ activity: Array.from({ length: 100 }, () => push(HEAD)) }),
-      /the branch's push history fills a page/u,
-    ],
   ]) {
     const { core, error } = await apply(costEnv(), {
       comments: [decision()],
@@ -1238,6 +1249,68 @@ test("a head pushed after the decided head with no run of this lane carries noth
     }),
   });
   assert.equal(ran.core.outputs.hold, "false");
+});
+
+// A branch name reused across deletions: `later` pushes after the 12:00
+// decision, HEAD's 10:45 push, then `older` entries from earlier lives of
+// the name (deletions and pushes of other commits, no run of this lane).
+const reused = (later, older = 0) => [
+  ...Array.from({ length: later }, () => push("e".repeat(40), "2026-10-23T12:30:00Z")),
+  push(HEAD),
+  ...Array.from({ length: older }, (_, i) =>
+    push(i % 2 ? "0".repeat(40) : "f".repeat(40), "2026-10-01T00:00:00Z"),
+  ),
+];
+const activityReads = (github) =>
+  github.calls.filter(([name]) => name === "activity").map(([, p]) => p.after);
+
+test("a reused branch's push history is read past one page, by the Link cursor, to the decided head", async () => {
+  const { core, github } = await apply(costEnv(), {
+    comments: [decision()],
+    lane: laneOf({ activity: reused(120, 200) }),
+  });
+  assert.equal(core.outputs.hold, "false");
+  // Page 2 holds the decided push and older entries: page 3 is never read.
+  assert.deepEqual(activityReads(github), [undefined, "c100"]);
+});
+
+test("push history up to 2,000 entries carries; past 20 pages it keeps the cost hold", async () => {
+  const full = await apply(costEnv(), {
+    comments: [decision()],
+    lane: laneOf({ activity: reused(1999) }),
+  });
+  assert.equal(full.core.outputs.hold, "false");
+  assert.equal(activityReads(full.github).length, 20);
+  const over = await apply(costEnv(), {
+    comments: [decision()],
+    lane: laneOf({ activity: reused(2000) }),
+  });
+  assert.equal(over.core.outputs.hold, "true");
+  assert.equal(activityReads(over.github).length, 20);
+  assert.match(
+    over.core.infos.join("\n"),
+    /the branch's push history runs past 20 pages/u,
+  );
+});
+
+test("a 409 or a push history page that is not a list keeps the cost hold", async () => {
+  for (const [name, options] of [
+    ["409", { fail: { activity: "HTTP 409 Git Repository is empty" } }],
+    ["object page", { lane: laneOf({ activity: { message: "Not a list" } }) }],
+    ["empty body", { lane: laneOf({ activity: "" }) }],
+  ]) {
+    const { core, error } = await apply(costEnv(), {
+      comments: [decision()],
+      ...options,
+    });
+    assert.equal(error, undefined, name);
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(
+      core.infos.join("\n"),
+      /no recorded cost decision carries \(a read failed\)/u,
+      name,
+    );
+  }
 });
 
 test("each failed read keeps the cost hold", async () => {
