@@ -1064,8 +1064,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   entry in the head branch's activity (`repos/<o>/<r>/activity`, the fork's
   for a fork). Commits and activity are read only after a path matched.
 
-  It fails closed. A missing or invalid config, a failed read, or a job that
-  errors or is cancelled posts `failure` (the fallback step). So does a
+  It fails closed. A missing config posts `failure` naming the path and
+  commit. An invalid config, any other failed read, or a job that errors or is
+  cancelled posts `failure` (the fallback step). So does a
   privileged change with more than 250 commits, a commit list shorter than
   the pull request, a deleted head repository or a full page (100) of
   activity. A file list shorter than the pull request, or at GitHub's

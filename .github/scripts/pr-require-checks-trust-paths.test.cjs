@@ -269,7 +269,10 @@ function fakeGithub({ config = CONFIG, files, commits, activity, fail = {} }) {
       repos: {
         getContent: async (params) => {
           calls.push(["getContent", params]);
-          if (fail.config) throw new Error("HTTP 404");
+          if (fail.config)
+            throw Object.assign(new Error(`HTTP ${fail.config}`), {
+              status: fail.config,
+            });
           return {
             data: {
               type: "file",
@@ -384,7 +387,8 @@ test("run decides a pull request whose recorded base predates the config", async
   });
   const { getContent } = github.rest.repos;
   github.rest.repos.getContent = async (params) => {
-    if (params.ref === BASE) throw new Error("HTTP 404");
+    if (params.ref === BASE)
+      throw Object.assign(new Error("HTTP 404"), { status: 404 });
     return getContent(params);
   };
   const verdict = await run({ github, context: context(), core: core(), env });
@@ -460,6 +464,34 @@ test("run reads a fork head's activity from the fork, and a deleted fork fails c
   );
 });
 
+test("run posts failure naming the path and commit when the config is missing", async () => {
+  const github = fakeGithub({
+    files: [file("README.md")],
+    commits: [],
+    activity: [],
+    fail: { config: 404 },
+  });
+  const log = core();
+  const verdict = await run({ github, context: context(), core: log, env });
+  assert.equal(verdict.state, "failure");
+  assert.equal(log.outputs.state, "failure");
+  assert.deepEqual(
+    github.statuses.map(({ sha, state }) => [sha, state]),
+    [
+      [HEAD, "pending"],
+      [HEAD, "failure"],
+    ],
+  );
+  const { description } = github.statuses[1];
+  assert.ok(description.length <= 140);
+  assert.ok(description.includes(MAIN.slice(0, 12)), description);
+  assert.ok(description.includes(env.CONFIG_PATH), description);
+  assert.deepEqual(
+    github.calls.map(([name]) => name),
+    ["getContent"],
+  );
+});
+
 test("run throws, posting no verdict, on an unreadable config or read, or the wrong event", async () => {
   const base = {
     files: [file("CODEOWNERS")],
@@ -467,7 +499,7 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
     activity: [],
   };
   for (const [label, options, ctx, runEnv] of [
-    ["missing config", { ...base, fail: { config: true } }, context(), env],
+    ["config read error", { ...base, fail: { config: 500 } }, context(), env],
     ["malformed config", { ...base, config: "{not json" }, context(), env],
     ["commits", { ...base, fail: { commits: true } }, context(), env],
     ["activity", { ...base, fail: { activity: true } }, context(), env],

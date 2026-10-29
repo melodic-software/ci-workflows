@@ -6,7 +6,8 @@ description: >-
   pushed to its head branch, and it changes a privileged path the config
   lists; `success` otherwise. Needs a `pull_request_target` event and a
   token with `statuses: write`, `pull-requests: read` and `contents: read`.
-  A read that fails fails the step. check.cjs documents the rules.
+  A missing config posts `failure`; any other read that fails fails the
+  step. check.cjs documents the rules.
 
 inputs:
   config-path:

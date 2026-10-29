@@ -20,8 +20,10 @@
 // that may hide a match or an App fails closed: a file list shorter than the
 // pull request or at GitHub's 3000-file cap counts as a match; more than 250
 // commits, a commit list shorter than the pull request, a deleted head
-// repository or a full page of activity posts `failure`. A read that errors
-// throws, and the caller's fallback step posts `failure`.
+// repository or a full page of activity posts `failure`. A config the contents
+// API reports missing (404) posts `failure` naming the path and commit. Any
+// other read that errors throws, and the caller's fallback step posts
+// `failure`.
 "use strict";
 
 const CONTEXT = "ci-status";
@@ -194,8 +196,15 @@ async function postStatus({ github, owner, repo, sha, state, description, target
   });
 }
 
+// The parsed config, or null when the contents API reports no file there.
 async function readConfig({ github, owner, repo, path, ref }) {
-  const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
+  let data;
+  try {
+    ({ data } = await github.rest.repos.getContent({ owner, repo, path, ref }));
+  } catch (error) {
+    if (error?.status === 404) return null;
+    throw error;
+  }
   if (Array.isArray(data) || data?.type !== "file" || data.encoding !== "base64")
     throw new Error(`${path} at ${ref} is not a readable file`);
   return parseConfig(Buffer.from(data.content, "base64").toString("utf8"));
@@ -222,6 +231,17 @@ async function run({ github, context, core, env = process.env }) {
 
   await post("pending", "Checking whether an agent App changed a privileged path.");
   const config = await readConfig({ github, owner, repo, path: configPath, ref: configSha });
+  if (config === null) {
+    const verdict = {
+      state: "failure",
+      description: `No trust-path config at ${configSha.slice(0, 12)} (${configPath}); a person must merge.`,
+      detail: `${configPath} is not on the default branch at ${configSha}`,
+    };
+    core.error(`${verdict.description} ${verdict.detail}`);
+    await post(verdict.state, verdict.description);
+    core.setOutput("state", verdict.state);
+    return verdict;
+  }
   const files = await github.paginate(github.rest.pulls.listFiles, {
     owner,
     repo,
