@@ -2,7 +2,7 @@ name: check-trust-paths
 description: >-
   pr-require-checks-trust-paths' check: posts the commit status `ci-status`
   on the pull request's head SHA, `failure` when an agent App named in the
-  base commit's config opened the pull request, wrote one of its commits or
+  default branch's config opened the pull request, wrote one of its commits or
   pushed to its head branch, and it changes a privileged path the config
   lists; `success` otherwise. Needs a `pull_request_target` event and a
   token with `statuses: write`, `pull-requests: read` and `contents: read`.
@@ -10,7 +10,7 @@ description: >-
 
 inputs:
   config-path:
-    description: Path of the JSON config in the base commit.
+    description: Path of the JSON config, read at the default branch's last commit.
     required: true
 
 outputs:
