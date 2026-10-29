@@ -2585,7 +2585,7 @@ echo 'case: a step-name naming a completed step fails closed'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true 'STEP_NAME=Check the pull-request contract'
-expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Check the pull-request contract' after 5 reads."
+expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Check the pull-request contract' after 9 reads."
 expect_no_log 'Carried forward'
 
 # Without the control-character replacement and the digits-only count, a job
@@ -2647,7 +2647,7 @@ reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 check_job 9100 5555
 run_case 1 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100
-expect_log "${check_job_cause_prefix}no in-progress job matched job.check_run_id 9100 in run 4242 after 5 reads."
+expect_log "${check_job_cause_prefix}no in-progress job matched job.check_run_id 9100 in run 4242 after 9 reads."
 expect_no_log 'Carried forward'
 expect_no_gh_call "actions/runs/4242/jobs"
 rm -f -- "$fixtures/${check_job_key}.json"
@@ -2668,9 +2668,27 @@ echo 'case: an own job that never resolves fails closed after a bounded retry'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true 'RUNNER_NAME=other runner'
-expect_log "${own_cause_prefix}no in-progress job matched runner 'other runner' after 5 reads."
-expect_total_sleep_at_most 15
+expect_log "${own_cause_prefix}no in-progress job matched runner 'other runner' after 9 reads."
+expect_total_sleep_at_most 120
+# The lookup waits about 120 s for a lagging jobs API (issue 9113), not 15.
+if [[ "$(awk '{ t += $1 } END { print t + 0 }' "$sleep_log")" != 120 ]]; then
+  echo "FAIL: expected the own-job lookup to sleep 120s in all, got: $(tr '\n' ' ' <"$sleep_log")"
+  failures=$((failures + 1))
+fi
 expect_no_log 'Carried forward'
+# Without naming the lookup, the red reads as a missing lanes status, which
+# hides the cause.
+expect_log "::error::the own-job lookup failed, so the ci-lanes success on ${sha} could not be verified: no in-progress job matched runner 'other runner' after 9 reads."
+expect_no_log 'no successful ci-lanes status'
+
+# Without retrying a 5xx, a jobs API outage of a few reads fails the run.
+echo 'case: the own-job lookup reads again past six 5xx answers'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+printf '6\n' >"$fixtures/${own_jobs_key}.fail-times"
+run_case 0 'skipped skipped' pass true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures/${own_jobs_key}.fail-times"
 
 # Without failing on more than one match, a self-hosted runner name shared by a
 # repository and an organization runner could pick another job's steps.
@@ -2679,7 +2697,7 @@ reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 own_jobs "[{\"name\":\"other\",\"status\":\"in_progress\",\"conclusion\":null,\"runner_name\":\"${own_runner}\",\"steps\":[]},${own_gate_job}]"
 run_case 1 'skipped skipped' pass true
-expect_log "${own_cause_prefix}2 in-progress jobs matched runner '${own_runner}' after 5 reads; a runner name is not unique."
+expect_log "${own_cause_prefix}2 in-progress jobs matched runner '${own_runner}' after 9 reads; a runner name is not unique."
 expect_no_log 'Carried forward'
 clear_own_jobs
 
@@ -2695,15 +2713,15 @@ expect_no_sleep
 
 echo 'case: without step-name, two in-progress steps fail closed naming the input'
 run_case 1 'skipped skipped' pass true
-expect_log "${own_cause_prefix}job 'ci-status' has 2 in-progress steps after 5 reads; set step-name to the name of the step that runs this action."
+expect_log "${own_cause_prefix}job 'ci-status' has 2 in-progress steps after 9 reads; set step-name to the name of the step that runs this action."
 clear_own_jobs
 
 echo 'case: a step-name no step of the gate job carries fails closed naming it'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true 'STEP_NAME=Aggregate'
-expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Aggregate' after 5 reads."
-expect_total_sleep_at_most 15
+expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Aggregate' after 9 reads."
+expect_total_sleep_at_most 120
 
 reset_yield_fixtures
 

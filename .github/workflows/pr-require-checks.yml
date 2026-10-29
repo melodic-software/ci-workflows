@@ -670,10 +670,10 @@ jobs:
     needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, check-workflow-naming, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
     runs-on: ubuntu-24.04
     # Worst case: two rate-limit waits of 60s (`rate-limit-wait-seconds` on
-    # each step), 15s of own-gate retries, 7s of status-write retries and the
-    # 90s `rerun-wait-seconds` wait, about four minutes. Without a rate limit
+    # each step), 120s of own-gate retries, 7s of status-write retries and the
+    # 90s `rerun-wait-seconds` wait, under six minutes. Without a rate limit
     # either kind of run finishes in seconds.
-    timeout-minutes: 5
+    timeout-minutes: 7
     permissions:
       contents: read
       # pr-contract upserts the linkage comment and label; ci-status records

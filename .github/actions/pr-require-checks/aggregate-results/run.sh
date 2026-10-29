@@ -455,6 +455,10 @@ verify_carried_writer() {
 own_gate_job=""
 own_gate_job_id=""
 own_gate_step=""
+# Why the last own-gate lookup failed, for the writer check's final error.
+own_gate_cause=""
+# Set when the writer check failed on that lookup, not on the carried status.
+own_gate_lookup_failed=""
 
 # The identity key: the one place that says which job is this run's own.
 # `job.check_run_id` (passed in as JOB_CHECK_RUN_ID) is this job's REST id, so
@@ -494,8 +498,10 @@ own_job_identity() {
 
 # Reads between the retries. The jobs API can list this job or this step a
 # moment after the runner started it, and lists a sibling job before its
-# `skipped`, so a miss is read again. The sleeps sum to 15 seconds.
-OWN_GATE_RETRY_DELAYS='1 2 4 8'
+# `skipped`, so a miss or a 5xx is read again. The sleeps sum to 120 seconds:
+# an Actions incident has left a running job unlisted for longer than 15. The
+# caller's job timeout and read margin budget for them.
+OWN_GATE_RETRY_DELAYS='1 2 4 8 15 30 30 30'
 
 # resolve_own_gate <job|step> <consequence>
 # `job` needs only the gate job's name (the yield listing); `step` needs the
@@ -511,6 +517,7 @@ resolve_own_gate() {
   own_job_identity
   endpoint="$own_job_endpoint"
   if [[ -n "$own_job_key_cause" ]]; then
+    own_gate_cause="${own_job_key_cause}"
     echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${own_job_key_cause} ${consequence}"
     return 1
   fi
@@ -522,6 +529,7 @@ resolve_own_gate() {
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
     if ! gh_api GET "${endpoint}${own_job_query}"; then
       if [[ "$GH_HTTP_STATUS" == 403 || "$GH_FAILURE" == rate-limit || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
+        own_gate_cause="${endpoint} could not be read (HTTP ${GH_HTTP_STATUS:-unknown}) after ${reads} reads."
         warn_actions_failed "$endpoint" 'actions: read' "$consequence"
         return 1
       fi
@@ -582,6 +590,7 @@ resolve_own_gate() {
     *' in-progress steps') cause="${cause} after ${reads} reads; set step-name to the name of the step that runs this action." ;;
     *) cause="${cause} after ${reads} reads." ;;
   esac
+  own_gate_cause="$cause"
   echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${cause} ${consequence}"
   return 1
 }
@@ -609,6 +618,7 @@ verify_writer_step() {
   local outcome unverified='Cannot verify the step that wrote the carried status, so this run fails closed.'
   # shellcheck disable=SC2310 # resolve_own_step warns itself; the caller fails closed.
   if ! resolve_own_step "$unverified"; then
+    own_gate_lookup_failed=true
     return 1
   fi
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
@@ -975,6 +985,10 @@ fail_carry_forward() {
     closing="A full run that records ${STATUS_CONTEXT}=success on ${SHA} re-runs this run; re-run it yourself only if it stays red after that."
   else
     closing="Once ${STATUS_CONTEXT} on ${SHA} is success, re-run this run instead."
+  fi
+  if [[ -n "$own_gate_lookup_failed" ]]; then
+    echo "::error::the own-job lookup failed, so the ${STATUS_CONTEXT} success on ${SHA} could not be verified: ${own_gate_cause} ${closing}"
+    exit 1
   fi
   echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; ${remedy}${carry_forward_wait_note}. ${closing}"
   exit 1
