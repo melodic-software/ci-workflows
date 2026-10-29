@@ -15,15 +15,18 @@
 // An App counts as involved when it is the pull request's author, the author
 // or committer (account login or noreply address) of one of its commits, or
 // the actor of an entry in the head branch's activity (a push, force push or
-// branch creation), read to its end: the activity API keeps a branch name's
-// history across deletions, so a name recreated for each sync fills any one
-// page. Commits and activity are read only once a path matched.
+// branch creation). The activity API keeps a branch name's history across
+// deletions, so a name recreated for each sync fills any one page: it is read
+// newest first, page by page, until it ends, a listed App's entry shows (a
+// hold), or MAX_ACTIVITY_PAGES pages were read. Commits and activity are read
+// only once a path matched.
 // A path matches on a changed file's path or a renamed file's old path. Data
 // that may hide a match or an App fails closed: a file list shorter than the
 // pull request or at GitHub's 3000-file cap counts as a match; more than 250
-// commits, a commit list shorter than the pull request or a deleted head
-// repository posts `failure`. A read that errors
-// throws, and the caller's fallback step posts `failure`.
+// commits, a commit list shorter than the pull request, a deleted head
+// repository or activity longer than the page cap posts `failure`. A read
+// that errors or answers with anything but a list throws, and the caller's
+// fallback step posts `failure`.
 "use strict";
 
 const CONTEXT = "ci-status";
@@ -32,6 +35,10 @@ const SHA = /^[0-9a-f]{40}$/u;
 const MAX_FILES = 3000;
 const MAX_COMMITS = 250;
 const ACTIVITY_PAGE = 100;
+// 2000 entries: the busiest reused branch seen, chore/standards-sync in
+// claude-code-plugins, held 564 after four months. The cap bounds what a fork
+// owner can make this base-repository token spend.
+const MAX_ACTIVITY_PAGES = 20;
 const DESCRIPTION_MAX = 140;
 const NOREPLY = "@users.noreply.github.com";
 const WORKFLOW_REF = /^[^/]+\/[^/]+\/(\.github\/workflows\/[^@]+)@/u;
@@ -133,8 +140,8 @@ function involvement({ apps, author, commits, activity }) {
 
 // The verdict from what was read: { state, description, detail }.
 // `files` and `commits` are the listed arrays; `activity` is null when it
-// was not read.
-function decide({ config, pr, files, commits, activity, extraPaths = [] }) {
+// was not read, and `activityCapped` is true when it stopped at the page cap.
+function decide({ config, pr, files, commits, activity, activityCapped = false, extraPaths = [] }) {
   const globs = [...config.paths, ...extraPaths];
   const matched = matchedPaths(files, globs);
   const truncated =
@@ -173,11 +180,60 @@ function decide({ config, pr, files, commits, activity, extraPaths = [] }) {
       description: HOLD,
       detail: `paths ${JSON.stringify(paths)}; ${JSON.stringify(reasons)}`,
     };
+  if (activityCapped)
+    return {
+      state: "failure",
+      description:
+        "Privileged paths changed and the push history is too long to read; a person must merge.",
+      detail: `paths ${JSON.stringify(paths)}; activity too long: more than ${MAX_ACTIVITY_PAGES * ACTIVITY_PAGE} entries`,
+    };
   return {
     state: "success",
     description: "Privileged paths changed; no agent App touched this pull request.",
     detail: `paths ${JSON.stringify(paths)}; no listed App is involved`,
   };
+}
+
+// The `after` cursor of a Link header's rel="next" link, else null. Only the
+// cursor is taken; the link's URL is never followed.
+function nextCursor(link) {
+  for (const part of String(link ?? "").split(",")) {
+    const match = /^\s*<([^>]*)>\s*;\s*rel="next"\s*$/u.exec(part);
+    if (!match) continue;
+    const after = new URL(match[1]).searchParams.get("after");
+    if (!after) throw new Error("the activity's next link has no after cursor");
+    return after;
+  }
+  return null;
+}
+
+// The head branch's activity, newest first, as { activity, capped }. Each
+// page comes from `request`, which throws on an HTTP error, never `paginate`,
+// which answers some errors with an empty page. The cursor parameters are
+// documented at
+// https://docs.github.com/en/rest/repos/repos#list-repository-activity.
+async function readActivity({ github, owner, repo, ref, apps }) {
+  const activity = [];
+  let after;
+  for (let page = 0; page < MAX_ACTIVITY_PAGES; page += 1) {
+    const response = await github.request("GET /repos/{owner}/{repo}/activity", {
+      owner,
+      repo,
+      ref,
+      direction: "desc",
+      per_page: ACTIVITY_PAGE,
+      ...(after === undefined ? {} : { after }),
+    });
+    if (!Array.isArray(response?.data))
+      throw new Error("the activity page is not a list");
+    activity.push(...response.data);
+    if (involvement({ apps, author: undefined, commits: [], activity: response.data }).length > 0)
+      return { activity, capped: false };
+    const next = nextCursor(response.headers?.link);
+    if (next === null) return { activity, capped: false };
+    after = next;
+  }
+  return { activity, capped: true };
 }
 
 function clip(text) {
@@ -233,6 +289,7 @@ async function run({ github, context, core, env = process.env }) {
   const extraPaths = [configPath, callerWorkflowPath(env.GITHUB_WORKFLOW_REF)].filter(Boolean);
   let commits = [];
   let activity = null;
+  let activityCapped = false;
   if (
     matchedPaths(files, [...config.paths, ...extraPaths]).length > 0 ||
     files.length >= MAX_FILES ||
@@ -246,16 +303,16 @@ async function run({ github, context, core, env = process.env }) {
     });
     const head = pr.head.repo;
     if (head?.owner?.login && head?.name) {
-      activity = await github.paginate("GET /repos/{owner}/{repo}/activity", {
+      ({ activity, capped: activityCapped } = await readActivity({
+        github,
         owner: head.owner.login,
         repo: head.name,
         ref: `refs/heads/${pr.head.ref}`,
-        direction: "desc",
-        per_page: ACTIVITY_PAGE,
-      });
+        apps: config.apps,
+      }));
     }
   }
-  const verdict = decide({ config, pr, files, commits, activity, extraPaths });
+  const verdict = decide({ config, pr, files, commits, activity, activityCapped, extraPaths });
   const log = verdict.state === "success" ? core.info : core.error;
   log(`${verdict.description} ${verdict.detail}`);
   await post(verdict.state, verdict.description);
@@ -268,6 +325,7 @@ module.exports = {
   CONTEXT,
   HOLD,
   MAX_COMMITS,
+  MAX_ACTIVITY_PAGES,
   MAX_FILES,
   callerWorkflowPath,
   clip,
@@ -275,6 +333,7 @@ module.exports = {
   globToRegExp,
   involvement,
   matchedPaths,
+  nextCursor,
   parseConfig,
   run,
 };

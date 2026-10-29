@@ -1062,13 +1062,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
   is involved when it opened the pull request, is the author or committer of
   one of its commits (by login or noreply address), or is the actor of an
   entry in the head branch's activity (`repos/<o>/<r>/activity`, the fork's
-  for a fork, read to its end: it keeps a branch name's history across
-  deletions). Commits and activity are read only after a path matched.
+  for a fork, read newest first until it ends, a listed App's entry shows,
+  or 20 pages: it keeps a branch name's history across deletions). Commits
+  and activity are read only after a path matched.
 
   It fails closed. A missing or invalid config, a failed read, or a job that
   errors or is cancelled posts `failure` (the fallback step). So does a
   privileged change with more than 250 commits, a commit list shorter than
-  the pull request or a deleted head repository. A file list shorter than the pull request, or at GitHub's
+  the pull request, a deleted head repository or activity past 20 pages
+  (2000 entries). A file list shorter than the pull request, or at GitHub's
   3000-file cap, counts as a match. The caller:
 
   ```yaml
