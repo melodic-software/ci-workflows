@@ -59,7 +59,7 @@ jobs:
     name: Hold agent App changes to privileged paths
     runs-on: ${{ inputs.runner }}
     # A config read, one file listing and, on a match, one commit listing and
-    # one activity read. Ten minutes bounds a hung call.
+    # at most 20 activity pages. Ten minutes bounds a hung call.
     timeout-minutes: 10
     permissions:
       contents: read # Read the config at the default branch's last commit.

@@ -15,6 +15,7 @@ const test = require("node:test");
 const {
   ACTIVITY_PAGE,
   HOLD,
+  MAX_ACTIVITY_PAGES,
   MAX_COMMITS,
   MAX_FILES,
   callerWorkflowPath,
@@ -23,6 +24,7 @@ const {
   globToRegExp,
   involvement,
   matchedPaths,
+  nextCursor,
   parseConfig,
   run,
 } = require("../actions/pr-require-checks/check-trust-paths/check.cjs");
@@ -233,26 +235,44 @@ test("decide fails closed on data that may hide a path, a commit or a push", () 
     decideWith({ files: [file("README.md")], pr: { changed_files: 2 } }).state,
     "success",
   );
-  // Incomplete commits or activity hold whoever touched it.
+  // Incomplete commits or unread activity hold whoever touched it.
   for (const extra of [
     { pr: { commits: 2 } },
     { pr: { commits: MAX_COMMITS + 1 } },
     { pr: { commits: undefined } },
     { activity: null },
-    {
-      activity: Array.from({ length: ACTIVITY_PAGE }, () => push("octocat")),
-    },
   ])
     assert.equal(decideWith(extra).state, "failure", JSON.stringify(extra));
+});
+
+test("decide reads every activity entry, past one page, of a reused branch name", () => {
+  // The activity API keeps a branch name's history across deletions, so a
+  // branch recreated for each sync passes a page of entries no App made.
+  const long = Array.from({ length: ACTIVITY_PAGE + 50 }, (_, index) =>
+    push("octocat", HEAD, index % 2 ? "branch_deletion" : "branch_creation"),
+  );
+  assert.equal(decideWith({ activity: long }).state, "success");
+  const late = long.map((entry, index) => (index === 130 ? push(APP) : entry));
+  assert.equal(decideWith({ activity: late }).description, HOLD);
 });
 
 test("a status description fits GitHub's 140 characters", () => {
   assert.equal(clip("x".repeat(140)).length, 140);
   assert.equal(clip("x".repeat(200)).length, 140);
-  for (const text of [HOLD]) assert.ok(text.length <= 140);
+  const long = decideWith({ activityCapped: true });
+  assert.equal(long.state, "failure");
+  for (const text of [HOLD, long.description]) assert.ok(text.length <= 140);
 });
 
-function fakeGithub({ config = CONFIG, files, commits, activity, fail = {} }) {
+// `activity` is one page, or `pages` several, each { data, link }.
+function fakeGithub({
+  config = CONFIG,
+  files,
+  commits,
+  activity,
+  pages,
+  fail = {},
+}) {
   const calls = [];
   const statuses = [];
   const github = {
@@ -263,7 +283,15 @@ function fakeGithub({ config = CONFIG, files, commits, activity, fail = {} }) {
       calls.push(["activity", params]);
       assert.equal(route, "GET /repos/{owner}/{repo}/activity");
       if (fail.activity) throw new Error("HTTP 502");
-      return { data: activity };
+      if (!pages) return { data: activity, headers: {} };
+      const index =
+        params.after === undefined ? 0 : Number(params.after.slice(1));
+      const page = pages[index];
+      if (page.status)
+        throw Object.assign(new Error(`HTTP ${page.status}`), {
+          status: page.status,
+        });
+      return { data: page.data, headers: page.link ? { link: page.link } : {} };
     },
     rest: {
       repos: {
@@ -390,6 +418,118 @@ test("run decides a pull request whose recorded base predates the config", async
   const verdict = await run({ github, context: context(), core: core(), env });
   assert.equal(verdict.state, "success");
   assert.equal(github.calls[0][1].ref, MAIN);
+});
+
+const nextLink = (index) =>
+  `<https://api.github.com/repositories/1/activity?ref=x&per_page=100&after=p${index}>; rel="next"`;
+// Pages of `size` entries by `login`, each but the last linking the next.
+const activityPages = (count, actorOf = () => "octocat", size = 3) =>
+  Array.from({ length: count }, (_, index) => ({
+    data: Array.from({ length: size }, () => push(actorOf(index))),
+    link: index < count - 1 ? nextLink(index + 1) : undefined,
+  }));
+const runWithPages = async (pages) => {
+  const github = fakeGithub({
+    files: [file(".github/workflows/ci.yml")],
+    commits: [commit(HEAD, "octocat", "web-flow")],
+    pages,
+  });
+  const verdict = await run({ github, context: context(), core: core(), env });
+  return {
+    github,
+    verdict,
+    reads: github.calls.filter(([name]) => name === "activity"),
+  };
+};
+
+test("the next cursor comes from the rel=next link's after parameter alone", () => {
+  assert.equal(nextCursor(undefined), null);
+  assert.equal(
+    nextCursor('<https://api.github.com/x?before=b>; rel="prev"'),
+    null,
+  );
+  assert.equal(
+    nextCursor(
+      `<https://api.github.com/x?before=b>; rel="prev", ${nextLink(4)}`,
+    ),
+    "p4",
+  );
+  assert.throws(
+    () => nextCursor('<https://evil.example/x>; rel="next"'),
+    Error,
+  );
+});
+
+test("run reads a clean multi-page activity to its end with the after cursor", async () => {
+  const { verdict, reads } = await runWithPages(activityPages(3));
+  assert.equal(verdict.state, "success");
+  assert.deepEqual(
+    reads.map(([, params]) => params.after),
+    [undefined, "p1", "p2"],
+  );
+});
+
+test("run holds an App entry past the first page and reads no further", async () => {
+  const { verdict, reads } = await runWithPages(
+    activityPages(5, (index) => (index === 2 ? APP : "octocat")),
+  );
+  assert.equal(verdict.description, HOLD);
+  assert.equal(reads.length, 3);
+});
+
+test("run fails closed on activity longer than the page cap", async () => {
+  const { verdict, reads } = await runWithPages(
+    activityPages(MAX_ACTIVITY_PAGES + 1),
+  );
+  assert.equal(verdict.state, "failure");
+  assert.match(verdict.detail, /activity too long/u);
+  assert.equal(reads.length, MAX_ACTIVITY_PAGES);
+});
+
+test("only a short activity page ends the history; a full one needs a next cursor", async () => {
+  const full = Array.from({ length: ACTIVITY_PAGE }, () => push("octocat"));
+  for (const link of [
+    undefined,
+    '<https://api.github.com/x?before=b>; rel="prev"',
+  ]) {
+    const github = fakeGithub({
+      files: [file(".github/workflows/ci.yml")],
+      commits: [commit(HEAD, "octocat", "web-flow")],
+      pages: [{ data: full, link }],
+    });
+    await assert.rejects(
+      run({ github, context: context(), core: core(), env }),
+      /full but carries no next cursor/u,
+      String(link),
+    );
+    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+  }
+  const { verdict } = await runWithPages([
+    { data: Array.from({ length: ACTIVITY_PAGE - 1 }, () => push("octocat")) },
+  ]);
+  assert.equal(verdict.state, "success");
+});
+
+test("run throws on a non-list activity page or an HTTP error past the first page", async () => {
+  for (const bad of [
+    { data: { message: "x" } },
+    { data: null },
+    { status: 409 },
+  ]) {
+    const pages = activityPages(2);
+    pages[1] = bad;
+    const github = fakeGithub({
+      files: [file(".github/workflows/ci.yml")],
+      commits: [commit(HEAD, "octocat", "web-flow")],
+      pages,
+    });
+    await assert.rejects(
+      run({ github, context: context(), core: core(), env }),
+      Error,
+      JSON.stringify(bad),
+    );
+    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+  }
 });
 
 test("run reads no commit or activity when no privileged path changed", async () => {
