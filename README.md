@@ -1075,8 +1075,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
     pull_request_target:
       types: [opened, synchronize, reopened, edited]
   concurrency:
-    group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-    cancel-in-progress: false
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: true
   permissions: {}
   jobs:
     pr-require-checks-trust-paths:
@@ -1087,8 +1087,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
       uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@<sha> # vX.Y.Z
   ```
 
-  `cancel-in-progress` stays `false`: a cancelled run posts `failure`, which
-  could land after a newer run on the same head. A run that never starts
+  The concurrency block is the standards concurrency-policy canonical form. A
+  run cancelled by a newer run on the same head can post its fallback
+  `failure` after the newer result; that is a false hold, cleared by
+  re-running the newer run. A run that never starts
   posts nothing, and the required check run alone decides. Any workflow with
   `statuses: write` can post a later `ci-status`, and the latest status wins.
 
