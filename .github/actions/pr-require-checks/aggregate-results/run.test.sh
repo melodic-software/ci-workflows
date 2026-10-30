@@ -2739,6 +2739,23 @@ expect_no_log 'Carried forward'
 expect_log "::warning::the newest ci-lanes status on ${sha} changed while its writer was verified"
 expect_status_reads 2
 
+echo 'case: a single status read whose newest entry turns into another success by the re-read does not carry forward'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list_on_call 2 "[$(full_run_success 100),$(writer_status 101 success 2026-09-05T12:00:40Z 4300)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+run_case 1 'skipped skipped' pass true
+expect_no_log 'Carried forward'
+
+echo 'case: a single status read whose re-read fails does not carry forward'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
+run_case 1 'skipped skipped' pass true
+rm -f -- "$fixtures/${statuses_key}.fail-on-call"
+expect_no_log 'Carried forward'
+expect_log "could not be read again"
+
 echo 'case: a waiting run looks its own gate up before it lists the runs'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
