@@ -978,7 +978,8 @@ jobs:
           mkdir -p .git/info
           echo /.lane/ >>.git/info/exclude
 
-      # Resolved or owner-answered review threads, with only the text
+      # Review threads a listed account resolved or a listed person
+      # answered, with only the text
       # claude-code-plugins' select-trusted-text keeps (run from the clone
       # above against the base commit's trusted-actor list), and whether the
       # lines under each changed since it was settled. Any failure writes no
@@ -2093,7 +2094,8 @@ jobs:
           mkdir -p .git/info
           echo /.lane/ >>.git/info/exclude
 
-      # Resolved or owner-answered review threads, with only the text
+      # Review threads a listed account resolved or a listed person
+      # answered, with only the text
       # claude-code-plugins' select-trusted-text keeps (run from the clone
       # above against the base commit's trusted-actor list), and whether the
       # lines under each changed since it was settled. Any failure writes no
@@ -3213,7 +3215,8 @@ jobs:
           mkdir -p .git/info
           echo /.lane/ >>.git/info/exclude
 
-      # Resolved or owner-answered review threads, with only the text
+      # Review threads a listed account resolved or a listed person
+      # answered, with only the text
       # claude-code-plugins' select-trusted-text keeps (run from the clone
       # above against the base commit's trusted-actor list), and whether the
       # lines under each changed since it was settled. Any failure writes no

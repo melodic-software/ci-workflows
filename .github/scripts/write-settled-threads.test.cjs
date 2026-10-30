@@ -59,7 +59,7 @@ test("touches: a hunk inside, beside or outside the thread's lines", () => {
   assert.equal(touches("", 10, 12), false);
 });
 
-test("settledThreads: resolution or a listed human's reply settles; untrusted text never passes", () => {
+test("settledThreads: a listed account's resolution or a listed human's reply settles; untrusted text never passes", () => {
   const kept = new Map([
     [
       2,
@@ -73,15 +73,26 @@ test("settledThreads: resolution or a listed human's reply settles; untrusted te
     [5, { authorId: KYLE, login: "kyle-sexton", body: "FINDING-BY-KYLE" }],
   ]);
   const humans = new Set([KYLE]);
+  const ids = new Set([KYLE, LANES_BOT]);
+  const byBot = { isResolved: true, resolvedBy: { databaseId: LANES_BOT } };
   const out = settledThreads(
     [
       thread({}, [comment(1, "t1"), comment(2, "t2")]), // owner reply, unresolved
       thread({}, [comment(3, "t1"), comment(4, "t2")]), // bot reply only: open
-      thread({ isResolved: true }, [comment(6, "t1")]), // resolved, no trusted text
-      thread({ isResolved: true }, [comment(5, "t1")]), // resolved, trusted root
+      thread(byBot, [comment(6, "t1")]), // resolved by a listed bot, no trusted text
+      thread({ isResolved: true, resolvedBy: { databaseId: KYLE } }, [
+        comment(5, "t1"),
+      ]), // trusted root
       thread({}, [comment(5, "t1")]), // the owner's own finding is not a reply
+      // Resolved by an unlisted account (say the pull request's author), or
+      // by no readable account: not settled.
+      thread({ isResolved: true, resolvedBy: { databaseId: 999 } }, [
+        comment(7, "t1"),
+      ]),
+      thread({ isResolved: true, resolvedBy: null }, [comment(8, "t1")]),
     ],
     kept,
+    ids,
     humans,
   );
   assert.equal(out.length, 3);
@@ -209,14 +220,27 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
       comment(2, at, head),
     ]),
     // Resolved; line 30 changed since the resolved head: yes.
-    thread({ isResolved: true, path: "a.js", line: 30 }, [
-      comment(3, at, head),
-    ]),
+    thread(
+      {
+        isResolved: true,
+        resolvedBy: { databaseId: KYLE },
+        path: "a.js",
+        line: 30,
+      },
+      [comment(3, at, head)],
+    ),
     // Outdated, resolved with no trusted text, so judged from its first
     // comment's commit, in a file unchanged since: no.
-    thread({ isResolved: true, isOutdated: true, line: null, path: "b.js" }, [
-      { ...comment(4, at, resolved), originalCommit: { oid: resolved } },
-    ]),
+    thread(
+      {
+        isResolved: true,
+        resolvedBy: { databaseId: KYLE },
+        isOutdated: true,
+        line: null,
+        path: "b.js",
+      },
+      [{ ...comment(4, at, resolved), originalCommit: { oid: resolved } }],
+    ),
     // Open, no owner reply: not settled.
     thread({}, [comment(5, at, head)]),
   ];
@@ -319,32 +343,63 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
   );
 });
 
-test("run: no trusted-actor list at the base commit writes nothing", async () => {
-  const dir = makeTemporaryDirectory("settled-threads-none-");
-  const saved = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = dir;
-  const outputs = {};
-  try {
-    await run({
-      github: {
-        rest: {
-          repos: {
-            getContent: async () =>
-              Promise.reject(
-                Object.assign(new Error("Not Found"), { status: 404 }),
-              ),
+// The two early exits: no thread that could be settled (nothing else is
+// read), and no trusted-actor list at the base commit. Either way a file the
+// head shipped at the output path is gone and no note is set.
+for (const [name, nodes, listed] of [
+  [
+    "no resolved or answered thread reads nothing else",
+    [thread({}, [comment(1, "t")])],
+    true,
+  ],
+  [
+    "no trusted-actor list at the base commit writes nothing",
+    [thread({ isResolved: true }, [comment(1, "t")])],
+    false,
+  ],
+]) {
+  test(`run: ${name}`, async () => {
+    const dir = makeTemporaryDirectory("settled-threads-none-");
+    const output = path.join(dir, "settled-threads.md");
+    fs.writeFileSync(output, "SHIPPED BY THE HEAD");
+    const saved = {
+      RUNNER_TEMP: process.env.RUNNER_TEMP,
+      OUTPUT_FILE: process.env.OUTPUT_FILE,
+    };
+    Object.assign(process.env, { RUNNER_TEMP: dir, OUTPUT_FILE: output });
+    const outputs = {};
+    const calls = [];
+    try {
+      await run({
+        github: {
+          graphql: async () => ({
+            repository: { pullRequest: { reviewThreads: { nodes } } },
+          }),
+          rest: {
+            repos: {
+              getContent: async () => {
+                calls.push("getContent");
+                return Promise.reject(
+                  Object.assign(new Error("Not Found"), { status: 404 }),
+                );
+              },
+            },
           },
         },
-      },
-      context: { repo: { owner: "o", repo: "r" } },
-      core: { info: () => {}, setOutput: (k, v) => (outputs[k] = v) },
-    });
-  } finally {
-    if (saved === undefined) delete process.env.RUNNER_TEMP;
-    else process.env.RUNNER_TEMP = saved;
-  }
-  assert.deepEqual(outputs, {});
-});
+        context: { repo: { owner: "o", repo: "r" } },
+        core: { info: () => {}, setOutput: (k, v) => (outputs[k] = v) },
+      });
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    assert.deepEqual(outputs, {});
+    assert.deepEqual(calls, listed ? [] : ["getContent"]);
+    assert.equal(fs.existsSync(output), false);
+  });
+}
 
 test("pr-review-cli.yml: every model leg writes the settled threads after the plugin clone, read-only, into the prompt", () => {
   const workflow = parseWorkflow(

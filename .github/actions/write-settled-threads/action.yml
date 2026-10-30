@@ -1,9 +1,9 @@
 name: write-settled-threads
 description: >-
   pr-review-cli's settled-threads step, with no model: writes the pull
-  request's resolved or owner-answered review threads to a file the model
-  reads, keeping only text claude-code-plugins' select-trusted-text keeps,
-  and records for each thread whether the lines under it changed since the
+  request's review threads that a trusted-actor-listed account resolved or a
+  listed person answered to a file the model reads, keeping only text
+  claude-code-plugins' select-trusted-text keeps, and records for each thread whether the lines under it changed since the
   head it was settled at. Writes nothing when the base commit has no
   trusted-actor list or any read fails. settled-threads.cjs documents the env
   it reads.

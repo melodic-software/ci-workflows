@@ -7,7 +7,8 @@
 // OUTPUT_FILE. Text comes only through claude-code-plugins'
 // select-trusted-text, run against the trusted-actor list at the base commit:
 // a comment body is written only when that action kept it. A thread is
-// settled when it is resolved, or a listed human replied in it. For each
+// settled when a listed account resolved it, or a listed human replied in it.
+// For each
 // settled thread the step diffs its resolution head against the head and
 // records whether the lines under it changed; any failure answers yes.
 "use strict";
@@ -27,6 +28,7 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
         pageInfo { hasNextPage }
         nodes {
           isResolved isOutdated path line startLine originalLine originalStartLine diffSide
+          resolvedBy { ... on User { databaseId } ... on Bot { databaseId } }
           comments(first: 100) {
             nodes { databaseId createdAt author { login } commit { oid } originalCommit { oid } }
           }
@@ -67,9 +69,10 @@ function resolutionHead(thread, settledAt, activity) {
 }
 
 // The settled threads, each with only the comments select-trusted-text kept
-// (`kept`: review-comment id to { login, body }); `humans` holds the listed
-// human ids, whose reply settles a thread.
-function settledThreads(threads, kept, humans) {
+// (`kept`: review-comment id to { authorId, login, body }). `ids` holds every
+// listed id, whose resolution settles a thread; `humans` the listed human
+// ids, whose reply settles it. A resolution by anyone else settles nothing.
+function settledThreads(threads, kept, ids, humans) {
   const out = [];
   for (const thread of threads) {
     const comments = thread?.comments?.nodes ?? [];
@@ -78,8 +81,9 @@ function settledThreads(threads, kept, humans) {
       .map((c, i) => kept.has(c?.databaseId) && { ...kept.get(c.databaseId), root: i === 0, at: c.createdAt })
       .filter(Boolean);
     const ownerReply = trusted.some((c) => !c.root && humans.has(c.authorId));
-    if (thread.isResolved !== true && !ownerReply) continue;
-    out.push({ thread, comments, trusted, rootKept: trusted[0]?.root === true, ownerReply });
+    const resolved = thread.isResolved === true && ids.has(thread.resolvedBy?.databaseId);
+    if (!resolved && !ownerReply) continue;
+    out.push({ thread, comments, trusted, rootKept: trusted[0]?.root === true, resolved, ownerReply });
   }
   return out;
 }
@@ -120,7 +124,7 @@ function render(entries, more) {
       "",
       `## ${e.thread.path}, ${e.lines}`,
       "",
-      `- settled by: ${[e.thread.isResolved ? "resolved" : "", e.ownerReply ? "owner reply" : ""].filter(Boolean).join(", ")}`,
+      `- settled by: ${[e.resolved ? "resolved" : "", e.ownerReply ? "owner reply" : ""].filter(Boolean).join(", ")}`,
       `- resolution head: ${e.from || "unknown"}`,
       `- lines changed since resolution: ${e.changed}`,
     );
@@ -137,6 +141,16 @@ async function run({ github, context, core }) {
   const env = process.env;
   const { owner, repo } = context.repo;
   const head = env.HEAD_SHA;
+  // A file the head ships at this path never reaches the model.
+  fs.rmSync(env.OUTPUT_FILE, { force: true });
+
+  // Threads first: with none that could be settled, nothing else is read.
+  const threads = (await github.graphql(THREADS_QUERY, { owner, name: repo, number: Number(env.PR_NUMBER) })).repository
+    .pullRequest.reviewThreads;
+  if (!(threads.nodes ?? []).some((t) => t?.isResolved === true || (t?.comments?.nodes?.length ?? 0) >= 2)) {
+    core.info("No resolved or answered review threads.");
+    return;
+  }
   const temp = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "settled-threads-"));
 
   // The trusted-actor list from the base commit, never the head.
@@ -151,9 +165,9 @@ async function run({ github, context, core }) {
   }
   const listFile = path.join(temp, "trusted-actors.json");
   fs.writeFileSync(listFile, String(list));
-  const humans = new Set(
-    (JSON.parse(String(list)).actors ?? []).filter((a) => a?.kind === "human" && Number.isInteger(a.id)).map((a) => a.id),
-  );
+  const actors = (JSON.parse(String(list)).actors ?? []).filter((a) => Number.isInteger(a?.id));
+  const ids = new Set(actors.map((a) => a.id));
+  const humans = new Set(actors.filter((a) => a.kind === "human").map((a) => a.id));
 
   // select-trusted-text exits 1 and writes nothing when it cannot read all of it.
   const selected = path.join(temp, "trusted.json");
@@ -175,9 +189,7 @@ async function run({ github, context, core }) {
       .map((i) => [i.id, { authorId: i.author_id, login: i.author_login, body: i.body }]),
   );
 
-  const threads = (await github.graphql(THREADS_QUERY, { owner, name: repo, number: Number(env.PR_NUMBER) })).repository
-    .pullRequest.reviewThreads;
-  const settled = settledThreads(threads.nodes ?? [], kept, humans);
+  const settled = settledThreads(threads.nodes ?? [], kept, ids, humans);
   if (settled.length === 0) {
     core.info("No settled review threads.");
     return;
@@ -227,7 +239,9 @@ async function run({ github, context, core }) {
     return { ...s, from, ...judge(s.thread, s.comments, from, head, diff) };
   });
   fs.mkdirSync(path.dirname(env.OUTPUT_FILE), { recursive: true });
-  fs.writeFileSync(env.OUTPUT_FILE, render(entries, settled.length > MAX_THREADS || threads.pageInfo?.hasNextPage === true));
+  fs.rmSync(`${env.OUTPUT_FILE}.tmp`, { force: true });
+  fs.writeFileSync(`${env.OUTPUT_FILE}.tmp`, render(entries, settled.length > MAX_THREADS || threads.pageInfo?.hasNextPage === true));
+  fs.renameSync(`${env.OUTPUT_FILE}.tmp`, env.OUTPUT_FILE);
   core.info(`${entries.length} settled review thread(s) written.`);
   core.setOutput(
     "note",

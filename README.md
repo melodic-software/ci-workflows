@@ -727,8 +727,8 @@ consumer to audit it.
   step, with no model; internal to that workflow, which passes it
   everything through env (its `action.yml` describes what it does).
 - `.github/actions/write-settled-threads` — `pr-review-cli.yml`'s
-  settled-threads step, with no model: the pull request's resolved or
-  owner-answered review threads, text kept only through claude-code-plugins'
+  settled-threads step, with no model: the pull request's review threads a
+  listed account resolved or a listed person answered, text kept only through claude-code-plugins'
   `select-trusted-text`, each with whether its lines changed since it was
   settled, so the review does not re-raise a settled point (its
   `action.yml` describes what it does).
