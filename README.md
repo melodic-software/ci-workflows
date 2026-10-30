@@ -329,7 +329,7 @@ consumer to audit it.
   `rerun-wait-seconds`, and only while a contract-only sibling is in flight
   (see `rerun-contract-only-siblings` below):
 
-  - `yield-to-full-run: 'true'` and `timeout-minutes: 5` on the `ci-status`
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 7` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
     SHA, then reads the status, and finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
@@ -366,9 +366,10 @@ consumer to audit it.
     of this run still queued, or an extra job that ran, does not hide it. `step-name` (default `''`) names the
     step that runs the action, which must be in progress and which a job
     running steps in parallel needs; left empty, it is the one step of that
-    job in progress. A read that does not resolve, or a jobs read that fails
-    other than with HTTP 403, is retried after 1, 2, 4 and 8 seconds; a 403
-    fails at once with no retry. Then the run fails
+    job in progress. Both are looked up once per run, before any run listing:
+    a read that does not resolve, or a jobs read that fails other than with
+    HTTP 403 or 429, is read again, up to 9 reads over 120 seconds in all; a
+    403 or 429 fails at once with no retry. Then the run fails
     closed with a warning naming the cause (no key, a job id not in progress
     in this run, no job or more than one job in progress on the runner, or no
     single matching step).
@@ -453,7 +454,7 @@ consumer to audit it.
         # ... change detection
     ci-status:
       if: always()
-      timeout-minutes: 5
+      timeout-minutes: 7
       permissions:
         contents: read
         statuses: write
