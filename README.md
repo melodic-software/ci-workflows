@@ -282,8 +282,8 @@ consumer to audit it.
   - **The wait never turns a verdict green.** Reaching the ceiling prints
     `::error::no successful <context> status on <sha>; <remedy>`, extended
     with how long it waited and on which run ids, and exits 1. There is no
-    pass-on-timeout path. The ceiling counts elapsed wall-clock time from the
-    start of the wait, API calls included, so it overruns by at most the few
+    pass-on-timeout path. The ceiling counts elapsed wall-clock time from
+    before the own-job lookup, API calls included, so it overruns by at most the few
     seconds one poll's calls take.
 
   Every carry-forward red names the remedy for the state it read. `pending`

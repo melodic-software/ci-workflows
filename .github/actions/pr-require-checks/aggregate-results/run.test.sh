@@ -2715,6 +2715,13 @@ run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_gh_call_before "actions/runs/4242/jobs" "actions/workflows/777/runs"
 
+echo 'case: a waiting run looks its own gate up before it lists the runs'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_gh_call_before "actions/runs/4242/jobs" "actions/workflows/777/runs"
+
 # Without one lookup per run, a job found on the last read is followed by a
 # second full retry for the step, and the run sleeps 240 s.
 echo 'case: a job found on the last read and a step never found share one 120s budget'
@@ -2742,6 +2749,7 @@ for call in 1 2 3 4 5 6 7 8; do
 done
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=200
 expect_total_sleep 200
+expect_calls "$own_jobs_key" 9
 expect_log 'reached the 200s carry-forward-wait-seconds ceiling'
 clear_own_jobs
 
