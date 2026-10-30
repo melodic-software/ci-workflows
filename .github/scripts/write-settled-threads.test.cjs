@@ -14,6 +14,7 @@ const test = require("node:test");
 
 const {
   judge,
+  laneFinding,
   resolutionHead,
   run,
   settledThreads,
@@ -102,6 +103,94 @@ test("settledThreads: a listed account's resolution or a listed human's reply se
       [true, false, ["accepted risk, owner decision Q7"]],
       [false, false, []],
       [false, true, ["FINDING-BY-KYLE"]],
+    ],
+  );
+});
+
+// The lane's own finding: github-actions[bot] (Bot, id 41898282) AND the
+// publish-review footer on the last line AND never edited. Any one missing
+// keeps the text out.
+const ACTIONS = {
+  __typename: "Bot",
+  login: "github-actions",
+  databaseId: 41898282,
+};
+const laneBody = "Off by one.\n\nclaude-lane: claude-review";
+const laneComment = (fields) => ({
+  ...comment(9, "t1"),
+  author: ACTIONS,
+  body: laneBody,
+  lastEditedAt: null,
+  ...fields,
+});
+
+test("laneFinding: only an unedited github-actions[bot] comment with the lane footer passes", () => {
+  assert.deepEqual(laneFinding(laneComment({})), {
+    authorId: 41898282,
+    login: "github-actions[bot]",
+    body: "Off by one.",
+  });
+  assert.equal(
+    laneFinding(
+      laneComment({ body: "x\n\nclaude-lane: claude-security-review" }),
+    ).body,
+    "x",
+  );
+  for (const [why, fields] of [
+    ["no footer", { body: "Off by one." }],
+    ["footer not last", { body: `${laneBody}\nmore` }],
+    ["another lane id", { body: "x\n\nclaude-lane: other" }],
+    [
+      "footer without its blank line",
+      { body: "x\nclaude-lane: claude-review" },
+    ],
+    ["edited", { lastEditedAt: "2026-10-01T00:00:00Z" }],
+    [
+      "a User with the bot's id",
+      { author: { ...ACTIONS, __typename: "User" } },
+    ],
+    ["another bot", { author: { ...ACTIONS, databaseId: 41898283 } }],
+    [
+      "a look-alike login",
+      { author: { ...ACTIONS, login: "github-actions-x" } },
+    ],
+    ["no author", { author: null }],
+  ])
+    assert.equal(laneFinding(laneComment(fields)), null, why);
+});
+
+test("settledThreads: a lane finding's text is admitted, but it never settles a thread", () => {
+  const ids = new Set([KYLE]);
+  const humans = new Set([KYLE]);
+  const kept = new Map([
+    [
+      2,
+      {
+        authorId: KYLE,
+        login: "kyle-sexton",
+        body: "accepted risk, owner decision Q7",
+      },
+    ],
+  ]);
+  const out = settledThreads(
+    [
+      thread({}, [laneComment({}), comment(2, "t2")]), // lane finding, owner reply
+      thread({}, [comment(1, "t1"), laneComment({})]), // lane reply only: open
+      thread({ isResolved: true, resolvedBy: { databaseId: 999 } }, [
+        laneComment({}),
+      ]), // PR author resolved: open
+      thread({}, [laneComment({ body: "STRANGER-TEXT" }), comment(2, "t2")]), // no footer: withheld
+    ],
+    kept,
+    ids,
+    humans,
+  );
+  assert.equal(out.length, 2);
+  assert.deepEqual(
+    out.map((e) => [e.rootKept, e.trusted.map((c) => c.body)]),
+    [
+      [true, ["Off by one.", "accepted risk, owner decision Q7"]],
+      [false, ["accepted risk, owner decision Q7"]],
     ],
   );
 });
