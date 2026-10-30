@@ -1,10 +1,10 @@
 name: check-trust-paths
 description: >-
   pr-require-checks-trust-paths' check: posts the commit status `ci-status`
-  on the pull request's head SHA, `failure` when an agent App named in the
+  on the pull request's head SHA as `failure` when an agent App named in the
   default branch's config opened the pull request, wrote one of its commits or
   pushed to its head branch, and it changes a privileged path the config
-  lists; `success` otherwise. Needs a `pull_request_target` event and a
+  lists; otherwise it posts nothing. Needs a `pull_request_target` event and a
   token with `statuses: write`, `pull-requests: read` and `contents: read`.
   A read that fails fails the step. check.cjs documents the rules.
 
@@ -15,7 +15,7 @@ inputs:
 
 outputs:
   state:
-    description: "The posted state: `success` or `failure`."
+    description: "The verdict: `success` (nothing posted) or `failure` (posted)."
     value: ${{ steps.check.outputs.state }}
 
 runs:

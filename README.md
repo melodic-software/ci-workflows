@@ -1042,11 +1042,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
 - `.github/workflows/pr-require-checks-trust-paths.yml` — holds a pull request
   for a person when an agent GitHub App touched it and it changes a privileged
-  path. It posts the commit status `ci-status` on the head SHA: `pending`
-  first, then `failure` on a hold, else `success`. When a ruleset requires
-  `ci-status`, a check run and a commit status of that name must both pass, so
-  the failure blocks the merge while the pull request's own `ci-status` check
-  run passes. The caller runs on `pull_request_target`, so the workflow, the
+  path. It posts the commit status `ci-status` on the head SHA only as
+  `failure`, on a hold, and posts nothing otherwise: a `success` status met a
+  ruleset's required `ci-status` before the pull request's own ci-status check
+  run existed, so the merge queue took an unchecked head
+  (melodic-software/claude-code-plugins#11341). Whether the `failure` blocks
+  the merge while that check run passes is UNVERIFIED. The caller runs on `pull_request_target`, so the workflow, the
   caller and the config all come from the default branch and the pull request
   cannot edit its hold away; nothing from the head is checked out or run. The
   job uses GITHUB_TOKEN with `contents: read`, `pull-requests: read` and
@@ -1075,8 +1076,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   or 20 pages: it keeps a branch name's history across deletions). Commits
   and activity are read only after a path matched.
 
-  It fails closed. A missing or invalid config, a failed read, or a job that
-  errors or is cancelled posts `failure` (the fallback step). So does a
+  It fails closed on errors. A missing or invalid config, a failed read, or a
+  job that errors posts `failure` (the fallback step). A cancelled job posts
+  nothing: the concurrency group cancels a run only for a newer one on the same
+  pull request, which posts its own verdict. A job that hits its timeout is
+  cancelled too and fails open; restoring fail-closed means adding
+  `cancelled()` back to the fallback with another way to clear a stale
+  `failure` than posting `success`. So does a
   privileged change with more than 250 commits, a commit list shorter than
   the pull request, a deleted head repository or activity past 20 pages
   (2000 entries). A file list shorter than the pull request, or at GitHub's
@@ -1100,9 +1106,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   The concurrency block is the standards concurrency-policy canonical form. A
-  run cancelled by a newer run on the same head can post its fallback
-  `failure` after the newer result; that is a false hold, cleared by
-  re-running the newer run. A run that never starts
+  `failure` stays until a later push gives the pull request a new head, since
+  the check never posts `success`. A run that never starts
   posts nothing, and the required check run alone decides. Any workflow with
   `statuses: write` can post a later `ci-status`, and the latest status wins.
 

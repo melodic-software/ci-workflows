@@ -1,10 +1,12 @@
 // check-trust-paths: holds a pull request for a person when an agent App
 // named in the default branch's config touched it and it changes a privileged
-// path. It posts the commit status `ci-status` on the head SHA: `pending`
-// first, then `failure` on a hold or on data it cannot trust, else
-// `success`. When a ruleset requires `ci-status`, both the check run and this
-// status of that name must pass, so a failure here blocks the merge whatever
-// the pull request's own workflows report.
+// path. It posts the commit status `ci-status` on the head SHA only as
+// `failure`, on a hold or on data it cannot trust, and posts nothing
+// otherwise. A `success` status met a ruleset's required `ci-status` before
+// the pull request's own ci-status check run existed, so the merge queue
+// took an unchecked head (claude-code-plugins#11341); a `pending` would need
+// that `success` to clear it. Whether a `failure` status blocks the merge
+// while the ci-status check run passes is UNVERIFIED.
 //
 // It runs from a `pull_request_target` caller, so this file and the caller
 // come from the default branch. The config is read at the default branch's last
@@ -283,7 +285,6 @@ async function run({ github, context, core, env = process.env }) {
   const post = (state, description) =>
     postStatus({ github, owner, repo, sha, state, description, targetUrl });
 
-  await post("pending", "Checking whether an agent App changed a privileged path.");
   const config = await readConfig({ github, owner, repo, path: configPath, ref: configSha });
   const files = await github.paginate(github.rest.pulls.listFiles, {
     owner,
@@ -320,7 +321,7 @@ async function run({ github, context, core, env = process.env }) {
   const verdict = decide({ config, pr, files, commits, activity, activityCapped, extraPaths });
   const log = verdict.state === "success" ? core.info : core.error;
   log(`${verdict.description} ${verdict.detail}`);
-  await post(verdict.state, verdict.description);
+  if (verdict.state === "failure") await post(verdict.state, verdict.description);
   core.setOutput("state", verdict.state);
   return verdict;
 }

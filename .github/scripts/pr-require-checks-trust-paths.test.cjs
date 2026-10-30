@@ -368,7 +368,7 @@ const env = {
   GITHUB_WORKFLOW_REF: "o/r/.github/workflows/pr-hold.yml@refs/heads/main",
 };
 
-test("run reads the config at the default branch's last commit and posts pending, then the verdict, on the head", async () => {
+test("run reads the config at the default branch's last commit and posts a hold as failure alone, on the head", async () => {
   const github = fakeGithub({
     files: [file(".github/workflows/ci.yml")],
     commits: [commit(HEAD, "octocat", "web-flow")],
@@ -383,14 +383,11 @@ test("run reads the config at the default branch's last commit and posts pending
   ]);
   assert.deepEqual(
     github.statuses.map(({ sha, state, context: name }) => [sha, state, name]),
-    [
-      [HEAD, "pending", "ci-status"],
-      [HEAD, "failure", "ci-status"],
-    ],
+    [[HEAD, "failure", "ci-status"]],
   );
-  assert.equal(github.statuses[1].description, HOLD);
+  assert.equal(github.statuses[0].description, HOLD);
   assert.equal(
-    github.statuses[1].target_url,
+    github.statuses[0].target_url,
     "https://github.com/o/r/actions/runs/9",
   );
   assert.deepEqual(github.calls.find(([name]) => name === "activity")[1], {
@@ -502,7 +499,7 @@ test("only a short activity page ends the history; a full one needs a next curso
       /full but carries no next cursor/u,
       String(link),
     );
-    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+    assert.deepEqual(github.statuses, []);
   }
   const { verdict } = await runWithPages([
     { data: Array.from({ length: ACTIVITY_PAGE - 1 }, () => push("octocat")) },
@@ -528,7 +525,7 @@ test("run throws on a non-list activity page or an HTTP error past the first pag
       Error,
       JSON.stringify(bad),
     );
-    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+    assert.deepEqual(github.statuses, []);
   }
 });
 
@@ -544,10 +541,9 @@ test("run reads no commit or activity when no privileged path changed", async ()
     github.calls.map(([name]) => name),
     ["getContent", "listFiles"],
   );
-  assert.deepEqual(
-    github.statuses.map(({ state }) => state),
-    ["pending", "success"],
-  );
+  // A success posts no status: it met the required ci-status before the
+  // pull request's own check run existed (claude-code-plugins#11341).
+  assert.deepEqual(github.statuses, []);
 });
 
 test("run holds an App's edit to the caller workflow or the config itself", async () => {
@@ -621,14 +617,11 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
       Error,
       label,
     );
-    assert.ok(
-      github.statuses.every(({ state }) => state === "pending"),
-      `${label} posted ${JSON.stringify(github.statuses)}`,
-    );
+    assert.deepEqual(github.statuses, [], label);
   }
 });
 
-test("the reusable grants only the three permissions, checks out nothing and posts failure when the check does not finish", () => {
+test("the reusable grants only the three permissions, checks out nothing and posts failure when the check fails", () => {
   const workflowPath = path.join(
     __dirname,
     "..",
@@ -648,7 +641,9 @@ test("the reusable grants only the three permissions, checks out nothing and pos
     source,
     /uses: \$\/\.github\/actions\/pr-require-checks\/check-trust-paths\n/u,
   );
-  assert.match(source, /if: \$\{\{ failure\(\) \|\| cancelled\(\) \}\}/u);
+  // A cancelled run is replaced by the newer run that cancelled it.
+  assert.match(source, /if: \$\{\{ failure\(\) \}\}/u);
+  assert.doesNotMatch(source, /if: [^\n]*cancelled\(\)/u);
   // No ${{ }} expansion inside a script body.
   const scripts = source
     .split(/script: \|\n/u)

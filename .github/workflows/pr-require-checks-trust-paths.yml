@@ -2,10 +2,11 @@ name: pr-require-checks-trust-paths
 
 # Reusable workflow: holds a pull request for a person when an agent GitHub
 # App touched it and it changes a privileged path. It posts the commit status
-# `ci-status` on the head SHA. When a ruleset requires `ci-status`, a check
-# run and a commit status of that name must both pass, so a `failure` status
-# blocks the merge even while the pull request's own `ci-status` check run
-# passes.
+# `ci-status` on the head SHA only as `failure`, never `pending` or
+# `success`: a `success` status met a ruleset's required `ci-status` before
+# the pull request's own ci-status check run existed, so the merge queue took
+# an unchecked head (claude-code-plugins#11341). Whether a `failure` status
+# blocks the merge while that check run passes is UNVERIFIED.
 #
 # Canonical caller, on the consumer's default branch:
 #
@@ -37,9 +38,13 @@ name: pr-require-checks-trust-paths
 # the API and treats file names, logins and emails as data. The composite is
 # referenced with `$/`, which resolves to this repository at the caller's
 # pinned commit. The token is GITHUB_TOKEN with the three permissions above;
-# no secret is used. A run cancelled by a newer run on the same head can post
-# its fallback `failure` after the newer result: a false hold, never a missed
-# one, cleared by re-running the newer run.
+# no secret is used. The fallback posts `failure` when the check fails, not
+# when the run is cancelled: the concurrency group cancels a run only for a
+# newer one on the same pull request, which posts its own verdict, and a
+# cancelled run's `failure` could not be cleared with no `success` to post.
+# A run that hits timeout-minutes is cancelled too, so it fails open. To make
+# it fail closed again, add `|| cancelled()` back and give the check another
+# way to clear a stale `failure` that does not post `success` early.
 on:
   workflow_call:
     inputs:
@@ -71,8 +76,8 @@ jobs:
         with:
           config-path: ${{ inputs.config-path }}
 
-      - name: Post a failed ci-status when the check did not finish
-        if: ${{ failure() || cancelled() }}
+      - name: Post a failed ci-status when the check failed
+        if: ${{ failure() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
