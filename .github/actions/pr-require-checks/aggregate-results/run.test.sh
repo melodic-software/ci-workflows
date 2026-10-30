@@ -2658,10 +2658,81 @@ reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 check_job 9100 5555
 run_case 1 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100
-expect_log "${check_job_cause_prefix}no in-progress job matched job.check_run_id 9100 in run 4242 after 9 reads."
+expect_log "${check_job_cause_prefix}no job matched job.check_run_id 9100 in run 4242 after 9 reads."
 expect_no_log 'Carried forward'
 expect_no_gh_call "actions/runs/4242/jobs"
 rm -f -- "$fixtures/${check_job_key}.json"
+
+# lagging_check_job <status>
+# This run's gate job as the jobs API served a re-run attempt's job while its
+# step ran (melodic-software/standards run 41110213137, attempts 2 to 5): not
+# yet in progress, and no steps listed.
+lagging_check_job() {
+  jq -c --arg status "$1" '. + {run_id: 4242, status: $status, steps: []}' <<<"$own_gate_job" >"$fixtures/${check_job_key}.json"
+}
+
+# Without dropping the status term from the id match, a re-run attempt whose
+# job the API still lists as queued fails closed on every attempt, after a
+# full run recorded `success` and re-ran it.
+echo 'case: job.check_run_id with step-name carries forward while the API lags the job status and steps'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+lagging_check_job queued
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100 'STEP_NAME=Aggregate lane results'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_log "This run's gate job is 'ci-status' (REST id 9100, job.check_run_id 9100), found by job.check_run_id 9100 in run 4242."
+expect_no_sleep
+
+# Without step-name nothing names the running step, so an unlisted step still
+# fails closed: the step check is not dropped, only trusted when named.
+echo 'case: job.check_run_id without step-name still needs the running step listed'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100
+expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step after 9 reads."
+expect_no_log 'Carried forward'
+
+# Without the completed-step test, a step-name naming a step that already
+# finished would be trusted as the step running this action.
+echo 'case: job.check_run_id with a step-name listed only as completed fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+check_job 9100 4242
+run_case 1 'skipped skipped' pass true true JOB_CHECK_RUN_ID=9100 'STEP_NAME=Check the pull-request contract'
+expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step named 'Check the pull-request contract' after 9 reads."
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/${check_job_key}.json"
+
+# writer_jobs_without_steps <run-id> <job-conclusion>
+# A completed full run's jobs as the API listed them for minutes after it
+# finished: every job's `steps` empty.
+writer_jobs_without_steps() {
+  printf '{"total_count":2,"jobs":[{"name":"lint","status":"completed","conclusion":"success","steps":[]},{"name":"ci-status","status":"completed","conclusion":"%s","steps":[]}]}' "$2" \
+    >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_${1}_jobs.json"
+}
+
+# Without reading a completed `success` gate job with no steps listed as a
+# succeeded gate step, the writer reads `absent`, the success stays pending,
+# and the re-run the full run issued fails closed again. Together with the
+# lagging own job this is the whole re-run of standards run 41110213137.
+echo 'case: a re-run carries forward a success whose completed writer job lists no steps'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+writer_jobs_without_steps 4100 success
+lagging_check_job in_progress
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100 'STEP_NAME=Aggregate lane results'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the conclusion test, a writer whose job failed (its contract step,
+# or its aggregate step) would pass on a listing that cannot say which step.
+echo 'case: a completed writer job that failed and lists no steps does not carry forward'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+writer_jobs_without_steps 4100 failure
+lagging_check_job in_progress
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100 'STEP_NAME=Aggregate lane results'
+expect_no_log 'Carried forward'
+expect_log "${fail_prefix}"
+rm -f -- "$fixtures/${check_job_key}.json"
+install_step_fixtures
 
 # Without validating the id, a value carrying `/` or `?` would address another
 # resource than this job.

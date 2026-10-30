@@ -359,19 +359,26 @@ consumer to audit it.
     `actions: read`, and fails the run when the listing fails three times.
     This run's own gate job, whose name a contract-only sibling must match and
     whose step names the writer step to verify, is the job `job.check_run_id`
-    names, read directly and required to be in progress in this run. Where
+    names, read directly and required to belong to this run (not to be in
+    progress: the jobs API can list a running re-run attempt's job as queued). Where
     `job.check_run_id` is empty (GHES, or a runner before v2.324.0) it is the
     one in-progress job of this run on this runner (`RUNNER_NAME`), and a
     runner name shared by two such jobs fails closed. Either way a sibling job
     of this run still queued, or an extra job that ran, does not hide it. `step-name` (default `''`) names the
     step that runs the action, which must be in progress and which a job
     running steps in parallel needs; left empty, it is the one step of that
-    job in progress. Both are looked up once per run, before any run listing:
+    job in progress. Keyed by `job.check_run_id`, a named step the jobs API
+    does not list yet is taken as given, unless it is listed only as
+    completed; set `step-name` on every caller, because the jobs API has
+    listed a running job's steps as `[]` for minutes. A writer gate job that
+    completed with `success` and lists no steps reads as a succeeded writer
+    step; any other conclusion with no steps fails closed.
+    Both are looked up once per run, before any run listing:
     a read that does not resolve, or a jobs read that fails other than with
     HTTP 403 or 429, is read again, up to 9 reads over 120 seconds in all; a
     403 or 429 fails at once with no retry. Then the run fails
-    closed with a warning naming the cause (no key, a job id not in progress
-    in this run, no job or more than one job in progress on the runner, or no
+    closed with a warning naming the cause (no key, a job id not in this
+    run, no job or more than one job in progress on the runner, or no
     single matching step).
     (`carry-forward-wait-seconds: '0'` alone never waits: it lists the runs
     only to verify a `success` and reads the status again after that listing,
