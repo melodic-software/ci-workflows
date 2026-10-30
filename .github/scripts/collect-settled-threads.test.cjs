@@ -78,7 +78,9 @@ test("settledThreads: a listed account's resolution or a listed human's reply se
   const byBot = { isResolved: true, resolvedBy: { databaseId: LANES_BOT } };
   const out = settledThreads(
     [
-      thread({}, [comment(1, "t1"), comment(2, "t2")]), // owner reply, unresolved
+      // Owner reply under a withheld finding: nothing says which point it
+      // decides, so not settled.
+      thread({}, [comment(1, "t1"), comment(2, "t2")]),
       thread({}, [comment(3, "t1"), comment(4, "t2")]), // bot reply only: open
       thread(byBot, [comment(6, "t1")]), // resolved by a listed bot, no trusted text
       thread({ isResolved: true, resolvedBy: { databaseId: KYLE } }, [
@@ -96,11 +98,10 @@ test("settledThreads: a listed account's resolution or a listed human's reply se
     ids,
     humans,
   );
-  assert.equal(out.length, 3);
+  assert.equal(out.length, 2);
   assert.deepEqual(
     out.map((e) => [e.ownerReply, e.rootKept, e.trusted.map((c) => c.body)]),
     [
-      [true, false, ["accepted risk, owner decision Q7"]],
       [false, false, []],
       [false, true, ["FINDING-BY-KYLE"]],
     ],
@@ -179,19 +180,18 @@ test("settledThreads: a lane finding's text is admitted, but it never settles a 
       thread({ isResolved: true, resolvedBy: { databaseId: 999 } }, [
         laneComment({}),
       ]), // PR author resolved: open
-      thread({}, [laneComment({ body: "STRANGER-TEXT" }), comment(2, "t2")]), // no footer: withheld
+      // No footer: the finding is withheld, so the reply under it settles
+      // nothing.
+      thread({}, [laneComment({ body: "STRANGER-TEXT" }), comment(2, "t2")]),
     ],
     kept,
     ids,
     humans,
   );
-  assert.equal(out.length, 2);
+  assert.equal(out.length, 1);
   assert.deepEqual(
     out.map((e) => [e.rootKept, e.trusted.map((c) => c.body)]),
-    [
-      [true, ["Off by one.", "accepted risk, owner decision Q7"]],
-      [false, ["accepted risk, owner decision Q7"]],
-    ],
+    [[true, ["Off by one.", "accepted risk, owner decision Q7"]]],
   );
 });
 
@@ -289,12 +289,13 @@ test("run: writes only trusted text and a verdict per thread from a real git dif
   const source = path.join(dir, "source");
   const stub = path.join(source, ".github", "actions", "select-trusted-text");
   fs.mkdirSync(stub, { recursive: true });
-  // The stub keeps what the real action would: the owner's reply and the
-  // owner's own finding, never the stranger's text.
+  // The stub keeps what the real action would: the owner's replies and
+  // findings, never the stranger's text.
   fs.writeFileSync(
     path.join(stub, "select-trusted-text.mjs"),
     `import { writeFileSync } from "node:fs";
 writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, items: [
+  { kind: "review-comment", id: 1, author_id: ${KYLE}, author_login: "kyle-sexton", body: "FIRST-FINDING" },
   { kind: "review-comment", id: 2, author_id: ${KYLE}, author_login: "kyle-sexton", body: "accepted risk, owner decision Q7" },
   { kind: "review-comment", id: 3, author_id: ${KYLE}, author_login: "kyle-sexton", body: "OWNER-FINDING" },
   { kind: "issue-comment", id: 9, author_id: ${KYLE}, author_login: "kyle-sexton", body: "NOT-A-THREAD" },
@@ -411,14 +412,15 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
   assert.match(sections[0], /^a\.js, lines 10-10 at the head/u);
   assert.match(sections[0], new RegExp(`resolution head: ${resolved}`, "u"));
   assert.match(sections[0], /lines changed since resolution: no/u);
-  assert.match(sections[0], /finding text withheld/u);
+  assert.match(sections[0], /settled by: owner reply/u);
   assert.match(
     sections[0],
-    /### Reply by kyle-sexton\n\naccepted risk, owner decision Q7/u,
+    /### Finding by kyle-sexton\n\nFIRST-FINDING\n\n### Reply by kyle-sexton\n\naccepted risk, owner decision Q7/u,
   );
   assert.match(sections[1], /lines changed since resolution: yes/u);
   assert.match(sections[1], /### Finding by kyle-sexton\n\nOWNER-FINDING/u);
   assert.match(sections[2], /^b\.js, original line 10/u);
+  assert.match(sections[2], /finding text withheld/u);
   assert.match(sections[2], /lines changed since resolution: no/u);
   for (const text of ["NOT-A-THREAD", "\nx\n"])
     assert.ok(!file.includes(text), text);
@@ -429,6 +431,10 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
   assert.match(
     outputs.note,
     /`git diff <resolution head>\.\.HEAD` touches the lines under it/u,
+  );
+  assert.match(
+    outputs.note,
+    /a question or an acknowledgement settles nothing/u,
   );
 });
 
