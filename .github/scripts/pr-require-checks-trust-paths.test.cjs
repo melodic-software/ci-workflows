@@ -264,13 +264,15 @@ test("a status description fits GitHub's 140 characters", () => {
   for (const text of [HOLD, long.description]) assert.ok(text.length <= 140);
 });
 
-// `activity` is one page, or `pages` several, each { data, link }.
+// `activity` is one page, or `pages` several, each { data, link }. `prior` is
+// the head SHA's latest ci-status state before the run, if any.
 function fakeGithub({
   config = CONFIG,
   files,
   commits,
   activity,
   pages,
+  prior,
   fail = {},
 }) {
   const calls = [];
@@ -311,6 +313,14 @@ function fakeGithub({
         createCommitStatus: async (params) => {
           statuses.push(params);
         },
+        getCombinedStatusForRef: async () => ({
+          data: {
+            statuses: [
+              { context: "other", state: "failure" },
+              ...(prior ? [{ context: "ci-status", state: prior }] : []),
+            ],
+          },
+        }),
       },
       pulls: {
         listFiles: async (params) => {
@@ -368,7 +378,7 @@ const env = {
   GITHUB_WORKFLOW_REF: "o/r/.github/workflows/pr-hold.yml@refs/heads/main",
 };
 
-test("run reads the config at the default branch's last commit and posts pending, then the verdict, on the head", async () => {
+test("run reads the config at the default branch's last commit and posts a hold as failure on the head", async () => {
   const github = fakeGithub({
     files: [file(".github/workflows/ci.yml")],
     commits: [commit(HEAD, "octocat", "web-flow")],
@@ -383,14 +393,11 @@ test("run reads the config at the default branch's last commit and posts pending
   ]);
   assert.deepEqual(
     github.statuses.map(({ sha, state, context: name }) => [sha, state, name]),
-    [
-      [HEAD, "pending", "ci-status"],
-      [HEAD, "failure", "ci-status"],
-    ],
+    [[HEAD, "failure", "ci-status"]],
   );
-  assert.equal(github.statuses[1].description, HOLD);
+  assert.equal(github.statuses[0].description, HOLD);
   assert.equal(
-    github.statuses[1].target_url,
+    github.statuses[0].target_url,
     "https://github.com/o/r/actions/runs/9",
   );
   assert.deepEqual(github.calls.find(([name]) => name === "activity")[1], {
@@ -502,7 +509,7 @@ test("only a short activity page ends the history; a full one needs a next curso
       /full but carries no next cursor/u,
       String(link),
     );
-    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+    assert.deepEqual(github.statuses, []);
   }
   const { verdict } = await runWithPages([
     { data: Array.from({ length: ACTIVITY_PAGE - 1 }, () => push("octocat")) },
@@ -528,7 +535,7 @@ test("run throws on a non-list activity page or an HTTP error past the first pag
       Error,
       JSON.stringify(bad),
     );
-    assert.ok(github.statuses.every(({ state }) => state === "pending"));
+    assert.deepEqual(github.statuses, []);
   }
 });
 
@@ -544,10 +551,28 @@ test("run reads no commit or activity when no privileged path changed", async ()
     github.calls.map(([name]) => name),
     ["getContent", "listFiles"],
   );
-  assert.deepEqual(
-    github.statuses.map(({ state }) => state),
-    ["pending", "success"],
-  );
+  assert.deepEqual(github.statuses, []);
+});
+
+test("a pass posts no status, so the ci-status check run alone decides the required check", async () => {
+  for (const prior of [undefined, "success", "pending"]) {
+    const github = fakeGithub({ files: [file("README.md")], commits: [], activity: [], prior });
+    const verdict = await run({ github, context: context(), core: core(), env });
+    assert.equal(verdict.state, "success");
+    assert.deepEqual(github.statuses, [], String(prior));
+  }
+});
+
+test("a pass clears this check's own earlier failure or error on the same SHA", async () => {
+  for (const prior of ["failure", "error"]) {
+    const github = fakeGithub({ files: [file("README.md")], commits: [], activity: [], prior });
+    await run({ github, context: context(), core: core(), env });
+    assert.deepEqual(
+      github.statuses.map(({ sha, state, context: name }) => [sha, state, name]),
+      [[HEAD, "success", "ci-status"]],
+      prior,
+    );
+  }
 });
 
 test("run holds an App's edit to the caller workflow or the config itself", async () => {
@@ -621,10 +646,7 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
       Error,
       label,
     );
-    assert.ok(
-      github.statuses.every(({ state }) => state === "pending"),
-      `${label} posted ${JSON.stringify(github.statuses)}`,
-    );
+    assert.deepEqual(github.statuses, [], label);
   }
 });
 

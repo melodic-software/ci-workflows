@@ -1042,11 +1042,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
 - `.github/workflows/pr-require-checks-trust-paths.yml` — holds a pull request
   for a person when an agent GitHub App touched it and it changes a privileged
-  path. It posts the commit status `ci-status` on the head SHA: `pending`
-  first, then `failure` on a hold, else `success`. When a ruleset requires
-  `ci-status`, a check run and a commit status of that name must both pass, so
-  the failure blocks the merge while the pull request's own `ci-status` check
-  run passes. The caller runs on `pull_request_target`, so the workflow, the
+  path. On a hold it posts the commit status `ci-status` = `failure` on the
+  head SHA, which blocks the merge while the pull request's own `ci-status`
+  check run passes. A pass posts no status, except a `success` that clears this
+  check's own earlier failure on that SHA: a `success` of the required name
+  satisfies the ruleset before the `ci-status` check run exists, which let pull
+  requests merge before CI ran (#930). The caller runs on `pull_request_target`, so the workflow, the
   caller and the config all come from the default branch and the pull request
   cannot edit its hold away; nothing from the head is checked out or run. The
   job uses GITHUB_TOKEN with `contents: read`, `pull-requests: read` and

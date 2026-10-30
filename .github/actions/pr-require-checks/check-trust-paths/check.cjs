@@ -1,10 +1,11 @@
 // check-trust-paths: holds a pull request for a person when an agent App
 // named in the default branch's config touched it and it changes a privileged
-// path. It posts the commit status `ci-status` on the head SHA: `pending`
-// first, then `failure` on a hold or on data it cannot trust, else
-// `success`. When a ruleset requires `ci-status`, both the check run and this
-// status of that name must pass, so a failure here blocks the merge whatever
-// the pull request's own workflows report.
+// path. It posts the commit status `ci-status` on the head SHA only as
+// `failure`, on a hold or on data it cannot trust. A pass posts nothing, or
+// `success` only to clear this check's own earlier `failure` on that SHA: a
+// `success` of the required name satisfies a ruleset on its own while the
+// pull request's `ci-status` check run does not exist yet, which let pull
+// requests merge before CI ran (ci-workflows#930).
 //
 // It runs from a `pull_request_target` caller, so this file and the caller
 // come from the default branch. The config is read at the default branch's last
@@ -257,6 +258,14 @@ async function postStatus({ github, owner, repo, sha, state, description, target
   });
 }
 
+// True when the SHA's latest `ci-status` status is a failure or error, which
+// only this check (or its caller's fallback step) posts.
+async function heldBefore({ github, owner, repo, sha }) {
+  const { data } = await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha });
+  const latest = data.statuses.find(({ context }) => context === CONTEXT);
+  return latest?.state === "failure" || latest?.state === "error";
+}
+
 async function readConfig({ github, owner, repo, path, ref }) {
   const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
   if (Array.isArray(data) || data?.type !== "file" || data.encoding !== "base64")
@@ -283,7 +292,6 @@ async function run({ github, context, core, env = process.env }) {
   const post = (state, description) =>
     postStatus({ github, owner, repo, sha, state, description, targetUrl });
 
-  await post("pending", "Checking whether an agent App changed a privileged path.");
   const config = await readConfig({ github, owner, repo, path: configPath, ref: configSha });
   const files = await github.paginate(github.rest.pulls.listFiles, {
     owner,
@@ -320,7 +328,8 @@ async function run({ github, context, core, env = process.env }) {
   const verdict = decide({ config, pr, files, commits, activity, activityCapped, extraPaths });
   const log = verdict.state === "success" ? core.info : core.error;
   log(`${verdict.description} ${verdict.detail}`);
-  await post(verdict.state, verdict.description);
+  if (verdict.state === "failure" || (await heldBefore({ github, owner, repo, sha })))
+    await post(verdict.state, verdict.description);
   core.setOutput("state", verdict.state);
   return verdict;
 }

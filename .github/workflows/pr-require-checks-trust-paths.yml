@@ -1,11 +1,12 @@
 name: pr-require-checks-trust-paths
 
 # Reusable workflow: holds a pull request for a person when an agent GitHub
-# App touched it and it changes a privileged path. It posts the commit status
-# `ci-status` on the head SHA. When a ruleset requires `ci-status`, a check
-# run and a commit status of that name must both pass, so a `failure` status
-# blocks the merge even while the pull request's own `ci-status` check run
-# passes.
+# App touched it and it changes a privileged path. On a hold it posts the
+# commit status `ci-status` = `failure` on the head SHA, which blocks the merge
+# even while the pull request's own `ci-status` check run passes. A pass posts
+# no status (only a `success` that clears this check's own earlier failure on
+# that SHA): a `success` of the required name satisfies the ruleset before the
+# `ci-status` check run exists (ci-workflows#930).
 #
 # Canonical caller, on the consumer's default branch:
 #
