@@ -26,7 +26,7 @@ name: intake-triage
 #         permissions:
 #           contents: read   # check out the default branch for AGENTS.md
 #           issues: write    # the apply job: labels, Issue Type, triage comment
-#         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@main
 #         with:
 #           issue-number: ${{ inputs.issue-number }}
 #           allowed-author-ids: <comma-separated user ids>

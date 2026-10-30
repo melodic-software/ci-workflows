@@ -38,12 +38,17 @@ checkout of this repo. (Public is required because a public consumer such as
   global-standard defaults. Consumers override repo-specific scope (globs,
   paths, tool versions, config location) through inputs — never by editing the
   action.
-- **Pin by SHA.** Reference every action at a full commit SHA with a `# vX.Y.Z`
-  comment. Consumers keep this repository out of Dependabot's `github-actions`
-  updates (an `ignore` entry) and move the pin by reviewed pull request in their
-  own repository, so a fix landed here does not reach a consumer until it
-  repins — see Versioning. For the third-party actions a consumer does let
-  Dependabot track, Dependabot updates only `uses:` SHAs — the tool versions
+- **First-party consumers reference reusable workflows at `@main` and actions
+  at a full commit SHA.** A reusable-workflow change merged here reaches every
+  melodic-software consumer on its next run, inside workflows that hold the
+  consumer's secrets. The org Actions policy requires every action, this
+  repository's included, to be pinned to a full-length commit SHA, while
+  "Reusable workflows can still be referenced by tag"
+  ([Disabling or limiting GitHub Actions for your organization][org-actions-policy]),
+  so an action change reaches a consumer when it moves its pin. Third-party
+  actions stay pinned by full commit SHA.
+  For the third-party actions a consumer lets Dependabot track,
+  Dependabot updates only `uses:` SHAs — the tool versions
   pinned in each action's `version:`/`analyzer-version:` input default (and the
   checksum-verified install URLs) have no package manifest it can track, so
   bumping one is a reviewed pull request in this repository.
@@ -63,21 +68,12 @@ checkout of this repo. (Public is required because a public consumer such as
 
 ## Versioning
 
-Every tag is full SemVer (`vX.Y.Z`). A release is cut whenever `main` changes
-by something worth pinning to — `release-tag.yml`'s manual `workflow_dispatch`
-(patch/minor/major) makes each release a deliberate act, and cutting one after
-every meaningful change keeps a tagged SHA available for consumers to pin to.
-Consumers are never bumped automatically: each pins this repository by full
-commit SHA with a `# vX.Y.Z` comment, and moving that pin is a reviewed pull
-request in the consumer's own repository. Nothing cuts a release
-automatically. There is no calendar cadence; GitHub's own guidance is
-silent on release frequency, and a tag-per-change policy is a closer fit for a
-repository whose only "release" event is "a consumer might need to pin to
-this." GitHub's reusable-workflow reference guidance treats a SHA, a release
-tag, and a branch as equally valid `{ref}` forms and states plainly that
-"Using the commit SHA is the safest option for stability and security"
-([Reuse workflows][reuse-workflows]) — this repo's tag-per-change practice and
-every consumer's SHA pin both sit inside that guidance, not around it.
+Every tag is full SemVer (`vX.Y.Z`), cut by `release-tag.yml`'s manual
+`workflow_dispatch` (patch/minor/major). First-party consumers reference
+reusable workflows at `@main` and actions at a full commit SHA, never a tag, so a release is a changelog marker, not a step a change
+needs before it reaches a consumer. A consumer outside melodic-software that
+wants a fixed version pins a full commit SHA, which GitHub calls "the safest
+option for stability and security" ([Reuse workflows][reuse-workflows]).
 
 **No floating major tag (`v1`).** GitHub's action-release guidance recommends
 "keeping major (`v1`) and minor (`v1.1`) tags current to the latest
@@ -86,18 +82,9 @@ receiving non-breaking updates automatically
 ([Releasing and maintaining actions][releasing-actions]). That guidance is
 scoped to actions consumed by a floating tag resolved at Actions runtime, and
 its own reusable-workflow reference page makes no equivalent recommendation.
-Neither the letter nor the premise of that guidance applies here: every
-consumer of this repository pins by 40-character commit SHA — the
-runner-policy allowlist requires it fleet-wide — so no consumer's workflow run
-ever resolves `@v1`, and a floating major tag would exist only as a label
-nothing at runtime reads. It would also actively conflict with the
-pin-comment convention consumers now follow
-(`melodic-software/standards#248`): that convention's primary form,
-`# vX.Y.Z`, asserts the comment names *the* release the pinned SHA
-corresponds to, a claim a moving tag cannot keep true once it moves. This is
-declined outright, not deferred by oversight; the trigger for revisiting it is
-this repository ever moving consumers onto tag-resolved-at-runtime references,
-which the current SHA-pin governance model gives no reason to expect.
+First-party consumers already float reusable workflows on `@main` and pin
+actions to a full commit SHA, so a moving major tag would be a ref that no
+consumer reads. Declined, not deferred.
 
 **`v0.x` carries no stability guarantee.** Per SemVer's own terms, "Major
 version zero (0.y.z) is for initial development. Anything MAY change at any
@@ -109,10 +96,11 @@ API" milestone ([SemVer, item 5][semver]) — is a deliberate, separate decision
 this document defers rather than resolves; nothing here should be read as an
 implicit 1.0 commitment or a timeline toward one.
 
-**A caller's SHA pin does not cascade.** Pinning this repository by SHA proves
-only that the one referenced file's bytes are fixed at that commit; GitHub
-resolves a reusable workflow's own nested calls to further reusable workflows
-or actions independently, at their own `{ref}`
+**A caller's ref does not cascade.** melodic-software callers reference this
+repository's reusable workflows at `@main` and run whatever main holds, and pin
+its actions to a full commit SHA; outside callers pin a full commit SHA. A SHA pin proves only that the one referenced file's bytes are
+fixed at that commit; GitHub resolves a reusable workflow's own nested calls
+to further reusable workflows or actions independently, at their own `{ref}`
 ([Reusing workflow configurations][reusing-workflow-configurations]). GitHub's
 docs do not call this out directly, but it follows structurally from that
 per-reference resolution model, and it is exactly the gap reported in a
@@ -122,8 +110,9 @@ workflow file to a commit. This repository closes that gap on its own side,
 not the consumer's: every external reference its own actions and workflows
 make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
-itself pinned to a full commit SHA with the same dual-form trailing comment
-consumers use (`melodic-software/standards#248`). A consumer's pin on this
+itself pinned to a full commit SHA with a dual-form trailing comment
+(`melodic-software/standards#248`), and a bump to one waits for a person,
+since it reaches every `@main` caller on merge. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
 down, and this repository keeps that chain closed rather than asking every
 consumer to audit it.
@@ -458,7 +447,7 @@ consumer to audit it.
         statuses: write
       steps:
         - name: Mark the lanes verdict pending
-          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
           with:
             record-pending: 'true'
         # ... change detection
@@ -471,7 +460,7 @@ consumer to audit it.
         actions: write
       steps:
         - name: Aggregate lane results
-          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
           with:
             yield-to-full-run: 'true'
             rerun-contract-only-siblings: 'true'
@@ -737,6 +726,12 @@ consumer to audit it.
 - `.github/actions/apply-review-hold` — `pr-review-cli.yml`'s add-only hold
   step, with no model; internal to that workflow, which passes it
   everything through env (its `action.yml` describes what it does).
+- `.github/actions/collect-settled-threads` — `pr-review-cli.yml`'s
+  settled-threads step, with no model: the pull request's review threads a
+  listed account resolved or a listed person answered, text kept only through claude-code-plugins'
+  `select-trusted-text`, each with whether its lines changed since it was
+  settled, so the review does not re-raise a settled point (its
+  `action.yml` describes what it does).
 - `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
   step: the `api-budget` notice (`token=github-token ... cost=N`) the hub
   collector reads, built from the `x-ratelimit-*` headers of the job's own
@@ -787,7 +782,7 @@ so there is no changed-file output to feed in; the list comes from git:
 
 - name: Lint shell scripts
   if: steps.changed_shell.outputs.files != ''
-  uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha> # <tag>
+  uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha>
   with:
     files: ${{ steps.changed_shell.outputs.files }}
 ```
@@ -891,8 +886,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   The composites run through `$/.github/actions/<x>`, which resolves against
   the repository and commit that host the called workflow, not the caller's
-  checkout. A consumer pinned to a tag therefore runs the composite bodies at
-  that tag, and this repository's own `./` call runs them at the commit under
+  checkout. A consumer therefore runs the composite bodies at the ref it
+  calls (`@main` or a SHA), and this repository's own `./` call runs them at the commit under
   test.
 
   ```yaml
@@ -901,7 +896,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
       permissions:
         contents: read
         pull-requests: read
-      uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks.yml@main
       with:
         runner: ubuntu-24.04
         filters: |
@@ -942,7 +937,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     issue-triage-label:
       permissions:
         issues: write
-      uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@main
   ```
 
   Loop-safe by construction: adding a label emits `issues.labeled`, never
@@ -986,7 +981,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     check-links:
       permissions:
         contents: read
-      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@main
       with:
         runner: ubuntu-24.04
   ```
@@ -1028,7 +1023,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
       permissions:
         contents: write
         pull-requests: write
-      uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@main
   ```
 
 - `.github/workflows/pr-require-checks-trust-paths.yml` — holds a pull request
@@ -1087,7 +1082,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
         contents: read
         pull-requests: read
         statuses: write
-      uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@<sha> # vX.Y.Z
+      uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@main
   ```
 
   The concurrency block is the standards concurrency-policy canonical form. A
@@ -1334,7 +1329,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/<lane>.yml@<sha>
+    uses: melodic-software/ci-workflows/.github/workflows/<lane>.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -1524,6 +1519,7 @@ mirrors of the standards catalog.
 
 [gh-actions-conventions]: https://github.com/melodic-software/standards/blob/main/components/github-actions-conventions/README.md
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
+[org-actions-policy]: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708

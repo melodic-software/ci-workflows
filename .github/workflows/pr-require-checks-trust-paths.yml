@@ -22,7 +22,7 @@ name: pr-require-checks-trust-paths
 #           contents: read
 #           pull-requests: read
 #           statuses: write
-#         uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@main
 #
 # The config (input `config-path`, default `.github/trust-path-hold.json`) is
 # read at the default branch's last commit (GITHUB_SHA):

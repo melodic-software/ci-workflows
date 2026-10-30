@@ -14,18 +14,17 @@ business days.
 ## Supported versions
 
 Repo publishes composite actions and reusable workflows, consumed by
-reference. No released version stream: security fixes land on `main` and
-reach a consumer only when that consumer repins by reviewed pull request
-in its own repository. Nothing advances a pin automatically. Watch this
-repository's Releases so a security fix is not missed.
+reference. melodic-software consumers reference reusable workflows at
+`@main`, so a fix on `main` reaches them on their next run. They pin actions to
+a full commit SHA, which the org Actions policy requires, and move that pin by
+reviewed pull request, as other consumers do for every reference.
 
 ## How to consume securely
 
-- **Pin by full commit SHA**, never branch or tag — full-length SHA
-  only immutable reference, kept SHA-pinned consumers immune to
-  tag-rewrite supply-chain attacks. Keep this repository out of
-  Dependabot's `github-actions` updates (an `ignore` entry) and move the
-  pin by reviewed pull request.
+- **Outside melodic-software, pin by full commit SHA**, never branch or
+  tag: the full-length SHA is the only immutable reference. Keep this
+  repository out of Dependabot's `github-actions` updates (an `ignore`
+  entry) and move the pin by reviewed pull request.
 - **Set least-privilege `permissions:` in your own jobs.** Composite action
   runs inline in calling job, inherits that job's `GITHUB_TOKEN` scopes;
   cannot reduce them for you. Start from `permissions: {}`, grant only

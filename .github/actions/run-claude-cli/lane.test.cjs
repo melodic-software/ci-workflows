@@ -653,6 +653,9 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
     assert.ok(call.args.includes(flag), flag);
   }
   assert.equal(call.args.includes("--setting-sources"), false);
+  // Callers float on @main and rely on this: under `none` the default mode
+  // denies every call no rule allows, as dontAsk does.
+  assert.equal(call.args[call.args.indexOf("--permission-prompts") + 1], "none");
   assert.equal(call.args[call.args.indexOf("--permission-mode") + 1], "auto");
   assert.equal(call.args[call.args.indexOf("--tools") + 1], "Read,Bash");
   assert.equal(
