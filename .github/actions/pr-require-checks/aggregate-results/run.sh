@@ -747,9 +747,9 @@ verify_writer_step() {
 #
 # The jobs API has listed a completed job's `steps` as `[]` for minutes after
 # it finished. The one such case read as `success` is the one gate job of that
-# name, completed with `success`: a job concludes `success` only when none of
-# its steps failed, and the gate step that wrote the status ends in `success`
-# once the write lands (the sibling re-run after it cannot fail it). A gate job
+# name, completed with `success`: the gate step that wrote a `success` cannot
+# fail after the write lands (the sibling re-run after it cannot fail it), and
+# a job that concluded `success` was not cancelled or timed out. A gate job
 # that concluded otherwise with no steps listed stays `absent`, because its
 # contract step can fail it over a true lanes `success`, and only the step
 # tells the two apart.

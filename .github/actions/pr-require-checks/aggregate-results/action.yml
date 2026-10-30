@@ -217,8 +217,9 @@ inputs:
       or no single matching step.
       The writer step of the full run is matched by the same name. A writer
       gate job completed with `success` whose steps the jobs API does not list
-      reads as a succeeded step, since a job concludes `success` only when no
-      step failed; any other conclusion with no steps listed fails closed.
+      reads as a succeeded step: the step cannot fail once its `success`
+      write lands, and a job concluding `success` was not cancelled or timed
+      out. Any other conclusion with no steps listed fails closed.
     default: ''
   rate-limit-wait-seconds:
     description: >-

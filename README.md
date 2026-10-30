@@ -372,7 +372,8 @@ consumer to audit it.
     completed; set `step-name` on every caller, because the jobs API has
     listed a running job's steps as `[]` for minutes. A writer gate job that
     completed with `success` and lists no steps reads as a succeeded writer
-    step; any other conclusion with no steps fails closed.
+    step, since that step cannot fail once its `success` write lands; any
+    other conclusion with no steps fails closed.
     Both are looked up once per run, before any run listing:
     a read that does not resolve, or a jobs read that fails other than with
     HTTP 403 or 429, is read again, up to 9 reads over 120 seconds in all; a
