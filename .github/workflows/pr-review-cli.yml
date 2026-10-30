@@ -77,9 +77,12 @@ name: pr-review-cli
 #     rule allows, reads outside the checkout included. A step checks the
 #     leg's init message reports that mode. Script steps with no model write
 #     what it reads into the checkout: the whole diff from the merge base,
-#     the incremental diff, and the pull request's description and closing
+#     the incremental diff, the pull request's description and closing
 #     issues (closing-issue text only from authors check-author-trust
-#     trusts).
+#     trusts), and its settled review threads (text only from comments
+#     claude-code-plugins' select-trusted-text keeps under the base commit's
+#     trusted-actor list, with a job-computed verdict on whether the lines
+#     under each changed since it was settled).
 #   - The review plugin comes from the claude-code-plugins default branch's
 #     tip, never the head, staged read-only in .lane/ (a head that holds
 #     .lane fails the job).
@@ -356,7 +359,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
     needs: check-key-credit
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 48 || 46 }}
     if: >-
       needs.check-key-credit.outputs.skip-key != 'true'
       && !cancelled()
@@ -967,13 +970,29 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
           chmod -R a-w .lane/plugins
           mkdir -p .git/info
           echo /.lane/ >>.git/info/exclude
+
+      # Review threads a listed account resolved or a listed person
+      # answered, with only the text
+      # claude-code-plugins' select-trusted-text keeps (run from the clone
+      # above against the base commit's trusted-actor list), and whether the
+      # lines under each changed since it was settled. Any failure writes no
+      # file and the review runs as before.
+      - name: Write the settled review threads
+        id: settled
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/collect-settled-threads
+        with:
+          source: ${{ runner.temp }}/claude-code-plugins
+          output-file: .claude-lane/settled-threads.md
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
@@ -997,6 +1016,7 @@ jobs:
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
+          SETTLED_NOTE: ${{ steps.settled.outputs.note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
         with:
           script: |
@@ -1087,6 +1107,7 @@ jobs:
               env.SCOPE_NOTE,
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
+              env.SETTLED_NOTE,
               ...(trusted.length > 0
                 ? [
                     "TRUSTED PATHS: give every changed file matching one of these globs extra security scrutiny (read its whole change and what it gates):",
@@ -1452,7 +1473,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
     needs: [check-key-credit, review-key]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 48 || 46 }}
     if: >-
       ((needs.review-key.result == 'success'
         && (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false'))
@@ -2065,13 +2086,29 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
           chmod -R a-w .lane/plugins
           mkdir -p .git/info
           echo /.lane/ >>.git/info/exclude
+
+      # Review threads a listed account resolved or a listed person
+      # answered, with only the text
+      # claude-code-plugins' select-trusted-text keeps (run from the clone
+      # above against the base commit's trusted-actor list), and whether the
+      # lines under each changed since it was settled. Any failure writes no
+      # file and the review runs as before.
+      - name: Write the settled review threads
+        id: settled
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/collect-settled-threads
+        with:
+          source: ${{ runner.temp }}/claude-code-plugins
+          output-file: .claude-lane/settled-threads.md
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
@@ -2095,6 +2132,7 @@ jobs:
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
+          SETTLED_NOTE: ${{ steps.settled.outputs.note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
         with:
           script: |
@@ -2185,6 +2223,7 @@ jobs:
               env.SCOPE_NOTE,
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
+              env.SETTLED_NOTE,
               ...(trusted.length > 0
                 ? [
                     "TRUSTED PATHS: give every changed file matching one of these globs extra security scrutiny (read its whole change and what it gates):",
@@ -2556,7 +2595,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}
     needs: [check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 46 || 44 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 48 || 46 }}
     if: >-
       needs.review-subscription.result == 'success'
       && needs.review-subscription.outputs.handoff == 'true'
@@ -3168,13 +3207,29 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
           chmod -R a-w .lane/plugins
           mkdir -p .git/info
           echo /.lane/ >>.git/info/exclude
+
+      # Review threads a listed account resolved or a listed person
+      # answered, with only the text
+      # claude-code-plugins' select-trusted-text keeps (run from the clone
+      # above against the base commit's trusted-actor list), and whether the
+      # lines under each changed since it was settled. Any failure writes no
+      # file and the review runs as before.
+      - name: Write the settled review threads
+        id: settled
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/collect-settled-threads
+        with:
+          source: ${{ runner.temp }}/claude-code-plugins
+          output-file: .claude-lane/settled-threads.md
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
@@ -3198,6 +3253,7 @@ jobs:
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
+          SETTLED_NOTE: ${{ steps.settled.outputs.note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
         with:
           script: |
@@ -3288,6 +3344,7 @@ jobs:
               env.SCOPE_NOTE,
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
+              env.SETTLED_NOTE,
               ...(trusted.length > 0
                 ? [
                     "TRUSTED PATHS: give every changed file matching one of these globs extra security scrutiny (read its whole change and what it gates):",
