@@ -2670,7 +2670,7 @@ status_list "[$(full_run_success 100)]"
 run_case 1 'skipped skipped' pass true true 'RUNNER_NAME=other runner'
 expect_log "${own_cause_prefix}no in-progress job matched runner 'other runner' after 9 reads."
 expect_total_sleep_at_most 120
-# The lookup waits about 120 s for a lagging jobs API (issue 9113), not 15.
+# The lookup waits about 120 s for a lagging jobs API, not 15.
 if [[ "$(awk '{ t += $1 } END { print t + 0 }' "$sleep_log")" != 120 ]]; then
   echo "FAIL: expected the own-job lookup to sleep 120s in all, got: $(tr '\n' ' ' <"$sleep_log")"
   failures=$((failures + 1))

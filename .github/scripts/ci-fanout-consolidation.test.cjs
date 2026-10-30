@@ -354,8 +354,9 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   );
 
   // A contract-only run yields to an in-flight full run instead of waiting,
-  // and the full run re-runs its red contract-only siblings on success.
-  assert.equal(timeoutMinutes, 5);
+  // and the full run re-runs its red contract-only siblings on success. Seven
+  // minutes holds the 120 s own-job lookup inside the worst case.
+  assert.equal(timeoutMinutes, 7);
   assert.equal(waitSeconds, 0);
   assert.match(ciStatusJob, /^ {10}yield-to-full-run: 'true'$/mu);
   assert.match(ciStatusJob, /^ {10}rerun-contract-only-siblings: 'true'$/mu);
