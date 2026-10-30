@@ -502,23 +502,32 @@ own_gate_lookup_failed=""
 
 # The identity key: the one place that says which job is this run's own.
 # `job.check_run_id` (passed in as JOB_CHECK_RUN_ID) is this job's REST id, so
-# the job is read directly and must belong to this run and be in progress.
-# GHES and runners before v2.324.0 leave it empty; then the job is the one
-# in-progress job of this run on this runner. GitHub documents that a runner
-# name may not be unique in a run (repository and organization runners can
-# share one), so a second match fails closed rather than picking. Sets the
-# endpoint to read and its query, the jq predicate one job must pass (`$key` and `$run` are
-# bound by `--arg`), the phrase a warning names the key by, and, when there is
-# no usable key, the cause.
+# the job is read directly and must belong to this run. Its status is not
+# checked: the runner hands this job its own id, so the id and the run already
+# prove which job it is, and the jobs API has served a running re-run attempt's
+# job as not yet in progress for longer than the lookup retries. The step
+# named by `step-name` is trusted on the same grounds (see `lookup_own_gate`).
+# GHES and runners before v2.324.0 leave the id empty; then the job is the one
+# in-progress job of this run on this runner, where the status is what tells
+# this job from an earlier one on the same runner. GitHub documents that a
+# runner name may not be unique in a run (repository and organization runners
+# can share one), so a second match fails closed rather than picking. Sets the
+# endpoint to read and its query, the jq predicate one job must pass (`$key`
+# and `$run` are bound by `--arg`), the phrase a warning names the key by,
+# whether a named step is trusted while unlisted, and, when there is no usable
+# key, the cause.
 own_job_identity() {
   own_job_key_cause=""
+  own_job_trusts_step_name=false
   if [[ -n "${JOB_CHECK_RUN_ID:-}" ]]; then
     own_job_key="$JOB_CHECK_RUN_ID"
     own_job_endpoint="repos/${REPOSITORY}/actions/jobs/${own_job_key}"
     own_job_query=""
     # shellcheck disable=SC2016 # `$key` and `$run` are jq variables.
-    own_job_predicate='(.id | tostring) == $key and (.run_id | tostring) == $run and .status == "in_progress"'
+    own_job_predicate='(.id | tostring) == $key and (.run_id | tostring) == $run'
     own_job_label="job.check_run_id ${own_job_key} in run ${GITHUB_RUN_ID}"
+    own_job_noun=job
+    own_job_trusts_step_name=true
     if [[ ! "$own_job_key" =~ ^[0-9]+$ ]]; then
       own_job_endpoint="repos/${REPOSITORY}/actions/jobs"
       own_job_key_cause="job.check_run_id is not a job id: $(escape_annotation "$own_job_key")."
@@ -530,6 +539,7 @@ own_job_identity() {
     # shellcheck disable=SC2016 # `$key` is a jq variable.
     own_job_predicate='.status == "in_progress" and (.runner_name // "") == $key'
     own_job_label="runner '$(escape_annotation "$own_job_key")'"
+    own_job_noun='in-progress job'
     if [[ -z "$own_job_key" ]]; then
       own_job_key_cause="job.check_run_id and RUNNER_NAME are both empty, so this run's own job has no key."
     fi
@@ -608,14 +618,21 @@ lookup_own_gate() {
     # other than one job, `steps` when the job's step did not resolve, else
     # `ok`), job name, job id, step name, and the match count behind the
     # verdict. Control characters in a name become `?`, so a name cannot add a
-    # field or a line.
+    # field or a line. Keyed by `job.check_run_id`, a `step-name` the listing
+    # does not show in progress yet is taken as given, since the jobs API has
+    # listed a running job's steps as `[]` for minutes; a step of that name
+    # listed only as completed is not the one running this action, and still
+    # fails.
     IFS=$'\x1f' read -r verdict job_name job_id step_name count < <(jq -r --arg key "$own_job_key" --arg run "$GITHUB_RUN_ID" --arg step "${STEP_NAME:-}" \
+      --arg trust "$own_job_trusts_step_name" \
       "[ (if has(\"jobs\") then .jobs[]? else . end) | select(${own_job_predicate}) ]"' as $own
       | if ($own | length) != 1 then ["jobs", "", "", "", ($own | length)]
         else $own[0] as $job
         | [ $job.steps[]? | if $step == "" then select(.status == "in_progress") else select(.name == $step and .status == "in_progress") end ] as $steps
-        | [ (if ($steps | length) == 1 then "ok" else "steps" end), ($job.name // "" | gsub("[\u0000-\u001f]"; "?")), ($job.id // ""),
-            (if ($steps | length) == 1 then $steps[0].name // "" | gsub("[\u0000-\u001f]"; "?") else "" end), ($steps | length) ]
+        | (($steps | length) == 1) as $listed
+        | ($trust == "true" and $step != "" and ($steps | length) == 0 and all($job.steps[]?; .name != $step or .status != "completed")) as $given
+        | [ (if $listed or $given then "ok" else "steps" end), ($job.name // "" | gsub("[\u0000-\u001f]"; "?")), ($job.id // ""),
+            (if $listed then $steps[0].name // "" elif $given then $step else "" end | gsub("[\u0000-\u001f]"; "?")), ($steps | length) ]
         end
       | map(tostring) | join("\u001f")' <"$gh_stdout") || verdict=unreadable
     # The count reaches bash arithmetic, so nothing but digits may.
@@ -635,9 +652,9 @@ lookup_own_gate() {
     case "$verdict" in
       jobs)
         if [[ "$count" -eq 0 ]]; then
-          cause="no in-progress job matched ${own_job_label}"
+          cause="no ${own_job_noun} matched ${own_job_label}"
         else
-          cause="${count} in-progress jobs matched ${own_job_label}"
+          cause="${count} ${own_job_noun}s matched ${own_job_label}"
         fi
         ;;
       steps)
@@ -727,10 +744,23 @@ verify_writer_step() {
 # jobs listing: its conclusion once completed, `running` before that, `absent`
 # when no such step is listed, `ambiguous` when more than one is. Returns jq's
 # status, so an unparseable body is a failed read.
+#
+# The jobs API has listed a completed job's `steps` as `[]` for minutes after
+# it finished. The one such case read as `success` is the one gate job of that
+# name, completed with `success`: the gate step that wrote a `success` cannot
+# fail after the write lands (the sibling re-run after it cannot fail it), and
+# a job that concluded `success` was not cancelled or timed out. A gate job
+# that concluded otherwise with no steps listed stays `absent`, because its
+# contract step can fail it over a true lanes `success`, and only the step
+# tells the two apart.
 gate_step_outcome() {
   jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" \
-    '[ .jobs[]? | select(.name == $job) | .steps[]? | select(.name == $step) ]
-     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end) elif length == 0 then "absent" else "ambiguous" end' \
+    '[ .jobs[]? | select(.name == $job) ] as $gates
+     | [ $gates[] | .steps[]? | select(.name == $step) ]
+     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end)
+       elif length > 1 then "ambiguous"
+       elif ($gates | length) == 1 and $gates[0].status == "completed" and $gates[0].conclusion == "success" and ($gates[0].steps // [] | length) == 0 then "success"
+       else "absent" end' \
     <"$1"
 }
 
