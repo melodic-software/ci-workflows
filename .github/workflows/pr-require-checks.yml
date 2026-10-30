@@ -665,11 +665,13 @@ jobs:
     # every gated lane fails open and runs.
     needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, check-workflow-naming, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
     runs-on: ubuntu-24.04
-    # Worst case: two rate-limit waits of 60s (`rate-limit-wait-seconds` on
-    # each step), 15s of own-gate retries, 7s of status-write retries and the
-    # 90s `rerun-wait-seconds` wait, about four minutes. Without a rate limit
-    # either kind of run finishes in seconds.
-    timeout-minutes: 5
+    # Worst case, both kinds paying two rate-limit waits of 60s
+    # (`rate-limit-wait-seconds` on each step): a contract-only run adds the
+    # 120s own-gate lookup and the 30s wait for a writer step, about 4.5
+    # minutes; a full run adds 7s of status-write retries and the 90s
+    # `rerun-wait-seconds` wait, under four. Without a rate limit either kind
+    # of run finishes in seconds.
+    timeout-minutes: 7
     permissions:
       contents: read
       # pr-contract upserts the linkage comment and label; ci-status records

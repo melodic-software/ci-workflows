@@ -282,8 +282,8 @@ consumer to audit it.
   - **The wait never turns a verdict green.** Reaching the ceiling prints
     `::error::no successful <context> status on <sha>; <remedy>`, extended
     with how long it waited and on which run ids, and exits 1. There is no
-    pass-on-timeout path. The ceiling counts elapsed wall-clock time from the
-    start of the wait, API calls included, so it overruns by at most the few
+    pass-on-timeout path. The ceiling counts elapsed wall-clock time from
+    before the own-job lookup, API calls included, so it overruns by at most the few
     seconds one poll's calls take.
 
   Every carry-forward red names the remedy for the state it read. `pending`
@@ -329,7 +329,7 @@ consumer to audit it.
   `rerun-wait-seconds`, and only while a contract-only sibling is in flight
   (see `rerun-contract-only-siblings` below):
 
-  - `yield-to-full-run: 'true'` and `timeout-minutes: 5` on the `ci-status`
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 7` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
     SHA, then reads the status, and finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
@@ -366,15 +366,17 @@ consumer to audit it.
     of this run still queued, or an extra job that ran, does not hide it. `step-name` (default `''`) names the
     step that runs the action, which must be in progress and which a job
     running steps in parallel needs; left empty, it is the one step of that
-    job in progress. A read that does not resolve, or a jobs read that fails
-    other than with HTTP 403, is retried after 1, 2, 4 and 8 seconds; a 403
-    fails at once with no retry. Then the run fails
+    job in progress. Both are looked up once per run, before any run listing:
+    a read that does not resolve, or a jobs read that fails other than with
+    HTTP 403 or 429, is read again, up to 9 reads over 120 seconds in all; a
+    403 or 429 fails at once with no retry. Then the run fails
     closed with a warning naming the cause (no key, a job id not in progress
     in this run, no job or more than one job in progress on the runner, or no
     single matching step).
-    (`carry-forward-wait-seconds: '0'` alone reads the status once with no
-    listing, so it can carry an older `success` across a full run that is
-    queued or has not yet written its `pending` marker.)
+    (`carry-forward-wait-seconds: '0'` alone never waits: it lists the runs
+    only to verify a `success` and reads the status again after that listing,
+    so it can still carry an older `success` across a full run that is queued
+    or has not yet written its `pending` marker.)
   - `record-pending: 'true'`, called as the first step of the full run's first
     job (for example `changes`). It marks `status-context` `pending` on the
     head SHA, so a contract-only run on that SHA while the lanes run reads
@@ -453,7 +455,7 @@ consumer to audit it.
         # ... change detection
     ci-status:
       if: always()
-      timeout-minutes: 5
+      timeout-minutes: 7
       permissions:
         contents: read
         statuses: write
