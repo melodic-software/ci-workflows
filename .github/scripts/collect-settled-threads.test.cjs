@@ -506,7 +506,11 @@ test("pr-review-cli.yml: every model leg writes the settled threads after the pl
     );
     const ids = job.steps.map((s) => s.id);
     const settled = job.steps.find((s) => s.id === "settled");
-    assert.equal(settled.uses, "$/.github/actions/collect-settled-threads", name);
+    assert.equal(
+      settled.uses,
+      "$/.github/actions/collect-settled-threads",
+      name,
+    );
     assert.equal(settled["continue-on-error"], true, name);
     assert.equal(
       settled.with["output-file"],
