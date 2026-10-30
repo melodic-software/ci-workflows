@@ -1,0 +1,44 @@
+name: write-settled-threads
+description: >-
+  pr-review-cli's settled-threads step, with no model: writes the pull
+  request's resolved or owner-answered review threads to a file the model
+  reads, keeping only text claude-code-plugins' select-trusted-text keeps,
+  and records for each thread whether the lines under it changed since the
+  head it was settled at. Writes nothing when the base commit has no
+  trusted-actor list or any read fails. settled-threads.cjs documents the env
+  it reads.
+
+inputs:
+  source:
+    description: The claude-code-plugins clone holding .github/actions/select-trusted-text.
+    required: true
+  output-file:
+    description: Where the threads file is written, inside the checkout.
+    required: true
+
+outputs:
+  note:
+    description: The prompt line naming the file, or empty when none was written.
+    value: ${{ steps.threads.outputs.note }}
+
+runs:
+  using: composite
+  steps:
+    - name: Write the settled review threads
+      id: threads
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        SOURCE: ${{ inputs.source }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        GIT_TOKEN: ${{ github.token }}
+      with:
+        script: |
+          const path = require("node:path");
+          require(path.join(process.env.ACTION_PATH, "..", "report-api-budget", "api-budget.cjs")).watch(github, "github-token");
+          const { run } = require(path.join(process.env.ACTION_PATH, "settled-threads.cjs"));
+          await run({ github, context, core });

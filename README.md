@@ -726,6 +726,12 @@ consumer to audit it.
 - `.github/actions/apply-review-hold` — `pr-review-cli.yml`'s add-only hold
   step, with no model; internal to that workflow, which passes it
   everything through env (its `action.yml` describes what it does).
+- `.github/actions/write-settled-threads` — `pr-review-cli.yml`'s
+  settled-threads step, with no model: the pull request's resolved or
+  owner-answered review threads, text kept only through claude-code-plugins'
+  `select-trusted-text`, each with whether its lines changed since it was
+  settled, so the review does not re-raise a settled point (its
+  `action.yml` describes what it does).
 - `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
   step: the `api-budget` notice (`token=github-token ... cost=N`) the hub
   collector reads, built from the `x-ratelimit-*` headers of the job's own
