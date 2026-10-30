@@ -19,7 +19,7 @@ const {
   run,
   settledThreads,
   touches,
-} = require("../actions/write-settled-threads/settled-threads.cjs");
+} = require("../actions/collect-settled-threads/settled-threads.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -506,7 +506,7 @@ test("pr-review-cli.yml: every model leg writes the settled threads after the pl
     );
     const ids = job.steps.map((s) => s.id);
     const settled = job.steps.find((s) => s.id === "settled");
-    assert.equal(settled.uses, "$/.github/actions/write-settled-threads", name);
+    assert.equal(settled.uses, "$/.github/actions/collect-settled-threads", name);
     assert.equal(settled["continue-on-error"], true, name);
     assert.equal(
       settled.with["output-file"],

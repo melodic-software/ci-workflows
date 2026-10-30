@@ -989,7 +989,7 @@ jobs:
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
-        uses: $/.github/actions/write-settled-threads
+        uses: $/.github/actions/collect-settled-threads
         with:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
@@ -2105,7 +2105,7 @@ jobs:
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
-        uses: $/.github/actions/write-settled-threads
+        uses: $/.github/actions/collect-settled-threads
         with:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
@@ -3226,7 +3226,7 @@ jobs:
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
-        uses: $/.github/actions/write-settled-threads
+        uses: $/.github/actions/collect-settled-threads
         with:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
