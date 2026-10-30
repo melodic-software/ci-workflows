@@ -14,9 +14,10 @@ business days.
 ## Supported versions
 
 Repo publishes composite actions and reusable workflows, consumed by
-reference. melodic-software consumers reference `@main`, so a fix on `main`
-reaches them on their next run. Other consumers pin a full commit SHA and
-move it by reviewed pull request.
+reference. melodic-software consumers reference reusable workflows at
+`@main`, so a fix on `main` reaches them on their next run. They pin actions to
+a full commit SHA, which the org Actions policy requires, and move that pin by
+reviewed pull request, as other consumers do for every reference.
 
 ## How to consume securely
 
