@@ -978,7 +978,8 @@ rm -f -- "$fixtures/${graphql_key}.err"
 
 # Without the GraphQL read this run's workflow costs a REST call. The same
 # case made 6 REST calls and no GraphQL call at 8b41a59
-# (origin/main before this read moved to GraphQL).
+# (origin/main before this read moved to GraphQL); the status re-read after
+# the run listing adds one back.
 echo 'case: a contract-only run carrying a success makes one REST call fewer than before'
 status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' pass true
@@ -986,8 +987,8 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_calls "$graphql_key" 1
 expect_calls "$current_run_key" 0
 rest_calls="$(grep -cv '^api -X POST graphql ' "$gh_log" || true)"
-if [[ "$rest_calls" -ne 5 ]]; then
-  echo "FAIL: expected 5 REST calls (6 at 8b41a59, less 1), got ${rest_calls}"
+if [[ "$rest_calls" -ne 6 ]]; then
+  echo "FAIL: expected 6 REST calls (6 at 8b41a59, less 1, plus the status re-read), got ${rest_calls}"
   cat "$gh_log"
   failures=$((failures + 1))
 fi
@@ -1181,6 +1182,7 @@ clear_run_fixtures
 current_run
 status_list_on_call 1 '[]'
 status_list_on_call 2 "[$(full_run_success 100)]"
+status_list_on_call 3 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 2 >"$fixtures/${workflow_runs_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
@@ -1213,12 +1215,19 @@ expect_no_gh_call 'actions/'
 expect_status_reads 1
 expect_no_sleep
 
-echo 'case: carry-forward-wait-seconds 0 carries a recorded success after one read'
+# The success is read once, then again after the run listing that verifies its
+# writer, so a verdict written while the lookup ran is not missed.
+echo 'case: carry-forward-wait-seconds 0 carries a recorded success read again after the run listing'
 clear_status_fixtures
 status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=0
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_status_reads 1
+expect_status_reads 2
+if [[ "$(grep -nF "commits/${sha}/statuses" "$gh_log" | tail -n1 | cut -d: -f1)" -le "$(grep -nF 'actions/workflows/777/runs' "$gh_log" | head -n1 | cut -d: -f1)" ]]; then
+  echo 'FAIL: expected the last status read after the run listing, got:'
+  cat "$gh_log"
+  failures=$((failures + 1))
+fi
 expect_no_sleep
 
 # Without the runner-side default, an action.yml regression that stopped passing
@@ -1461,6 +1470,7 @@ clear_run_fixtures
 current_run
 status_list_on_call 1 '[]'
 status_list_on_call 3 "[$(full_run_success 100)]"
+status_list_on_call 4 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
@@ -2395,17 +2405,18 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_calls "$workflow_runs_key" 1
 expect_calls "${runs_key_prefix}_4100_jobs" 1
 
-# At most one call more than before the shape and newer-run checks: the run
-# listing. Before them a plain carry made five (this run, the status list, the
-# writer run, this run's jobs, the writer's jobs).
-echo 'case: carrying one success makes at most one extra API call'
+# At most two calls more than before the shape and newer-run checks: the run
+# listing and the status re-read after it. Before them a plain carry made five
+# (this run, the status list, the writer run, this run's jobs, the writer's
+# jobs).
+echo 'case: carrying one success makes at most two extra API calls'
 reset_writer_fixtures
 workflow_runs '[]'
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_calls "${runs_key_prefix}_4100_jobs" 1
-if [[ "$(wc -l <"$gh_log")" -gt 6 ]]; then
-  echo "FAIL: expected at most 6 API calls, got $(wc -l <"$gh_log")"
+if [[ "$(wc -l <"$gh_log")" -gt 7 ]]; then
+  echo "FAIL: expected at most 7 API calls, got $(wc -l <"$gh_log")"
   cat "$gh_log"
   failures=$((failures + 1))
 fi
@@ -2715,6 +2726,19 @@ run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_gh_call_before "actions/runs/4242/jobs" "actions/workflows/777/runs"
 
+# Without reading the status again after the listing, a newer full run that
+# writes `failure` during the lookup and is still in flight at the listing is
+# missed by the newer-verdict check, and the old `success` is carried.
+echo 'case: a single status read whose newest entry changes by the re-read does not carry forward'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list_on_call 2 "[$(full_run_success 100),$(writer_status 101 failure 2026-09-05T12:00:40Z 4300)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
+run_case 1 'skipped skipped' pass true
+expect_no_log 'Carried forward'
+expect_log "::warning::the newest ci-lanes status on ${sha} changed while its writer was verified"
+expect_status_reads 2
+
 echo 'case: a waiting run looks its own gate up before it lists the runs'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
@@ -2763,6 +2787,14 @@ jobs_raw 4300 "$contract_only_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true 'RUNNER_NAME=other runner'
 expect_total_sleep 120
 expect_calls "$own_jobs_key" 9
+expect_log "::error::the own-job lookup failed"
+expect_no_log 'no successful ci-lanes status'
+# Without warning once per run, the yield listing and the writer check repeat it.
+if [[ "$(grep -cF -- '::warning::could not identify this run' "$log_file")" -ne 1 ]]; then
+  echo 'FAIL: expected exactly one own-gate warning, got:'
+  cat "$log_file"
+  failures=$((failures + 1))
+fi
 
 # Without recording a failed read as the cause, the red names no cause at all.
 echo 'case: a jobs API that answers 5xx on every read names the HTTP status and read count'

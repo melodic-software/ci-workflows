@@ -90,7 +90,9 @@ inputs:
       wall-clock time from before the own-job lookup, API calls included, so it
       overruns by at most one poll's calls. Every red names the remedy that
       fits the status it read (see `rerun-contract-only-siblings`).
-      `0` reads the status once and never waits.
+      `0` never waits: it reads the status, and a `success` is read again
+      after the run listing that verifies its writer, and carried only if the
+      newest entry is unchanged.
       `yield-to-full-run` replaces the wait instead and is the recommended
       setting, with `record-pending`, `rerun-contract-only-siblings` and a
       calling-job `timeout-minutes` of 7: no contract-only run then waits for

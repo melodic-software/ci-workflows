@@ -373,9 +373,10 @@ consumer to audit it.
     closed with a warning naming the cause (no key, a job id not in progress
     in this run, no job or more than one job in progress on the runner, or no
     single matching step).
-    (`carry-forward-wait-seconds: '0'` alone reads the status once with no
-    listing, so it can carry an older `success` across a full run that is
-    queued or has not yet written its `pending` marker.)
+    (`carry-forward-wait-seconds: '0'` alone never waits: it lists the runs
+    only to verify a `success` and reads the status again after that listing,
+    so it can still carry an older `success` across a full run that is queued
+    or has not yet written its `pending` marker.)
   - `record-pending: 'true'`, called as the first step of the full run's first
     job (for example `changes`). It marks `status-context` `pending` on the
     head SHA, so a contract-only run on that SHA while the lanes run reads

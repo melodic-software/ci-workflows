@@ -330,14 +330,40 @@ carried_state_read=false
 # making its own. Set per read, so a listing from an earlier poll is never
 # taken for a fresh one.
 carried_runs_listed=""
+# The newest entry as `read_newest_entry` set it. A read that lists runs after
+# its status read compares this with a second status read.
+carried_entry=""
 read_carried_state() {
-  local entry
   carried_runs_listed="${1:-}"
   carried_state=""
   carried_created_at=""
   carried_writer_run_id=""
   carried_writer_running=false
   carried_state_read=false
+  # Set by this read alone, so the red describes the read it ends.
+  own_gate_lookup_failed=""
+  # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+  if ! read_newest_entry; then
+    return 1
+  fi
+  carried_entry="$newest_entry"
+  IFS='|' read -r carried_state carried_created_at carried_writer_run_id _ <<<"$carried_entry"
+  if [[ "$carried_state" == success ]]; then
+    # shellcheck disable=SC2310 # verify_carried_writer reports a failed lookup through its status.
+    if ! verify_carried_writer; then
+      return 1
+    fi
+  fi
+  carried_state_read=true
+}
+
+# Sets `newest_entry` to the newest status this context's bot wrote on the SHA,
+# as `state|created_at|writer-run-id|id`, every field empty when there is none.
+# Returns 1 on a failed or unparseable read. Not a command substitution, so the
+# caller still sees what `gh_api` sets.
+newest_entry=""
+read_newest_entry() {
+  newest_entry=""
   # The LIST endpoint, not the combined one: `commits/<sha>/status` collapses to
   # one entry per context and exposes no author, so any collaborator with write
   # could POST a forged `ci-lanes=success` and then flip a label to turn the
@@ -365,19 +391,11 @@ read_carried_state() {
   # empty middle field and shift the ones after it. The writer run id comes only
   # from a `target_url` of the exact shape `write_status` records, on this
   # server and repository; any other URL yields no writer.
-  entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
+  newest_entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
     --arg runs_prefix "${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/" \
     '[ .[][] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id) // {})
-     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("\\A[0-9]+\\z")) then ltrimstr($runs_prefix) else "" end)] | join("|")' \
+     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("\\A[0-9]+\\z")) then ltrimstr($runs_prefix) else "" end), (.id // "" | tostring)] | join("|")' \
     <"$gh_stdout")" || return 1
-  IFS='|' read -r carried_state carried_created_at carried_writer_run_id <<<"$entry"
-  if [[ "$carried_state" == success ]]; then
-    # shellcheck disable=SC2310 # verify_carried_writer reports a failed lookup through its status.
-    if ! verify_carried_writer; then
-      return 1
-    fi
-  fi
-  carried_state_read=true
 }
 
 # Every workflow in the repository posts as the Actions bot, so the creator
@@ -421,6 +439,17 @@ verify_carried_writer() {
     fi
     cp -- "$gh_stdout" "$scratch/runs.json"
     carried_runs_listed=listed
+    # The status read came before the lookup and this listing, so a newer full
+    # run could have written its verdict and still be in flight here, where the
+    # newer-verdict check does not look. Read the status again, after the
+    # listing as the wait and the yield read it, and go on only if the newest
+    # entry is the one being verified.
+    # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+    if ! read_newest_entry || [[ "$newest_entry" != "$carried_entry" ]]; then
+      echo "::warning::the newest ${STATUS_CONTEXT} status on ${SHA} changed while its writer was verified, or could not be read again; this run fails closed."
+      carried_state=""
+      return 1
+    fi
   fi
   # The writer's row in that listing carries every field read below, so the run
   # itself is read only when its row is absent or lacks the workflow or the
@@ -465,6 +494,7 @@ own_gate_job_id=""
 own_gate_step=""
 own_gate_endpoint=""
 own_gate_looked_up=""
+own_gate_warned=""
 # Why the own-gate lookup failed, for the writer check's final error.
 own_gate_cause=""
 # Set when the writer check failed on that lookup, not on the carried status.
@@ -536,6 +566,11 @@ resolve_own_gate() {
   if [[ -n "$own_gate_step" || ("$need" == job && -n "$own_gate_job") ]]; then
     return 0
   fi
+  # Once per run: every later caller fails on the same cause.
+  if [[ -n "$own_gate_warned" ]]; then
+    return 1
+  fi
+  own_gate_warned=true
   echo "::warning::could not identify this run's gate job and running step in ${own_gate_endpoint}: ${own_gate_cause} ${consequence}"
   return 1
 }
@@ -1166,8 +1201,9 @@ writer_attempt_wrote() {
 # stale, and a full run that started meanwhile would go unseen by the
 # newer-verdict check. A failure only records its cause here; the yield listing
 # and the writer check each fail closed on it. A single read with no wait lists
-# only to verify a `success`, and looks the gate up just before that listing
-# (see `verify_carried_writer`), so a run that finds none makes no Actions call.
+# only to verify a `success`, and looks the gate up just before that listing,
+# then reads the status again after it (see `verify_carried_writer`), so a run
+# that finds none makes no Actions call.
 if [[ "$contract_only" == true && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -gt 0) ]]; then
   contract_started="$(date +%s)"
   # shellcheck disable=SC2310 # resolve_own_gate warns itself; its callers below fail closed.
