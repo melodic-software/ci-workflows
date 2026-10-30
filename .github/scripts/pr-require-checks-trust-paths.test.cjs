@@ -1,6 +1,6 @@
 "use strict";
 
-// check-trust-paths posts `ci-status` on the head SHA: `failure` when a
+// check-trust-paths posts `trust-path-hold` on the head SHA: `failure` when a
 // listed agent App touched a pull request that changes a privileged path, or
 // when the data that decides it is incomplete; `success` otherwise. Its
 // config is read at the default branch's last commit, not the pull
@@ -368,7 +368,7 @@ const env = {
   GITHUB_WORKFLOW_REF: "o/r/.github/workflows/pr-hold.yml@refs/heads/main",
 };
 
-test("run reads the config at the default branch's last commit and posts a hold as failure alone, on the head", async () => {
+test("run reads the config at the default branch's last commit and posts pending, then the verdict, on the head", async () => {
   const github = fakeGithub({
     files: [file(".github/workflows/ci.yml")],
     commits: [commit(HEAD, "octocat", "web-flow")],
@@ -383,11 +383,14 @@ test("run reads the config at the default branch's last commit and posts a hold 
   ]);
   assert.deepEqual(
     github.statuses.map(({ sha, state, context: name }) => [sha, state, name]),
-    [[HEAD, "failure", "ci-status"]],
+    [
+      [HEAD, "pending", "trust-path-hold"],
+      [HEAD, "failure", "trust-path-hold"],
+    ],
   );
-  assert.equal(github.statuses[0].description, HOLD);
+  assert.equal(github.statuses[1].description, HOLD);
   assert.equal(
-    github.statuses[0].target_url,
+    github.statuses[1].target_url,
     "https://github.com/o/r/actions/runs/9",
   );
   assert.deepEqual(github.calls.find(([name]) => name === "activity")[1], {
@@ -499,7 +502,7 @@ test("only a short activity page ends the history; a full one needs a next curso
       /full but carries no next cursor/u,
       String(link),
     );
-    assert.deepEqual(github.statuses, []);
+    assert.ok(github.statuses.every(({ state }) => state === "pending"));
   }
   const { verdict } = await runWithPages([
     { data: Array.from({ length: ACTIVITY_PAGE - 1 }, () => push("octocat")) },
@@ -525,7 +528,7 @@ test("run throws on a non-list activity page or an HTTP error past the first pag
       Error,
       JSON.stringify(bad),
     );
-    assert.deepEqual(github.statuses, []);
+    assert.ok(github.statuses.every(({ state }) => state === "pending"));
   }
 });
 
@@ -541,9 +544,10 @@ test("run reads no commit or activity when no privileged path changed", async ()
     github.calls.map(([name]) => name),
     ["getContent", "listFiles"],
   );
-  // A success posts no status: it met the required ci-status before the
-  // pull request's own check run existed (claude-code-plugins#11341).
-  assert.deepEqual(github.statuses, []);
+  assert.deepEqual(
+    github.statuses.map(({ state }) => state),
+    ["pending", "success"],
+  );
 });
 
 test("run holds an App's edit to the caller workflow or the config itself", async () => {
@@ -617,11 +621,14 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
       Error,
       label,
     );
-    assert.deepEqual(github.statuses, [], label);
+    assert.ok(
+      github.statuses.every(({ state }) => state === "pending"),
+      `${label} posted ${JSON.stringify(github.statuses)}`,
+    );
   }
 });
 
-test("the reusable grants only the three permissions, checks out nothing and posts failure when the check fails", () => {
+test("the reusable grants only the three permissions and checks out nothing", () => {
   const workflowPath = path.join(
     __dirname,
     "..",
@@ -641,9 +648,6 @@ test("the reusable grants only the three permissions, checks out nothing and pos
     source,
     /uses: \$\/\.github\/actions\/pr-require-checks\/check-trust-paths\n/u,
   );
-  // A cancelled run is replaced by the newer run that cancelled it.
-  assert.match(source, /if: \$\{\{ failure\(\) \}\}/u);
-  assert.doesNotMatch(source, /if: [^\n]*cancelled\(\)/u);
   // No ${{ }} expansion inside a script body.
   const scripts = source
     .split(/script: \|\n/u)
@@ -651,4 +655,73 @@ test("the reusable grants only the three permissions, checks out nothing and pos
     .map((rest) => rest.split(/\n(?! {12})/u)[0]);
   assert.ok(scripts.length > 0);
   for (const body of scripts) assert.doesNotMatch(body, /\$\{\{/u);
+});
+
+// The fallback step, run as GitHub would: its `if:` evaluated for each job
+// outcome, and its script run with a recording client.
+function fallbackStep() {
+  const source = fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "workflows",
+      "pr-require-checks-trust-paths.yml",
+    ),
+    "utf8",
+  );
+  const steps = parseWorkflow(source).jobs["check-trust-paths"].steps;
+  const fallback = steps.filter((step) => step.if !== undefined);
+  assert.equal(fallback.length, 1);
+  return fallback[0];
+}
+function runsWhen(condition, outcome) {
+  const expression = String(condition).replace(/^\$\{\{\s*|\s*\}\}$/gu, "");
+  assert.match(expression, /^[a-z()|&!\s]+$/u, expression);
+  return new Function(
+    "failure",
+    "cancelled",
+    "success",
+    "always",
+    `return ${expression};`,
+  )(
+    () => outcome === "failure",
+    () => outcome === "cancelled",
+    () => outcome === "success",
+    () => true,
+  );
+}
+
+test("the fallback runs when the check throws, and not when the run is cancelled or passes", () => {
+  const step = fallbackStep();
+  assert.equal(runsWhen(step.if, "failure"), true);
+  assert.equal(runsWhen(step.if, "cancelled"), false);
+  assert.equal(runsWhen(step.if, "success"), false);
+});
+
+test("the fallback posts failure under trust-path-hold, never ci-status, on the event's head", async () => {
+  const step = fallbackStep();
+  const posted = [];
+  const github = {
+    rest: {
+      repos: { createCommitStatus: async (params) => posted.push(params) },
+    },
+  };
+  const ctx = {
+    repo: { owner: "o", repo: "r" },
+    serverUrl: "https://github.com",
+    runId: 9,
+  };
+  const saved = process.env.HEAD_SHA;
+  process.env.HEAD_SHA = HEAD;
+  try {
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+    await new AsyncFunction("github", "context", step.with.script)(github, ctx);
+  } finally {
+    if (saved === undefined) delete process.env.HEAD_SHA;
+    else process.env.HEAD_SHA = saved;
+  }
+  assert.deepEqual(
+    posted.map(({ sha, state, context: name }) => [sha, state, name]),
+    [[HEAD, "failure", "trust-path-hold"]],
+  );
 });

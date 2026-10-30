@@ -1,12 +1,13 @@
 // check-trust-paths: holds a pull request for a person when an agent App
 // named in the default branch's config touched it and it changes a privileged
-// path. It posts the commit status `ci-status` on the head SHA only as
-// `failure`, on a hold or on data it cannot trust, and posts nothing
-// otherwise. A `success` status met a ruleset's required `ci-status` before
-// the pull request's own ci-status check run existed, so the merge queue
-// took an unchecked head (claude-code-plugins#11341); a `pending` would need
-// that `success` to clear it. Whether a `failure` status blocks the merge
-// while the ci-status check run passes is UNVERIFIED.
+// path. It posts the commit status `trust-path-hold` on the head SHA:
+// `pending` first, then `failure` on a hold or on data it cannot trust, else
+// `success`. A repository that turns the hold on requires `trust-path-hold`
+// in its ruleset, so a run that never finishes leaves it pending and holds.
+// The context is its own, never `ci-status`: a `success` status named
+// `ci-status` met the required ci-status check before the pull request's own
+// check run existed, and the merge queue took an unchecked head
+// (claude-code-plugins#11341).
 //
 // It runs from a `pull_request_target` caller, so this file and the caller
 // come from the default branch. The config is read at the default branch's last
@@ -31,7 +32,7 @@
 // fallback step posts `failure`.
 "use strict";
 
-const CONTEXT = "ci-status";
+const CONTEXT = "trust-path-hold";
 const APP_LOGIN = /^[A-Za-z0-9]+(-[A-Za-z0-9]+)*\[bot\]$/u;
 const SHA = /^[0-9a-f]{40}$/u;
 const MAX_FILES = 3000;
@@ -285,6 +286,7 @@ async function run({ github, context, core, env = process.env }) {
   const post = (state, description) =>
     postStatus({ github, owner, repo, sha, state, description, targetUrl });
 
+  await post("pending", "Checking whether an agent App changed a privileged path.");
   const config = await readConfig({ github, owner, repo, path: configPath, ref: configSha });
   const files = await github.paginate(github.rest.pulls.listFiles, {
     owner,
@@ -321,7 +323,7 @@ async function run({ github, context, core, env = process.env }) {
   const verdict = decide({ config, pr, files, commits, activity, activityCapped, extraPaths });
   const log = verdict.state === "success" ? core.info : core.error;
   log(`${verdict.description} ${verdict.detail}`);
-  if (verdict.state === "failure") await post(verdict.state, verdict.description);
+  await post(verdict.state, verdict.description);
   core.setOutput("state", verdict.state);
   return verdict;
 }

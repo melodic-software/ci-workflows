@@ -2,11 +2,12 @@ name: pr-require-checks-trust-paths
 
 # Reusable workflow: holds a pull request for a person when an agent GitHub
 # App touched it and it changes a privileged path. It posts the commit status
-# `ci-status` on the head SHA only as `failure`, never `pending` or
-# `success`: a `success` status met a ruleset's required `ci-status` before
-# the pull request's own ci-status check run existed, so the merge queue took
-# an unchecked head (claude-code-plugins#11341). Whether a `failure` status
-# blocks the merge while that check run passes is UNVERIFIED.
+# `trust-path-hold` on the head SHA: `pending`, then `success` or `failure`.
+# A repository that turns the hold on requires `trust-path-hold` in its
+# ruleset (a github-iac edit). The context is its own, never `ci-status`: a
+# `success` status named `ci-status` met the required ci-status check before
+# the pull request's own check run existed, and the merge queue took an
+# unchecked head (claude-code-plugins#11341).
 #
 # Canonical caller, on the consumer's default branch:
 #
@@ -38,13 +39,10 @@ name: pr-require-checks-trust-paths
 # the API and treats file names, logins and emails as data. The composite is
 # referenced with `$/`, which resolves to this repository at the caller's
 # pinned commit. The token is GITHUB_TOKEN with the three permissions above;
-# no secret is used. The fallback posts `failure` when the check fails, not
-# when the run is cancelled: the concurrency group cancels a run only for a
-# newer one on the same pull request, which posts its own verdict, and a
-# cancelled run's `failure` could not be cleared with no `success` to post.
-# A run that hits timeout-minutes is cancelled too, so it fails open. To make
-# it fail closed again, add `|| cancelled()` back and give the check another
-# way to clear a stale `failure` that does not post `success` early.
+# no secret is used. The fallback posts `failure` when the check throws. A
+# cancelled run posts nothing: the concurrency group cancels a run only for a
+# newer one, which posts its own verdict, and a run that hits timeout-minutes
+# leaves its `pending`, which holds a repository that requires the context.
 on:
   workflow_call:
     inputs:
@@ -69,14 +67,14 @@ jobs:
     permissions:
       contents: read # Read the config at the default branch's last commit.
       pull-requests: read # List the pull request's files and commits.
-      statuses: write # Post `ci-status` on the head SHA.
+      statuses: write # Post `trust-path-hold` on the head SHA.
     steps:
-      - name: Check privileged paths and post ci-status
+      - name: Check privileged paths and post trust-path-hold
         uses: $/.github/actions/pr-require-checks/check-trust-paths
         with:
           config-path: ${{ inputs.config-path }}
 
-      - name: Post a failed ci-status when the check failed
+      - name: Post a failed trust-path-hold when the check throws
         if: ${{ failure() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -89,7 +87,7 @@ jobs:
               ...context.repo,
               sha,
               state: "failure",
-              context: "ci-status",
-              description: "The privileged-path check did not finish; re-run it, or a person merges.",
+              context: "trust-path-hold",
+              description: "The privileged-path check failed; re-run it, or a person merges.",
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
