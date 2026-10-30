@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@<sha>
-      - uses: melodic-software/ci-workflows/.github/actions/markdownlint@main
+      - uses: melodic-software/ci-workflows/.github/actions/markdownlint@<sha>
 ```
 
 This repo is public, so its actions and reusable workflows are consumable by any
@@ -38,9 +38,15 @@ checkout of this repo. (Public is required because a public consumer such as
   global-standard defaults. Consumers override repo-specific scope (globs,
   paths, tool versions, config location) through inputs — never by editing the
   action.
-- **First-party consumers reference `@main`.** A change merged here reaches
-  every melodic-software consumer on its next run, inside workflows that hold
-  the consumer's secrets. Third-party actions stay pinned by full commit SHA.
+- **First-party consumers reference reusable workflows at `@main` and actions
+  at a full commit SHA.** A reusable-workflow change merged here reaches every
+  melodic-software consumer on its next run, inside workflows that hold the
+  consumer's secrets. The org Actions policy requires every action, this
+  repository's included, to be pinned to a full-length commit SHA, while
+  "Reusable workflows can still be referenced by tag"
+  ([Disabling or limiting GitHub Actions for your organization][org-actions-policy]),
+  so an action change reaches a consumer when it moves its pin. Third-party
+  actions stay pinned by full commit SHA.
   For the third-party actions a consumer lets Dependabot track,
   Dependabot updates only `uses:` SHAs — the tool versions
   pinned in each action's `version:`/`analyzer-version:` input default (and the
@@ -64,7 +70,7 @@ checkout of this repo. (Public is required because a public consumer such as
 
 Every tag is full SemVer (`vX.Y.Z`), cut by `release-tag.yml`'s manual
 `workflow_dispatch` (patch/minor/major). First-party consumers reference
-`@main`, not a tag, so a release is a changelog marker, not a step a change
+reusable workflows at `@main` and actions at a full commit SHA, never a tag, so a release is a changelog marker, not a step a change
 needs before it reaches a consumer. A consumer outside melodic-software that
 wants a fixed version pins a full commit SHA, which GitHub calls "the safest
 option for stability and security" ([Reuse workflows][reuse-workflows]).
@@ -76,8 +82,9 @@ receiving non-breaking updates automatically
 ([Releasing and maintaining actions][releasing-actions]). That guidance is
 scoped to actions consumed by a floating tag resolved at Actions runtime, and
 its own reusable-workflow reference page makes no equivalent recommendation.
-First-party consumers already float on `@main`, so a moving major tag would be
-a second floating ref that no consumer reads. Declined, not deferred.
+First-party consumers already float reusable workflows on `@main` and pin
+actions to a full commit SHA, so a moving major tag would be a ref that no
+consumer reads. Declined, not deferred.
 
 **`v0.x` carries no stability guarantee.** Per SemVer's own terms, "Major
 version zero (0.y.z) is for initial development. Anything MAY change at any
@@ -90,8 +97,8 @@ this document defers rather than resolves; nothing here should be read as an
 implicit 1.0 commitment or a timeline toward one.
 
 **A caller's ref does not cascade.** melodic-software callers reference this
-repository at `@main` and run whatever main holds; outside callers pin a full
-commit SHA. A SHA pin proves only that the one referenced file's bytes are
+repository's reusable workflows at `@main` and run whatever main holds, and pin
+its actions to a full commit SHA; outside callers pin a full commit SHA. A SHA pin proves only that the one referenced file's bytes are
 fixed at that commit; GitHub resolves a reusable workflow's own nested calls
 to further reusable workflows or actions independently, at their own `{ref}`
 ([Reusing workflow configurations][reusing-workflow-configurations]). GitHub's
@@ -440,7 +447,7 @@ consumer to audit it.
         statuses: write
       steps:
         - name: Mark the lanes verdict pending
-          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@main
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
           with:
             record-pending: 'true'
         # ... change detection
@@ -453,7 +460,7 @@ consumer to audit it.
         actions: write
       steps:
         - name: Aggregate lane results
-          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@main
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
           with:
             yield-to-full-run: 'true'
             rerun-contract-only-siblings: 'true'
@@ -769,7 +776,7 @@ so there is no changed-file output to feed in; the list comes from git:
 
 - name: Lint shell scripts
   if: steps.changed_shell.outputs.files != ''
-  uses: melodic-software/ci-workflows/.github/actions/shellcheck@main
+  uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha>
   with:
     files: ${{ steps.changed_shell.outputs.files }}
 ```
@@ -1506,6 +1513,7 @@ mirrors of the standards catalog.
 
 [gh-actions-conventions]: https://github.com/melodic-software/standards/blob/main/components/github-actions-conventions/README.md
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
+[org-actions-policy]: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708
