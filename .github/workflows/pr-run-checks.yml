@@ -155,6 +155,13 @@ on:
           self-matching reason.
         type: string
         default: ''
+      lychee-offline-exclude:
+        description: >-
+          Space-separated path-exclude regexes for `lychee-offline`, for a
+          tree that holds markdown this repository does not author (captured
+          third-party text).
+        type: string
+        default: ''
     outputs:
       results:
         description: >-
@@ -291,6 +298,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         uses: $/.github/actions/lychee-offline
+        with:
+          exclude: ${{ inputs.lychee-offline-exclude }}
 
       - name: Validate against JSON Schema
         id: check_jsonschema

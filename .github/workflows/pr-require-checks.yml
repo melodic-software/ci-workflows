@@ -505,6 +505,8 @@ jobs:
         run: bash .github/actions/shellcheck/run.test.sh
       - name: Test exec-bit shebang mode scan
         run: bash .github/actions/check-exec-bit/check-exec-bit.test.sh
+      - name: Test lychee-offline config resolution
+        run: bash .github/actions/lychee-offline/run.test.sh
 
   shfmt:
     needs: detect-changes

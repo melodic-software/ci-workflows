@@ -7,7 +7,10 @@ inputs:
       File globs to scan, space-separated. Default scans all markdown.
     default: '**/*.md'
   config:
-    description: Path to the lychee.toml ruleset in the caller repo.
+    description: >-
+      Path to the lychee.toml ruleset in the caller repo. When the default
+      path is absent, the canonical ruleset this action ships with (this
+      repository's standards-synced root lychee.toml) is used instead.
     default: lychee.toml
   exclude:
     description: >-
@@ -65,24 +68,4 @@ runs:
         GLOBS: ${{ inputs.globs }}
         CONFIG: ${{ inputs.config }}
         EXCLUDE: ${{ inputs.exclude }}
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$CONFIG" ]]; then
-          echo "::error::lychee-offline: config file not found: $CONFIG"
-          exit 2
-        fi
-        # Anchor checks come from the ruleset's include_fragments (lychee's CLI
-        # default is off); the config is intentionally not overridden here.
-        args=(--offline --no-progress --config "$CONFIG")
-        # $EXCLUDE entries are REGEXES; without set -f bash would pathname-expand
-        # an entry containing a metacharacter before lychee sees it.
-        set -f
-        for e in $EXCLUDE; do
-          args+=(--exclude-path "$e")
-        done
-        set +f
-        # -d '' takes the whole value so a multi-line input still splits; read hits
-        # EOF without finding that delimiter, hence the `|| true`.
-        globs=()
-        read -r -d '' -a globs <<<"$GLOBS" || true
-        lychee "${args[@]}" "${globs[@]}"
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

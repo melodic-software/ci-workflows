@@ -541,7 +541,10 @@ consumer to audit it.
   carry the defect they gate on. This repo's own `pr-require-checks.yml` `changes` job is
   the reference wiring.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
-  reference-integrity over the repo's docs (deterministic; no network).
+  reference-integrity over the repo's docs (deterministic; no network). A
+  caller with no root `lychee.toml` gets the canonical one this repository
+  carries from the standards sync, so a repository outside that sync needs no
+  copy of its own.
 - `.github/actions/check-markdown-references` — resolves `file.md` "Anchor" prose
   citations against each cited file's headings and bold lead-ins (dependency-free
   awk); pairs with `lychee-offline`, which covers link/fragment targets.
@@ -852,7 +855,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   **fails the job** rather than skipping the validation: a gate that disappears
   on a typo is the failure mode this lane exists to prevent.
   `machine-specific-paths-exclude` and
-  `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans.
+  `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans;
+  `lychee-offline-exclude` passes space-separated path regexes to lychee.
   `markdown-extra-globs` (default empty) appends extra markdownlint-cli2 glob
   arguments after the composite default `**/*.md`. The value is space-separated:
   the markdown composite word-splits `globs` with `read -a` on IFS whitespace,
