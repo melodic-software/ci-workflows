@@ -358,10 +358,14 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   // holds the hold plus the job's other waits (two 60 s rate-limit waits and
   // the 120 s own-job lookup), so the timeout cannot preempt the ceiling's red.
   const holdSeconds = Number(
-    /^ {10}yield-wait-seconds: .*'(?<seconds>[1-9]\d*)' \}\}$/mu.exec(ciStatusJob)
-      ?.groups?.seconds,
+    /^ {10}yield-wait-seconds: .*'(?<seconds>[1-9]\d*)' \}\}$/mu.exec(
+      ciStatusJob,
+    )?.groups?.seconds,
   );
-  assert.ok(Number.isInteger(holdSeconds), "ci-status has no yield-wait-seconds");
+  assert.ok(
+    Number.isInteger(holdSeconds),
+    "ci-status has no yield-wait-seconds",
+  );
   assert.ok(
     holdSeconds + 240 <= timeoutMinutes * 60,
     `yield-wait-seconds ${holdSeconds} leaves too little of timeout-minutes ${timeoutMinutes}`,
