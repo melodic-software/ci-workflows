@@ -129,7 +129,8 @@ inputs:
       sibling not
       known to be a full run (two or more jobs are running or ran) to
       complete, then re-runs. A wait above `0` without yield needs no such
-      wait: that sibling polls and reads the success itself. A carry-forward
+      wait: that sibling polls and reads the success itself, as does one
+      holding under `yield-wait-seconds`. A carry-forward
       red then says the full run will re-run it instead of
       telling the reader to. The calling job needs `actions: write`; a
       refusal warns and never changes this run's verdict. Off by default.
@@ -140,7 +141,8 @@ inputs:
       siblings before it re-runs the failed ones (see
       `rerun-contract-only-siblings`). Applies only with
       `rerun-contract-only-siblings` and either `yield-to-full-run` or a
-      carry-forward wait of `0`. The wait holds the full run's own
+      carry-forward wait of `0`, and never with `yield-wait-seconds` above `0`.
+      The wait holds the full run's own
       `ci-status` check open, so keep it under the calling job's
       `timeout-minutes` with room for the rest of the job; the default fits
       the recommended 7. Raise it where contract-only gate jobs queue longer
@@ -185,7 +187,8 @@ inputs:
       it finishes. When the newest status is a `success` written by the
       current attempt of the one full run in flight, and that run's step that
       wrote it is still running (re-running failed siblings), it re-lists and
-      re-reads every 5 seconds for up to 30 until that step finishes, then
+      re-reads every 5 seconds for up to 30, and every 30 for the rest of any
+      `yield-wait-seconds`, until that step finishes, then
       carries the `success` once the step reads back `success`; a step still
       running at 30 seconds fails superseded, and a full run still waiting on
       this run re-runs it. Overrides
@@ -203,7 +206,8 @@ inputs:
       newest status, two reads. When the superseding runs complete or that
       status changes, it lists and reads again and passes only on a `success`
       created at or after their latest start. An older `success` does not pass:
-      a full run cancelled during the hold fails this run. Any other status is
+      a full run cancelled during the hold fails this run, while a held run that
+      turns out contract-only does not count. Any other status is
       red, and so is a full run still in flight at the ceiling. The failure path
       it replaces is what `0`, the default, keeps. A full run under this input does not wait
       `rerun-wait-seconds`, because a holding sibling reads its `success`

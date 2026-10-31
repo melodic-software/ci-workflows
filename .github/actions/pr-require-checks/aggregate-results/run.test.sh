@@ -1992,9 +1992,9 @@ run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SE
 expect_log '::error::the full run(s) this run held for ended without recording ci-lanes'
 expect_no_log 'Carried forward'
 
-# The same on a re-run: 4000 wrote this success before its re-run started, so a
-# filter on the writer's run id alone would carry it.
-echo 'case: a hold does not carry the success an earlier attempt of the held run wrote'
+# The gate reads `success`, so only the start check can refuse this: without it
+# a status older than the held run's start carries.
+echo 'case: a hold does not carry a success created before the held run started'
 reset_yield_fixtures
 status_list "[$(writer_status 100 success 2026-09-05T11:00:00Z 4000)]"
 workflow_runs_on_call 1 "[${held_run}]"
@@ -2017,6 +2017,45 @@ run_of_workflow 4000 777
 writer_jobs 4000 success
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log '::error::the full run(s) this run held for ended without recording ci-lanes'
+
+# The check is on time, not writer: a filter on the held ids would refuse this
+# newer run's verdict.
+echo 'case: a hold carries a success a newer run recorded after a cancelled one'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 success 2026-09-05T12:09:00Z 4200)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs "[{\"id\":4000,\"status\":\"completed\",\"conclusion\":\"cancelled\",\"run_attempt\":1,\"run_started_at\":\"2026-09-05T12:00:00Z\"},$(attempt_entry 4200 completed 2026-09-05T12:01:00Z 1 2026-09-05T12:01:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_of_workflow 4200 777
+writer_jobs 4200 success
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the re-read a sibling that only looked full turns a valid success red,
+# and nothing re-runs it: it is no full run, and the hold wrote no verdict.
+echo 'case: a hold for a run that turns out contract-only carries the older success'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T11:00:00Z 4100)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs "[${held_run_done}]"
+printf '{"jobs":%s}' "$full_run_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.1.json"
+jobs_raw 4000 "$contract_only_jobs"
+run_of_workflow 4100 777
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log 'held for ended'
+
+# Without the ceiling's guard on the input, not on a hold having happened, a
+# verdict recorded before the first pass still holds to the ceiling.
+echo 'case: a failure recorded before any hold goes red at once'
+reset_yield_fixtures
+status_list "[$(writer_status 200 failure 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[${held_run}]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "${fail_prefix}${writer_failure_remedy}"
+expect_no_sleep
 
 # Without the unsettled arm a hold over a cancelled run could only end in the
 # error above or a pass.
@@ -2121,6 +2160,23 @@ if [[ "$(head -1 "$sleep_log")" != 30 || "$(grep -c '^30$' "$sleep_log")" -ne 1 
   echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
+
+# The same on the hold's status read.
+echo 'case: a rate-limited status read ends a hold and fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[${held_run}]"
+for call in 2 3 4 5 6; do
+  printf 'gh: API rate limit exceeded for installation ID 1 (HTTP 403)\n' >"$fixtures/${statuses_key}.${call}.err"
+done
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RATE_LIMIT_WAIT_SECONDS=0
+expect_no_log 'Carried forward'
+if [[ "$(grep -c '^30$' "$sleep_log")" -ne 1 ]]; then
+  echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/${statuses_key}".*.err
 
 # Without the 5 s cycle ending at its own 30 s ceiling a 720 s hold spends 144
 # polls of about five reads each on a step that is usually about to finish; red

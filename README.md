@@ -331,7 +331,7 @@ consumer to audit it.
   instead of going red, at the cost of a runner for the hold:
 
   - `yield-to-full-run: 'true'` and `timeout-minutes: 7` on the `ci-status`
-    job. A contract-only run lists this workflow's in-flight runs on the head
+    job, plus `yield-wait-seconds` on `timeout-minutes` if it holds. A contract-only run lists this workflow's in-flight runs on the head
     SHA, then reads the status, and with no hold finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
     because that run's own `ci-status` check run is newer and decides the merge

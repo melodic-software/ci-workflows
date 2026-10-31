@@ -129,6 +129,8 @@ RERUN_WAIT_POLL_SECONDS=10
 # that recorded `success` to finish; see the yield block. Below the default
 # `rerun-wait-seconds` on purpose: when that full run is waiting on this run,
 # this run gives up first, and the full run re-runs it. Fixed, like the polls.
+# Under `yield-wait-seconds` the full run does not wait, and a hold keeps
+# re-reading past this ceiling on its slower poll.
 YIELD_WRITER_WAIT_SECONDS=30
 YIELD_WRITER_POLL_SECONDS=5
 # Ceiling, in seconds, on a yielding run's hold for the full runs that supersede
@@ -1128,7 +1130,10 @@ fail_carry_forward() {
 # ceiling passes. It then lists and reads again and decides as above, and a run
 # that held carries only a `success` created at or after the latest start of the
 # runs it held for: a held run cancelled before its gate writes nothing, and the
-# older `success` still newest must not pass in its place. The only red left is
+# older `success` still newest must not pass in its place. A held run that turns
+# out contract-only does not count, since it was never going to write one, and
+# the check is on time, not writer, so a newer run's `success` carries. The red
+# left is
 # a real one or the ceiling's. The hold is what a job that runs can do: it always ends with a conclusion, and
 # only `success`, `skipped` and `neutral` satisfy a required check, so ending
 # early can only pass the gate or go red. Holding is safe whichever same-name
@@ -1196,29 +1201,37 @@ list_in_flight_full_runs() {
     gate="$own_gate_job"
   fi
   for id in $ids; do
-    shape=unknown
-    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
-    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-      shape="$(job_shape "$gh_stdout" "$gate")"
-    else
-      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
-    fi
-    # A re-run keeps its original event, so a re-run of a contract-only run is
-    # contract-only too, yet its new attempt's jobs may not be listed yet. Its
-    # first attempt has completed, so that attempt's jobs decide.
-    if [[ "$shape" != contract ]] &&
-      [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
-      # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
-      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
-        shape="$(job_shape "$gh_stdout" "$gate")"
-      else
-        warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
-      fi
-    fi
-    if [[ "$shape" != contract ]]; then
+    read_sibling_shape "$id" "$gate"
+    if [[ "$sibling_shape" != contract ]]; then
       yield_full_runs="${yield_full_runs}${yield_full_runs:+ }${id}"
     fi
   done
+}
+
+# Sets `sibling_shape` to run `$1`'s shape under gate name `$2`, reading its
+# jobs. Anything unread stays `unknown`, which every caller takes as a full run.
+sibling_shape=unknown
+read_sibling_shape() {
+  local id="$1" gate="$2"
+  sibling_shape=unknown
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
+  if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+    sibling_shape="$(job_shape "$gh_stdout" "$gate")"
+  else
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+  fi
+  # A re-run keeps its original event, so a re-run of a contract-only run is
+  # contract-only too, yet its new attempt's jobs may not be listed yet. Its
+  # first attempt has completed, so that attempt's jobs decide.
+  if [[ "$sibling_shape" != contract ]] &&
+    [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
+    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
+      sibling_shape="$(job_shape "$gh_stdout" "$gate")"
+    else
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+    fi
+  fi
 }
 
 # Holds until none of the full runs `$1` is incomplete, the newest status is no
@@ -1226,19 +1239,15 @@ list_in_flight_full_runs() {
 # `yield_started`. The status read ends a hold whose run has its verdict but
 # stays in flight on later jobs. A failed read only costs a poll, except a rate
 # limit, which returns: the caller reads again and fails closed on that read.
-# Raises `yield_held_since` to the latest start of `$1`, `unknown` when one
-# cannot be read, which refuses any carried `success`.
-yield_held_since=""
+# Adds `$1` to `yield_held_ids`.
+yield_held_ids=""
 yield_hold() {
-  local waiting="$1" remaining sleep_for since
-  since="$(jq -r --arg ids " ${waiting} " \
-    '[ .workflow_runs[]? | select(. as $run | $ids | contains(" \($run.id) ")) | .run_started_at // "" ] | if length == 0 or any(. == "") then "" else max end' \
-    <"$scratch/runs.json")" || since=""
-  if [[ -z "$since" ]]; then
-    yield_held_since=unknown
-  elif [[ "$yield_held_since" != unknown && "$since" > "$yield_held_since" ]]; then
-    yield_held_since="$since"
-  fi
+  local waiting="$1" remaining sleep_for id
+  for id in $waiting; do
+    if [[ " ${yield_held_ids} " != *" ${id} "* ]]; then
+      yield_held_ids="${yield_held_ids}${yield_held_ids:+ }${id}"
+    fi
+  done
   while :; do
     remaining=$((YIELD_WAIT_SECONDS - ($(date +%s) - yield_started)))
     if [[ "$remaining" -le 0 ]]; then
@@ -1270,6 +1279,35 @@ yield_hold() {
       return 0
     fi
   done
+}
+
+# True when the carried `success` was created at or after the latest start of
+# runs `$1`, as the last listing gives them. A run with no start reads as false.
+carried_postdates() {
+  local since
+  since="$(jq -r --arg ids " ${1} " \
+    '[ .workflow_runs[]? | select(. as $run | $ids | contains(" \($run.id) ")) | .run_started_at // "" ] | if length == 0 or any(. == "") then "" else max end' \
+    <"$scratch/runs.json")" || since=""
+  [[ -n "$since" && ! "$carried_created_at" < "$since" ]]
+}
+
+# True when a run that held may carry `success`. Only on a refusal does it read
+# jobs again: a sibling whose jobs were not listed yet counted as a full run, and
+# once it reads contract-only it was never going to write a verdict.
+held_success_carries() {
+  local id kept=""
+  # shellcheck disable=SC2310 # carried_postdates reports through its status.
+  if carried_postdates "$yield_held_ids"; then
+    return 0
+  fi
+  for id in $yield_held_ids; do
+    read_sibling_shape "$id" "$own_gate_job"
+    if [[ "$sibling_shape" != contract ]]; then
+      kept="${kept}${kept:+ }${id}"
+    fi
+  done
+  # shellcheck disable=SC2310 # carried_postdates reports through its status.
+  [[ -z "$kept" ]] || carried_postdates "$kept"
 }
 
 # The yield red: a full run in flight decides the merge gate, so this run says
@@ -1331,9 +1369,10 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     fi
     superseding=""
     for id in $yield_full_runs; do
-      # A held run's own failure is its verdict too, whatever later jobs it runs.
+      # Under a hold a full run's own failure is its verdict too, whatever later
+      # jobs it runs. Without one this fails superseded, as it always has.
       # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false keeps the run superseding.
-      if [[ "$carried_state" == success || (-n "$yield_held_since" && "$carried_state" =~ ^(failure|error)$) ]] && writer_attempt_wrote "$id"; then
+      if [[ "$carried_state" == success || ("$YIELD_WAIT_SECONDS" -gt 0 && "$carried_state" =~ ^(failure|error)$) ]] && writer_attempt_wrote "$id"; then
         continue
       fi
       superseding="${superseding}${superseding:+ }${id}"
@@ -1373,9 +1412,9 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     fi
     fail_superseded "$superseding"
   done
-  if [[ "$carried_state" == success && -n "$yield_held_since" ]] &&
-    [[ "$yield_held_since" == unknown || "$carried_created_at" < "$yield_held_since" ]]; then
-        echo "::error::the full run(s) this run held for ended without recording ${STATUS_CONTEXT} on ${SHA}, so the older success is not carried; re-run the full workflow."
+  # shellcheck disable=SC2310 # held_success_carries reports through its status.
+  if [[ "$carried_state" == success && -n "$yield_held_ids" ]] && ! held_success_carries; then
+    echo "::error::the full run(s) this run held for ended without recording ${STATUS_CONTEXT} on ${SHA}, so the older success is not carried; re-run the full workflow."
     exit 1
   fi
   if [[ "$carried_state" == success ]]; then
