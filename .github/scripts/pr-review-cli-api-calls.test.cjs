@@ -459,10 +459,16 @@ async function spend({
 
 const INLINE = {
   findings: 1,
+  coverage: { read: 1, changed: 1 },
   summary: "One finding.",
   comments: [{ path: "a.js", line: 2, side: "RIGHT", body: "Off by one." }],
 };
-const NONE = { findings: 0, summary: "Nothing found.", comments: [] };
+const NONE = {
+  findings: 0,
+  coverage: { read: 1, changed: 1 },
+  summary: "Nothing found.",
+  comments: [],
+};
 const A = { filename: "a.js", status: "modified", patch: PATCH, changes: 3 };
 const CODEOWNERS = {
   filename: "CODEOWNERS",
@@ -747,6 +753,7 @@ test("a review quoting a registered secret's value still reaches publish through
   const secret = "SENTINEL-4711";
   const review = {
     findings: 1,
+    coverage: { read: 1, changed: 1 },
     summary: `The test fixture hard-codes ${secret}.`,
     comments: [
       { path: "a.js", line: 2, side: "RIGHT", body: `Move ${secret} out.` },
@@ -782,4 +789,27 @@ test("the status job refuses a handoff file whose sha256 does not match the key 
     }),
     /failure-class=incomplete: the model returned no usable review/u,
   );
+});
+
+// A partial review's marker records no head (sha=none), so the next push
+// reviews the whole pull request rather than only what changed since.
+test("a push after a partial review reviews the whole pull request", async () => {
+  const partial = {
+    id: 41,
+    user: { login: BOT },
+    body: [
+      "<!-- claude-lane-reviewed-head lane=claude-review sha=none -->",
+      `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} -->`,
+      `**claude-review** partial review of \`${LAST}\`: read 1 of 2 changed file(s). 0 finding(s) in what was read, 0 as inline comments. This head is not reviewed.`,
+    ].join("\n"),
+  };
+  const { keyOutputs } = await spend({
+    action: "synchronize",
+    prFiles: [A],
+    comments: [partial],
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    review: NONE,
+  });
+  assert.equal(keyOutputs.scope, "whole");
+  assert.equal(keyOutputs.since, "");
 });
