@@ -112,7 +112,9 @@ make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
 itself pinned to a full commit SHA with a dual-form trailing comment
 (`melodic-software/standards#248`), and a bump to one waits for a person,
-since it reaches every `@main` caller on merge. A consumer's reference to this
+since it reaches every `@main` caller on merge. Dependabot leaves
+`anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
+why. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
 down, and this repository keeps that chain closed rather than asking every
 consumer to audit it.
