@@ -809,6 +809,9 @@ jobs:
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
+          # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
+          # inside a pipe must still fail the step, so the review is incomplete.
+          set -o pipefail
           if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
             base="$MERGE_BASE"
           else
@@ -1967,6 +1970,9 @@ jobs:
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
+          # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
+          # inside a pipe must still fail the step, so the review is incomplete.
+          set -o pipefail
           if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
             base="$MERGE_BASE"
           else
@@ -3130,6 +3136,9 @@ jobs:
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
+          # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
+          # inside a pipe must still fail the step, so the review is incomplete.
+          set -o pipefail
           if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
             base="$MERGE_BASE"
           else

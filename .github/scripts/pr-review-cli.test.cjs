@@ -1762,6 +1762,7 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     assert.match(step(job, "full-diff").run, /^ {2}echo "files=\$files"$/mu);
     assert.match(step(job, "full-diff").run, /^ {2}echo "bytes=\$bytes"$/mu);
     assert.match(step(job, "full-diff").run, /\| tee "\$DIFF_FILE" \| wc -c/u);
+    assert.match(step(job, "full-diff").run, /^set -o pipefail$/mu);
     assert.match(step(job, "scope").with.script, /core\.setOutput\("bytes", /u);
     assert.equal(
       env.SCOPE_BYTES,
@@ -1783,4 +1784,36 @@ test("every model leg wires the coverage counts and asks the model for files_rea
       step(key, "extract").with.script,
     );
   }
+});
+
+test("the full-diff step fails when git diff fails inside its pipe", () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-pipefail-");
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, "git"),
+    '#!/usr/bin/env bash\n[ "$1" = diff ] && exit 128\nexit 0\n',
+    { mode: 0o755 },
+  );
+  const output = path.join(dir, "out");
+  fs.writeFileSync(output, "");
+  const result = require("node:child_process").spawnSync(
+    "bash",
+    ["-e", "-c", step(key, "full-diff").run],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        GH_TOKEN: "t",
+        MERGE_BASE: "b".repeat(40),
+        HEAD_SHA: "a".repeat(40),
+        DIFF_FILE: ".claude-lane/pr.diff",
+        GITHUB_OUTPUT: output,
+        GITHUB_SERVER_URL: "https://github.com",
+      },
+    },
+  );
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(fs.readFileSync(output, "utf8"), /written=true/u);
 });
