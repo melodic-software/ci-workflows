@@ -668,6 +668,9 @@ jobs:
               });
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+              // Measured here, not re-read from the path: the head could put a
+              // symlink at it.
+              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -831,11 +834,14 @@ jobs:
           mkdir -p "$(dirname "$DIFF_FILE")"
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
-          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # The byte count is the diff's own, measured in the pipe, so a symlink
+          # the head commits at the path cannot shrink it.
+          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
             echo "files=$files"
+            echo "bytes=$bytes"
             echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
 
@@ -1290,6 +1296,7 @@ jobs:
           SCOPE_FILES: ${{ steps.scope.outputs.files }}
           WHOLE_FILES: ${{ steps.full-diff.outputs.files }}
           SCOPE_DIFF: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          SCOPE_BYTES: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}
         with:
           script: |
             const fs = require("node:fs");
@@ -1392,12 +1399,15 @@ jobs:
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
             if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return incomplete("the review returned no files_read count");
-            let bytes;
+            // The size the writing step measured; the file must be a regular
+            // file, never a symlink the head committed in its place.
+            let regular = false;
             try {
-              bytes = fs.statSync(env.SCOPE_DIFF).size;
-            } catch {
-              return incomplete("the diff file in scope could not be read");
-            }
+              regular = fs.lstatSync(env.SCOPE_DIFF).isFile();
+            } catch {}
+            if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
+            if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            const bytes = Number(env.SCOPE_BYTES);
             const changed = Number(counted);
             const coverage = {
               read: Math.min(raw.files_read, changed),
@@ -1816,6 +1826,9 @@ jobs:
               });
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+              // Measured here, not re-read from the path: the head could put a
+              // symlink at it.
+              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -1979,11 +1992,14 @@ jobs:
           mkdir -p "$(dirname "$DIFF_FILE")"
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
-          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # The byte count is the diff's own, measured in the pipe, so a symlink
+          # the head commits at the path cannot shrink it.
+          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
             echo "files=$files"
+            echo "bytes=$bytes"
             echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
 
@@ -2439,6 +2455,7 @@ jobs:
           SCOPE_FILES: ${{ steps.scope.outputs.files }}
           WHOLE_FILES: ${{ steps.full-diff.outputs.files }}
           SCOPE_DIFF: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          SCOPE_BYTES: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}
         with:
           script: |
             const fs = require("node:fs");
@@ -2541,12 +2558,15 @@ jobs:
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
             if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return incomplete("the review returned no files_read count");
-            let bytes;
+            // The size the writing step measured; the file must be a regular
+            // file, never a symlink the head committed in its place.
+            let regular = false;
             try {
-              bytes = fs.statSync(env.SCOPE_DIFF).size;
-            } catch {
-              return incomplete("the diff file in scope could not be read");
-            }
+              regular = fs.lstatSync(env.SCOPE_DIFF).isFile();
+            } catch {}
+            if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
+            if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            const bytes = Number(env.SCOPE_BYTES);
             const changed = Number(counted);
             const coverage = {
               read: Math.min(raw.files_read, changed),
@@ -2969,6 +2989,9 @@ jobs:
               });
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+              // Measured here, not re-read from the path: the head could put a
+              // symlink at it.
+              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -3132,11 +3155,14 @@ jobs:
           mkdir -p "$(dirname "$DIFF_FILE")"
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
-          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # The byte count is the diff's own, measured in the pipe, so a symlink
+          # the head commits at the path cannot shrink it.
+          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
             echo "files=$files"
+            echo "bytes=$bytes"
             echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
 
@@ -3590,6 +3616,7 @@ jobs:
           SCOPE_FILES: ${{ steps.scope.outputs.files }}
           WHOLE_FILES: ${{ steps.full-diff.outputs.files }}
           SCOPE_DIFF: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          SCOPE_BYTES: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}
         with:
           script: |
             const fs = require("node:fs");
@@ -3692,12 +3719,15 @@ jobs:
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
             if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return incomplete("the review returned no files_read count");
-            let bytes;
+            // The size the writing step measured; the file must be a regular
+            // file, never a symlink the head committed in its place.
+            let regular = false;
             try {
-              bytes = fs.statSync(env.SCOPE_DIFF).size;
-            } catch {
-              return incomplete("the diff file in scope could not be read");
-            }
+              regular = fs.lstatSync(env.SCOPE_DIFF).isFile();
+            } catch {}
+            if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
+            if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            const bytes = Number(env.SCOPE_BYTES);
             const changed = Number(counted);
             const coverage = {
               read: Math.min(raw.files_read, changed),

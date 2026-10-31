@@ -1079,6 +1079,7 @@ async function extract(files, env = {}) {
     SCOPE_FILES: "",
     WHOLE_FILES: "1",
     SCOPE_DIFF: diff,
+    SCOPE_BYTES: "24",
     ...env,
   };
   const saved = Object.fromEntries(
@@ -1661,7 +1662,7 @@ test("a diff over one review's read budget is partial whatever the model reports
         comments: [],
       }),
     },
-    { WHOLE_FILES: "5", SCOPE_DIFF: diff },
+    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300001" },
   );
   assert.equal(outputs.verdict, "complete");
   assert.deepEqual(JSON.parse(outputs.review).coverage, {
@@ -1679,7 +1680,7 @@ test("a diff over one review's read budget is partial whatever the model reports
         comments: [],
       }),
     },
-    { WHOLE_FILES: "5", SCOPE_DIFF: diff },
+    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300000" },
   );
   assert.deepEqual(JSON.parse(fits.review).coverage, { read: 5, changed: 5 });
 });
@@ -1700,8 +1701,9 @@ test("the extract step calls a review with no coverage it can check incomplete",
     [
       good,
       { SCOPE_DIFF: "/nonexistent/pr.diff" },
-      /diff file in scope could not be read/u,
+      /diff file in scope is missing or not a regular file/u,
     ],
+    [good, { SCOPE_BYTES: "" }, /could not measure the diff/u],
   ]) {
     const outputs = await extract(
       { structured: JSON.stringify(structured) },
@@ -1710,6 +1712,28 @@ test("the extract step calls a review with no coverage it can check incomplete",
     assert.match(outputs.verdict, reason, JSON.stringify(env));
     assert.equal(outputs.review, undefined);
   }
+});
+
+// A head that commits a symlink at the diff path (to /dev/null, say) must not
+// pass for a small diff: the size comes from the writing step, and the path
+// must be a regular file.
+test("a diff path the head replaced with a symlink is incomplete", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-symlink-");
+  const link = path.join(dir, "pr.diff");
+  fs.symlinkSync("/dev/null", link);
+  const outputs = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 1,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { SCOPE_DIFF: link, SCOPE_BYTES: "0" },
+  );
+  assert.match(outputs.verdict, /not a regular file/u);
+  assert.equal(outputs.review, undefined);
 });
 
 test("every model leg wires the coverage counts and asks the model for files_read", () => {
@@ -1736,6 +1760,14 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     );
     assert.equal(step(job, "full-diff").env.DIFF_FILE, ".claude-lane/pr.diff");
     assert.match(step(job, "full-diff").run, /^ {2}echo "files=\$files"$/mu);
+    assert.match(step(job, "full-diff").run, /^ {2}echo "bytes=\$bytes"$/mu);
+    assert.match(step(job, "full-diff").run, /\| tee "\$DIFF_FILE" \| wc -c/u);
+    assert.match(step(job, "scope").with.script, /core\.setOutput\("bytes", /u);
+    assert.equal(
+      env.SCOPE_BYTES,
+      `\${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}`,
+      job.name,
+    );
     assert.match(
       step(job, "scope").with.script,
       /core\.setOutput\("files", String\(scope\.length\)\);/u,
