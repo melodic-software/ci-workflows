@@ -192,6 +192,23 @@ inputs:
       calling job needs `actions: read`; a listing that fails after three
       tries fails the run. Off by default.
     default: 'false'
+  yield-wait-seconds:
+    description: >-
+      Ceiling, in seconds, on how long a run under `yield-to-full-run` holds
+      instead of failing while a full run supersedes it. The job stays in
+      progress, so its `ci-status` check run has no conclusion and no red. Every
+      30 seconds it lists this workflow's runs on the head SHA, one read. When
+      the superseding runs complete it lists and reads the status again and
+      passes only on their recorded `success`; any other status is red, and so
+      is a full run still in flight at the ceiling. The failure path it replaces
+      is what `0`, the default, keeps. A full run under this input does not wait
+      `rerun-wait-seconds`, because a holding sibling reads its `success`
+      itself; it still re-runs any red sibling. Size the ceiling from the
+      repository's measured full run and keep it under the calling job's
+      `timeout-minutes` with room for the job's other waits. Pass `0` when an
+      earlier step failed (`job.status == 'failure'`), so that red lands at
+      once: holding a run that cannot pass only delays it.
+    default: '0'
   step-name:
     description: >-
       Name of the calling job's step that runs this action, as the jobs API
@@ -271,6 +288,7 @@ runs:
         RATE_LIMIT_WAIT_SECONDS: ${{ inputs.rate-limit-wait-seconds }}
         RECORD_PENDING: ${{ inputs.record-pending }}
         YIELD_TO_FULL_RUN: ${{ inputs.yield-to-full-run }}
+        YIELD_WAIT_SECONDS: ${{ inputs.yield-wait-seconds }}
         STEP_NAME: ${{ inputs.step-name }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         GH_TOKEN: ${{ inputs.token }}

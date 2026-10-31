@@ -1923,6 +1923,84 @@ if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]];
   failures=$((failures + 1))
 fi
 
+# Without the hold this fails superseded and posts a red the full run must
+# replace; without re-reading after it, the hold could only end in a red.
+echo 'case: yield-wait-seconds holds for the full run, then carries its success'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs_on_call 2 "[${earlier_full_run}]"
+workflow_runs "[$(attempt_entry 4000 completed 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_of_workflow 4000 777
+writer_jobs 4000 success
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "Holding 30s for full run(s) 4000 in flight on ${sha} (720s left of 720s)."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log 'superseded'
+if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 60 ]]; then
+  echo "FAIL: expected two 30s holds, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without re-reading after the hold, the older success read before it would
+# carry across the full run's failure: the false green the hold must not open.
+echo 'case: yield-wait-seconds goes red on the failure the full run records over an older success'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 failure 2026-09-05T12:05:00Z 4000),$(full_run_success 100)]"
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs "[$(attempt_entry 4000 completed 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "Holding 30s for full run(s) 4000"
+expect_log "${fail_prefix}${writer_failure_remedy}"
+expect_no_log 'Carried forward'
+expect_no_log 'superseded'
+
+# Without the ceiling the hold runs to the job timeout, and a poll past it
+# would oversleep; without failing at it, the unproven older success would pass.
+echo 'case: yield-wait-seconds fails superseded at the ceiling, never past it'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[${earlier_full_run}]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=45
+expect_log "${superseded_prefix}${superseded_manual}"
+expect_no_log 'Carried forward'
+if [[ "$(paste -sd' ' "$sleep_log")" != '30 15' ]]; then
+  echo "FAIL: expected holds of 30 and 15 seconds, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the ceiling following the hold, a writer step that finishes after 30s
+# fails superseded, red with a verdict already recorded, and no one re-runs it.
+echo 'case: yield-wait-seconds extends the wait for a writer step still finishing'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "$late_writer_runs"
+writer_jobs 4000 running
+for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+  cp -- "$fixtures/${writer_jobs_key}.json" "$fixtures/${writer_jobs_key}.${call}.json"
+done
+writer_jobs 4000 success
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "waiting 5s (waited 35s of 720s)."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_log 'superseded'
+
+# Without this the full run waits on a sibling that is holding on it, the
+# sibling reads a step still running, and both run to their ceilings.
+echo 'case: a full-mode success does not wait for a sibling under yield-wait-seconds'
+reset_yield_fixtures
+workflow_runs "[$(completed_run 5000 failure),$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+jobs_for 5000 failure skipped
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_no_sleep
+expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
+expect_log "Re-ran 1 failed contract-only run(s) on ${sha}."
+
 # Without keying the wait on the writer's running step, a `pending` marker newer
 # than the success would be waited on as well; it means the lanes are running,
 # and the full run re-runs this run once they pass.
@@ -2188,6 +2266,10 @@ expect_no_gh_call 'actions/runs/5300/jobs'
 
 # Without validation a non-numeric value makes the arithmetic an error, which
 # the `|| true` around the re-run would swallow silently.
+echo 'case: a non-numeric yield-wait-seconds is rejected'
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=soon
+expect_log '::error::yield-wait-seconds must be a non-negative integer number of seconds, got: soon'
+
 echo 'case: a non-numeric rerun-wait-seconds is rejected'
 run_case 1 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_WAIT_SECONDS=soon
 expect_log '::error::rerun-wait-seconds must be a non-negative integer number of seconds, got: soon'
@@ -2841,7 +2923,7 @@ reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
 jobs_raw 4300 "$contract_only_jobs"
-for call in 1 2 3 4 5 6 7 8; do
+for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
   own_jobs '[]' "$call"
 done
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true 'STEP_NAME=Aggregate'
@@ -2856,7 +2938,7 @@ echo 'case: the carry-forward ceiling counts the own-job lookup'
 reset_yield_fixtures
 status_list '[]'
 workflow_runs "[${earlier_full_run}]"
-for call in 1 2 3 4 5 6 7 8; do
+for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
   own_jobs '[]' "$call"
 done
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=200
@@ -2945,13 +3027,13 @@ reset_yield_fixtures
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds rate-limit-wait-seconds record-pending yield-to-full-run token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds rate-limit-wait-seconds record-pending yield-to-full-run yield-wait-seconds token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RATE_LIMIT_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RATE_LIMIT_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN YIELD_WAIT_SECONDS GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))

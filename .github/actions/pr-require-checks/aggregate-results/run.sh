@@ -131,6 +131,12 @@ RERUN_WAIT_POLL_SECONDS=10
 # this run gives up first, and the full run re-runs it. Fixed, like the polls.
 YIELD_WRITER_WAIT_SECONDS=30
 YIELD_WRITER_POLL_SECONDS=5
+# Ceiling, in seconds, on a yielding run's hold for the full runs that supersede
+# it; see the yield block. `0` never holds. Validated below. The poll is fixed,
+# like the others, and each poll is one listing, so a hold costs one read per
+# YIELD_WAIT_POLL_SECONDS.
+YIELD_WAIT_SECONDS="${YIELD_WAIT_SECONDS:-0}"
+YIELD_WAIT_POLL_SECONDS=30
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
 # will.
@@ -227,6 +233,7 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+require_pattern yield-wait-seconds "$YIELD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 # At most an hour, the life of a GitHub App installation token.
 require_pattern rate-limit-wait-seconds "$RATE_LIMIT_WAIT_SECONDS" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
 
@@ -1115,6 +1122,19 @@ fail_carry_forward() {
 # ceiling it fails superseded: a full run still waiting on this run re-runs it
 # once it completes.
 #
+# With `yield-wait-seconds` above `0` the run holds instead of failing: the job
+# stays in progress, so its `ci-status` check run has no conclusion yet, until
+# the full runs that supersede it complete or the ceiling passes. It then lists
+# and reads again and decides as above, so it passes only on the `success` the
+# full run wrote, and the only red left is a real one or the ceiling's. The
+# hold is what a job that runs can do: it always ends with a conclusion, and
+# only `success`, `skipped` and `neutral` satisfy a required check, so ending
+# early can only pass the gate or go red. Holding is safe whichever same-name
+# check run GitHub judges, which its docs do not say: an in-progress run neither
+# passes nor fails anything, and it concludes with the full run's own verdict.
+# Doing without the check run is not: an older `success` on the SHA would stand
+# alone while the full run is in flight.
+#
 # This closes the gap `record-pending` alone leaves: a full run that is queued,
 # or whose first job has not yet written its `pending` marker, would otherwise
 # let this run carry an older `success` forward across it.
@@ -1199,6 +1219,34 @@ list_in_flight_full_runs() {
   done
 }
 
+# Holds until none of the full runs `$1` is incomplete or YIELD_WAIT_SECONDS has
+# passed since `yield_started`. A failed listing only costs a poll: the caller
+# lists again when this returns, and fails closed on that listing.
+yield_hold() {
+  local waiting="$1" remaining sleep_for
+  while :; do
+    remaining=$((YIELD_WAIT_SECONDS - ($(date +%s) - yield_started)))
+    if [[ "$remaining" -le 0 ]]; then
+      return 0
+    fi
+    sleep_for="$YIELD_WAIT_POLL_SECONDS"
+    if [[ "$sleep_for" -gt "$remaining" ]]; then
+      sleep_for="$remaining"
+    fi
+    echo "Holding ${sleep_for}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
+    sleep "$sleep_for"
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; a failed read holds for one more poll.
+    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      waiting="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg ids " ${waiting} " \
+        '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | .id | tostring | select(. as $id | $ids | contains(" \($id) ")) ] | join(" ")' \
+        <"$gh_stdout")" || waiting=""
+      if [[ -z "$waiting" ]]; then
+        return 0
+      fi
+    fi
+  done
+}
+
 # The yield red: a full run in flight decides the merge gate, so this run says
 # which one and who replaces this red.
 fail_superseded() {
@@ -1270,17 +1318,25 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false fails superseded.
     if [[ "$carried_writer_running" == true && "$superseding" == "$carried_writer_run_id" ]] && writer_attempt_wrote "$superseding"; then
       yield_waited=$(($(date +%s) - yield_started))
-      yield_remaining=$((YIELD_WRITER_WAIT_SECONDS - yield_waited))
+      yield_ceiling="$YIELD_WRITER_WAIT_SECONDS"
+      if [[ "$YIELD_WAIT_SECONDS" -gt "$yield_ceiling" ]]; then
+        yield_ceiling="$YIELD_WAIT_SECONDS"
+      fi
+      yield_remaining=$((yield_ceiling - yield_waited))
       if [[ "$yield_remaining" -gt 0 ]]; then
         yield_sleep="$YIELD_WRITER_POLL_SECONDS"
         if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
           yield_sleep="$yield_remaining"
         fi
-        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WRITER_WAIT_SECONDS}s)."
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${yield_sleep}s (waited ${yield_waited}s of ${yield_ceiling}s)."
         sleep "$yield_sleep"
         continue
       fi
       echo "::warning::the step of run ${superseding} that recorded ${STATUS_CONTEXT}=success on ${SHA} was still running after ${yield_waited}s."
+    fi
+    if [[ $(($(date +%s) - yield_started)) -lt "$YIELD_WAIT_SECONDS" ]]; then
+      yield_hold "$superseding"
+      continue
     fi
     fail_superseded "$superseding"
   done
@@ -1412,7 +1468,9 @@ fi
 # reads the status once and never polls, this waits up to `rerun-wait-seconds`
 # for it to complete, re-listing every RERUN_WAIT_POLL_SECONDS. A run that
 # polls (a wait above `0` without yield) reads this success itself once this
-# step finishes, so nothing waits for it: it would be waiting on this run.
+# step finishes, so nothing waits for it: it would be waiting on this run. The
+# same goes for a run holding under `yield-wait-seconds`, which this run's input
+# describes too, since the same step runs in both modes.
 #
 # An in-flight sibling is waited for unless it is known to be a full run: two
 # or more of its latest attempt's jobs are running or ran (any conclusion but
@@ -1432,7 +1490,7 @@ rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
   local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining sleep_for ran
   local wait_for_in_flight=false
-  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
+  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && "$YIELD_WAIT_SECONDS" -eq 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
     wait_for_in_flight=true
   fi
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; a refusal only skips the re-run.
