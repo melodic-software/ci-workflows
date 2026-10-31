@@ -213,16 +213,68 @@ function decidedHead(notices, cutoff) {
   return heads.size === 1 ? [...heads][0] : heads.size === 0 ? null : undefined;
 }
 
+// The repository activity API keeps a branch name's history across
+// deletions, so a name recreated for each sync passes a page of 100 (564
+// entries on one such branch). Its pages are cursor pages: `after` takes the
+// cursor the Link header gives
+// (https://docs.github.com/en/rest/repos/repos#list-repository-activities).
+// github.paginate is not used: it answers a 409 or an empty body with an
+// empty list and appends a body that is not a list (actions/github-script
+// @3a2844b7 dist/index.js:64366 and :64426). Only the cursor is taken from
+// the link, never its URL. Twenty pages hold 2,000 entries; past them the
+// history counts as unreadable.
+const MAX_ACTIVITY_PAGES = 20;
+const ACTIVITY_PAGE = 100;
+const NEXT_LINK = /<([^>]+)>;\s*rel="next"/u;
+
+// The branch's push history, newest first, read page by page until a page
+// reaches an entry older than the last push of `decided` before `cutoff`
+// (no older entry changes unranHead), or a page shorter than 100 ends it,
+// as { activity }. { why } when a full page carries no next cursor (a
+// dropped or changed Link header is not the end of the history) or a next
+// page would pass MAX_ACTIVITY_PAGES. A failed read, a page that is not a
+// list, or a next link with no cursor throws.
+async function branchActivity(github, owner, repo, branch, decided, cutoff) {
+  const activity = [];
+  let after;
+  for (let pages = 0; ; pages += 1) {
+    if (pages === MAX_ACTIVITY_PAGES)
+      return { why: `the branch's push history runs past ${MAX_ACTIVITY_PAGES} pages` };
+    const { data, headers } = await github.request("GET /repos/{owner}/{repo}/activity", {
+      owner,
+      repo,
+      ref: `refs/heads/${branch}`,
+      direction: "desc",
+      per_page: ACTIVITY_PAGE,
+      ...(after === undefined ? {} : { after }),
+    });
+    if (!Array.isArray(data)) throw new Error("an activity page is not a list");
+    activity.push(...data);
+    const last = Math.max(
+      ...activity
+        .filter((m) => m?.after === decided && Date.parse(m.timestamp) < cutoff)
+        .map((m) => Date.parse(m.timestamp)),
+    );
+    if (data.some((m) => Date.parse(m?.timestamp) < last)) return { activity };
+    const next = NEXT_LINK.exec(String(headers?.link ?? ""));
+    if (!next) {
+      if (data.length < ACTIVITY_PAGE) return { activity };
+      return { why: "the branch's activity page is full but carries no next cursor" };
+    }
+    after = new URL(next[1]).searchParams.get("after");
+    if (!after) throw new Error("the next activity page has no cursor");
+  }
+}
+
 // Why the branch's push history shows a head with no run of this lane
 // before the decision, else null (merge-holds.mjs unranHead, for one lane).
-// `activity` is one page of the repository activity API for the branch,
-// which deleting a run leaves; `ran` the heads of this lane's runs started
-// before the decision. Every head the branch moved to after its last push of
-// `decided` before the decision needs a run: with one deleted, an older
-// notice would become the decided head (claude-code-plugins#10437).
+// `activity` is the branch's activity (branchActivity), which deleting a
+// run leaves; `ran` the heads of this lane's runs started before the
+// decision. Every head the branch moved to after its last push of `decided`
+// before the decision needs a run: with one deleted, an older notice would
+// become the decided head (claude-code-plugins#10437).
 function unranHead(activity, ran, decided, cutoff) {
   if (!Array.isArray(activity)) return "the branch's push history is unreadable";
-  if (activity.length >= 100) return "the branch's push history fills a page";
   const moves = [];
   for (const move of activity) {
     const after = String(move?.after ?? "");
@@ -349,15 +401,8 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     return { carry: false, why: "two heads were noticed at the newest time before the decision" };
   if (decided === null)
     return { carry: false, why: "no cost hold notice of this lane precedes the decision" };
-  const activity = (
-    await github.request("GET /repos/{owner}/{repo}/activity", {
-      owner,
-      repo,
-      ref: `refs/heads/${branch}`,
-      direction: "desc",
-      per_page: 100,
-    })
-  ).data;
+  const { activity, why } = await branchActivity(github, owner, repo, branch, decided, cutoff);
+  if (why) return { carry: false, why };
   const gap = unranHead(activity, ran, decided, cutoff);
   if (gap) return { carry: false, why: gap };
   if (decided === env.HEAD_SHA)
