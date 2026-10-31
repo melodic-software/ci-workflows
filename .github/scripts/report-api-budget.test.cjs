@@ -43,6 +43,7 @@ const RUNNER = {
 const WHERE =
   "workflow=.github/workflows/pr-review-cli.yml job=status run=39931677333 attempt=2";
 const NOTICE = "::notice title=api-budget::";
+const CALLS = "::notice title=api-calls::";
 const RESET = 1792748042;
 
 // A `gh api -i` header block, CRLF header lines as gh prints them.
@@ -259,20 +260,39 @@ test("the action reads the named gh api -i files, then emits each token with the
   });
   const graphql = `token=github-token ${WHERE} limit=1000 remaining=993 used=7 reset=${RESET} resource=graphql cost=na`;
   const core = `token=github-token ${WHERE} limit=1000 remaining=958 used=42 reset=${RESET} resource=core cost=29`;
-  assert.equal(out, `${NOTICE}${graphql}\n${NOTICE}${core}\n`);
+  // Two Octokit readings and two response files; missing.http is no request.
+  const lanes = "lanes-app=0 not-modified=0 graphql=0";
+  const job = "github-token=4 not-modified=0 graphql=1";
+  assert.equal(
+    out,
+    `${CALLS}${lanes}\n${NOTICE}${graphql}\n${NOTICE}${core}\n${CALLS}${job}\n`,
+  );
   assert.equal(
     summary,
-    `api-budget: ${graphql}\napi-budget: ${core}\ngithub-token-cost=29\n`,
+    `api-calls ${lanes}\napi-budget: ${graphql}\napi-budget: ${core}\napi-calls ${job}\ngithub-token-cost=29\n`,
   );
   assert.equal(output, "costs=github-token-cost=29\n");
 });
 
-test("the action writes nothing for a job that made no request, and never fails", () => {
+test("the action counts a 304 as not-modified, not as a request", () => {
+  const dir = makeTemporaryDirectory("api-budget-304-");
+  record(dir, { used: 5 }, { status: 304, used: 5 }, { used: 6 });
+  assert.match(
+    runAction(dir).out,
+    /^::notice title=api-calls::github-token=2 not-modified=1 graphql=0$/mu,
+  );
+});
+
+test("the action writes only a zero api-calls line for a job that made no request, and never fails", () => {
   const dir = makeTemporaryDirectory("api-budget-none-");
   const { out, summary, output } = runAction(dir, {
     responses: path.join(dir, "missing.http"),
   });
-  assert.deepEqual([out, summary, output], ["", "", ""]);
+  const zero = "github-token=0 not-modified=0 graphql=0";
+  assert.deepEqual(
+    [out, summary, output],
+    [`${CALLS}${zero}\n`, `api-calls ${zero}\n`, ""],
+  );
 });
 
 test("nothing in the action or the workflow reads GET /rate_limit", () => {

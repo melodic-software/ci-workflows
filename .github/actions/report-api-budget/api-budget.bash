@@ -5,8 +5,8 @@
 # line in $RUNNER_TEMP/api-budget/<token>:
 #   <status> <limit> <remaining> <used> <reset epoch> <resource>
 # (`na` for a missing value). api-budget.cjs appends the same lines from
-# Octokit's request hooks. Keep both functions identical to those in
-# claude-code-plugins' .github/actions/log-api-budget/api-budget.bash, so the
+# Octokit's request hooks. Keep these functions identical to those in
+# claude-code-plugins' .github/actions/log-api-budget/api-budget.bash, so each
 # notice is the line the hub collector reads from every repository's runs.
 # Never fails the caller.
 #
@@ -19,6 +19,13 @@
 #                               each resource, core last; cost is
 #                               the rise in used since the first earlier reading
 #                               with the same reset and resource, else na
+#   api_budget_emit_calls <token>...
+#                               the hub's api-calls notice for each token,
+#                               `<token>=N not-modified=M graphql=K`: N is the
+#                               job's own requests, M its 304 answers, which
+#                               GitHub does not count, and K the GraphQL ones
+#                               among N, which spend their own pool; 0 for a
+#                               token with no reading
 
 api_budget_read() {
   local state=${RUNNER_TEMP:-}/api-budget/${1:-} lines
@@ -53,6 +60,17 @@ api_budget_read() {
     END { if (!done && NR) flush(); if (!done) print 0 }
   ' "$2") || lines=0
   tail -n +"$((${lines:-0} + 1))" "$2"
+}
+
+api_budget_emit_calls() {
+  local token file
+  for token; do
+    file=${RUNNER_TEMP:-}/api-budget/$token
+    [[ -n ${RUNNER_TEMP:-} && $token =~ ^[a-z][a-z0-9-]{0,39}$ ]] || continue
+    [[ -s $file ]] || file=/dev/null
+    awk '$1 != 304 { n++ } $1 == 304 { m++ } $6 == "graphql" || $2 == "graphql" { g++ } END { printf "::notice title=api-calls::%s=%d not-modified=%d graphql=%d\n", token, n, m, g }' token="$token" "$file"
+  done
+  return 0
 }
 
 api_budget_emit() {
