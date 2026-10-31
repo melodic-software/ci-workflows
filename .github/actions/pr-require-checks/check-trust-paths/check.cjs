@@ -1,11 +1,12 @@
 // check-trust-paths: holds a pull request for a person when an agent App
 // named in the default branch's config touched it and it changes a privileged
 // path. It posts the commit status `ci-status` on the head SHA only as
-// `failure`, on a hold or on data it cannot trust. A pass posts nothing, or
-// `success` only to clear this check's own earlier `failure` on that SHA: a
-// `success` of the required name satisfies a ruleset on its own while the
-// pull request's `ci-status` check run does not exist yet, which let pull
-// requests merge before CI ran (ci-workflows#930).
+// `failure`, on a hold or on data it cannot trust. A pass posts nothing. It
+// posts `success` only to clear this check's own earlier failure on that SHA,
+// and only once the GitHub Actions `ci-status` check run exists there: a
+// `success` of the required name with no check run beside it satisfies a
+// ruleset on its own, which let pull requests merge before CI ran
+// (ci-workflows#930). With both present, both must pass.
 //
 // It runs from a `pull_request_target` caller, so this file and the caller
 // come from the default branch. The config is read at the default branch's last
@@ -31,6 +32,8 @@
 "use strict";
 
 const CONTEXT = "ci-status";
+// The GitHub Actions App, which the rulesets pin `ci-status` to.
+const ACTIONS_APP_ID = 15368;
 const APP_LOGIN = /^[A-Za-z0-9]+(-[A-Za-z0-9]+)*\[bot\]$/u;
 const SHA = /^[0-9a-f]{40}$/u;
 const MAX_FILES = 3000;
@@ -266,6 +269,20 @@ async function heldBefore({ github, owner, repo, sha }) {
   return latest?.state === "failure" || latest?.state === "error";
 }
 
+// True when the Actions `ci-status` check run exists on the SHA, in any state.
+async function checkRunExists({ github, owner, repo, sha }) {
+  const { data } = await github.rest.checks.listForRef({
+    owner,
+    repo,
+    ref: sha,
+    check_name: CONTEXT,
+    app_id: ACTIONS_APP_ID,
+    filter: "all",
+    per_page: 1,
+  });
+  return data.total_count > 0;
+}
+
 async function readConfig({ github, owner, repo, path, ref }) {
   const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
   if (Array.isArray(data) || data?.type !== "file" || data.encoding !== "base64")
@@ -328,13 +345,21 @@ async function run({ github, context, core, env = process.env }) {
   const verdict = decide({ config, pr, files, commits, activity, activityCapped, extraPaths });
   const log = verdict.state === "success" ? core.info : core.error;
   log(`${verdict.description} ${verdict.detail}`);
-  if (verdict.state === "failure" || (await heldBefore({ github, owner, repo, sha })))
-    await post(verdict.state, verdict.description);
+  if (verdict.state === "failure") await post(verdict.state, verdict.description);
+  else if (await heldBefore({ github, owner, repo, sha })) {
+    if (await checkRunExists({ github, owner, repo, sha }))
+      await post(verdict.state, verdict.description);
+    else
+      core.info(
+        "An earlier ci-status failure stays: the ci-status check run does not exist yet. Re-run this check once it does.",
+      );
+  }
   core.setOutput("state", verdict.state);
   return verdict;
 }
 
 module.exports = {
+  ACTIONS_APP_ID,
   ACTIVITY_PAGE,
   CONTEXT,
   HOLD,

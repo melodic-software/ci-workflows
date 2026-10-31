@@ -13,6 +13,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  ACTIONS_APP_ID,
   ACTIVITY_PAGE,
   HOLD,
   MAX_ACTIVITY_PAGES,
@@ -265,7 +266,8 @@ test("a status description fits GitHub's 140 characters", () => {
 });
 
 // `activity` is one page, or `pages` several, each { data, link }. `prior` is
-// the head SHA's latest ci-status state before the run, if any.
+// the head SHA's latest ci-status state before the run, if any; `checkRun`
+// whether the Actions ci-status check run exists on it.
 function fakeGithub({
   config = CONFIG,
   files,
@@ -273,6 +275,7 @@ function fakeGithub({
   activity,
   pages,
   prior,
+  checkRun = false,
   fail = {},
 }) {
   const calls = [];
@@ -321,6 +324,12 @@ function fakeGithub({
             ],
           },
         }),
+      },
+      checks: {
+        listForRef: async (params) => {
+          calls.push(["listForRef", params]);
+          return { data: { total_count: checkRun ? 1 : 0 } };
+        },
       },
       pulls: {
         listFiles: async (params) => {
@@ -563,16 +572,45 @@ test("a pass posts no status, so the ci-status check run alone decides the requi
   }
 });
 
-test("a pass clears this check's own earlier failure or error on the same SHA", async () => {
+test("a pass clears this check's own earlier failure or error once the Actions ci-status check run exists", async () => {
   for (const prior of ["failure", "error"]) {
-    const github = fakeGithub({ files: [file("README.md")], commits: [], activity: [], prior });
+    const github = fakeGithub({
+      files: [file("README.md")],
+      commits: [],
+      activity: [],
+      prior,
+      checkRun: true,
+    });
     await run({ github, context: context(), core: core(), env });
     assert.deepEqual(
       github.statuses.map(({ sha, state, context: name }) => [sha, state, name]),
       [[HEAD, "success", "ci-status"]],
       prior,
     );
+    assert.deepEqual(github.calls.find(([name]) => name === "listForRef")[1], {
+      owner: "o",
+      repo: "r",
+      ref: HEAD,
+      check_name: "ci-status",
+      app_id: ACTIONS_APP_ID,
+      filter: "all",
+      per_page: 1,
+    });
   }
+});
+
+test("a pass keeps an earlier failure while no ci-status check run exists, so no success stands alone", async () => {
+  const github = fakeGithub({
+    files: [file("README.md")],
+    commits: [],
+    activity: [],
+    prior: "failure",
+  });
+  const log = core();
+  const verdict = await run({ github, context: context(), core: log, env });
+  assert.equal(verdict.state, "success");
+  assert.deepEqual(github.statuses, []);
+  assert.ok(log.lines.some(([, line]) => /does not exist yet/u.test(line)));
 });
 
 test("run holds an App's edit to the caller workflow or the config itself", async () => {
@@ -650,7 +688,7 @@ test("run throws, posting no verdict, on an unreadable config or read, or the wr
   }
 });
 
-test("the reusable grants only the three permissions, checks out nothing and posts failure when the check does not finish", () => {
+test("the reusable grants only the four permissions, checks out nothing and posts failure when the check does not finish", () => {
   const workflowPath = path.join(
     __dirname,
     "..",
@@ -664,7 +702,7 @@ test("the reusable grants only the three permissions, checks out nothing and pos
   assert.match(source, /^permissions: \{\}$/mu);
   assert.match(
     source,
-    / {4}permissions:\n {6}contents: read #[^\n]*\n {6}pull-requests: read #[^\n]*\n {6}statuses: write #[^\n]*\n {4}steps:/u,
+    / {4}permissions:\n {6}contents: read #[^\n]*\n {6}pull-requests: read #[^\n]*\n {6}statuses: write #[^\n]*\n {6}checks: read #[^\n]*\n {4}steps:/u,
   );
   assert.match(
     source,

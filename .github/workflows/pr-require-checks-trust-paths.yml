@@ -4,9 +4,10 @@ name: pr-require-checks-trust-paths
 # App touched it and it changes a privileged path. On a hold it posts the
 # commit status `ci-status` = `failure` on the head SHA, which blocks the merge
 # even while the pull request's own `ci-status` check run passes. A pass posts
-# no status (only a `success` that clears this check's own earlier failure on
-# that SHA): a `success` of the required name satisfies the ruleset before the
-# `ci-status` check run exists (ci-workflows#930).
+# no status. It posts `success` only to clear its own earlier failure on that
+# SHA, and only once the `ci-status` check run exists: a `success` of the
+# required name with no check run beside it satisfies the ruleset alone, which
+# let pull requests merge before CI ran (ci-workflows#930).
 #
 # Canonical caller, on the consumer's default branch:
 #
@@ -23,6 +24,7 @@ name: pr-require-checks-trust-paths
 #           contents: read
 #           pull-requests: read
 #           statuses: write
+#           checks: read
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@main
 #
 # The config (input `config-path`, default `.github/trust-path-hold.json`) is
@@ -37,7 +39,7 @@ name: pr-require-checks-trust-paths
 # from the head is checked out or run; the check reads the pull request over
 # the API and treats file names, logins and emails as data. The composite is
 # referenced with `$/`, which resolves to this repository at the caller's
-# pinned commit. The token is GITHUB_TOKEN with the three permissions above;
+# pinned commit. The token is GITHUB_TOKEN with the four permissions above;
 # no secret is used. A run cancelled by a newer run on the same head can post
 # its fallback `failure` after the newer result: a false hold, never a missed
 # one, cleared by re-running the newer run.
@@ -66,6 +68,7 @@ jobs:
       contents: read # Read the config at the default branch's last commit.
       pull-requests: read # List the pull request's files and commits.
       statuses: write # Post `ci-status` on the head SHA.
+      checks: read # Clear an earlier failure only once the ci-status check run exists.
     steps:
       - name: Check privileged paths and post ci-status
         uses: $/.github/actions/pr-require-checks/check-trust-paths

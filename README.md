@@ -1044,14 +1044,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
   for a person when an agent GitHub App touched it and it changes a privileged
   path. On a hold it posts the commit status `ci-status` = `failure` on the
   head SHA, which blocks the merge while the pull request's own `ci-status`
-  check run passes. A pass posts no status, except a `success` that clears this
-  check's own earlier failure on that SHA: a `success` of the required name
-  satisfies the ruleset before the `ci-status` check run exists, which let pull
-  requests merge before CI ran (#930). The caller runs on `pull_request_target`, so the workflow, the
+  check run passes. A pass posts no status. It posts `success` only to clear
+  its own earlier failure on that SHA, and only once the `ci-status` check run
+  exists: a `success` of the required name with no check run beside it
+  satisfies the ruleset alone, which let pull requests merge before CI ran
+  (#930). The caller runs on `pull_request_target`, so the workflow, the
   caller and the config all come from the default branch and the pull request
   cannot edit its hold away; nothing from the head is checked out or run. The
-  job uses GITHUB_TOKEN with `contents: read`, `pull-requests: read` and
-  `statuses: write`, and no secret.
+  job uses GITHUB_TOKEN with `contents: read`, `pull-requests: read`,
+  `statuses: write` and `checks: read`, and no secret.
 
   The config is JSON, read at the default branch's last commit over the
   contents API from the `config-path` input (default
