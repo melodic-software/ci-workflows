@@ -129,8 +129,15 @@ RERUN_WAIT_POLL_SECONDS=10
 # that recorded `success` to finish; see the yield block. Below the default
 # `rerun-wait-seconds` on purpose: when that full run is waiting on this run,
 # this run gives up first, and the full run re-runs it. Fixed, like the polls.
+# Under `yield-wait-seconds` the full run does not wait, and a hold keeps
+# re-reading past this ceiling on its slower poll.
 YIELD_WRITER_WAIT_SECONDS=30
 YIELD_WRITER_POLL_SECONDS=5
+# Ceiling, in seconds, on a yielding run's hold for the full runs that supersede
+# it; see the yield block. `0` never holds. Validated below. The poll is fixed,
+# like the others, and each poll is one listing and one status read.
+YIELD_WAIT_SECONDS="${YIELD_WAIT_SECONDS:-0}"
+YIELD_WAIT_POLL_SECONDS=30
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
 # will.
@@ -227,6 +234,8 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+# No leading zero: bash arithmetic reads one as octal, and `08` is an error.
+require_pattern yield-wait-seconds "$YIELD_WAIT_SECONDS" '^(0|[1-9][0-9]*)$' 'a non-negative integer number of seconds'
 # At most an hour, the life of a GitHub App installation token.
 require_pattern rate-limit-wait-seconds "$RATE_LIMIT_WAIT_SECONDS" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
 
@@ -1115,6 +1124,24 @@ fail_carry_forward() {
 # ceiling it fails superseded: a full run still waiting on this run re-runs it
 # once it completes.
 #
+# With `yield-wait-seconds` above `0` the run holds instead of failing: the job
+# stays in progress, so its `ci-status` check run has no conclusion yet, until
+# the full runs that supersede it complete, the newest status changes, or the
+# ceiling passes. It then lists and reads again and decides as above, and a run
+# that held carries only a `success` created at or after the latest start of the
+# runs it held for: a held run cancelled before its gate writes nothing, and the
+# older `success` still newest must not pass in its place. A held run that turns
+# out contract-only does not count, since it was never going to write one, and
+# the check is on time, not writer, so a newer run's `success` carries. The red
+# left is
+# a real one or the ceiling's. The hold is what a job that runs can do: it always ends with a conclusion, and
+# only `success`, `skipped` and `neutral` satisfy a required check, so ending
+# early can only pass the gate or go red. Holding is safe whichever same-name
+# check run GitHub judges, which its docs do not say: an in-progress run neither
+# passes nor fails anything, and it concludes with the full run's own verdict.
+# Doing without the check run is not: an older `success` on the SHA would stand
+# alone while the full run is in flight.
+#
 # This closes the gap `record-pending` alone leaves: a full run that is queued,
 # or whose first job has not yet written its `pending` marker, would otherwise
 # let this run carry an older `success` forward across it.
@@ -1174,29 +1201,113 @@ list_in_flight_full_runs() {
     gate="$own_gate_job"
   fi
   for id in $ids; do
-    shape=unknown
-    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
-    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-      shape="$(job_shape "$gh_stdout" "$gate")"
-    else
-      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
-    fi
-    # A re-run keeps its original event, so a re-run of a contract-only run is
-    # contract-only too, yet its new attempt's jobs may not be listed yet. Its
-    # first attempt has completed, so that attempt's jobs decide.
-    if [[ "$shape" != contract ]] &&
-      [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
-      # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
-      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
-        shape="$(job_shape "$gh_stdout" "$gate")"
-      else
-        warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
-      fi
-    fi
-    if [[ "$shape" != contract ]]; then
+    read_sibling_shape "$id" "$gate"
+    if [[ "$sibling_shape" != contract ]]; then
       yield_full_runs="${yield_full_runs}${yield_full_runs:+ }${id}"
     fi
   done
+}
+
+# Sets `sibling_shape` to run `$1`'s shape under gate name `$2`, reading its
+# jobs. Anything unread stays `unknown`, which every caller takes as a full run.
+sibling_shape=unknown
+read_sibling_shape() {
+  local id="$1" gate="$2"
+  sibling_shape=unknown
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
+  if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+    sibling_shape="$(job_shape "$gh_stdout" "$gate")"
+  else
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+  fi
+  # A re-run keeps its original event, so a re-run of a contract-only run is
+  # contract-only too, yet its new attempt's jobs may not be listed yet. Its
+  # first attempt has completed, so that attempt's jobs decide.
+  if [[ "$sibling_shape" != contract ]] &&
+    [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
+    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
+      sibling_shape="$(job_shape "$gh_stdout" "$gate")"
+    else
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+    fi
+  fi
+}
+
+# Holds until none of the full runs `$1` is incomplete, the newest status is no
+# longer the one read before the hold, or YIELD_WAIT_SECONDS has passed since
+# `yield_started`. The status read ends a hold whose run has its verdict but
+# stays in flight on later jobs. A failed read only costs a poll, except a rate
+# limit, which returns: the caller reads again and fails closed on that read.
+# Adds `$1` to `yield_held_ids`.
+yield_held_ids=""
+yield_hold() {
+  local waiting="$1" remaining sleep_for id
+  for id in $waiting; do
+    if [[ " ${yield_held_ids} " != *" ${id} "* ]]; then
+      yield_held_ids="${yield_held_ids}${yield_held_ids:+ }${id}"
+    fi
+  done
+  while :; do
+    remaining=$((YIELD_WAIT_SECONDS - ($(date +%s) - yield_started)))
+    if [[ "$remaining" -le 0 ]]; then
+      return 0
+    fi
+    sleep_for="$YIELD_WAIT_POLL_SECONDS"
+    if [[ "$sleep_for" -gt "$remaining" ]]; then
+      sleep_for="$remaining"
+    fi
+    echo "Holding ${sleep_for}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
+    sleep "$sleep_for"
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; a failed read holds for one more poll.
+    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      waiting="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg ids " ${waiting} " \
+        '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | .id | tostring | select(. as $id | $ids | contains(" \($id) ")) ] | join(" ")' \
+        <"$gh_stdout")" || waiting=""
+      if [[ -z "$waiting" ]]; then
+        return 0
+      fi
+    elif [[ "$GH_FAILURE" == rate-limit ]]; then
+      return 0
+    fi
+    # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+    if read_newest_entry; then
+      if [[ "$newest_entry" != "$carried_entry" ]]; then
+        return 0
+      fi
+    elif [[ "$GH_FAILURE" == rate-limit ]]; then
+      return 0
+    fi
+  done
+}
+
+# True when the carried `success` was created at or after the latest start of
+# runs `$1`, as the last listing gives them. A run with no start reads as false.
+carried_postdates() {
+  local since
+  since="$(jq -r --arg ids " ${1} " \
+    '[ .workflow_runs[]? | select(. as $run | $ids | contains(" \($run.id) ")) | .run_started_at // "" ] | if length == 0 or any(. == "") then "" else max end' \
+    <"$scratch/runs.json")" || since=""
+  [[ -n "$since" && ! "$carried_created_at" < "$since" ]]
+}
+
+# True when a run that held may carry `success`. Only on a refusal does it read
+# jobs again: a sibling whose jobs were not listed yet counted as a full run, and
+# once it reads contract-only it was never going to write a verdict.
+held_success_carries() {
+  local id kept=""
+  # shellcheck disable=SC2310 # carried_postdates reports through its status.
+  if carried_postdates "$yield_held_ids"; then
+    return 0
+  fi
+  for id in $yield_held_ids; do
+    read_sibling_shape "$id" "$own_gate_job"
+    if [[ "$sibling_shape" != contract ]]; then
+      kept="${kept}${kept:+ }${id}"
+    fi
+  done
+  # shellcheck disable=SC2310 # carried_postdates reports through its status.
+  [[ -z "$kept" ]] || carried_postdates "$kept"
 }
 
 # The yield red: a full run in flight decides the merge gate, so this run says
@@ -1258,8 +1369,10 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     fi
     superseding=""
     for id in $yield_full_runs; do
+      # Under a hold a full run's own failure is its verdict too, whatever later
+      # jobs it runs. Without one this fails superseded, as it always has.
       # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false keeps the run superseding.
-      if [[ "$carried_state" == success ]] && writer_attempt_wrote "$id"; then
+      if [[ "$carried_state" == success || ("$YIELD_WAIT_SECONDS" -gt 0 && "$carried_state" =~ ^(failure|error)$) ]] && writer_attempt_wrote "$id"; then
         continue
       fi
       superseding="${superseding}${superseding:+ }${id}"
@@ -1280,10 +1393,30 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
         sleep "$yield_sleep"
         continue
       fi
+      # Past the writer's own ceiling a hold keeps re-reading, on its slower poll.
+      yield_remaining=$((YIELD_WAIT_SECONDS - yield_waited))
+      if [[ "$yield_remaining" -gt 0 ]]; then
+        yield_sleep="$YIELD_WAIT_POLL_SECONDS"
+        if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
+          yield_sleep="$yield_remaining"
+        fi
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; holding ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WAIT_SECONDS}s)."
+        sleep "$yield_sleep"
+        continue
+      fi
       echo "::warning::the step of run ${superseding} that recorded ${STATUS_CONTEXT}=success on ${SHA} was still running after ${yield_waited}s."
+    fi
+    if [[ $(($(date +%s) - yield_started)) -lt "$YIELD_WAIT_SECONDS" ]]; then
+      yield_hold "$superseding"
+      continue
     fi
     fail_superseded "$superseding"
   done
+  # shellcheck disable=SC2310 # held_success_carries reports through its status.
+  if [[ "$carried_state" == success && -n "$yield_held_ids" ]] && ! held_success_carries; then
+    echo "::error::the full run(s) this run held for ended without recording ${STATUS_CONTEXT} on ${SHA}, so the older success is not carried; re-run the full workflow."
+    exit 1
+  fi
   if [[ "$carried_state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
     exit 0
@@ -1412,7 +1545,9 @@ fi
 # reads the status once and never polls, this waits up to `rerun-wait-seconds`
 # for it to complete, re-listing every RERUN_WAIT_POLL_SECONDS. A run that
 # polls (a wait above `0` without yield) reads this success itself once this
-# step finishes, so nothing waits for it: it would be waiting on this run.
+# step finishes, so nothing waits for it: it would be waiting on this run. The
+# same goes for a run holding under `yield-wait-seconds`, which this run's input
+# describes too, since the same step runs in both modes.
 #
 # An in-flight sibling is waited for unless it is known to be a full run: two
 # or more of its latest attempt's jobs are running or ran (any conclusion but
@@ -1432,7 +1567,7 @@ rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
   local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining sleep_for ran
   local wait_for_in_flight=false
-  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
+  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && "$YIELD_WAIT_SECONDS" -eq 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
     wait_for_in_flight=true
   fi
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; a refusal only skips the re-run.
