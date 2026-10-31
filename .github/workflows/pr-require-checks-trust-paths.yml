@@ -3,8 +3,10 @@ name: pr-require-checks-trust-paths
 # Reusable workflow: holds a pull request for a person when an agent GitHub
 # App touched it and it changes a privileged path. It posts the commit status
 # `trust-path-hold` on the head SHA: `pending`, then `success` or `failure`.
-# A repository that turns the hold on requires `trust-path-hold` in its
-# ruleset (a github-iac edit). The context is its own, never `ci-status`: a
+# The hold is off org-wide and the status is advisory: requiring it breaks
+# github-iac ADR 0017's one-required-check rule, and with no merge_group run
+# it would time merge-queue entries out. Turning it on needs a merge_group
+# answer (such as ci-status reading it) and a github-iac exception. The context is its own, never `ci-status`: a
 # `success` status named `ci-status` met the required ci-status check before
 # the pull request's own check run existed, and the merge queue took an
 # unchecked head (claude-code-plugins#11341).
@@ -42,7 +44,7 @@ name: pr-require-checks-trust-paths
 # no secret is used. The fallback posts `failure` when the check throws. A
 # cancelled run posts nothing: the concurrency group cancels a run only for a
 # newer one, which posts its own verdict, and a run that hits timeout-minutes
-# leaves its `pending`, which holds a repository that requires the context.
+# leaves its `pending`.
 on:
   workflow_call:
     inputs:

@@ -1055,7 +1055,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   The config is JSON, read at the default branch's last commit over the
   contents API from the `config-path` input (default
-  `.github/trust-path-hold.json`):
+  `.github/trust-path-hold.json`). The `runner` input (default
+  `ubuntu-24.04`) picks the runner label; the job needs only Node, through
+  `actions/github-script`. The config:
 
   ```json
   {
@@ -1085,9 +1087,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   nothing more: its `pending` stays, which a newer run's verdict replaces, and
   a run that hits its timeout leaves `pending` too.
 
-  To turn the hold on, a repository adds the caller below and requires
-  `trust-path-hold` in its ruleset, an edit in `melodic-software/github-iac`;
-  without that requirement the status is advisory. The caller:
+  The hold is off org-wide: no ruleset requires `trust-path-hold`, so the
+  status is advisory. Requiring it as is would break
+  `CiStatusIsTheOnlyRequiredCheckAcrossEveryRuleset` (github-iac ADR 0017),
+  and since the check runs only on `pull_request_target`, merge-queue entries
+  would wait 30 minutes for it and time out. Turning it on needs a
+  `merge_group` answer, such as `ci-status` reading `trust-path-hold`, and a
+  github-iac exception. The caller:
 
   ```yaml
   on:
@@ -1107,8 +1113,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   The concurrency block is the standards concurrency-policy canonical form. A
-  run that never starts posts nothing, so a ruleset that requires
-  `trust-path-hold` holds until one does. Any workflow with `statuses: write`
+  run that never starts posts nothing, so the status stays absent until one
+  does. Any workflow with `statuses: write`
   can post a later `trust-path-hold`, and the latest status wins.
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
