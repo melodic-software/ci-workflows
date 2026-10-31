@@ -234,9 +234,10 @@ jobs:
     # Capped at the 16-minute ceiling set for every CI job (960 s). Outside the
     # review step, 1,366 successful jobs on claude-code-plugins (2026-09-29 to
     # 2026-10-01) took p95 17 s, max 82 s, and the scope and record steps took
-    # 1 s each on ci-workflows#653; the 1-minute isolation install and the
-    # step's 13 minutes (780 s) leave 38 s for that work and the full-diff step,
-    # which is capped at 1 minute and not yet measured: a fetch and a local diff.
+    # 1 s each on ci-workflows#653. The step's 13 minutes (780 s) and the
+    # 1-minute isolation install leave 120 s for that 82 s and the full-diff
+    # step, capped at 60 s and not yet measured (a fetch and a local diff), so
+    # a job that reaches all of those limits needs 982 s, 22 s past the ceiling.
     # Incremental scoping, not a longer step, shortens the reviews that reach
     # the limit. A job that runs out never concludes success, so the check never
     # claims a review it did not finish.
@@ -557,8 +558,8 @@ jobs:
       # request's diff, and the model's own sandbox may have no network. The
       # verify step reads `written`: without it a whole review would cover
       # part of the change, so it concludes `incomplete`. An incremental
-      # review already has its complete diff from the scope step. The fetch
-      # and diff take seconds; the cap keeps the job inside its timeout.
+      # review already has its complete diff from the scope step. The 1-minute
+      # cap bounds the fetch and diff; the job's timeout comment has the budget.
       - name: Write the full diff
         id: full-diff
         if: steps.scope.outputs.review != 'false' && steps.scope.outputs.scope != 'incremental'
@@ -1093,16 +1094,26 @@ jobs:
               Array.isArray(message?.message?.content) ? message.message.content : [],
             );
             const results = parts.filter((part) => part?.type === "tool_result");
+            const toolIds = (matches) =>
+              new Set(parts.filter((part) => part?.type === "tool_use" && matches(part)).map((part) => part.id));
+            const succeeded = (ids) => results.some((result) => result.is_error !== true && ids.has(result.tool_use_id));
             const DIFF_FILE = /(?:^|\/)\.claude-lane\/(?:pr|incremental)\.diff$/u;
-            const diffReads = new Set(
-              parts
-                .filter((part) => part?.type === "tool_use" && part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""))
-                .map((part) => part.id),
+            const diffReads = toolIds((part) => part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""));
+            const bashCalls = toolIds((part) => part.name === "Bash");
+            const prDiffs = toolIds((part) => part.name === "Bash" && String(part.input?.command ?? "").includes("gh pr diff"));
+            const noShell = results.some(
+              (result) =>
+                result.is_error === true && bashCalls.has(result.tool_use_id) && JSON.stringify(result.content ?? "").includes("bwrap:"),
             );
-            const noShell = results.some((result) => result.is_error === true && JSON.stringify(result.content ?? "").includes("bwrap:"));
-            const readDiff = results.some((result) => result.is_error !== true && diffReads.has(result.tool_use_id));
+            const readDiff = succeeded(diffReads);
             if (noShell && !readDiff) {
               return incomplete("bwrap could not start, so the shell failed, and the diff file was never read, so the review saw no change");
+            }
+            if (noShell) core.warning("A Bash call failed on bwrap, so this review ran with no working shell; it did read its diff file.");
+            // Warns only: this measures how often the file shows no diff access,
+            // since whether it records subagent tool calls is unproven.
+            if (Array.isArray(messages) && !readDiff && !succeeded(prDiffs)) {
+              core.warning("The execution file shows no successful Read of the diff file and no successful gh pr diff.");
             }
             // Every `manifest <field>: flag` line in the summary is a finding, so a
             // count below those lines is raised to them, never trusted.

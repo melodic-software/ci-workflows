@@ -1250,16 +1250,26 @@ jobs:
               Array.isArray(message?.message?.content) ? message.message.content : [],
             );
             const results = parts.filter((part) => part?.type === "tool_result");
+            const toolIds = (matches) =>
+              new Set(parts.filter((part) => part?.type === "tool_use" && matches(part)).map((part) => part.id));
+            const succeeded = (ids) => results.some((result) => result.is_error !== true && ids.has(result.tool_use_id));
             const DIFF_FILE = /(?:^|\/)\.claude-lane\/(?:pr|incremental)\.diff$/u;
-            const diffReads = new Set(
-              parts
-                .filter((part) => part?.type === "tool_use" && part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""))
-                .map((part) => part.id),
+            const diffReads = toolIds((part) => part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""));
+            const bashCalls = toolIds((part) => part.name === "Bash");
+            const prDiffs = toolIds((part) => part.name === "Bash" && String(part.input?.command ?? "").includes("gh pr diff"));
+            const noShell = results.some(
+              (result) =>
+                result.is_error === true && bashCalls.has(result.tool_use_id) && JSON.stringify(result.content ?? "").includes("bwrap:"),
             );
-            const noShell = results.some((result) => result.is_error === true && JSON.stringify(result.content ?? "").includes("bwrap:"));
-            const readDiff = results.some((result) => result.is_error !== true && diffReads.has(result.tool_use_id));
+            const readDiff = succeeded(diffReads);
             if (noShell && !readDiff) {
               return incomplete("bwrap could not start, so the shell failed, and the diff file was never read, so the review saw no change");
+            }
+            if (noShell) core.warning("A Bash call failed on bwrap, so this review ran with no working shell; it did read its diff file.");
+            // Warns only: this measures how often the file shows no diff access,
+            // since whether it records subagent tool calls is unproven.
+            if (Array.isArray(messages) && !readDiff && !succeeded(prDiffs)) {
+              core.warning("The execution file shows no successful Read of the diff file and no successful gh pr diff.");
             }
             // Every `manifest <field>: flag` line in the summary is a finding, so a
             // count below those lines is raised to them, never trusted.

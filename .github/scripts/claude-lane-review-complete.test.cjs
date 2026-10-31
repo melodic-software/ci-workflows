@@ -753,6 +753,14 @@ const executionFile = (text) => {
 };
 const diffPath = (name) => `/runner/work/r/r/.claude-lane/${name}.diff`;
 const clean = { structured: { findings: 0 } };
+const warnings = (messages) =>
+  messages
+    .filter((line) => line.startsWith("warning: "))
+    .map((line) => line.slice("warning: ".length));
+const DEAD_SHELL =
+  "A Bash call failed on bwrap, so this review ran with no working shell; it did read its diff file.";
+const NO_DIFF_ACCESS =
+  "The execution file shows no successful Read of the diff file and no successful gh pr diff.";
 
 for (const lane of lanes) {
   test(`${lane.lane}: the verify step reads the attempt that counts' execution file`, () => {
@@ -795,42 +803,33 @@ for (const lane of lanes) {
     }
   });
 
-  test(`${lane.lane}: a failed shell with the diff file read stays complete`, async () => {
-    for (const [scope, name] of [
-      ["whole", "pr"],
-      ["incremental", "incremental"],
+  test(`${lane.lane}: a failed shell with the diff file read stays complete and warns the shell is dead`, async () => {
+    for (const [scope, filePath] of [
+      ["whole", diffPath("pr")],
+      ["incremental", diffPath("incremental")],
+      ["whole", ".claude-lane/pr.diff"],
     ]) {
-      const { outputs } = await verify(lane, {
+      const { outputs, messages } = await verify(lane, {
         ...clean,
         scope,
         executionFile: executionFile(
           JSON.stringify([
             ...blindShell,
-            toolUse("r1", "Read", { file_path: diffPath(name) }),
+            toolUse("r1", "Read", { file_path: filePath }),
             toolResult("r1", "@@ -1 +1 @@", false),
           ]),
         ),
       });
       assert.equal(outputs.verdict, "complete");
+      assert.deepEqual(warnings(messages), [DEAD_SHELL]);
     }
-    const relative = await verify(lane, {
-      ...clean,
-      executionFile: executionFile(
-        JSON.stringify([
-          ...blindShell,
-          toolUse("r1", "Read", { file_path: ".claude-lane/pr.diff" }),
-          toolResult("r1", "@@ -1 +1 @@", false),
-        ]),
-      ),
-    });
-    assert.equal(relative.outputs.verdict, "complete");
   });
 
-  test(`${lane.lane}: an execution file with no bwrap failure stays complete`, async () => {
+  test(`${lane.lane}: no failed Bash call naming bwrap means no blind review`, async () => {
     const quiet = [
       // A failure that does not name bwrap.
       [
-        toolUse("b1", "Bash", { command: "false" }),
+        toolUse("b1", "Bash", { command: "gh pr diff 7" }),
         toolResult("b1", "Exit code 1", true),
       ],
       // A successful result quoting the text, as a review of this check would.
@@ -838,6 +837,13 @@ for (const lane of lanes) {
         toolUse("b1", "Bash", { command: "gh pr diff 7" }),
         toolResult("b1", BWRAP, false),
       ],
+      // A failed non-Bash result quoting the text.
+      [
+        toolUse("r1", "Read", { file_path: "/runner/work/r/r/notes.md" }),
+        toolResult("r1", BWRAP, true),
+      ],
+      // A failed result no Bash call owns.
+      [toolResult("x1", BWRAP, true)],
       [],
     ];
     for (const messages of quiet) {
@@ -846,10 +852,51 @@ for (const lane of lanes) {
         executionFile: executionFile(JSON.stringify(messages)),
       });
       assert.equal(outputs.verdict, "complete");
-      assert.deepEqual(
-        logged.filter((line) => line.startsWith("warning:")),
-        [],
-      );
+      assert.ok(!warnings(logged).includes(DEAD_SHELL));
+    }
+  });
+
+  test(`${lane.lane}: a parsed execution file with no diff access warns and stays complete`, async () => {
+    const unseen = [
+      [],
+      [
+        toolUse("b1", "Bash", { command: "gh pr diff 7" }),
+        toolResult("b1", "Exit code 1", true),
+      ],
+      [
+        toolUse("b1", "Bash", { command: "git status" }),
+        toolResult("b1", "clean", false),
+      ],
+      [
+        toolUse("r1", "Read", { file_path: diffPath("pr") }),
+        toolResult("r1", "File does not exist.", true),
+      ],
+    ];
+    for (const messages of unseen) {
+      const { outputs, messages: logged } = await verify(lane, {
+        ...clean,
+        executionFile: executionFile(JSON.stringify(messages)),
+      });
+      assert.equal(outputs.verdict, "complete");
+      assert.deepEqual(warnings(logged), [NO_DIFF_ACCESS]);
+    }
+    const seen = [
+      [
+        toolUse("r1", "Read", { file_path: diffPath("pr") }),
+        toolResult("r1", "@@ -1 +1 @@", false),
+      ],
+      [
+        toolUse("b1", "Bash", { command: "gh pr diff 7 --patch" }),
+        toolResult("b1", "@@ -1 +1 @@", false),
+      ],
+    ];
+    for (const messages of seen) {
+      const { outputs, messages: logged } = await verify(lane, {
+        ...clean,
+        executionFile: executionFile(JSON.stringify(messages)),
+      });
+      assert.equal(outputs.verdict, "complete");
+      assert.deepEqual(warnings(logged), []);
     }
   });
 

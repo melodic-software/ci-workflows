@@ -1386,9 +1386,10 @@ written. On a whole review each lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
 cannot be written, the review is `incomplete`. A review is also `incomplete`
-when its execution file holds a failed tool result naming `bwrap:` and no
-successful Read of the diff file; an execution file that cannot be read warns
-and proves nothing.
+when its execution file holds a failed Bash result naming `bwrap:` and no
+successful Read of the diff file; with that Read it stays complete and warns.
+An execution file that cannot be read warns and proves nothing, and one that
+shows no successful Read of the diff file and no successful `gh pr diff` warns.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
