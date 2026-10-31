@@ -1007,16 +1007,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fetch-metadata succeeded; every update is `github_actions` or, unless the
   caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`
   (docker, uv, dotnet-sdk and other ecosystems stay manual); every GitHub
-  Actions dependency name matches the publisher allowlist (`actions/*`,
-  `github/*`, `anthropics/*`, mirroring standards `dependabot-policy`
-  `autoMerge`); no package name is in the caller's `review-only-dependencies`
-  JSON array (its `autoMerge.reviewOnly` entries); every update is semver patch
-  or minor, and a version below 1.0 keeps its minor component; and every
-  commit, head included, has author `49699333`, committer web-flow
+  Actions dependency name matches a glob in the caller's `publisher-allowlist`
+  JSON array (default `["actions/*","github/*","anthropics/*"]`, mirroring
+  standards `dependabot-policy` `autoMerge`; an input that is not a JSON array
+  of non-empty strings arms nothing); no package name is in the caller's
+  `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
+  every update is semver patch or minor, and a version below 1.0 keeps its
+  minor component; and every commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. A repository that adopts it
   records it as the merge authority for Dependabot PRs. A repository where a
-  merge can lead to a deploy passes `package-auto-merge: false`. Package
+  merge can lead to a deploy passes `package-auto-merge: false`. A caller that
+  wants a person on a publisher's bumps, such as a third-party action that
+  receives its secrets, passes a narrower `publisher-allowlist`. Package
   updates have no publisher allowlist, and this workflow does not check a
   cooldown. The delay against a malicious patch or minor release lives in each
   caller's `.github/dependabot.yml` `cooldown`, and the standards
