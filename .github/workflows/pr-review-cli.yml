@@ -668,6 +668,9 @@ jobs:
               });
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+              // Measured here, not re-read from the path: the head could put a
+              // symlink at it.
+              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -766,6 +769,7 @@ jobs:
                 core.setOutput("scope", last ? "incremental" : "whole");
                 if (last) {
                   core.setOutput("since", last);
+                  core.setOutput("files", String(scope.length));
                   const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
                   if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
                   core.setOutput(
@@ -805,6 +809,9 @@ jobs:
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
+          # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
+          # inside a pipe must still fail the step, so the review is incomplete.
+          set -o pipefail
           if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
             base="$MERGE_BASE"
           else
@@ -830,10 +837,14 @@ jobs:
           mkdir -p "$(dirname "$DIFF_FILE")"
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
-          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # The byte count is the diff's own, measured in the pipe, so a symlink
+          # the head commits at the path cannot shrink it.
+          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
+            echo "files=$files"
+            echo "bytes=$bytes"
             echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
 
@@ -1075,6 +1086,7 @@ jobs:
               additionalProperties: false,
               properties: {
                 findings: { type: "integer", minimum: 0 },
+                files_read: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
                 comments: { type: "array", maxItems: 25, items: comment },
                 hold: {
@@ -1092,7 +1104,7 @@ jobs:
                   required: ["criteria", "reason"],
                 },
               },
-              required: ["findings", "summary", "comments"],
+              required: ["findings", "files_read", "summary", "comments"],
             };
             // Owner decisions Q52 and Q53 (2026-10-24): only a real security
             // issue or a real charge stops a pull request for a person.
@@ -1130,6 +1142,9 @@ jobs:
               "  goes in summary instead; link its code to the commit blob with a line-numbered permalink:",
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
+              "- files_read: how many of the changed files in scope you read every hunk of in the diff",
+              "  file. Count a file only when you read its whole change; a review that read fewer is",
+              "  reported as partial, never as complete.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -1281,6 +1296,10 @@ jobs:
           MODE_OK: ${{ steps.mode.outputs.ok }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           FULL_DIFF: ${{ steps.full-diff.outputs.written }}
+          SCOPE_FILES: ${{ steps.scope.outputs.files }}
+          WHOLE_FILES: ${{ steps.full-diff.outputs.files }}
+          SCOPE_DIFF: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          SCOPE_BYTES: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}
         with:
           script: |
             const fs = require("node:fs");
@@ -1373,6 +1392,31 @@ jobs:
               }
               hold = { criteria, reason };
             }
+            // Coverage: the changed files the review read, of those in scope. The
+            // count in scope and the diff's size come from this job; the model
+            // supplies only how many it read, capped at that count. A diff over
+            // one review's read budget (pr-verify's 300000-byte chunk,
+            // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
+            // partial whatever the model reports.
+            const READ_BUDGET = 300000;
+            const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
+            if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
+            if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return incomplete("the review returned no files_read count");
+            // The size the writing step measured; the file must be a regular
+            // file, never a symlink the head committed in its place.
+            let regular = false;
+            try {
+              regular = fs.lstatSync(env.SCOPE_DIFF).isFile();
+            } catch {}
+            if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
+            if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            const bytes = Number(env.SCOPE_BYTES);
+            const changed = Number(counted);
+            const coverage = {
+              read: Math.min(raw.files_read, changed),
+              changed,
+              ...(bytes > READ_BUDGET ? { over_budget: bytes } : {}),
+            };
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length + malformed.length, flags);
             // The status job receives the review as one environment string, which
@@ -1380,6 +1424,7 @@ jobs:
             // ASCII review near 100 KB, and anything over that is not passed on.
             const review = JSON.stringify({
               findings,
+              coverage,
               summary,
               comments,
               ...(malformed.length > 0 ? { malformed } : {}),
@@ -1784,6 +1829,9 @@ jobs:
               });
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+              // Measured here, not re-read from the path: the head could put a
+              // symlink at it.
+              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -1882,6 +1930,7 @@ jobs:
                 core.setOutput("scope", last ? "incremental" : "whole");
                 if (last) {
                   core.setOutput("since", last);
+                  core.setOutput("files", String(scope.length));
                   const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
                   if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
                   core.setOutput(
@@ -1921,6 +1970,9 @@ jobs:
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
+          # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
+          # inside a pipe must still fail the step, so the review is incomplete.
+          set -o pipefail
           if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
             base="$MERGE_BASE"
           else
@@ -1946,10 +1998,14 @@ jobs:
           mkdir -p "$(dirname "$DIFF_FILE")"
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
-          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # The byte count is the diff's own, measured in the pipe, so a symlink
+          # the head commits at the path cannot shrink it.
+          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
+            echo "files=$files"
+            echo "bytes=$bytes"
             echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
 
@@ -2191,6 +2247,7 @@ jobs:
               additionalProperties: false,
               properties: {
                 findings: { type: "integer", minimum: 0 },
+                files_read: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
                 comments: { type: "array", maxItems: 25, items: comment },
                 hold: {
@@ -2208,7 +2265,7 @@ jobs:
                   required: ["criteria", "reason"],
                 },
               },
-              required: ["findings", "summary", "comments"],
+              required: ["findings", "files_read", "summary", "comments"],
             };
             // Owner decisions Q52 and Q53 (2026-10-24): only a real security
             // issue or a real charge stops a pull request for a person.
@@ -2246,6 +2303,9 @@ jobs:
               "  goes in summary instead; link its code to the commit blob with a line-numbered permalink:",
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
+              "- files_read: how many of the changed files in scope you read every hunk of in the diff",
+              "  file. Count a file only when you read its whole change; a review that read fewer is",
+              "  reported as partial, never as complete.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -2398,6 +2458,10 @@ jobs:
           MODE_OK: ${{ steps.mode.outputs.ok }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           FULL_DIFF: ${{ steps.full-diff.outputs.written }}
+          SCOPE_FILES: ${{ steps.scope.outputs.files }}
+          WHOLE_FILES: ${{ steps.full-diff.outputs.files }}
+          SCOPE_DIFF: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          SCOPE_BYTES: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}
         with:
           script: |
             const fs = require("node:fs");
@@ -2490,6 +2554,31 @@ jobs:
               }
               hold = { criteria, reason };
             }
+            // Coverage: the changed files the review read, of those in scope. The
+            // count in scope and the diff's size come from this job; the model
+            // supplies only how many it read, capped at that count. A diff over
+            // one review's read budget (pr-verify's 300000-byte chunk,
+            // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
+            // partial whatever the model reports.
+            const READ_BUDGET = 300000;
+            const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
+            if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
+            if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return incomplete("the review returned no files_read count");
+            // The size the writing step measured; the file must be a regular
+            // file, never a symlink the head committed in its place.
+            let regular = false;
+            try {
+              regular = fs.lstatSync(env.SCOPE_DIFF).isFile();
+            } catch {}
+            if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
+            if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            const bytes = Number(env.SCOPE_BYTES);
+            const changed = Number(counted);
+            const coverage = {
+              read: Math.min(raw.files_read, changed),
+              changed,
+              ...(bytes > READ_BUDGET ? { over_budget: bytes } : {}),
+            };
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length + malformed.length, flags);
             // The status job receives the review as one environment string, which
@@ -2497,6 +2586,7 @@ jobs:
             // ASCII review near 100 KB, and anything over that is not passed on.
             const review = JSON.stringify({
               findings,
+              coverage,
               summary,
               comments,
               ...(malformed.length > 0 ? { malformed } : {}),
@@ -2905,6 +2995,9 @@ jobs:
               });
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
+              // Measured here, not re-read from the path: the head could put a
+              // symlink at it.
+              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -3003,6 +3096,7 @@ jobs:
                 core.setOutput("scope", last ? "incremental" : "whole");
                 if (last) {
                   core.setOutput("since", last);
+                  core.setOutput("files", String(scope.length));
                   const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
                   if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
                   core.setOutput(
@@ -3042,6 +3136,9 @@ jobs:
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
         run: |
+          # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
+          # inside a pipe must still fail the step, so the review is incomplete.
+          set -o pipefail
           if [[ "$MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]; then
             base="$MERGE_BASE"
           else
@@ -3067,10 +3164,14 @@ jobs:
           mkdir -p "$(dirname "$DIFF_FILE")"
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
-          git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          # The byte count is the diff's own, measured in the pipe, so a symlink
+          # the head commits at the path cannot shrink it.
+          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
+            echo "files=$files"
+            echo "bytes=$bytes"
             echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
 
@@ -3312,6 +3413,7 @@ jobs:
               additionalProperties: false,
               properties: {
                 findings: { type: "integer", minimum: 0 },
+                files_read: { type: "integer", minimum: 0 },
                 summary: { type: "string", minLength: 1, maxLength: 20000 },
                 comments: { type: "array", maxItems: 25, items: comment },
                 hold: {
@@ -3329,7 +3431,7 @@ jobs:
                   required: ["criteria", "reason"],
                 },
               },
-              required: ["findings", "summary", "comments"],
+              required: ["findings", "files_read", "summary", "comments"],
             };
             // Owner decisions Q52 and Q53 (2026-10-24): only a real security
             // issue or a real charge stops a pull request for a person.
@@ -3367,6 +3469,9 @@ jobs:
               "  goes in summary instead; link its code to the commit blob with a line-numbered permalink:",
               `  https://github.com/${env.REPOSITORY}/blob/${env.HEAD_SHA}/<path>#L<line>`,
               "- findings: the number of findings you report, comments included (0 when none).",
+              "- files_read: how many of the changed files in scope you read every hunk of in the diff",
+              "  file. Count a file only when you read its whole change; a review that read fewer is",
+              "  reported as partial, never as complete.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -3517,6 +3622,10 @@ jobs:
           MODE_OK: ${{ steps.mode.outputs.ok }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           FULL_DIFF: ${{ steps.full-diff.outputs.written }}
+          SCOPE_FILES: ${{ steps.scope.outputs.files }}
+          WHOLE_FILES: ${{ steps.full-diff.outputs.files }}
+          SCOPE_DIFF: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          SCOPE_BYTES: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}
         with:
           script: |
             const fs = require("node:fs");
@@ -3609,6 +3718,31 @@ jobs:
               }
               hold = { criteria, reason };
             }
+            // Coverage: the changed files the review read, of those in scope. The
+            // count in scope and the diff's size come from this job; the model
+            // supplies only how many it read, capped at that count. A diff over
+            // one review's read budget (pr-verify's 300000-byte chunk,
+            // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
+            // partial whatever the model reports.
+            const READ_BUDGET = 300000;
+            const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
+            if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
+            if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return incomplete("the review returned no files_read count");
+            // The size the writing step measured; the file must be a regular
+            // file, never a symlink the head committed in its place.
+            let regular = false;
+            try {
+              regular = fs.lstatSync(env.SCOPE_DIFF).isFile();
+            } catch {}
+            if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
+            if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            const bytes = Number(env.SCOPE_BYTES);
+            const changed = Number(counted);
+            const coverage = {
+              read: Math.min(raw.files_read, changed),
+              changed,
+              ...(bytes > READ_BUDGET ? { over_budget: bytes } : {}),
+            };
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
             const findings = Math.max(raw.findings, comments.length + malformed.length, flags);
             // The status job receives the review as one environment string, which
@@ -3616,6 +3750,7 @@ jobs:
             // ASCII review near 100 KB, and anything over that is not passed on.
             const review = JSON.stringify({
               findings,
+              coverage,
               summary,
               comments,
               ...(malformed.length > 0 ? { malformed } : {}),

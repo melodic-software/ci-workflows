@@ -1383,8 +1383,8 @@ the cause, whenever no review happened: a failed attempt (`auth`,
 skipping itself because the
 PR edits the caller workflow (`skipped-validation`), bubblewrap unable to
 create a namespace so no review ran (`sandbox-unavailable`), a review that did
-not complete (`incomplete`), or a job that ended before the review reported
-(`no-outcome`). A review that was not needed
+not complete (`incomplete`), a review that read only part of its scope
+(`partial`), or a job that ended before the review reported (`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
 
 **Completion.** A green Claude step is not taken as a review. The model
@@ -1407,6 +1407,16 @@ when its execution file holds a failed Bash result naming `bwrap:` and no
 successful Read of the diff file; with that Read it stays complete and warns.
 An execution file that cannot be read warns and proves nothing, and one that
 shows no successful Read of the diff file and no successful `gh pr diff` warns.
+
+**Coverage.** In `pr-review-cli.yml` the model also returns `files_read`, how
+many of the changed files in scope it read whole; the job counts the files in
+scope and the diff's bytes itself. A review that read fewer files than it
+changed, or whose diff is over one review's 300000-byte read budget, is
+`partial`: red, no completion notice, and its comment's first visible line
+states `read <n> of <m> changed file(s)` before the findings count, with the
+hidden marker at `sha=none` so the next push reviews the whole pull request
+and no merge gate reads the head as reviewed. A review with no `files_read`
+is `incomplete`.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to

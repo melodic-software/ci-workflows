@@ -288,7 +288,13 @@ function fakeCore() {
 }
 
 const review = (extra = {}) =>
-  JSON.stringify({ findings: 0, summary: "S", comments: [], ...extra });
+  JSON.stringify({
+    findings: 0,
+    coverage: { read: 1, changed: 1 },
+    summary: "S",
+    comments: [],
+    ...extra,
+  });
 
 const baseEnv = (extra = {}) => ({
   HOLD_LABEL: "needs-human",

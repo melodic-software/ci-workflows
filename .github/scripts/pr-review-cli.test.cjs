@@ -339,7 +339,8 @@ test("after a key-credit skip, publish reads the counted token leg's success, no
   const { judge } = require("../actions/publish-review/publish.cjs");
   const pick = step(status, "token-leg");
   assert.equal(pick.with["result-encoding"] ?? "json", "json");
-  const REVIEW = '{"findings":0,"summary":"No findings.","comments":[]}';
+  const REVIEW =
+    '{"findings":0,"coverage":{"read":1,"changed":1},"summary":"No findings.","comments":[]}';
   const ok = {
     PRESENT: "true",
     FAILED: "false",
@@ -1067,12 +1068,18 @@ async function extract(files, env = {}) {
   }
   const outputs = {};
   const warnings = [];
+  const diff = path.join(dir, "pr.diff");
+  fs.writeFileSync(diff, files.diff ?? "diff --git a/a.js b/a.js\n");
   const values = {
     STRUCTURED_FILE: paths.structured ?? "",
     LOG_FILE: paths.log ?? "",
     MODE_OK: "true",
     SCOPE: "whole",
     FULL_DIFF: "true",
+    SCOPE_FILES: "",
+    WHOLE_FILES: "1",
+    SCOPE_DIFF: diff,
+    SCOPE_BYTES: "24",
     ...env,
   };
   const saved = Object.fromEntries(
@@ -1116,6 +1123,7 @@ test("the extract step passes on a well-formed review with the scanned log's fac
   const outputs = await extract({
     structured: JSON.stringify({
       findings: 0,
+      files_read: 1,
       summary: "One issue.<!-- hidden -->\n- `manifest name: flag`",
       comments: [COMMENT],
     }),
@@ -1125,6 +1133,7 @@ test("the extract step passes on a well-formed review with the scanned log's fac
   // Raised to the larger of one comment and one manifest flag line.
   assert.deepEqual(JSON.parse(outputs.review), {
     findings: 1,
+    coverage: { read: 1, changed: 1 },
     summary: "One issue.\n- `manifest name: flag`",
     comments: [COMMENT],
   });
@@ -1136,7 +1145,12 @@ test("the extract step passes on a well-formed review with the scanned log's fac
 });
 
 test("the extract step calls a review incomplete on every gap it checks", async () => {
-  const good = { findings: 1, summary: "S", comments: [COMMENT] };
+  const good = {
+    files_read: 1,
+    findings: 1,
+    summary: "S",
+    comments: [COMMENT],
+  };
   for (const [files, env, reason] of [
     [
       { structured: JSON.stringify(good) },
@@ -1163,7 +1177,7 @@ test("the extract step calls a review incomplete on every gap it checks", async 
   // An incremental review needs no full diff.
   const outputs = await extract(
     { structured: JSON.stringify(good) },
-    { FULL_DIFF: "", SCOPE: "incremental" },
+    { FULL_DIFF: "", SCOPE: "incremental", SCOPE_FILES: "1" },
   );
   assert.equal(outputs.verdict, "complete");
 });
@@ -1179,6 +1193,7 @@ test("the extract step keeps the valid comments and passes a malformed one on fo
     const outputs = await extract({
       structured: JSON.stringify({
         findings: 0,
+        files_read: 1,
         summary: "S",
         comments: [bad, COMMENT],
       }),
@@ -1195,6 +1210,7 @@ test("the extract step keeps the valid comments and passes a malformed one on fo
   const located = await extract({
     structured: JSON.stringify({
       findings: 1,
+      files_read: 1,
       summary: "S",
       comments: [
         { path: "a.js", line: 7, side: "BOTH", body: "B" },
@@ -1212,6 +1228,7 @@ test("the extract step drops a comment with no body, with a warning", async () =
   const outputs = await extract({
     structured: JSON.stringify({
       findings: 1,
+      files_read: 1,
       summary: "S",
       comments: [COMMENT, { ...COMMENT, body: "  " }, { path: "a.js" }],
     }),
@@ -1229,6 +1246,7 @@ test("the extract step passes on a review no larger than one environment string 
   const comment = (body) => ({ ...COMMENT, body });
   const largest = {
     findings: 25,
+    files_read: 1,
     summary: "s".repeat(20000),
     comments: Array.from({ length: 25 }, () => comment("b".repeat(3000))),
   };
@@ -1247,7 +1265,7 @@ test("the extract step passes on a review no larger than one environment string 
 });
 
 test("the extract step carries a well-formed hold and calls a malformed one incomplete", async () => {
-  const good = { findings: 0, summary: "S", comments: [] };
+  const good = { files_read: 1, findings: 0, summary: "S", comments: [] };
   const held = await extract({
     structured: JSON.stringify({
       ...good,
@@ -1402,6 +1420,7 @@ test("the prompt sends hold-paths to extra security scrutiny and holds cost only
 test("the review with the largest hold still fits one environment string", async () => {
   const largest = {
     findings: 25,
+    files_read: 1,
     summary: "s".repeat(20000),
     comments: Array.from({ length: 25 }, () => ({
       ...COMMENT,
@@ -1592,4 +1611,209 @@ test("the full diff shows text the base or head marks -diff or binary, or hides 
       /^written=true$/mu,
     );
   }
+});
+
+// Coverage: files read of the changed files in scope. The count in scope and
+// the diff's size come from the job; the model gives only files_read.
+test("the extract step records coverage from the job's counts and the model's files_read", async () => {
+  const review = (files_read) =>
+    JSON.stringify({ findings: 0, files_read, summary: "S", comments: [] });
+  const full = await extract({ structured: review(3) }, { WHOLE_FILES: "3" });
+  assert.equal(full.verdict, "complete");
+  assert.deepEqual(JSON.parse(full.review).coverage, { read: 3, changed: 3 });
+  const partial = await extract(
+    { structured: review(2) },
+    { WHOLE_FILES: "1186" },
+  );
+  assert.equal(partial.verdict, "complete");
+  assert.deepEqual(JSON.parse(partial.review).coverage, {
+    read: 2,
+    changed: 1186,
+  });
+  // A count past the scope is capped at it.
+  const over = await extract({ structured: review(9) }, { WHOLE_FILES: "3" });
+  assert.deepEqual(JSON.parse(over.review).coverage, { read: 3, changed: 3 });
+  // An incremental review counts the files in its scope, not the whole diff's.
+  const incremental = await extract(
+    { structured: review(1) },
+    {
+      SCOPE: "incremental",
+      FULL_DIFF: "",
+      SCOPE_FILES: "2",
+      WHOLE_FILES: "40",
+    },
+  );
+  assert.deepEqual(JSON.parse(incremental.review).coverage, {
+    read: 1,
+    changed: 2,
+  });
+});
+
+test("a diff over one review's read budget is partial whatever the model reports", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-budget-");
+  const diff = path.join(dir, "pr.diff");
+  fs.writeFileSync(diff, "+".repeat(300001));
+  const outputs = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 5,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300001" },
+  );
+  assert.equal(outputs.verdict, "complete");
+  assert.deepEqual(JSON.parse(outputs.review).coverage, {
+    read: 5,
+    changed: 5,
+    over_budget: 300001,
+  });
+  fs.writeFileSync(diff, "+".repeat(300000));
+  const fits = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 5,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300000" },
+  );
+  assert.deepEqual(JSON.parse(fits.review).coverage, { read: 5, changed: 5 });
+});
+
+test("the extract step calls a review with no coverage it can check incomplete", async () => {
+  const good = { findings: 0, files_read: 1, summary: "S", comments: [] };
+  for (const [structured, env, reason] of [
+    [{ ...good, files_read: undefined }, {}, /no files_read count/u],
+    [{ ...good, files_read: -1 }, {}, /no files_read count/u],
+    [{ ...good, files_read: 1.5 }, {}, /no files_read count/u],
+    [good, { WHOLE_FILES: "" }, /could not count the changed files/u],
+    [good, { WHOLE_FILES: "3x" }, /could not count the changed files/u],
+    [
+      good,
+      { SCOPE: "incremental", SCOPE_FILES: "" },
+      /could not count the changed files/u,
+    ],
+    [
+      good,
+      { SCOPE_DIFF: "/nonexistent/pr.diff" },
+      /diff file in scope is missing or not a regular file/u,
+    ],
+    [good, { SCOPE_BYTES: "" }, /could not measure the diff/u],
+  ]) {
+    const outputs = await extract(
+      { structured: JSON.stringify(structured) },
+      env,
+    );
+    assert.match(outputs.verdict, reason, JSON.stringify(env));
+    assert.equal(outputs.review, undefined);
+  }
+});
+
+// A head that commits a symlink at the diff path (to /dev/null, say) must not
+// pass for a small diff: the size comes from the writing step, and the path
+// must be a regular file.
+test("a diff path the head replaced with a symlink is incomplete", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-symlink-");
+  const link = path.join(dir, "pr.diff");
+  fs.symlinkSync("/dev/null", link);
+  const outputs = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 1,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { SCOPE_DIFF: link, SCOPE_BYTES: "0" },
+  );
+  assert.match(outputs.verdict, /not a regular file/u);
+  assert.equal(outputs.review, undefined);
+});
+
+test("every model leg wires the coverage counts and asks the model for files_read", () => {
+  for (const job of [key, subscription, fallback]) {
+    const env = step(job, "extract").env;
+    assert.equal(
+      env.SCOPE_FILES,
+      `\${{ steps.scope.outputs.files }}`,
+      job.name,
+    );
+    assert.equal(
+      env.WHOLE_FILES,
+      `\${{ steps.full-diff.outputs.files }}`,
+      job.name,
+    );
+    assert.equal(
+      env.SCOPE_DIFF,
+      `\${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}`,
+      job.name,
+    );
+    assert.equal(
+      step(job, "scope").env.DIFF_FILE,
+      ".claude-lane/incremental.diff",
+    );
+    assert.equal(step(job, "full-diff").env.DIFF_FILE, ".claude-lane/pr.diff");
+    assert.match(step(job, "full-diff").run, /^ {2}echo "files=\$files"$/mu);
+    assert.match(step(job, "full-diff").run, /^ {2}echo "bytes=\$bytes"$/mu);
+    assert.match(step(job, "full-diff").run, /\| tee "\$DIFF_FILE" \| wc -c/u);
+    assert.match(step(job, "full-diff").run, /^set -o pipefail$/mu);
+    assert.match(step(job, "scope").with.script, /core\.setOutput\("bytes", /u);
+    assert.equal(
+      env.SCOPE_BYTES,
+      `\${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}`,
+      job.name,
+    );
+    assert.match(
+      step(job, "scope").with.script,
+      /core\.setOutput\("files", String\(scope\.length\)\);/u,
+    );
+    const compose = step(job, "compose").with.script;
+    assert.match(
+      compose,
+      /required: \["findings", "files_read", "summary", "comments"\]/u,
+    );
+    assert.match(compose, /"- files_read: /u);
+    assert.equal(
+      step(job, "extract").with.script,
+      step(key, "extract").with.script,
+    );
+  }
+});
+
+test("the full-diff step fails when git diff fails inside its pipe", () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-pipefail-");
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, "git"),
+    '#!/usr/bin/env bash\n[ "$1" = diff ] && exit 128\nexit 0\n',
+    { mode: 0o755 },
+  );
+  const output = path.join(dir, "out");
+  fs.writeFileSync(output, "");
+  const result = require("node:child_process").spawnSync(
+    "bash",
+    ["-e", "-c", step(key, "full-diff").run],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        GH_TOKEN: "t",
+        MERGE_BASE: "b".repeat(40),
+        HEAD_SHA: "a".repeat(40),
+        DIFF_FILE: ".claude-lane/pr.diff",
+        GITHUB_OUTPUT: output,
+        GITHUB_SERVER_URL: "https://github.com",
+      },
+    },
+  );
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(fs.readFileSync(output, "utf8"), /written=true/u);
 });
