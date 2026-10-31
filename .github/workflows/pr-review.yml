@@ -858,7 +858,7 @@ jobs:
         if: steps.scope.outputs.review != 'false' && steps.sandbox.outcome != 'failure'
         continue-on-error: true
         timeout-minutes: 11
-        uses: anthropics/claude-code-action@8041f1d17e0e7d2f2cfe35002962e9f26237c0bb # v1.0.263
+        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
         env:
           # The action stops reading at Claude's first result message
           # (base-action/src/run-claude-sdk.ts:198-209), so background work
@@ -1047,7 +1047,7 @@ jobs:
         if: steps.fallback.outputs.run == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.fallback.outputs.timeout-minutes || '11') }}
-        uses: anthropics/claude-code-action@8041f1d17e0e7d2f2cfe35002962e9f26237c0bb # v1.0.263
+        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
         env:
           # The action stops reading at Claude's first result message
           # (base-action/src/run-claude-sdk.ts:198-209), so background work
@@ -1190,6 +1190,7 @@ jobs:
           SCOPE: ${{ steps.scope.outputs.scope }}
           REQUIRE_FULL_DIFF: "true"
           FULL_DIFF: ${{ steps.full-diff.outputs.written }}
+          EXECUTION_FILE: ${{ steps.attempt.outputs.execution-file }}
         with:
           script: |
             // A failed GitHub API call logs its status and rate-limit headers, then
@@ -1232,6 +1233,34 @@ jobs:
             const summary =
               typeof output.summary === "string" ? output.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
             if (!summary) return incomplete("the review returned no summary");
+            // A shell that bwrap could not start, with no successful Read of the
+            // diff file, means the model saw no change, whatever it returned.
+            // Only that match fails the review: an execution file that cannot
+            // be read warns and proves nothing.
+            let messages;
+            try {
+              messages = JSON.parse(require("node:fs").readFileSync(env.EXECUTION_FILE ?? "", "utf8"));
+            } catch {
+              messages = undefined;
+            }
+            if (!Array.isArray(messages)) {
+              core.warning(`${lane}: the execution file could not be read, so the blind-review check did not run.`);
+            }
+            const parts = (Array.isArray(messages) ? messages : []).flatMap((message) =>
+              Array.isArray(message?.message?.content) ? message.message.content : [],
+            );
+            const results = parts.filter((part) => part?.type === "tool_result");
+            const DIFF_FILE = /(?:^|\/)\.claude-lane\/(?:pr|incremental)\.diff$/u;
+            const diffReads = new Set(
+              parts
+                .filter((part) => part?.type === "tool_use" && part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""))
+                .map((part) => part.id),
+            );
+            const noShell = results.some((result) => result.is_error === true && JSON.stringify(result.content ?? "").includes("bwrap:"));
+            const readDiff = results.some((result) => result.is_error !== true && diffReads.has(result.tool_use_id));
+            if (noShell && !readDiff) {
+              return incomplete("bwrap could not start, so the shell failed, and the diff file was never read, so the review saw no change");
+            }
             // Every `manifest <field>: flag` line in the summary is a finding, so a
             // count below those lines is raised to them, never trusted.
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
@@ -1443,7 +1472,7 @@ jobs:
             install-failed) why="the subprocess isolation or Bun install failed (often a slow package mirror or an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
             no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
-            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
+            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, the review saw only part of the diff, or bwrap could not start and the diff file was never read; read the verify step's log" ;;
             sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;

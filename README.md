@@ -1325,7 +1325,7 @@ Calling either lane from `pull_request_target` or
 `workflow_run` fails the job.
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
-request; the code-review lane writes its whole diff to `.claude-lane/pr.diff`.
+request; each lane writes its whole diff to `.claude-lane/pr.diff`.
 A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
 their diff to `.claude-lane/incremental.diff`. A push
@@ -1380,11 +1380,13 @@ head in that window with no footer fails the review of every lane whose window
 covers it, since it belongs to neither lane. The footer is plain text
 because the action's comment tool deletes HTML comments before posting.
 Anything less is `incomplete`: red, and the reviewed-head marker is not
-written. On a whole review the code-review lane
+written. On a whole review each lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
-cannot be written, the review is `incomplete`. The security lane reviews from
-the API diff.
+cannot be written, the review is `incomplete`. A review is also `incomplete`
+when its execution file holds a failed tool result naming `bwrap:` and no
+successful Read of the diff file; an execution file that cannot be read warns
+and proves nothing.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to

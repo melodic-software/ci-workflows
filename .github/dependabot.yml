@@ -26,6 +26,12 @@ updates:
     # SHA-rewrite supply-chain risk that motivates SHA-pinning (architecture D5).
     cooldown:
       default-days: 3
+    # Held on v1.0.253: the subprocess-scrub sandbox in Claude Code 2.1.311
+    # passes --disable-userns to bwrap, which cannot start where /proc/sys is
+    # read-only (the melodic-review Docker workers), so every Bash call in a
+    # review lane fails. Remove this once a release starts on those workers.
+    ignore:
+      - dependency-name: anthropics/claude-code-action
     # Vendor bumps get their own PR so a community bump never blocks a vendor
     # one; a dependency joins the first group that matches it.
     groups:

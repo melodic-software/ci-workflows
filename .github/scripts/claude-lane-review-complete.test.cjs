@@ -134,6 +134,7 @@ async function verify(
     fullDiff = "true",
     startedAt = String(START),
     fail = false,
+    executionFile,
   } = {},
 ) {
   const step = lane.step("Verify the review completed");
@@ -158,6 +159,7 @@ async function verify(
             JSON.stringify({ summary: "Looks fine.", ...structured }),
       SCOPE: scope,
       FULL_DIFF: fullDiff,
+      EXECUTION_FILE: executionFile,
     },
     {
       rest: { pulls: { listReviewComments: list(reviewComments) } },
@@ -697,30 +699,198 @@ test("an unknown start time or an API failure concludes incomplete", async () =>
   assert.equal(composite.outputs.failure_class, "incomplete");
 });
 
-test("claude-review without the full diff on a whole review is partial coverage, so incomplete", async () => {
-  assert.equal(
-    codeLane.step("Verify the review completed").env.REQUIRE_FULL_DIFF,
-    "true",
-  );
-  assert.equal(
-    codeLane.step("Verify the review completed").env.FULL_DIFF,
-    `\${{ steps.full-diff.outputs.written }}`,
-  );
-  const partial = await verify(codeLane, {
-    structured: { findings: 0 },
-    fullDiff: "",
-  });
-  assert.notEqual(partial.outputs.verdict, "complete");
-  assert.match(partial.outputs.verdict, /full diff/u);
+for (const lane of lanes) {
+  test(`${lane.lane} without the full diff on a whole review is partial coverage, so incomplete`, async () => {
+    assert.equal(
+      lane.step("Verify the review completed").env.REQUIRE_FULL_DIFF,
+      "true",
+    );
+    assert.equal(
+      lane.step("Verify the review completed").env.FULL_DIFF,
+      `\${{ steps.full-diff.outputs.written }}`,
+    );
+    const partial = await verify(lane, {
+      structured: { findings: 0 },
+      fullDiff: "",
+    });
+    assert.notEqual(partial.outputs.verdict, "complete");
+    assert.match(partial.outputs.verdict, /full diff/u);
 
-  // An incremental review already carries its complete diff.
-  const incremental = await verify(codeLane, {
-    structured: { findings: 0, summary: "Nothing found." },
-    scope: "incremental",
-    fullDiff: "",
+    // An incremental review already carries its complete diff.
+    const incremental = await verify(lane, {
+      structured: { findings: 0, summary: "Nothing found." },
+      scope: "incremental",
+      fullDiff: "",
+    });
+    assert.equal(incremental.outputs.verdict, "complete");
   });
-  assert.equal(incremental.outputs.verdict, "complete");
+}
+
+// The execution file's message shapes: an assistant tool_use, then a user
+// message carrying its tool_result.
+const toolUse = (id, name, input) => ({
+  type: "assistant",
+  message: { content: [{ type: "tool_use", id, name, input }] },
 });
+const toolResult = (id, content, isError) => ({
+  type: "user",
+  message: {
+    content: [
+      { type: "tool_result", tool_use_id: id, content, is_error: isError },
+    ],
+  },
+});
+const BWRAP =
+  "bwrap: cannot open /proc/sys/user/max_user_namespaces: Read-only file system";
+const blindShell = [
+  toolUse("b1", "Bash", { command: "gh pr diff 7" }),
+  toolResult("b1", `Exit code 1\n${BWRAP}`, true),
+];
+const executionFile = (text) => {
+  const file = path.join(makeTemporaryDirectory("complete-exec-"), "exec.json");
+  fs.writeFileSync(file, text);
+  return file;
+};
+const diffPath = (name) => `/runner/work/r/r/.claude-lane/${name}.diff`;
+const clean = { structured: { findings: 0 } };
+
+for (const lane of lanes) {
+  test(`${lane.lane}: the verify step reads the attempt that counts' execution file`, () => {
+    assert.equal(
+      lane.step("Verify the review completed").env.EXECUTION_FILE,
+      `\${{ steps.attempt.outputs.execution-file }}`,
+    );
+  });
+
+  test(`${lane.lane}: a failed shell and no diff read is a blind review, so incomplete`, async () => {
+    const blind = [
+      blindShell,
+      // Tool result content as a list of text blocks.
+      [
+        toolUse("b1", "Bash", { command: "gh pr diff 7" }),
+        toolResult("b1", [{ type: "text", text: BWRAP }], true),
+      ],
+      // A failed Read of the diff is no read.
+      [
+        ...blindShell,
+        toolUse("r1", "Read", { file_path: diffPath("pr") }),
+        toolResult("r1", "File does not exist.", true),
+      ],
+      // A Read of another file is no read of the diff.
+      [
+        ...blindShell,
+        toolUse("r1", "Read", { file_path: "/tmp/.claude-lane/pr.diff.txt" }),
+        toolResult("r1", "text", false),
+      ],
+      // A Read with no result in the file proves nothing was read.
+      [...blindShell, toolUse("r1", "Read", { file_path: diffPath("pr") })],
+    ];
+    for (const messages of blind) {
+      const { outputs } = await verify(lane, {
+        ...clean,
+        executionFile: executionFile(JSON.stringify(messages)),
+      });
+      assert.match(outputs.verdict, /bwrap could not start/u);
+      assert.equal(outputs.findings, undefined);
+    }
+  });
+
+  test(`${lane.lane}: a failed shell with the diff file read stays complete`, async () => {
+    for (const [scope, name] of [
+      ["whole", "pr"],
+      ["incremental", "incremental"],
+    ]) {
+      const { outputs } = await verify(lane, {
+        ...clean,
+        scope,
+        executionFile: executionFile(
+          JSON.stringify([
+            ...blindShell,
+            toolUse("r1", "Read", { file_path: diffPath(name) }),
+            toolResult("r1", "@@ -1 +1 @@", false),
+          ]),
+        ),
+      });
+      assert.equal(outputs.verdict, "complete");
+    }
+    const relative = await verify(lane, {
+      ...clean,
+      executionFile: executionFile(
+        JSON.stringify([
+          ...blindShell,
+          toolUse("r1", "Read", { file_path: ".claude-lane/pr.diff" }),
+          toolResult("r1", "@@ -1 +1 @@", false),
+        ]),
+      ),
+    });
+    assert.equal(relative.outputs.verdict, "complete");
+  });
+
+  test(`${lane.lane}: an execution file with no bwrap failure stays complete`, async () => {
+    const quiet = [
+      // A failure that does not name bwrap.
+      [
+        toolUse("b1", "Bash", { command: "false" }),
+        toolResult("b1", "Exit code 1", true),
+      ],
+      // A successful result quoting the text, as a review of this check would.
+      [
+        toolUse("b1", "Bash", { command: "gh pr diff 7" }),
+        toolResult("b1", BWRAP, false),
+      ],
+      [],
+    ];
+    for (const messages of quiet) {
+      const { outputs, messages: logged } = await verify(lane, {
+        ...clean,
+        executionFile: executionFile(JSON.stringify(messages)),
+      });
+      assert.equal(outputs.verdict, "complete");
+      assert.deepEqual(
+        logged.filter((line) => line.startsWith("warning:")),
+        [],
+      );
+    }
+  });
+
+  test(`${lane.lane}: an execution file that cannot be read warns and stays complete`, async () => {
+    const unreadable = [
+      undefined,
+      "",
+      "/nonexistent/exec.json",
+      executionFile("{not json"),
+      executionFile('{"type":"result"}'),
+    ];
+    for (const file of unreadable) {
+      const { outputs, messages } = await verify(lane, {
+        ...clean,
+        executionFile: file,
+      });
+      assert.equal(outputs.verdict, "complete");
+      assert.ok(
+        messages.some((line) =>
+          /^warning: .*execution file could not be read/u.test(line),
+        ),
+      );
+    }
+  });
+
+  test(`${lane.lane}: malformed execution-file entries are skipped, not thrown on`, async () => {
+    const { outputs } = await verify(lane, {
+      ...clean,
+      executionFile: executionFile(
+        JSON.stringify([
+          null,
+          1,
+          { message: null },
+          { message: { content: "text" } },
+          { message: { content: [null, 1, { type: "tool_result" }] } },
+        ]),
+      ),
+    });
+    assert.equal(outputs.verdict, "complete");
+  });
+}
 
 test("the composite keeps its old behavior for a lane that does not ask for completion", async () => {
   const { outputs, errors } = await runComposite({});
@@ -854,88 +1024,92 @@ test("the scope step reports whole, incremental since, no-change since and docs-
   assert.equal(docsOnly.skip, "docs-only");
 });
 
-test("claude-review writes the whole pull request's diff from a fetched base, not the API", () => {
-  const step = codeLane.step("Write the full diff");
-  assert.equal(step.id, "full-diff");
-  assert.equal(step["continue-on-error"], true);
-  assert.equal(
-    step.if,
-    "steps.scope.outputs.review != 'false' && steps.scope.outputs.scope != 'incremental'",
-  );
-  assert.doesNotMatch(step.run, /\$\{\{/u);
-  const prompt = codeLane.job.steps.find((s) => s.id === "claude-review").with
-    .prompt;
-  assert.match(prompt, /^\$\{\{ steps\.full-diff\.outputs\.note \}\}$/mu);
-  assert.equal(securityLane.step("Write the full diff"), undefined);
+for (const lane of lanes) {
+  test(`${lane.lane} writes the whole pull request's diff from a fetched base, not the API`, () => {
+    const step = lane.step("Write the full diff");
+    assert.equal(step.id, "full-diff");
+    assert.equal(step["continue-on-error"], true);
+    assert.equal(
+      step.if,
+      "steps.scope.outputs.review != 'false' && steps.scope.outputs.scope != 'incremental'",
+    );
+    assert.doesNotMatch(step.run, /\$\{\{/u);
+    for (const id of ["claude-review", "claude-review-fallback"]) {
+      const { prompt } = lane.job.steps.find((s) => s.id === id).with;
+      assert.match(prompt, /^\$\{\{ steps\.full-diff\.outputs\.note \}\}$/mu);
+    }
 
-  // A real repository: the merge base and a head with 350 changed files,
-  // more than the API shows. The step must write all 350.
-  const root = makeTemporaryDirectory("complete-diff-");
-  const origin = path.join(root, "origin");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+    // A real repository: the merge base and a head with 350 changed files,
+    // more than the API shows. The step must write all 350.
+    const root = makeTemporaryDirectory("complete-diff-");
+    const origin = path.join(root, "origin");
+    const git = (cwd, ...args) => {
+      const result = spawnSync("git", ["-C", cwd, ...args], {
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    fs.mkdirSync(origin);
+    git(origin, "init", "-q", "-b", "main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    git(origin, "config", "uploadpack.allowFilter", "true");
+    git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+    fs.writeFileSync(path.join(origin, "base.txt"), "base\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "-q", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (let i = 0; i < 350; i += 1) {
+      fs.writeFileSync(path.join(origin, `f${i}.txt`), `${i}\n`);
+    }
+    git(origin, "add", ".");
+    git(origin, "commit", "-q", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(root, "work");
+    const clone = spawnSync(
+      "git",
+      [
+        "clone",
+        "-q",
+        "--depth=1",
+        "--filter=blob:none",
+        `file://${origin}`,
+        work,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(clone.status, 0, clone.stderr);
+
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash\necho "${base}"\n`,
+      { mode: 0o755 },
+    );
+    const githubOutput = path.join(root, "out");
+    fs.writeFileSync(githubOutput, "");
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", step.run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: root,
+        GH_TOKEN: "x",
+        RUNNER_TEMP: root,
+        REPO: "o/r",
+        BASE_SHA: base,
+        HEAD_SHA: head,
+        DIFF_FILE: step.env.DIFF_FILE,
+        GITHUB_OUTPUT: githubOutput,
+      },
+    });
     assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  fs.mkdirSync(origin);
-  git(origin, "init", "-q", "-b", "main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
-  git(origin, "config", "uploadpack.allowFilter", "true");
-  git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
-  fs.writeFileSync(path.join(origin, "base.txt"), "base\n");
-  git(origin, "add", ".");
-  git(origin, "commit", "-q", "-m", "base");
-  const base = git(origin, "rev-parse", "HEAD");
-  for (let i = 0; i < 350; i += 1) {
-    fs.writeFileSync(path.join(origin, `f${i}.txt`), `${i}\n`);
-  }
-  git(origin, "add", ".");
-  git(origin, "commit", "-q", "-m", "head");
-  const head = git(origin, "rev-parse", "HEAD");
-  const work = path.join(root, "work");
-  const clone = spawnSync(
-    "git",
-    [
-      "clone",
-      "-q",
-      "--depth=1",
-      "--filter=blob:none",
-      `file://${origin}`,
-      work,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(clone.status, 0, clone.stderr);
-
-  const bin = path.join(root, "bin");
-  fs.mkdirSync(bin);
-  fs.writeFileSync(
-    path.join(bin, "gh"),
-    `#!/usr/bin/env bash\necho "${base}"\n`,
-    { mode: 0o755 },
-  );
-  const githubOutput = path.join(root, "out");
-  fs.writeFileSync(githubOutput, "");
-  const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", step.run], {
-    cwd: work,
-    encoding: "utf8",
-    env: {
-      PATH: `${bin}:${process.env.PATH}`,
-      HOME: root,
-      GH_TOKEN: "x",
-      RUNNER_TEMP: root,
-      REPO: "o/r",
-      BASE_SHA: base,
-      HEAD_SHA: head,
-      DIFF_FILE: step.env.DIFF_FILE,
-      GITHUB_OUTPUT: githubOutput,
-    },
+    const outputs = fs.readFileSync(githubOutput, "utf8");
+    assert.match(outputs, /^written=true$/mu);
+    assert.match(outputs, /^note=.*350 files/mu);
+    const diff = fs.readFileSync(path.join(work, step.env.DIFF_FILE), "utf8");
+    assert.equal((diff.match(/^diff --git /gmu) ?? []).length, 350);
   });
-  assert.equal(result.status, 0, result.stderr);
-  const outputs = fs.readFileSync(githubOutput, "utf8");
-  assert.match(outputs, /^written=true$/mu);
-  assert.match(outputs, /^note=.*350 files/mu);
-  const diff = fs.readFileSync(path.join(work, step.env.DIFF_FILE), "utf8");
-  assert.equal((diff.match(/^diff --git /gmu) ?? []).length, 350);
-});
+}
