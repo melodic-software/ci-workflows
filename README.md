@@ -519,7 +519,7 @@ consumer to audit it.
   run. A hold costs one read per 30 seconds. GitHub's docs do not say how
   same-name check runs resolve; on a required `ci-status`
   ([pr-pipeline-sandbox#261](https://github.com/melodic-software/pr-pipeline-sandbox/pull/261),
-  2026-10-31), the newest-created run decided: in progress over an older
+  2026-10-31, one head), the newest run decided: in progress over an older
   `success` read `BLOCKED`, and a newer `success` stayed mergeable when an older
   run ended `failure` after it.
 
