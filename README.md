@@ -112,7 +112,9 @@ make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
 itself pinned to a full commit SHA with a dual-form trailing comment
 (`melodic-software/standards#248`), and a bump to one waits for a person,
-since it reaches every `@main` caller on merge. A consumer's reference to this
+since it reaches every `@main` caller on merge. Dependabot leaves
+`anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
+why. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
 down, and this repository keeps that chain closed rather than asking every
 consumer to audit it.
@@ -1325,7 +1327,7 @@ Calling either lane from `pull_request_target` or
 `workflow_run` fails the job.
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
-request; the code-review lane writes its whole diff to `.claude-lane/pr.diff`.
+request; each lane writes its whole diff to `.claude-lane/pr.diff`.
 A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
 their diff to `.claude-lane/incremental.diff`. A push
@@ -1380,11 +1382,14 @@ head in that window with no footer fails the review of every lane whose window
 covers it, since it belongs to neither lane. The footer is plain text
 because the action's comment tool deletes HTML comments before posting.
 Anything less is `incomplete`: red, and the reviewed-head marker is not
-written. On a whole review the code-review lane
+written. On a whole review each lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
-cannot be written, the review is `incomplete`. The security lane reviews from
-the API diff.
+cannot be written, the review is `incomplete`. A review is also `incomplete`
+when its execution file holds a failed Bash result naming `bwrap:` and no
+successful Read of the diff file; with that Read it stays complete and warns.
+An execution file that cannot be read warns and proves nothing, and one that
+shows no successful Read of the diff file and no successful `gh pr diff` warns.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
