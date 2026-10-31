@@ -895,7 +895,11 @@ for (const lane of lanes) {
       ],
       [
         toolUse("b1", "Bash", { command: "gh pr diff 7 --patch" }),
-        toolResult("b1", "diff --git a/README.md b/README.md\n@@ -1 +1 @@", false),
+        toolResult(
+          "b1",
+          "diff --git a/README.md b/README.md\n@@ -1 +1 @@",
+          false,
+        ),
       ],
     ];
     for (const messages of seen) {
