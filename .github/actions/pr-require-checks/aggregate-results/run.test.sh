@@ -1923,15 +1923,20 @@ if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]];
   failures=$((failures + 1))
 fi
 
+# The runs a hold sees: 4000 in flight, started at 12:00:00, then finished.
+held_run="$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)"
+held_run_done="$(attempt_entry 4000 completed 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)"
+
 # Without the hold this fails superseded and posts a red the full run must
 # replace; without re-reading after it, the hold could only end in a red.
 echo 'case: yield-wait-seconds holds for the full run, then carries its success'
 reset_yield_fixtures
 status_list_on_call 1 "[$(full_run_success 100)]"
+status_list_on_call 2 "[$(full_run_success 100)]"
 status_list "[$(writer_status 200 success 2026-09-05T12:05:00Z 4000)]"
-workflow_runs_on_call 1 "[${earlier_full_run}]"
-workflow_runs_on_call 2 "[${earlier_full_run}]"
-workflow_runs "[$(attempt_entry 4000 completed 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs_on_call 2 "[${held_run}]"
+workflow_runs "[${held_run_done}]"
 jobs_raw 4000 "$full_run_jobs"
 run_of_workflow 4000 777
 writer_jobs 4000 success
@@ -1950,8 +1955,8 @@ echo 'case: yield-wait-seconds goes red on the failure the full run records over
 reset_yield_fixtures
 status_list_on_call 1 "[$(full_run_success 100)]"
 status_list "[$(writer_status 200 failure 2026-09-05T12:05:00Z 4000),$(full_run_success 100)]"
-workflow_runs_on_call 1 "[${earlier_full_run}]"
-workflow_runs "[$(attempt_entry 4000 completed 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs "[${held_run_done}]"
 jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log "Holding 30s for full run(s) 4000"
@@ -1974,19 +1979,168 @@ if [[ "$(paste -sd' ' "$sleep_log")" != '30 15' ]]; then
   failures=$((failures + 1))
 fi
 
-# Without the ceiling following the hold, a writer step that finishes after 30s
-# fails superseded, red with a verdict already recorded, and no one re-runs it.
-echo 'case: yield-wait-seconds extends the wait for a writer step still finishing'
+# Without keying the carry on the held run's start, this older success passes
+# while the run the hold was for never decided: the false green of a cancelled
+# full run, whose gate is skipped and which `verify_no_newer_verdict` ignores.
+echo 'case: a hold whose full run was cancelled does not carry the older success'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T11:00:00Z 4100)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs "[{\"id\":4000,\"status\":\"completed\",\"conclusion\":\"cancelled\",\"run_attempt\":1,\"run_started_at\":\"2026-09-05T12:00:00Z\"}]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log '::error::the full run(s) this run held for ended without recording ci-lanes'
+expect_no_log 'Carried forward'
+
+# The same on a re-run: 4000 wrote this success before its re-run started, so a
+# filter on the writer's run id alone would carry it.
+echo 'case: a hold does not carry the success an earlier attempt of the held run wrote'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T11:00:00Z 4000)]"
+workflow_runs_on_call 1 "[${held_run}]"
+run_of_workflow 4000 777
+writer_jobs 4000 success
+workflow_runs "[{\"id\":4000,\"status\":\"completed\",\"conclusion\":\"cancelled\",\"run_attempt\":2,\"run_started_at\":\"2026-09-05T12:00:00Z\"}]"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log '::error::the full run(s) this run held for ended without recording ci-lanes'
+expect_no_log 'Carried forward'
+
+# Without this an absent start reads as older than any status and carries.
+echo 'case: a hold over a run with no start time carries nothing'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+workflow_runs "[$(completed_run 4000 success)]"
+jobs_raw 4000 "$full_run_jobs"
+run_of_workflow 4000 777
+writer_jobs 4000 success
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log '::error::the full run(s) this run held for ended without recording ci-lanes'
+
+# Without the unsettled arm a hold over a cancelled run could only end in the
+# error above or a pass.
+for ended_status in '[]' "[$(writer_status 200 pending 2026-09-05T12:00:30Z 4000)]"; do
+  echo 'case: a hold ending on no status or pending goes red'
+  reset_yield_fixtures
+  status_list "$ended_status"
+  workflow_runs_on_call 1 "[${held_run}]"
+  workflow_runs "[${held_run_done}]"
+  jobs_raw 4000 "$full_run_jobs"
+  run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+  expect_log "$fail_prefix"
+  expect_no_log 'Carried forward'
+done
+
+# Without the listing after the hold a full run that starts during it goes
+# unseen, and the success of the run it replaced would carry across it.
+echo 'case: a full run starting during a hold is held for too'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list_on_call 2 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 success 2026-09-05T12:09:00Z 4200)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs_on_call 2 "[${held_run_done}]"
+workflow_runs_on_call 3 "[${held_run_done},$(attempt_entry 4200 in_progress 2026-09-05T12:01:00Z 1 2026-09-05T12:01:00Z)]"
+workflow_runs "[${held_run_done},$(attempt_entry 4200 completed 2026-09-05T12:01:00Z 1 2026-09-05T12:01:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+jobs_raw 4200 "$full_run_jobs"
+run_of_workflow 4200 777
+writer_jobs 4200 success
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log 'Holding 30s for full run(s) 4000'
+expect_log 'Holding 30s for full run(s) 4200'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# Without the filter on both ids the hold ends when either completes.
+echo 'case: a hold on two full runs lasts until both complete'
+reset_yield_fixtures
+status_list "[]"
+other_run="$(attempt_entry 4200 in_progress 2026-09-05T12:01:00Z 1 2026-09-05T12:01:00Z)"
+workflow_runs_on_call 1 "[${held_run},${other_run}]"
+workflow_runs_on_call 2 "[${held_run_done},${other_run}]"
+workflow_runs "[${held_run_done},$(attempt_entry 4200 completed 2026-09-05T12:01:00Z 1 2026-09-05T12:01:00Z)]"
+jobs_raw 4000 "$full_run_jobs"
+jobs_raw 4200 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log 'Holding 30s for full run(s) 4000 4200'
+if [[ "$(paste -sd' ' "$sleep_log")" != '30 30' ]]; then
+  echo "FAIL: expected two 30s holds, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the status read the hold outlasts a verdict whose run stays in flight
+# on later jobs, and runs to the ceiling's red.
+echo 'case: a hold ends when the full run records its verdict and is still in flight'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 failure 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[${held_run}]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "${fail_prefix}${writer_failure_remedy}"
+if [[ "$(paste -sd' ' "$sleep_log")" != '30' ]]; then
+  echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the failed-read branch a transient listing error ends the hold early.
+echo 'case: a failed listing during a hold costs one poll'
+reset_yield_fixtures
+status_list_on_call 1 "[$(full_run_success 100)]"
+status_list_on_call 2 "[$(full_run_success 100)]"
+status_list_on_call 3 "[$(full_run_success 100)]"
+status_list "[$(writer_status 200 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs_on_call 1 "[${held_run}]"
+printf 'HTTP 502: bad gateway\n' >"$fixtures/${workflow_runs_key}.2.err"
+workflow_runs "[${held_run_done}]"
+jobs_raw 4000 "$full_run_jobs"
+run_of_workflow 4000 777
+writer_jobs 4000 success
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+if [[ "$(paste -sd' ' "$sleep_log")" != '30 30' ]]; then
+  echo "FAIL: expected a second poll after the failed listing, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the rate-limit return the hold polls a limited token to the ceiling.
+echo 'case: a rate-limited read ends a hold and fails closed'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs_on_call 1 "[${held_run}]"
+for call in 2 3 4 5 6; do
+  printf 'gh: API rate limit exceeded for installation ID 1 (HTTP 403)\n' >"$fixtures/${workflow_runs_key}.${call}.err"
+done
+workflow_runs "[${held_run}]"
+jobs_raw 4000 "$full_run_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RATE_LIMIT_WAIT_SECONDS=0
+expect_log "::error::could not list this workflow's runs on ${sha}"
+expect_no_log 'Carried forward'
+if [[ "$(head -1 "$sleep_log")" != 30 || "$(grep -c '^30$' "$sleep_log")" -ne 1 ]]; then
+  echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+
+# Without the 5 s cycle ending at its own 30 s ceiling a 720 s hold spends 144
+# polls of about five reads each on a step that is usually about to finish; red
+# here would lose a verdict already recorded, with no one left to re-run it.
+echo 'case: yield-wait-seconds keeps waiting for a writer step, on the slower poll past 30s'
 reset_yield_fixtures
 status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
 workflow_runs "$late_writer_runs"
 writer_jobs 4000 running
-for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
   cp -- "$fixtures/${writer_jobs_key}.json" "$fixtures/${writer_jobs_key}.${call}.json"
 done
 writer_jobs 4000 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
-expect_log "waiting 5s (waited 35s of 720s)."
+expect_log 'holding 30s (waited 30s of 720s).'
+expect_no_log '::warning::the step'
+if [[ "$(paste -sd' ' "$sleep_log")" != '5 5 5 5 5 5 30 30' ]]; then
+  echo "FAIL: expected six 5s polls, then 30s polls, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_log 'superseded'
 
@@ -2266,14 +2420,18 @@ expect_no_gh_call 'actions/runs/5300/jobs'
 
 # Without validation a non-numeric value makes the arithmetic an error, which
 # the `|| true` around the re-run would swallow silently.
-echo 'case: a non-numeric yield-wait-seconds is rejected'
-run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=soon
-expect_log '::error::yield-wait-seconds must be a non-negative integer number of seconds, got: soon'
-
 echo 'case: a non-numeric rerun-wait-seconds is rejected'
 run_case 1 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_WAIT_SECONDS=soon
 expect_log '::error::rerun-wait-seconds must be a non-negative integer number of seconds, got: soon'
 expect_no_gh_calls_at_all
+
+# Without validation the ceiling's arithmetic is an error, and a leading zero
+# reads as octal, so `08` is one too.
+for bad_ceiling in soon 08; do
+  echo "case: yield-wait-seconds ${bad_ceiling} is rejected"
+  run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS="$bad_ceiling"
+  expect_log "::error::yield-wait-seconds must be a non-negative integer number of seconds, got: ${bad_ceiling}"
+done
 
 reset_yield_fixtures
 
@@ -2923,7 +3081,7 @@ reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z)]"
 jobs_raw 4300 "$contract_only_jobs"
-for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+for call in 1 2 3 4 5 6 7 8; do
   own_jobs '[]' "$call"
 done
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true 'STEP_NAME=Aggregate'
@@ -2938,7 +3096,7 @@ echo 'case: the carry-forward ceiling counts the own-job lookup'
 reset_yield_fixtures
 status_list '[]'
 workflow_runs "[${earlier_full_run}]"
-for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
+for call in 1 2 3 4 5 6 7 8; do
   own_jobs '[]' "$call"
 done
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=200

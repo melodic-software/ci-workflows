@@ -332,13 +332,14 @@ consumer to audit it.
 
   - `yield-to-full-run: 'true'` and `timeout-minutes: 7` on the `ci-status`
     job. A contract-only run lists this workflow's in-flight runs on the head
-    SHA, then reads the status, and finishes in seconds. A full run
+    SHA, then reads the status, and with no hold finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
     because that run's own `ci-status` check run is newer and decides the merge
     gate. With `yield-wait-seconds` above `0` it holds instead, up to that many
     seconds, with its check run in progress: no conclusion, so no red. Once the
-    superseding runs complete it passes only on their recorded `success`, and
-    at the ceiling it fails as above. With nothing in flight it is green on a
+    superseding runs complete or the status changes, it passes only on a
+    `success` created at or after their latest start, so a full run cancelled
+    during the hold fails it, and at the ceiling it fails as above. With nothing in flight it is green on a
     recorded `success` and red otherwise. An in-flight sibling whose latest attempt skipped every job but
     one, and that one has this run's gate name, is contract-only and ignored,
     and so is a re-run attempt whose first attempt had that shape (a re-run
@@ -516,7 +517,7 @@ consumer to audit it.
   **Why a hold instead of this wait.** This wait can carry an older `success`
   forward across a full run in flight; `yield-to-full-run` lists first, so a
   hold cannot. Size `yield-wait-seconds` the same way, from the measured full
-  run. A hold costs one read per 30 seconds. GitHub's docs do not say how
+  run. A hold costs two reads per 30 seconds. GitHub's docs do not say how
   same-name check runs resolve; on a required `ci-status`
   ([pr-pipeline-sandbox#261](https://github.com/melodic-software/pr-pipeline-sandbox/pull/261),
   2026-10-31, one head), the newest run decided: in progress over an older

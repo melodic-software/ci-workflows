@@ -702,13 +702,13 @@ jobs:
         with:
           # While a full run on the SHA is in flight a contract-only run holds,
           # up to `yield-wait-seconds`, with its check run in progress, then
-          # passes only on the `success` that run records. The ceiling is this
+          # passes only on a `success` that run records. The ceiling is this
           # repository's full-run p95 (372 s, max 614 s of 18 runs, 2026-10-31)
           # plus a margin; past it the run fails with "superseded by full run
           # <url>", and the full run re-runs it once it records `success`. A
           # failed contract cannot pass, so that red lands at once.
           yield-to-full-run: 'true'
-          yield-wait-seconds: ${{ job.status == 'failure' && '0' || '420' }}
+          yield-wait-seconds: ${{ job.status == 'failure' && contains(fromJSON('["labeled","unlabeled","edited"]'), github.event.action) && '0' || '420' }}
           rerun-contract-only-siblings: 'true'
           carry-forward-wait-seconds: '0'
           # This step's own name, so the own-step lookup never depends on

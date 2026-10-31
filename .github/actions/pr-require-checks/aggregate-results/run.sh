@@ -133,8 +133,7 @@ YIELD_WRITER_WAIT_SECONDS=30
 YIELD_WRITER_POLL_SECONDS=5
 # Ceiling, in seconds, on a yielding run's hold for the full runs that supersede
 # it; see the yield block. `0` never holds. Validated below. The poll is fixed,
-# like the others, and each poll is one listing, so a hold costs one read per
-# YIELD_WAIT_POLL_SECONDS.
+# like the others, and each poll is one listing and one status read.
 YIELD_WAIT_SECONDS="${YIELD_WAIT_SECONDS:-0}"
 YIELD_WAIT_POLL_SECONDS=30
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
@@ -233,7 +232,8 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
-require_pattern yield-wait-seconds "$YIELD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+# No leading zero: bash arithmetic reads one as octal, and `08` is an error.
+require_pattern yield-wait-seconds "$YIELD_WAIT_SECONDS" '^(0|[1-9][0-9]*)$' 'a non-negative integer number of seconds'
 # At most an hour, the life of a GitHub App installation token.
 require_pattern rate-limit-wait-seconds "$RATE_LIMIT_WAIT_SECONDS" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
 
@@ -1124,10 +1124,12 @@ fail_carry_forward() {
 #
 # With `yield-wait-seconds` above `0` the run holds instead of failing: the job
 # stays in progress, so its `ci-status` check run has no conclusion yet, until
-# the full runs that supersede it complete or the ceiling passes. It then lists
-# and reads again and decides as above, so it passes only on the `success` the
-# full run wrote, and the only red left is a real one or the ceiling's. The
-# hold is what a job that runs can do: it always ends with a conclusion, and
+# the full runs that supersede it complete, the newest status changes, or the
+# ceiling passes. It then lists and reads again and decides as above, and a run
+# that held carries only a `success` created at or after the latest start of the
+# runs it held for: a held run cancelled before its gate writes nothing, and the
+# older `success` still newest must not pass in its place. The only red left is
+# a real one or the ceiling's. The hold is what a job that runs can do: it always ends with a conclusion, and
 # only `success`, `skipped` and `neutral` satisfy a required check, so ending
 # early can only pass the gate or go red. Holding is safe whichever same-name
 # check run GitHub judges, which its docs do not say: an in-progress run neither
@@ -1219,11 +1221,24 @@ list_in_flight_full_runs() {
   done
 }
 
-# Holds until none of the full runs `$1` is incomplete or YIELD_WAIT_SECONDS has
-# passed since `yield_started`. A failed listing only costs a poll: the caller
-# lists again when this returns, and fails closed on that listing.
+# Holds until none of the full runs `$1` is incomplete, the newest status is no
+# longer the one read before the hold, or YIELD_WAIT_SECONDS has passed since
+# `yield_started`. The status read ends a hold whose run has its verdict but
+# stays in flight on later jobs. A failed read only costs a poll, except a rate
+# limit, which returns: the caller reads again and fails closed on that read.
+# Raises `yield_held_since` to the latest start of `$1`, `unknown` when one
+# cannot be read, which refuses any carried `success`.
+yield_held_since=""
 yield_hold() {
-  local waiting="$1" remaining sleep_for
+  local waiting="$1" remaining sleep_for since
+  since="$(jq -r --arg ids " ${waiting} " \
+    '[ .workflow_runs[]? | select(. as $run | $ids | contains(" \($run.id) ")) | .run_started_at // "" ] | if length == 0 or any(. == "") then "" else max end' \
+    <"$scratch/runs.json")" || since=""
+  if [[ -z "$since" ]]; then
+    yield_held_since=unknown
+  elif [[ "$yield_held_since" != unknown && "$since" > "$yield_held_since" ]]; then
+    yield_held_since="$since"
+  fi
   while :; do
     remaining=$((YIELD_WAIT_SECONDS - ($(date +%s) - yield_started)))
     if [[ "$remaining" -le 0 ]]; then
@@ -1243,6 +1258,16 @@ yield_hold() {
       if [[ -z "$waiting" ]]; then
         return 0
       fi
+    elif [[ "$GH_FAILURE" == rate-limit ]]; then
+      return 0
+    fi
+    # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+    if read_newest_entry; then
+      if [[ "$newest_entry" != "$carried_entry" ]]; then
+        return 0
+      fi
+    elif [[ "$GH_FAILURE" == rate-limit ]]; then
+      return 0
     fi
   done
 }
@@ -1306,8 +1331,9 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     fi
     superseding=""
     for id in $yield_full_runs; do
+      # A held run's own failure is its verdict too, whatever later jobs it runs.
       # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false keeps the run superseding.
-      if [[ "$carried_state" == success ]] && writer_attempt_wrote "$id"; then
+      if [[ "$carried_state" == success || (-n "$yield_held_since" && "$carried_state" =~ ^(failure|error)$) ]] && writer_attempt_wrote "$id"; then
         continue
       fi
       superseding="${superseding}${superseding:+ }${id}"
@@ -1318,17 +1344,24 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false fails superseded.
     if [[ "$carried_writer_running" == true && "$superseding" == "$carried_writer_run_id" ]] && writer_attempt_wrote "$superseding"; then
       yield_waited=$(($(date +%s) - yield_started))
-      yield_ceiling="$YIELD_WRITER_WAIT_SECONDS"
-      if [[ "$YIELD_WAIT_SECONDS" -gt "$yield_ceiling" ]]; then
-        yield_ceiling="$YIELD_WAIT_SECONDS"
-      fi
-      yield_remaining=$((yield_ceiling - yield_waited))
+      yield_remaining=$((YIELD_WRITER_WAIT_SECONDS - yield_waited))
       if [[ "$yield_remaining" -gt 0 ]]; then
         yield_sleep="$YIELD_WRITER_POLL_SECONDS"
         if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
           yield_sleep="$yield_remaining"
         fi
-        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${yield_sleep}s (waited ${yield_waited}s of ${yield_ceiling}s)."
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WRITER_WAIT_SECONDS}s)."
+        sleep "$yield_sleep"
+        continue
+      fi
+      # Past the writer's own ceiling a hold keeps re-reading, on its slower poll.
+      yield_remaining=$((YIELD_WAIT_SECONDS - yield_waited))
+      if [[ "$yield_remaining" -gt 0 ]]; then
+        yield_sleep="$YIELD_WAIT_POLL_SECONDS"
+        if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
+          yield_sleep="$yield_remaining"
+        fi
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; holding ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WAIT_SECONDS}s)."
         sleep "$yield_sleep"
         continue
       fi
@@ -1340,6 +1373,11 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     fi
     fail_superseded "$superseding"
   done
+  if [[ "$carried_state" == success && -n "$yield_held_since" ]] &&
+    [[ "$yield_held_since" == unknown || "$carried_created_at" < "$yield_held_since" ]]; then
+        echo "::error::the full run(s) this run held for ended without recording ${STATUS_CONTEXT} on ${SHA}, so the older success is not carried; re-run the full workflow."
+    exit 1
+  fi
   if [[ "$carried_state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
     exit 0
