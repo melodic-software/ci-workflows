@@ -864,6 +864,14 @@ for (const lane of lanes) {
         toolResult("b1", "Exit code 1", true),
       ],
       [
+        toolUse("b1", "Bash", { command: "gh pr diff 7" }),
+        toolResult("b1", BWRAP, false),
+      ],
+      [
+        toolUse("b1", "Bash", { command: "gh pr diff 7 --name-only" }),
+        toolResult("b1", "README.md", false),
+      ],
+      [
         toolUse("b1", "Bash", { command: "git status" }),
         toolResult("b1", "clean", false),
       ],
@@ -887,7 +895,7 @@ for (const lane of lanes) {
       ],
       [
         toolUse("b1", "Bash", { command: "gh pr diff 7 --patch" }),
-        toolResult("b1", "@@ -1 +1 @@", false),
+        toolResult("b1", "diff --git a/README.md b/README.md\n@@ -1 +1 @@", false),
       ],
     ];
     for (const messages of seen) {
