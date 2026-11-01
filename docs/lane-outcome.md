@@ -1,7 +1,8 @@
 # Lane-outcome record
 
 The lane-outcome record is the public contract for how a Claude lane reports
-the outcome of one credential attempt. ci-workflows owns it. Readers outside
+the outcome of one credential attempt, and the one lane record for every lane,
+the claude-code-plugins hub lanes included. ci-workflows owns it. Readers outside
 this repository, such as claude-code-account-rotation's limit-stop check, build
 to this page and to the JSON Schema
 [`schemas/lane-outcome.v1.schema.json`](../schemas/lane-outcome.v1.schema.json).
@@ -17,6 +18,26 @@ lanes, a subscription leg hands off to the fallback leg, on the org secret
 `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`, at a usage limit, a credit stop or a
 rejected token, when the caller passes that secret. The emitter is
 [`report-lane-outcome`](../.github/actions/report-lane-outcome/action.yml).
+
+## Public safety
+
+Every record, and every annotation, step summary, artifact or comment that
+carries one, is public: the repositories that run lanes are public. An
+emitter MUST write only values from a closed enum, a fixed-shape pattern in
+the schema, or a count. In particular:
+
+- `credential.secret` and `credential.role` MUST be secret NAMES. A secret's
+  value, any part or prefix of it (`sk-ant-`), or any other credential-shaped
+  string MUST NOT appear. The schema admits only a Claude credential's secret
+  name (`<ROLE>_CLAUDE_API_KEY` or `[<ROLE>_]CLAUDE_CODE_OAUTH_TOKEN`).
+- An email address, hostname, machine path, runner name or user name MUST NOT
+  appear in any field.
+- A class, fallback reason or outcome MUST be one of its enum values. Free
+  text, model output and raw error text MUST NOT fill an enum field; an
+  emitter maps a value it cannot place to `other` or leaves the field out.
+- A field whose source is absent or out of shape is left out, never guessed.
+
+A reader MAY treat a record that breaks this rule as unreadable.
 
 ## Format
 
@@ -44,7 +65,8 @@ The record comes before the free text, and the legacy sentence before it is
 short, so the cut does not reach the record. The sentence's `models=` token
 and the record's `models` list each name at most 8 models; the run's other
 models are left out. An emitter whose record would pass 1,024 characters
-drops `models`, then `usage`, then `windows`, until it fits.
+drops `models`, then `usage`, then `windows`, then `githubCalls`, until it
+fits.
 
 ## Examples
 
@@ -97,8 +119,8 @@ their closed values and where `report-lane-outcome` takes them from.
 | `v` | yes | integer; `1` | constant |
 | `lane` | yes | string, stable per lane workflow | `lane-id` input |
 | `outcome` | yes | `success`, `failure`, `timeout`, `skip`, `cancellation` or `error`, the OpenTelemetry CICD `cicd.pipeline.task.run.result` values | see [Outcome](#outcome) |
-| `class` | when `outcome` is not `success` | string; an open set | the classifier, or `known-failure-class` |
-| `credential.secret` | yes | string, the secret name the caller mapped, never a slot name | `credential` input |
+| `class` | when `outcome` is not `success` | one value from [Failure classes](#failure-classes) | the classifier, or `known-failure-class`; a caller class outside the enum is `other` |
+| `credential.secret` | yes | string, the secret name the caller mapped, never a slot name or a value; a Claude credential's name only (see [Public safety](#public-safety)) | `credential` input |
 | `credential.kind` | yes | `oauth-token` or `api-key` | the secret's suffix: `_CLAUDE_API_KEY` is `api-key`; `CLAUDE_CODE_OAUTH_TOKEN`, alone or as a suffix, is `oauth-token` |
 | `credential.role` | no | the `<ROLE>` prefix | `<ROLE>_CLAUDE_API_KEY` or `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` |
 | `handoff` | no | boolean; true when this attempt handed off to another credential | `handoff` input |
@@ -106,6 +128,11 @@ their closed values and where `report-lane-outcome` takes them from.
 | `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
 | `turns`, `maxTurns` | no | integers | the execution file; `max-turns` input |
+| `durationMs` | no | integer, at least 0; the leg's run time in milliseconds | the execution file's result message `duration_ms`, the CLI's own measure |
+| `runId`, `runAttempt` | no | integers, at least 1 | `github.run_id`, `github.run_attempt` |
+| `traceId` | no | 32 lower-case hex digits, the W3C trace-context `trace-id` shape | see [Run context](#run-context); needs `runId` and `runAttempt` |
+| `spanId` | no | 16 lower-case hex digits, the W3C trace-context `parent-id` shape | see [Run context](#run-context); needs `traceId` and `github.job` |
+| `githubCalls.githubToken`, `githubCalls.lanesApp` | no | object per token: `requests`, `graphql`, `notModified`, integers at least 0 | the job's api-budget readings for `github-token` and `lanes-app`; see [Run context](#run-context) |
 | `costUsd` | no | number, at least 0; US dollars at list price, never what was billed | the execution file's result message `total_cost_usd`, the CLI's own estimate, on every outcome |
 | `models` | no | array of strings, at most 8 | the execution file's `modelUsage` keys |
 | `usage.input`, `usage.output`, `usage.cacheRead`, `usage.cacheCreation` | no | integers, at least 0; the leg's input, output, cache-read and cache-creation tokens | the `log-file` input, run-claude-cli's credential-scanned log; never the execution file |
@@ -129,6 +156,50 @@ The schema allows unknown properties at every level
 | `failure` or anything else | any other | `failure` |
 
 `error` is reserved; v1 maps nothing to it.
+
+## Failure classes
+
+`class` is one closed enum. The schema lists it, and `FAILURE_CLASSES` in
+[`classify.cjs`](../.github/actions/report-lane-outcome/classify.cjs) is the
+emitter's copy; a test holds the two equal.
+
+| Class | Meaning |
+|---|---|
+| `auth` | the API refused the credential (401, 402 or 403): unusable until a human acts |
+| `credit-stop` | an API key's organization is out of credit or at a spend limit; never written as `rate-limit` |
+| `rate-limit` | a subscription usage limit (429) |
+| `overloaded` | an API 5xx, `api_error`, `timeout_error` or `overloaded_error` |
+| `max-turns` | the run used its turn cap |
+| `timeout` | the step or leg ran its whole time budget |
+| `install-failed` | the CLI install failed, so Claude never started |
+| `no-execution` | the step ended before writing an execution file |
+| `sandbox-unavailable` | the subprocess sandbox probe kept the run from starting |
+| `skipped-validation` | the action skipped itself on its workflow-validation check |
+| `incomplete` | the run succeeded but the lane's completion check found no completed review |
+| `no-credential` | the leg had no credential to run with |
+| `no-outcome` | the leg stopped before its outcome step |
+| `other` | anything else, and any caller class outside this enum |
+
+## Run context
+
+`runId` and `runAttempt` are the workflow run's. `traceId` is the first 32 hex
+digits of SHA-256 over `lane-outcome:<runId>:<runAttempt>`, so every record
+of one run attempt shares it and a reader can compute it from the run alone.
+`spanId` is the first 16 hex digits of SHA-256 over
+`<traceId>:<github.job>:<lane>:<credential.secret>`; two matrix legs of one
+job with the same lane and credential share it. Each is left out when an
+input it needs is absent or out of shape.
+
+`githubCalls` counts the job's own GitHub API requests made before the
+report step, from the readings
+[`report-api-budget`](../.github/actions/report-api-budget/action.yml) and its
+`api-budget.cjs` leave in `$RUNNER_TEMP/api-budget/<token>`, counted as its
+`api-calls` notice counts them: `requests` is responses other than 304,
+`notModified` the 304 answers, which GitHub does not count against the
+limit, and `graphql` the GraphQL requests among `requests`. Only the
+`github-token` (the job's `GITHUB_TOKEN`) and `lanes-app` token files are
+read; a token with no file is left out. Calls after the report step, and calls
+no reading recorded, are not counted.
 
 ## Usage warning
 
@@ -171,6 +242,30 @@ whether or not `credential` is set.
 - Emitters keep writing the legacy `key=value` tokens in the human sentence
   until an org architecture decision retires them.
 
-The check-run summary record claude-code-plugins' activity lanes write
-(`lane=... activity=...`) is a separate record. This contract does not change
-it.
+The run-context fields, `durationMs` and the closed `class` enum are additive
+under these rules, so the record stays `v: 1`. Records written before them
+still validate: the classifier and every `known-failure-class` its callers
+pass produce only enum values, and the emitter wrote a record only for a
+secret name that maps to a kind, which is what `credential.secret` now
+admits. A reader still ignores a class it does not know, since a later v1 may
+add one.
+
+## Retiring the other failure-class spellings
+
+The same failure class is written in several places under different names.
+Each maps to the record's `class` with no change of value, except where noted.
+They are retired over a deprecation window; none changes in the slice that
+adds this section.
+
+| Spelling | Where | Plan |
+|---|---|---|
+| `class=<token>` | the legacy sentence before the record | kept until the org decision above; readers move to `class` |
+| `failure-class` output, `failure_class` step output | `report-lane-outcome` | kept as the action's interface; readers of annotations read `class` |
+| `failure-class=` | hub annotation and log text | readers move to `class` |
+| hub `CLASSES` and `lane=... activity=... class=` summary line | claude-code-plugins `.github/actions/report-check-run/lane-record.mjs` | replaced by this record on the hub lanes; its set lacks `credit-stop` |
+| `known-failure-class` mapped from `credit-stop` to `rate-limit` | hub lane workflows | pass `credit-stop` through, so the record says `credit-stop` |
+| `outcome=` | the hub work-resolve-issue lane | replaced by this record |
+
+The window closes when no reader in the org reads a retired spelling; the
+claude-code-plugins decision record for one public-safe lane record sets the
+order.

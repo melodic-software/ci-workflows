@@ -1,8 +1,7 @@
 // Project the last claude-code-action SDK result message into safe, structured
 // metadata and classify a genuine infrastructure failure into exactly one coarse
-// class: auth | rate-limit | overloaded | max-turns | timeout |
-// install-failed | no-execution | other, plus credit-stop for a caller that
-// opts in (see isCreditStop). Reads
+// class from FAILURE_CLASSES (docs/lane-outcome.md, "Failure classes");
+// credit-stop only for a caller that opts in (see isCreditStop). Reads
 // the action's execution_file output (which may be unset, missing, or
 // unparsable) and returns the review detail plus failure class.
 //
@@ -59,7 +58,9 @@
 // status decision rather than falling through to it.
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
 
 function classFromStatus(status) {
   if (status === 401 || status === 402 || status === 403) return "auth";
@@ -456,8 +457,11 @@ function readRunRecord(executionFilePath) {
   const turns = result?.num_turns;
   const usage = result?.modelUsage;
   const cost = result?.total_cost_usd;
+  const duration = result?.duration_ms;
   return {
     turns: Number.isInteger(turns) && turns >= 0 ? turns : null,
+    // The CLI's own measure of the run's wall time.
+    durationMs: Number.isSafeInteger(duration) && duration >= 0 ? duration : null,
     // The CLI's own list-price estimate of the run, not what was billed.
     costUsd:
       typeof cost === "number" && Number.isFinite(cost) && cost >= 0
@@ -485,6 +489,7 @@ const MAX_MODELS = 8;
 function runFacts(
   {
     turns = null,
+    durationMs = null,
     costUsd = null,
     models = [],
     resetsAt = null,
@@ -516,6 +521,7 @@ function runFacts(
       ? fallbackReason
       : null,
     turns,
+    durationMs,
     costUsd,
     maxTurns: COUNT_PATTERN.test(maxTurns) ? Number(maxTurns) : null,
     models: models.slice(0, MAX_MODELS),
@@ -556,9 +562,107 @@ const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 // Basis: docs/lane-outcome.md, "A record is at most 1,024 characters".
 const RECORD_MAX_LENGTH = 1024;
 
+// The record's closed failure classes (docs/lane-outcome.md, "Failure
+// classes"). A caller's class outside this list is `other` in the record; the
+// legacy `class=` token keeps it as given.
+const FAILURE_CLASSES = [
+  "auth",
+  "credit-stop",
+  "rate-limit",
+  "overloaded",
+  "max-turns",
+  "timeout",
+  "install-failed",
+  "no-execution",
+  "sandbox-unavailable",
+  "skipped-validation",
+  "incomplete",
+  "no-credential",
+  "no-outcome",
+  "other",
+];
+// A Claude credential's secret name, the only shape `credential.secret` may
+// take, so a value, token prefix or any other string never reaches a record.
+const SECRET_NAME_PATTERN =
+  /^(?:(?:[A-Z][A-Z0-9_]{0,75}_)?CLAUDE_CODE_OAUTH_TOKEN|[A-Z][A-Z0-9_]{0,84}_CLAUDE_API_KEY)$/u;
+// The GitHub API counters the record reads, by api-budget token name.
+const GITHUB_CALL_COUNTERS = [
+  ["github-token", "githubToken"],
+  ["lanes-app", "lanesApp"],
+];
+const RUN_ID_PATTERN = /^[1-9]\d{0,15}$/u;
+const RUN_ATTEMPT_PATTERN = /^[1-9]\d{0,3}$/u;
+const JOB_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/u;
+
+// One api-budget token file's counts, as api-budget.bash's
+// api_budget_emit_calls counts them: requests not answered 304, the 304
+// answers, and the GraphQL requests among the first. Null when the file is
+// absent or unreadable.
+function callCounts(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  const counts = { requests: 0, graphql: 0, notModified: 0 };
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    const fields = line.trim().split(/\s+/u);
+    if (fields[0] === "304") counts.notModified += 1;
+    else counts.requests += 1;
+    if (fields[5] === "graphql" || fields[1] === "graphql") counts.graphql += 1;
+  }
+  return counts;
+}
+
+function hash(text) {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+// The run context of one record: the run id and attempt, a trace id every
+// record of the run attempt shares, a span id for this record, and the
+// GitHub API calls the job made before the report. Each is null when its
+// input is absent or out of shape; nothing is guessed.
+function runContext({
+  runId = "",
+  runAttempt = "",
+  job = "",
+  laneId = "",
+  credential = "",
+  budgetDir = "",
+} = {}) {
+  const run = RUN_ID_PATTERN.test(runId) ? Number(runId) : null;
+  const attempt = RUN_ATTEMPT_PATTERN.test(runAttempt)
+    ? Number(runAttempt)
+    : null;
+  const traceId =
+    run === null || attempt === null
+      ? null
+      : hash(`lane-outcome:${run}:${attempt}`).slice(0, 32);
+  const spanId =
+    traceId === null || !JOB_PATTERN.test(job)
+      ? null
+      : hash(`${traceId}:${job}:${laneId}:${credential}`).slice(0, 16);
+  const calls =
+    budgetDir === ""
+      ? []
+      : GITHUB_CALL_COUNTERS.map(([file, key]) => [
+          key,
+          callCounts(path.join(budgetDir, file)),
+        ]).filter(([, counts]) => counts !== null);
+  return {
+    runId: run,
+    runAttempt: attempt,
+    traceId,
+    spanId,
+    githubCalls: calls.length > 0 ? Object.fromEntries(calls) : null,
+  };
+}
+
 // The credential's kind and role from its secret name, or null.
 function credentialFacts(secret) {
-  if (secret === null) return null;
+  if (secret === null || !SECRET_NAME_PATTERN.test(secret)) return null;
   const key = /^([A-Z][A-Z0-9_]*)_CLAUDE_API_KEY$/u.exec(secret);
   if (key) return { secret, kind: "api-key", role: key[1] };
   const token = /^(?:([A-Z][A-Z0-9_]*)_)?CLAUDE_CODE_OAUTH_TOKEN$/u.exec(
@@ -584,7 +688,13 @@ function recordOutcome(outcome, failureClass) {
 // legacy tokens carry no class (incomplete, skipped-validation).
 function factRecord(
   facts,
-  { laneId = "", outcome = "", handoff = "", recordClass = facts.failureClass },
+  {
+    laneId = "",
+    outcome = "",
+    handoff = "",
+    recordClass = facts.failureClass,
+    context = {},
+  },
 ) {
   const credential = credentialFacts(facts.credential);
   const missing = [
@@ -600,7 +710,14 @@ function factRecord(
     ["v", 1],
     ["lane", laneId],
     ["outcome", recordOutcome(outcome, recordClass)],
-    ["class", recordClass === "" ? null : recordClass],
+    [
+      "class",
+      recordClass === ""
+        ? null
+        : FAILURE_CLASSES.includes(recordClass)
+          ? recordClass
+          : "other",
+    ],
     ["credential", credential],
     ["handoff", handoff === "true" ? true : null],
     ["fallback", present([["reason", facts.fallbackReason]])],
@@ -623,7 +740,13 @@ function factRecord(
     ],
     ["turns", facts.turns !== null && facts.turns <= COUNT_MAX ? facts.turns : null],
     ["maxTurns", facts.maxTurns],
+    ["durationMs", facts.durationMs],
     ["costUsd", facts.costUsd],
+    ["runId", context.runId ?? null],
+    ["runAttempt", context.runAttempt ?? null],
+    ["traceId", context.traceId ?? null],
+    ["spanId", context.spanId ?? null],
+    ["githubCalls", context.githubCalls ?? null],
     ["usage", facts.usage],
     ["windows", facts.windows],
     [
@@ -631,8 +754,8 @@ function factRecord(
       facts.models.length > 0 ? facts.models : null,
     ],
   ]);
-  // Past the limit the least needed facts go first, the windows last.
-  for (const field of ["models", "usage", "windows"]) {
+  // Past the limit the least needed facts go first, the GitHub calls last.
+  for (const field of ["models", "usage", "windows", "githubCalls"]) {
     if (JSON.stringify(record).length <= RECORD_MAX_LENGTH) break;
     delete record[field];
   }
@@ -659,8 +782,14 @@ module.exports = {
   COUNT_MAX,
   CREDENTIAL_PATTERN,
   creditStopResetsAt,
+  FAILURE_CLASSES,
   FALLBACK_REASONS,
   isCreditStop,
+  JOB_PATTERN,
+  RUN_ATTEMPT_PATTERN,
+  RUN_ID_PATTERN,
+  runContext,
+  SECRET_NAME_PATTERN,
   LANE_ID_PATTERN,
   laneReport,
   MAX_MODELS,
