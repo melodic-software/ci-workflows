@@ -231,6 +231,11 @@ writes the legacy tokens alone. When `lane-id` is set, it also writes a
 warning naming what is missing; with `lane-id` empty it writes no warning,
 whether or not `credential` is set.
 
+The action also sets its `record` output to the same JSON object it wrote
+after the marker, without the marker, and leaves it empty when it wrote no
+record. A caller passes it on to a reader that cannot read annotations, such
+as a check run the caller posts itself.
+
 ## Compatibility
 
 - Fields and `class` values are only added within a major version.

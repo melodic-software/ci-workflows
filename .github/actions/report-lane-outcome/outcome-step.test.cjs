@@ -801,7 +801,7 @@ test("with a lane id and a credential, every message carries one record that val
   ];
   for (const run of runs) {
     const label = JSON.stringify(run);
-    const { errors, warnings, notices } = await runOutcome({
+    const { errors, warnings, notices, outputs } = await runOutcome({
       ...run,
       laneId: "pr-review",
       credential: "CLAUDE_CODE_OAUTH_TOKEN",
@@ -810,6 +810,9 @@ test("with a lane id and a credential, every message carries one record that val
     assert.equal(messages.length, 1, label);
     assert.equal(messages[0].split(MARKER).length, 2, label);
     const record = readRecord(messages[0]);
+    // The record output is the annotation's record, byte for byte.
+    assert.equal(outputs.record, JSON.stringify(record), label);
+    assert.equal(messages[0].includes(`${MARKER}${outputs.record}`), true, label);
     assert.deepEqual(schemaErrors(schema, record), [], label);
     assert.equal(record.lane, "pr-review", label);
     assert.deepEqual(record.credential, { secret: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth-token" }, label);
@@ -976,13 +979,14 @@ test("a caller that sets lane-id but cannot get a record gets the tokens alone a
     [{ laneId: "Pr Review" }, /\blane-id and credential are empty or invalid\./u],
   ]) {
     const label = JSON.stringify(inputs);
-    const { notices, warnings } = await runOutcome({
+    const { notices, warnings, outputs } = await runOutcome({
       outcome: "success",
       executionFile: file,
       ...inputs,
     });
     assert.equal(notices.length, 1, label);
     assert.equal(notices[0].includes(MARKER), false, label);
+    assert.equal("record" in outputs, false, label);
     assert.match(notices[0], /\bturns=3\b/u, label);
     assert.equal(warnings.length, 1, label);
     assert.match(warnings[0], missing, label);
