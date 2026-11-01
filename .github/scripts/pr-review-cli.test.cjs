@@ -1794,11 +1794,219 @@ test("every model leg wires the coverage counts and asks the model for files_rea
       /required: \["findings", "files_read", "summary", "comments"\]/u,
     );
     assert.match(compose, /"- files_read: /u);
+    for (const s of ["compose", "extract"]) {
+      assert.equal(
+        step(job, s).env.COPIES,
+        `\${{ steps.full-diff.outputs.copies }}`,
+        `${job.name} ${s}`,
+      );
+      assert.equal(step(job, s).env.SCOPE, `\${{ steps.scope.outputs.scope }}`);
+    }
+    assert.match(
+      step(job, "full-diff").run,
+      /^echo "copies=\$copies" >> "\$GITHUB_OUTPUT"$/mu,
+    );
     assert.equal(
       step(job, "extract").with.script,
       step(key, "extract").with.script,
     );
   }
+});
+
+// Identical changes: the full-diff step groups modified regular files whose
+// modes and blobs match on both sides, the prompt names the groups, and the
+// copies count as read.
+test("the full-diff step groups only identical modifications and never a hold-paths match, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const write = (root, file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-identical-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    // a, b and c make one identical change; .github/CODEOWNERS and d (made
+    // executable) make it too but must not join. x and y converge on one
+    // post-image from different pre-images, as do control.yml and aaa.txt
+    // truncated to empty.
+    for (const p of ["a", "b", "c", "d"])
+      write(origin, `${p}/lib.mjs`, "old\n");
+    write(origin, ".github/CODEOWNERS", "old\n");
+    write(origin, "gone.mjs", "old\n");
+    write(origin, "x.js", "timeout = 10\n");
+    write(origin, "y.js", "timeout = 300\n");
+    write(origin, "aaa.txt", "harmless\n");
+    write(origin, "control.yml", "kill-switch: on\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const p of ["a", "b", "c", "d"])
+      write(origin, `${p}/lib.mjs`, "synced\n");
+    write(origin, ".github/CODEOWNERS", "synced\n");
+    fs.rmSync(path.join(origin, "gone.mjs"));
+    write(origin, "added.mjs", "synced\n");
+    write(origin, "x.js", "timeout = 20\n");
+    write(origin, "y.js", "timeout = 20\n");
+    write(origin, "aaa.txt", "");
+    write(origin, "control.yml", "");
+    git(origin, "add", "-A");
+    git(origin, "update-index", "--chmod=+x", "d/lib.mjs");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const run = (prepare = () => {}, holdPaths = "**/CODEOWNERS\n") => {
+      const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+      git(dir, "clone", "--quiet", origin, work);
+      prepare(work);
+      const output = path.join(work, "..", `${path.basename(work)}.out`);
+      const fullDiff = step(job, "full-diff");
+      const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          MERGE_BASE: base,
+          HEAD_SHA: head,
+          DIFF_FILE: fullDiff.env.DIFF_FILE,
+          HOLD_PATHS: holdPaths,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return { out: fs.readFileSync(output, "utf8"), work };
+    };
+    assert.equal(
+      step(job, "full-diff").env.HOLD_PATHS,
+      `\${{ inputs.hold-paths }}`,
+    );
+    // Different pre-images (x and y, control.yml and aaa.txt), a mode
+    // change (d), an addition, a deletion and a hold-paths match never group.
+    const grouped = run();
+    assert.match(grouped.out, /^written=true$/mu, job.name);
+    assert.match(grouped.out, /^copies=2$/mu, job.name);
+    assert.equal(
+      fs.readFileSync(
+        path.join(grouped.work, ".claude-lane/identical.txt"),
+        "utf8",
+      ),
+      "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\n",
+    );
+    // With no hold-paths the trusted file would lead the group; a match in
+    // any position leaves the group.
+    const identical = (holdPaths) =>
+      fs.readFileSync(
+        path.join(run(undefined, holdPaths).work, ".claude-lane/identical.txt"),
+        "utf8",
+      );
+    assert.equal(
+      identical(""),
+      ".github/CODEOWNERS\ta/lib.mjs\tb/lib.mjs\tc/lib.mjs\n",
+    );
+    assert.equal(
+      identical(" **/CODEOWNERS \nc/**\n"),
+      "a/lib.mjs\tb/lib.mjs\n",
+    );
+    // A file the head planted at the path groups nothing and is left as is.
+    const planted = run((work) =>
+      write(work, ".claude-lane/identical.txt", "x\n"),
+    );
+    assert.match(planted.out, /^copies=0$/mu);
+    assert.equal(
+      fs.readFileSync(
+        path.join(planted.work, ".claude-lane/identical.txt"),
+        "utf8",
+      ),
+      "x\n",
+    );
+  }
+});
+
+test("the prompt names the identical files only for one review of the whole pull request", async () => {
+  const line =
+    /^IDENTICAL FILES: each line of \.claude-lane\/identical\.txt /mu;
+  assert.match(await compose({ COPIES: "8", SCOPE: "whole" }), line);
+  assert.match(
+    await compose({ COPIES: "8", SCOPE: "whole" }),
+    /files_read counts\nthe first path only/u,
+  );
+  for (const env of [
+    { COPIES: "0", SCOPE: "whole" },
+    { COPIES: "", SCOPE: "whole" },
+    { COPIES: "8x", SCOPE: "whole" },
+    { COPIES: "8", SCOPE: "incremental" },
+    { COPIES: "8", SCOPE: "whole", CHUNKS: "2", CHUNK_FILES: "10,9" },
+  ]) {
+    const outputs = await composeOutputs(env);
+    for (const file of [
+      outputs["prompt-file"],
+      outputs["prompt-file-2"],
+    ].filter(Boolean)) {
+      assert.doesNotMatch(
+        fs.readFileSync(file, "utf8"),
+        line,
+        JSON.stringify(env),
+      );
+    }
+  }
+});
+
+test("the copies count as read in one whole review, and coverage stays partial below the files in scope", async () => {
+  const review = (files_read) =>
+    JSON.stringify({ findings: 0, files_read, summary: "S", comments: [] });
+  const coverage = async (files_read, env) =>
+    JSON.parse(
+      (
+        await extract(
+          { structured: review(files_read) },
+          { WHOLE_FILES: "19", ...env },
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage(11, { COPIES: "8" }), {
+    read: 19,
+    changed: 19,
+  });
+  assert.deepEqual(await coverage(10, { COPIES: "8" }), {
+    read: 18,
+    changed: 19,
+  });
+  // An overclaim is capped before the copies are added.
+  assert.deepEqual(await coverage(19, { COPIES: "8" }), {
+    read: 19,
+    changed: 19,
+  });
+  // No well-formed count below the files in scope, or an incremental review: no credit.
+  for (const env of [
+    {},
+    { COPIES: "" },
+    { COPIES: "8x" },
+    { COPIES: "19" },
+    { COPIES: "8", SCOPE: "incremental", FULL_DIFF: "", SCOPE_FILES: "19" },
+  ]) {
+    assert.deepEqual(
+      await coverage(11, env),
+      { read: 11, changed: 19 },
+      JSON.stringify(env),
+    );
+  }
+  // A chunked review gets no credit.
+  const good = { findings: 0, files_read: 1, summary: "S", comments: [] };
+  const chunked = await extractChunks([good, good], { COPIES: "2" });
+  assert.deepEqual(JSON.parse(chunked.review).coverage, {
+    read: 2,
+    changed: 4,
+  });
 });
 
 test("the full-diff step fails when git diff fails inside its pipe", () => {
