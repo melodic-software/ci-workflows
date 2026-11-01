@@ -1937,3 +1937,22 @@ test("scan-upload withholds a planted credential without printing it, and passes
   );
   checkImports('import { readFileSync } from "node:fs";');
 });
+
+test("scan-upload fetches the gate with /usr/bin/git, no system or global config and a minimal env", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "scan-upload", "scan.cjs"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /execFileSync\("\/usr\/bin\/git", \["-c", "core\.hooksPath=\/dev\/null", \.\.\.args\]/u,
+  );
+  assert.match(source, /GIT_CONFIG_NOSYSTEM: "1"/u);
+  assert.match(source, /GIT_CONFIG_GLOBAL: "\/dev\/null"/u);
+  assert.match(source, /PATH: "\/usr\/bin:\/bin"/u);
+  assert.doesNotMatch(
+    source,
+    /\.\.\.process\.env/u,
+    "no inherited environment",
+  );
+});

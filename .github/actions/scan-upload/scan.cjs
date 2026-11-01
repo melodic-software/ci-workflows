@@ -25,11 +25,22 @@ const IMPORTS = /\bfrom\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]|\bimpor
 /** lib/publish-gate.mjs from the default-branch tip, written into a fresh directory under `temp`; returns its path. */
 function fetchGate(temp) {
   const clone = fs.mkdtempSync(path.join(temp, "claude-code-plugins-"));
+  const home = fs.mkdtempSync(path.join(temp, "scan-upload-home-"));
+  // /usr/bin/git with no system or global config and a minimal env, so no
+  // config, hook or credential helper a model step could have left applies.
+  const env = {
+    PATH: "/usr/bin:/bin",
+    HOME: home,
+    XDG_CONFIG_HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+  };
   const git = (...args) =>
-    childProcess.execFileSync("git", args, {
+    childProcess.execFileSync("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      env,
     });
   git("clone", "--quiet", "--depth=1", "--filter=blob:none", "--no-checkout", SOURCE, clone);
   const tip = git("-C", clone, "rev-parse", "HEAD").trim();
