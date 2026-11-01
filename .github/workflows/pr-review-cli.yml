@@ -1025,7 +1025,10 @@ jobs:
             echo "::warning::the diff in scope is not a regular file; it is reviewed unsplit, as a partial review"
             unsplit
           fi
-          mkdir "$CHUNK_DIR"
+          if ! mkdir "$CHUNK_DIR" 2>/dev/null; then
+            echo "::warning::the head already holds $CHUNK_DIR; the diff is reviewed unsplit, as a partial review"
+            unsplit
+          fi
           status=0
           python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$SCOPE_DIFF" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" || status=$?
           if [ "$status" -ne 0 ]; then
@@ -2524,7 +2527,10 @@ jobs:
             echo "::warning::the diff in scope is not a regular file; it is reviewed unsplit, as a partial review"
             unsplit
           fi
-          mkdir "$CHUNK_DIR"
+          if ! mkdir "$CHUNK_DIR" 2>/dev/null; then
+            echo "::warning::the head already holds $CHUNK_DIR; the diff is reviewed unsplit, as a partial review"
+            unsplit
+          fi
           status=0
           python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$SCOPE_DIFF" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" || status=$?
           if [ "$status" -ne 0 ]; then
@@ -4028,7 +4034,10 @@ jobs:
             echo "::warning::the diff in scope is not a regular file; it is reviewed unsplit, as a partial review"
             unsplit
           fi
-          mkdir "$CHUNK_DIR"
+          if ! mkdir "$CHUNK_DIR" 2>/dev/null; then
+            echo "::warning::the head already holds $CHUNK_DIR; the diff is reviewed unsplit, as a partial review"
+            unsplit
+          fi
           status=0
           python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$SCOPE_DIFF" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" || status=$?
           if [ "$status" -ne 0 ]; then

@@ -1921,13 +1921,12 @@ test("the split step cuts only a diff over the read budget, counting each chunk'
     fs.symlinkSync("/dev/null", path.join(work, ".claude-lane/pr.diff"));
   });
   assert.equal(linked.out, "chunks=1\n");
-  // A chunk directory the head planted fails the step: no chunk count, so
-  // the compose and extract steps take one review.
+  // A chunk directory the head planted: one review, with a warning.
   const planted = split({}, (work) =>
     fs.mkdirSync(path.join(work, ".claude-lane/chunks")),
   );
-  assert.notEqual(planted.status, 0);
-  assert.doesNotMatch(planted.out, /chunks=/u);
+  assert.equal(planted.status, 0);
+  assert.equal(planted.out, "chunks=1\n");
 });
 
 test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {
