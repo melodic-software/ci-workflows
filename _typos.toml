@@ -99,4 +99,6 @@ xdescribe = "xdescribe"
 # be spell-checked belong here. Minified bundles are the near-universal case.
 extend-exclude = [
   "*.min.*",
+  # GitHub's published GraphQL schema, committed verbatim.
+  "schemas/github/*.graphql",
 ]
