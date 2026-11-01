@@ -10,20 +10,22 @@
 // GraphQL request but yields fewer operations than it has call sites fails,
 // so a quoting shape the extractor misses cannot pass silently.
 //
-// The schema is GitHub's published SDL, committed at schemas/github/; refresh
-// it from https://docs.github.com/public/fpt/schema.docs.graphql when an
-// operation needs a newer field.
+// The schema is GitHub's published SDL, committed gzipped at schemas/github/
+// so the text lanes skip it; refresh it with `gzip -9 -n` over
+// https://docs.github.com/public/fpt/schema.docs.graphql when an operation
+// needs a newer field.
 
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { gunzipSync } = require("node:zlib");
 
 const { buildSchema, parse, validate } = require("graphql");
 
 const ROOT = path.resolve(__dirname, "..", "..");
-const SCHEMA = path.join(ROOT, "schemas", "github", "schema.docs.graphql");
+const SCHEMA = path.join(ROOT, "schemas", "github", "schema.docs.graphql.gz");
 const SOURCE = /\.(?:c?js|mjs|sh|bash|ya?ml)$/;
 const OPENING = /[`'"]\s*(?:query|mutation|subscription)\b\s*[A-Za-z_({]/g;
 // A request site: a github-script `github.graphql(` call, or a `gh api` /
@@ -112,9 +114,12 @@ function problems(schema, operation) {
 // assumeValid skips the type-system rules, which GitHub's own schema breaks
 // (an implementation field deprecated where its interface field is not);
 // operations are still validated against every type and field it defines.
-const schema = buildSchema(fs.readFileSync(SCHEMA, "utf8"), {
-  assumeValid: true,
-});
+const schema = buildSchema(
+  gunzipSync(fs.readFileSync(SCHEMA)).toString("utf8"),
+  {
+    assumeValid: true,
+  },
+);
 const files = trackedSources().map((file) => ({
   file,
   ...extract(file, fs.readFileSync(path.join(ROOT, file), "utf8")),
