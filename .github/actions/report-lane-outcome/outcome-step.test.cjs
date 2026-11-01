@@ -436,6 +436,36 @@ test("a run that finished past its turn cap reads as max-turns with its turns an
   assert.equal(outputs.review_failed, "true");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /\bclass=max-turns turns=16 max-turns=15\b/u);
+  assert.match(errors[0], /^Claude intake triage stopped: turn budget used /u);
+  assert.doesNotMatch(errors[0], /infrastructure error/u);
+});
+
+test("a run that used every turn reads as a sizing stop, not an infrastructure error", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "error_max_turns", is_error: true, num_turns: 76 },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "work-resolve-issue",
+    maxTurns: "75",
+  });
+  assert.equal(outputs.failure_class, "max-turns");
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /^work-resolve-issue stopped: turn budget used \(work-resolve-issue exited with: failure class=max-turns turns=76 max-turns=75\); the work is too big for one run, split it\. /u,
+  );
+  assert.doesNotMatch(errors[0], /infrastructure error/u);
+});
+
+test("an infrastructure error no longer lists max-turns among its examples", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 3 },
+  ]);
+  const { errors } = await runOutcome({ outcome: "failure", executionFile: file, maxTurns: "30" });
+  assert.match(errors[0], /\(infrastructure error, not a code-quality signal/u);
+  assert.doesNotMatch(errors[0], /max-turns exhaustion/u);
 });
 
 // ci-workflows#806: the subscription job of the two-job pattern writes the
@@ -1046,7 +1076,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: failure class=credit-stop error-type=billing_error request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 max-turns=30 models=claude-sonnet-5 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}"
+      "Claude review exited with: failure class=credit-stop error-type=billing_error request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 max-turns=30 models=claude-sonnet-5 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}"
     ],
     "warnings": [],
     "notices": [],
@@ -1087,7 +1117,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: failure class=auth error-type=permission_error error-code=abc_def request-id=req_abcdefgh12 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}"
+      "Claude review exited with: failure class=auth error-type=permission_error error-code=abc_def request-id=req_abcdefgh12 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}"
     ],
     "warnings": [],
     "notices": [],
@@ -1101,7 +1131,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: cancelled class=no-execution credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: (no execution file was produced)"
+      "Claude review exited with: cancelled class=no-execution credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: (no execution file was produced)"
     ],
     "warnings": [],
     "notices": [],
@@ -1115,7 +1145,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: skipped class=sandbox-unavailable credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, is_error result, or max-turns exhaustion). Last SDK result: (no execution file was produced)"
+      "Claude review exited with: skipped class=sandbox-unavailable credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: (no execution file was produced)"
     ],
     "warnings": [],
     "notices": [],
