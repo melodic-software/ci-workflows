@@ -1424,17 +1424,26 @@ hidden marker at `sha=none` so the next push reviews the whole pull request
 and no merge gate reads the head as reviewed. A review with no `files_read`
 is `incomplete`.
 
-**Chunks.** A diff in scope over the read budget is split at file boundaries,
-each file whole, into at most 4 chunks of at most 300000 bytes by
-claude-code-plugins' `.github/scripts/pr-review-main/split-diff.py`, read from
-that repository's default-branch tip, and each chunk gets its own model step
-in the leg, in order. The review's findings, comments and files read are the
+**Identical copies.** On a whole review, changed files whose whole change is
+identical (modifications with the same content and mode before and after, or
+additions of the same content and mode) are grouped in
+`.claude-lane/identical.txt`; a hold-paths match never groups. The review
+reads each group's first path, and the job counts the copies as read.
+
+**Chunks.** A diff in scope over the read budget, or with more than 40 files,
+is split at file boundaries, each file whole, into at most 4 chunks of at most
+300000 bytes and 40 files by claude-code-plugins'
+`.github/scripts/pr-review-main/split-diff.py`, read from that repository's
+default-branch tip, and each chunk gets its own model step in the leg, in
+order. On a whole review the identical copies are left out first: when the
+rest fits one review it is one review, and otherwise only the rest is split,
+with the copies counted as read. The review's findings, comments and files read are the
 chunks' sums, each chunk's files read capped at the files the job counted in
 it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
 sends the next leg to review every chunk again. A diff the split refuses (a
-file over the budget, or more than 4 chunks) is reviewed whole and stays
-`partial`.
+file over the budget, or more than 4 chunks, so more than 160 files that are
+not copies) is reviewed whole and stays `partial`.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
