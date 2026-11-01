@@ -21,11 +21,11 @@ name: pr-review-security
 #           contents: read         # checkout + read the diff
 #           pull-requests: write   # inline comments + the lane's comment
 #           id-token: write        # OIDC for the Claude GitHub App token
-#         uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-review-security.yml@main
 #         secrets:
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #           # Optional: retried once after a usage limit.
-#           fallback-claude-code-oauth-token: ${{ secrets.<FALLBACK_SECRET> }}
+#           FALLBACK_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.<FALLBACK_SECRET> }}
 #         with:
 #           # Optional: the secret names the lane record reports, never values.
 #           credential-name: CLAUDE_CODE_OAUTH_TOKEN
@@ -75,8 +75,8 @@ name: pr-review-security
 # red, naming the cause, when no review happened; a review that is not needed
 # stays green. Completion and its `claude-lane-review-complete` notice work as
 # in pr-review.yml (see its header), with lane id `claude-security-review`;
-# this lane reviews from the API diff and writes no full diff of its own. The
-# usage-limit fallback works as in pr-review.yml, with lane name `Claude
+# a whole review reads the diff this job writes from the merge base, as there.
+# The usage-limit fallback works as in pr-review.yml, with lane name `Claude
 # security review` and the 13-minute step budget. The
 # check is advisory (github-iac ADR 0011 keeps agentic review
 # advisory, and `ci-status` is the only required check); do not make it
@@ -193,7 +193,7 @@ on:
       fallback-credential-name:
         description: >-
           Name (never the value) of the secret the caller maps to
-          fallback-claude-code-oauth-token. The lane-outcome record names it
+          FALLBACK_CLAUDE_CODE_OAUTH_TOKEN. The lane-outcome record names it
           when the fallback attempt reports; empty writes that attempt's
           tokens with no record and a warning.
         type: string
@@ -217,7 +217,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token (from `claude setup-token`).
         required: true
-      fallback-claude-code-oauth-token:
+      FALLBACK_CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           Optional second Claude Code OAuth token. When the first attempt
           stops on a usage limit (class rate-limit), the job retries the
@@ -234,9 +234,13 @@ jobs:
     # Capped at the 16-minute ceiling set for every CI job (960 s). Outside the
     # review step, 1,366 successful jobs on claude-code-plugins (2026-09-29 to
     # 2026-10-01) took p95 17 s, max 82 s, and the scope and record steps took
-    # 1 s each on ci-workflows#653; after the 1-minute isolation install the
-    # step gets 13 minutes (780 s), which leaves 38 s;
-    # incremental scoping, not a longer step, shortens the reviews that reach it.
+    # 1 s each on ci-workflows#653. The step's 13 minutes (780 s) and the
+    # 1-minute isolation install leave 120 s for that 82 s and the full-diff
+    # step, capped at 60 s and not yet measured (a fetch and a local diff), so
+    # a job that reaches all of those limits needs 982 s, 22 s past the ceiling.
+    # Incremental scoping, not a longer step, shortens the reviews that reach
+    # the limit. A job that runs out never concludes success, so the check never
+    # claims a review it did not finish.
     timeout-minutes: 16
     # The draft and fork tests are scoped to pull_request so a privileged
     # trigger still reaches the tripwire. A bot passes only when the event
@@ -549,6 +553,51 @@ jobs:
               core.setOutput("scope", "whole");
             }
 
+      # A whole review reads the pull request's whole diff from the merge base
+      # the job fetches itself: the API returns only part of a large pull
+      # request's diff, and the model's own sandbox may have no network. The
+      # verify step reads `written`: without it a whole review would cover
+      # part of the change, so it concludes `incomplete`. An incremental
+      # review already has its complete diff from the scope step. The 1-minute
+      # cap bounds the fetch and diff; the job's timeout comment has the budget.
+      - name: Write the full diff
+        id: full-diff
+        if: steps.scope.outputs.review != 'false' && steps.scope.outputs.scope != 'incremental'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DIFF_FILE: .claude-lane/pr.diff
+        run: |
+          # `-i` keeps the response headers, so a failed call logs its rate limit.
+          response="$RUNNER_TEMP/compare.http"
+          if ! gh api -i "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq .merge_base_commit.sha > "$response"; then
+            echo "::warning::The compare call failed: $(tr -d '\r' < "$response" | grep -iE '^(HTTP/|x-ratelimit-(remaining|reset):|retry-after:)' | paste -sd ' ' -)"
+            exit 1
+          fi
+          base="$(tr -d '\r' < "$response" | awk 'NR == 1 && !/^HTTP\// { body = 1 } body { print; next } $0 == "" { body = 1 }')"
+          if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::warning::No merge base was found for the full diff."
+            exit 1
+          fi
+          # The checkout persists no credential, and the blob-less clone fetches
+          # file contents during the diff too, so every git call here carries
+          # the job token in its environment, never in argv or .git/config.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base"
+          mkdir -p "$(dirname "$DIFF_FILE")"
+          git diff --no-color --no-ext-diff "$base" "$HEAD_SHA" > "$DIFF_FILE"
+          files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
+          {
+            echo "written=true"
+            echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
+          } >> "$GITHUB_OUTPUT"
+
       # The model and effort (or model-args), inline-comment and
       # plugin-command Skill grants go after the caller's args so replacing
       # claude-args cannot drop them, and
@@ -566,7 +615,7 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           MODEL_ARGS: ${{ inputs.model-args }}
           PLUGIN_COMMAND: ${{ inputs.plugin-command }}
-          HAS_FALLBACK: ${{ secrets.fallback-claude-code-oauth-token != '' }}
+          HAS_FALLBACK: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           if ! [[ "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$ ]]; then
             echo "::error::The model input must be a model alias or ID."
@@ -713,6 +762,7 @@ jobs:
             PR NUMBER: ${{ github.event.pull_request.number }}
             HEAD SHA: ${{ github.event.pull_request.head.sha }}
             ${{ steps.scope.outputs.note }}
+            ${{ steps.full-diff.outputs.note }}
 
             Invoke ${{ inputs.plugin-command }} now and follow its instructions exactly for this pull request.
             The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.
@@ -864,7 +914,7 @@ jobs:
           # row, as of 2026-10-17; recheck when the row changes what it keeps).
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
-          claude_code_oauth_token: ${{ secrets.fallback-claude-code-oauth-token }}
+          claude_code_oauth_token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
           # No track_progress: on a pull_request event with a prompt the action
           # runs in agent mode, which posts no tracking comment and gives the
           # model no comment tool (claude-code-action src/modes/detector.ts,
@@ -893,6 +943,7 @@ jobs:
             PR NUMBER: ${{ github.event.pull_request.number }}
             HEAD SHA: ${{ github.event.pull_request.head.sha }}
             ${{ steps.scope.outputs.note }}
+            ${{ steps.full-diff.outputs.note }}
 
             Invoke ${{ inputs.plugin-command }} now and follow its instructions exactly for this pull request.
             The REPO / PR NUMBER / HEAD SHA header above is authoritative context for the command.
@@ -981,6 +1032,9 @@ jobs:
           STARTED_AT: ${{ steps.attempt.outputs.started-at }}
           STRUCTURED_OUTPUT: ${{ steps.attempt.outputs.structured-output }}
           SCOPE: ${{ steps.scope.outputs.scope }}
+          REQUIRE_FULL_DIFF: "true"
+          FULL_DIFF: ${{ steps.full-diff.outputs.written }}
+          EXECUTION_FILE: ${{ steps.attempt.outputs.execution-file }}
         with:
           script: |
             // A failed GitHub API call logs its status and rate-limit headers, then
@@ -1023,6 +1077,52 @@ jobs:
             const summary =
               typeof output.summary === "string" ? output.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
             if (!summary) return incomplete("the review returned no summary");
+            // A shell that bwrap could not start, with no successful Read of the
+            // diff file, means the model saw no change, whatever it returned.
+            // Only that match fails the review: an execution file that cannot
+            // be read warns and proves nothing.
+            let messages;
+            try {
+              messages = JSON.parse(require("node:fs").readFileSync(env.EXECUTION_FILE ?? "", "utf8"));
+            } catch {
+              messages = undefined;
+            }
+            if (!Array.isArray(messages)) {
+              core.warning(`${lane}: the execution file could not be read, so the blind-review check did not run.`);
+            }
+            const parts = (Array.isArray(messages) ? messages : []).flatMap((message) =>
+              Array.isArray(message?.message?.content) ? message.message.content : [],
+            );
+            const results = parts.filter((part) => part?.type === "tool_result");
+            const toolIds = (matches) =>
+              new Set(parts.filter((part) => part?.type === "tool_use" && matches(part)).map((part) => part.id));
+            const succeeded = (ids) => results.some((result) => result.is_error !== true && ids.has(result.tool_use_id));
+            const DIFF_FILE = /(?:^|\/)\.claude-lane\/(?:pr|incremental)\.diff$/u;
+            const diffReads = toolIds((part) => part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""));
+            const bashCalls = toolIds((part) => part.name === "Bash");
+            const prDiffs = toolIds((part) => part.name === "Bash" && String(part.input?.command ?? "").includes("gh pr diff"));
+            const noShell = results.some(
+              (result) =>
+                result.is_error === true && bashCalls.has(result.tool_use_id) && JSON.stringify(result.content ?? "").includes("bwrap:"),
+            );
+            const readDiff = succeeded(diffReads);
+            if (noShell && !readDiff) {
+              return incomplete("bwrap could not start, so the shell failed, and the diff file was never read, so the review saw no change");
+            }
+            if (noShell) core.warning("A Bash call failed on bwrap, so this review ran with no working shell; it did read its diff file.");
+            // Warns only: this measures how often the file shows no diff access,
+            // since whether it records subagent tool calls is unproven. The count
+            // logged here settles that: a non-zero value proves they are recorded.
+            const printedDiff = results.some(
+              (result) =>
+                result.is_error !== true && prDiffs.has(result.tool_use_id) && JSON.stringify(result.content ?? "").includes("diff --git"),
+            );
+            if (Array.isArray(messages)) {
+              core.info(`${lane}: ${messages.filter((message) => message?.parent_tool_use_id).length} execution-file message(s) came from a subagent.`);
+            }
+            if (Array.isArray(messages) && !readDiff && !printedDiff) {
+              core.warning("The execution file shows no successful Read of the diff file and no successful gh pr diff.");
+            }
             // Every `manifest <field>: flag` line in the summary is a finding, so a
             // count below those lines is raised to them, never trusted.
             const flags = summary.match(/^[ \t]*(?:[-*+][ \t]+)?`?manifest \S+: flag/gmu)?.length ?? 0;
@@ -1234,7 +1334,7 @@ jobs:
             install-failed) why="the subprocess isolation or Bun install failed (often a slow package mirror or an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
             no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
-            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, or the review saw only part of the diff; read the verify step's log" ;;
+            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, the review saw only part of the diff, or bwrap could not start and the diff file was never read; read the verify step's log" ;;
             sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;

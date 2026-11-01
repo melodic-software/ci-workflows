@@ -7,7 +7,10 @@ inputs:
       File globs to scan, space-separated. Default scans all markdown.
     default: '**/*.md'
   config:
-    description: Path to the lychee.toml ruleset in the caller repo.
+    description: >-
+      Path to the lychee.toml ruleset in the caller repo. When the default
+      path is absent, the canonical ruleset this action ships with (this
+      repository's standards-synced root lychee.toml) is used instead.
     default: lychee.toml
   exclude:
     description: >-
@@ -28,8 +31,9 @@ runs:
   steps:
     # A warm pin never touches the network. install-release.sh re-verifies the
     # pinned SHA-256 on every restore, so the cache key is never trusted by itself.
-    - name: Cache lychee release asset
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore lychee release asset
+      id: lychee-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/ci-workflows-release-cache/lychee
         key: lychee-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
@@ -45,30 +49,23 @@ runs:
         ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/lychee
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
 
+    # Save from the default branch only, after a miss: every ref restores the
+    # default branch's entries, but an entry a PR ref saves serves that ref alone.
+    # A schedule run has no webhook payload, so github.event.repository is not
+    # guaranteed there, but its ref is always the default branch.
+    - name: Save lychee release asset
+      if: >-
+        (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+        && steps.lychee-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/lychee
+        key: ${{ steps.lychee-cache.outputs.cache-primary-key }}
+
     - name: Check links (offline)
       shell: bash
       env:
         GLOBS: ${{ inputs.globs }}
         CONFIG: ${{ inputs.config }}
         EXCLUDE: ${{ inputs.exclude }}
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$CONFIG" ]]; then
-          echo "::error::lychee-offline: config file not found: $CONFIG"
-          exit 2
-        fi
-        # Anchor checks come from the ruleset's include_fragments (lychee's CLI
-        # default is off); the config is intentionally not overridden here.
-        args=(--offline --no-progress --config "$CONFIG")
-        # $EXCLUDE entries are REGEXES; without set -f bash would pathname-expand
-        # an entry containing a metacharacter before lychee sees it.
-        set -f
-        for e in $EXCLUDE; do
-          args+=(--exclude-path "$e")
-        done
-        set +f
-        # -d '' takes the whole value so a multi-line input still splits; read hits
-        # EOF without finding that delimiter, hence the `|| true`.
-        globs=()
-        read -r -d '' -a globs <<<"$GLOBS" || true
-        lychee "${args[@]}" "${globs[@]}"
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

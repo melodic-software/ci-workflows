@@ -1,6 +1,7 @@
 // pr-review-cli's hold step. No model runs here. It reads, from env:
-// HOLD_LABEL, LANE_ID, PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base
-// branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
+// HOLD_LABEL, LANE_ID, STATUS_JOB (the name of the status job this step runs
+// in, whose earlier runs' notices give a cost decision's decided head),
+// PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
 // counts), and the legs' KEY_* and SUB_* outputs that publish-review's judge
 // reads. It only adds: the label and one marker comment. Every write goes
 // through issues.addLabels or issues.createComment.
@@ -44,12 +45,6 @@ const PULL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
 }`;
 const EDITED_QUERY =
   "query($id: ID!) { node(id: $id) { ... on IssueComment { lastEditedAt } } }";
-const DELETED_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) { timelineItems(itemTypes: [COMMENT_DELETED_EVENT], last: 100) { filteredCount nodes { ... on CommentDeletedEvent { createdAt } } } }
-  }
-}`;
-
 // Whether comment `c` was ever edited: "unedited" when GraphQL answers
 // lastEditedAt null, "edited" when it answers a time, else "unknown" (a
 // failed read, no node, or no lastEditedAt).
@@ -62,34 +57,6 @@ async function editState(github, c) {
   } catch {
     return "unknown";
   }
-}
-
-// Whether a comment on pull request `number` was deleted at or after `at`
-// (merge-holds.mjs deletedSince at claude-code-plugins#9569's head
-// 149f3214): "deleted", "none", or "unknown" when the read fails, lists
-// fewer deletions than its filteredCount, has no list or integer count, or
-// holds a time that does not parse. A deleted newer marker would otherwise
-// make an older one the decided head.
-async function deletedSince(github, owner, repo, number, at) {
-  let items;
-  try {
-    items = (await github.graphql(DELETED_QUERY, { owner, name: repo, number }))
-      ?.repository?.pullRequest?.timelineItems;
-  } catch {
-    return "unknown";
-  }
-  const when = Date.parse(at);
-  const nodes = items?.nodes;
-  if (
-    !Number.isFinite(when) ||
-    !Array.isArray(nodes) ||
-    !Number.isInteger(items.filteredCount) ||
-    items.filteredCount > nodes.length
-  )
-    return "unknown";
-  const times = nodes.map((node) => Date.parse(node?.createdAt));
-  if (!times.every(Number.isFinite)) return "unknown";
-  return times.some((t) => t >= when) ? "deleted" : "none";
 }
 
 // The issue one plain `Refs: #<n>` line names, or null: claude-code-plugins@eda837d4c8
@@ -219,87 +186,184 @@ async function costDecided(github, owner, repo, number, env, prComments) {
 // (https://docs.github.com/en/rest/commits/commits#compare-two-commits).
 const MAX_COMPARE_FILES = 300;
 const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/u;
+const SHA = /^[0-9a-f]{40}$/u;
+const WORKFLOW_PATH = /^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/u;
 
-// Whether `decision` covers the head: { carry, why }. The decided head is
-// the sha of this lane's newest cost hold marker posted before the decision,
-// and only while that marker is unedited: an edited marker, or one whose
-// edit state cannot be read, carries nothing, and no older marker is used.
-// It carries nothing either when any comment on the pull request was
-// deleted at or after that marker was posted, or the deletion list cannot
-// show none was (deletedSince), read before the head check so deleting a
-// newer marker cannot promote an older head. The decision carries when the head is that sha, or when the pull request's
-// net diff against its base branch is the same at both: compare
-// base...decided and base...head (three-dot, so each is the diff from its
-// merge base) list the same files, each with the same status,
-// previous_filename and patch text. So a base-only merge or a rebase that
-// leaves every patch as it was carries, and any other change does not. One
-// edit read, one deletion read and at most two compare reads; any failure,
-// a missing patch, or a list of 300 or more files carries nothing.
-async function carryDecision(github, owner, repo, env, prComments, decision) {
-  const cutoff = Date.parse(decision.created_at);
-  if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
-  const markerLine = new RegExp(
-    `^<!-- claude-lane-hold lane=${env.LANE_ID} sha=([0-9a-f]{40}) criteria=([a-z,-]+) -->(?:\n|$)`,
+// The cost hold notices of lane `lane` among one status job's annotations,
+// as { sha, at } with `at` the job's completion: only those naming `head`,
+// the head its run ran on, so a notice speaks for no other commit
+// (claude-code-plugins .github/scripts/pr-merge/merge-holds.mjs costNotices).
+function costNotices(annotations, lane, head, at) {
+  const line = new RegExp(
+    `^claude-lane-hold lane=${lane} sha=([0-9a-f]{40}) criteria=([a-z,-]+) label=`,
     "u",
   );
-  let decided = null;
-  let held = null;
-  let at = -Infinity;
-  for (const c of prComments) {
-    if (c?.user?.login !== "github-actions[bot]") continue;
-    const m = markerLine.exec(String(c.body ?? ""));
-    const t = Date.parse(c.created_at);
-    if (!m || !m[2].split(",").includes("cost")) continue;
-    if (!(t < cutoff) || t <= at) continue;
-    decided = m[1];
-    held = c;
-    at = t;
+  return (Array.isArray(annotations) ? annotations : []).flatMap((a) => {
+    const m = a?.annotation_level === "notice" ? line.exec(String(a.message ?? "")) : null;
+    return m && m[1] === head && m[2].split(",").includes("cost") ? [{ sha: m[1], at }] : [];
+  });
+}
+
+// The sha of the newest of `notices` before `cutoff`, or null, null too when
+// two heads share that time (merge-holds.mjs decidedHead).
+function decidedHead(notices, cutoff) {
+  const before = notices.filter((n) => Date.parse(n.at) < cutoff);
+  const newest = Math.max(...before.map((n) => Date.parse(n.at)));
+  const heads = new Set(before.filter((n) => Date.parse(n.at) === newest).map((n) => n.sha));
+  return heads.size === 1 ? [...heads][0] : heads.size === 0 ? null : undefined;
+}
+
+// Why the branch's push history shows a head with no run of this lane
+// before the decision, else null (merge-holds.mjs unranHead, for one lane).
+// `activity` is one page of the repository activity API for the branch,
+// which deleting a run leaves; `ran` the heads of this lane's runs started
+// before the decision. Every head the branch moved to after its last push of
+// `decided` before the decision needs a run: with one deleted, an older
+// notice would become the decided head (claude-code-plugins#10437).
+function unranHead(activity, ran, decided, cutoff) {
+  if (!Array.isArray(activity)) return "the branch's push history is unreadable";
+  if (activity.length >= 100) return "the branch's push history fills a page";
+  const moves = [];
+  for (const move of activity) {
+    const after = String(move?.after ?? "");
+    if (!SHA.test(after) || /^0{40}$/u.test(after)) continue;
+    const made = Date.parse(move.timestamp);
+    if (!Number.isFinite(made)) return "the branch's push history is unreadable";
+    moves.push({ after, made });
   }
-  if (!decided)
-    return { carry: false, why: "no cost hold marker of this lane precedes the decision" };
-  const state = await editState(github, held);
-  if (state === "edited")
-    return { carry: false, why: "the decided-head marker was edited" };
-  if (state !== "unedited")
-    return { carry: false, why: "could not confirm the marker is unedited" };
-  const deleted = await deletedSince(github, owner, repo, Number(env.PR_NUMBER), held.created_at);
-  if (deleted === "deleted")
-    return { carry: false, why: "a comment was deleted since the decided-head marker was posted" };
-  if (deleted !== "none")
-    return {
-      carry: false,
-      why: "could not confirm no comment was deleted since the decided-head marker was posted",
-    };
-  if (decided === env.HEAD_SHA)
-    return { carry: true, why: `the head is the decided head ${decided}` };
+  const before = moves.filter((m) => m.made < cutoff);
+  const last = Math.max(...before.filter((m) => m.after === decided).map((m) => m.made));
+  if (!Number.isFinite(last))
+    return `the branch shows no push of ${decided} before the decision`;
+  const gap = before.find((m) => m.after !== decided && m.made >= last && !ran.includes(m.after));
+  return gap
+    ? `${gap.after} was pushed after the decided head with no run of this lane before the decision`
+    : null;
+}
+
+// Whether `decision` covers the head: { carry, why }. The decided head comes
+// from this lane's own check-run notices, never a comment: any workflow on
+// GITHUB_TOKEN posts as github-actions[bot] (claude-code-plugins#9635). It
+// reads every pull_request run of this run's workflow on the pull request's
+// head branch of this repository started before the decision; vets each
+// run's head (compare base...head lists under 300 files and does not change
+// this workflow's file, which a pull_request run takes from the head and so
+// could write the notice); takes, from each run's STATUS_JOB done before the
+// decision, the `claude-lane-hold lane=<LANE_ID>` cost notices naming that
+// run's own head; and keeps the newest (decidedHead) while the branch's push
+// history shows no run missing since it (unranHead). The decision carries
+// when the head is that sha, or when the pull request's net diff against its
+// base branch is the same at both: compare base...decided and base...head
+// (three-dot, so each is the diff from its merge base) list the same files,
+// each with the same status, previous_filename and patch. So a base-only
+// merge or a rebase that leaves every patch as it was carries, and any other
+// change does not. A read that fails throws, and the caller keeps the hold.
+// Reads need actions: read (runs, jobs), checks: read (annotations) and
+// contents: read (compare, activity).
+async function carryDecision(github, owner, repo, env, runId, decision) {
+  const cutoff = Date.parse(decision.created_at);
+  if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
   const base = String(env.BASE_REF ?? "");
   if (!BRANCH.test(base)) return { carry: false, why: "the base branch name is not usable" };
-  const files = async (sha) => {
-    const data = (
-      await github.rest.repos.compareCommitsWithBasehead({
-        owner,
-        repo,
-        basehead: `${base}...${sha}`,
-      })
-    ).data;
-    const list = data?.files;
+  const statusJob = String(env.STATUS_JOB ?? "");
+  if (!/^[A-Za-z0-9._ -]{1,100}$/u.test(statusJob))
+    return { carry: false, why: "the status job name is not usable" };
+  const self = `${owner}/${repo}`.toLowerCase();
+  const current = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
+  if (
+    current?.event !== "pull_request" ||
+    String(current.head_repository?.full_name).toLowerCase() !== self
+  )
+    return { carry: false, why: "this run is not a pull_request run of this repository" };
+  const branch = String(current.head_branch ?? "");
+  const workflow = String(current.path ?? "");
+  if (!BRANCH.test(branch) || !WORKFLOW_PATH.test(workflow) || !Number.isInteger(current.workflow_id))
+    return { carry: false, why: "this run's workflow or branch is not usable" };
+
+  // Each compare is read once: base...sha's files by name, or null when it
+  // lists 300 or more, a file with no patch, or one twice.
+  const compared = new Map();
+  const compare = async (sha) => {
+    if (!compared.has(sha))
+      compared.set(
+        sha,
+        (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${base}...${sha}` }))
+          .data?.files,
+      );
+    return compared.get(sha);
+  };
+  const byName = (list) => {
     if (!Array.isArray(list) || list.length >= MAX_COMPARE_FILES) return null;
-    const byName = new Map();
+    const names = new Map();
     for (const f of list) {
       if (typeof f?.filename !== "string" || typeof f.patch !== "string") return null;
-      if (byName.has(f.filename)) return null;
-      byName.set(f.filename, [f.status, f.previous_filename ?? null, f.patch]);
+      if (names.has(f.filename)) return null;
+      names.set(f.filename, [f.status, f.previous_filename ?? null, f.patch]);
     }
-    return byName;
+    return names;
   };
-  let then;
-  let now;
-  try {
-    then = await files(decided);
-    now = await files(env.HEAD_SHA);
-  } catch {
-    return { carry: false, why: "a compare read failed" };
+
+  const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+    owner,
+    repo,
+    workflow_id: current.workflow_id,
+    event: "pull_request",
+    branch,
+    per_page: 100,
+  });
+  const notices = [];
+  const ran = [];
+  for (const run of runs) {
+    if (String(run?.head_repository?.full_name).toLowerCase() !== self) continue;
+    if (!(Date.parse(run.created_at) < cutoff)) continue;
+    const head = String(run.head_sha ?? "");
+    if (!SHA.test(head)) return { carry: false, why: "a run of this lane has no head commit" };
+    ran.push(head);
+    const files = await compare(head);
+    if (!Array.isArray(files) || files.length >= MAX_COMPARE_FILES)
+      return { carry: false, why: `the head ${head} lists 300 or more files, or no file list` };
+    if (files.some((f) => f?.filename === workflow))
+      return { carry: false, why: `the head ${head} changes this lane's workflow` };
+    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+      owner,
+      repo,
+      run_id: run.id,
+      filter: "all",
+      per_page: 100,
+    });
+    for (const job of jobs) {
+      const name = String(job?.name ?? "");
+      if (name !== statusJob && !name.endsWith(` / ${statusJob}`)) continue;
+      if (!(Date.parse(job.completed_at) < cutoff)) continue;
+      const annotations = await github.paginate(github.rest.checks.listAnnotations, {
+        owner,
+        repo,
+        check_run_id: job.id,
+        per_page: 100,
+      });
+      notices.push(...costNotices(annotations, env.LANE_ID, head, job.completed_at));
+    }
   }
+  const decided = decidedHead(notices, cutoff);
+  if (decided === undefined)
+    return { carry: false, why: "two heads were noticed at the newest time before the decision" };
+  if (decided === null)
+    return { carry: false, why: "no cost hold notice of this lane precedes the decision" };
+  const activity = (
+    await github.request("GET /repos/{owner}/{repo}/activity", {
+      owner,
+      repo,
+      ref: `refs/heads/${branch}`,
+      direction: "desc",
+      per_page: 100,
+    })
+  ).data;
+  const gap = unranHead(activity, ran, decided, cutoff);
+  if (gap) return { carry: false, why: gap };
+  if (decided === env.HEAD_SHA)
+    return { carry: true, why: `the head is the decided head ${decided}` };
+  const then = byName(await compare(decided));
+  const now = byName(await compare(env.HEAD_SHA));
   if (!then || !now)
     return {
       carry: false,
@@ -354,7 +418,7 @@ async function run({ github, context, core, env = process.env }) {
       const comments = await listPrComments();
       const decision = await costDecided(github, owner, repo, number, env, comments);
       if (decision)
-        result = await carryDecision(github, owner, repo, env, comments, decision);
+        result = await carryDecision(github, owner, repo, env, context.runId, decision);
     } catch {
       result = { carry: false, why: "a read failed" };
     }

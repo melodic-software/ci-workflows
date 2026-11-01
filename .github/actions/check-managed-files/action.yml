@@ -3,8 +3,8 @@ description: >-
   Fail when a PR hand-edits files managed by melodic-software/standards'
   sync-manifest (ci-workflows#208). A standards-sync PR is instead verified to
   hold exactly what sync-manifest apply produces at standards main HEAD, as
-  resolved when the check runs. Callers must pin this action by SHA; see
-  README.md. Advisory-first: wire into ci-status only after a clean soak.
+  resolved when the check runs. melodic-software callers reference this
+  action at @main, outside callers at a full SHA; see README.md. Advisory-first: wire into ci-status only after a clean soak.
 
 inputs:
   standards-ref:

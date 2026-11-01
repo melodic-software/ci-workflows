@@ -54,7 +54,7 @@ The same discipline holds outside prose. Deduplicate with the language's idiomat
 
 ## History lives in version control
 
-Where and when something came from is a fact the version-control history already owns. An origin or history aside in code, comments, configuration, or docs (a "ported from" note, an "added on <date>" comment) copies that fact into a second place nothing keeps current. Leave it out of explanatory prose, code, comments, and configuration; [`legacy-and-migration-debt.md`](https://github.com/melodic-software/standards/blob/main/conventions/engineering/legacy-and-migration-debt.md) covers the related case of prose that narrates a migration.
+Where and when something came from is a fact the version-control history already owns. An origin or history aside in code, comments, configuration, or docs (a "ported from" note, an "added on <date>" comment) copies that fact into a second place nothing keeps current. Leave it out of explanatory prose, code, comments, and configuration; [`legacy-and-migration-debt.md`](https://github.com/melodic-software/standards/blob/main/standards/engineering/legacy-and-migration-debt.md) covers the related case of prose that narrates a migration.
 
 A record whose purpose is evidence keeps its dates and origins: a manifest's adoption, rollout, or canary notes, an architecture decision record, a component's admission evidence, a changelog. There the date is the evidence a decision rests on, not a copy of version-control history.
 
@@ -68,8 +68,10 @@ A record whose purpose is evidence keeps its dates and origins: a manifest's ado
 - Fowler: [What do you mean by "Event-Driven"?](https://martinfowler.com/articles/201701-event-driven.html)
 - OASIS DITA 1.3: [Producing different deliverables from a single source](https://docs.oasis-open.org/dita/dita/v1.3/errata02/os/complete/part1-base/archSpec/base/single-sourcing.html)
 - Gasparyan, WTD Portland 2022: [Don't shoot yourself in the foot with content reuse](https://www.writethedocs.org/conf/portland/2022/speakers/#speaker-anna-gasparyan-don-t-shoot-yourself-in-the-foot-with-content-reuse-anna-gasparyan)
+- Metz, 2016: [The Wrong Abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction)
+- Dodds, 2020: [AHA Programming](https://kentcdodds.com/blog/aha-programming)
 
-Further reading (links only, not load-bearing until a targeted primary-source verify pass): [Metz, *The Wrong Abstraction*](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction); [Dodds, AHA Programming](https://kentcdodds.com/blog/aha-programming); [Swett, counter-argument to Metz](https://www.codewithjason.com/duplication-cheaper-wrong-abstraction/); [Go proverb, copy a little](https://go-proverbs.github.io/).
+Further reading (links only, not load-bearing until a targeted primary-source verify pass): [Swett, counter-argument to Metz](https://www.codewithjason.com/duplication-cheaper-wrong-abstraction/); [Go proverb, copy a little](https://go-proverbs.github.io/).
 
 ## Related
 

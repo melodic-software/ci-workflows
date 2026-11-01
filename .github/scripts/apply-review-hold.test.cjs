@@ -36,6 +36,69 @@ const TRUST_PATHS = [
   "**/.gitmodules",
 ].join("\n");
 
+// This lane's earlier runs, in the REST shapes the hold step reads
+// (docs.github.com/en/rest/actions/workflow-runs: workflow_runs[].id,
+// head_sha, created_at, head_repository.full_name, and a run's workflow_id,
+// path, event, head_branch; /rest/actions/workflow-jobs: jobs[].id, name,
+// completed_at; /rest/checks/runs#list-check-run-annotations:
+// annotation_level, message; /rest/repos/repos#list-repository-activities:
+// after, timestamp). The default is one run at HEAD whose status job
+// recorded a cost hold notice at 11:00, before the 12:00 decision, with HEAD
+// pushed at 10:45.
+const RUN_ID = 99;
+const RUN_PATH = ".github/workflows/pr-review-hosted.yml";
+const STATUS_JOB = "claude-review-status";
+const laneRun = ({
+  id = 11,
+  sha = "a".repeat(40),
+  createdAt = "2026-10-23T10:50:00Z",
+  repo = "o/r",
+} = {}) => ({
+  id,
+  head_sha: sha,
+  created_at: createdAt,
+  head_repository: { full_name: repo },
+});
+const statusJob = ({
+  id = 111,
+  name = `pr-review / ${STATUS_JOB}`,
+  completedAt = "2026-10-23T11:00:00Z",
+} = {}) => ({ id, name, completed_at: completedAt });
+const notice = ({
+  sha = "a".repeat(40),
+  lane = "claude-review",
+  criteria = "cost",
+  level = "notice",
+} = {}) => ({
+  annotation_level: level,
+  message: `claude-lane-hold lane=${lane} sha=${sha} criteria=${criteria} label=needs-human`,
+});
+const push = (after, timestamp = "2026-10-23T10:45:00Z") => ({
+  after,
+  timestamp,
+});
+const laneOf = ({
+  current = {},
+  runs = [laneRun()],
+  jobs = { 11: [statusJob()] },
+  annotations = { 111: [notice()] },
+  activity = [push("a".repeat(40))],
+} = {}) => ({
+  current: {
+    id: RUN_ID,
+    workflow_id: 5,
+    path: RUN_PATH,
+    event: "pull_request",
+    head_branch: "feat/cost",
+    head_repository: { full_name: "o/r" },
+    ...current,
+  },
+  runs,
+  jobs,
+  annotations,
+  activity,
+});
+
 // `comments` are the pull request's (#7); `issueComments` maps another
 // issue number to its comments; `pull` is the GraphQL pull request;
 // `edited` holds the node ids of edited comments; `failEdited` those whose
@@ -44,8 +107,11 @@ const TRUST_PATHS = [
 // answers another number; `compares` maps a basehead to its compare
 // response data; `deletions` the created_at of each COMMENT_DELETED_EVENT
 // on the pull request, `deletedItems` a raw timelineItems answer in their
-// place, and `failDeleted` fails that read.
+// place, and `failDeleted` fails that read. `lane` holds this lane's
+// earlier runs (laneOf); `fail.run`, `fail.runs`, `fail.jobs`,
+// `fail.annotations` and `fail.activity` fail those reads.
 function fakeGithub({
+  lane = laneOf(),
   files = [],
   changedFiles,
   comments = [],
@@ -102,14 +168,60 @@ function fakeGithub({
       return { repository: { pullRequest: pull } };
     },
     paginate: async (method, params) => method(params),
+    request: async (route, params) => {
+      calls.push(["activity", params]);
+      if (route !== "GET /repos/{owner}/{repo}/activity")
+        throw new Error(`unexpected request ${route}`);
+      if (fail.activity) throw new Error("HTTP 502");
+      return { data: lane.activity };
+    },
     rest: {
+      actions: {
+        getWorkflowRun: async (params) => {
+          calls.push(["getWorkflowRun", params]);
+          if (fail.run) throw new Error("HTTP 502");
+          return { data: lane.current };
+        },
+        listWorkflowRuns: (params) => {
+          calls.push(["listWorkflowRuns", params]);
+          if (fail.runs) throw new Error("HTTP 502");
+          return lane.runs;
+        },
+        listJobsForWorkflowRun: (params) => {
+          calls.push(["listJobs", params]);
+          if (fail.jobs) throw new Error("HTTP 502");
+          return lane.jobs[params.run_id] ?? [];
+        },
+      },
+      checks: {
+        listAnnotations: (params) => {
+          calls.push(["listAnnotations", params]);
+          if (fail.annotations) throw new Error("HTTP 502");
+          return lane.annotations[params.check_run_id] ?? [];
+        },
+      },
       repos: {
         compareCommitsWithBasehead: async (params) => {
           calls.push(["compare", params]);
           if (fail.compare) throw new Error("HTTP 404");
-          if (!(params.basehead in compares))
+          // The default answer for HEAD vets the notice run's head: one
+          // file, no review-lane workflow.
+          const answers = {
+            [`main...${HEAD}`]: {
+              status: "ahead",
+              files: [
+                {
+                  filename: "src/app.js",
+                  status: "modified",
+                  patch: "@@ -1 +1 @@\n-a\n+b",
+                },
+              ],
+            },
+            ...compares,
+          };
+          if (!(params.basehead in answers))
             throw new Error(`unexpected compare ${params.basehead}`);
-          return { data: compares[params.basehead] };
+          return { data: answers[params.basehead] };
         },
       },
       pulls: {
@@ -176,12 +288,19 @@ function fakeCore() {
 }
 
 const review = (extra = {}) =>
-  JSON.stringify({ findings: 0, summary: "S", comments: [], ...extra });
+  JSON.stringify({
+    findings: 0,
+    coverage: { read: 1, changed: 1 },
+    summary: "S",
+    comments: [],
+    ...extra,
+  });
 
 const baseEnv = (extra = {}) => ({
   HOLD_LABEL: "needs-human",
   HOLD_PATHS: TRUST_PATHS,
   LANE_ID: "claude-review",
+  STATUS_JOB,
   PR_NUMBER: "7",
   HEAD_SHA: HEAD,
   BASE_REF: "main",
@@ -202,7 +321,7 @@ async function apply(env, options = {}) {
   try {
     await run({
       github,
-      context: { repo: { owner: "o", repo: "r" } },
+      context: { repo: { owner: "o", repo: "r" }, runId: RUN_ID },
       core,
       env,
     });
@@ -484,30 +603,68 @@ const refsPull = (body) => ({
 
 test("a cost decision on the pull request keeps the cost hold from coming back", async () => {
   const { core, error, writes, github } = await apply(costEnv(), {
-    comments: [marker(), decision()],
+    comments: [decision()],
   });
   assert.equal(error, undefined);
   assert.equal(core.outputs.hold, "false");
   assert.deepEqual(writes, []);
   // The lookup's reads, the pull request's comments and the decision's edit
-  // check, then the marker's edit check and the deletion read: the head is
-  // the decided head, so no compare.
+  // check, then this lane's earlier runs: the current run (for the
+  // workflow and branch), the runs, the vet compare of the run's head, its
+  // jobs, the status job's annotations and the branch's push history. The
+  // head is the decided head, so no second compare.
   assert.deepEqual(
     github.calls.map(([name]) => name),
-    ["listComments", "graphql", "graphql", "graphql"],
+    [
+      "listComments",
+      "graphql",
+      "getWorkflowRun",
+      "listWorkflowRuns",
+      "compare",
+      "listJobs",
+      "listAnnotations",
+      "activity",
+    ],
   );
-  assert.deepEqual(github.calls[3][1], { owner: "o", name: "r", number: 7 });
-  assert.deepEqual(
-    github.calls
-      .filter(([name, v]) => name === "graphql" && "id" in v)
-      .map(([, v]) => v.id),
-    ["IC_1", "IC_100"],
-  );
+  const read = (name) => github.calls.find(([n]) => n === name)[1];
+  assert.deepEqual(read("getWorkflowRun"), {
+    owner: "o",
+    repo: "r",
+    run_id: RUN_ID,
+  });
+  assert.deepEqual(read("listWorkflowRuns"), {
+    owner: "o",
+    repo: "r",
+    workflow_id: 5,
+    event: "pull_request",
+    branch: "feat/cost",
+    per_page: 100,
+  });
+  assert.deepEqual(read("listJobs"), {
+    owner: "o",
+    repo: "r",
+    run_id: 11,
+    filter: "all",
+    per_page: 100,
+  });
+  assert.deepEqual(read("listAnnotations"), {
+    owner: "o",
+    repo: "r",
+    check_run_id: 111,
+    per_page: 100,
+  });
+  assert.deepEqual(read("activity"), {
+    owner: "o",
+    repo: "r",
+    ref: "refs/heads/feat/cost",
+    direction: "desc",
+    per_page: 100,
+  });
+  assert.equal(read("compare").basehead, `main...${HEAD}`);
 });
 
 test("a cost decision on the Refs issue that names the pull request keeps the cost hold off", async () => {
   const { core, writes, github } = await apply(costEnv(), {
-    comments: [marker()],
     pull: refsPull("Refs: #9436\n\n## Summary"),
     issueComments: {
       9436: [
@@ -525,15 +682,18 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
       "issues.get",
       "listComments",
       "graphql",
-      "graphql",
-      "graphql",
+      "getWorkflowRun",
+      "listWorkflowRuns",
+      "compare",
+      "listJobs",
+      "listAnnotations",
+      "activity",
     ],
   );
 });
 
 test("a cost decision on the closing issue that names the pull request keeps the cost hold off", async () => {
   const { core } = await apply(costEnv(), {
-    comments: [marker()],
     pull: {
       createdAt: OPENED,
       body: "Closes #9436",
@@ -641,17 +801,17 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
 
 test("a carried cost decision leaves only critical-security to hold", async () => {
   const both = await apply(costEnv(["cost", "trust-gate"]), {
-    comments: [marker(), decision()],
+    comments: [decision()],
   });
   assert.equal(both.core.outputs.hold, "false");
   const byPath = await apply(costEnv(), {
-    comments: [marker(), decision()],
+    comments: [decision()],
     files: ["CODEOWNERS"],
   });
   assert.equal(byPath.core.outputs.hold, "false");
   assert.deepEqual(byPath.writes, []);
   const security = await apply(costEnv(["cost", "critical-security"]), {
-    comments: [marker(), decision()],
+    comments: [decision()],
   });
   assert.equal(security.core.outputs.criteria, "critical-security");
 });
@@ -715,7 +875,7 @@ const workflowFile = (extra = {}) => ({
 const atDecided = [prFile(), workflowFile()];
 const carryCase = (laterFiles, options = {}) =>
   apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
-    comments: [marker(), decision()],
+    comments: [decision()],
     compares: {
       [`main...${HEAD}`]: { status: "ahead", files: atDecided },
       [`main...${LATER}`]: { status: "ahead", files: laterFiles },
@@ -751,7 +911,7 @@ test("a rebase onto a newer base with the same patches carries the decision", as
     patch: "@@ -1 +1 @@\n-a\n+b",
   };
   const { core } = await apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
-    comments: [marker(), decision()],
+    comments: [decision()],
     compares: {
       [`main...${HEAD}`]: { status: "ahead", files: [renamedThen, prFile()] },
       // Listed in another order, with new blob shas: still the same diff.
@@ -829,10 +989,12 @@ test("a file with no patch, or a list of 300 or more files, keeps the cost hold"
   );
   for (const [name, then, later] of [
     ["no patch at either head", [...atDecided, binary], [...atDecided, binary]],
-    ["300 files", many, many],
+    // At the decided head the run's vet stops it first (the
+    // "lists 300 files" case below); here only the head lists 300.
+    ["300 files at the head", atDecided, many],
   ]) {
     const { core } = await apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
-      comments: [marker(), decision()],
+      comments: [decision()],
       compares: {
         [`main...${HEAD}`]: { status: "ahead", files: then },
         [`main...${LATER}`]: { status: "ahead", files: later },
@@ -854,222 +1016,338 @@ test("a failed compare keeps the cost hold", async () => {
   assert.equal(error, undefined);
   assert.equal(core.outputs.hold, "true");
   assert.equal(compares(github).length, 1);
-  assert.match(core.infos.join("\n"), /a compare read failed/u);
+  assert.match(core.infos.join("\n"), /a read failed/u);
 });
 
-test("a decision with no cost marker of this lane before it keeps the cost hold, even at the same head", async () => {
-  for (const [name, comments] of [
-    ["no marker", [decision()]],
+// The decided head comes from this lane's own check-run notices, never a
+// comment. Any workflow on
+// GITHUB_TOKEN posts as github-actions[bot], so a marker comment by that
+// login, at any head and any time, decides nothing.
+test("a github-actions[bot] marker comment with no notice of this lane keeps the cost hold", async () => {
+  const { core, github } = await apply(costEnv(), {
+    comments: [marker(), decision()],
+    lane: laneOf({ annotations: {} }),
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(core.outputs.criteria, "cost");
+  assert.equal(compares(github).length, 1);
+  assert.match(
+    core.infos.join("\n"),
+    /no recorded cost decision carries \(no cost hold notice of this lane precedes the decision\)/u,
+  );
+});
+
+test("a newer github-actions[bot] marker naming the head does not replace the notice's decided head", async () => {
+  // The notice decided HEAD; the forged marker, newer and before the
+  // decision, names LATER, the head now. LATER's net diff differs.
+  const { core, github } = await carryCase(
+    [prFile({ status: "added" }), workflowFile()],
+    {
+      comments: [
+        marker({ sha: LATER, createdAt: "2026-10-23T11:30:00Z" }),
+        decision(),
+      ],
+    },
+  );
+  assert.equal(core.outputs.hold, "true");
+  assert.deepEqual(compares(github), [`main...${HEAD}`, `main...${LATER}`]);
+  assert.match(core.infos.join("\n"), /differs from the decided head a{40}/u);
+});
+
+test("the notice fixture carries, and each one-field change to it keeps the cost hold", async () => {
+  const carried = await apply(costEnv(), { comments: [decision()] });
+  assert.equal(carried.core.outputs.hold, "false");
+  assert.match(
+    carried.core.infos.join("\n"),
+    /the recorded cost decision carries \(the head is the decided head a{40}\)/u,
+  );
+  const none = /no cost hold notice of this lane precedes the decision/u;
+  for (const [name, lane, why] of [
     [
-      "a marker after the decision",
-      [marker({ createdAt: "2026-10-23T13:00:00Z" }), decision()],
+      "a notice naming another head than its run's",
+      laneOf({ annotations: { 111: [notice({ sha: LATER })] } }),
+      none,
     ],
     [
-      "another lane's marker",
-      [marker({ lane: "claude-security-review" }), decision()],
+      "another lane's notice",
+      laneOf({
+        annotations: { 111: [notice({ lane: "claude-security-review" })] },
+      }),
+      none,
     ],
-    ["a marker without cost", [marker({ criteria: "trust-gate" }), decision()]],
-    ["a marker by someone else", [marker({ login: "someone" }), decision()]],
+    [
+      "a notice without cost",
+      laneOf({
+        annotations: { 111: [notice({ criteria: "critical-security" })] },
+      }),
+      none,
+    ],
+    [
+      "a warning, not a notice",
+      laneOf({ annotations: { 111: [notice({ level: "warning" })] } }),
+      none,
+    ],
+    [
+      "a notice with no label= suffix",
+      laneOf({
+        annotations: {
+          111: [
+            {
+              annotation_level: "notice",
+              message: `claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost`,
+            },
+          ],
+        },
+      }),
+      none,
+    ],
+    [
+      "a status job done after the decision",
+      laneOf({
+        jobs: { 11: [statusJob({ completedAt: "2026-10-23T12:30:00Z" })] },
+      }),
+      none,
+    ],
+    [
+      "a job of another name",
+      laneOf({ jobs: { 11: [statusJob({ name: "pr-review / review-key" })] } }),
+      none,
+    ],
+    [
+      "a run started after the decision",
+      laneOf({ runs: [laneRun({ createdAt: "2026-10-23T12:10:00Z" })] }),
+      none,
+    ],
+    [
+      "a run from a fork's same-named branch",
+      laneOf({ runs: [laneRun({ repo: "fork/r" })] }),
+      none,
+    ],
+    [
+      "a run whose head is not a commit",
+      laneOf({ runs: [laneRun({ sha: "main" })] }),
+      /a run of this lane has no head commit/u,
+    ],
+    [
+      "this run is not a pull_request run",
+      laneOf({ current: { event: "pull_request_target" } }),
+      /this run is not a pull_request run of this repository/u,
+    ],
+    [
+      "this run is from a fork",
+      laneOf({ current: { head_repository: { full_name: "fork/r" } } }),
+      /this run is not a pull_request run of this repository/u,
+    ],
+    [
+      "this run's workflow path is not a workflow file",
+      laneOf({ current: { path: "dynamic/pages/pages-build-deployment" } }),
+      /this run's workflow or branch is not usable/u,
+    ],
+    [
+      "no push of the decided head before the decision",
+      laneOf({ activity: [push(HEAD, "2026-10-23T12:05:00Z")] }),
+      /the branch shows no push of a{40} before the decision/u,
+    ],
+    [
+      "a full page of push history",
+      laneOf({ activity: Array.from({ length: 100 }, () => push(HEAD)) }),
+      /the branch's push history fills a page/u,
+    ],
   ]) {
-    const { core, github } = await apply(costEnv(), { comments });
+    const { core, error } = await apply(costEnv(), {
+      comments: [decision()],
+      lane,
+    });
+    assert.equal(error, undefined, name);
     assert.equal(core.outputs.hold, "true", name);
-    assert.equal(compares(github).length, 0, name);
+    assert.match(core.infos.join("\n"), why, name);
+  }
+});
+
+test("a run whose head changes this lane's workflow, or lists 300 files, carries nothing", async () => {
+  const many = Array.from({ length: 300 }, (_, i) =>
+    prFile({ filename: `f${i}.js` }),
+  );
+  for (const [name, files, why] of [
+    [
+      "the lane workflow",
+      [
+        prFile(),
+        {
+          filename: RUN_PATH,
+          status: "modified",
+          patch: "@@ -1 +1 @@\n-a\n+b",
+        },
+      ],
+      /changes this lane's workflow/u,
+    ],
+    ["300 files", many, /lists 300 or more files/u],
+    ["no file list", undefined, /lists 300 or more files, or no file list/u],
+  ]) {
+    const { core } = await apply(costEnv(), {
+      comments: [decision()],
+      compares: { [`main...${HEAD}`]: { status: "ahead", files } },
+    });
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(core.infos.join("\n"), why, name);
+  }
+});
+
+test("two heads noticed at the newest time carry nothing", async () => {
+  const other = "c".repeat(40);
+  const { core } = await apply(costEnv(), {
+    comments: [decision()],
+    compares: { [`main...${other}`]: { status: "ahead", files: [prFile()] } },
+    lane: laneOf({
+      runs: [laneRun(), laneRun({ id: 12, sha: other })],
+      jobs: { 11: [statusJob()], 12: [statusJob({ id: 112 })] },
+      annotations: { 111: [notice()], 112: [notice({ sha: other })] },
+    }),
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.match(
+    core.infos.join("\n"),
+    /two heads were noticed at the newest time/u,
+  );
+});
+
+// claude-code-plugins#10437: deleting the newest head's run would make an
+// older notice the decided head, so every head pushed after the decided
+// head and before the decision needs a run of this lane.
+test("a head pushed after the decided head with no run of this lane carries nothing", async () => {
+  const deleted = "c".repeat(40);
+  const gap = await apply(costEnv(), {
+    comments: [decision()],
+    lane: laneOf({
+      activity: [push(deleted, "2026-10-23T11:10:00Z"), push(HEAD)],
+    }),
+  });
+  assert.equal(gap.core.outputs.hold, "true");
+  assert.match(
+    gap.core.infos.join("\n"),
+    /c{40} was pushed after the decided head with no run of this lane before the decision/u,
+  );
+  // With that head's run present (its notice-free status job), it carries.
+  const ran = await apply(costEnv(), {
+    comments: [decision()],
+    compares: { [`main...${deleted}`]: { status: "ahead", files: [prFile()] } },
+    lane: laneOf({
+      runs: [
+        laneRun(),
+        laneRun({ id: 12, sha: deleted, createdAt: "2026-10-23T11:15:00Z" }),
+      ],
+      jobs: {
+        11: [statusJob()],
+        12: [statusJob({ id: 112, completedAt: "2026-10-23T11:20:00Z" })],
+      },
+      activity: [push(deleted, "2026-10-23T11:10:00Z"), push(HEAD)],
+    }),
+  });
+  assert.equal(ran.core.outputs.hold, "false");
+});
+
+test("each failed read keeps the cost hold", async () => {
+  for (const name of [
+    "run",
+    "runs",
+    "jobs",
+    "annotations",
+    "activity",
+    "compare",
+  ]) {
+    const { core, error } = await apply(costEnv(), {
+      comments: [decision()],
+      fail: { [name]: true },
+    });
+    assert.equal(error, undefined, name);
+    assert.equal(core.outputs.hold, "true", name);
     assert.match(
       core.infos.join("\n"),
-      /no cost hold marker of this lane precedes the decision/u,
+      /no recorded cost decision carries \(a read failed\)/u,
       name,
     );
   }
 });
 
-test("the decided head is the newest cost marker before the newest decision", async () => {
+test("the decided head is the newest notice of this lane before the newest decision", async () => {
   const older = "c".repeat(40);
-  const { github } = await carryCase(atDecided, {
+  const { core, github } = await carryCase(atDecided, {
     comments: [
-      marker({ id: 101, sha: older, createdAt: "2026-10-23T10:30:00Z" }),
-      marker({ id: 102, sha: HEAD, criteria: "cost,trust-gate" }),
-      marker({
-        id: 103,
-        sha: older,
-        criteria: "trust-gate",
-        createdAt: "2026-10-23T11:30:00Z",
-      }),
       decision({ id: 1, createdAt: "2026-10-23T10:45:00Z" }),
       decision({ id: 2 }),
     ],
+    compares: {
+      [`main...${HEAD}`]: { status: "ahead", files: atDecided },
+      [`main...${LATER}`]: { status: "ahead", files: atDecided },
+      [`main...${older}`]: { status: "ahead", files: [prFile()] },
+    },
+    lane: laneOf({
+      runs: [
+        laneRun({ id: 10, sha: older, createdAt: "2026-10-23T10:20:00Z" }),
+        laneRun(),
+        laneRun({ id: 13, sha: older, createdAt: "2026-10-23T11:40:00Z" }),
+      ],
+      jobs: {
+        10: [statusJob({ id: 110, completedAt: "2026-10-23T10:30:00Z" })],
+        11: [statusJob()],
+        // Done after the newest decision: not read for a notice.
+        13: [statusJob({ id: 113, completedAt: "2026-10-23T12:30:00Z" })],
+      },
+      annotations: {
+        110: [notice({ sha: older })],
+        111: [notice({ criteria: "cost,critical-security" })],
+        113: [notice({ sha: older })],
+      },
+      activity: [
+        push(older, "2026-10-23T11:35:00Z"),
+        push(HEAD),
+        push(older, "2026-10-23T10:10:00Z"),
+      ],
+    }),
   });
-  assert.deepEqual(compares(github), [`main...${HEAD}`, `main...${LATER}`]);
+  assert.equal(core.outputs.hold, "false");
+  assert.deepEqual(compares(github), [
+    `main...${older}`,
+    `main...${HEAD}`,
+    `main...${LATER}`,
+  ]);
+  assert.match(
+    core.infos.join("\n"),
+    /the net diff against main is the same as at the decided head a{40}/u,
+  );
 });
 
 test("an unusable base branch name reads no compare and keeps the cost hold", async () => {
   const { core, github } = await apply(
     costEnv(["cost"], { HEAD_SHA: LATER, BASE_REF: "main..x" }),
-    { comments: [marker(), decision()] },
+    { comments: [decision()] },
   );
   assert.equal(core.outputs.hold, "true");
   assert.equal(compares(github).length, 0);
 });
 
-test("the carry check reads one deletion list, at most two compares and nothing else", async () => {
+test("the carry check reads this lane's runs, its jobs and notices, the push history and at most one compare per head", async () => {
   const { github } = await carryCase(atDecided);
-  const names = github.calls.map(([name]) => name);
-  // The pull request's comments, the decision's and the marker's edit
-  // checks, the deletion read and two compares.
-  assert.deepEqual(names, [
-    "listComments",
-    "graphql",
-    "graphql",
-    "graphql",
-    "compare",
-    "compare",
-  ]);
-});
-
-// The decided head comes from a marker comment, which a writer can edit:
-// an edited marker is not trusted.
-test("an edited marker at the head's sha keeps the cost hold, though the decision exists", async () => {
-  const { core, writes, github } = await apply(costEnv(), {
-    comments: [marker(), decision()],
-    edited: new Set(["IC_100"]),
-  });
-  assert.equal(core.outputs.hold, "true");
-  assert.equal(core.outputs.criteria, "cost");
-  // The label comes back; the marker for this head and criteria exists.
   assert.deepEqual(
-    writes.map(([name]) => name),
-    ["addLabels"],
-  );
-  assert.equal(compares(github).length, 0);
-  assert.match(
-    core.infos.join("\n"),
-    /no recorded cost decision carries \(the decided-head marker was edited\)/u,
-  );
-});
-
-test("an edited newest marker keeps the cost hold, with no fallback to an older unedited one", async () => {
-  const { core, github } = await carryCase(atDecided, {
-    comments: [
-      // Would carry: at the head, unedited, before the decision.
-      marker({ id: 101, sha: LATER, createdAt: "2026-10-23T10:30:00Z" }),
-      marker({ id: 102 }),
-      decision(),
-    ],
-    edited: new Set(["IC_102"]),
-  });
-  assert.equal(core.outputs.hold, "true");
-  assert.equal(compares(github).length, 0);
-  assert.deepEqual(
-    github.calls.filter(([name]) => name === "graphql").map(([, v]) => v.id),
-    ["IC_1", "IC_102"],
-  );
-  assert.match(core.infos.join("\n"), /the decided-head marker was edited/u);
-});
-
-test("a failed marker edit check keeps the cost hold", async () => {
-  const { core, error, github } = await apply(costEnv(), {
-    comments: [marker(), decision()],
-    failEdited: new Set(["IC_100"]),
-  });
-  assert.equal(error, undefined);
-  assert.equal(core.outputs.hold, "true");
-  assert.equal(compares(github).length, 0);
-  assert.match(
-    core.infos.join("\n"),
-    /no recorded cost decision carries \(could not confirm the marker is unedited\)/u,
-  );
-});
-
-// A deleted comment can remove the newest marker, which would make an older
-// one the decided head (as merge-holds.mjs deletedSince reads it): any
-// comment deleted at or after the decided-head marker was posted carries
-// nothing. The pull request timeline's COMMENT_DELETED_EVENT
-// items give the deletion times.
-test("a comment deleted after the decided-head marker keeps the cost hold, with no older marker standing in", async () => {
-  // The newer marker, at 11:00, was deleted; the one left, at 10:30, holds
-  // the head's sha and would carry with no compare.
-  const { core, writes, github } = await carryCase(atDecided, {
-    comments: [
-      marker({ id: 101, sha: LATER, createdAt: "2026-10-23T10:30:00Z" }),
-      decision(),
-    ],
-    deletions: ["2026-10-23T11:05:00Z"],
-  });
-  assert.equal(core.outputs.hold, "true");
-  assert.equal(core.outputs.criteria, "cost");
-  // The label comes back; the remaining marker already names this head.
-  assert.deepEqual(
-    writes.map(([name]) => name),
-    ["addLabels"],
-  );
-  assert.equal(compares(github).length, 0);
-  assert.match(
-    core.infos.join("\n"),
-    /no recorded cost decision carries \(a comment was deleted since the decided-head marker was posted\)/u,
-  );
-});
-
-test("a deletion at the marker's own time keeps the cost hold, and one before it does not", async () => {
-  const at = await apply(costEnv(), {
-    comments: [marker(), decision()],
-    deletions: ["2026-10-23T10:00:00Z", "2026-10-23T11:00:00Z"],
-  });
-  assert.equal(at.core.outputs.hold, "true");
-  const before = await apply(costEnv(), {
-    comments: [marker(), decision()],
-    deletions: ["2026-10-23T10:59:59Z"],
-  });
-  assert.equal(before.core.outputs.hold, "false");
-  assert.match(
-    before.core.infos.join("\n"),
-    /the recorded cost decision carries \(the head is the decided head/u,
-  );
-});
-
-test("a deletion list that cannot show no comment was deleted keeps the cost hold", async () => {
-  const listed = (filteredCount, nodes) => ({ filteredCount, nodes });
-  for (const [name, options] of [
-    ["a failed read", { failDeleted: true }],
-    ["no timeline", { deletedItems: null }],
-    ["no node list", { deletedItems: { filteredCount: 0 } }],
-    ["no count", { deletedItems: { nodes: [] } }],
-    ["a count that is not a number", { deletedItems: listed("0", []) }],
+    github.calls.map(([name]) => name),
     [
-      "more deletions than listed",
-      {
-        deletedItems: listed(
-          101,
-          Array.from({ length: 100 }, () => ({
-            createdAt: "2026-10-23T09:00:00Z",
-          })),
-        ),
-      },
+      "listComments",
+      "graphql",
+      "getWorkflowRun",
+      "listWorkflowRuns",
+      "compare",
+      "listJobs",
+      "listAnnotations",
+      "activity",
+      "compare",
     ],
-    [
-      "a time that does not parse",
-      { deletedItems: listed(1, [{ createdAt: "yesterday" }]) },
-    ],
-    ["an event with no time", { deletedItems: listed(1, [{}]) }],
-  ]) {
-    const { core, error, github } = await apply(costEnv(), {
-      comments: [marker(), decision()],
-      ...options,
-    });
-    assert.equal(error, undefined, name);
-    assert.equal(core.outputs.hold, "true", name);
-    assert.equal(compares(github).length, 0, name);
-    assert.match(
-      core.infos.join("\n"),
-      /no recorded cost decision carries \(could not confirm no comment was deleted since the decided-head marker was posted\)/u,
-      name,
-    );
-  }
+  );
 });
 
-test("an edited marker reads no deletion list", async () => {
-  const { github } = await apply(costEnv(), {
-    comments: [marker(), decision()],
-    edited: new Set(["IC_100"]),
-    failDeleted: true,
+test("an empty STATUS_JOB reads no run and keeps the cost hold", async () => {
+  const { core, github } = await apply(costEnv(["cost"], { STATUS_JOB: "" }), {
+    comments: [decision()],
   });
-  assert.equal(github.calls.filter(([name]) => name === "graphql").length, 2);
+  assert.equal(core.outputs.hold, "true");
+  assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
 });

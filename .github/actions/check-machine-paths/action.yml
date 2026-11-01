@@ -11,7 +11,7 @@ inputs:
       code, config, and docs extensions.
     default: >-
       *.cs *.csproj *.json *.jsonc *.js *.jsx *.md *.props *.ps1 *.psm1 *.py
-      *.sh *.slnx *.targets *.toml *.ts *.tsx *.yaml *.yml
+      *.sh *.slnx *.targets *.tmpl *.toml *.ts *.tsx *.yaml *.yml
   exclude:
     description: >-
       Additional git pathspec exclusions, space-separated (e.g.

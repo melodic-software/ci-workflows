@@ -15,17 +15,8 @@ name: release-tag
 #   - Manual dispatch (not on: push) so releasing is a deliberate act — every
 #     merge to main does NOT cut a release; you pick when and how much to bump.
 #
-# CUTTING A RELEASE REPINS NOTHING: it rewrites no `uses:` pin, here or in a
-# consumer. Repins are separate reviewed pull requests: the standards
-# `claude-lanes-repin.yml` lane for the callers `repin-callers.sh` enumerates,
-# this repository's `github-actions` Dependabot group for its self-pins,
-# github-iac's Dependabot `github-actions` updates for the composite actions it
-# uses (it ignores all of `melodic-software/ci-workflows/*`),
-# and by hand everywhere else.
-#
-# Cut a release whenever main changes by something worth pinning to, so a
-# repinner has a released SHA for the `# vX.Y.Z` comment form instead of the
-# `# <short-sha> <YYYY-MM-DD>` fallback an unreleased commit forces.
+# First-party consumers reference `@main`, so a release is a changelog marker;
+# no consumer waits on one.
 
 on:
   workflow_dispatch:
@@ -67,8 +58,7 @@ jobs:
             exit 1
           fi
 
-      # SINGLE SOURCE OF TRUTH: the highest-SemVer PUBLISHED RELEASE, the same
-      # artifact and ordering the fleet's re-pin lane `resolve` uses. A stray
+      # SINGLE SOURCE OF TRUTH: the highest-SemVer PUBLISHED RELEASE. A stray
       # tag must not move the counter. Not `releases/latest`: it orders by the
       # tag target's commit date.
       - name: Compute next version

@@ -22,7 +22,7 @@ name: pr-automerge-dependabot
 #         permissions:
 #           contents: write        # enablePullRequestAutoMerge
 #           pull-requests: write   # enable/disable auto-merge on the PR
-#         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@main
 #
 # A repository where a merge can lead to a deploy passes
 # `package-auto-merge: false`, which leaves only the GitHub Actions path.
@@ -217,12 +217,20 @@ jobs:
               return;
             }
 
-            await github.graphql(
-              `mutation($id: ID!, $head: GitObjectID!) {
-                enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH, expectedHeadOid: $head}) {
-                  clientMutationId
-                }
-              }`,
-              { id: pr.node_id, head: pr.head.sha },
-            );
+            try {
+              await github.graphql(
+                `mutation($id: ID!, $head: GitObjectID!) {
+                  enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH, expectedHeadOid: $head}) {
+                    clientMutationId
+                  }
+                }`,
+                { id: pr.node_id, head: pr.head.sha },
+              );
+            } catch (error) {
+              // An already-mergeable PR (mergeStateStatus CLEAN or UNSTABLE) makes
+              // the mutation error instead of no-op, as in the standards-sync arm.
+              if (!/is in (clean|unstable) status/iu.test(error.message)) throw error;
+              core.warning(`Could not arm auto-merge on #${pr.number}: ${error.message}`);
+              return;
+            }
             core.info(`Armed squash auto-merge on #${pr.number} at ${pr.head.sha}.`);

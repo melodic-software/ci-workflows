@@ -61,8 +61,9 @@ runs:
   steps:
     # install-release.sh re-verifies the SHA-256 on every restore and fails
     # closed: a secret scan that silently skipped is worse than a red check.
-    - name: Cache gitleaks release asset
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore gitleaks release asset
+      id: gitleaks-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/ci-workflows-release-cache/gitleaks
         key: gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ inputs.sha256 }}
@@ -77,6 +78,19 @@ runs:
         VERSION_CMD: version
         ASSET_CACHE_DIR: ${{ runner.temp }}/ci-workflows-release-cache/gitleaks
       run: bash "$GITHUB_ACTION_PATH/../_shared/install-release.sh"
+
+    # Save from the default branch only, after a miss: every ref restores the
+    # default branch's entries, but an entry a PR ref saves serves that ref alone.
+    # A schedule run has no webhook payload, so github.event.repository is not
+    # guaranteed there, but its ref is always the default branch.
+    - name: Save gitleaks release asset
+      if: >-
+        (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+        && steps.gitleaks-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/ci-workflows-release-cache/gitleaks
+        key: ${{ steps.gitleaks-cache.outputs.cache-primary-key }}
 
     - name: Scan for secrets
       shell: bash

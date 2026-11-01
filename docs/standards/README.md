@@ -5,12 +5,13 @@ standards-contract: 1.0.2
 # Standards index
 
 Team-layer engineering standards synced from melodic-software/standards
-(`conventions/engineering/`). Change them there, not here.
+(`standards/engineering/`). Change them there, not here.
 
 | Surface | Applies when | File |
 |---|---|---|
 | bulk-mutation | a command or sweep that creates, deletes, or changes many objects; background or unattended runs; work spanning several targets | bulk-mutation.md |
 | concise-prose | writing or reviewing any prose: docs, comments, commit messages, PR bodies, replies | concise-prose.md |
+| design-for-change | designing or reviewing a module boundary, an extension point, configuration, dependency wiring, or a design pattern; any change whose reversal would edit many files | design-for-change.md |
 | deterministic-work-execution | counts, diffs, sorting, arithmetic, inventories; composing shell commands an agent runs | deterministic-work-execution.md |
 | documentation-and-citations | citing upstream docs; recording an external default or version; labeling the basis of a recommendation | documentation-and-citations.md |
 | reference-dont-duplicate | a fact, value, or rule appearing in more than one place; origin or history notes in code or docs | reference-dont-duplicate.md |

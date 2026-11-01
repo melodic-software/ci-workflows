@@ -120,11 +120,44 @@ function parseReview(text) {
     review.findings < 0 ||
     typeof review.summary !== "string" ||
     !Array.isArray(review.comments) ||
-    !(review.malformed === undefined || Array.isArray(review.malformed))
+    !(review.malformed === undefined || Array.isArray(review.malformed)) ||
+    !validCoverage(review.coverage)
   ) {
     return null;
   }
   return review;
+}
+
+// The extract step's coverage: files read of the changed files in scope, and
+// the diff's size when it is over one review's read budget. A review without
+// it is not one.
+function validCoverage(coverage) {
+  return (
+    Number.isSafeInteger(coverage?.changed) &&
+    coverage.changed >= 0 &&
+    Number.isSafeInteger(coverage.read) &&
+    coverage.read >= 0 &&
+    coverage.read <= coverage.changed &&
+    (coverage.over_budget === undefined ||
+      (Number.isSafeInteger(coverage.over_budget) && coverage.over_budget > 0))
+  );
+}
+
+// Whether the review read less than its whole scope.
+function isPartial(coverage) {
+  return coverage.read < coverage.changed || coverage.over_budget !== undefined;
+}
+
+// The marker's status line, which states coverage before the finding count.
+function statusLine(lane, head, coverage, findings, inline) {
+  const read = `read ${coverage.read} of ${coverage.changed} changed file(s)`;
+  if (!isPartial(coverage))
+    return `**${lane}** reviewed \`${head}\`: ${read}; ${findings} finding(s), ${inline} as inline comments.`;
+  const size =
+    coverage.over_budget === undefined
+      ? ""
+      : `; the diff is ${coverage.over_budget} bytes, over one review's read budget`;
+  return `**${lane}** partial review of \`${head}\`: ${read}${size}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.`;
 }
 
 // The leg whose outputs count: the subscription job's when it ran, else the
@@ -342,14 +375,24 @@ async function diffLines(github, owner, repo, number) {
   );
 }
 
-async function writeMarker(github, owner, repo, env, status, summary) {
+// A partial review records no reviewed head (sha=none), so the next run
+// reviews the whole pull request and no merge gate reads this one as done.
+async function writeMarker(
+  github,
+  owner,
+  repo,
+  env,
+  status,
+  summary,
+  sha = env.HEAD_SHA,
+) {
   const base = /^[0-9a-f]{40}$/u.test(env.MERGE_BASE ?? "")
     ? [
         `<!-- claude-lane-reviewed-base ref=${env.BASE_REF} merge-base=${env.MERGE_BASE} -->`,
       ]
     : [];
   const body = [
-    `<!-- claude-lane-reviewed-head lane=${env.LANE_ID} sha=${env.HEAD_SHA} -->`,
+    `<!-- claude-lane-reviewed-head lane=${env.LANE_ID} sha=${sha} -->`,
     ...base,
     status,
     ...(summary ? ["", summary] : []),
@@ -380,7 +423,9 @@ const WHY = {
   "install-failed":
     "the runner isolation or the Claude Code CLI install or its integrity check failed",
   incomplete:
-    "the model returned no usable review (findings, summary and comments)",
+    "the model returned no usable review (findings, files read, summary and comments)",
+  partial:
+    "the review read only part of the pull request, so the head is not reviewed",
   "no-credential": "both secrets were empty, so no review ran",
   "no-outcome": "the review job ended before it reported an outcome",
   withheld:
@@ -515,9 +560,13 @@ async function publish({ github, context, core, env }) {
     return fail("withheld", scanned.withheld);
   }
 
+  const partial = isPartial(review.coverage);
+  const coverage = `read ${review.coverage.read} of ${review.coverage.changed} changed file(s)`;
   if (!comments) {
     await shadowReport(core, env, {
       ...facts,
+      ...(partial ? { failure_class: "partial" } : {}),
+      coverage: review.coverage,
       findings,
       inline: placed.inline.length,
       anchor_problems: placed.problems,
@@ -528,6 +577,7 @@ async function publish({ github, context, core, env }) {
         malformed: malformedComments(review),
       },
     });
+    if (partial) return fail("partial", coverage);
     return { findings, inline: placed.inline.length };
   }
 
@@ -571,12 +621,15 @@ async function publish({ github, context, core, env }) {
       owner,
       repo,
       env,
-      `**${lane}** reviewed \`${head}\`: ${findings} finding(s), ${inline} as inline comments.`,
+      statusLine(lane, head, review.coverage, findings, inline),
       summary,
+      partial ? "none" : head,
     );
   } catch (error) {
     return fail("publish-failed", error.message);
   }
+  // No completion notice: a merge gate reads that notice as a reviewed head.
+  if (partial) return fail("partial", coverage);
   const scope =
     env.SCOPE === "incremental"
       ? `scope=incremental since=${env.SINCE}`
@@ -597,6 +650,11 @@ async function shadowReport(core, env, report) {
     "",
     `- Leg: ${report.leg}; scope: ${report.scope}`,
     `- Outcome: ${report.failure_class ?? "complete"}`,
+    ...(report.coverage
+      ? [
+          `- Coverage: read ${report.coverage.read} of ${report.coverage.changed} changed file(s)`,
+        ]
+      : []),
     `- Findings: ${report.findings ?? "none"}; inline-ready: ${report.inline ?? 0}`,
     `- Anchor problems: ${report.anchor_problems?.length ?? 0}`,
     `- Turns: ${report.turns || "?"}; models: ${report.models || "?"}`,
@@ -622,6 +680,7 @@ module.exports = {
   commentBody,
   commentableLines,
   hunkLines,
+  isPartial,
   judge,
   loadGate,
   parseReview,
@@ -629,6 +688,7 @@ module.exports = {
   run,
   scan,
   scopedFiles,
+  statusLine,
   stripHtml,
   summaryText,
 };

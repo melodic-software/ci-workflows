@@ -120,7 +120,7 @@ CARRY_FORWARD_POLL_SECONDS=15
 # Ceiling, in seconds, on how long a full run that records `success` waits for
 # in-flight contract-only siblings to finish before re-running the failed ones;
 # see `rerun_failed_contract_only_siblings`. `0` disables the wait. The default
-# fits inside the 5-minute `timeout-minutes` the README recommends for the
+# fits inside the 7-minute `timeout-minutes` the README recommends for the
 # ci-status job. Validated below. The re-list interval is fixed, like the poll
 # above.
 RERUN_WAIT_SECONDS="${RERUN_WAIT_SECONDS:-90}"
@@ -129,8 +129,15 @@ RERUN_WAIT_POLL_SECONDS=10
 # that recorded `success` to finish; see the yield block. Below the default
 # `rerun-wait-seconds` on purpose: when that full run is waiting on this run,
 # this run gives up first, and the full run re-runs it. Fixed, like the polls.
+# Under `yield-wait-seconds` the full run does not wait, and a hold keeps
+# re-reading past this ceiling on its slower poll.
 YIELD_WRITER_WAIT_SECONDS=30
 YIELD_WRITER_POLL_SECONDS=5
+# Ceiling, in seconds, on a yielding run's hold for the full runs that supersede
+# it; see the yield block. `0` never holds. Validated below. The poll is fixed,
+# like the others, and each poll is one listing and one status read.
+YIELD_WAIT_SECONDS="${YIELD_WAIT_SECONDS:-0}"
+YIELD_WAIT_POLL_SECONDS=30
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
 # will.
@@ -227,6 +234,8 @@ require_pattern sha "$SHA" '^[0-9a-f]{40}$' 'a full 40-character lowercase commi
 # a no-op, either of which silently changes the branch the caller asked for.
 require_pattern carry-forward-wait-seconds "$CARRY_FORWARD_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
 require_pattern rerun-wait-seconds "$RERUN_WAIT_SECONDS" '^[0-9]+$' 'a non-negative integer number of seconds'
+# No leading zero: bash arithmetic reads one as octal, and `08` is an error.
+require_pattern yield-wait-seconds "$YIELD_WAIT_SECONDS" '^(0|[1-9][0-9]*)$' 'a non-negative integer number of seconds'
 # At most an hour, the life of a GitHub App installation token.
 require_pattern rate-limit-wait-seconds "$RATE_LIMIT_WAIT_SECONDS" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
 
@@ -330,14 +339,40 @@ carried_state_read=false
 # making its own. Set per read, so a listing from an earlier poll is never
 # taken for a fresh one.
 carried_runs_listed=""
+# The newest entry as `read_newest_entry` set it. A read that lists runs after
+# its status read compares this with a second status read.
+carried_entry=""
 read_carried_state() {
-  local entry
   carried_runs_listed="${1:-}"
   carried_state=""
   carried_created_at=""
   carried_writer_run_id=""
   carried_writer_running=false
   carried_state_read=false
+  # Set by this read alone, so the red describes the read it ends.
+  own_gate_lookup_failed=""
+  # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+  if ! read_newest_entry; then
+    return 1
+  fi
+  carried_entry="$newest_entry"
+  IFS='|' read -r carried_state carried_created_at carried_writer_run_id _ <<<"$carried_entry"
+  if [[ "$carried_state" == success ]]; then
+    # shellcheck disable=SC2310 # verify_carried_writer reports a failed lookup through its status.
+    if ! verify_carried_writer; then
+      return 1
+    fi
+  fi
+  carried_state_read=true
+}
+
+# Sets `newest_entry` to the newest status this context's bot wrote on the SHA,
+# as `state|created_at|writer-run-id|id`, every field empty when there is none.
+# Returns 1 on a failed or unparseable read. Not a command substitution, so the
+# caller still sees what `gh_api` sets.
+newest_entry=""
+read_newest_entry() {
+  newest_entry=""
   # The LIST endpoint, not the combined one: `commits/<sha>/status` collapses to
   # one entry per context and exposes no author, so any collaborator with write
   # could POST a forged `ci-lanes=success` and then flip a label to turn the
@@ -365,19 +400,11 @@ read_carried_state() {
   # empty middle field and shift the ones after it. The writer run id comes only
   # from a `target_url` of the exact shape `write_status` records, on this
   # server and repository; any other URL yields no writer.
-  entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
+  newest_entry="$(jq -r --arg context "$STATUS_CONTEXT" --arg creator "$STATUS_CREATOR" \
     --arg runs_prefix "${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/" \
     '[ .[][] | select(.context == $context and (.creator.login // "") == $creator and (.creator.type // "") == "Bot") ] | (max_by(.id) // {})
-     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("\\A[0-9]+\\z")) then ltrimstr($runs_prefix) else "" end)] | join("|")' \
+     | [(.state // ""), (.created_at // ""), ((.target_url // "") | if startswith($runs_prefix) and (ltrimstr($runs_prefix) | test("\\A[0-9]+\\z")) then ltrimstr($runs_prefix) else "" end), (.id // "" | tostring)] | join("|")' \
     <"$gh_stdout")" || return 1
-  IFS='|' read -r carried_state carried_created_at carried_writer_run_id <<<"$entry"
-  if [[ "$carried_state" == success ]]; then
-    # shellcheck disable=SC2310 # verify_carried_writer reports a failed lookup through its status.
-    if ! verify_carried_writer; then
-      return 1
-    fi
-  fi
-  carried_state_read=true
 }
 
 # Every workflow in the repository posts as the Actions bot, so the creator
@@ -407,6 +434,13 @@ verify_carried_writer() {
   # The run listing the newer-run check needs anyway: the caller's from this
   # poll, else one made here. A listing that fails is a failed read.
   if [[ "$carried_runs_listed" != listed ]]; then
+    # Before the listing, for the reason the contract-only branches look it up
+    # first.
+    # shellcheck disable=SC2310 # resolve_own_step warns itself; the caller fails closed.
+    if ! resolve_own_step 'Cannot verify the step that wrote the carried status, so this run fails closed.'; then
+      own_gate_lookup_failed=true
+      return 1
+    fi
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
       warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$unverified"
@@ -414,6 +448,17 @@ verify_carried_writer() {
     fi
     cp -- "$gh_stdout" "$scratch/runs.json"
     carried_runs_listed=listed
+    # The status read came before the lookup and this listing, so a newer full
+    # run could have written its verdict and still be in flight here, where the
+    # newer-verdict check does not look. Read the status again, after the
+    # listing as the wait and the yield read it, and go on only if the newest
+    # entry is the one being verified.
+    # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+    if ! read_newest_entry || [[ "$newest_entry" != "$carried_entry" ]]; then
+      echo "::warning::the newest ${STATUS_CONTEXT} status on ${SHA} changed while its writer was verified, or could not be read again; this run fails closed."
+      carried_state=""
+      return 1
+    fi
   fi
   # The writer's row in that listing carries every field read below, so the run
   # itself is read only when its row is absent or lacks the workflow or the
@@ -449,32 +494,49 @@ verify_carried_writer() {
 
 # This run's gate job and the step running this action, as the jobs API lists
 # this run. The full run's gate is the same job of the same workflow, so the
-# writer step carries the same two names. Both callers, the writer check and
-# the yield listing, resolve through `resolve_own_gate`, and each half is cached
-# once found.
+# writer step carries the same two names. A contract-only run looks both up
+# once, before it lists any run (see the call above the contract-only
+# branches), and every later `resolve_own_gate` answers from what that lookup
+# found, so the run spends one retry budget in all.
 own_gate_job=""
 own_gate_job_id=""
 own_gate_step=""
+own_gate_endpoint=""
+own_gate_looked_up=""
+own_gate_warned=""
+# Why the own-gate lookup failed, for the writer check's final error.
+own_gate_cause=""
+# Set when the writer check failed on that lookup, not on the carried status.
+own_gate_lookup_failed=""
 
 # The identity key: the one place that says which job is this run's own.
 # `job.check_run_id` (passed in as JOB_CHECK_RUN_ID) is this job's REST id, so
-# the job is read directly and must belong to this run and be in progress.
-# GHES and runners before v2.324.0 leave it empty; then the job is the one
-# in-progress job of this run on this runner. GitHub documents that a runner
-# name may not be unique in a run (repository and organization runners can
-# share one), so a second match fails closed rather than picking. Sets the
-# endpoint to read and its query, the jq predicate one job must pass (`$key` and `$run` are
-# bound by `--arg`), the phrase a warning names the key by, and, when there is
-# no usable key, the cause.
+# the job is read directly and must belong to this run. Its status is not
+# checked: the runner hands this job its own id, so the id and the run already
+# prove which job it is, and the jobs API has served a running re-run attempt's
+# job as not yet in progress for longer than the lookup retries. The step
+# named by `step-name` is trusted on the same grounds (see `lookup_own_gate`).
+# GHES and runners before v2.324.0 leave the id empty; then the job is the one
+# in-progress job of this run on this runner, where the status is what tells
+# this job from an earlier one on the same runner. GitHub documents that a
+# runner name may not be unique in a run (repository and organization runners
+# can share one), so a second match fails closed rather than picking. Sets the
+# endpoint to read and its query, the jq predicate one job must pass (`$key`
+# and `$run` are bound by `--arg`), the phrase a warning names the key by,
+# whether a named step is trusted while unlisted, and, when there is no usable
+# key, the cause.
 own_job_identity() {
   own_job_key_cause=""
+  own_job_trusts_step_name=false
   if [[ -n "${JOB_CHECK_RUN_ID:-}" ]]; then
     own_job_key="$JOB_CHECK_RUN_ID"
     own_job_endpoint="repos/${REPOSITORY}/actions/jobs/${own_job_key}"
     own_job_query=""
     # shellcheck disable=SC2016 # `$key` and `$run` are jq variables.
-    own_job_predicate='(.id | tostring) == $key and (.run_id | tostring) == $run and .status == "in_progress"'
+    own_job_predicate='(.id | tostring) == $key and (.run_id | tostring) == $run'
     own_job_label="job.check_run_id ${own_job_key} in run ${GITHUB_RUN_ID}"
+    own_job_noun=job
+    own_job_trusts_step_name=true
     if [[ ! "$own_job_key" =~ ^[0-9]+$ ]]; then
       own_job_endpoint="repos/${REPOSITORY}/actions/jobs"
       own_job_key_cause="job.check_run_id is not a job id: $(escape_annotation "$own_job_key")."
@@ -486,32 +548,65 @@ own_job_identity() {
     # shellcheck disable=SC2016 # `$key` is a jq variable.
     own_job_predicate='.status == "in_progress" and (.runner_name // "") == $key'
     own_job_label="runner '$(escape_annotation "$own_job_key")'"
+    own_job_noun='in-progress job'
     if [[ -z "$own_job_key" ]]; then
       own_job_key_cause="job.check_run_id and RUNNER_NAME are both empty, so this run's own job has no key."
     fi
+  fi
+  if [[ ! "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]]; then
+    own_job_key_cause="GITHUB_RUN_ID is not a run id: $(escape_annotation "${GITHUB_RUN_ID:-}")."
   fi
 }
 
 # Reads between the retries. The jobs API can list this job or this step a
 # moment after the runner started it, and lists a sibling job before its
-# `skipped`, so a miss is read again. The sleeps sum to 15 seconds.
-OWN_GATE_RETRY_DELAYS='1 2 4 8'
+# `skipped`, so a miss or a 5xx is read again. The sleeps sum to 120 seconds:
+# an Actions incident has left a running job unlisted for longer than 15. The
+# lookup runs once per run, so this is the run's whole budget for it; the
+# job timeout budgets for it.
+OWN_GATE_RETRY_DELAYS='1 2 4 8 15 30 30 30'
 
 # resolve_own_gate <job|step> <consequence>
 # `job` needs only the gate job's name (the yield listing); `step` needs the
 # running step too (the writer check). The step is the one named by
-# `step-name`, else the one step of the job in progress. Returns 1 after a
-# warning naming the cause and ending in `consequence`.
+# `step-name`, else the one step of the job in progress. The first call looks
+# both up, reading until the step resolves; every call answers from that one
+# lookup. Returns 1 after a warning naming the cause and ending in
+# `consequence`.
 resolve_own_gate() {
-  local need="$1" consequence="$2" endpoint
-  local delay reads=0 verdict job_name job_id step_name count cause=""
-  if [[ -n "$own_gate_job" && ("$need" == job || -n "$own_gate_step") ]]; then
+  local need="$1" consequence="$2"
+  if [[ -z "$own_gate_looked_up" ]]; then
+    own_gate_looked_up=true
+    # shellcheck disable=SC2310 # lookup_own_gate reports through its status and own_gate_cause.
+    if lookup_own_gate "$consequence"; then
+      return 0
+    fi
+  fi
+  if [[ -n "$own_gate_step" || ("$need" == job && -n "$own_gate_job") ]]; then
     return 0
   fi
+  # Once per run: every later caller fails on the same cause.
+  if [[ -n "$own_gate_warned" ]]; then
+    return 1
+  fi
+  own_gate_warned=true
+  echo "::warning::could not identify this run's gate job and running step in ${own_gate_endpoint}: ${own_gate_cause} ${consequence}"
+  return 1
+}
+
+# lookup_own_gate <consequence>
+# The one lookup behind `resolve_own_gate`: sets `own_gate_job` once the job is
+# found and `own_gate_step` once its step is, and returns 0 only when both are.
+# Otherwise sets `own_gate_cause` and returns 1.
+lookup_own_gate() {
+  local consequence="$1" endpoint
+  local delay reads=0 own_gate_retries verdict job_name job_id step_name count cause=""
   own_job_identity
   endpoint="$own_job_endpoint"
+  own_gate_endpoint="$endpoint"
+  own_gate_retries=$(wc -w <<<"$OWN_GATE_RETRY_DELAYS")
   if [[ -n "$own_job_key_cause" ]]; then
-    echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${own_job_key_cause} ${consequence}"
+    own_gate_cause="${own_job_key_cause}"
     return 1
   fi
   for delay in 0 $OWN_GATE_RETRY_DELAYS; do
@@ -521,7 +616,8 @@ resolve_own_gate() {
     reads=$((reads + 1))
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
     if ! gh_api GET "${endpoint}${own_job_query}"; then
-      if [[ "$GH_HTTP_STATUS" == 403 || "$GH_FAILURE" == rate-limit || "$delay" == "${OWN_GATE_RETRY_DELAYS##* }" ]]; then
+      if [[ "$GH_HTTP_STATUS" == 403 || "$GH_HTTP_STATUS" == 429 || "$GH_FAILURE" == rate-limit || "$reads" -gt "$own_gate_retries" ]]; then
+        own_gate_cause="${endpoint} could not be read (HTTP ${GH_HTTP_STATUS:-unknown}) after ${reads} reads."
         warn_actions_failed "$endpoint" 'actions: read' "$consequence"
         return 1
       fi
@@ -531,14 +627,21 @@ resolve_own_gate() {
     # other than one job, `steps` when the job's step did not resolve, else
     # `ok`), job name, job id, step name, and the match count behind the
     # verdict. Control characters in a name become `?`, so a name cannot add a
-    # field or a line.
+    # field or a line. Keyed by `job.check_run_id`, a `step-name` the listing
+    # does not show in progress yet is taken as given, since the jobs API has
+    # listed a running job's steps as `[]` for minutes; a step of that name
+    # listed only as completed is not the one running this action, and still
+    # fails.
     IFS=$'\x1f' read -r verdict job_name job_id step_name count < <(jq -r --arg key "$own_job_key" --arg run "$GITHUB_RUN_ID" --arg step "${STEP_NAME:-}" \
+      --arg trust "$own_job_trusts_step_name" \
       "[ (if has(\"jobs\") then .jobs[]? else . end) | select(${own_job_predicate}) ]"' as $own
       | if ($own | length) != 1 then ["jobs", "", "", "", ($own | length)]
         else $own[0] as $job
         | [ $job.steps[]? | if $step == "" then select(.status == "in_progress") else select(.name == $step and .status == "in_progress") end ] as $steps
-        | [ (if ($steps | length) == 1 then "ok" else "steps" end), ($job.name // "" | gsub("[\u0000-\u001f]"; "?")), ($job.id // ""),
-            (if ($steps | length) == 1 then $steps[0].name // "" | gsub("[\u0000-\u001f]"; "?") else "" end), ($steps | length) ]
+        | (($steps | length) == 1) as $listed
+        | ($trust == "true" and $step != "" and ($steps | length) == 0 and all($job.steps[]?; .name != $step or .status != "completed")) as $given
+        | [ (if $listed or $given then "ok" else "steps" end), ($job.name // "" | gsub("[\u0000-\u001f]"; "?")), ($job.id // ""),
+            (if $listed then $steps[0].name // "" elif $given then $step else "" end | gsub("[\u0000-\u001f]"; "?")), ($steps | length) ]
         end
       | map(tostring) | join("\u001f")' <"$gh_stdout") || verdict=unreadable
     # The count reaches bash arithmetic, so nothing but digits may.
@@ -549,7 +652,7 @@ resolve_own_gate() {
       if [[ "$verdict" == ok && -n "$step_name" ]]; then
         own_gate_step="$step_name"
       fi
-      if [[ "$need" == job || -n "$own_gate_step" ]]; then
+      if [[ -n "$own_gate_step" ]]; then
         # `job.check_run_id` beside the REST id is evidence for keying on it.
         echo "This run's gate job is '${own_gate_job}' (REST id ${own_gate_job_id:-none}, job.check_run_id ${JOB_CHECK_RUN_ID:-empty}), found by ${own_job_label}."
         return 0
@@ -558,9 +661,9 @@ resolve_own_gate() {
     case "$verdict" in
       jobs)
         if [[ "$count" -eq 0 ]]; then
-          cause="no in-progress job matched ${own_job_label}"
+          cause="no ${own_job_noun} matched ${own_job_label}"
         else
-          cause="${count} in-progress jobs matched ${own_job_label}"
+          cause="${count} ${own_job_noun}s matched ${own_job_label}"
         fi
         ;;
       steps)
@@ -582,7 +685,7 @@ resolve_own_gate() {
     *' in-progress steps') cause="${cause} after ${reads} reads; set step-name to the name of the step that runs this action." ;;
     *) cause="${cause} after ${reads} reads." ;;
   esac
-  echo "::warning::could not identify this run's gate job and running step in ${endpoint}: ${cause} ${consequence}"
+  own_gate_cause="$cause"
   return 1
 }
 
@@ -609,6 +712,7 @@ verify_writer_step() {
   local outcome unverified='Cannot verify the step that wrote the carried status, so this run fails closed.'
   # shellcheck disable=SC2310 # resolve_own_step warns itself; the caller fails closed.
   if ! resolve_own_step "$unverified"; then
+    own_gate_lookup_failed=true
     return 1
   fi
   # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
@@ -649,10 +753,23 @@ verify_writer_step() {
 # jobs listing: its conclusion once completed, `running` before that, `absent`
 # when no such step is listed, `ambiguous` when more than one is. Returns jq's
 # status, so an unparseable body is a failed read.
+#
+# The jobs API has listed a completed job's `steps` as `[]` for minutes after
+# it finished. The one such case read as `success` is the one gate job of that
+# name, completed with `success`: the gate step that wrote a `success` cannot
+# fail after the write lands (the sibling re-run after it cannot fail it), and
+# a job that concluded `success` was not cancelled or timed out. A gate job
+# that concluded otherwise with no steps listed stays `absent`, because its
+# contract step can fail it over a true lanes `success`, and only the step
+# tells the two apart.
 gate_step_outcome() {
   jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" \
-    '[ .jobs[]? | select(.name == $job) | .steps[]? | select(.name == $step) ]
-     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end) elif length == 0 then "absent" else "ambiguous" end' \
+    '[ .jobs[]? | select(.name == $job) ] as $gates
+     | [ $gates[] | .steps[]? | select(.name == $step) ]
+     | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end)
+       elif length > 1 then "ambiguous"
+       elif ($gates | length) == 1 and $gates[0].status == "completed" and $gates[0].conclusion == "success" and ($gates[0].steps // [] | length) == 0 then "success"
+       else "absent" end' \
     <"$1"
 }
 
@@ -845,7 +962,9 @@ wait_for_sibling_runs() {
   # `date`, not bash's `SECONDS`: an external clock is one the harness can
   # advance from its `sleep` and `gh` shims, so the ceiling arithmetic stays
   # real in tests without a test-only knob in this script.
-  wait_started="$(date +%s)"
+  # From before the own-gate lookup, so the ceiling bounds the lookup too and
+  # still ends inside the job's timeout.
+  wait_started="${contract_started:-$(date +%s)}"
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller degrades to one read.
   if ! resolve_workflow_id 'actions: read' "$no_wait"; then
     return 0
@@ -976,6 +1095,10 @@ fail_carry_forward() {
   else
     closing="Once ${STATUS_CONTEXT} on ${SHA} is success, re-run this run instead."
   fi
+  if [[ -n "$own_gate_lookup_failed" ]]; then
+    echo "::error::the own-job lookup failed, so the ${STATUS_CONTEXT} success on ${SHA} could not be verified: ${own_gate_cause} ${closing}"
+    exit 1
+  fi
   echo "::error::no successful ${STATUS_CONTEXT} status on ${SHA}; ${remedy}${carry_forward_wait_note}. ${closing}"
   exit 1
 }
@@ -1000,6 +1123,24 @@ fail_carry_forward() {
 # finishes, up to YIELD_WRITER_WAIT_SECONDS, then decides as above. At the
 # ceiling it fails superseded: a full run still waiting on this run re-runs it
 # once it completes.
+#
+# With `yield-wait-seconds` above `0` the run holds instead of failing: the job
+# stays in progress, so its `ci-status` check run has no conclusion yet, until
+# the full runs that supersede it complete, the newest status changes, or the
+# ceiling passes. It then lists and reads again and decides as above, and a run
+# that held carries only a `success` created at or after the latest start of the
+# runs it held for: a held run cancelled before its gate writes nothing, and the
+# older `success` still newest must not pass in its place. A held run that turns
+# out contract-only does not count, since it was never going to write one, and
+# the check is on time, not writer, so a newer run's `success` carries. The red
+# left is
+# a real one or the ceiling's. The hold is what a job that runs can do: it always ends with a conclusion, and
+# only `success`, `skipped` and `neutral` satisfy a required check, so ending
+# early can only pass the gate or go red. Holding is safe whichever same-name
+# check run GitHub judges, which its docs do not say: an in-progress run neither
+# passes nor fails anything, and it concludes with the full run's own verdict.
+# Doing without the check run is not: an older `success` on the SHA would stand
+# alone while the full run is in flight.
 #
 # This closes the gap `record-pending` alone leaves: a full run that is queued,
 # or whose first job has not yet written its `pending` marker, would otherwise
@@ -1060,29 +1201,113 @@ list_in_flight_full_runs() {
     gate="$own_gate_job"
   fi
   for id in $ids; do
-    shape=unknown
-    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
-    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-      shape="$(job_shape "$gh_stdout" "$gate")"
-    else
-      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
-    fi
-    # A re-run keeps its original event, so a re-run of a contract-only run is
-    # contract-only too, yet its new attempt's jobs may not be listed yet. Its
-    # first attempt has completed, so that attempt's jobs decide.
-    if [[ "$shape" != contract ]] &&
-      [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
-      # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
-      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
-        shape="$(job_shape "$gh_stdout" "$gate")"
-      else
-        warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
-      fi
-    fi
-    if [[ "$shape" != contract ]]; then
+    read_sibling_shape "$id" "$gate"
+    if [[ "$sibling_shape" != contract ]]; then
       yield_full_runs="${yield_full_runs}${yield_full_runs:+ }${id}"
     fi
   done
+}
+
+# Sets `sibling_shape` to run `$1`'s shape under gate name `$2`, reading its
+# jobs. Anything unread stays `unknown`, which every caller takes as a full run.
+sibling_shape=unknown
+read_sibling_shape() {
+  local id="$1" gate="$2"
+  sibling_shape=unknown
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
+  if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+    sibling_shape="$(job_shape "$gh_stdout" "$gate")"
+  else
+    warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+  fi
+  # A re-run keeps its original event, so a re-run of a contract-only run is
+  # contract-only too, yet its new attempt's jobs may not be listed yet. Its
+  # first attempt has completed, so that attempt's jobs decide.
+  if [[ "$sibling_shape" != contract ]] &&
+    [[ "$(jq -r --arg id "$id" '[ .workflow_runs[]? | select((.id | tostring) == $id and (.run_attempt // 1) > 1) ] | length > 0' <"$scratch/runs.json")" == true ]]; then
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable first attempt leaves the run full.
+    if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs?per_page=100"; then
+      sibling_shape="$(job_shape "$gh_stdout" "$gate")"
+    else
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
+    fi
+  fi
+}
+
+# Holds until none of the full runs `$1` is incomplete, the newest status is no
+# longer the one read before the hold, or YIELD_WAIT_SECONDS has passed since
+# `yield_started`. The status read ends a hold whose run has its verdict but
+# stays in flight on later jobs. A failed read only costs a poll, except a rate
+# limit, which returns: the caller reads again and fails closed on that read.
+# Adds `$1` to `yield_held_ids`.
+yield_held_ids=""
+yield_hold() {
+  local waiting="$1" remaining sleep_for id
+  for id in $waiting; do
+    if [[ " ${yield_held_ids} " != *" ${id} "* ]]; then
+      yield_held_ids="${yield_held_ids}${yield_held_ids:+ }${id}"
+    fi
+  done
+  while :; do
+    remaining=$((YIELD_WAIT_SECONDS - ($(date +%s) - yield_started)))
+    if [[ "$remaining" -le 0 ]]; then
+      return 0
+    fi
+    sleep_for="$YIELD_WAIT_POLL_SECONDS"
+    if [[ "$sleep_for" -gt "$remaining" ]]; then
+      sleep_for="$remaining"
+    fi
+    echo "Holding ${sleep_for}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
+    sleep "$sleep_for"
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; a failed read holds for one more poll.
+    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+      waiting="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg ids " ${waiting} " \
+        '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | .id | tostring | select(. as $id | $ids | contains(" \($id) ")) ] | join(" ")' \
+        <"$gh_stdout")" || waiting=""
+      if [[ -z "$waiting" ]]; then
+        return 0
+      fi
+    elif [[ "$GH_FAILURE" == rate-limit ]]; then
+      return 0
+    fi
+    # shellcheck disable=SC2310 # read_newest_entry reports a failed read through its status.
+    if read_newest_entry; then
+      if [[ "$newest_entry" != "$carried_entry" ]]; then
+        return 0
+      fi
+    elif [[ "$GH_FAILURE" == rate-limit ]]; then
+      return 0
+    fi
+  done
+}
+
+# True when the carried `success` was created at or after the latest start of
+# runs `$1`, as the last listing gives them. A run with no start reads as false.
+carried_postdates() {
+  local since
+  since="$(jq -r --arg ids " ${1} " \
+    '[ .workflow_runs[]? | select(. as $run | $ids | contains(" \($run.id) ")) | .run_started_at // "" ] | if length == 0 or any(. == "") then "" else max end' \
+    <"$scratch/runs.json")" || since=""
+  [[ -n "$since" && ! "$carried_created_at" < "$since" ]]
+}
+
+# True when a run that held may carry `success`. Only on a refusal does it read
+# jobs again: a sibling whose jobs were not listed yet counted as a full run, and
+# once it reads contract-only it was never going to write a verdict.
+held_success_carries() {
+  local id kept=""
+  # shellcheck disable=SC2310 # carried_postdates reports through its status.
+  if carried_postdates "$yield_held_ids"; then
+    return 0
+  fi
+  for id in $yield_held_ids; do
+    read_sibling_shape "$id" "$own_gate_job"
+    if [[ "$sibling_shape" != contract ]]; then
+      kept="${kept}${kept:+ }${id}"
+    fi
+  done
+  # shellcheck disable=SC2310 # carried_postdates reports through its status.
+  [[ -z "$kept" ]] || carried_postdates "$kept"
 }
 
 # The yield red: a full run in flight decides the merge gate, so this run says
@@ -1111,6 +1336,23 @@ writer_attempt_wrote() {
       <"$scratch/runs.json")" == true ]]
 }
 
+# A contract-only run's own gate job and step do not depend on any listing, so
+# a run that lists before it reads the status (the yield and the wait) looks
+# them up first: a lookup that retries after a listing would leave that listing
+# stale, and a full run that started meanwhile would go unseen by the
+# newer-verdict check. A failure only records its cause here; the yield listing
+# and the writer check each fail closed on it. A single read with no wait lists
+# only to verify a `success`, and looks the gate up just before that listing,
+# then reads the status again after it (see `verify_carried_writer`), so a run
+# that finds none makes no Actions call.
+if [[ "$contract_only" == true && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -gt 0) ]]; then
+  contract_started="$(date +%s)"
+  # shellcheck disable=SC2310 # resolve_own_gate warns itself; its callers below fail closed.
+  if ! resolve_own_gate step 'The yield listing and the writer check fail closed on it.'; then
+    :
+  fi
+fi
+
 if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
   echo "Contract-only event: yielding to any full run in flight on ${SHA}, else reading the ${STATUS_CONTEXT} status."
   yield_started="$(date +%s)"
@@ -1127,8 +1369,10 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     fi
     superseding=""
     for id in $yield_full_runs; do
+      # Under a hold a full run's own failure is its verdict too, whatever later
+      # jobs it runs. Without one this fails superseded, as it always has.
       # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false keeps the run superseding.
-      if [[ "$carried_state" == success ]] && writer_attempt_wrote "$id"; then
+      if [[ "$carried_state" == success || ("$YIELD_WAIT_SECONDS" -gt 0 && "$carried_state" =~ ^(failure|error)$) ]] && writer_attempt_wrote "$id"; then
         continue
       fi
       superseding="${superseding}${superseding:+ }${id}"
@@ -1149,10 +1393,30 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
         sleep "$yield_sleep"
         continue
       fi
+      # Past the writer's own ceiling a hold keeps re-reading, on its slower poll.
+      yield_remaining=$((YIELD_WAIT_SECONDS - yield_waited))
+      if [[ "$yield_remaining" -gt 0 ]]; then
+        yield_sleep="$YIELD_WAIT_POLL_SECONDS"
+        if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
+          yield_sleep="$yield_remaining"
+        fi
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; holding ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WAIT_SECONDS}s)."
+        sleep "$yield_sleep"
+        continue
+      fi
       echo "::warning::the step of run ${superseding} that recorded ${STATUS_CONTEXT}=success on ${SHA} was still running after ${yield_waited}s."
+    fi
+    if [[ $(($(date +%s) - yield_started)) -lt "$YIELD_WAIT_SECONDS" ]]; then
+      yield_hold "$superseding"
+      continue
     fi
     fail_superseded "$superseding"
   done
+  # shellcheck disable=SC2310 # held_success_carries reports through its status.
+  if [[ "$carried_state" == success && -n "$yield_held_ids" ]] && ! held_success_carries; then
+    echo "::error::the full run(s) this run held for ended without recording ${STATUS_CONTEXT} on ${SHA}, so the older success is not carried; re-run the full workflow."
+    exit 1
+  fi
   if [[ "$carried_state" == success ]]; then
     echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
     exit 0
@@ -1281,7 +1545,9 @@ fi
 # reads the status once and never polls, this waits up to `rerun-wait-seconds`
 # for it to complete, re-listing every RERUN_WAIT_POLL_SECONDS. A run that
 # polls (a wait above `0` without yield) reads this success itself once this
-# step finishes, so nothing waits for it: it would be waiting on this run.
+# step finishes, so nothing waits for it: it would be waiting on this run. The
+# same goes for a run holding under `yield-wait-seconds`, which this run's input
+# describes too, since the same step runs in both modes.
 #
 # An in-flight sibling is waited for unless it is known to be a full run: two
 # or more of its latest attempt's jobs are running or ran (any conclusion but
@@ -1301,7 +1567,7 @@ rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
   local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining sleep_for ran
   local wait_for_in_flight=false
-  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
+  if [[ "$RERUN_WAIT_SECONDS" -gt 0 && "$YIELD_WAIT_SECONDS" -eq 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
     wait_for_in_flight=true
   fi
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; a refusal only skips the re-run.
