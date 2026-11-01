@@ -435,6 +435,7 @@ test("a window name outside the token character set is dropped, the reset kept",
 test("no rate_limit_event, a missing file or an unparsable one leaves the record empty", () => {
   const empty = {
     turns: null,
+    durationMs: null,
     costUsd: null,
     models: [],
     resetsAt: null,

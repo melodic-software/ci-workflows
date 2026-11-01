@@ -69,8 +69,16 @@ async function runOutcome({
   handoff = "",
   requireCompletion = "",
   completion = "",
+  runId = "",
+  runAttempt = "",
+  jobId = "",
+  apiBudgetDir = "",
 }) {
   const keys = [
+    "RUN_ID",
+    "RUN_ATTEMPT",
+    "JOB_ID",
+    "API_BUDGET_DIR",
     "LANE_OUTCOME",
     "EXECUTION_FILE",
     "LOG_FILE",
@@ -105,6 +113,10 @@ async function runOutcome({
     HANDOFF: handoff,
     REQUIRE_COMPLETION: requireCompletion,
     COMPLETION: completion,
+    RUN_ID: runId,
+    RUN_ATTEMPT: runAttempt,
+    JOB_ID: jobId,
+    API_BUDGET_DIR: apiBudgetDir,
     ACTION_PATH: __dirname,
   });
   const outputs = {};
@@ -1004,17 +1016,18 @@ test("the fallback leg after a subscription limit stop writes the contract's fal
 
 test("the schema states the emitter's own patterns, closed sets and limits", () => {
   const {
-    CLASS_PATTERN,
     COUNT_MAX,
     CREDENTIAL_PATTERN,
+    FAILURE_CLASSES,
     FALLBACK_REASONS,
     LANE_ID_PATTERN,
+    SECRET_NAME_PATTERN,
     WINDOW_PATTERN,
   } = require("./classify.cjs");
   const { properties } = schema;
   assert.equal(properties.lane.pattern, LANE_ID_PATTERN.source);
-  assert.equal(properties.class.pattern, CLASS_PATTERN.source);
-  assert.equal(properties.credential.properties.secret.pattern, CREDENTIAL_PATTERN.source);
+  assert.deepEqual(properties.class.enum, FAILURE_CLASSES);
+  assert.equal(properties.credential.properties.secret.pattern, SECRET_NAME_PATTERN.source);
   assert.equal(properties.credential.properties.role.pattern, CREDENTIAL_PATTERN.source);
   assert.equal(properties.resets.properties.window.pattern, WINDOW_PATTERN.source);
   assert.deepEqual(properties.fallback.properties.reason.enum, FALLBACK_REASONS);
@@ -1303,4 +1316,175 @@ test("with log-file the record carries the leg's token usage and windows from th
   assert.deepEqual(schemaErrors(schema, record), []);
   const without = readRecord((await runOutcome(inputs)).notices[0]);
   assert.equal("usage" in without || "windows" in without, false);
+});
+
+const sha256 = (text) => require("node:crypto").createHash("sha256").update(text).digest("hex");
+
+test("the schema accepts a record with every run-context field and rejects value-shaped credentials and free text", () => {
+  const full = {
+    ...reviewLimitExample,
+    durationMs: 61234,
+    runId: 18234567890,
+    runAttempt: 2,
+    traceId: "0123456789abcdef0123456789abcdef",
+    spanId: "0123456789abcdef",
+    githubCalls: {
+      githubToken: { requests: 14, graphql: 3, notModified: 2 },
+      lanesApp: { requests: 5, graphql: 0, notModified: 0 },
+    },
+  };
+  assert.deepEqual(schemaErrors(schema, full), []);
+  const secret = (value) => ({ ...full, credential: { secret: value, kind: "oauth-token" } });
+  for (const bad of [
+    secret("sk-ant-oat01-AbCdEf0123456789"),
+    secret("SK_ANT_OAT01_ABCDEF0123456789"),
+    secret("ABCDEF0123456789ABCDEF0123456789"),
+    secret("GITHUB_TOKEN"),
+    secret("CLAUDE_API_KEY"),
+    { ...full, class: "Rate limit hit, retry later" },
+    { ...full, class: "rate_limit" },
+    { ...full, class: "made-up-class" },
+    { ...full, fallback: { reason: "the key ran out of credit" } },
+    { ...full, outcome: "it failed" },
+    { ...full, traceId: "not-a-trace-id" },
+    { ...full, spanId: "0123456789ABCDEF" },
+    { ...full, durationMs: -1 },
+    { ...full, runAttempt: 0 },
+    { ...full, githubCalls: { githubToken: { requests: 1, graphql: 0 } } },
+    { ...full, githubCalls: { lanesApp: { requests: "5", graphql: 0, notModified: 0 } } },
+  ]) {
+    assert.notDeepEqual(schemaErrors(schema, bad), [], JSON.stringify(bad));
+  }
+});
+
+test("every class the classifier, run-claude-cli and the review lanes produce is in the closed enum", () => {
+  for (const known of [
+    "auth", "credit-stop", "rate-limit", "overloaded", "max-turns", "timeout", "install-failed",
+    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "no-credential", "no-outcome", "other",
+  ]) {
+    assert.ok(schema.properties.class.enum.includes(known), known);
+  }
+});
+
+test("the record carries run id, attempt, trace and span ids, duration and the job's GitHub calls", async () => {
+  const budgetDir = path.join(temporaryDirectory, "api-budget");
+  fs.mkdirSync(budgetDir, { recursive: true });
+  // api-budget.bash's reading lines: <status> <limit> <remaining> <used> <reset> <resource>.
+  fs.writeFileSync(
+    path.join(budgetDir, "github-token"),
+    ["200 5000 4990 10 1792645200 core", "304 5000 4990 10 1792645200 core", "200 5000 4980 20 1792645200 graphql", ""].join("\n"),
+  );
+  fs.writeFileSync(path.join(budgetDir, "lanes-app"), "201 5000 4999 1 1792645200 core\n");
+  const executionFile = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 4, duration_ms: 61234 },
+  ]);
+  const { notices } = await runOutcome({
+    outcome: "success",
+    executionFile,
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    runId: "18234567890",
+    runAttempt: "2",
+    jobId: "review",
+    apiBudgetDir: budgetDir,
+  });
+  const record = readRecord(notices[0]);
+  assert.deepEqual(schemaErrors(schema, record), []);
+  const traceId = sha256("lane-outcome:18234567890:2").slice(0, 32);
+  assert.equal(record.durationMs, 61234);
+  assert.equal(record.runId, 18234567890);
+  assert.equal(record.runAttempt, 2);
+  assert.equal(record.traceId, traceId);
+  assert.equal(record.spanId, sha256(`${traceId}:review:pr-review:CLAUDE_CODE_OAUTH_TOKEN`).slice(0, 16));
+  assert.deepEqual(record.githubCalls, {
+    githubToken: { requests: 2, graphql: 1, notModified: 1 },
+    lanesApp: { requests: 1, graphql: 0, notModified: 0 },
+  });
+  // The legacy sentence is unchanged by the run context.
+  assert.equal(notices[0].split(MARKER)[0].includes("18234567890"), false);
+});
+
+test("a run-context field is absent, not guessed, when its input is missing or out of shape", async () => {
+  const executionFile = writeExecutionFile([{ type: "result", subtype: "success", is_error: false, num_turns: 4 }]);
+  const base = { outcome: "success", executionFile, laneId: "pr-review", credential: "CLAUDE_CODE_OAUTH_TOKEN" };
+  const fields = ["durationMs", "runId", "runAttempt", "traceId", "spanId", "githubCalls"];
+  const bare = readRecord((await runOutcome(base)).notices[0]);
+  assert.deepEqual(fields.filter((field) => field in bare), []);
+  const noJob = readRecord(
+    (await runOutcome({ ...base, runId: "42", runAttempt: "1", apiBudgetDir: path.join(temporaryDirectory, "no-such-dir") }))
+      .notices[0],
+  );
+  assert.equal(noJob.traceId, sha256("lane-outcome:42:1").slice(0, 32));
+  assert.equal("spanId" in noJob || "githubCalls" in noJob, false);
+  const forged = readRecord((await runOutcome({ ...base, runId: "42; rm", runAttempt: "1", jobId: "review" })).notices[0]);
+  assert.equal("runId" in forged || "traceId" in forged || "spanId" in forged, false);
+});
+
+test("a caller class outside the closed enum is other in the record and unchanged in the legacy token", async () => {
+  const { errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: "",
+    laneId: "pr-review",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    knownFailureClass: "brand-new-class",
+  });
+  assert.match(errors[0], /\bclass=brand-new-class\b/u);
+  const record = readRecord(errors[0]);
+  assert.equal(record.class, "other");
+  assert.deepEqual(schemaErrors(schema, record), []);
+});
+
+test("a credential name that is not a Claude secret name writes no record", async () => {
+  for (const credential of ["ABCDEF0123456789ABCDEF", "GITHUB_TOKEN"]) {
+    const { notices, warnings } = await runOutcome({
+      outcome: "success",
+      executionFile: writeExecutionFile([{ type: "result", subtype: "success", is_error: false, num_turns: 1 }]),
+      laneId: "pr-review",
+      credential,
+    });
+    assert.equal(notices[0].includes(MARKER), false, credential);
+    assert.match(warnings[0], /credential/u, credential);
+  }
+});
+
+test("with every field at its longest the record stays within 1,024 characters and validates", async () => {
+  const budgetDir = path.join(temporaryDirectory, "api-budget-max");
+  fs.mkdirSync(budgetDir, { recursive: true });
+  const lines = `${"200 5000 4990 10 1792645200 graphql\n".repeat(50)}${"304 5000 4990 10 1792645200 core\n".repeat(50)}`;
+  fs.writeFileSync(path.join(budgetDir, "github-token"), lines);
+  fs.writeFileSync(path.join(budgetDir, "lanes-app"), lines);
+  const models = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`${"m".repeat(99)}${i}`, {}]));
+  const credential = `${"R".repeat(84)}_CLAUDE_API_KEY`;
+  const file = writeExecutionFile([
+    { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1792645200, rateLimitType: "seven_day_sonnet" } },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      num_turns: 999999,
+      duration_ms: 9007199254740991,
+      total_cost_usd: 123456.123456789,
+      result: `API Error: 429 {"type":"error","error":{"type":"rate_limit_error","details":{"error_code":"${"e".repeat(64)}"}},"request_id":"req_${"A".repeat(64)}"}`,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      api_error_status: 429,
+      modelUsage: models,
+    },
+  ]);
+  const { errors, notices } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    laneId: `l${"a".repeat(63)}`,
+    credential,
+    maxTurns: "999999",
+    fallbackReason: "limit-stop",
+    handoff: "true",
+    runId: "9007199254740991",
+    runAttempt: "9999",
+    jobId: `j${"b".repeat(99)}`,
+    apiBudgetDir: budgetDir,
+  });
+  const record = readRecord([...errors, ...notices][0]);
+  assert.ok(JSON.stringify(record).length <= 1024, String(JSON.stringify(record).length));
+  assert.deepEqual(schemaErrors(schema, record), []);
+  assert.ok("traceId" in record && "spanId" in record && "durationMs" in record);
 });

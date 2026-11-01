@@ -167,10 +167,10 @@ outputs:
     value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
     description: >-
-      auth | rate-limit | overloaded | max-turns | timeout |
-      install-failed | no-execution | other (empty on
-      a genuine success; skipped-validation when the action skipped itself;
-      incomplete when require-completion found no completed review).
+      One class from docs/lane-outcome.md "Failure classes", or the
+      caller's known-failure-class as given (empty on a genuine success;
+      skipped-validation when the action skipped itself; incomplete when
+      require-completion found no completed review).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -205,6 +205,10 @@ runs:
         KNOWN_FAILURE_CLASS: ${{ inputs.known-failure-class }}
         LANE_ID: ${{ inputs.lane-id }}
         HANDOFF: ${{ inputs.handoff }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        JOB_ID: ${{ github.job }}
+        API_BUDGET_DIR: ${{ runner.temp }}/api-budget
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
@@ -218,6 +222,7 @@ runs:
             readLegLog,
             readRunRecord,
             recordText,
+            runContext,
           } = require(path.join(process.env.ACTION_PATH, "classify.cjs"));
 
           // A caller wiring error, not a lane outcome: fail before reporting.
@@ -246,6 +251,16 @@ runs:
           // sentence's models= token stays short.
           const laneId = process.env.LANE_ID ?? "";
           const credential = process.env.CREDENTIAL ?? "";
+          // The run id, attempt, trace and span ids, and the job's GitHub
+          // API calls so far, from the runner's context; record only.
+          const context = runContext({
+            runId: process.env.RUN_ID ?? "",
+            runAttempt: process.env.RUN_ATTEMPT ?? "",
+            job: process.env.JOB_ID ?? "",
+            laneId,
+            credential,
+            budgetDir: process.env.API_BUDGET_DIR ?? "",
+          });
           // `failureClass` builds the tokens as they have always been built;
           // `recordClass` is the record's class where the tokens carry none.
           // With no record every message is what it was before the record.
@@ -259,6 +274,7 @@ runs:
               credential,
               fallbackReason,
               handoff: process.env.HANDOFF ?? "",
+              context,
             });
             // Only a caller that opted in with lane-id warns; one that
             // passes only a credential is not wired for the record yet.
