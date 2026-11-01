@@ -1492,7 +1492,9 @@ test("the review leaves each leg as an artifact named for the run, head and leg,
     const upload = job.steps.find(
       (s) => s.name === "Upload the review handoff",
     );
-    assert.equal(names.indexOf("handoff-file") + 1, job.steps.indexOf(upload));
+    // Only the handoff's credential scan sits between the file and its upload.
+    assert.equal(names[names.indexOf("handoff-file") + 1], "handoff-scan");
+    assert.equal(names.indexOf("handoff-file") + 2, job.steps.indexOf(upload));
     assert.equal(upload.with.name, name);
     assert.equal(upload.with.overwrite, true);
     assert.equal(upload.with["retention-days"], 1);
@@ -1816,4 +1818,141 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
   );
   assert.notEqual(result.status, 0);
   assert.doesNotMatch(fs.readFileSync(output, "utf8"), /written=true/u);
+});
+
+// --- every artifact the lane uploads is scanned for credentials first ---
+
+const SCAN_ACTION = "$/.github/actions/scan-upload";
+const isUpload = (s) =>
+  String(s.uses ?? "").startsWith("actions/upload-artifact@");
+
+test("every upload follows a credential scan over the same path, and a scan that is not clean withholds it", () => {
+  const uploads = [];
+  for (const [name, job] of Object.entries({
+    "review-key": key,
+    "review-subscription": subscription,
+    "review-fallback": fallback,
+    status,
+  })) {
+    job.steps.forEach((upload, index) => {
+      if (!isUpload(upload)) return;
+      uploads.push(name);
+      const scan = job.steps
+        .slice(0, index)
+        .reverse()
+        .find((s) => s.uses === SCAN_ACTION);
+      assert.ok(scan, `${name}: ${upload.name} has a scan step before it`);
+      assert.equal(
+        scan.with.path,
+        upload.with.path,
+        `${name}: the scan reads the path the upload sends`,
+      );
+      assert.equal(
+        scan.if,
+        upload.if.replace(` && steps.${scan.id}.outputs.clean == 'true'`, ""),
+        `${name}: the scan runs whenever the upload would`,
+      );
+      const steps = {
+        "handoff-file": { outputs: { sha256: "a".repeat(64) } },
+        [scan.id]: { outputs: { clean: "true" } },
+      };
+      const inputs = { publish: "shadow" };
+      assert.equal(
+        evaluate(upload.if, { steps, inputs }),
+        true,
+        `${name}: a clean scan uploads`,
+      );
+      for (const clean of ["", null]) {
+        steps[scan.id].outputs.clean = clean;
+        assert.equal(
+          evaluate(upload.if, { steps, inputs }),
+          false,
+          `${name}: a hit or a failed scan withholds the upload`,
+        );
+      }
+    });
+  }
+  assert.deepEqual(uploads, [
+    "review-key",
+    "review-subscription",
+    "review-fallback",
+    "status",
+  ]);
+});
+
+test("scan-upload withholds a planted credential without printing it, and passes a clean file", async () => {
+  const { main, checkImports } = require("../actions/scan-upload/scan.cjs");
+  const directory = makeTemporaryDirectory("scan-upload-");
+  // A stand-in gate with the scanLeak return shape; claude-code-plugins tests the rule set itself.
+  const gate = path.join(directory, "gate.mjs");
+  fs.writeFileSync(
+    gate,
+    'export const scanLeak = (bytes) => (Buffer.from(bytes).includes("FAKE".repeat(9)) ? { block: "GitHub token", credential: true } : {});\n',
+  );
+  // Built at run time: a GitHub token prefix and 36 letters spelling FAKE, never a live token.
+  const planted = ["gh", "p_", "FAKE".repeat(9)].join("");
+  const handoff = path.join(directory, "review-key.json");
+  const output = path.join(directory, "github-output");
+  const run = async (gatePath) => {
+    fs.writeFileSync(output, "");
+    const write = process.stdout.write;
+    let printed = "";
+    process.stdout.write = (chunk) => {
+      printed += chunk;
+      return true;
+    };
+    try {
+      const code = await main(
+        { SCAN_PATHS: handoff, GITHUB_OUTPUT: output },
+        gatePath,
+      );
+      return { code, printed, outputs: fs.readFileSync(output, "utf8") };
+    } finally {
+      process.stdout.write = write;
+    }
+  };
+  fs.writeFileSync(
+    handoff,
+    JSON.stringify({ review: `a review naming ${planted}` }),
+  );
+  let result = await run(gate);
+  assert.equal(result.code, 1);
+  assert.equal(result.outputs, "", "no clean output");
+  assert.match(
+    result.printed,
+    /::error::scan-upload: GitHub token; nothing is uploaded\. Rotate this credential/u,
+  );
+  assert.ok(!result.printed.includes(planted), "the value is never printed");
+  fs.writeFileSync(handoff, JSON.stringify({ review: "a clean review" }));
+  result = await run(gate);
+  assert.equal(result.code, 0);
+  assert.equal(result.outputs, "clean=true\n");
+  // A gate that cannot load withholds the upload too.
+  result = await run(path.join(directory, "absent.mjs"));
+  assert.equal(result.code, 1);
+  assert.equal(result.outputs, "");
+  assert.throws(
+    () => checkImports('import x from "./other.mjs";'),
+    /node builtins/u,
+  );
+  checkImports('import { readFileSync } from "node:fs";');
+});
+
+test("scan-upload fetches the gate with /usr/bin/git, no system or global config and a minimal env", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "scan-upload", "scan.cjs"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /execFileSync\("\/usr\/bin\/git", \["-c", "core\.hooksPath=\/dev\/null", \.\.\.args\]/u,
+  );
+  assert.match(source, /GIT_CONFIG_NOSYSTEM: "1"/u);
+  assert.match(source, /GIT_CONFIG_GLOBAL: "\/dev\/null"/u);
+  assert.match(source, /PATH: "\/usr\/bin:\/bin"/u);
+  assert.doesNotMatch(
+    source,
+    /\.\.\.process\.env/u,
+    "no inherited environment",
+  );
 });
