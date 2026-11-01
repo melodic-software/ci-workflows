@@ -303,6 +303,22 @@ on:
 permissions:
   contents: read
 
+# Values the three model jobs' steps share.
+env:
+  # The files one review reads whole: the split step cuts chunks of at most
+  # this many, and the extract step calls one review of more files that are
+  # not copies partial. claude-code-plugins#12052's reviews read 50 and 68 of
+  # a 195-file chunk whole, and every file of a 3- and a 4-file chunk.
+  MAX_CHUNK_FILES: "40"
+  # Paths where an added file never groups as an identical copy, globbed as
+  # hold-paths: the same content can act differently there, so each is
+  # reviewed at its own path. Empty, no addition groups.
+  SENSITIVE_PATHS: |
+    .github/**
+    **/hooks/**
+    **/package.json
+    **/*.sh
+
 jobs:
   # Whether the key is still out of credits: a key-job credit stop in this
   # workflow inside the window skips the key job. Its record step carries the
@@ -858,16 +874,18 @@ jobs:
           # blobs and the status, so an addition joins only additions; a
           # delete, rename, copy, type change, symlink or submodule never does,
           # nor a path matching a hold-paths glob (globbed as the scope step's
-          # docs-only-paths). A whole review reads each group once (the split
-          # step leaves the copies out of its chunks) and the extract step
-          # counts the copies as read. A file the head planted, or any failure,
-          # groups none.
+          # docs-only-paths), nor an addition matching a SENSITIVE_PATHS glob
+          # (no addition when that list is empty). A whole review reads each
+          # group once (the split step leaves the copies out of its chunks) and
+          # the extract step counts the copies as read. A file the head
+          # planted, or any failure, groups none.
           identical=.claude-lane/identical.txt
           copies=0
           if [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
             groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | awk -F '\t' '
-              BEGIN {
-                lines = split(ENVIRON["HOLD_PATHS"], glob, "\n")
+              # Newline-separated globs into anchored regexes in out; returns their count.
+              function globs(text, out,    lines, glob, i, j, ch, re, n) {
+                lines = split(text, glob, "\n")
                 for (i = 1; i <= lines; i++) {
                   gsub(/^[ \t\r]+|[ \t\r]+$/, "", glob[i])
                   if (glob[i] == "") continue
@@ -881,13 +899,16 @@ jobs:
                     else if (index(".+^$(){}|[]\\", ch)) re = re "\\" ch
                     else re = re ch
                   }
-                  held[++h] = "^" re "$"
+                  out[++n] = "^" re "$"
                 }
+                return n
               }
+              BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
               { split($1, f, " ") }
               NF != 2 || f[2] !~ /^100(644|755)$/ || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
+              f[5] == "A" { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
               { k = $1; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
@@ -1042,13 +1063,15 @@ jobs:
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review step below. On a whole review the identical copies the
-      # full-diff step grouped are left out first: when the rest fits one
-      # review it is one review, which skips the copies, and when the rest
-      # still needs chunks only the rest is split (excluded= names the copies
-      # left out). chunks=1 is one review of the whole diff in scope, as
-      # before: a diff that fits, or one the split refuses (a file over the
-      # budget, or more than MAX_CHUNKS chunks), which the extract step then
-      # calls partial. The chunk directory must be new, so the head cannot
+      # full-diff step grouped are left out first: when the whole diff fits
+      # the read budget and the rest fits MAX_CHUNK_FILES it is one review,
+      # which skips the copies; when the rest alone is over either cap only
+      # the rest is split (excluded= names the copies left out); otherwise the
+      # whole diff is split, copies included. chunks=1 is
+      # one review of the whole diff in scope, as before: a diff that fits, or
+      # one the split refuses (a file over the budget, more than MAX_CHUNKS
+      # chunks, or a chunk over MAX_CHUNK_FILES files), which the extract step
+      # then calls partial. The chunk directory must be new, so the head cannot
       # plant a file or symlink in it; any failure here reviews unsplit, as a
       # partial review.
       - name: Split the diff
@@ -1065,16 +1088,18 @@ jobs:
           COPIES: ${{ steps.full-diff.outputs.copies }}
           # One review's read budget, the extract step's READ_BUDGET.
           READ_BUDGET: "300000"
-          # The chunk review steps each leg has.
+          # The chunk review steps each leg has. MAX_CHUNK_FILES is the
+          # workflow's.
           MAX_CHUNKS: "4"
-          # The files one review reads whole: claude-code-plugins#12052's
-          # reviews read 50 and 68 of a 195-file chunk whole, and every file
-          # of a 3- and a 4-file chunk.
-          MAX_CHUNK_FILES: "40"
         run: |
           unsplit() {
             echo "chunks=1" >>"$GITHUB_OUTPUT"
             exit 0
+          }
+          # Files, not sections: a type change is two sections of one file,
+          # which the full-diff step's file count counts once.
+          count_files() {
+            grep '^diff --git ' "$1" | sort -u | wc -l | tr -d ' '
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -1083,7 +1108,7 @@ jobs:
             echo "::warning::the diff in scope is not a regular file; it is reviewed unsplit, as a partial review"
             unsplit
           fi
-          scope_files=$(grep -c '^diff --git ' "$SCOPE_DIFF" || true)
+          scope_files=$(count_files "$SCOPE_DIFF")
           if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$scope_files" -le "$MAX_CHUNK_FILES" ]; then
             unsplit
           fi
@@ -1103,7 +1128,7 @@ jobs:
               /^diff --git / { skip = ($0 in copy) }
               !skip' "$identical" "$SCOPE_DIFF" >"$distinct"
             distinct_bytes=$(wc -c <"$distinct" | tr -d ' ')
-            distinct_files=$(grep -c '^diff --git ' "$distinct" || true)
+            distinct_files=$(count_files "$distinct")
             if [ $((distinct_files + COPIES)) -eq "$scope_files" ]; then
               if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
                 unsplit
@@ -1121,9 +1146,16 @@ jobs:
             unsplit
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
+          # A chunk over the file cap (a split-diff.py that ignored it) is one
+          # review, which the extract step then calls partial.
           files=
           for k in $(seq "$chunks"); do
-            files="$files${files:+,}$(grep -c '^diff --git ' "$CHUNK_DIR/chunk-$k.patch" || true)"
+            n=$(count_files "$CHUNK_DIR/chunk-$k.patch")
+            if [ "$n" -gt "$MAX_CHUNK_FILES" ]; then
+              echo "::warning::chunk $k holds $n files, over $MAX_CHUNK_FILES; the diff is reviewed unsplit, as a partial review"
+              unsplit
+            fi
+            files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
           echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
@@ -1840,7 +1872,8 @@ jobs:
             // review's read budget (pr-verify's 300000-byte chunk,
             // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
             // partial whatever the model reports, unless each of its chunks,
-            // each within the budget, was reviewed.
+            // each within the budget, was reviewed. So is one review of more
+            // files that are not copies than MAX_CHUNK_FILES.
             const READ_BUDGET = 300000;
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
@@ -1852,6 +1885,7 @@ jobs:
             } catch {}
             if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
             if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            if (!/^[1-9][0-9]{0,5}$/u.test(env.MAX_CHUNK_FILES ?? "")) return incomplete("the job could not read the files one review reads whole");
             for (let k = 1; chunks > 1 && k <= chunks; k++) {
               let size = -1;
               try {
@@ -1881,6 +1915,9 @@ jobs:
               read: Math.min(read, changed - copies) + copies,
               changed,
               ...(chunks === 1 && bytes > READ_BUDGET ? { over_budget: bytes } : {}),
+              // One review of more files than the split step's cap, past the
+              // copies it skips: a split refused or failed for file count.
+              ...(chunks === 1 && changed - copies > Number(env.MAX_CHUNK_FILES) ? { over_files: changed - copies } : {}),
             };
             const findings = reviews.reduce((sum, r) => sum + r.findings, 0);
             const comments = reviews.flatMap((r) => r.comments);
@@ -2510,16 +2547,18 @@ jobs:
           # blobs and the status, so an addition joins only additions; a
           # delete, rename, copy, type change, symlink or submodule never does,
           # nor a path matching a hold-paths glob (globbed as the scope step's
-          # docs-only-paths). A whole review reads each group once (the split
-          # step leaves the copies out of its chunks) and the extract step
-          # counts the copies as read. A file the head planted, or any failure,
-          # groups none.
+          # docs-only-paths), nor an addition matching a SENSITIVE_PATHS glob
+          # (no addition when that list is empty). A whole review reads each
+          # group once (the split step leaves the copies out of its chunks) and
+          # the extract step counts the copies as read. A file the head
+          # planted, or any failure, groups none.
           identical=.claude-lane/identical.txt
           copies=0
           if [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
             groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | awk -F '\t' '
-              BEGIN {
-                lines = split(ENVIRON["HOLD_PATHS"], glob, "\n")
+              # Newline-separated globs into anchored regexes in out; returns their count.
+              function globs(text, out,    lines, glob, i, j, ch, re, n) {
+                lines = split(text, glob, "\n")
                 for (i = 1; i <= lines; i++) {
                   gsub(/^[ \t\r]+|[ \t\r]+$/, "", glob[i])
                   if (glob[i] == "") continue
@@ -2533,13 +2572,16 @@ jobs:
                     else if (index(".+^$(){}|[]\\", ch)) re = re "\\" ch
                     else re = re ch
                   }
-                  held[++h] = "^" re "$"
+                  out[++n] = "^" re "$"
                 }
+                return n
               }
+              BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
               { split($1, f, " ") }
               NF != 2 || f[2] !~ /^100(644|755)$/ || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
+              f[5] == "A" { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
               { k = $1; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
@@ -2694,13 +2736,15 @@ jobs:
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review step below. On a whole review the identical copies the
-      # full-diff step grouped are left out first: when the rest fits one
-      # review it is one review, which skips the copies, and when the rest
-      # still needs chunks only the rest is split (excluded= names the copies
-      # left out). chunks=1 is one review of the whole diff in scope, as
-      # before: a diff that fits, or one the split refuses (a file over the
-      # budget, or more than MAX_CHUNKS chunks), which the extract step then
-      # calls partial. The chunk directory must be new, so the head cannot
+      # full-diff step grouped are left out first: when the whole diff fits
+      # the read budget and the rest fits MAX_CHUNK_FILES it is one review,
+      # which skips the copies; when the rest alone is over either cap only
+      # the rest is split (excluded= names the copies left out); otherwise the
+      # whole diff is split, copies included. chunks=1 is
+      # one review of the whole diff in scope, as before: a diff that fits, or
+      # one the split refuses (a file over the budget, more than MAX_CHUNKS
+      # chunks, or a chunk over MAX_CHUNK_FILES files), which the extract step
+      # then calls partial. The chunk directory must be new, so the head cannot
       # plant a file or symlink in it; any failure here reviews unsplit, as a
       # partial review.
       - name: Split the diff
@@ -2717,16 +2761,18 @@ jobs:
           COPIES: ${{ steps.full-diff.outputs.copies }}
           # One review's read budget, the extract step's READ_BUDGET.
           READ_BUDGET: "300000"
-          # The chunk review steps each leg has.
+          # The chunk review steps each leg has. MAX_CHUNK_FILES is the
+          # workflow's.
           MAX_CHUNKS: "4"
-          # The files one review reads whole: claude-code-plugins#12052's
-          # reviews read 50 and 68 of a 195-file chunk whole, and every file
-          # of a 3- and a 4-file chunk.
-          MAX_CHUNK_FILES: "40"
         run: |
           unsplit() {
             echo "chunks=1" >>"$GITHUB_OUTPUT"
             exit 0
+          }
+          # Files, not sections: a type change is two sections of one file,
+          # which the full-diff step's file count counts once.
+          count_files() {
+            grep '^diff --git ' "$1" | sort -u | wc -l | tr -d ' '
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -2735,7 +2781,7 @@ jobs:
             echo "::warning::the diff in scope is not a regular file; it is reviewed unsplit, as a partial review"
             unsplit
           fi
-          scope_files=$(grep -c '^diff --git ' "$SCOPE_DIFF" || true)
+          scope_files=$(count_files "$SCOPE_DIFF")
           if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$scope_files" -le "$MAX_CHUNK_FILES" ]; then
             unsplit
           fi
@@ -2755,7 +2801,7 @@ jobs:
               /^diff --git / { skip = ($0 in copy) }
               !skip' "$identical" "$SCOPE_DIFF" >"$distinct"
             distinct_bytes=$(wc -c <"$distinct" | tr -d ' ')
-            distinct_files=$(grep -c '^diff --git ' "$distinct" || true)
+            distinct_files=$(count_files "$distinct")
             if [ $((distinct_files + COPIES)) -eq "$scope_files" ]; then
               if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
                 unsplit
@@ -2773,9 +2819,16 @@ jobs:
             unsplit
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
+          # A chunk over the file cap (a split-diff.py that ignored it) is one
+          # review, which the extract step then calls partial.
           files=
           for k in $(seq "$chunks"); do
-            files="$files${files:+,}$(grep -c '^diff --git ' "$CHUNK_DIR/chunk-$k.patch" || true)"
+            n=$(count_files "$CHUNK_DIR/chunk-$k.patch")
+            if [ "$n" -gt "$MAX_CHUNK_FILES" ]; then
+              echo "::warning::chunk $k holds $n files, over $MAX_CHUNK_FILES; the diff is reviewed unsplit, as a partial review"
+              unsplit
+            fi
+            files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
           echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
@@ -3493,7 +3546,8 @@ jobs:
             // review's read budget (pr-verify's 300000-byte chunk,
             // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
             // partial whatever the model reports, unless each of its chunks,
-            // each within the budget, was reviewed.
+            // each within the budget, was reviewed. So is one review of more
+            // files that are not copies than MAX_CHUNK_FILES.
             const READ_BUDGET = 300000;
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
@@ -3505,6 +3559,7 @@ jobs:
             } catch {}
             if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
             if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            if (!/^[1-9][0-9]{0,5}$/u.test(env.MAX_CHUNK_FILES ?? "")) return incomplete("the job could not read the files one review reads whole");
             for (let k = 1; chunks > 1 && k <= chunks; k++) {
               let size = -1;
               try {
@@ -3534,6 +3589,9 @@ jobs:
               read: Math.min(read, changed - copies) + copies,
               changed,
               ...(chunks === 1 && bytes > READ_BUDGET ? { over_budget: bytes } : {}),
+              // One review of more files than the split step's cap, past the
+              // copies it skips: a split refused or failed for file count.
+              ...(chunks === 1 && changed - copies > Number(env.MAX_CHUNK_FILES) ? { over_files: changed - copies } : {}),
             };
             const findings = reviews.reduce((sum, r) => sum + r.findings, 0);
             const comments = reviews.flatMap((r) => r.comments);
@@ -4167,16 +4225,18 @@ jobs:
           # blobs and the status, so an addition joins only additions; a
           # delete, rename, copy, type change, symlink or submodule never does,
           # nor a path matching a hold-paths glob (globbed as the scope step's
-          # docs-only-paths). A whole review reads each group once (the split
-          # step leaves the copies out of its chunks) and the extract step
-          # counts the copies as read. A file the head planted, or any failure,
-          # groups none.
+          # docs-only-paths), nor an addition matching a SENSITIVE_PATHS glob
+          # (no addition when that list is empty). A whole review reads each
+          # group once (the split step leaves the copies out of its chunks) and
+          # the extract step counts the copies as read. A file the head
+          # planted, or any failure, groups none.
           identical=.claude-lane/identical.txt
           copies=0
           if [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
             groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | awk -F '\t' '
-              BEGIN {
-                lines = split(ENVIRON["HOLD_PATHS"], glob, "\n")
+              # Newline-separated globs into anchored regexes in out; returns their count.
+              function globs(text, out,    lines, glob, i, j, ch, re, n) {
+                lines = split(text, glob, "\n")
                 for (i = 1; i <= lines; i++) {
                   gsub(/^[ \t\r]+|[ \t\r]+$/, "", glob[i])
                   if (glob[i] == "") continue
@@ -4190,13 +4250,16 @@ jobs:
                     else if (index(".+^$(){}|[]\\", ch)) re = re "\\" ch
                     else re = re ch
                   }
-                  held[++h] = "^" re "$"
+                  out[++n] = "^" re "$"
                 }
+                return n
               }
+              BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
               { split($1, f, " ") }
               NF != 2 || f[2] !~ /^100(644|755)$/ || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
+              f[5] == "A" { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
               { k = $1; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
@@ -4351,13 +4414,15 @@ jobs:
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review step below. On a whole review the identical copies the
-      # full-diff step grouped are left out first: when the rest fits one
-      # review it is one review, which skips the copies, and when the rest
-      # still needs chunks only the rest is split (excluded= names the copies
-      # left out). chunks=1 is one review of the whole diff in scope, as
-      # before: a diff that fits, or one the split refuses (a file over the
-      # budget, or more than MAX_CHUNKS chunks), which the extract step then
-      # calls partial. The chunk directory must be new, so the head cannot
+      # full-diff step grouped are left out first: when the whole diff fits
+      # the read budget and the rest fits MAX_CHUNK_FILES it is one review,
+      # which skips the copies; when the rest alone is over either cap only
+      # the rest is split (excluded= names the copies left out); otherwise the
+      # whole diff is split, copies included. chunks=1 is
+      # one review of the whole diff in scope, as before: a diff that fits, or
+      # one the split refuses (a file over the budget, more than MAX_CHUNKS
+      # chunks, or a chunk over MAX_CHUNK_FILES files), which the extract step
+      # then calls partial. The chunk directory must be new, so the head cannot
       # plant a file or symlink in it; any failure here reviews unsplit, as a
       # partial review.
       - name: Split the diff
@@ -4374,16 +4439,18 @@ jobs:
           COPIES: ${{ steps.full-diff.outputs.copies }}
           # One review's read budget, the extract step's READ_BUDGET.
           READ_BUDGET: "300000"
-          # The chunk review steps each leg has.
+          # The chunk review steps each leg has. MAX_CHUNK_FILES is the
+          # workflow's.
           MAX_CHUNKS: "4"
-          # The files one review reads whole: claude-code-plugins#12052's
-          # reviews read 50 and 68 of a 195-file chunk whole, and every file
-          # of a 3- and a 4-file chunk.
-          MAX_CHUNK_FILES: "40"
         run: |
           unsplit() {
             echo "chunks=1" >>"$GITHUB_OUTPUT"
             exit 0
+          }
+          # Files, not sections: a type change is two sections of one file,
+          # which the full-diff step's file count counts once.
+          count_files() {
+            grep '^diff --git ' "$1" | sort -u | wc -l | tr -d ' '
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -4392,7 +4459,7 @@ jobs:
             echo "::warning::the diff in scope is not a regular file; it is reviewed unsplit, as a partial review"
             unsplit
           fi
-          scope_files=$(grep -c '^diff --git ' "$SCOPE_DIFF" || true)
+          scope_files=$(count_files "$SCOPE_DIFF")
           if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$scope_files" -le "$MAX_CHUNK_FILES" ]; then
             unsplit
           fi
@@ -4412,7 +4479,7 @@ jobs:
               /^diff --git / { skip = ($0 in copy) }
               !skip' "$identical" "$SCOPE_DIFF" >"$distinct"
             distinct_bytes=$(wc -c <"$distinct" | tr -d ' ')
-            distinct_files=$(grep -c '^diff --git ' "$distinct" || true)
+            distinct_files=$(count_files "$distinct")
             if [ $((distinct_files + COPIES)) -eq "$scope_files" ]; then
               if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
                 unsplit
@@ -4430,9 +4497,16 @@ jobs:
             unsplit
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
+          # A chunk over the file cap (a split-diff.py that ignored it) is one
+          # review, which the extract step then calls partial.
           files=
           for k in $(seq "$chunks"); do
-            files="$files${files:+,}$(grep -c '^diff --git ' "$CHUNK_DIR/chunk-$k.patch" || true)"
+            n=$(count_files "$CHUNK_DIR/chunk-$k.patch")
+            if [ "$n" -gt "$MAX_CHUNK_FILES" ]; then
+              echo "::warning::chunk $k holds $n files, over $MAX_CHUNK_FILES; the diff is reviewed unsplit, as a partial review"
+              unsplit
+            fi
+            files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
           echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
@@ -5148,7 +5222,8 @@ jobs:
             // review's read budget (pr-verify's 300000-byte chunk,
             // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
             // partial whatever the model reports, unless each of its chunks,
-            // each within the budget, was reviewed.
+            // each within the budget, was reviewed. So is one review of more
+            // files that are not copies than MAX_CHUNK_FILES.
             const READ_BUDGET = 300000;
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
@@ -5160,6 +5235,7 @@ jobs:
             } catch {}
             if (!regular) return incomplete("the diff file in scope is missing or not a regular file");
             if (!/^[0-9]{1,12}$/u.test(env.SCOPE_BYTES ?? "")) return incomplete("the job could not measure the diff in scope");
+            if (!/^[1-9][0-9]{0,5}$/u.test(env.MAX_CHUNK_FILES ?? "")) return incomplete("the job could not read the files one review reads whole");
             for (let k = 1; chunks > 1 && k <= chunks; k++) {
               let size = -1;
               try {
@@ -5189,6 +5265,9 @@ jobs:
               read: Math.min(read, changed - copies) + copies,
               changed,
               ...(chunks === 1 && bytes > READ_BUDGET ? { over_budget: bytes } : {}),
+              // One review of more files than the split step's cap, past the
+              // copies it skips: a split refused or failed for file count.
+              ...(chunks === 1 && changed - copies > Number(env.MAX_CHUNK_FILES) ? { over_files: changed - copies } : {}),
             };
             const findings = reviews.reduce((sum, r) => sum + r.findings, 0);
             const comments = reviews.flatMap((r) => r.comments);

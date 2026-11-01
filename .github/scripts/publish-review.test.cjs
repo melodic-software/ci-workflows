@@ -626,7 +626,7 @@ test("a malformed CRITICAL comment raises the summary's critical-findings line",
 });
 
 // A review that read less than its scope, or whose diff is over one review's
-// read budget, is partial: its comment states coverage first, records no
+// read budget or file cap, is partial: its comment states coverage first, records no
 // reviewed head, and the check is not a success.
 test("a partial review states its coverage first, records no head and fails, with no completion notice", async () => {
   for (const [coverage, size] of [
@@ -634,6 +634,10 @@ test("a partial review states its coverage first, records no head and fails, wit
     [
       { read: 3, changed: 3, over_budget: 1330000 },
       /^read 3 of 3 changed file\(s\); the diff is 1330000 bytes, over one review's read budget\. /u,
+    ],
+    [
+      { read: 170, changed: 170, over_files: 170 },
+      /^read 170 of 170 changed file\(s\); one review faced 170 files that are not copies, more than it reads whole\. /u,
     ],
   ]) {
     const { writes, log } = await publish({
@@ -687,6 +691,8 @@ test("a review with no coverage, or coverage past its scope, is incomplete", asy
     { read: 2, changed: 1 },
     { read: 1 },
     { read: 1, changed: 1, over_budget: 0 },
+    { read: 1, changed: 1, over_files: 0 },
+    { read: 1, changed: 1, over_files: "41" },
     { read: "1", changed: 1 },
   ]) {
     const { writes, log } = await publish({

@@ -128,24 +128,31 @@ function parseReview(text) {
   return review;
 }
 
-// The extract step's coverage: files read of the changed files in scope, and
-// the diff's size when it is over one review's read budget. A review without
-// it is not one.
+// The extract step's coverage: files read of the changed files in scope, the
+// diff's size when it is over one review's read budget, and its files that
+// are not copies when one review faced more than it reads whole. A review
+// without it is not one.
 function validCoverage(coverage) {
+  const absentOrPositive = (n) =>
+    n === undefined || (Number.isSafeInteger(n) && n > 0);
   return (
     Number.isSafeInteger(coverage?.changed) &&
     coverage.changed >= 0 &&
     Number.isSafeInteger(coverage.read) &&
     coverage.read >= 0 &&
     coverage.read <= coverage.changed &&
-    (coverage.over_budget === undefined ||
-      (Number.isSafeInteger(coverage.over_budget) && coverage.over_budget > 0))
+    absentOrPositive(coverage.over_budget) &&
+    absentOrPositive(coverage.over_files)
   );
 }
 
 // Whether the review read less than its whole scope.
 function isPartial(coverage) {
-  return coverage.read < coverage.changed || coverage.over_budget !== undefined;
+  return (
+    coverage.read < coverage.changed ||
+    coverage.over_budget !== undefined ||
+    coverage.over_files !== undefined
+  );
 }
 
 // The marker's status line, which states coverage before the finding count.
@@ -157,7 +164,11 @@ function statusLine(lane, head, coverage, findings, inline) {
     coverage.over_budget === undefined
       ? ""
       : `; the diff is ${coverage.over_budget} bytes, over one review's read budget`;
-  return `**${lane}** partial review of \`${head}\`: ${read}${size}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.`;
+  const files =
+    coverage.over_files === undefined
+      ? ""
+      : `; one review faced ${coverage.over_files} files that are not copies, more than it reads whole`;
+  return `**${lane}** partial review of \`${head}\`: ${read}${size}${files}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.`;
 }
 
 // The leg whose outputs count: the subscription job's when it ran, else the
