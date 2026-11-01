@@ -1438,6 +1438,9 @@ their number, with a log line. A failed, skipped or
 incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
 reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
+A `max-turns` failure stays red but reads "<lane> stopped: turn budget used",
+a sizing stop rather than an infrastructure error (the `class=max-turns` token
+is unchanged).
 Every outcome annotation, and a notice on a run that completed, also carries
 the run record as bare tokens, each omitted when unknown: `turns=<n>`,
 `max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the

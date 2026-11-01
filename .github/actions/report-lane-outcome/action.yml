@@ -366,15 +366,22 @@ runs:
           // lane-id gets a notice, whether or not its record could be
           // written. With no lane-id the level is what it always was.
           const annotate = laneId !== "" && process.env.HANDOFF === "true" ? core.notice : core.error;
+          // A run past its turn cap is a sizing stop, not an infrastructure
+          // error: the work is bigger than one run allows.
           annotate(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
                   `(${lane} exited with: ${outcome} class=rate-limit${tokens}). ` +
                   `${before}Last SDK result: ${reviewDetail}`
-              : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
-                  `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
-                  "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
-                  `${before}Last SDK result: ${reviewDetail}`,
+              : failureClass === "max-turns"
+                ? `${lane} stopped: turn budget used ` +
+                    `(${lane} exited with: ${outcome} class=max-turns${tokens}); ` +
+                    "the work is too big for one run, split it. " +
+                    `${before}Last SDK result: ${reviewDetail}`
+                : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
+                    `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
+                    "OIDC failure, SDK crash, or is_error result). " +
+                    `${before}Last SDK result: ${reviewDetail}`,
           );
 
           core.setOutput("failure_class", failureClass);
