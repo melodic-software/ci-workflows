@@ -763,6 +763,12 @@ consumer to audit it.
   `select-trusted-text`, each with whether its lines changed since it was
   settled, so the review does not re-raise a settled point (its
   `action.yml` describes what it does).
+- `.github/actions/collect-prior-findings` — `pr-review-cli.yml`'s
+  prior-findings step, with no model: runs claude-code-plugins'
+  `prior-findings.mjs` for the lane's own earlier findings and its rounds
+  against `loop.review-rounds`, read from the default branch's
+  `docs/conventions/pr-pipeline.yaml`, so the review does not repeat a finding
+  on unchanged lines (its `action.yml` describes what it does).
 - `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
   step: the `api-budget` notice (`token=github-token ... cost=N`) and the
   `api-calls` notice (`github-token=N not-modified=M graphql=K`) the hub

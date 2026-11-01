@@ -82,7 +82,11 @@ name: pr-review-cli
 #     trusts), and its settled review threads (text only from comments
 #     claude-code-plugins' select-trusted-text keeps under the base commit's
 #     trusted-actor list, with a job-computed verdict on whether the lines
-#     under each changed since it was settled).
+#     under each changed since it was settled), and this lane's own prior
+#     findings (only posts GitHub reports the github-actions bot wrote, by
+#     numeric id, edited by no other account and carrying the lane's footer
+#     or reviewed-head marker, each with whether its lines changed since
+#     posted, and the round cap read from the default branch, never the head).
 #   - The review plugin comes from the claude-code-plugins default branch's
 #     tip, never the head, staged read-only in .lane/ (a head that holds
 #     .lane fails the job).
@@ -359,7 +363,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
     needs: check-key-credit
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 101 || 93 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 103 || 95 }}
     if: >-
       needs.check-key-credit.outputs.skip-key != 'true'
       && !cancelled()
@@ -1099,6 +1103,23 @@ jobs:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
 
+      # This lane's own earlier findings (github-actions bot posts carrying
+      # its footer or reviewed-head marker), whether the lines under each
+      # changed since posted, and its rounds against loop.review-rounds from
+      # the default branch's pr-pipeline.yaml, by claude-code-plugins'
+      # prior-findings.mjs from the clone above. Any failure writes no file
+      # and the review runs as before.
+      - name: Write the lane's prior findings
+        id: prior
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/collect-prior-findings
+        with:
+          source: ${{ runner.temp }}/claude-code-plugins
+          output-file: .claude-lane/prior-findings.md
+          lane: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
       # the outcome step tell a step timeout from other failures.
@@ -1122,6 +1143,7 @@ jobs:
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
           SETTLED_NOTE: ${{ steps.settled.outputs.note }}
+          PRIOR_NOTE: ${{ steps.prior.outputs.note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           CHUNKS: ${{ steps.split.outputs.chunks }}
           CHUNK_FILES: ${{ steps.split.outputs.files }}
@@ -1235,6 +1257,7 @@ jobs:
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
               env.SETTLED_NOTE,
+              env.PRIOR_NOTE,
               chunkNote,
               ...(copies > 0
                 ? [
@@ -1934,7 +1957,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
     needs: [check-key-credit, review-key]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 101 || 93 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 103 || 95 }}
     if: >-
       ((needs.review-key.result == 'success'
         && (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false'))
@@ -2676,6 +2699,23 @@ jobs:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
 
+      # This lane's own earlier findings (github-actions bot posts carrying
+      # its footer or reviewed-head marker), whether the lines under each
+      # changed since posted, and its rounds against loop.review-rounds from
+      # the default branch's pr-pipeline.yaml, by claude-code-plugins'
+      # prior-findings.mjs from the clone above. Any failure writes no file
+      # and the review runs as before.
+      - name: Write the lane's prior findings
+        id: prior
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/collect-prior-findings
+        with:
+          source: ${{ runner.temp }}/claude-code-plugins
+          output-file: .claude-lane/prior-findings.md
+          lane: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
       # the outcome step tell a step timeout from other failures.
@@ -2699,6 +2739,7 @@ jobs:
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
           SETTLED_NOTE: ${{ steps.settled.outputs.note }}
+          PRIOR_NOTE: ${{ steps.prior.outputs.note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           CHUNKS: ${{ steps.split.outputs.chunks }}
           CHUNK_FILES: ${{ steps.split.outputs.files }}
@@ -2812,6 +2853,7 @@ jobs:
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
               env.SETTLED_NOTE,
+              env.PRIOR_NOTE,
               chunkNote,
               ...(copies > 0
                 ? [
@@ -3517,7 +3559,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}
     needs: [check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 101 || 93 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 103 || 95 }}
     if: >-
       needs.review-subscription.result == 'success'
       && needs.review-subscription.outputs.handoff == 'true'
@@ -4258,6 +4300,23 @@ jobs:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
 
+      # This lane's own earlier findings (github-actions bot posts carrying
+      # its footer or reviewed-head marker), whether the lines under each
+      # changed since posted, and its rounds against loop.review-rounds from
+      # the default branch's pr-pipeline.yaml, by claude-code-plugins'
+      # prior-findings.mjs from the clone above. Any failure writes no file
+      # and the review runs as before.
+      - name: Write the lane's prior findings
+        id: prior
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/collect-prior-findings
+        with:
+          source: ${{ runner.temp }}/claude-code-plugins
+          output-file: .claude-lane/prior-findings.md
+          lane: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
       # the outcome step tell a step timeout from other failures.
@@ -4281,6 +4340,7 @@ jobs:
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
           SETTLED_NOTE: ${{ steps.settled.outputs.note }}
+          PRIOR_NOTE: ${{ steps.prior.outputs.note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           CHUNKS: ${{ steps.split.outputs.chunks }}
           CHUNK_FILES: ${{ steps.split.outputs.files }}
@@ -4394,6 +4454,7 @@ jobs:
               env.FULL_DIFF_NOTE,
               env.CONTEXT_NOTE,
               env.SETTLED_NOTE,
+              env.PRIOR_NOTE,
               chunkNote,
               ...(copies > 0
                 ? [
