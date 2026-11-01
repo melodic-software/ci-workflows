@@ -134,13 +134,24 @@ async function runOutcome({
       notice: (message) => notices.push(message),
       setFailed: (message) => failed.push(message),
     };
-    const execute = new AsyncFunction(
-      "core",
-      "require",
-      "process",
-      stepScript(),
-    );
-    await execute(core, require, process);
+    // Every name actions/github-script binds as a parameter (its
+    // src/main.ts), so a script that redeclares one throws here as on the
+    // runner.
+    const bindings = {
+      require,
+      __original_require__: require,
+      github: {},
+      octokit: {},
+      getOctokit: () => ({}),
+      context: {},
+      core,
+      exec: {},
+      glob: {},
+      io: {},
+      process,
+    };
+    const execute = new AsyncFunction(...Object.keys(bindings), stepScript());
+    await execute(...Object.values(bindings));
     return { outputs, errors, warnings, failed, infos, notices };
   } finally {
     for (const key of keys) {
