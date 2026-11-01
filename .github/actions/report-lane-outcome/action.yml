@@ -253,7 +253,7 @@ runs:
           const credential = process.env.CREDENTIAL ?? "";
           // The run id, attempt, trace and span ids, and the job's GitHub
           // API calls so far, from the runner's context; record only.
-          const context = runContext({
+          const laneContext = runContext({
             runId: process.env.RUN_ID ?? "",
             runAttempt: process.env.RUN_ATTEMPT ?? "",
             job: process.env.JOB_ID ?? "",
@@ -274,7 +274,7 @@ runs:
               credential,
               fallbackReason,
               handoff: process.env.HANDOFF ?? "",
-              context,
+              context: laneContext,
             });
             // Only a caller that opted in with lane-id warns; one that
             // passes only a credential is not wired for the record yet.
