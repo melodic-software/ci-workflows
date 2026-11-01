@@ -29,7 +29,7 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
         pageInfo { hasNextPage }
         nodes {
           isResolved isOutdated path line startLine originalLine originalStartLine diffSide
-          resolvedBy { ... on User { databaseId } ... on Bot { databaseId } }
+          resolvedBy { databaseId }
           comments(first: 100) {
             nodes {
               databaseId createdAt body lastEditedAt commit { oid } originalCommit { oid }
