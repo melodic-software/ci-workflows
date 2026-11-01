@@ -100,9 +100,18 @@ test("every model job tells its launcher whether the fallback token is set, neve
       `\${{ steps.credential.outputs.fallback-ready }}`,
       job.name,
     );
+    // The reason of the chunk step that handed off: a later chunk runs
+    // only when the one before it handed nothing on.
+    const reason = (steps) =>
+      evaluate(job.outputs["handoff-reason"], { steps });
+    const off = (why) => ({
+      outputs: { handoff: "true", "handoff-reason": why },
+    });
+    const on = { outputs: { handoff: "false" } };
+    assert.equal(reason({ claude: off("limit-stop") }), "limit-stop", job.name);
     assert.equal(
-      job.outputs["handoff-reason"],
-      `\${{ steps.claude.outputs.handoff-reason }}`,
+      reason({ claude: on, "claude-2": on, "claude-3": off("auth") }),
+      "auth",
       job.name,
     );
   }
@@ -201,7 +210,7 @@ test("the fallback job repeats the subscription job's steps but for the credenti
         delete copy.env.PRESENT;
         delete copy.env.SECRET_NAME;
       }
-      if (copy.id === "claude") {
+      if (/^claude(-[2-4])?$/u.test(copy.id)) {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
         delete copy.with[input];
       }
@@ -747,7 +756,7 @@ test("the subscription job repeats the key job's steps but for the credential an
         assert.equal(copy.env.SECRET_NAME, secret);
         delete copy.env.SECRET_NAME;
       }
-      if (copy.id === "claude") {
+      if (/^claude(-[2-4])?$/u.test(copy.id)) {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
         delete copy.with[input];
       }
@@ -1318,6 +1327,10 @@ test("the schema offers the hold criteria the extract step accepts, in both lane
 });
 
 async function compose(env) {
+  return fs.readFileSync((await composeOutputs(env))["prompt-file"], "utf8");
+}
+
+async function composeOutputs(env) {
   const dir = makeTemporaryDirectory("pr-review-cli-compose-");
   const outputs = {};
   const values = {
@@ -1360,7 +1373,7 @@ async function compose(env) {
       else process.env[k] = v;
     }
   }
-  return fs.readFileSync(outputs["prompt-file"], "utf8");
+  return outputs;
 }
 
 // Owner decisions Q52 and Q53 (2026-10-24): only a real security issue or a
@@ -1818,6 +1831,353 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
   );
   assert.notEqual(result.status, 0);
   assert.doesNotMatch(fs.readFileSync(output, "utf8"), /written=true/u);
+});
+
+// A diff in scope over one review's read budget is reviewed in chunks of
+// whole files, one model step each, and only every chunk's verdict together
+// is a complete review.
+
+// Runs the split step in a fresh checkout with a stand-in for split-diff.py
+// that writes the chunks the real one would for the fixture: two files, then
+// one.
+function split(env = {}, prepare = () => {}) {
+  const dir = makeTemporaryDirectory("pr-review-cli-split-");
+  const source = path.join(dir, "source");
+  const script = path.join(source, ".github/scripts/pr-review-main");
+  fs.mkdirSync(script, { recursive: true });
+  fs.writeFileSync(
+    path.join(script, "split-diff.py"),
+    [
+      "import sys",
+      "from pathlib import Path",
+      "patch, out = sys.argv[1], Path(sys.argv[2])",
+      "if Path(sys.argv[1]).read_text().startswith('TOO LARGE'): sys.exit(3)",
+      "(out / 'chunk-1.patch').write_text('diff --git a/a b/a\\n+1\\ndiff --git a/b b/b\\n+2\\n')",
+      "(out / 'chunk-2.patch').write_text('diff --git a/c b/c\\n+3\\n')",
+      "Path(sys.argv[5]).write_text('chunk 1 modified a\\n')",
+      "",
+    ].join("\n"),
+  );
+  const work = path.join(dir, "work");
+  fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
+  fs.writeFileSync(
+    path.join(work, ".claude-lane/pr.diff"),
+    "diff --git a/a b/a\n",
+  );
+  prepare(work);
+  const output = path.join(dir, "out");
+  fs.writeFileSync(output, "");
+  const s = step(key, "split");
+  const result = require("node:child_process").spawnSync(
+    "bash",
+    ["-e", "-c", s.run],
+    {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        SOURCE: source,
+        SCOPE_DIFF: ".claude-lane/pr.diff",
+        SCOPE_BYTES: "700000",
+        CHUNK_DIR: s.env.CHUNK_DIR,
+        READ_BUDGET: s.env.READ_BUDGET,
+        MAX_CHUNKS: s.env.MAX_CHUNKS,
+        GITHUB_OUTPUT: output,
+        ...env,
+      },
+    },
+  );
+  return { status: result.status, out: fs.readFileSync(output, "utf8"), work };
+}
+
+test("the split step cuts only a diff over the read budget, counting each chunk's files", () => {
+  const s = step(key, "split");
+  assert.equal(s.env.READ_BUDGET, "300000");
+  assert.match(
+    s.run,
+    /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
+  );
+  const cut = split();
+  assert.equal(cut.status, 0);
+  assert.match(cut.out, /^chunks=2$/mu);
+  assert.match(cut.out, /^files=2,1$/mu);
+  // A diff within the budget, or a size the job could not read, is one review.
+  for (const bytes of ["300000", "", "x"]) {
+    const one = split({ SCOPE_BYTES: bytes });
+    assert.equal(one.out, "chunks=1\n", JSON.stringify(bytes));
+    assert.equal(
+      fs.existsSync(path.join(one.work, ".claude-lane/chunks")),
+      false,
+    );
+  }
+  // A refused split, or a diff path the head made a symlink, is one review,
+  // which the extract step then calls partial for its size.
+  assert.equal(
+    split({}, (work) =>
+      fs.writeFileSync(path.join(work, ".claude-lane/pr.diff"), "TOO LARGE"),
+    ).out,
+    "chunks=1\n",
+  );
+  const linked = split({}, (work) => {
+    fs.rmSync(path.join(work, ".claude-lane/pr.diff"));
+    fs.symlinkSync("/dev/null", path.join(work, ".claude-lane/pr.diff"));
+  });
+  assert.equal(linked.out, "chunks=1\n");
+  // A chunk directory the head planted: one review, with a warning.
+  const planted = split({}, (work) =>
+    fs.mkdirSync(path.join(work, ".claude-lane/chunks")),
+  );
+  assert.equal(planted.status, 0);
+  assert.equal(planted.out, "chunks=1\n");
+});
+
+test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {
+  const outputs = await composeOutputs({ CHUNKS: "3", CHUNK_FILES: "2,1,4" });
+  assert.equal(outputs.chunks, "3");
+  assert.equal(outputs["chunk-files"], "2,1,4");
+  const prompts = [
+    outputs["prompt-file"],
+    outputs["prompt-file-2"],
+    outputs["prompt-file-3"],
+  ].map((file) => fs.readFileSync(file, "utf8"));
+  for (const [i, prompt] of prompts.entries()) {
+    assert.match(prompt, new RegExp(`CHUNK ${i + 1} OF 3:`, "u"));
+    assert.match(
+      prompt,
+      new RegExp(`\\.claude-lane/chunks/chunk-${i + 1}\\.patch`, "u"),
+    );
+    assert.match(
+      prompt,
+      /at most 8 comments and a summary of at most 6666 characters/u,
+    );
+  }
+  assert.match(prompts[2], /\(4 changed files\)/u);
+  assert.equal(outputs["prompt-file-4"], undefined);
+  const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
+  assert.equal(schema.properties.summary.maxLength, 6666);
+  assert.equal(schema.properties.comments.maxItems, 8);
+  // Without a well-formed count, one review with the whole caps.
+  for (const env of [
+    {},
+    { CHUNKS: "5", CHUNK_FILES: "1,1,1,1,1" },
+    { CHUNKS: "2", CHUNK_FILES: "1" },
+    { CHUNKS: "2", CHUNK_FILES: "1,0" },
+  ]) {
+    const one = await composeOutputs(env);
+    assert.equal(one.chunks, "1", JSON.stringify(env));
+    assert.equal(one["prompt-file-2"], undefined);
+    assert.doesNotMatch(
+      fs.readFileSync(one["prompt-file"], "utf8"),
+      /CHUNK 1 OF/u,
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(one["schema-file"], "utf8")).properties.summary
+        .maxLength,
+      20000,
+    );
+  }
+});
+
+test("every model leg runs chunk k only after chunk k-1 succeeded and handed nothing on", () => {
+  for (const job of [key, subscription, fallback]) {
+    for (const k of [2, 3, 4]) {
+      const model = step(job, `claude-${k}`);
+      assert.equal(
+        model.with["prompt-file"],
+        `\${{ steps.compose.outputs.prompt-file-${k} }}`,
+        job.name,
+      );
+      assert.equal(step(job, `time-${k}`).if, model.if, job.name);
+      const prev = k === 2 ? "claude" : `claude-${k - 1}`;
+      const runs = (chunks, outcome, handoff = "false") =>
+        Boolean(
+          evaluate(model.if, {
+            steps: {
+              credential: { outputs: { present: "true" } },
+              compose: { outputs: { chunks } },
+              [prev]: { outcome, outputs: { handoff } },
+            },
+          }),
+        );
+      assert.equal(runs(String(k), "success"), true, `${job.name} chunk ${k}`);
+      assert.equal(runs("4", "success"), true);
+      assert.equal(runs(String(k - 1), "success"), false);
+      assert.equal(runs("", "success"), false);
+      assert.equal(runs(String(k), "failure"), false);
+      assert.equal(runs(String(k), "skipped"), false);
+      assert.equal(runs(String(k), "success", "true"), false);
+    }
+    // No extract, so no verdict, while any chunk handed off.
+    const extracts = (handoffs) =>
+      Boolean(
+        evaluate(step(job, "extract").if, {
+          steps: {
+            compose: { outcome: "success" },
+            credential: { outputs: { present: "true" } },
+            ...Object.fromEntries(
+              handoffs.map((h, i) => [
+                i === 0 ? "claude" : `claude-${i + 1}`,
+                { outputs: { handoff: h } },
+              ]),
+            ),
+          },
+        }),
+      );
+    assert.equal(extracts(["false", "false", "false", "false"]), true);
+    assert.equal(extracts(["false", "false", "true", ""]), false);
+    // The leg's outcome is the last chunk that ran.
+    const report = step(job, "review-outcome").with;
+    const ran = {
+      claude: { outcome: "success", outputs: { "log-file": "l1" } },
+      "claude-2": {
+        outcome: "failure",
+        outputs: { "log-file": "l2", "lane-class": "timeout" },
+      },
+      "claude-3": { outcome: "skipped", outputs: {} },
+      "claude-4": { outcome: "skipped", outputs: {} },
+      "time-2": { outputs: { "started-at": "200" } },
+      compose: { outputs: { "started-at": "100" } },
+    };
+    assert.equal(evaluate(report.outcome, { steps: ran }), "failure");
+    assert.equal(evaluate(report["log-file"], { steps: ran }), "l2");
+    assert.equal(evaluate(report["step-started-at"], { steps: ran }), "200");
+    assert.equal(
+      evaluate(job.outputs["failure-class"], { steps: ran }),
+      "timeout",
+    );
+  }
+});
+
+// The extract step with one review file per chunk, each chunk's diff file
+// written as the split step would.
+async function extractChunks(reviews, env = {}, sizes = reviews.map(() => 10)) {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-");
+  fs.mkdirSync(path.join(dir, "chunks"));
+  sizes.forEach((size, i) => {
+    if (size !== null)
+      fs.writeFileSync(
+        path.join(dir, "chunks", `chunk-${i + 1}.patch`),
+        "+".repeat(size),
+      );
+  });
+  const files = {};
+  const chunkEnv = {};
+  reviews.forEach((review, i) => {
+    const suffix = i === 0 ? "" : `_${i + 1}`;
+    if (review !== null) files[`structured${suffix}`] = JSON.stringify(review);
+    files[`log${suffix}`] = `${LOG}\n`;
+  });
+  const outcomes = ["", "", "", ""].map((_, i) =>
+    i < reviews.length ? "success" : "skipped",
+  );
+  const values = {
+    CHUNKS: String(reviews.length),
+    CHUNK_FILES: reviews.map(() => "2").join(","),
+    CHUNK_DIR: path.join(dir, "chunks"),
+    CHUNK_OUTCOMES: outcomes.join(","),
+    WHOLE_FILES: String(2 * reviews.length),
+    SCOPE_BYTES: "700000",
+    ...env,
+  };
+  const dirFiles = makeTemporaryDirectory("pr-review-cli-chunk-files-");
+  for (const [name, content] of Object.entries(files)) {
+    if (!name.includes("_")) continue;
+    const file = path.join(dirFiles, name);
+    fs.writeFileSync(file, content);
+    const [kind, k] = name.split("_");
+    chunkEnv[`${kind === "structured" ? "STRUCTURED_FILE" : "LOG_FILE"}_${k}`] =
+      file;
+  }
+  return extract(
+    { structured: files.structured, log: files.log },
+    { ...chunkEnv, ...values },
+  );
+}
+
+test("a chunked review sums every chunk's findings, comments and files read, and is never over budget", async () => {
+  const chunk = (n, extra = {}) => ({
+    findings: n,
+    files_read: 2,
+    summary: `S${n}`,
+    comments: Array.from({ length: n }, () => COMMENT),
+    ...extra,
+  });
+  const outputs = await extractChunks([
+    chunk(1),
+    chunk(0, { hold: { criteria: ["cost"], reason: "Bills." } }),
+    chunk(2, { files_read: 9 }),
+  ]);
+  assert.equal(outputs.verdict, "complete");
+  const review = JSON.parse(outputs.review);
+  assert.equal(review.findings, 3);
+  assert.equal(review.comments.length, 3);
+  // A chunk's overclaim is capped at the files the job counted in it.
+  assert.deepEqual(review.coverage, { read: 6, changed: 6 });
+  assert.match(
+    review.summary,
+    /^#### Chunk 1 of 3 \(2 files\)\n\nS1\n\n#### Chunk 2 of 3/u,
+  );
+  assert.deepEqual(review.hold, {
+    criteria: ["cost"],
+    reason: "Chunk 2: Bills.",
+  });
+  assert.equal(outputs.turns, "36");
+  assert.equal(outputs.cost, "1.5");
+  // Fewer files read than changed is partial coverage, which publish fails.
+  const short = await extractChunks([chunk(0), chunk(0, { files_read: 1 })]);
+  assert.deepEqual(JSON.parse(short.review).coverage, { read: 3, changed: 4 });
+  // A chunk with more than its share of comments is incomplete.
+  const many = await extractChunks([chunk(13), chunk(0)]);
+  assert.match(
+    many.verdict,
+    /^chunk 1 of 2: the review returned no comment list$/u,
+  );
+});
+
+test("a chunk that failed, did not run or returned no verdict keeps the review incomplete", async () => {
+  const good = { findings: 0, files_read: 2, summary: "S", comments: [] };
+  for (const [reviews, env, sizes, reason] of [
+    [
+      [good, good],
+      { CHUNK_OUTCOMES: "success,failure,skipped,skipped" },
+      undefined,
+      /^chunk 2 of 2: the review step did not succeed$/u,
+    ],
+    [
+      [good, good, good],
+      { CHUNK_OUTCOMES: "success,success,skipped,skipped" },
+      undefined,
+      /^chunk 3 of 3: the review step did not succeed$/u,
+    ],
+    [
+      [good, null],
+      {},
+      undefined,
+      /^chunk 2 of 2: the leg wrote no structured output$/u,
+    ],
+    [
+      [good, { ...good, files_read: undefined }],
+      {},
+      undefined,
+      /^chunk 2 of 2: the review returned no files_read count$/u,
+    ],
+    [[good, good], {}, [10, null], /^chunk 2 of 2: its diff file is missing/u],
+    [
+      [good, good],
+      {},
+      [10, 300001],
+      /^chunk 2 of 2: its diff file is missing, not a regular file, or over the read budget$/u,
+    ],
+  ]) {
+    const outputs = await extractChunks(reviews, env, sizes);
+    assert.match(outputs.verdict, reason);
+    assert.equal(outputs.review, undefined);
+  }
+  // A chunk count that does not match its file counts is one review of an
+  // over-budget diff: partial.
+  const one = await extractChunks([good, good], { CHUNK_FILES: "2" });
+  assert.equal(one.verdict, "complete");
+  assert.equal(JSON.parse(one.review).coverage.over_budget, 700000);
 });
 
 // --- every artifact the lane uploads is scanned for credentials first ---
