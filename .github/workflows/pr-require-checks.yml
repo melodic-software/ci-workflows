@@ -138,6 +138,9 @@ jobs:
             selector-contract:
               .github/**
               .node-version
+              package.json
+              package-lock.json
+              schemas/github/**
             go:
               .github/**
               fixtures/go/**
@@ -544,6 +547,8 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Test selector and generated workflow contracts
         run: node --test .github/scripts/*.test.cjs
       - name: Test change-detection matcher
