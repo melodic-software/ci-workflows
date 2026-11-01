@@ -1813,9 +1813,10 @@ test("every model leg wires the coverage counts and asks the model for files_rea
   }
 });
 
-// Byte-identical changed files: the full-diff step groups them by post-image
-// blob, the prompt names the groups, and the copies count as read.
-test("the full-diff step groups changed files by their post-image blob, in every leg", () => {
+// Identical changes: the full-diff step groups modified regular files whose
+// modes and blobs match on both sides, the prompt names the groups, and the
+// copies count as read.
+test("the full-diff step groups only identical modifications and never a hold-paths match, in every leg", () => {
   const { spawnSync } = require("node:child_process");
   const git = (cwd, ...args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -1833,19 +1834,35 @@ test("the full-diff step groups changed files by their post-image blob, in every
     git(origin, "init", "--quiet", "--initial-branch=main");
     git(origin, "config", "user.email", "t@example.com");
     git(origin, "config", "user.name", "t");
-    for (const p of ["a", "b", "c"])
-      write(origin, `${p}/lib.mjs`, `old ${p}\n`);
-    write(origin, "gone.mjs", "synced\n");
+    // a, b and c make one identical change; .github/CODEOWNERS and d (made
+    // executable) make it too but must not join. x and y converge on one
+    // post-image from different pre-images, as do control.yml and aaa.txt
+    // truncated to empty.
+    for (const p of ["a", "b", "c", "d"])
+      write(origin, `${p}/lib.mjs`, "old\n");
+    write(origin, ".github/CODEOWNERS", "old\n");
+    write(origin, "gone.mjs", "old\n");
+    write(origin, "x.js", "timeout = 10\n");
+    write(origin, "y.js", "timeout = 300\n");
+    write(origin, "aaa.txt", "harmless\n");
+    write(origin, "control.yml", "kill-switch: on\n");
     git(origin, "add", ".");
     git(origin, "commit", "--quiet", "-m", "base");
     const base = git(origin, "rev-parse", "HEAD");
-    for (const p of ["a", "b", "c"]) write(origin, `${p}/lib.mjs`, "synced\n");
+    for (const p of ["a", "b", "c", "d"])
+      write(origin, `${p}/lib.mjs`, "synced\n");
+    write(origin, ".github/CODEOWNERS", "synced\n");
     fs.rmSync(path.join(origin, "gone.mjs"));
-    write(origin, "unique.md", "one of a kind\n");
+    write(origin, "added.mjs", "synced\n");
+    write(origin, "x.js", "timeout = 20\n");
+    write(origin, "y.js", "timeout = 20\n");
+    write(origin, "aaa.txt", "");
+    write(origin, "control.yml", "");
     git(origin, "add", "-A");
+    git(origin, "update-index", "--chmod=+x", "d/lib.mjs");
     git(origin, "commit", "--quiet", "-m", "head");
     const head = git(origin, "rev-parse", "HEAD");
-    const run = (prepare = () => {}) => {
+    const run = (prepare = () => {}, holdPaths = "**/CODEOWNERS\n") => {
       const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
       git(dir, "clone", "--quiet", origin, work);
       prepare(work);
@@ -1863,13 +1880,18 @@ test("the full-diff step groups changed files by their post-image blob, in every
           MERGE_BASE: base,
           HEAD_SHA: head,
           DIFF_FILE: fullDiff.env.DIFF_FILE,
+          HOLD_PATHS: holdPaths,
         },
       });
       assert.equal(result.status, 0, result.stderr);
       return { out: fs.readFileSync(output, "utf8"), work };
     };
-    // The deleted file shares the group's blob only at the base, and
-    // unique.md has no twin: neither joins the group.
+    assert.equal(
+      step(job, "full-diff").env.HOLD_PATHS,
+      `\${{ inputs.hold-paths }}`,
+    );
+    // Different pre-images (x and y, control.yml and aaa.txt), a mode
+    // change (d), an addition, a deletion and a hold-paths match never group.
     const grouped = run();
     assert.match(grouped.out, /^written=true$/mu, job.name);
     assert.match(grouped.out, /^copies=2$/mu, job.name);
@@ -1879,6 +1901,21 @@ test("the full-diff step groups changed files by their post-image blob, in every
         "utf8",
       ),
       "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\n",
+    );
+    // With no hold-paths the trusted file would lead the group; a match in
+    // any position leaves the group.
+    const identical = (holdPaths) =>
+      fs.readFileSync(
+        path.join(run(undefined, holdPaths).work, ".claude-lane/identical.txt"),
+        "utf8",
+      );
+    assert.equal(
+      identical(""),
+      ".github/CODEOWNERS\ta/lib.mjs\tb/lib.mjs\tc/lib.mjs\n",
+    );
+    assert.equal(
+      identical(" **/CODEOWNERS \nc/**\n"),
+      "a/lib.mjs\tb/lib.mjs\n",
     );
     // A file the head planted at the path groups nothing and is left as is.
     const planted = run((work) =>
