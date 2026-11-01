@@ -182,6 +182,12 @@ outputs:
       On class rate-limit, the ISO 8601 UTC time the limit resets, from the
       run's newest rejected rate_limit_event; empty when it carried none.
     value: ${{ steps.outcome.outputs.resets_at }}
+  record:
+    description: >-
+      The lane-outcome record this step wrote after the `lane-outcome `
+      marker, as the same one JSON object without the marker
+      (docs/lane-outcome.md); empty when no record was written.
+    value: ${{ steps.outcome.outputs.record }}
 
 runs:
   using: composite
@@ -284,6 +290,9 @@ runs:
                   `${missing.length === 1 ? "is" : "are"} empty or invalid.`,
               );
             }
+            // The same object, so a reader of the step's outputs gets the
+            // record without reading annotations.
+            if (record !== null) core.setOutput("record", JSON.stringify(record));
             const line = recordText(record);
             return {
               tokens: tokens === "" ? "" : ` ${tokens}`,
