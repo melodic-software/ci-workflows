@@ -1,0 +1,64 @@
+name: collect-prior-findings
+description: >-
+  pr-review-cli's prior-findings step, with no model: runs
+  claude-code-plugins' plugins/review/lib/prior-findings.mjs, which writes
+  the lane's own earlier findings on the pull request (posts by the
+  github-actions bot carrying the lane's footer or reviewed-head marker),
+  whether the lines under each changed since it was posted, and the lane's
+  round count against loop.review-rounds, into a file the model reads. The
+  cap comes from docs/conventions/pr-pipeline.yaml on the default branch,
+  never the head; an unread cap means no cap. Any failure of the script
+  leaves no file, and the review runs as before.
+
+inputs:
+  source:
+    description: The claude-code-plugins clone holding plugins/review/lib/prior-findings.mjs.
+    required: true
+  output-file:
+    description: Where the prior-findings file is written, inside the checkout.
+    required: true
+  lane:
+    description: The lane's footer name, claude-review or claude-security-review.
+    required: true
+
+outputs:
+  note:
+    description: The prompt line naming the file, or empty when none was written.
+    value: ${{ steps.prior.outputs.note }}
+
+runs:
+  using: composite
+  steps:
+    - name: Write the lane's prior findings
+      id: prior
+      shell: bash
+      env:
+        SOURCE: ${{ inputs.source }}
+        OUTPUT_PATH: ${{ inputs.output-file }}
+        LANE: ${{ inputs.lane }}
+        REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        # A file the head ships at this path never reaches the model.
+        rm -f -- "$OUTPUT_PATH"
+        # The round cap from the default branch, never the head. A failed or
+        # missing read leaves CAP_CONFIG unset: the script then counts no cap.
+        cap="$RUNNER_TEMP/prior-findings-pr-pipeline.yaml"
+        if [ -n "$DEFAULT_BRANCH" ] &&
+          gh api -X GET -H 'Accept: application/vnd.github.raw' \
+            "repos/$REPOSITORY/contents/docs/conventions/pr-pipeline.yaml" -f ref="$DEFAULT_BRANCH" >"$cap"; then
+          export CAP_CONFIG="$cap"
+        else
+          echo "No docs/conventions/pr-pipeline.yaml was read from the default branch; the lane counts no round cap."
+        fi
+        # The script writes the file, then the note, only on success; the rm
+        # covers a failure after the write.
+        if ! node "$SOURCE/plugins/review/lib/prior-findings.mjs"; then
+          rm -f -- "$OUTPUT_PATH"
+          echo "::warning::prior-findings.mjs failed; the lane reviews without prior findings."
+          exit 1
+        fi
