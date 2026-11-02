@@ -1089,6 +1089,7 @@ async function extract(files, env = {}) {
     WHOLE_FILES: "1",
     SCOPE_DIFF: diff,
     SCOPE_BYTES: "24",
+    MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     ...env,
   };
   const saved = Object.fromEntries(
@@ -1644,6 +1645,7 @@ test("the extract step records coverage from the job's counts and the model's fi
   assert.deepEqual(JSON.parse(partial.review).coverage, {
     read: 2,
     changed: 1186,
+    over_files: 1186,
   });
   // A count past the scope is capped at it.
   const over = await extract({ structured: review(9) }, { WHOLE_FILES: "3" });
@@ -1816,6 +1818,29 @@ test("every model leg wires the coverage counts and asks the model for files_rea
 // Identical changes: the full-diff step groups modified regular files whose
 // modes and blobs match on both sides, the prompt names the groups, and the
 // copies count as read.
+// One path per SENSITIVE_PATHS glob, nested where the glob allows.
+const SENSITIVE_ADDITIONS = [
+  ".github/workflows/zz-ci.yml",
+  "plugins/p/hooks/guard.mjs",
+  "tools/package.json",
+  "scripts/deep/setup.sh",
+];
+
+test("the workflow names one sensitive list and one file cap, which no step overrides", () => {
+  assert.deepEqual(workflow.env.SENSITIVE_PATHS.trim().split("\n"), [
+    ".github/**",
+    "**/hooks/**",
+    "**/package.json",
+    "**/*.sh",
+  ]);
+  assert.match(workflow.env.MAX_CHUNK_FILES, /^[1-9][0-9]*$/u);
+  for (const job of [key, subscription, fallback])
+    for (const s of job.steps) {
+      assert.equal(s.env?.SENSITIVE_PATHS, undefined, s.name);
+      assert.equal(s.env?.MAX_CHUNK_FILES, undefined, s.name);
+    }
+});
+
 test("the full-diff step groups identical modifications, and identical additions apart, never a hold-paths match, in every leg", () => {
   const { spawnSync } = require("node:child_process");
   const git = (cwd, ...args) => {
@@ -1858,6 +1883,10 @@ test("the full-diff step groups identical modifications, and identical additions
     write(origin, "added.mjs", "synced\n");
     write(origin, "added2.mjs", "synced\n");
     write(origin, "run.sh", "synced\n");
+    // The same addition at a sensitive path joins no group, whatever sorts
+    // first.
+    for (const sensitive of SENSITIVE_ADDITIONS)
+      write(origin, sensitive, "synced\n");
     write(origin, "x.js", "timeout = 20\n");
     write(origin, "y.js", "timeout = 20\n");
     write(origin, "aaa.txt", "");
@@ -1866,7 +1895,11 @@ test("the full-diff step groups identical modifications, and identical additions
     git(origin, "update-index", "--chmod=+x", "d/lib.mjs", "run.sh");
     git(origin, "commit", "--quiet", "-m", "head");
     const head = git(origin, "rev-parse", "HEAD");
-    const run = (prepare = () => {}, holdPaths = "**/CODEOWNERS\n") => {
+    const run = (
+      prepare = () => {},
+      holdPaths = "**/CODEOWNERS\n",
+      sensitivePaths = workflow.env.SENSITIVE_PATHS,
+    ) => {
       const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
       git(dir, "clone", "--quiet", origin, work);
       prepare(work);
@@ -1885,6 +1918,7 @@ test("the full-diff step groups identical modifications, and identical additions
           HEAD_SHA: head,
           DIFF_FILE: fullDiff.env.DIFF_FILE,
           HOLD_PATHS: holdPaths,
+          SENSITIVE_PATHS: sensitivePaths,
         },
       });
       assert.equal(result.status, 0, result.stderr);
@@ -1894,6 +1928,8 @@ test("the full-diff step groups identical modifications, and identical additions
       step(job, "full-diff").env.HOLD_PATHS,
       `\${{ inputs.hold-paths }}`,
     );
+    // The sensitive list is the workflow's one, which no step overrides.
+    assert.equal(step(job, "full-diff").env.SENSITIVE_PATHS, undefined);
     // Different pre-images (x and y, control.yml and aaa.txt), a mode
     // change (d), a deletion and a hold-paths match never group.
     const grouped = run();
@@ -1920,6 +1956,17 @@ test("the full-diff step groups identical modifications, and identical additions
     assert.equal(
       identical(" **/CODEOWNERS \nc/**\nadded2.mjs\n"),
       "a/lib.mjs\tb/lib.mjs\n",
+    );
+    // With no sensitive list, no addition groups.
+    assert.equal(
+      fs.readFileSync(
+        path.join(
+          run(undefined, undefined, "").work,
+          ".claude-lane/identical.txt",
+        ),
+        "utf8",
+      ),
+      "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\n",
     );
     // A file the head planted at the path groups nothing and is left as is.
     const planted = run((work) =>
@@ -2106,7 +2153,9 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
 
 // Runs the split step in a fresh checkout with a stand-in for split-diff.py
 // that writes the chunks the real one would for the fixture: two files, then
-// one.
+// one. The legs' split steps are one step by construction (the subscription
+// and fallback jobs repeat the key job's steps, asserted above), so the key
+// job's stands for all three.
 function split(env = {}, prepare = () => {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-split-");
   const source = path.join(dir, "source");
@@ -2149,7 +2198,7 @@ function split(env = {}, prepare = () => {}) {
         CHUNK_DIR: s.env.CHUNK_DIR,
         READ_BUDGET: s.env.READ_BUDGET,
         MAX_CHUNKS: s.env.MAX_CHUNKS,
-        MAX_CHUNK_FILES: s.env.MAX_CHUNK_FILES,
+        MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
         SCOPE: "whole",
         COPIES: "0",
         GITHUB_OUTPUT: output,
@@ -2236,6 +2285,122 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.equal(planted.out, "chunks=1\n");
 });
 
+// A split-diff.py that ignores the file cap (an older claude-code-plugins
+// tip) must not leave a chunk too large to read whole.
+test("a chunk over the file cap reviews unsplit, and two sections of one file count once", () => {
+  const standIn = (chunk1) => (work) =>
+    fs.writeFileSync(
+      path.join(
+        work,
+        "..",
+        "source/.github/scripts/pr-review-main/split-diff.py",
+      ),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "out = Path(sys.argv[2])",
+        `(out / 'chunk-1.patch').write_text(${JSON.stringify(chunk1)})`,
+        "(out / 'chunk-2.patch').write_text('diff --git a/c b/c\\n+3\\n')",
+        "",
+      ].join("\n"),
+    );
+  const headers = (n) =>
+    Array.from(
+      { length: n },
+      (_, i) => `diff --git a/f${i} b/f${i}\n+${i}\n`,
+    ).join("");
+  const cap = Number(workflow.env.MAX_CHUNK_FILES);
+  assert.equal(split({}, standIn(headers(cap + 1))).out, "chunks=1\n");
+  assert.match(
+    split({}, standIn(headers(cap))).out,
+    new RegExp(`^files=${cap},1$`, "mu"),
+  );
+  // A type change is two sections of one file: one file, as git counts it.
+  assert.match(
+    split({}, standIn("diff --git a/l b/l\n-x\ndiff --git a/l b/l\n+y\n")).out,
+    /^files=1,1$/mu,
+  );
+});
+
+// A split refused for file count (split-diff.py's TooLarge, a planted chunk
+// directory, a chunk over the cap) leaves one review of more files than it
+// reads whole: partial, past the copies it skips.
+test("one review of more files that are not copies than the cap is partial", async () => {
+  const cap = Number(workflow.env.MAX_CHUNK_FILES);
+  const coverage = async (files_read, env) =>
+    JSON.parse(
+      (
+        await extract(
+          {
+            structured: JSON.stringify({
+              findings: 0,
+              files_read,
+              summary: "S",
+              comments: [],
+            }),
+          },
+          env,
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage(170, { WHOLE_FILES: "170" }), {
+    read: 170,
+    changed: 170,
+    over_files: 170,
+  });
+  assert.deepEqual(await coverage(cap, { WHOLE_FILES: String(cap) }), {
+    read: cap,
+    changed: cap,
+  });
+  // The copies one whole review skips do not count against the cap.
+  assert.deepEqual(
+    await coverage(35, { WHOLE_FILES: String(cap + 5), COPIES: "10" }),
+    { read: cap + 5, changed: cap + 5 },
+  );
+  assert.deepEqual(
+    await coverage(41, { WHOLE_FILES: String(cap + 5), COPIES: "4" }),
+    { read: cap + 5, changed: cap + 5, over_files: cap + 1 },
+  );
+  // An incremental review counts its own scope, with no copies.
+  assert.deepEqual(
+    await coverage(cap + 1, {
+      SCOPE: "incremental",
+      FULL_DIFF: "",
+      SCOPE_FILES: String(cap + 1),
+      COPIES: "10",
+    }),
+    { read: cap + 1, changed: cap + 1, over_files: cap + 1 },
+  );
+  // A chunked review is never over the cap here: the split step checked it.
+  const good = { findings: 0, files_read: 2, summary: "S", comments: [] };
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await extractChunks([good, good], {
+          CHUNK_FILES: `${cap},${cap}`,
+          WHOLE_FILES: String(2 * cap),
+        })
+      ).review,
+    ).coverage,
+    { read: 4, changed: 2 * cap },
+  );
+  // A cap the job cannot read checks nothing: incomplete.
+  for (const bad of ["", "0", "40x"]) {
+    const outputs = await extract(
+      {
+        structured: JSON.stringify({
+          findings: 0,
+          files_read: 1,
+          summary: "S",
+          comments: [],
+        }),
+      },
+      { MAX_CHUNK_FILES: bad },
+    );
+    assert.match(outputs.verdict, /files one review reads whole/u, bad);
+  }
+});
+
 // claude-code-plugins#12052's shape: over 150 small added files, some of them
 // byte-identical across eval cases. The full-diff step groups the added
 // copies, the split step leaves them out and cuts the rest at
@@ -2297,7 +2462,13 @@ test("a diff of many small added files, some identical, is chunked without its c
     const result = spawnSync("bash", ["-e", "-c", step(key, id).run], {
       cwd: work,
       encoding: "utf8",
-      env: { PATH: process.env.PATH, HOME: dir, GITHUB_OUTPUT: output, ...env },
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        GITHUB_OUTPUT: output,
+        ...workflow.env,
+        ...env,
+      },
     });
     assert.equal(result.status, 0, result.stderr);
     return Object.fromEntries(
@@ -2353,7 +2524,7 @@ test("a diff of many small added files, some identical, is chunked without its c
     CHUNK_DIR: s.env.CHUNK_DIR,
     READ_BUDGET: s.env.READ_BUDGET,
     MAX_CHUNKS: s.env.MAX_CHUNKS,
-    MAX_CHUNK_FILES: s.env.MAX_CHUNK_FILES,
+    MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     SCOPE: "whole",
     COPIES: fullDiff.copies,
   });
@@ -2424,6 +2595,157 @@ test("a diff of many small added files, some identical, is chunked without its c
     read: 200,
     changed: 201,
   });
+});
+
+// The post-merge review of ci-workflows#958: a fixture that sorts first and
+// an identical workflow added beside it, in a diff over the file cap. The
+// workflow must be reviewed at its own path, never credited as a copy of the
+// fixture. A type change rides along: two sections of one file.
+test("an added workflow identical to a fixture is reviewed in a chunk, not credited as a copy, in every leg", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-sensitive-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    const add = (file, text) => {
+      fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+      fs.writeFileSync(path.join(origin, file), text);
+    };
+    add("README.md", "base\n");
+    add("link", "a regular file\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    const workflowText = "on: push\njobs: {}\n";
+    add("-fixtures/ci.yml", workflowText);
+    add(".github/workflows/zz-ci.yml", workflowText);
+    add("docs/a.md", "same\n");
+    add("docs/b.md", "same\n");
+    for (let i = 0; i <= 40; i++)
+      add(`f${String(i).padStart(2, "0")}.js`, `export const n = ${i};\n`);
+    fs.rmSync(path.join(origin, "link"));
+    fs.symlinkSync("README.md", path.join(origin, "link"));
+    git(origin, "add", "-A");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const run = (id, env) => {
+      const output = path.join(dir, `${id}.out`);
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          ...env,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+      );
+    };
+    const fullDiff = run("full-diff", {
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      MERGE_BASE: base,
+      HEAD_SHA: head,
+      DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      HOLD_PATHS: "",
+    });
+    assert.equal(fullDiff.files, "46", job.name);
+    // Only docs/b.md is a copy.
+    assert.equal(fullDiff.copies, "1", job.name);
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8"),
+      "docs/a.md\tdocs/b.md\n",
+    );
+    // The many-files test's stand-in for split-diff.py, which honors the cap.
+    const source = path.join(dir, "source");
+    const script = path.join(source, ".github/scripts/pr-review-main");
+    fs.mkdirSync(script, { recursive: true });
+    fs.writeFileSync(
+      path.join(script, "split-diff.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
+        "max_files = int(sys.argv[7])",
+        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+        "chunks = []",
+        "for u in units:",
+        "    if not chunks or len(''.join(chunks[-1])) + len(u) > max_bytes or len(chunks[-1]) >= max_files:",
+        "        chunks.append([])",
+        "    chunks[-1].append(u)",
+        "if len(chunks) > max_chunks: sys.exit(3)",
+        "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
+        "",
+      ].join("\n"),
+    );
+    const s = step(job, "split");
+    const cut = run("split", {
+      SOURCE: source,
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: fullDiff.bytes,
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: s.env.READ_BUDGET,
+      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      SCOPE: "whole",
+      COPIES: fullDiff.copies,
+    });
+    // 45 files that are not copies, the type change counted once.
+    assert.equal(cut.chunks, "2", job.name);
+    assert.equal(cut.files, "40,5", job.name);
+    assert.equal(cut.excluded, "1", job.name);
+    const chunked = [1, 2].flatMap((k) =>
+      [
+        ...fs
+          .readFileSync(
+            path.join(work, s.env.CHUNK_DIR, `chunk-${k}.patch`),
+            "utf8",
+          )
+          .matchAll(/^diff --git a\/(\S+) b\//gmu),
+      ].map((m) => m[1]),
+    );
+    assert.ok(chunked.includes(".github/workflows/zz-ci.yml"), job.name);
+    assert.ok(chunked.includes("-fixtures/ci.yml"), job.name);
+    assert.ok(!chunked.includes("docs/b.md"), job.name);
+    // Each chunk read whole, the copy counted: complete.
+    const reviews = cut.files.split(",").map((n) => ({
+      findings: 0,
+      files_read: Number(n),
+      summary: "S",
+      comments: [],
+    }));
+    const outputs = await extractChunks(reviews, {
+      CHUNK_FILES: cut.files,
+      CHUNK_DIR: path.join(work, s.env.CHUNK_DIR),
+      WHOLE_FILES: fullDiff.files,
+      SCOPE_BYTES: fullDiff.bytes,
+      COPIES: fullDiff.copies,
+      EXCLUDED: cut.excluded,
+    });
+    assert.deepEqual(JSON.parse(outputs.review).coverage, {
+      read: 46,
+      changed: 46,
+    });
+  }
 });
 
 test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {

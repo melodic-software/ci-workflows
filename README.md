@@ -1417,7 +1417,8 @@ shows no successful Read of the diff file and no successful `gh pr diff` warns.
 **Coverage.** In `pr-review-cli.yml` the model also returns `files_read`, how
 many of the changed files in scope it read whole; the job counts the files in
 scope and the diff's bytes itself. A review that read fewer files than it
-changed, or whose diff is over one review's 300000-byte read budget, is
+changed, whose diff is over one review's 300000-byte read budget, or that was
+one review of more than 40 files that are not identical copies, is
 `partial`: red, no completion notice, and its comment's first visible line
 states `read <n> of <m> changed file(s)` before the findings count, with the
 hidden marker at `sha=none` so the next push reviews the whole pull request
@@ -1427,8 +1428,10 @@ is `incomplete`.
 **Identical copies.** On a whole review, changed files whose whole change is
 identical (modifications with the same content and mode before and after, or
 additions of the same content and mode) are grouped in
-`.claude-lane/identical.txt`; a hold-paths match never groups. The review
-reads each group's first path, and the job counts the copies as read.
+`.claude-lane/identical.txt`; a hold-paths match never groups, nor an addition
+under `.github/`, under a `hooks/` directory, or named `package.json` or
+`*.sh`, which is reviewed at its own path. The review reads each group's first
+path, and the job counts the copies as read.
 
 **Chunks.** A diff in scope over the read budget, or with more than 40 files,
 is split at file boundaries, each file whole, into at most 4 chunks of at most
@@ -1436,14 +1439,16 @@ is split at file boundaries, each file whole, into at most 4 chunks of at most
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
 default-branch tip, and each chunk gets its own model step in the leg, in
 order. On a whole review the identical copies are left out first: when the
-rest fits one review it is one review, and otherwise only the rest is split,
-with the copies counted as read. The review's findings, comments and files read are the
+whole diff fits the read budget and the rest fits 40 files it is one review;
+when the rest alone is over either cap only the rest is split, with the
+copies counted as read; otherwise the whole diff is split, copies included.
+The review's findings, comments and files read are the
 chunks' sums, each chunk's files read capped at the files the job counted in
 it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
 sends the next leg to review every chunk again. A diff the split refuses (a
-file over the budget, or more than 4 chunks, so more than 160 files that are
-not copies) is reviewed whole and stays `partial`.
+file over the budget, more than 4 chunks, so more than 160 files that are not
+copies, or a chunk over 40 files) is reviewed whole and stays `partial`.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
