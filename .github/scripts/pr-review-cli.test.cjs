@@ -1788,7 +1788,7 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     );
     assert.match(
       step(job, "scope").with.script,
-      /core\.setOutput\("files", String\(scope\.length\)\);/u,
+      /core\.setOutput\("files", String\(scope\.filter\(\(file\) => !removed\(file\)\)\.length\)\);/u,
     );
     const compose = step(job, "compose").with.script;
     assert.match(
@@ -2772,6 +2772,308 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
   }
 });
 
+// claude-code-plugins#12253: a review that read every file the pull request
+// adds, changes or renames was partial because the 13 files it deletes whole
+// were counted as changed files to read. A deletion stays in the diff for
+// context but counts in no file total: not the full-diff step's, not the
+// split step's per chunk, so the chunk sum still matches it. A type change
+// (a deleted and a new section of one path) still counts once.
+test("a whole-file deletion counts in no file total, so a review of the rest is complete, in every leg", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-deleted-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    for (const name of ["gone1.js", "gone2.js", "gone3.js"])
+      fs.writeFileSync(path.join(origin, name), `${name}\n`);
+    fs.writeFileSync(path.join(origin, "keep.js"), "base\n");
+    fs.writeFileSync(path.join(origin, "link"), "a regular file\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const name of ["gone1.js", "gone2.js", "gone3.js"])
+      fs.rmSync(path.join(origin, name));
+    fs.writeFileSync(path.join(origin, "keep.js"), "head\n");
+    fs.writeFileSync(path.join(origin, "new.js"), "new\n");
+    fs.rmSync(path.join(origin, "link"));
+    fs.symlinkSync("keep.js", path.join(origin, "link"));
+    git(origin, "add", "-A");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const run = (id, env) => {
+      const output = path.join(dir, `${id}.out`);
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          ...env,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+      );
+    };
+    const fullDiff = run("full-diff", {
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      MERGE_BASE: base,
+      HEAD_SHA: head,
+      DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      HOLD_PATHS: "",
+    });
+    // keep.js, new.js and link; the deletions stay in the diff.
+    assert.equal(fullDiff.files, "3", job.name);
+    assert.match(
+      fs.readFileSync(path.join(work, ".claude-lane/pr.diff"), "utf8"),
+      /^-gone2\.js$/mu,
+    );
+    // One review: a model that also counted the deletions it read is capped.
+    const review = (n) => ({
+      findings: 0,
+      files_read: n,
+      summary: "S",
+      comments: [],
+    });
+    const whole = await extract(
+      { structured: JSON.stringify(review(6)) },
+      { WHOLE_FILES: fullDiff.files },
+    );
+    assert.deepEqual(JSON.parse(whole.review).coverage, {
+      read: 3,
+      changed: 3,
+    });
+    // Two sections a chunk: a chunk of deletions alone counts 0 files.
+    const source = path.join(dir, "source");
+    const script = path.join(source, ".github/scripts/pr-review-main");
+    fs.mkdirSync(script, { recursive: true });
+    fs.writeFileSync(
+      path.join(script, "split-diff.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
+        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+        "chunks = [units[i:i + 2] for i in range(0, len(units), 2)]",
+        "if len(chunks) > max_chunks: sys.exit(3)",
+        "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
+        "",
+      ].join("\n"),
+    );
+    const s = step(job, "split");
+    const cut = run("split", {
+      SOURCE: source,
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: "700000",
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: s.env.READ_BUDGET,
+      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      SCOPE: "whole",
+      COPIES: fullDiff.copies,
+    });
+    // gone1+gone2, gone3+keep.js, link's two sections, new.js.
+    assert.equal(cut.chunks, "4", job.name);
+    assert.equal(cut.files, "0,1,1,1", job.name);
+    const outputs = await composeOutputs({
+      CHUNKS: cut.chunks,
+      CHUNK_FILES: cut.files,
+    });
+    assert.equal(outputs.chunks, "4", job.name);
+    assert.equal(outputs["chunk-files"], cut.files, job.name);
+    const chunked = await extractChunks(
+      [review(2), review(2), review(1), review(1)],
+      {
+        CHUNK_FILES: cut.files,
+        CHUNK_DIR: path.join(work, s.env.CHUNK_DIR),
+        WHOLE_FILES: fullDiff.files,
+        SCOPE_BYTES: "700000",
+      },
+    );
+    assert.deepEqual(JSON.parse(chunked.review).coverage, {
+      read: 3,
+      changed: 3,
+    });
+  }
+});
+
+// An incremental review counts the files in scope the same way: a file the
+// push deleted whole stays in the incremental diff and its file list, but not
+// in files, and the split step's count of that diff agrees.
+test("an incremental review leaves a file the push deleted out of its file count, in every leg", async () => {
+  const LAST = "b".repeat(40);
+  const HEAD = "a".repeat(40);
+  const MB = "c".repeat(40);
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-incremental-deleted-");
+    const prFiles = [
+      { filename: "a.js", status: "modified" },
+      { filename: "gone.js", status: "removed" },
+    ];
+    const compares = {
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB } },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB } },
+      [`${LAST}...${HEAD}`]: {
+        status: "ahead",
+        files: [
+          {
+            filename: "a.js",
+            status: "modified",
+            patch: "@@ -1 +1 @@\n-x\n+y",
+            changes: 2,
+          },
+          {
+            filename: "gone.js",
+            status: "removed",
+            patch: "@@ -1 +0,0 @@\n-z",
+            changes: 1,
+          },
+        ],
+      },
+    };
+    const marker = {
+      id: 41,
+      user: { login: "github-actions[bot]" },
+      body: [
+        `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`,
+        `<!-- claude-lane-reviewed-base ref=main merge-base=${MB} -->`,
+        "**claude-review** reviewed it.",
+      ].join("\n"),
+    };
+    const github = {
+      hook: { after: () => {}, error: () => {} },
+      paginate: async (fn) => fn(),
+      rest: {
+        issues: { listComments: () => [marker] },
+        pulls: {
+          listFiles: () => prFiles,
+          get: async () => ({
+            data: { head: { sha: HEAD }, changed_files: 2 },
+          }),
+        },
+        repos: {
+          compareCommitsWithBasehead: async ({ basehead }) => {
+            assert.ok(basehead in compares, basehead);
+            return { data: compares[basehead] };
+          },
+        },
+      },
+    };
+    const outputs = {};
+    const diffFile = path.join(dir, "incremental.diff");
+    const values = {
+      LANE: "claude-review",
+      INCREMENTAL: "true",
+      DOCS_ONLY_PATHS: "",
+      EVENT_ACTION: "synchronize",
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      BASE_REF: "main",
+      DIFF_FILE: diffFile,
+      GIT_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      RUNNER_TEMP: dir,
+    };
+    const saved = Object.fromEntries(
+      Object.keys(values).map((k) => [k, process.env[k]]),
+    );
+    Object.assign(process.env, values);
+    try {
+      await new AsyncFunction(
+        "require",
+        "github",
+        "context",
+        "core",
+        step(job, "scope").with.script,
+      )(
+        require,
+        github,
+        { repo: { owner: "o", repo: "r" } },
+        {
+          setSecret: () => {},
+          setOutput: (k, v) => {
+            outputs[k] = v;
+          },
+          info: () => {},
+          warning: (message) => assert.fail(message),
+        },
+      );
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    assert.equal(outputs.scope, "incremental", job.name);
+    assert.equal(outputs.files, "1", job.name);
+    assert.match(outputs.note, /^- gone\.js$/mu, job.name);
+    assert.match(fs.readFileSync(diffFile, "utf8"), /^status: removed$/mu);
+    // The split step, one section a chunk, counts the same file.
+    const work = path.join(dir, "work");
+    fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
+    fs.copyFileSync(diffFile, path.join(work, ".claude-lane/incremental.diff"));
+    const script = path.join(dir, "source/.github/scripts/pr-review-main");
+    fs.mkdirSync(script, { recursive: true });
+    fs.writeFileSync(
+      path.join(script, "split-diff.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "patch, out = sys.argv[1], Path(sys.argv[2])",
+        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+        "for k, u in enumerate(units, 1): (out / f'chunk-{k}.patch').write_text(u)",
+        "",
+      ].join("\n"),
+    );
+    const output = path.join(dir, "split.out");
+    fs.writeFileSync(output, "");
+    const s = step(job, "split");
+    const result = require("node:child_process").spawnSync(
+      "bash",
+      ["-e", "-c", s.run],
+      {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          SOURCE: path.join(dir, "source"),
+          SCOPE_DIFF: ".claude-lane/incremental.diff",
+          SCOPE_BYTES: "700000",
+          CHUNK_DIR: s.env.CHUNK_DIR,
+          READ_BUDGET: s.env.READ_BUDGET,
+          MAX_CHUNKS: s.env.MAX_CHUNKS,
+          SCOPE: "incremental",
+          COPIES: "0",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const split = fs.readFileSync(output, "utf8");
+    assert.match(split, /^chunks=2$/mu, job.name);
+    assert.match(split, /^files=1,0$/mu, job.name);
+  }
+});
+
 test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {
   const outputs = await composeOutputs({ CHUNKS: "3", CHUNK_FILES: "2,1,4" });
   assert.equal(outputs.chunks, "3");
@@ -2802,7 +3104,7 @@ test("the compose step writes one prompt per chunk, each with its share of the c
     {},
     { CHUNKS: "5", CHUNK_FILES: "1,1,1,1,1" },
     { CHUNKS: "2", CHUNK_FILES: "1" },
-    { CHUNKS: "2", CHUNK_FILES: "1,0" },
+    { CHUNKS: "2", CHUNK_FILES: "1,01" },
   ]) {
     const one = await composeOutputs(env);
     assert.equal(one.chunks, "1", JSON.stringify(env));
