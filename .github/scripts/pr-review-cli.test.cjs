@@ -1331,7 +1331,7 @@ async function compose(env) {
   return fs.readFileSync((await composeOutputs(env))["prompt-file"], "utf8");
 }
 
-async function composeOutputs(env) {
+async function composeOutputs(env, job = key) {
   const dir = makeTemporaryDirectory("pr-review-cli-compose-");
   const outputs = {};
   const values = {
@@ -1359,7 +1359,7 @@ async function composeOutputs(env) {
     await new AsyncFunction(
       "require",
       "core",
-      step(key, "compose").with.script,
+      step(job, "compose").with.script,
     )(require, {
       setOutput: (k, v) => {
         outputs[k] = v;
@@ -3208,7 +3208,7 @@ test("the compose step writes one prompt per chunk, each with its share of the c
       /at most 8 comments and a summary of at most 6666 characters/u,
     );
   }
-  assert.match(prompts[2], /\(4 changed files\)/u);
+  assert.match(prompts[2], /\(4 changed files, /u);
   assert.equal(outputs["prompt-file-4"], undefined);
   const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
   assert.equal(schema.properties.summary.maxLength, 6666);
@@ -3232,6 +3232,36 @@ test("the compose step writes one prompt per chunk, each with its share of the c
         .maxLength,
       20000,
     );
+  }
+});
+
+// A chunk of 38 files beside two it deleted whole was reviewed as 36 of 38:
+// the model read the count as including the deletions, and the review failed
+// as partial. Each chunk prompt says the count leaves them out.
+test("each chunk prompt says its file count and files_read leave out whole-file deletions, in every leg", async () => {
+  for (const job of [key, subscription, fallback]) {
+    const outputs = await composeOutputs(
+      { CHUNKS: "2", CHUNK_FILES: "38,38" },
+      job,
+    );
+    for (const file of [outputs["prompt-file"], outputs["prompt-file-2"]]) {
+      const prompt = fs.readFileSync(file, "utf8");
+      assert.match(
+        prompt,
+        /\(38 changed files, not counting files it deletes whole\)/u,
+        job.name,
+      );
+      assert.match(
+        prompt,
+        /files_read counts the changed files of this chunk you read every hunk of\. That count above already leaves\nout files the chunk deletes whole, so a chunk read whole returns it\./u,
+        job.name,
+      );
+      assert.match(
+        prompt,
+        /A pure rename \(a header with no hunks\) is read once you\n {2}have seen its header\./u,
+        job.name,
+      );
+    }
   }
 });
 
