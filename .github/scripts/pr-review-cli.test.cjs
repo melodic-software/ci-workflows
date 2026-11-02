@@ -3029,10 +3029,122 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
   }
 });
 
+// claude-code-plugins#12533: a pull request whose bulk was whole-file
+// deletions (2.7 MB of fixtures) was partial, over the read budget, though the
+// review read every file it changes. The deleted sections stay in the diff
+// but not in its size, so the split step leaves it whole and the extract step
+// finds it within the budget; a changed file left unread still fails.
+test("a whole-file deletion counts in no diff size, so deletions alone put no review over the budget, in every leg", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-deleted-bytes-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    // 400000 bytes of binary fixture, more than one read budget (300000).
+    fs.writeFileSync(path.join(origin, "crop.png"), Buffer.alloc(400000, 0));
+    for (const name of ["case1.md", "case2.md"])
+      fs.writeFileSync(path.join(origin, name), `${name}\n`.repeat(5000));
+    fs.writeFileSync(path.join(origin, "keep.js"), "base\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const name of ["crop.png", "case1.md", "case2.md"])
+      fs.rmSync(path.join(origin, name));
+    fs.writeFileSync(path.join(origin, "keep.js"), "head\n");
+    git(origin, "add", "-A");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const run = (id, env) => {
+      const output = path.join(dir, `${id}.out`);
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          ...env,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+      );
+    };
+    const fullDiff = run("full-diff", {
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      MERGE_BASE: base,
+      HEAD_SHA: head,
+      DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      HOLD_PATHS: "",
+    });
+    const diff = path.join(work, ".claude-lane/pr.diff");
+    // The deletions stay in the diff, which is over the budget.
+    assert.ok(fs.statSync(diff).size > 400000, job.name);
+    assert.match(fs.readFileSync(diff, "utf8"), /^-case1\.md$/mu);
+    assert.equal(fullDiff.files, "1", job.name);
+    // keep.js's section alone: "diff --git a/keep.js b/keep.js\n" (31),
+    // "index <7>..<7> 100644\n" (30), "--- a/keep.js\n" and "+++ b/keep.js\n"
+    // (14 each), "@@ -1 +1 @@\n" (12), "-base\n" and "+head\n" (6 each).
+    assert.equal(fullDiff.bytes, "113", job.name);
+    const s = step(job, "split");
+    const cut = run("split", {
+      SOURCE: path.join(dir, "no-source"),
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: fullDiff.bytes,
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: s.env.READ_BUDGET,
+      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      SCOPE: "whole",
+      COPIES: fullDiff.copies,
+    });
+    assert.equal(cut.chunks, "1", job.name);
+    const review = (n) =>
+      JSON.stringify({
+        findings: 0,
+        files_read: n,
+        summary: "S",
+        comments: [],
+      });
+    const env = {
+      WHOLE_FILES: fullDiff.files,
+      SCOPE_DIFF: diff,
+      SCOPE_BYTES: fullDiff.bytes,
+    };
+    const read = await extract({ structured: review(1) }, env);
+    assert.deepEqual(JSON.parse(read.review).coverage, {
+      read: 1,
+      changed: 1,
+    });
+    const unread = await extract({ structured: review(0) }, env);
+    assert.deepEqual(JSON.parse(unread.review).coverage, {
+      read: 0,
+      changed: 1,
+    });
+  }
+});
+
 // An incremental review counts the files in scope the same way: a file the
 // push deleted whole stays in the incremental diff and its file list, but not
-// in files, and the split step's count of that diff agrees.
-test("an incremental review leaves a file the push deleted out of its file count, in every leg", async () => {
+// in files or bytes, and the split step's count of that diff agrees.
+test("an incremental review leaves a file the push deleted out of its file count and size, in every leg", async () => {
   const LAST = "b".repeat(40);
   const HEAD = "a".repeat(40);
   const MB = "c".repeat(40);
@@ -3140,6 +3252,9 @@ test("an incremental review leaves a file the push deleted out of its file count
     assert.equal(outputs.files, "1", job.name);
     assert.match(outputs.note, /^- gone\.js$/mu, job.name);
     assert.match(fs.readFileSync(diffFile, "utf8"), /^status: removed$/mu);
+    // Nor in its size: the a.js section alone, "diff --git a/a.js b/a.js\n"
+    // (25) + "status: modified\n" (17) + "@@ -1 +1 @@\n" (12) + "-x\n+y\n" (6).
+    assert.equal(outputs.bytes, "60", job.name);
     // The split step, one section a chunk, counts the same file.
     const work = path.join(dir, "work");
     fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
