@@ -705,8 +705,10 @@ jobs:
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
               // Measured here, not re-read from the path: the head could put a
-              // symlink at it.
-              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
+              // symlink at it. A file the push deletes whole stays in the diff
+              // but not in its size, as in the full-diff step's.
+              const kept = text.filter((_, i) => (patches.get(files[i].filename) ?? patches.get(files[i].previous_filename)).status !== "removed");
+              core.setOutput("bytes", String(Buffer.byteLength(kept.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -881,9 +883,13 @@ jobs:
           # turn a changed file into "Binary files differ" the model cannot read.
           # The byte count is the diff's own, measured in the pipe, so a symlink
           # the head commits at the path cannot shrink it.
-          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
+          all="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           # A file the pull request deletes whole stays in the diff but counts
-          # in no file total: there is nothing at the head to review.
+          # in no file total and not in its size: there is nothing at the head
+          # to review. Its sections, diffed with the same flags, are the bytes
+          # left out.
+          deleted="$(git diff --no-color --no-ext-diff --no-textconv --text --diff-filter=D "$base" "$HEAD_SHA" | wc -c | tr -d ' ')"
+          bytes=$((all - deleted))
           files="$(git diff --name-only --diff-filter=d "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
@@ -2406,8 +2412,10 @@ jobs:
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
               // Measured here, not re-read from the path: the head could put a
-              // symlink at it.
-              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
+              // symlink at it. A file the push deletes whole stays in the diff
+              // but not in its size, as in the full-diff step's.
+              const kept = text.filter((_, i) => (patches.get(files[i].filename) ?? patches.get(files[i].previous_filename)).status !== "removed");
+              core.setOutput("bytes", String(Buffer.byteLength(kept.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -2582,9 +2590,13 @@ jobs:
           # turn a changed file into "Binary files differ" the model cannot read.
           # The byte count is the diff's own, measured in the pipe, so a symlink
           # the head commits at the path cannot shrink it.
-          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
+          all="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           # A file the pull request deletes whole stays in the diff but counts
-          # in no file total: there is nothing at the head to review.
+          # in no file total and not in its size: there is nothing at the head
+          # to review. Its sections, diffed with the same flags, are the bytes
+          # left out.
+          deleted="$(git diff --no-color --no-ext-diff --no-textconv --text --diff-filter=D "$base" "$HEAD_SHA" | wc -c | tr -d ' ')"
+          bytes=$((all - deleted))
           files="$(git diff --name-only --diff-filter=d "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
@@ -4112,8 +4124,10 @@ jobs:
               fs.mkdirSync(path.dirname(env.DIFF_FILE), { recursive: true });
               fs.writeFileSync(env.DIFF_FILE, text.join("\n"));
               // Measured here, not re-read from the path: the head could put a
-              // symlink at it.
-              core.setOutput("bytes", String(Buffer.byteLength(text.join("\n"), "utf8")));
+              // symlink at it. A file the push deletes whole stays in the diff
+              // but not in its size, as in the full-diff step's.
+              const kept = text.filter((_, i) => (patches.get(files[i].filename) ?? patches.get(files[i].previous_filename)).status !== "removed");
+              core.setOutput("bytes", String(Buffer.byteLength(kept.join("\n"), "utf8")));
             };
 
             // The newest marker comment this lane's job token wrote: the head it
@@ -4288,9 +4302,13 @@ jobs:
           # turn a changed file into "Binary files differ" the model cannot read.
           # The byte count is the diff's own, measured in the pipe, so a symlink
           # the head commits at the path cannot shrink it.
-          bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
+          all="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
           # A file the pull request deletes whole stays in the diff but counts
-          # in no file total: there is nothing at the head to review.
+          # in no file total and not in its size: there is nothing at the head
+          # to review. Its sections, diffed with the same flags, are the bytes
+          # left out.
+          deleted="$(git diff --no-color --no-ext-diff --no-textconv --text --diff-filter=D "$base" "$HEAD_SHA" | wc -c | tr -d ' ')"
+          bytes=$((all - deleted))
           files="$(git diff --name-only --diff-filter=d "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
