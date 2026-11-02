@@ -765,6 +765,7 @@ jobs:
               else writePrFiles(prFiles, pull.changed_files);
               let scope = prFiles;
               let last = "";
+              let patches = new Map();
               let now = "";
               if (incremental) {
                 now = (await compare(`${env.BASE_REF}...${head}`)).merge_base_commit.sha;
@@ -777,6 +778,7 @@ jobs:
                 } else {
                   last = recorded.sha;
                   scope = result.files;
+                  patches = result.patches;
                   if (scope.length > 0) writeDiff(scope, result.patches);
                 }
               }
@@ -795,7 +797,9 @@ jobs:
                 core.setOutput("scope", last ? "incremental" : "whole");
                 if (last) {
                   core.setOutput("since", last);
-                  core.setOutput("files", String(scope.length));
+                  // A file the push deleted whole counts no file, as in the full-diff step.
+                  const removed = (file) => (patches.get(file.filename) ?? patches.get(file.previous_filename))?.status === "removed";
+                  core.setOutput("files", String(scope.filter((file) => !removed(file)).length));
                   const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
                   if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
                   core.setOutput(
@@ -867,12 +871,14 @@ jobs:
           # The byte count is the diff's own, measured in the pipe, so a symlink
           # the head commits at the path cannot shrink it.
           bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
-          files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
+          # A file the pull request deletes whole stays in the diff but counts
+          # in no file total: there is nothing at the head to review.
+          files="$(git diff --name-only --diff-filter=d "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
             echo "files=$files"
             echo "bytes=$bytes"
-            echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
+            echo "note=FULL DIFF: the whole pull request's diff ($files changed files, besides any it deletes whole) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
           # Changed files whose whole change is identical, one group per line,
           # tab-separated: the first path, then its copies. Only modifications
@@ -1103,9 +1109,14 @@ jobs:
             exit 0
           }
           # Files, not sections: a type change is two sections of one file,
-          # which the full-diff step's file count counts once.
+          # which the full-diff step's file count counts once. A section that
+          # deletes a file whole (git's deleted file mode, the scope step's
+          # status: removed) counts no file, as in the full-diff and scope
+          # steps' counts, so a chunk of deletions alone counts 0.
           count_files() {
-            grep '^diff --git ' "$1" | sort -u | wc -l | tr -d ' '
+            awk '/^diff --git /{ if (h != "" && !d) n[h] = 1; h = $0; d = 0; next }
+              /^(deleted file mode |status: removed$)/{ d = 1 }
+              END { if (h != "" && !d) n[h] = 1; for (k in n) c++; print c + 0 }' "$1"
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -1276,7 +1287,7 @@ jobs:
             const chunks =
               /^[2-4]$/u.test(env.CHUNKS ?? "") &&
               chunkFiles.length === Number(env.CHUNKS) &&
-              chunkFiles.every((n) => /^[1-9][0-9]{0,5}$/u.test(n))
+              chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
             const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
@@ -1380,7 +1391,8 @@ jobs:
               "- findings: the number of findings you report, comments included (0 when none).",
               "- files_read: how many of the changed files in scope you read every hunk of in the diff",
               "  file. Count a file only when you read its whole change; a review that read fewer is",
-              "  reported as partial, never as complete.",
+              "  reported as partial, never as complete. A file the diff deletes whole is not a changed",
+              "  file in scope: do not count it.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -1745,7 +1757,7 @@ jobs:
             const chunks =
               /^[2-4]$/u.test(env.CHUNKS ?? "") &&
               chunkFiles.length === Number(env.CHUNKS) &&
-              chunkFiles.every((n) => /^[1-9][0-9]{0,5}$/u.test(n))
+              chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
             const suffixes = Array.from({ length: chunks }, (_, i) => (i === 0 ? "" : `_${i + 1}`));
@@ -2438,6 +2450,7 @@ jobs:
               else writePrFiles(prFiles, pull.changed_files);
               let scope = prFiles;
               let last = "";
+              let patches = new Map();
               let now = "";
               if (incremental) {
                 now = (await compare(`${env.BASE_REF}...${head}`)).merge_base_commit.sha;
@@ -2450,6 +2463,7 @@ jobs:
                 } else {
                   last = recorded.sha;
                   scope = result.files;
+                  patches = result.patches;
                   if (scope.length > 0) writeDiff(scope, result.patches);
                 }
               }
@@ -2468,7 +2482,9 @@ jobs:
                 core.setOutput("scope", last ? "incremental" : "whole");
                 if (last) {
                   core.setOutput("since", last);
-                  core.setOutput("files", String(scope.length));
+                  // A file the push deleted whole counts no file, as in the full-diff step.
+                  const removed = (file) => (patches.get(file.filename) ?? patches.get(file.previous_filename))?.status === "removed";
+                  core.setOutput("files", String(scope.filter((file) => !removed(file)).length));
                   const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
                   if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
                   core.setOutput(
@@ -2540,12 +2556,14 @@ jobs:
           # The byte count is the diff's own, measured in the pipe, so a symlink
           # the head commits at the path cannot shrink it.
           bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
-          files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
+          # A file the pull request deletes whole stays in the diff but counts
+          # in no file total: there is nothing at the head to review.
+          files="$(git diff --name-only --diff-filter=d "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
             echo "files=$files"
             echo "bytes=$bytes"
-            echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
+            echo "note=FULL DIFF: the whole pull request's diff ($files changed files, besides any it deletes whole) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
           # Changed files whose whole change is identical, one group per line,
           # tab-separated: the first path, then its copies. Only modifications
@@ -2776,9 +2794,14 @@ jobs:
             exit 0
           }
           # Files, not sections: a type change is two sections of one file,
-          # which the full-diff step's file count counts once.
+          # which the full-diff step's file count counts once. A section that
+          # deletes a file whole (git's deleted file mode, the scope step's
+          # status: removed) counts no file, as in the full-diff and scope
+          # steps' counts, so a chunk of deletions alone counts 0.
           count_files() {
-            grep '^diff --git ' "$1" | sort -u | wc -l | tr -d ' '
+            awk '/^diff --git /{ if (h != "" && !d) n[h] = 1; h = $0; d = 0; next }
+              /^(deleted file mode |status: removed$)/{ d = 1 }
+              END { if (h != "" && !d) n[h] = 1; for (k in n) c++; print c + 0 }' "$1"
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -2949,7 +2972,7 @@ jobs:
             const chunks =
               /^[2-4]$/u.test(env.CHUNKS ?? "") &&
               chunkFiles.length === Number(env.CHUNKS) &&
-              chunkFiles.every((n) => /^[1-9][0-9]{0,5}$/u.test(n))
+              chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
             const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
@@ -3053,7 +3076,8 @@ jobs:
               "- findings: the number of findings you report, comments included (0 when none).",
               "- files_read: how many of the changed files in scope you read every hunk of in the diff",
               "  file. Count a file only when you read its whole change; a review that read fewer is",
-              "  reported as partial, never as complete.",
+              "  reported as partial, never as complete. A file the diff deletes whole is not a changed",
+              "  file in scope: do not count it.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -3419,7 +3443,7 @@ jobs:
             const chunks =
               /^[2-4]$/u.test(env.CHUNKS ?? "") &&
               chunkFiles.length === Number(env.CHUNKS) &&
-              chunkFiles.every((n) => /^[1-9][0-9]{0,5}$/u.test(n))
+              chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
             const suffixes = Array.from({ length: chunks }, (_, i) => (i === 0 ? "" : `_${i + 1}`));
@@ -4116,6 +4140,7 @@ jobs:
               else writePrFiles(prFiles, pull.changed_files);
               let scope = prFiles;
               let last = "";
+              let patches = new Map();
               let now = "";
               if (incremental) {
                 now = (await compare(`${env.BASE_REF}...${head}`)).merge_base_commit.sha;
@@ -4128,6 +4153,7 @@ jobs:
                 } else {
                   last = recorded.sha;
                   scope = result.files;
+                  patches = result.patches;
                   if (scope.length > 0) writeDiff(scope, result.patches);
                 }
               }
@@ -4146,7 +4172,9 @@ jobs:
                 core.setOutput("scope", last ? "incremental" : "whole");
                 if (last) {
                   core.setOutput("since", last);
-                  core.setOutput("files", String(scope.length));
+                  // A file the push deleted whole counts no file, as in the full-diff step.
+                  const removed = (file) => (patches.get(file.filename) ?? patches.get(file.previous_filename))?.status === "removed";
+                  core.setOutput("files", String(scope.filter((file) => !removed(file)).length));
                   const shown = scope.slice(0, 100).map((file) => `- ${file.filename}`);
                   if (scope.length > shown.length) shown.push(`- and ${scope.length - shown.length} more (see the diff file)`);
                   core.setOutput(
@@ -4218,12 +4246,14 @@ jobs:
           # The byte count is the diff's own, measured in the pipe, so a symlink
           # the head commits at the path cannot shrink it.
           bytes="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" | tee "$DIFF_FILE" | wc -c | tr -d ' ')"
-          files="$(git diff --name-only "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
+          # A file the pull request deletes whole stays in the diff but counts
+          # in no file total: there is nothing at the head to review.
+          files="$(git diff --name-only --diff-filter=d "$base" "$HEAD_SHA" | wc -l | tr -d ' ')"
           {
             echo "written=true"
             echo "files=$files"
             echo "bytes=$bytes"
-            echo "note=FULL DIFF: the whole pull request's diff ($files files) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
+            echo "note=FULL DIFF: the whole pull request's diff ($files changed files, besides any it deletes whole) is in $DIFF_FILE. Read it to see every change; \`gh pr diff\` and the API can return only part of a large pull request."
           } >> "$GITHUB_OUTPUT"
           # Changed files whose whole change is identical, one group per line,
           # tab-separated: the first path, then its copies. Only modifications
@@ -4454,9 +4484,14 @@ jobs:
             exit 0
           }
           # Files, not sections: a type change is two sections of one file,
-          # which the full-diff step's file count counts once.
+          # which the full-diff step's file count counts once. A section that
+          # deletes a file whole (git's deleted file mode, the scope step's
+          # status: removed) counts no file, as in the full-diff and scope
+          # steps' counts, so a chunk of deletions alone counts 0.
           count_files() {
-            grep '^diff --git ' "$1" | sort -u | wc -l | tr -d ' '
+            awk '/^diff --git /{ if (h != "" && !d) n[h] = 1; h = $0; d = 0; next }
+              /^(deleted file mode |status: removed$)/{ d = 1 }
+              END { if (h != "" && !d) n[h] = 1; for (k in n) c++; print c + 0 }' "$1"
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -4627,7 +4662,7 @@ jobs:
             const chunks =
               /^[2-4]$/u.test(env.CHUNKS ?? "") &&
               chunkFiles.length === Number(env.CHUNKS) &&
-              chunkFiles.every((n) => /^[1-9][0-9]{0,5}$/u.test(n))
+              chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
             const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
@@ -4731,7 +4766,8 @@ jobs:
               "- findings: the number of findings you report, comments included (0 when none).",
               "- files_read: how many of the changed files in scope you read every hunk of in the diff",
               "  file. Count a file only when you read its whole change; a review that read fewer is",
-              "  reported as partial, never as complete.",
+              "  reported as partial, never as complete. A file the diff deletes whole is not a changed",
+              "  file in scope: do not count it.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -5095,7 +5131,7 @@ jobs:
             const chunks =
               /^[2-4]$/u.test(env.CHUNKS ?? "") &&
               chunkFiles.length === Number(env.CHUNKS) &&
-              chunkFiles.every((n) => /^[1-9][0-9]{0,5}$/u.test(n))
+              chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
             const suffixes = Array.from({ length: chunks }, (_, i) => (i === 0 ? "" : `_${i + 1}`));
