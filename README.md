@@ -1428,9 +1428,11 @@ is `incomplete`.
 **Identical copies.** On a whole review, changed files whose whole change is
 identical (modifications with the same content and mode before and after, or
 additions of the same content and mode) are grouped in
-`.claude-lane/identical.txt`; a hold-paths match never groups, nor an addition
-under `.github/`, under a `hooks/` directory, or named `package.json` or
-`*.sh`, which is reviewed at its own path. The review reads each group's first
+`.claude-lane/identical.txt`; a hold-paths match never groups, nor an
+executable file, nor the root `lefthook.yml`, nor a file under the root
+`.github/` or `.husky/`, under a `.claude/` or `hooks/` directory, or named
+`package.json`, `.mcp.json`, `action.yml`, `action.yaml` or `*.sh`, which is
+reviewed at its own path. The review reads each group's first
 path, and the job counts the copies as read.
 
 **Chunks.** A diff in scope over the read budget, or with more than 40 files,

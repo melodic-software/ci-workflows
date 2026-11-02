@@ -310,14 +310,20 @@ env:
   # not copies partial. claude-code-plugins#12052's reviews read 50 and 68 of
   # a 195-file chunk whole, and every file of a 3- and a 4-file chunk.
   MAX_CHUNK_FILES: "40"
-  # Paths where an added file never groups as an identical copy, globbed as
+  # Paths where a changed file never groups as an identical copy, globbed as
   # hold-paths: the same content can act differently there, so each is
-  # reviewed at its own path. Empty, no addition groups.
+  # reviewed at its own path. An executable file never groups either. Empty,
+  # nothing groups.
   SENSITIVE_PATHS: |
     .github/**
     **/hooks/**
     **/package.json
     **/*.sh
+    **/.claude/**
+    **/.mcp.json
+    **/action.y*ml
+    lefthook.yml
+    .husky/**
 
 jobs:
   # Whether the key is still out of credits: a key-job credit stop in this
@@ -870,12 +876,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           # Changed files whose whole change is identical, one group per line,
           # tab-separated: the first path, then its copies. Only modifications
-          # and additions of regular files group, keyed on both modes, both
-          # blobs and the status, so an addition joins only additions; a
-          # delete, rename, copy, type change, symlink or submodule never does,
-          # nor a path matching a hold-paths glob (globbed as the scope step's
-          # docs-only-paths), nor an addition matching a SENSITIVE_PATHS glob
-          # (no addition when that list is empty). A whole review reads each
+          # and additions of non-executable regular files group, keyed on both
+          # modes, both blobs and the status, so an addition joins only
+          # additions; a delete, rename, copy, type change, symlink, submodule
+          # or executable never does, nor a path matching a hold-paths glob
+          # (globbed as the scope step's docs-only-paths) or a SENSITIVE_PATHS
+          # glob (nothing when that list is empty). A whole review reads each
           # group once (the split step leaves the copies out of its chunks) and
           # the extract step counts the copies as read. A file the head
           # planted, or any failure, groups none.
@@ -905,10 +911,10 @@ jobs:
               }
               BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
               { split($1, f, " ") }
-              NF != 2 || f[2] !~ /^100(644|755)$/ || $2 ~ /^"/ { next }
+              NF != 2 || f[2] != "100644" || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
-              f[5] == "A" { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
+              { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
               { k = $1; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
@@ -2543,12 +2549,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           # Changed files whose whole change is identical, one group per line,
           # tab-separated: the first path, then its copies. Only modifications
-          # and additions of regular files group, keyed on both modes, both
-          # blobs and the status, so an addition joins only additions; a
-          # delete, rename, copy, type change, symlink or submodule never does,
-          # nor a path matching a hold-paths glob (globbed as the scope step's
-          # docs-only-paths), nor an addition matching a SENSITIVE_PATHS glob
-          # (no addition when that list is empty). A whole review reads each
+          # and additions of non-executable regular files group, keyed on both
+          # modes, both blobs and the status, so an addition joins only
+          # additions; a delete, rename, copy, type change, symlink, submodule
+          # or executable never does, nor a path matching a hold-paths glob
+          # (globbed as the scope step's docs-only-paths) or a SENSITIVE_PATHS
+          # glob (nothing when that list is empty). A whole review reads each
           # group once (the split step leaves the copies out of its chunks) and
           # the extract step counts the copies as read. A file the head
           # planted, or any failure, groups none.
@@ -2578,10 +2584,10 @@ jobs:
               }
               BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
               { split($1, f, " ") }
-              NF != 2 || f[2] !~ /^100(644|755)$/ || $2 ~ /^"/ { next }
+              NF != 2 || f[2] != "100644" || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
-              f[5] == "A" { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
+              { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
               { k = $1; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
@@ -4221,12 +4227,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           # Changed files whose whole change is identical, one group per line,
           # tab-separated: the first path, then its copies. Only modifications
-          # and additions of regular files group, keyed on both modes, both
-          # blobs and the status, so an addition joins only additions; a
-          # delete, rename, copy, type change, symlink or submodule never does,
-          # nor a path matching a hold-paths glob (globbed as the scope step's
-          # docs-only-paths), nor an addition matching a SENSITIVE_PATHS glob
-          # (no addition when that list is empty). A whole review reads each
+          # and additions of non-executable regular files group, keyed on both
+          # modes, both blobs and the status, so an addition joins only
+          # additions; a delete, rename, copy, type change, symlink, submodule
+          # or executable never does, nor a path matching a hold-paths glob
+          # (globbed as the scope step's docs-only-paths) or a SENSITIVE_PATHS
+          # glob (nothing when that list is empty). A whole review reads each
           # group once (the split step leaves the copies out of its chunks) and
           # the extract step counts the copies as read. A file the head
           # planted, or any failure, groups none.
@@ -4256,10 +4262,10 @@ jobs:
               }
               BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
               { split($1, f, " ") }
-              NF != 2 || f[2] !~ /^100(644|755)$/ || $2 ~ /^"/ { next }
+              NF != 2 || f[2] != "100644" || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
-              f[5] == "A" { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
+              { if (s == 0) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
               { k = $1; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then

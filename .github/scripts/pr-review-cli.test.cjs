@@ -1824,16 +1824,30 @@ const SENSITIVE_ADDITIONS = [
   "plugins/p/hooks/guard.mjs",
   "tools/package.json",
   "scripts/deep/setup.sh",
+  "plugins/p/.claude/settings.json",
+  "plugins/p/.mcp.json",
+  "actions/x/action.yaml",
+  "lefthook.yml",
+  ".husky/pre-commit",
 ];
 
-test("the workflow names one sensitive list and one file cap, which no step overrides", () => {
+test("the workflow names one sensitive list and one file cap, which no job or step overrides", () => {
   assert.deepEqual(workflow.env.SENSITIVE_PATHS.trim().split("\n"), [
     ".github/**",
     "**/hooks/**",
     "**/package.json",
     "**/*.sh",
+    "**/.claude/**",
+    "**/.mcp.json",
+    "**/action.y*ml",
+    "lefthook.yml",
+    ".husky/**",
   ]);
   assert.match(workflow.env.MAX_CHUNK_FILES, /^[1-9][0-9]*$/u);
+  for (const job of [key, subscription, fallback]) {
+    assert.equal(job.env?.SENSITIVE_PATHS, undefined, job.name);
+    assert.equal(job.env?.MAX_CHUNK_FILES, undefined, job.name);
+  }
   for (const job of [key, subscription, fallback])
     for (const s of job.steps) {
       assert.equal(s.env?.SENSITIVE_PATHS, undefined, s.name);
@@ -1859,13 +1873,14 @@ test("the full-diff step groups identical modifications, and identical additions
     git(origin, "init", "--quiet", "--initial-branch=main");
     git(origin, "config", "user.email", "t@example.com");
     git(origin, "config", "user.name", "t");
-    // a, b and c make one identical change; .github/CODEOWNERS and d (made
-    // executable) make it too but must not join. x and y converge on one
-    // post-image from different pre-images, as do control.yml and aaa.txt
-    // truncated to empty.
+    // a, b and c make one identical change; .github/CODEOWNERS, d (made
+    // executable) and 0/package.json (a sensitive path that sorts first) make
+    // it too but must not join. x and y converge on one post-image from
+    // different pre-images, as do control.yml and aaa.txt truncated to empty.
     for (const p of ["a", "b", "c", "d"])
       write(origin, `${p}/lib.mjs`, "old\n");
     write(origin, ".github/CODEOWNERS", "old\n");
+    write(origin, "0/package.json", "old\n");
     write(origin, "gone.mjs", "old\n");
     write(origin, "x.js", "timeout = 10\n");
     write(origin, "y.js", "timeout = 300\n");
@@ -1877,12 +1892,16 @@ test("the full-diff step groups identical modifications, and identical additions
     for (const p of ["a", "b", "c", "d"])
       write(origin, `${p}/lib.mjs`, "synced\n");
     write(origin, ".github/CODEOWNERS", "synced\n");
+    write(origin, "0/package.json", "synced\n");
     fs.rmSync(path.join(origin, "gone.mjs"));
     // added.mjs and added2.mjs add the same file, which joins no modification;
-    // run.sh adds it executable, so it joins neither.
+    // run.sh adds it executable, so it joins neither, and bin/tool-a and
+    // bin/tool-b add it executable at paths no glob lists, which never group.
     write(origin, "added.mjs", "synced\n");
     write(origin, "added2.mjs", "synced\n");
     write(origin, "run.sh", "synced\n");
+    write(origin, "bin/tool-a", "synced\n");
+    write(origin, "bin/tool-b", "synced\n");
     // The same addition at a sensitive path joins no group, whatever sorts
     // first.
     for (const sensitive of SENSITIVE_ADDITIONS)
@@ -1892,7 +1911,15 @@ test("the full-diff step groups identical modifications, and identical additions
     write(origin, "aaa.txt", "");
     write(origin, "control.yml", "");
     git(origin, "add", "-A");
-    git(origin, "update-index", "--chmod=+x", "d/lib.mjs", "run.sh");
+    git(
+      origin,
+      "update-index",
+      "--chmod=+x",
+      "d/lib.mjs",
+      "run.sh",
+      "bin/tool-a",
+      "bin/tool-b",
+    );
     git(origin, "commit", "--quiet", "-m", "head");
     const head = git(origin, "rev-parse", "HEAD");
     const run = (
@@ -1931,7 +1958,8 @@ test("the full-diff step groups identical modifications, and identical additions
     // The sensitive list is the workflow's one, which no step overrides.
     assert.equal(step(job, "full-diff").env.SENSITIVE_PATHS, undefined);
     // Different pre-images (x and y, control.yml and aaa.txt), a mode
-    // change (d), a deletion and a hold-paths match never group.
+    // change (d), a deletion, an executable addition, a hold-paths match and
+    // a sensitive modification or addition never group.
     const grouped = run();
     assert.match(grouped.out, /^written=true$/mu, job.name);
     assert.match(grouped.out, /^copies=3$/mu, job.name);
@@ -1942,8 +1970,8 @@ test("the full-diff step groups identical modifications, and identical additions
       ),
       "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\nadded.mjs\tadded2.mjs\n",
     );
-    // With no hold-paths the trusted file would lead the group; a match in
-    // any position leaves the group.
+    // With no hold-paths the trusted file still stays out, as a sensitive
+    // modification; a hold-paths match in any position leaves the group.
     const identical = (holdPaths) =>
       fs.readFileSync(
         path.join(run(undefined, holdPaths).work, ".claude-lane/identical.txt"),
@@ -1951,22 +1979,18 @@ test("the full-diff step groups identical modifications, and identical additions
       );
     assert.equal(
       identical(""),
-      ".github/CODEOWNERS\ta/lib.mjs\tb/lib.mjs\tc/lib.mjs\nadded.mjs\tadded2.mjs\n",
+      "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\nadded.mjs\tadded2.mjs\n",
     );
     assert.equal(
       identical(" **/CODEOWNERS \nc/**\nadded2.mjs\n"),
       "a/lib.mjs\tb/lib.mjs\n",
     );
-    // With no sensitive list, no addition groups.
+    // With no sensitive list, nothing groups.
+    const unlisted = run(undefined, undefined, "");
+    assert.match(unlisted.out, /^copies=0$/mu);
     assert.equal(
-      fs.readFileSync(
-        path.join(
-          run(undefined, undefined, "").work,
-          ".claude-lane/identical.txt",
-        ),
-        "utf8",
-      ),
-      "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\n",
+      fs.existsSync(path.join(unlisted.work, ".claude-lane/identical.txt")),
+      false,
     );
     // A file the head planted at the path groups nothing and is left as is.
     const planted = run((work) =>
