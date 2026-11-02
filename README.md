@@ -1432,8 +1432,12 @@ additions of the same content and mode) are grouped in
 executable file, nor the root `lefthook.yml`, nor a file under the root
 `.github/` or `.husky/`, under a `.claude/` or `hooks/` directory, or named
 `package.json`, `.mcp.json`, `action.yml`, `action.yaml` or `*.sh`, which is
-reviewed at its own path. The review reads each group's first
-path, and the job counts the copies as read.
+reviewed at its own path. The one exception is the `generated-copies` input:
+a repository path to a file of `<source> <copy>` lines, read at the merge base
+so a pull request cannot declare its own files. Copies it declares of one
+source group with each other, executable or at one of those paths, but never
+with any other file or past a hold-paths match. The review reads each group's
+first path, and the job counts the copies as read.
 
 **Chunks.** A diff in scope over the read budget, or with more than 40 files,
 is split at file boundaries, each file whole, into at most 4 chunks of at most
