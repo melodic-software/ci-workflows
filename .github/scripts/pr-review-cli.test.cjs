@@ -2934,8 +2934,18 @@ test("an incremental review leaves a file the push deleted out of its file count
       [`${LAST}...${HEAD}`]: {
         status: "ahead",
         files: [
-          { filename: "a.js", status: "modified", patch: "@@ -1 +1 @@\n-x\n+y", changes: 2 },
-          { filename: "gone.js", status: "removed", patch: "@@ -1 +0,0 @@\n-z", changes: 1 },
+          {
+            filename: "a.js",
+            status: "modified",
+            patch: "@@ -1 +1 @@\n-x\n+y",
+            changes: 2,
+          },
+          {
+            filename: "gone.js",
+            status: "removed",
+            patch: "@@ -1 +0,0 @@\n-z",
+            changes: 1,
+          },
         ],
       },
     };
@@ -2955,7 +2965,9 @@ test("an incremental review leaves a file the push deleted out of its file count
         issues: { listComments: () => [marker] },
         pulls: {
           listFiles: () => prFiles,
-          get: async () => ({ data: { head: { sha: HEAD }, changed_files: 2 } }),
+          get: async () => ({
+            data: { head: { sha: HEAD }, changed_files: 2 },
+          }),
         },
         repos: {
           compareCommitsWithBasehead: async ({ basehead }) => {
@@ -2991,14 +3003,19 @@ test("an incremental review leaves a file the push deleted out of its file count
         "context",
         "core",
         step(job, "scope").with.script,
-      )(require, github, { repo: { owner: "o", repo: "r" } }, {
-        setSecret: () => {},
-        setOutput: (k, v) => {
-          outputs[k] = v;
+      )(
+        require,
+        github,
+        { repo: { owner: "o", repo: "r" } },
+        {
+          setSecret: () => {},
+          setOutput: (k, v) => {
+            outputs[k] = v;
+          },
+          info: () => {},
+          warning: (message) => assert.fail(message),
         },
-        info: () => {},
-        warning: (message) => assert.fail(message),
-      });
+      );
     } finally {
       for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];
