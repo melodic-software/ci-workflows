@@ -782,6 +782,12 @@ consumer to audit it.
   pieces: a gate job before its key job, a record step named for its run
   after the launcher's `credit-stop`, and a subscription job that also starts
   on the gate's skip (its `action.yml` describes the inputs).
+- `.github/actions/upload-lane-transcript` — the step after each model leg in
+  `pr-review-cli.yml` and `intake-triage.yml`: scans the leg's execution file,
+  seals it to the caller's `lane-transcript-public-key` input and uploads only
+  the sealed file for 7 days, for claude-code-plugins' transcript puller. An
+  empty key skips with a notice (its `action.yml` describes the record and
+  artifact name).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.

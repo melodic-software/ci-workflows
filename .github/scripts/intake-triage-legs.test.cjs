@@ -194,6 +194,50 @@ test("the fallback job repeats the subscription job's steps but for the credenti
   }
 });
 
+test("every model job's leg uploads its sealed transcript under a job id unique in the run", () => {
+  const artifact = /^lane-transcript-(.+)-([1-9][0-9]{0,4})$/u;
+  const jobId = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/u;
+  const seen = new Set();
+  for (const [name, job] of Object.entries({
+    claude,
+    subscription,
+    fallback,
+  })) {
+    const uploads = job.steps.filter(
+      (step) => step.uses === "$/.github/actions/upload-lane-transcript",
+    );
+    assert.equal(uploads.length, 1, name);
+    const [upload] = uploads;
+    assert.ok(
+      job.steps.indexOf(upload) >
+        job.steps.findIndex((step) => step.id === "review-outcome"),
+      name,
+    );
+    assert.equal(upload["continue-on-error"], true);
+    assert.equal(
+      upload.if,
+      "always() && steps.claude.outputs.execution-file != ''",
+    );
+    assert.equal(
+      upload.with["execution-file"],
+      `\${{ steps.claude.outputs.execution-file }}`,
+    );
+    assert.equal(
+      upload.with["public-key"],
+      `\${{ inputs.lane-transcript-public-key }}`,
+    );
+    const id = upload.with["job-id"].replace(`\${{ github.job }}`, name);
+    assert.match(id, jobId);
+    assert.equal(seen.has(id), false, id);
+    seen.add(id);
+    assert.equal(artifact.exec(`lane-transcript-${id}-1`)?.[1], id);
+  }
+  assert.equal(
+    workflow.on.workflow_call.inputs["lane-transcript-public-key"].default,
+    "",
+  );
+});
+
 test("the subscription job runs on a fixed GitHub-hosted label, after the claude job", () => {
   assert.equal(subscription["runs-on"], "ubuntu-24.04");
   assert.equal(subscription.needs, "claude");

@@ -1,0 +1,66 @@
+name: Upload lane transcript
+description: >
+  Keep one lane leg's transcript (run-claude-cli's execution-file) for 7 days
+  as an encrypted artifact, so a puller outside CI can copy it to a private
+  sink. CI holds only the public key: it can seal a transcript but never open
+  one. The plaintext is scanned first (../scan-upload); a credential in it
+  fails the step with nothing sealed. It is then gzipped and sealed in memory
+  as one record, and only the sealed file is uploaded, as
+  `lane-transcript-<job-id>-<run attempt>` holding `transcript.json.gz.sealed`.
+  The record is claude-code-plugins' seal-lane-output format for the payload
+  name `transcript.json.gz`, bound to GITHUB_RUN_ID and job-id, so a record
+  moved to another run or job name does not open. An empty public key skips
+  with a notice and scans nothing; a missing, empty or linked execution file
+  uploads nothing; a malformed key or job-id fails the step. Callers run it
+  with `if: always()` and `continue-on-error: true` after the leg, so a failed
+  leg's transcript is kept and no failure here changes the lane's outcome.
+  Needs node on PATH.
+
+inputs:
+  execution-file:
+    description: The leg's execution file, run-claude-cli's execution-file output; empty when no leg ran.
+    required: true
+  public-key:
+    description: "The caller's LANE_TRANSCRIPT_PUBLIC_KEY variable: one line, `x25519 <key id> <base64 raw key>`."
+    required: true
+  job-id:
+    description: >-
+      A fixed key for the leg, unique in the run, matching
+      `^[A-Za-z_][A-Za-z0-9_-]{0,99}$`; the puller reads it back from the
+      artifact name (everything between `lane-transcript-` and the last `-`).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The plaintext, before the seal: the sealed upload is ciphertext, which
+    # no scan can read. A hit fails here and nothing is sealed or uploaded.
+    - name: Scan the transcript for credentials
+      id: scan
+      if: inputs.public-key != ''
+      shell: bash
+      env:
+        SCAN_PATHS: ${{ inputs.execution-file }}
+      run: node "$GITHUB_ACTION_PATH/../scan-upload/scan.cjs"
+
+    - name: Seal the transcript
+      id: seal
+      if: inputs.public-key == '' || steps.scan.outputs.clean == 'true'
+      shell: bash
+      env:
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+        PUBLIC_KEY: ${{ inputs.public-key }}
+        JOB_ID: ${{ inputs.job-id }}
+      run: node "$GITHUB_ACTION_PATH/seal-transcript.cjs"
+
+    - name: Upload the sealed transcript
+      if: steps.seal.outputs.file != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: lane-transcript-${{ inputs.job-id }}-${{ github.run_attempt }}
+        path: ${{ steps.seal.outputs.file }}
+        retention-days: 7
+        # Ciphertext does not compress.
+        compression-level: 0
+        if-no-files-found: error
+        overwrite: false
