@@ -2023,10 +2023,14 @@ test("the full-diff step groups identical copies the base branch declares genera
   };
   const copy = (p) => `plugins/${p}/hooks/hook-utils.sh`;
   // p, q, r and h are declared at the base; u and v only at the head; w is
-  // declared but stays a regular file while the others are executable.
+  // declared but stays a regular file while the others are executable. x and
+  // y are declared from a second source with the same content and mode as p,
+  // q and r, so they group apart. docs/a.txt is declared and docs/b.txt is
+  // not; with the same content, neither groups.
   const declared = ["p", "q", "r", "h", "w"];
   const map = (names) =>
-    `# <canonical> <copy>\n${names.map((p) => `lib/hook-utils.sh ${copy(p)}`).join("\n")}\n`;
+    `# <canonical> <copy>\n${names.map((p) => `lib/hook-utils.sh ${copy(p)}`).join("\n")}\n` +
+    `lib/other.sh ${copy("x")}\nlib/other.sh ${copy("y")}\nlib/doc.txt docs/a.txt\n`;
   for (const job of [key, subscription, fallback]) {
     const dir = makeTemporaryDirectory("pr-review-cli-generated-");
     const origin = path.join(dir, "origin");
@@ -2036,8 +2040,12 @@ test("the full-diff step groups identical copies the base branch declares genera
     git(origin, "config", "user.name", "t");
     const tree = (version, names) => {
       write(origin, "lib/hook-utils.sh", `${version}\n`);
-      for (const p of [...declared, "u", "v"])
+      write(origin, "lib/other.sh", `other ${version}\n`);
+      write(origin, "lib/doc.txt", `doc source ${version}\n`);
+      for (const p of [...declared, "u", "v", "x", "y"])
         write(origin, copy(p), `# GENERATED\n${version}\n`);
+      for (const p of ["docs/a.txt", "docs/b.txt"])
+        write(origin, p, `doc ${version}\n`);
       for (const p of ["bin/tool-a", "bin/tool-b"])
         write(origin, p, `${version}\n`);
       write(origin, "scripts/shared-copies.txt", map(names));
@@ -2047,7 +2055,7 @@ test("the full-diff step groups identical copies the base branch declares genera
         "update-index",
         "--chmod=+x",
         "lib/hook-utils.sh",
-        ...["p", "q", "r", "h", "u", "v"].map(copy),
+        ...["p", "q", "r", "h", "u", "v", "x", "y"].map(copy),
         "bin/tool-a",
         "bin/tool-b",
       );
@@ -2094,19 +2102,21 @@ test("the full-diff step groups identical copies the base branch declares genera
     // The copies the base declares group, but h (a hold-paths match) and w
     // (another mode); u and v, declared only at the head, and the undeclared
     // executables in bin never group, nor does the canonical, whose change
-    // differs by the generated header.
+    // differs by the generated header. x and y, copies of another source,
+    // form their own group; docs/a.txt never groups with its undeclared twin.
     const grouped = run("scripts/shared-copies.txt");
-    assert.match(grouped.out, /^copies=2$/mu, job.name);
+    assert.match(grouped.out, /^copies=3$/mu, job.name);
     assert.equal(
       grouped.identical,
-      `${["p", "q", "r"].map(copy).join("\t")}\n`,
+      `${["p", "q", "r"].map(copy).join("\t")}\n${["x", "y"].map(copy).join("\t")}\n`,
     );
-    // With no map, or a map the base does not hold, nothing groups.
+    // With no map, or a map the base does not hold, no copy is declared: only
+    // the two identical regular files in docs group, as any undeclared pair.
     for (const generatedCopies of ["", "scripts/missing.txt"]) {
       const none = run(generatedCopies);
       assert.match(none.out, /^written=true$/mu, job.name);
-      assert.match(none.out, /^copies=0$/mu, job.name);
-      assert.equal(none.identical, undefined, job.name);
+      assert.match(none.out, /^copies=1$/mu, job.name);
+      assert.equal(none.identical, "docs/a.txt\tdocs/b.txt\n", job.name);
     }
   }
 });
