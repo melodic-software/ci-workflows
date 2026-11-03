@@ -872,9 +872,8 @@ test("the restack check's git commands see mode and type changes in a blob-less 
   }
 });
 
-// Two callers on one pull request write one marker key. On
-// melodic-software/pr-pipeline-sandbox#273 a docs-only skip by a legacy caller
-// recorded a head that pr-review-cli.yml then skipped as already reviewed.
+// Two callers on one pull request write one marker key, so a docs-only skip by
+// a legacy caller must not read as pr-review-cli.yml's review of that head.
 {
   const cliScript = stepNamed(
     Object.values(load("pr-review-cli.yml").jobs).find((job) =>
