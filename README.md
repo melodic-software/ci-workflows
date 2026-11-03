@@ -1434,7 +1434,7 @@ hidden marker at `sha=none` so the next push reviews the whole pull request
 and no merge gate reads the head as reviewed. A review with no `files_read`
 is `incomplete`.
 
-**Identical copies.** On a whole review, changed files whose whole change is
+**Identical copies.** Changed files whose whole change is
 identical (modifications with the same content and mode before and after, or
 additions of the same content and mode) are grouped in
 `.claude-lane/identical.txt`; a hold-paths match never groups, nor an
@@ -1445,8 +1445,10 @@ reviewed at its own path. The one exception is the `generated-copies` input:
 a repository path to a file of `<source> <copy>` lines, read at the merge base
 so a pull request cannot declare its own files. Copies it declares of one
 source group with each other, executable or at one of those paths, but never
-with any other file or past a hold-paths match. The review reads each group's
-first path, and the job counts the copies as read.
+with any other file or past a hold-paths match. An incremental review groups
+only the files in its scope whose change since the last reviewed head is
+identical too; when the job cannot compare that head, nothing groups. The
+review reads each group's first path, and the job counts the copies as read.
 
 **Generated data files.** The `generated-data` input is a repository path to a
 file of paths or globs, one per line (globbed as `hold-paths`; blank lines and
@@ -1475,7 +1477,7 @@ is split at file boundaries, each file whole, into at most 4 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
 default-branch tip, and each chunk gets its own model step in the leg, in
-order. On a whole review the identical copies are left out first: when the
+order. The identical copies in scope are left out first: when the
 whole diff fits the read budget and the rest fits 40 files it is one review;
 when the rest alone is over either cap only the rest is split, with the
 copies counted as read; otherwise the whole diff is split, copies included.

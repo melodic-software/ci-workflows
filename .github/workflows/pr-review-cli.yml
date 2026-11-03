@@ -961,6 +961,9 @@ jobs:
           HOLD_PATHS: ${{ inputs.hold-paths }}
           GENERATED_COPIES: ${{ inputs.generated-copies }}
           GENERATED_DATA: ${{ inputs.generated-data }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          SINCE: ${{ steps.scope.outputs.since }}
+          SCOPE_LIST: .claude-lane/incremental-files.txt
         run: |
           # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
           # inside a pipe must still fail the step, so the review is incomplete.
@@ -1088,10 +1091,14 @@ jobs:
           # glob (nothing when that list is empty). The one exception: a copy
           # the generated-copies file at the merge base declares, executable
           # or at a SENSITIVE_PATHS match, groups with the copies of the same
-          # source only. A whole review reads each
-          # group once (the split step leaves the copies out of its chunks) and
-          # the extract step counts the copies as read. A file the head
-          # planted, or any failure, groups none.
+          # source only. An incremental review groups only the files on the
+          # scope step's list, each keyed on its raw diff line from the
+          # reviewed head too, so a copy also changed since the last review
+          # exactly as the first path did; a reviewed head the job cannot
+          # compare groups none. A review reads each group once (the split
+          # step leaves the copies out of its chunks) and the extract step
+          # counts the copies as read. A file the head planted, or any
+          # failure, groups none.
           identical=.claude-lane/identical.txt
           copies=0
           generated=""
@@ -1099,20 +1106,40 @@ jobs:
             echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; no copy is declared."
             generated=""
           fi
-          if [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
-            groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" "${only[@]}" | GENERATED="$generated" awk -F '\t' "$globs"'
+          scoped=""
+          since=""
+          if [ "$SCOPE" = incremental ]; then
+            scoped=true
+            if ! { [[ "$SINCE" =~ ^[0-9a-f]{40}$ ]] && [ -f "$SCOPE_LIST" ] && [ ! -L "$SCOPE_LIST" ] &&
+              git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$SINCE" &&
+              since="$(git diff --raw --no-abbrev --no-renames "$SINCE" "$HEAD_SHA" "${only[@]}")"; }; then
+              echo "::warning::The last reviewed head could not be compared with this one; no copy groups."
+              scoped=none
+            fi
+          fi
+          if [ "$scoped" != none ] && [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
+            groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" "${only[@]}" | GENERATED="$generated" SCOPED="$scoped" SINCE_RAW="$since" awk -F '\t' "$globs"'
               BEGIN {
                 h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive)
                 # Each `<source> <copy>` line declares copy generated from source.
                 m = split(ENVIRON["GENERATED"], line, "\n")
                 for (i = 1; i <= m; i++) if (line[i] !~ /^[ \t]*#/ && split(line[i], pair, " ") == 2) source[pair[2]] = pair[1]
+                # An incremental review: the files in scope, and the raw diff
+                # line of each file changed since the reviewed head.
+                scoped = ENVIRON["SCOPED"] == "true"
+                if (scoped) {
+                  while ((getline p < ENVIRON["SCOPE_LIST"]) > 0) listed[p] = 1
+                  r = split(ENVIRON["SINCE_RAW"], row, "\n")
+                  for (i = 1; i <= r; i++) if (split(row[i], col, "\t") == 2) since[col[2]] = col[1]
+                }
               }
               { split($1, f, " "); src = ($2 in source) ? source[$2] : "" }
               NF != 2 || f[2] !~ (src == "" ? "^100644$" : "^100(644|755)$") || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
               { if (s == 0) next; if (src == "") for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-              { k = $1 "\t" src; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
+              scoped && (!($2 in listed) || !($2 in since)) { next }
+              { k = $1 "\t" src (scoped ? "\t" since[$2] : ""); if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
             copies="$(printf '%s\n' "$groups" | awk -F '\t' '{ n += NF - 1 } END { print n }')"
@@ -1265,8 +1292,8 @@ jobs:
       # into chunks of at most that budget and that many files by
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
-      # review step below. On a whole review the identical copies the
-      # full-diff step grouped are left out first: when the whole diff fits
+      # review step below. The identical copies the full-diff step grouped
+      # in scope are left out first: when the whole diff fits
       # the read budget and the rest fits MAX_CHUNK_FILES it is one review,
       # which skips the copies; when the rest alone is over either cap only
       # the rest is split (excluded= names the copies left out); otherwise the
@@ -1329,7 +1356,7 @@ jobs:
           input="$SCOPE_DIFF"
           excluded=0
           identical=.claude-lane/identical.txt
-          if [ "$SCOPE" != incremental ] && [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
+          if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
             awk -F '\t' '
               NR == FNR { for (i = 2; i <= NF; i++) copy["diff --git a/" $i " b/" $i] = 1; next }
@@ -1482,11 +1509,10 @@ jobs:
                 ? Number(env.CHUNKS)
                 : 1;
             const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
-            // The identical-change copies the full-diff step grouped, which the
-            // extract step counts as read under this same condition: a whole
-            // review, in one review or in chunks the split step left them out of.
+            // The identical-change copies in scope the full-diff step grouped,
+            // which the extract step counts as read under this same condition:
+            // in one review, or in chunks the split step left them out of.
             const copies =
-              env.SCOPE !== "incremental" &&
               /^[1-9][0-9]{0,5}$/u.test(env.COPIES ?? "") &&
               (chunks === 1 || env.EXCLUDED === env.COPIES)
                 ? Number(env.COPIES)
@@ -2134,12 +2160,11 @@ jobs:
             }
             const bytes = Number(env.SCOPE_BYTES);
             const changed = Number(counted);
-            // The identical-change copies the full-diff step grouped count as
-            // read in a whole review (the compose step told the model to skip
-            // them), never past the files in scope: in one review, or in chunks
-            // the split step left exactly the copies out of.
+            // The identical-change copies in scope the full-diff step grouped
+            // count as read (the compose step told the model to skip them),
+            // never past the files in scope: in one review, or in chunks the
+            // split step left exactly the copies out of.
             const copies =
-              env.SCOPE !== "incremental" &&
               /^[0-9]{1,6}$/u.test(env.COPIES ?? "") &&
               Number(env.COPIES) < changed &&
               (chunks === 1 ||
@@ -2881,6 +2906,9 @@ jobs:
           HOLD_PATHS: ${{ inputs.hold-paths }}
           GENERATED_COPIES: ${{ inputs.generated-copies }}
           GENERATED_DATA: ${{ inputs.generated-data }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          SINCE: ${{ steps.scope.outputs.since }}
+          SCOPE_LIST: .claude-lane/incremental-files.txt
         run: |
           # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
           # inside a pipe must still fail the step, so the review is incomplete.
@@ -3008,10 +3036,14 @@ jobs:
           # glob (nothing when that list is empty). The one exception: a copy
           # the generated-copies file at the merge base declares, executable
           # or at a SENSITIVE_PATHS match, groups with the copies of the same
-          # source only. A whole review reads each
-          # group once (the split step leaves the copies out of its chunks) and
-          # the extract step counts the copies as read. A file the head
-          # planted, or any failure, groups none.
+          # source only. An incremental review groups only the files on the
+          # scope step's list, each keyed on its raw diff line from the
+          # reviewed head too, so a copy also changed since the last review
+          # exactly as the first path did; a reviewed head the job cannot
+          # compare groups none. A review reads each group once (the split
+          # step leaves the copies out of its chunks) and the extract step
+          # counts the copies as read. A file the head planted, or any
+          # failure, groups none.
           identical=.claude-lane/identical.txt
           copies=0
           generated=""
@@ -3019,20 +3051,40 @@ jobs:
             echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; no copy is declared."
             generated=""
           fi
-          if [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
-            groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" "${only[@]}" | GENERATED="$generated" awk -F '\t' "$globs"'
+          scoped=""
+          since=""
+          if [ "$SCOPE" = incremental ]; then
+            scoped=true
+            if ! { [[ "$SINCE" =~ ^[0-9a-f]{40}$ ]] && [ -f "$SCOPE_LIST" ] && [ ! -L "$SCOPE_LIST" ] &&
+              git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$SINCE" &&
+              since="$(git diff --raw --no-abbrev --no-renames "$SINCE" "$HEAD_SHA" "${only[@]}")"; }; then
+              echo "::warning::The last reviewed head could not be compared with this one; no copy groups."
+              scoped=none
+            fi
+          fi
+          if [ "$scoped" != none ] && [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
+            groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" "${only[@]}" | GENERATED="$generated" SCOPED="$scoped" SINCE_RAW="$since" awk -F '\t' "$globs"'
               BEGIN {
                 h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive)
                 # Each `<source> <copy>` line declares copy generated from source.
                 m = split(ENVIRON["GENERATED"], line, "\n")
                 for (i = 1; i <= m; i++) if (line[i] !~ /^[ \t]*#/ && split(line[i], pair, " ") == 2) source[pair[2]] = pair[1]
+                # An incremental review: the files in scope, and the raw diff
+                # line of each file changed since the reviewed head.
+                scoped = ENVIRON["SCOPED"] == "true"
+                if (scoped) {
+                  while ((getline p < ENVIRON["SCOPE_LIST"]) > 0) listed[p] = 1
+                  r = split(ENVIRON["SINCE_RAW"], row, "\n")
+                  for (i = 1; i <= r; i++) if (split(row[i], col, "\t") == 2) since[col[2]] = col[1]
+                }
               }
               { split($1, f, " "); src = ($2 in source) ? source[$2] : "" }
               NF != 2 || f[2] !~ (src == "" ? "^100644$" : "^100(644|755)$") || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
               { if (s == 0) next; if (src == "") for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-              { k = $1 "\t" src; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
+              scoped && (!($2 in listed) || !($2 in since)) { next }
+              { k = $1 "\t" src (scoped ? "\t" since[$2] : ""); if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
             copies="$(printf '%s\n' "$groups" | awk -F '\t' '{ n += NF - 1 } END { print n }')"
@@ -3185,8 +3237,8 @@ jobs:
       # into chunks of at most that budget and that many files by
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
-      # review step below. On a whole review the identical copies the
-      # full-diff step grouped are left out first: when the whole diff fits
+      # review step below. The identical copies the full-diff step grouped
+      # in scope are left out first: when the whole diff fits
       # the read budget and the rest fits MAX_CHUNK_FILES it is one review,
       # which skips the copies; when the rest alone is over either cap only
       # the rest is split (excluded= names the copies left out); otherwise the
@@ -3249,7 +3301,7 @@ jobs:
           input="$SCOPE_DIFF"
           excluded=0
           identical=.claude-lane/identical.txt
-          if [ "$SCOPE" != incremental ] && [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
+          if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
             awk -F '\t' '
               NR == FNR { for (i = 2; i <= NF; i++) copy["diff --git a/" $i " b/" $i] = 1; next }
@@ -3402,11 +3454,10 @@ jobs:
                 ? Number(env.CHUNKS)
                 : 1;
             const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
-            // The identical-change copies the full-diff step grouped, which the
-            // extract step counts as read under this same condition: a whole
-            // review, in one review or in chunks the split step left them out of.
+            // The identical-change copies in scope the full-diff step grouped,
+            // which the extract step counts as read under this same condition:
+            // in one review, or in chunks the split step left them out of.
             const copies =
-              env.SCOPE !== "incremental" &&
               /^[1-9][0-9]{0,5}$/u.test(env.COPIES ?? "") &&
               (chunks === 1 || env.EXCLUDED === env.COPIES)
                 ? Number(env.COPIES)
@@ -4022,12 +4073,11 @@ jobs:
             }
             const bytes = Number(env.SCOPE_BYTES);
             const changed = Number(counted);
-            // The identical-change copies the full-diff step grouped count as
-            // read in a whole review (the compose step told the model to skip
-            // them), never past the files in scope: in one review, or in chunks
-            // the split step left exactly the copies out of.
+            // The identical-change copies in scope the full-diff step grouped
+            // count as read (the compose step told the model to skip them),
+            // never past the files in scope: in one review, or in chunks the
+            // split step left exactly the copies out of.
             const copies =
-              env.SCOPE !== "incremental" &&
               /^[0-9]{1,6}$/u.test(env.COPIES ?? "") &&
               Number(env.COPIES) < changed &&
               (chunks === 1 ||
@@ -4773,6 +4823,9 @@ jobs:
           HOLD_PATHS: ${{ inputs.hold-paths }}
           GENERATED_COPIES: ${{ inputs.generated-copies }}
           GENERATED_DATA: ${{ inputs.generated-data }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          SINCE: ${{ steps.scope.outputs.since }}
+          SCOPE_LIST: .claude-lane/incremental-files.txt
         run: |
           # No `shell:` runs as `bash -e` without pipefail; a git diff that fails
           # inside a pipe must still fail the step, so the review is incomplete.
@@ -4900,10 +4953,14 @@ jobs:
           # glob (nothing when that list is empty). The one exception: a copy
           # the generated-copies file at the merge base declares, executable
           # or at a SENSITIVE_PATHS match, groups with the copies of the same
-          # source only. A whole review reads each
-          # group once (the split step leaves the copies out of its chunks) and
-          # the extract step counts the copies as read. A file the head
-          # planted, or any failure, groups none.
+          # source only. An incremental review groups only the files on the
+          # scope step's list, each keyed on its raw diff line from the
+          # reviewed head too, so a copy also changed since the last review
+          # exactly as the first path did; a reviewed head the job cannot
+          # compare groups none. A review reads each group once (the split
+          # step leaves the copies out of its chunks) and the extract step
+          # counts the copies as read. A file the head planted, or any
+          # failure, groups none.
           identical=.claude-lane/identical.txt
           copies=0
           generated=""
@@ -4911,20 +4968,40 @@ jobs:
             echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; no copy is declared."
             generated=""
           fi
-          if [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
-            groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" "${only[@]}" | GENERATED="$generated" awk -F '\t' "$globs"'
+          scoped=""
+          since=""
+          if [ "$SCOPE" = incremental ]; then
+            scoped=true
+            if ! { [[ "$SINCE" =~ ^[0-9a-f]{40}$ ]] && [ -f "$SCOPE_LIST" ] && [ ! -L "$SCOPE_LIST" ] &&
+              git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$SINCE" &&
+              since="$(git diff --raw --no-abbrev --no-renames "$SINCE" "$HEAD_SHA" "${only[@]}")"; }; then
+              echo "::warning::The last reviewed head could not be compared with this one; no copy groups."
+              scoped=none
+            fi
+          fi
+          if [ "$scoped" != none ] && [ ! -e "$identical" ] && [ ! -L "$identical" ] &&
+            groups="$(git diff --raw --no-abbrev "$base" "$HEAD_SHA" "${only[@]}" | GENERATED="$generated" SCOPED="$scoped" SINCE_RAW="$since" awk -F '\t' "$globs"'
               BEGIN {
                 h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive)
                 # Each `<source> <copy>` line declares copy generated from source.
                 m = split(ENVIRON["GENERATED"], line, "\n")
                 for (i = 1; i <= m; i++) if (line[i] !~ /^[ \t]*#/ && split(line[i], pair, " ") == 2) source[pair[2]] = pair[1]
+                # An incremental review: the files in scope, and the raw diff
+                # line of each file changed since the reviewed head.
+                scoped = ENVIRON["SCOPED"] == "true"
+                if (scoped) {
+                  while ((getline p < ENVIRON["SCOPE_LIST"]) > 0) listed[p] = 1
+                  r = split(ENVIRON["SINCE_RAW"], row, "\n")
+                  for (i = 1; i <= r; i++) if (split(row[i], col, "\t") == 2) since[col[2]] = col[1]
+                }
               }
               { split($1, f, " "); src = ($2 in source) ? source[$2] : "" }
               NF != 2 || f[2] !~ (src == "" ? "^100644$" : "^100(644|755)$") || $2 ~ /^"/ { next }
               !(f[5] == "M" && f[1] ~ /^:100(644|755)$/) && !(f[5] == "A" && f[1] == ":000000") { next }
               { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next }
               { if (s == 0) next; if (src == "") for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-              { k = $1 "\t" src; if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
+              scoped && (!($2 in listed) || !($2 in since)) { next }
+              { k = $1 "\t" src (scoped ? "\t" since[$2] : ""); if (!(k in g)) order[++n] = k; g[k] = g[k] "\t" $2; c[k]++ }
               END { for (i = 1; i <= n; i++) if (c[order[i]] > 1) print substr(g[order[i]], 2) }')" &&
             [ -n "$groups" ] && printf '%s\n' "$groups" > "$identical"; then
             copies="$(printf '%s\n' "$groups" | awk -F '\t' '{ n += NF - 1 } END { print n }')"
@@ -5077,8 +5154,8 @@ jobs:
       # into chunks of at most that budget and that many files by
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
-      # review step below. On a whole review the identical copies the
-      # full-diff step grouped are left out first: when the whole diff fits
+      # review step below. The identical copies the full-diff step grouped
+      # in scope are left out first: when the whole diff fits
       # the read budget and the rest fits MAX_CHUNK_FILES it is one review,
       # which skips the copies; when the rest alone is over either cap only
       # the rest is split (excluded= names the copies left out); otherwise the
@@ -5141,7 +5218,7 @@ jobs:
           input="$SCOPE_DIFF"
           excluded=0
           identical=.claude-lane/identical.txt
-          if [ "$SCOPE" != incremental ] && [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
+          if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
             awk -F '\t' '
               NR == FNR { for (i = 2; i <= NF; i++) copy["diff --git a/" $i " b/" $i] = 1; next }
@@ -5294,11 +5371,10 @@ jobs:
                 ? Number(env.CHUNKS)
                 : 1;
             const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
-            // The identical-change copies the full-diff step grouped, which the
-            // extract step counts as read under this same condition: a whole
-            // review, in one review or in chunks the split step left them out of.
+            // The identical-change copies in scope the full-diff step grouped,
+            // which the extract step counts as read under this same condition:
+            // in one review, or in chunks the split step left them out of.
             const copies =
-              env.SCOPE !== "incremental" &&
               /^[1-9][0-9]{0,5}$/u.test(env.COPIES ?? "") &&
               (chunks === 1 || env.EXCLUDED === env.COPIES)
                 ? Number(env.COPIES)
@@ -5912,12 +5988,11 @@ jobs:
             }
             const bytes = Number(env.SCOPE_BYTES);
             const changed = Number(counted);
-            // The identical-change copies the full-diff step grouped count as
-            // read in a whole review (the compose step told the model to skip
-            // them), never past the files in scope: in one review, or in chunks
-            // the split step left exactly the copies out of.
+            // The identical-change copies in scope the full-diff step grouped
+            // count as read (the compose step told the model to skip them),
+            // never past the files in scope: in one review, or in chunks the
+            // split step left exactly the copies out of.
             const copies =
-              env.SCOPE !== "incremental" &&
               /^[0-9]{1,6}$/u.test(env.COPIES ?? "") &&
               Number(env.COPIES) < changed &&
               (chunks === 1 ||
