@@ -129,9 +129,10 @@ function parseReview(text) {
 }
 
 // The extract step's coverage: files read of the changed files in scope, the
-// diff's size when it is over one review's read budget, and its files that
-// are not copies when one review faced more than it reads whole. A review
-// without it is not one.
+// diff's size when it is over one review's read budget, its files that are
+// not copies when one review faced more than it reads whole, and the
+// generated data files left out of the scope. A review without it is not one.
+const DATA_PATH = /^[A-Za-z0-9._/@+-]{1,500}$/u;
 function validCoverage(coverage) {
   const absentOrPositive = (n) =>
     n === undefined || (Number.isSafeInteger(n) && n > 0);
@@ -142,8 +143,32 @@ function validCoverage(coverage) {
     coverage.read >= 0 &&
     coverage.read <= coverage.changed &&
     absentOrPositive(coverage.over_budget) &&
-    absentOrPositive(coverage.over_files)
+    absentOrPositive(coverage.over_files) &&
+    (coverage.data_files === undefined ||
+      (Array.isArray(coverage.data_files) &&
+        coverage.data_files.length > 0 &&
+        coverage.data_files.every(
+          (name) => typeof name === "string" && DATA_PATH.test(name),
+        )))
   );
+}
+
+// The files read, then the generated data files the review never read: the
+// first DATA_NAMES by name, then how many more.
+const DATA_NAMES = 10;
+function coverageText(coverage) {
+  const data = coverage.data_files ?? [];
+  const named = data
+    .slice(0, DATA_NAMES)
+    .map((name) => `\`${name}\``)
+    .join(", ");
+  const more =
+    data.length > DATA_NAMES ? ` and ${data.length - DATA_NAMES} more` : "";
+  return `read ${coverage.read} of ${coverage.changed} changed file(s)${
+    data.length === 0
+      ? ""
+      : `; ${data.length} data file(s) not reviewed: ${named}${more}`
+  }`;
 }
 
 // Whether the review read less than its whole scope.
@@ -157,7 +182,7 @@ function isPartial(coverage) {
 
 // The marker's status line, which states coverage before the finding count.
 function statusLine(lane, head, coverage, findings, inline) {
-  const read = `read ${coverage.read} of ${coverage.changed} changed file(s)`;
+  const read = coverageText(coverage);
   if (!isPartial(coverage))
     return `**${lane}** reviewed \`${head}\`: ${read}; ${findings} finding(s), ${inline} as inline comments.`;
   const size =
@@ -663,7 +688,7 @@ async function shadowReport(core, env, report) {
     `- Outcome: ${report.failure_class ?? "complete"}`,
     ...(report.coverage
       ? [
-          `- Coverage: read ${report.coverage.read} of ${report.coverage.changed} changed file(s)`,
+          `- Coverage: ${coverageText(report.coverage)}`,
         ]
       : []),
     `- Findings: ${report.findings ?? "none"}; inline-ready: ${report.inline ?? 0}`,
@@ -690,6 +715,7 @@ module.exports = {
   anchorProblem,
   commentBody,
   commentableLines,
+  coverageText,
   hunkLines,
   isPartial,
   judge,
