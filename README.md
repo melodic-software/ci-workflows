@@ -776,7 +776,7 @@ consumer to audit it.
   requests, so it spends none (its `action.yml` describes what it does).
 - `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
-  inside `key-credit-window-hours` (default 6), reading one artifact name with
+  inside `key-credit-window-hours` (default 1), reading one artifact name with
   the job token (one call), and runs the key on any failure. Another keyed
   lane adopts it with the same three pieces: a gate job before its key job, an
   upload of the gate's `marker` artifact after the launcher's `credit-stop`,

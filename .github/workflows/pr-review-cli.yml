@@ -303,7 +303,7 @@ on:
           or a replaced key is picked up. 0 always tries the key. The marker
           is kept one day, so a longer window ends after 24 hours.
         type: number
-        default: 6
+        default: 1
       lane-transcript-public-key:
         description: >-
           The caller's vars.LANE_TRANSCRIPT_PUBLIC_KEY. Each model leg's
