@@ -4176,6 +4176,10 @@ test("an incremental review leaves the data files the base branch declares out o
       job.name,
     );
     assert.deepEqual(mixed.warnings, [], job.name);
+    assert.match(
+      mixed.outputs.note,
+      /^The push also changed 3 generated data file\(s\) the base branch declares, in neither the diff nor the list; do not review them\.$/mu,
+    );
     // A push of data files alone needs no review, and says why.
     const dataOnly = await scope(job, "scripts/data-files.txt", [
       "data/verdicts.json",
