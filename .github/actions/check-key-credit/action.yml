@@ -2,21 +2,23 @@ name: Key credit gate
 description: >
   Before a keyed lane's key job: whether that job should skip its key because
   the key ended in a credit stop in this workflow inside the window. Reads
-  the workflow's completed runs created inside the window (one list call)
-  and at most three of their job lists, with the job token, which needs
-  actions: read. Any failure or an unclear answer leaves skip-key `false`,
-  so the key job runs as before. Writes one log line either way; a skip is a
-  notice naming the run whose credit stop caused it. See gate.cjs.
+  the repository's artifacts named by the `marker` output (one list call)
+  with the job token, which needs actions: read; the key job uploads that
+  marker after a credit stop. Any failure or an unclear answer leaves
+  skip-key `false`, so the key job runs as before. Writes one log line
+  either way; a skip is a notice naming the run whose credit stop caused it.
+  See gate.cjs.
 
 inputs:
   key-job:
     description: >-
       The key job's display name, lower-case kebab (for example
-      claude-review-key). The record steps are looked up in this job and in
-      `<key-job>-credit`, the job that runs this action.
+      claude-review-key); the marker's name carries it.
     required: true
   window-hours:
-    description: How far back a credit stop counts, in hours (0 turns the gate off; at most 168).
+    description: >-
+      How far back a credit stop counts, in hours (0 turns the gate off; at
+      most 168). A marker kept fewer days than the window ends it sooner.
     required: false
     default: "6"
   github-token:
@@ -31,6 +33,11 @@ outputs:
   origin-run:
     description: The run id whose credit stop caused the skip, or empty.
     value: ${{ steps.gate.outputs.origin-run }}
+  marker:
+    description: >-
+      The artifact name the key job uploads after a credit stop, or empty
+      when the workflow or key job is unreadable.
+    value: ${{ steps.gate.outputs.marker }}
 
 runs:
   using: composite

@@ -22,7 +22,7 @@ name: pr-review-cli
 #         # request against this grant at startup, so summary mode needs it
 #         # too, though it writes nothing.
 #         permissions:
-#           actions: read         # the check-key-credit and status jobs read this workflow's runs
+#           actions: read         # check-key-credit reads its marker; the status job reads this workflow's runs
 #           checks: read          # the status job reads its earlier runs' cost notices
 #           contents: read
 #           pull-requests: write
@@ -57,14 +57,15 @@ name: pr-review-cli
 #     a 401 or 402), which it sets only when that secret is set. The other
 #     model jobs read only whether it is set. It may be empty; then the lane
 #     runs as with two legs.
-#   - The check-key-credit job runs first, holds no secret and no write, and reads
-#     only this workflow's own runs with the job token (actions: read, so
-#     the caller grants it). When the key job ended in a credit stop
-#     (lane-class `credit-stop`) in a run created inside
-#     key-credit-window-hours, the key job is skipped and the subscription
-#     job reviews, its scope read by the status job in the key job's place.
-#     A failed or unclear read runs the key job as before
-#     (.github/actions/check-key-credit).
+#   - The check-key-credit job runs first, holds no secret and no write, and
+#     reads one artifact name with the job token (actions: read, so the
+#     caller grants it): the marker the key job uploads after a credit stop
+#     (lane-class `credit-stop`), named for this caller workflow and lane,
+#     counting only one whose run's head is this repository, never a fork's.
+#     When one was uploaded inside key-credit-window-hours, the key job is
+#     skipped and the subscription job reviews, its scope read by the status
+#     job in the key job's place. A failed or unclear read runs the key job
+#     as before (.github/actions/check-key-credit).
 #   - The model jobs cannot write: contents: read and pull-requests: read,
 #     no id-token, and `cache-mode: none`. The launcher step's env holds the
 #     one Claude credential and no GitHub token. Before the checkout the job
@@ -299,7 +300,8 @@ on:
           Hours a key's credit stop in this workflow keeps later runs off the
           key: their key job is skipped and the subscription job reviews.
           The first run after the window tries the key again, so a new cycle
-          or a replaced key is picked up. 0 always tries the key.
+          or a replaced key is picked up. 0 always tries the key. The marker
+          is kept one day, so a longer window ends after 24 hours.
         type: number
         default: 6
       lane-transcript-public-key:
@@ -367,10 +369,11 @@ env:
 
 jobs:
   # Whether the key is still out of credits: a key-job credit stop in this
-  # workflow inside the window skips the key job. Its record step carries the
-  # origin run forward in its name, which the next run's read finds, so the
-  # window counts from the credit stop, not the last skip. Every failure runs
-  # the key job: its `if` starts with !cancelled().
+  # workflow inside the window skips the key job. The key job uploads the
+  # gate's `marker` artifact after a credit stop, and the gate reads that
+  # one name (one call), so the window counts from the credit stop, not the
+  # last skip. Every failure runs the key job: its `if` starts with
+  # !cancelled().
   check-key-credit:
     name: ${{ inputs.lane == 'security' && 'security-review-key-credit' || 'claude-review-key-credit' }}
     runs-on: ubuntu-24.04
@@ -395,6 +398,7 @@ jobs:
     cache-mode: none
     outputs:
       skip-key: ${{ steps.gate.outputs.skip-key }}
+      marker: ${{ steps.gate.outputs.marker }}
     steps:
       - name: Read the key's credit history
         id: gate
@@ -404,12 +408,6 @@ jobs:
         with:
           key-job: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
           window-hours: ${{ inputs.key-credit-window-hours }}
-
-      - name: Record the key's credit stop in run ${{ steps.gate.outputs.origin-run }}
-        if: steps.gate.outputs.skip-key == 'true'
-        continue-on-error: true
-        timeout-minutes: 1
-        run: echo "carried to the next run's check-key-credit read"
 
       # The job token's api-budget notice, from the readings the gate's
       # requests left. It spends no request.
@@ -425,7 +423,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
     needs: check-key-credit
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 115 || 107 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
       needs.check-key-credit.outputs.skip-key != 'true'
       && !cancelled()
@@ -1865,15 +1863,38 @@ jobs:
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # Read by the next runs' check-key-credit job: a step named for this run that
-      # succeeds only after the launcher's credit stop, which only the key
-      # leg can end in. Its name is the record; keep it equal to
-      # check-key-credit's RECORD_PATTERN.
-      - name: Record the key's credit stop in run ${{ github.run_id }}
-        if: always() && (steps.claude.outputs.lane-class == 'credit-stop' || steps.claude-2.outputs.lane-class == 'credit-stop' || steps.claude-3.outputs.lane-class == 'credit-stop' || steps.claude-4.outputs.lane-class == 'credit-stop')
+      # Read by the next runs' check-key-credit job: the artifact it names
+      # (gate.cjs markerName), uploaded only after the launcher's credit stop,
+      # which only the key leg can end in. Its upload time starts the window;
+      # one day's retention covers the default 6-hour window.
+      - name: Write the key's credit-stop marker
+        id: credit-marker
+        if: always() && needs.check-key-credit.outputs.marker != '' && (steps.claude.outputs.lane-class == 'credit-stop' || steps.claude-2.outputs.lane-class == 'credit-stop' || steps.claude-3.outputs.lane-class == 'credit-stop' || steps.claude-4.outputs.lane-class == 'credit-stop')
         continue-on-error: true
         timeout-minutes: 1
-        run: echo "the key ended in a credit stop"
+        run: |
+          mkdir -p "$RUNNER_TEMP/key-credit-stop"
+          echo "$GITHUB_RUN_ID" >"$RUNNER_TEMP/key-credit-stop/run-id"
+
+      - name: Scan the key's credit-stop marker for credentials
+        id: credit-marker-scan
+        if: always() && steps.credit-marker.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/scan-upload
+        with:
+          path: ${{ runner.temp }}/key-credit-stop/run-id
+
+      - name: Upload the key's credit-stop marker
+        if: always() && steps.credit-marker.outcome == 'success' && steps.credit-marker-scan.outputs.clean == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.check-key-credit.outputs.marker }}
+          path: ${{ runner.temp }}/key-credit-stop/run-id
+          if-no-files-found: error
+          retention-days: 1
 
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
@@ -2320,7 +2341,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
     needs: [check-key-credit, review-key]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 115 || 107 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
       ((needs.review-key.result == 'success'
         && (needs.review-key.outputs.handoff == 'true' || needs.review-key.outputs.credential-present == 'false'))
@@ -3763,16 +3784,6 @@ jobs:
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # Read by the next runs' check-key-credit job: a step named for this run that
-      # succeeds only after the launcher's credit stop, which only the key
-      # leg can end in. Its name is the record; keep it equal to
-      # check-key-credit's RECORD_PATTERN.
-      - name: Record the key's credit stop in run ${{ github.run_id }}
-        if: always() && (steps.claude.outputs.lane-class == 'credit-stop' || steps.claude-2.outputs.lane-class == 'credit-stop' || steps.claude-3.outputs.lane-class == 'credit-stop' || steps.claude-4.outputs.lane-class == 'credit-stop')
-        continue-on-error: true
-        timeout-minutes: 1
-        run: echo "the key ended in a credit stop"
-
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
       # makes deny every call no rule allows, as dontAsk does. A mismatch, or
@@ -4223,7 +4234,7 @@ jobs:
     name: ${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}
     needs: [check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 115 || 107 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
       needs.review-subscription.result == 'success'
       && needs.review-subscription.outputs.handoff == 'true'
@@ -5662,16 +5673,6 @@ jobs:
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
-
-      # Read by the next runs' check-key-credit job: a step named for this run that
-      # succeeds only after the launcher's credit stop, which only the key
-      # leg can end in. Its name is the record; keep it equal to
-      # check-key-credit's RECORD_PATTERN.
-      - name: Record the key's credit stop in run ${{ github.run_id }}
-        if: always() && (steps.claude.outputs.lane-class == 'credit-stop' || steps.claude-2.outputs.lane-class == 'credit-stop' || steps.claude-3.outputs.lane-class == 'credit-stop' || steps.claude-4.outputs.lane-class == 'credit-stop')
-        continue-on-error: true
-        timeout-minutes: 1
-        run: echo "the key ended in a credit stop"
 
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
