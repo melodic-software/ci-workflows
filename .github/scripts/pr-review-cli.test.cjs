@@ -2595,6 +2595,17 @@ test("an incremental review groups only copies in its scope whose change since t
   }
 });
 
+// The prompt is built by one script copied into each leg; a copy that drifts
+// tells one leg's model something the others do not.
+test("every model leg composes its prompt with the same script", () => {
+  for (const job of [subscription, fallback])
+    assert.equal(
+      step(job, "compose").with.script,
+      step(key, "compose").with.script,
+      job.name,
+    );
+});
+
 test("the prompt names the identical files only for a review that holds them once", async () => {
   const line =
     /^IDENTICAL FILES: each line of \.claude-lane\/identical\.txt /mu;
@@ -2621,7 +2632,7 @@ test("the prompt names the identical files only for a review that holds them onc
     assert.match(text, line);
     assert.match(
       text,
-      /^The job left the copies out of every chunk and counts them as read;/mu,
+      /^The job left the copies out of every chunk and counts them as read\. Each first path is an ordinary file of\nits chunk: read its whole change and count it in files_read like any other file\.$/mu,
     );
     assert.doesNotMatch(text, /skip its copies/u);
   }
@@ -3182,11 +3193,12 @@ test("a diff of many small added files, some identical, is chunked without its c
   assert.equal(cut.chunks, "4");
   assert.equal(cut.files, "40,40,40,32");
   assert.equal(cut.excluded, "49");
-  const copies = fs
+  const groups = fs
     .readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8")
     .trim()
     .split("\n")
-    .flatMap((line) => line.split("\t").slice(1));
+    .map((line) => line.split("\t"));
+  const copies = groups.flatMap((group) => group.slice(1));
   assert.equal(copies.length, 49);
   const chunked = [1, 2, 3, 4].flatMap((k) =>
     [
@@ -3203,6 +3215,9 @@ test("a diff of many small added files, some identical, is chunked without its c
     copies.every((copy) => !chunked.includes(copy)),
     "no copy is in a chunk",
   );
+  // Each group's first path stays in the read set: exactly one chunk holds it.
+  for (const [first] of groups)
+    assert.equal(chunked.filter((p) => p === first).length, 1, first);
   // Every chunk's prompt names the copies it left out.
   const outputs = await composeOutputs({
     COPIES: fullDiff.copies,
@@ -3917,6 +3932,12 @@ test("files_read counts against the scope's file list, with no deletion left for
       assert.match(
         prompt,
         /A pure rename \(a header with no hunks\)\n {2}is read once you have seen its header\./u,
+        job.name,
+      );
+      // A blob id matching another file's is no read (claude-code-plugins#12792).
+      assert.match(
+        prompt,
+        /A blob id on an index line, matching another\n {2}file's or not, is not a read: read the hunks of every listed file\./u,
         job.name,
       );
       assert.doesNotMatch(prompt, /deletes whole/u, job.name);
