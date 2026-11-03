@@ -1599,6 +1599,7 @@ test("the full diff shows text the base or head marks -diff or binary, or hides 
           HEAD_SHA: head,
           MERGE_BASE: base,
           DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
         },
       },
     );
@@ -1786,9 +1787,22 @@ test("every model leg wires the coverage counts and asks the model for files_rea
       `\${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}`,
       job.name,
     );
+    // Each count is the length of the list the model counts against.
     assert.match(
       step(job, "scope").with.script,
-      /core\.setOutput\("files", String\(scope\.filter\(\(file\) => !removed\(file\)\)\.length\)\);/u,
+      /core\.setOutput\("files", String\(kept\.length\)\);/u,
+    );
+    assert.equal(
+      step(job, "scope").env.FILE_LIST,
+      ".claude-lane/incremental-files.txt",
+    );
+    assert.equal(
+      step(job, "full-diff").env.FILE_LIST,
+      ".claude-lane/files.txt",
+    );
+    assert.match(
+      step(job, "full-diff").run,
+      /files="\$\(git diff --name-only --diff-filter=d "\$base" "\$HEAD_SHA" \| tee "\$FILE_LIST" \| wc -l/u,
     );
     const compose = step(job, "compose").with.script;
     assert.match(
@@ -1944,6 +1958,7 @@ test("the full-diff step groups identical modifications, and identical additions
           MERGE_BASE: base,
           HEAD_SHA: head,
           DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
           HOLD_PATHS: holdPaths,
           SENSITIVE_PATHS: sensitivePaths,
         },
@@ -2085,6 +2100,7 @@ test("the full-diff step groups identical copies the base branch declares genera
           MERGE_BASE: base,
           HEAD_SHA: head,
           DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
           HOLD_PATHS: "plugins/h/**\n",
           SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
           GENERATED_COPIES: generatedCopies,
@@ -2276,6 +2292,7 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
         MERGE_BASE: "b".repeat(40),
         HEAD_SHA: "a".repeat(40),
         DIFF_FILE: ".claude-lane/pr.diff",
+        FILE_LIST: ".claude-lane/files.txt",
         GITHUB_OUTPUT: output,
         GITHUB_SERVER_URL: "https://github.com",
       },
@@ -2623,6 +2640,7 @@ test("a diff of many small added files, some identical, is chunked without its c
     MERGE_BASE: base,
     HEAD_SHA: head,
     DIFF_FILE: step(key, "full-diff").env.DIFF_FILE,
+    FILE_LIST: step(key, "full-diff").env.FILE_LIST,
     HOLD_PATHS: "",
   });
   assert.equal(fullDiff.files, "201");
@@ -2805,6 +2823,7 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
       MERGE_BASE: base,
       HEAD_SHA: head,
       DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      FILE_LIST: step(job, "full-diff").env.FILE_LIST,
       HOLD_PATHS: "",
     });
     assert.equal(fullDiff.files, "46", job.name);
@@ -2924,6 +2943,12 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
     const head = git(origin, "rev-parse", "HEAD");
     const work = path.join(dir, "work");
     git(dir, "clone", "--quiet", origin, work);
+    // A list the head planted as a symlink is replaced, not written through.
+    fs.mkdirSync(path.join(work, ".claude-lane"));
+    fs.symlinkSync(
+      path.join(dir, "outside.txt"),
+      path.join(work, ".claude-lane/files.txt"),
+    );
     const run = (id, env) => {
       const output = path.join(dir, `${id}.out`);
       fs.writeFileSync(output, "");
@@ -2953,10 +2978,22 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
       MERGE_BASE: base,
       HEAD_SHA: head,
       DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      FILE_LIST: step(job, "full-diff").env.FILE_LIST,
       HOLD_PATHS: "",
     });
-    // keep.js, new.js and link; the deletions stay in the diff.
+    assert.equal(fs.existsSync(path.join(dir, "outside.txt")), false, job.name);
+    assert.ok(
+      !fs.lstatSync(path.join(work, ".claude-lane/files.txt")).isSymbolicLink(),
+      job.name,
+    );
+    // keep.js, new.js and link; the deletions stay in the diff but on no
+    // list, and the count is the list's.
     assert.equal(fullDiff.files, "3", job.name);
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/files.txt"), "utf8"),
+      "keep.js\nlink\nnew.js\n",
+      job.name,
+    );
     assert.match(
       fs.readFileSync(path.join(work, ".claude-lane/pr.diff"), "utf8"),
       /^-gone2\.js$/mu,
@@ -3093,6 +3130,7 @@ test("a whole-file deletion counts in no diff size, so deletions alone put no re
       MERGE_BASE: base,
       HEAD_SHA: head,
       DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      FILE_LIST: step(job, "full-diff").env.FILE_LIST,
       HOLD_PATHS: "",
     });
     const diff = path.join(work, ".claude-lane/pr.diff");
@@ -3142,8 +3180,8 @@ test("a whole-file deletion counts in no diff size, so deletions alone put no re
 });
 
 // An incremental review counts the files in scope the same way: a file the
-// push deleted whole stays in the incremental diff and its file list, but not
-// in files or bytes, and the split step's count of that diff agrees.
+// push deleted whole stays in the incremental diff, but not in its file list,
+// files or bytes, and the split step's count of that diff agrees.
 test("an incremental review leaves a file the push deleted out of its file count and size, in every leg", async () => {
   const LAST = "b".repeat(40);
   const HEAD = "a".repeat(40);
@@ -3214,6 +3252,7 @@ test("an incremental review leaves a file the push deleted out of its file count
       HEAD_SHA: HEAD,
       BASE_REF: "main",
       DIFF_FILE: diffFile,
+      FILE_LIST: path.join(dir, "incremental-files.txt"),
       GIT_TOKEN: "test-token",
       GITHUB_SERVER_URL: "https://github.invalid",
       RUNNER_TEMP: dir,
@@ -3250,7 +3289,13 @@ test("an incremental review leaves a file the push deleted out of its file count
     }
     assert.equal(outputs.scope, "incremental", job.name);
     assert.equal(outputs.files, "1", job.name);
-    assert.match(outputs.note, /^- gone\.js$/mu, job.name);
+    // The list the model counts against holds a.js alone, and the note names it.
+    const list = path.join(dir, "incremental-files.txt");
+    assert.equal(fs.readFileSync(list, "utf8"), "a.js\n", job.name);
+    assert.ok(
+      outputs.note.includes(`in the files listed one per line in ${list}`),
+      job.name,
+    );
     assert.match(fs.readFileSync(diffFile, "utf8"), /^status: removed$/mu);
     // Nor in its size: the a.js section alone, "diff --git a/a.js b/a.js\n"
     // (25) + "status: modified\n" (17) + "@@ -1 +1 @@\n" (12) + "-x\n+y\n" (6).
@@ -3323,7 +3368,7 @@ test("the compose step writes one prompt per chunk, each with its share of the c
       /at most 8 comments and a summary of at most 6666 characters/u,
     );
   }
-  assert.match(prompts[2], /\(4 changed files, /u);
+  assert.match(prompts[2], /\(4 files of the scope's file list\)/u);
   assert.equal(outputs["prompt-file-4"], undefined);
   const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
   assert.equal(schema.properties.summary.maxLength, 6666);
@@ -3350,10 +3395,12 @@ test("the compose step writes one prompt per chunk, each with its share of the c
   }
 });
 
-// A chunk of 38 files beside two it deleted whole was reviewed as 36 of 38:
-// the model read the count as including the deletions, and the review failed
-// as partial. Each chunk prompt says the count leaves them out.
-test("each chunk prompt says its file count and files_read leave out whole-file deletions, in every leg", async () => {
+// A chunk of 38 files beside two it deleted whole was reviewed as 36 of 38,
+// and claude-code-plugins#12563's 13 files beside one deletion as 12 of 13:
+// told to leave deletions out of a count the job had already left them out
+// of, the model left them out twice. The prompt names the job's file list and
+// has files_read count against it, with no deletion arithmetic of its own.
+test("files_read counts against the scope's file list, with no deletion left for the model to subtract, in every leg", async () => {
   for (const job of [key, subscription, fallback]) {
     const outputs = await composeOutputs(
       { CHUNKS: "2", CHUNK_FILES: "38,38" },
@@ -3361,22 +3408,29 @@ test("each chunk prompt says its file count and files_read leave out whole-file 
     );
     for (const file of [outputs["prompt-file"], outputs["prompt-file-2"]]) {
       const prompt = fs.readFileSync(file, "utf8");
+      assert.match(prompt, /\(38 files of the scope's file list\)/u, job.name);
       assert.match(
         prompt,
-        /\(38 changed files, not counting files it deletes whole\)/u,
+        /files_read counts the listed files of this chunk you read every hunk of, so a chunk read whole\nreturns 38\./u,
         job.name,
       );
       assert.match(
         prompt,
-        /files_read counts the changed files of this chunk you read every hunk of\. That count above already leaves\nout files the chunk deletes whole, so a chunk read whole returns it\./u,
+        /- files_read: how many files of the scope's file list you read every hunk of in the diff\n {2}file: the list REVIEW SCOPE names for an incremental review, else the FULL DIFF list\.\n {2}Count only listed files,/u,
         job.name,
       );
       assert.match(
         prompt,
-        /A pure rename \(a header with no hunks\) is read once you\n {2}have seen its header\./u,
+        /A pure rename \(a header with no hunks\)\n {2}is read once you have seen its header\./u,
         job.name,
       );
+      assert.doesNotMatch(prompt, /deletes whole/u, job.name);
     }
+    assert.match(
+      step(job, "full-diff").run,
+      /Its \$files changed files are listed one per line in \$FILE_LIST; a file it deletes whole is in the diff but on no list\./u,
+      job.name,
+    );
   }
 });
 
