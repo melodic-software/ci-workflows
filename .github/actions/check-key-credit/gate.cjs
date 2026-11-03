@@ -4,7 +4,7 @@
 // The key job uploads an artifact named markerName(workflow, keyJob) after
 // the launcher's lane-class `credit-stop` (run-claude-cli: classify.cjs
 // isCreditStop), so an auth stop (401, or 402 without the credit text) never
-// writes one. This gate makes one call, the repository's artifacts of that
+// writes one. This gate's first call reads the repository's artifacts of that
 // exact name, and skips the key when the newest unexpired one was created
 // inside the window, citing the run that uploaded it. The window counts from
 // that upload, so a topped-up or rotated key is tried on the first run after
@@ -21,13 +21,32 @@
 // repository can still upload one; the worst it does is move reviews to the
 // subscription for the window. More than 100 markers of one name in
 // retention can push the newest off the page, which runs the key.
+//
+// The probing marker closes the re-probe race: when the window has ended but
+// a credit-stop marker is still in retention, every gate until the first
+// re-probe's own credit stop lands would run the empty key. So the gate then
+// makes a second call, the probing markers (probeName), and:
+//   - a probing marker created after that credit stop and inside the probe
+//     window skips, citing the probing run;
+//   - one created after it but older than the probe window means that probe
+//     hit no credit stop, so the key runs and no new probe is written;
+//   - none means this gate is the probe: the key runs and the probing-marker
+//     output names the artifact the gate job uploads.
+// With no credit-stop marker in retention the key is healthy: one call, no
+// probe, so a working key is never held to one call per probe window. A
+// failed probe read runs the key and writes no probe. A probe run cancelled
+// before its key leg leaves no credit stop either, so the next gate after it
+// expires runs the key as healthy.
 "use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
 
 const MARKER_PREFIX = "key-credit-stop-";
+const PROBE_PREFIX = "key-credit-probing-";
 const MAX_WINDOW_HOURS = 168;
+// The markers are kept one day, so a longer probe window would outlive them.
+const MAX_PROBE_MINUTES = 1440;
 const WORKFLOW_REF = /^[\w.-]+\/[\w.-]+\/\.github\/workflows\/([\w.-]+\.ya?ml)@/u;
 
 // The rate-limit reading report-api-budget reads, as the scope step writes
@@ -59,10 +78,14 @@ function markerName(workflow, keyJob) {
   return `${MARKER_PREFIX}${workflow}-${keyJob}`;
 }
 
-// The decision from one artifact listing: the newest unexpired marker of the
-// exact name, created at or after `sinceMs` by a run whose head is this
-// repository, skips, citing its run.
-function judgeMarkers(artifacts, name, sinceMs) {
+// The artifact name the gate job uploads when it passes the key as a probe.
+function probeName(workflow, keyJob) {
+  return `${PROBE_PREFIX}${workflow}-${keyJob}`;
+}
+
+// The newest unexpired marker of the exact name, created at or after
+// `sinceMs` by a run whose head is this repository, or null.
+function newestMarker(artifacts, name, sinceMs) {
   let newest = null;
   for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
     const created = Date.parse(artifact?.created_at ?? "");
@@ -81,28 +104,67 @@ function judgeMarkers(artifacts, name, sinceMs) {
     }
     if (!newest || created > newest.created) newest = { created, run };
   }
+  return newest;
+}
+
+// The decision from one credit-stop listing: a marker inside the window
+// skips, citing its run.
+function judgeMarkers(artifacts, name, sinceMs) {
+  const newest = newestMarker(artifacts, name, sinceMs);
   return newest
     ? { skip: true, origin: String(newest.run) }
     : { skip: false, reason: "no credit-stop marker in the window" };
 }
 
-// The decision, from an injected reader; never throws.
-async function decide({ listArtifacts, name, sinceMs }) {
-  let artifacts;
+async function read(listArtifacts, name, what) {
   try {
-    artifacts = await listArtifacts();
+    const artifacts = await listArtifacts(name);
+    return Array.isArray(artifacts)
+      ? { artifacts }
+      : { reason: `the ${what} list was not a list` };
   } catch (error) {
-    return { skip: false, reason: `the markers were not read (${error.message})` };
+    return { reason: `the ${what}s were not read (${error.message})` };
   }
-  if (!Array.isArray(artifacts)) {
-    return { skip: false, reason: "the marker list was not a list" };
+}
+
+// The decision, from an injected reader of one exact name; never throws.
+// `probe` (the probing marker's name and `probeSinceMs`) is optional: without
+// it the gate reads and judges the credit-stop marker alone. `probe: true` on
+// a verdict asks the gate job to upload the probing marker.
+async function decide({ listArtifacts, name, sinceMs, probe = null, probeSinceMs = 0, nowMs = 0 }) {
+  const stops = await read(listArtifacts, name, "marker");
+  if (!stops.artifacts) return { skip: false, reason: stops.reason };
+  const verdict = judgeMarkers(stops.artifacts, name, sinceMs);
+  if (verdict.skip || !probe) return verdict;
+  const stop = newestMarker(stops.artifacts, name, -Infinity);
+  if (!stop) return verdict;
+  const probes = await read(listArtifacts, probe, "probing marker");
+  if (!probes.artifacts) return { skip: false, reason: probes.reason };
+  const prior = newestMarker(probes.artifacts, probe, stop.created);
+  if (!prior) {
+    return {
+      skip: false,
+      reason: `the credit stop in run ${stop.run} is past the window; this run probes the key`,
+      probe: true,
+    };
   }
-  return judgeMarkers(artifacts, name, sinceMs);
+  if (prior.created >= probeSinceMs) {
+    return {
+      skip: true,
+      origin: String(prior.run),
+      probing: Math.max(0, Math.round((nowMs - prior.created) / 60000)),
+    };
+  }
+  return {
+    skip: false,
+    reason: `run ${prior.run} probed the key after its credit stop with no new credit stop`,
+  };
 }
 
 function readEnv(env) {
   const keyJob = env.KEY_JOB ?? "";
   const hours = Number(env.WINDOW_HOURS);
+  const probeMinutes = Number(env.PROBE_MINUTES);
   const workflow = (env.WORKFLOW_REF ?? "").match(WORKFLOW_REF)?.[1] ?? null;
   const repository = env.GITHUB_REPOSITORY ?? "";
   const valid =
@@ -112,8 +174,12 @@ function readEnv(env) {
   return {
     keyJob,
     hours,
+    // Out of range or unreadable turns probing off: the key runs as before.
+    probeMinutes:
+      probeMinutes > 0 && probeMinutes <= MAX_PROBE_MINUTES ? probeMinutes : 0,
     repository,
     marker: valid ? markerName(workflow, keyJob) : "",
+    probe: valid ? probeName(workflow, keyJob) : "",
     api: env.GITHUB_API_URL || "https://api.github.com",
     server: env.GITHUB_SERVER_URL || "https://github.com",
     token: env.GITHUB_TOKEN ?? "",
@@ -131,12 +197,17 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
   } else if (!config.valid || config.token === "") {
     verdict = { skip: false, reason: "the workflow, job or token is unreadable" };
   } else {
+    const nowMs = now().getTime();
     verdict = await decide({
       name: config.marker,
-      sinceMs: now().getTime() - config.hours * 3600 * 1000,
-      listArtifacts: async () => {
+      sinceMs: nowMs - config.hours * 3600 * 1000,
+      probe: config.probeMinutes > 0 ? config.probe : null,
+      probeSinceMs: nowMs - config.probeMinutes * 60 * 1000,
+      nowMs,
+      // The API's name filter takes one exact name, so each marker is a call.
+      listArtifacts: async (name) => {
         const response = await fetchImpl(
-          `${config.api}/repos/${config.repository}/actions/artifacts?name=${encodeURIComponent(config.marker)}&per_page=100`,
+          `${config.api}/repos/${config.repository}/actions/artifacts?name=${encodeURIComponent(name)}&per_page=100`,
           {
             headers: {
               Accept: "application/vnd.github+json",
@@ -152,7 +223,11 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
       },
     });
   }
-  if (verdict.skip) {
+  if (verdict.skip && verdict.probing !== undefined) {
+    lines.push(
+      `::notice title=check-key-credit::${config.keyJob} skips the key: run ${verdict.origin} (${config.server}/${config.repository}/actions/runs/${verdict.origin}) is probing the key, ${verdict.probing} minutes ago, inside the ${config.probeMinutes}-minute probe window; the subscription job reviews`,
+    );
+  } else if (verdict.skip) {
     lines.push(
       `::notice title=check-key-credit::${config.keyJob} skips the key: the key's credit stop in run ${verdict.origin} (${config.server}/${config.repository}/actions/runs/${verdict.origin}) is inside the ${config.hours}-hour window; the subscription job reviews`,
     );
@@ -162,7 +237,7 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
   if (env.GITHUB_OUTPUT) {
     fs.appendFileSync(
       env.GITHUB_OUTPUT,
-      `skip-key=${verdict.skip}\norigin-run=${verdict.skip ? verdict.origin : ""}\nmarker=${config.marker}\n`,
+      `skip-key=${verdict.skip}\norigin-run=${verdict.skip ? verdict.origin : ""}\nmarker=${config.marker}\nprobing-marker=${verdict.probe ? config.probe : ""}\n`,
     );
   }
   return { verdict, lines };
@@ -179,8 +254,10 @@ if (require.main === module) {
 
 module.exports = {
   MARKER_PREFIX,
+  PROBE_PREFIX,
   decide,
   judgeMarkers,
   main,
   markerName,
+  probeName,
 };

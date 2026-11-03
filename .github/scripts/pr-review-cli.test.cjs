@@ -652,14 +652,10 @@ test("only the key job uploads the gate's marker, only after a credit stop, kept
   assert.equal(upload.with.path, `\${{ runner.temp }}/key-credit-stop/run-id`);
   assert.equal(upload.with["retention-days"], 1);
   assert.equal(upload["continue-on-error"], true);
-  // The gate hands the marker name on and carries nothing forward: the
-  // window counts from the upload.
+  // The gate hands the marker name on and writes no credit-stop marker of
+  // its own: the window counts from the key job's upload.
   const gate = workflow.jobs["check-key-credit"];
   assert.equal(gate.outputs.marker, `\${{ steps.gate.outputs.marker }}`);
-  assert.deepEqual(
-    gate.steps.map((s) => s.name),
-    ["Read the key's credit history", "Log the API budget"],
-  );
   for (const job of Object.values(workflow.jobs)) {
     assert.equal(
       job.steps.some((s) =>
@@ -669,6 +665,51 @@ test("only the key job uploads the gate's marker, only after a credit stop, kept
       job.name,
     );
   }
+});
+
+test("the gate job uploads the probing marker it names, right after the read, kept one day", () => {
+  const gate = workflow.jobs["check-key-credit"];
+  assert.deepEqual(
+    gate.steps.map((s) => s.name),
+    [
+      "Read the key's credit history",
+      "Write the key's probing marker",
+      "Scan the key's probing marker for credentials",
+      "Upload the key's probing marker",
+      "Log the API budget",
+    ],
+  );
+  const write = step(gate, "probe-marker");
+  const writes = (name) =>
+    Boolean(
+      evaluate(write.if, {
+        steps: { gate: { outputs: { "probing-marker": name } } },
+      }),
+    );
+  assert.equal(writes("key-credit-probing-w.yml-claude-review-key"), true);
+  assert.equal(writes(""), false);
+  assert.match(
+    write.run,
+    /"\$GITHUB_RUN_ID" >"\$RUNNER_TEMP\/key-credit-probing\/run-id"$/mu,
+  );
+  const upload = gate.steps.find(
+    (s) => s.name === "Upload the key's probing marker",
+  );
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
+  assert.equal(
+    upload.if,
+    "always() && steps.probe-marker.outcome == 'success' && steps.probe-marker-scan.outputs.clean == 'true'",
+  );
+  assert.equal(upload.with.name, `\${{ steps.gate.outputs.probing-marker }}`);
+  assert.equal(
+    upload.with.path,
+    `\${{ runner.temp }}/key-credit-probing/run-id`,
+  );
+  assert.equal(upload.with["retention-days"], 1);
+  assert.equal(upload["continue-on-error"], true);
+  // An artifact upload uses the runner's token, not the job token, so the
+  // gate keeps actions: read and nothing more.
+  assert.deepEqual(gate.permissions, { actions: "read" });
 });
 
 test("after a credit skip the status job runs and reads the subscription job's scope", () => {
@@ -4216,6 +4257,7 @@ const isUpload = (s) =>
 test("every upload follows a credential scan over the same path, and a scan that is not clean withholds it", () => {
   const uploads = [];
   for (const [name, job] of Object.entries({
+    "check-key-credit": workflow.jobs["check-key-credit"],
     "review-key": key,
     "review-subscription": subscription,
     "review-fallback": fallback,
@@ -4242,6 +4284,7 @@ test("every upload follows a credential scan over the same path, and a scan that
       const steps = {
         "handoff-file": { outputs: { sha256: "a".repeat(64) } },
         "credit-marker": { outcome: "success" },
+        "probe-marker": { outcome: "success" },
         [scan.id]: { outputs: { clean: "true" } },
       };
       const inputs = { publish: "shadow" };
@@ -4260,8 +4303,10 @@ test("every upload follows a credential scan over the same path, and a scan that
       }
     });
   }
-  // The key job's credit-stop marker, then each leg's review handoff.
+  // The gate's probing marker, the key job's credit-stop marker, then each
+  // leg's review handoff.
   assert.deepEqual(uploads, [
+    "check-key-credit",
     "review-key",
     "review-key",
     "review-subscription",
