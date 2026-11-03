@@ -13,11 +13,11 @@ const zlib = require("node:zlib");
 
 const {
   makeTemporaryDirectory,
-} = require("../../scripts/temporary-directories.cjs");
-const { parseWorkflow } = require("../../scripts/workflow-yaml.cjs");
+} = require("./temporary-directories.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const ACTION = parseWorkflow(
-  fs.readFileSync(path.join(__dirname, "action.yml"), "utf8"),
+  fs.readFileSync(path.join(__dirname, "../actions/upload-lane-transcript/action.yml"), "utf8"),
 );
 const SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
 const MARKER = "plaintext-marker-7f3c";
@@ -94,7 +94,7 @@ function run(dir, { key, file = "", jobId = JOB }) {
   fs.writeFileSync(output, "");
   const result = spawnSync(
     process.execPath,
-    [path.join(__dirname, "seal-transcript.cjs")],
+    [path.join(__dirname, "../actions/upload-lane-transcript/seal-transcript.cjs")],
     {
       env: {
         PATH: process.env.PATH,
