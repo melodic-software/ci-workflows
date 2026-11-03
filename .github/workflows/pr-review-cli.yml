@@ -60,7 +60,8 @@ name: pr-review-cli
 #   - The check-key-credit job runs first, holds no secret and no write, and
 #     reads one artifact name with the job token (actions: read, so the
 #     caller grants it): the marker the key job uploads after a credit stop
-#     (lane-class `credit-stop`), named for this caller workflow and lane.
+#     (lane-class `credit-stop`), named for this caller workflow and lane,
+#     counting only one whose run's head is this repository, never a fork's.
 #     When one was uploaded inside key-credit-window-hours, the key job is
 #     skipped and the subscription job reviews, its scope read by the status
 #     job in the key job's place. A failed or unclear read runs the key job

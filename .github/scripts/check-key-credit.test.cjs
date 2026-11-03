@@ -27,7 +27,7 @@ const marker = (run, hoursAgo, extra = {}) => ({
   name: NAME,
   expired: false,
   created_at: at(hoursAgo),
-  workflow_run: { id: run },
+  workflow_run: { id: run, repository_id: 1, head_repository_id: 1 },
   ...extra,
 });
 
@@ -80,6 +80,56 @@ test("no marker, an expired one, another name or a malformed one runs the key", 
       JSON.stringify(artifacts),
     );
   }
+});
+
+test("only a marker from a run whose head is this repository counts, so a fork cannot forge one", () => {
+  const run = (ids) => ({ workflow_run: { id: 10, ...ids } });
+  // A fork's pull_request run: its head repository is the fork.
+  assert.equal(
+    judgeMarkers(
+      [marker(10, 1, run({ repository_id: 1, head_repository_id: 2 }))],
+      NAME,
+      SINCE,
+    ).skip,
+    false,
+  );
+  // A same-repository run still skips.
+  assert.deepEqual(
+    judgeMarkers(
+      [marker(10, 1, run({ repository_id: 1, head_repository_id: 1 }))],
+      NAME,
+      SINCE,
+    ),
+    { skip: true, origin: "10" },
+  );
+  // Either id missing or malformed: ignored.
+  for (const ids of [
+    { repository_id: 1 },
+    { head_repository_id: 1 },
+    {},
+    { repository_id: null, head_repository_id: null },
+    { repository_id: "1", head_repository_id: "1" },
+  ]) {
+    assert.equal(
+      judgeMarkers([marker(10, 1, run(ids))], NAME, SINCE).skip,
+      false,
+      JSON.stringify(ids),
+    );
+  }
+  // A fork marker newer than a same-repository one does not hide it.
+  assert.deepEqual(
+    judgeMarkers(
+      [
+        marker(11, 0.5, {
+          workflow_run: { id: 11, repository_id: 1, head_repository_id: 2 },
+        }),
+        marker(10, 2),
+      ],
+      NAME,
+      SINCE,
+    ),
+    { skip: true, origin: "10" },
+  );
 });
 
 test("the decision reads no run history, so runs that carry no record cannot starve it", async () => {
@@ -182,7 +232,10 @@ test("main skips on a marker in the window with one call, reads no run or job li
 });
 
 test("main runs the key with one call when no marker is in the window, a topped-up key included", async () => {
-  for (const artifacts of [[], [marker(98, 6.5)]]) {
+  const fork = marker(98, 1, {
+    workflow_run: { id: 98, repository_id: 1, head_repository_id: 2 },
+  });
+  for (const artifacts of [[], [marker(98, 6.5)], [fork]]) {
     const dir = makeTemporaryDirectory("check-key-credit-");
     const { urls, fetchImpl } = fakeFetch([[ARTIFACTS, { artifacts }]]);
     const { verdict, lines } = await main(env(dir), fetchImpl, now);

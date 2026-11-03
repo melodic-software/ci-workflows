@@ -13,11 +13,14 @@
 // fails the step.
 //
 // The name carries the caller workflow's file and the key job, so each
-// caller's key is judged on its own credit stops. Any workflow in the
-// repository can upload an artifact of that name; the worst a forged one
-// does is move reviews to the subscription for the window, and such writers
-// already hold the secrets. More than 100 markers of one name in retention
-// can push the newest off the page, which runs the key.
+// caller's key is judged on its own credit stops. A fork's pull_request run
+// holds no secret but can upload an artifact of any name from a modified
+// workflow, so a marker counts only when its run's head repository is this
+// repository (workflow_run.head_repository_id equal to repository_id), as
+// the run-history read's exclude_pull_requests did. Any workflow of this
+// repository can still upload one; the worst it does is move reviews to the
+// subscription for the window. More than 100 markers of one name in
+// retention can push the newest off the page, which runs the key.
 "use strict";
 
 const fs = require("node:fs");
@@ -57,18 +60,22 @@ function markerName(workflow, keyJob) {
 }
 
 // The decision from one artifact listing: the newest unexpired marker of the
-// exact name created at or after `sinceMs` skips, citing its run.
+// exact name, created at or after `sinceMs` by a run whose head is this
+// repository, skips, citing its run.
 function judgeMarkers(artifacts, name, sinceMs) {
   let newest = null;
   for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
     const created = Date.parse(artifact?.created_at ?? "");
     const run = artifact?.workflow_run?.id;
+    const repo = artifact?.workflow_run?.repository_id;
     if (
       artifact?.name !== name ||
       artifact.expired !== false ||
       !Number.isFinite(created) ||
       created < sinceMs ||
-      !Number.isSafeInteger(run)
+      !Number.isSafeInteger(run) ||
+      !Number.isSafeInteger(repo) ||
+      artifact.workflow_run.head_repository_id !== repo
     ) {
       continue;
     }
