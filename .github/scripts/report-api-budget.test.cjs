@@ -32,6 +32,11 @@ const WORKFLOW = parseWorkflow(
     "utf8",
   ),
 );
+const INTAKE_TEXT = fs.readFileSync(
+  path.join(ROOT, ".github", "workflows", "intake-triage.yml"),
+  "utf8",
+);
+const INTAKE = parseWorkflow(INTAKE_TEXT);
 
 const RUNNER = {
   GITHUB_WORKFLOW_REF:
@@ -304,6 +309,7 @@ test("nothing in the action or the workflow reads GET /rate_limit", () => {
       path.join(ROOT, ".github", "workflows", "pr-review-cli.yml"),
       "utf8",
     ),
+    INTAKE_TEXT,
   ].join("\n");
   assert.doesNotMatch(
     sources,
@@ -392,6 +398,103 @@ test("every pr-review-cli job ends by logging the job token's budget", () => {
       job,
     );
   }
+});
+
+// The intake jobs that call the API with the job token end with the notice.
+// The status job holds no permission and makes no request, so it has none.
+test("every intake-triage job that calls the API ends by logging the job token's budget", () => {
+  const callers = ["claude", "subscription", "fallback", "apply", "skipped"];
+  assert.deepEqual(
+    Object.keys(INTAKE.jobs).sort(),
+    [...callers, "status"].sort(),
+  );
+  for (const name of callers) {
+    const last = INTAKE.jobs[name].steps.at(-1);
+    assert.equal(last.name, "Log the API budget", name);
+    assert.equal(last.uses, "$/.github/actions/report-api-budget", name);
+    assert.equal(last.if, "always()", name);
+    assert.equal(last["continue-on-error"], true, name);
+    assert.equal(last.with.tokens, "github-token", name);
+    assert.equal(last.with.responses, undefined, name);
+  }
+  const { status } = INTAKE.jobs;
+  assert.deepEqual(status.permissions, {});
+  assert.equal(
+    status.steps.some((s) => s.uses || s.with),
+    false,
+    "the status job runs only a shell step",
+  );
+});
+
+// Each intake script step that calls the API opens with the scope step's
+// recorder, so its requests reach the notice; it cannot load api-budget.cjs.
+const API_CALL = /github\.(rest|graphql|paginate|request)\b/u;
+const intakeRecorders = Object.entries(INTAKE.jobs).flatMap(
+  ([job, { steps }]) =>
+    steps
+      .filter((s) => API_CALL.test(s.with?.script ?? ""))
+      .map((s) => {
+        const script = s.with.script;
+        const end = script.indexOf(
+          "\n});\n",
+          script.indexOf("github.hook.error"),
+        );
+        return {
+          where: `${job}: ${s.name}`,
+          recorder: end < 0 ? "" : script.slice(0, end + 4),
+        };
+      }),
+);
+
+test("every intake-triage API step opens with one shared recorder", () => {
+  assert.equal(intakeRecorders.length, 11);
+  for (const { where, recorder } of intakeRecorders) {
+    assert.match(recorder, /^\/\/ Each response's rate-limit reading/u, where);
+    assert.equal(recorder, intakeRecorders[0].recorder, where);
+  }
+});
+
+test("the intake recorder records each response and refusal as api-budget.cjs does", async () => {
+  const dir = makeTemporaryDirectory("api-budget-intake-");
+  const hooks = { after: [], error: [] };
+  const github = {
+    hook: {
+      after: (name, fn) => hooks.after.push([name, fn]),
+      error: (name, fn) => hooks.error.push([name, fn]),
+    },
+  };
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  await new AsyncFunction("require", "github", intakeRecorders[0].recorder)(
+    require,
+    github,
+  );
+  assert.deepEqual(
+    [hooks.after.map(([n]) => n), hooks.error.map(([n]) => n)],
+    [["request"], ["request"]],
+  );
+  const ok = { status: 200, headers: octokitHeaders({ used: 5 }) };
+  const refused = Object.assign(new Error("rate limited"), {
+    status: 429,
+    response: { status: 429, headers: octokitHeaders({ used: 9 }) },
+  });
+  const bare = Object.assign(new Error("not found"), {
+    response: { status: 404, headers: octokitHeaders({ used: 10 }) },
+  });
+  const offline = new Error("socket hang up");
+  await withRunnerTemp(dir, () => {
+    hooks.after[0][1](ok);
+    for (const error of [refused, bare, offline])
+      assert.throws(
+        () => hooks.error[0][1](error),
+        (e) => e === error,
+      );
+  });
+  assert.equal(
+    state(dir),
+    readingLine(200, ok.headers) +
+      readingLine(429, refused.response.headers) +
+      readingLine(404, bare.response.headers),
+  );
 });
 
 // publish-review and apply-review-hold record through api-budget.cjs.
