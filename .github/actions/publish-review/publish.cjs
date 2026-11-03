@@ -422,14 +422,19 @@ async function writeMarker(
   summary,
   sha = env.HEAD_SHA,
 ) {
-  const base = /^[0-9a-f]{40}$/u.test(env.MERGE_BASE ?? "")
-    ? [
-        `<!-- claude-lane-reviewed-base ref=${env.BASE_REF} merge-base=${env.MERGE_BASE} -->`,
-      ]
-    : [];
+  const mergeBase = /^[0-9a-f]{40}$/u.test(env.MERGE_BASE ?? "")
+    ? env.MERGE_BASE
+    : "none";
+  // The scope step in pr-review-cli.yml reads only markers naming its own caller.
+  const caller = (env.GITHUB_WORKFLOW_REF ?? "")
+    .split("@")[0]
+    .split("/")
+    .slice(2)
+    .join("/")
+    .replace(/\s/gu, "_");
   const body = [
     `<!-- claude-lane-reviewed-head lane=${env.LANE_ID} sha=${sha} -->`,
-    ...base,
+    `<!-- claude-lane-reviewed-base ref=${env.BASE_REF} merge-base=${mergeBase} caller=${caller} -->`,
     status,
     ...(summary ? ["", summary] : []),
   ].join("\n");

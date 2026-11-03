@@ -490,7 +490,8 @@ jobs:
                 per_page: 100,
               });
               const marker = comments
-                .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER))
+                // A marker naming a caller is pr-review-cli.yml's, not this lane's.
+                .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER) && !/^<!-- claude-lane-reviewed-base .* caller=/mu.test(comment.body))
                 .at(-1);
               if (!marker) return { sha: "", ref: "", mergeBase: "" };
               core.setOutput("marker-id", String(marker.id));

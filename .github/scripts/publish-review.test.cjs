@@ -184,6 +184,7 @@ const REVIEW = {
 function env(overrides = {}) {
   return {
     PUBLISH: "comments",
+    GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
     LANE_ID: "claude-review",
     PR_NUMBER: "7",
     HEAD_SHA: HEAD,
@@ -236,7 +237,7 @@ test("comments mode posts one COMMENT review of footed comments, the marker and 
     marker[1].body,
     [
       `<!-- claude-lane-reviewed-head lane=claude-review sha=${HEAD} -->`,
-      `<!-- claude-lane-reviewed-base ref=main merge-base=${"b".repeat(40)} -->`,
+      `<!-- claude-lane-reviewed-base ref=main merge-base=${"b".repeat(40)} caller=.github/workflows/review.yml -->`,
       `**claude-review** reviewed \`${HEAD}\`: read 1 of 1 changed file(s); 1 finding(s), 1 as inline comments.`,
       "",
       "Summary.",
@@ -653,11 +654,12 @@ test("a partial review states its coverage first, records no head and fails, wit
     assert.deepEqual(log.notices, []);
     const [marker] = writes;
     assert.equal(marker[0], "createComment");
-    const [hidden, , status] = marker[1].body.split("\n");
+    const [hidden, base, status] = marker[1].body.split("\n");
     assert.equal(
       hidden,
       "<!-- claude-lane-reviewed-head lane=claude-review sha=none -->",
     );
+    assert.match(base, / caller=\.github\/workflows\/review\.yml -->$/u);
     const prefix = `**claude-review** partial review of \`${HEAD}\`: `;
     assert.ok(status.startsWith(prefix), status);
     assert.match(status.slice(prefix.length), size);

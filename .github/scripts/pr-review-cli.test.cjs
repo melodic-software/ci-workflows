@@ -3247,7 +3247,7 @@ test("an incremental review leaves a file the push deleted out of its file count
       user: { login: "github-actions[bot]" },
       body: [
         `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`,
-        `<!-- claude-lane-reviewed-base ref=main merge-base=${MB} -->`,
+        `<!-- claude-lane-reviewed-base ref=main merge-base=${MB} caller=.github/workflows/review.yml -->`,
         "**claude-review** reviewed it.",
       ].join("\n"),
     };
@@ -3273,6 +3273,7 @@ test("an incremental review leaves a file the push deleted out of its file count
     const outputs = {};
     const diffFile = path.join(dir, "incremental.diff");
     const values = {
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
       LANE: "claude-review",
       INCREMENTAL: "true",
       DOCS_ONLY_PATHS: "",
@@ -4089,7 +4090,7 @@ test("an incremental review leaves the data files the base branch declares out o
     const marker = {
       id: 41,
       user: { login: "github-actions[bot]" },
-      body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->\n**claude-review** reviewed it.`,
+      body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=none caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
     };
     const github = {
       hook: { after: () => {}, error: () => {} },
@@ -4117,6 +4118,7 @@ test("an incremental review leaves the data files the base branch declares out o
     const outputs = {};
     const warnings = [];
     const values = {
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
       LANE: "claude-review",
       INCREMENTAL: "true",
       DOCS_ONLY_PATHS: "",
