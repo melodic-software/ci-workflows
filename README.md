@@ -1445,7 +1445,8 @@ additions of the same content and mode) are grouped in
 `.claude-lane/identical.txt`; a hold-paths match never groups, nor an
 executable file, nor the root `lefthook.yml`, nor a file under the root
 `.github/` or `.husky/`, under a `.claude/` or `hooks/` directory, or named
-`package.json`, `.mcp.json`, `action.yml`, `action.yaml` or `*.sh`, which is
+`package.json`, `.mcp.json`, `action.yml`, `action.yaml`, `*.sh`, `*.bash`,
+`*.zsh`, `*.ps1` or `*.psm1`, which is
 reviewed at its own path. The one exception is the `generated-copies` input:
 a repository path to a file of `<source> <copy>` lines, read at the merge base.
 A copy only the head's file declares counts only when its bytes and mode at the

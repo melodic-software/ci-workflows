@@ -370,6 +370,10 @@ env:
     **/hooks/**
     **/package.json
     **/*.sh
+    **/*.bash
+    **/*.zsh
+    **/*.ps1
+    **/*.psm1
     **/.claude/**
     **/.mcp.json
     **/action.y*ml

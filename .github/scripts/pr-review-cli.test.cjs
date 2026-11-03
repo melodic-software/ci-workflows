@@ -1946,6 +1946,10 @@ const SENSITIVE_ADDITIONS = [
   "plugins/p/hooks/guard.mjs",
   "tools/package.json",
   "scripts/deep/setup.sh",
+  "scripts/deep/setup.bash",
+  "scripts/deep/setup.zsh",
+  "scripts/deep/Setup.ps1",
+  "scripts/deep/Setup.psm1",
   "plugins/p/.claude/settings.json",
   "plugins/p/.mcp.json",
   "actions/x/action.yaml",
@@ -1959,6 +1963,10 @@ test("the workflow names one sensitive list and one file cap, which no job or st
     "**/hooks/**",
     "**/package.json",
     "**/*.sh",
+    "**/*.bash",
+    "**/*.zsh",
+    "**/*.ps1",
+    "**/*.psm1",
     "**/.claude/**",
     "**/.mcp.json",
     "**/action.y*ml",
@@ -2390,21 +2398,24 @@ test("the full-diff step groups a copy only the head declares when it matches it
 // base map, reviewed in an earlier pull request, already declared: a copy only
 // the head declares there is read in full even when its bytes match.
 test("the full-diff step reads in full a matching copy only the head declares at a SENSITIVE_PATHS match, in every leg", () => {
-  const shell = "#!/usr/bin/env bash\necho real\n";
-  const python = "#!/usr/bin/env python3\nreal\n";
-  const rendered = (from) =>
-    from.endsWith(".sh")
-      ? `#!/usr/bin/env bash\n${generatedHeader("#", from)}echo real\n`
-      : `#!/usr/bin/env python3\n${generatedHeader("#", from)}real\n`;
-  // s: a `**/*.sh` match, a: under `.github/**`, both only at the head; k:
-  // under `**/hooks/**` and `**/*.sh`, declared at the merge base; p: a plain
-  // path, only at the head. Every copy matches its source byte for byte.
+  const source = "#!/bin/sh\nreal\n";
+  const rendered = (from) => `#!/bin/sh\n${generatedHeader("#", from)}real\n`;
+  // Only at the head: s, b, z, w and m at a `**/*.sh`, `*.bash`, `*.zsh`,
+  // `*.ps1` and `*.psm1` match (z from a .sh source, whose header the render
+  // check accepts), a under `.github/**`. k: under `**/hooks/**` and
+  // `**/*.sh`, declared at the merge base; p: a plain path, only at the head.
+  // Every copy matches its source byte for byte.
   const pairs = {
     s: ["lib/real.sh", (n) => `plugins/s${n}/bin/real.sh`],
+    b: ["lib/real.bash", (n) => `plugins/b${n}/bin/real.bash`],
+    z: ["lib/real.sh", (n) => `plugins/z${n}/bin/real.zsh`],
+    w: ["lib/real.ps1", (n) => `plugins/w${n}/bin/real.ps1`],
+    m: ["lib/real.psm1", (n) => `plugins/m${n}/bin/real.psm1`],
     a: ["lib/real.py", (n) => `.github/scripts/a${n}/real.py`],
     k: ["lib/real.sh", (n) => `plugins/k${n}/hooks/real.sh`],
     p: ["lib/real.py", (n) => `plugins/p${n}/skills/real.py`],
   };
+  const sources = [...new Set(Object.values(pairs).map(([from]) => from))];
   const line = (id) =>
     [1, 2].map((n) => `${pairs[id][0]} ${pairs[id][1](n)}\n`).join("");
   const added = Object.fromEntries(
@@ -2414,11 +2425,11 @@ test("the full-diff step reads in full a matching copy only the head declares at
   );
   for (const job of [key, subscription, fallback]) {
     const { identical, out } = headCopiesRun(job, {
-      base: { "lib/real.sh": shell, "lib/real.py": python },
+      base: Object.fromEntries(sources.map((from) => [from, source])),
       added,
       baseMap: line("k"),
-      headMap: ["k", "s", "a", "p"].map(line).join(""),
-      executable: Object.keys(added).concat("lib/real.sh", "lib/real.py"),
+      headMap: Object.keys(pairs).map(line).join(""),
+      executable: Object.keys(added).concat(sources),
     });
     assert.equal(
       identical,
