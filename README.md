@@ -1445,6 +1445,26 @@ source group with each other, executable or at one of those paths, but never
 with any other file or past a hold-paths match. The review reads each group's
 first path, and the job counts the copies as read.
 
+**Generated data files.** The `generated-data` input is a repository path to a
+file of paths or globs, one per line (globbed as `hold-paths`; blank lines and
+`#` comments skipped), read at the merge base so a pull request cannot declare
+its own files; a file missing there warns and declares none. A changed file it
+declares leaves the diff, the file list and the file total, on a whole and an
+incremental review alike, so a large generated file no review can read whole
+does not make every review `partial`. Only a modification or addition of a
+non-executable regular file at a path of letters, digits and `._/@+-` is left
+out; an executable file, a symlink, a rename, or a `hold-paths` or
+SENSITIVE_PATHS match is still reviewed. The comment's first visible line names
+each file left out (`; <n> data file(s) not reviewed: <path>`), and the
+coverage in the shadow report lists them as `data_files`. A push that changes
+only data files needs no new review. Gitleaks and every other check still scan
+the file.
+
+```yaml
+with:
+  generated-data: scripts/generated-data.txt
+```
+
 **Chunks.** A diff in scope over the read budget, or with more than 40 files,
 is split at file boundaries, each file whole, into at most 4 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'

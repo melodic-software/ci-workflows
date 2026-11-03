@@ -685,6 +685,38 @@ test("a partial review still posts the findings it made inline", async () => {
   );
 });
 
+// A generated data file the job left out of the scope is named in the
+// coverage, so the complete review and the shadow report both say which file
+// no one reviewed; the completion notice, which merge gates parse, is unchanged.
+test("a complete review names each generated data file it left out", async () => {
+  const data =
+    "plugins/source-control/skills/babysit-prs/scripts/verify-legacy-fails.json";
+  const coverage = { read: 1, changed: 1, data_files: [data] };
+  const { writes, log } = await publish({
+    KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
+  });
+  assert.deepEqual(log.failed, []);
+  const status = writes[1][1].body.split("\n")[2];
+  assert.equal(
+    status,
+    `**claude-review** reviewed \`${HEAD}\`: read 1 of 1 changed file(s); 1 data file(s) not reviewed: \`${data}\`; 1 finding(s), 1 as inline comments.`,
+  );
+  assert.deepEqual(log.notices, [
+    `claude-lane-review-complete lane=claude-review sha=${HEAD} findings=1 inline=1 scope=whole`,
+  ]);
+  const shadow = await publish({
+    PUBLISH: "summary",
+    KEY_REVIEW: JSON.stringify({
+      ...REVIEW,
+      coverage: { read: 1, changed: 1, data_files: ["a.json", "b/c.json"] },
+    }),
+  });
+  assert.match(
+    shadow.log.summary,
+    /- Coverage: read 1 of 1 changed file\(s\); 2 data file\(s\) not reviewed: `a\.json`, `b\/c\.json`\n/u,
+  );
+});
+
 test("a review with no coverage, or coverage past its scope, is incomplete", async () => {
   for (const coverage of [
     undefined,
@@ -694,6 +726,12 @@ test("a review with no coverage, or coverage past its scope, is incomplete", asy
     { read: 1, changed: 1, over_files: 0 },
     { read: 1, changed: 1, over_files: "41" },
     { read: "1", changed: 1 },
+    // A data file list that is empty, not a list, or names a path that
+    // could break out of its code span.
+    { read: 1, changed: 1, data_files: [] },
+    { read: 1, changed: 1, data_files: "a.json" },
+    { read: 1, changed: 1, data_files: ["a`b.json"] },
+    { read: 1, changed: 1, data_files: ["a.json\n**x**"] },
   ]) {
     const { writes, log } = await publish({
       KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
