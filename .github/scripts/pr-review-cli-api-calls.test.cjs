@@ -320,6 +320,7 @@ async function spend({
       ...renderEnv(scope, { ...contexts, steps: {} }),
       DIFF_FILE: path.join(dir, "incremental.diff"),
       GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
       RUNNER_TEMP: dir,
     },
     () =>
@@ -481,7 +482,7 @@ const marker = {
   user: { login: BOT },
   body: [
     `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`,
-    `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} -->`,
+    `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} caller=.github/workflows/review.yml -->`,
     "**claude-review** reviewed it.",
     "",
     "Earlier summary.",
@@ -799,7 +800,7 @@ test("a push after a partial review reviews the whole pull request", async () =>
     user: { login: BOT },
     body: [
       "<!-- claude-lane-reviewed-head lane=claude-review sha=none -->",
-      `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} -->`,
+      `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} caller=.github/workflows/review.yml -->`,
       `**claude-review** partial review of \`${LAST}\`: read 1 of 2 changed file(s). 0 finding(s) in what was read, 0 as inline comments. This head is not reviewed.`,
     ].join("\n"),
   };

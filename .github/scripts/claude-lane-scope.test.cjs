@@ -65,7 +65,7 @@ async function runScript(script, values, github, requireFn = require) {
       requireFn,
       {
         paginate: async (method, params) => (await method(params)).data,
-        hook: { error: () => {} },
+        hook: { after: () => {}, error: () => {} },
         ...github,
       },
       { repo: { owner: "o", repo: "r" } },
@@ -871,6 +871,102 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     );
   }
 });
+
+// Two callers on one pull request write one marker key. On
+// melodic-software/pr-pipeline-sandbox#273 a docs-only skip by a legacy caller
+// recorded a head that pr-review-cli.yml then skipped as already reviewed.
+{
+  const cliScript = stepNamed(
+    Object.values(load("pr-review-cli.yml").jobs).find((job) =>
+      job.steps?.some((step) => step.name === "Scope the review"),
+    ),
+    "Scope the review",
+  ).with.script;
+  const cliLane = { lane: "claude-review", script: cliScript };
+  const OWN = ".github/workflows/review.yml";
+  const cliMarker = (sha, caller, id = 41) => ({
+    id,
+    user: { login: BOT },
+    body: [
+      `<!-- claude-lane-reviewed-head lane=claude-review sha=${sha} -->`,
+      `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} caller=${caller} -->`,
+      "**claude-review** reviewed it.",
+      "",
+      "Earlier summary.",
+    ].join("\n"),
+  });
+  const legacyMarker = (sha, id = 42) => ({
+    id,
+    user: { login: BOT },
+    body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${sha} -->\n**claude-review** needs no new review of \`${sha}\`: every file in scope matches docs-only-paths.`,
+  });
+  const scopeCli = (comments, compares = {}) => {
+    const directory = makeTemporaryDirectory("scope-cli-");
+    return runScope(cliLane, {
+      env: {
+        GITHUB_WORKFLOW_REF: `o/r/${OWN}@refs/pull/7/merge`,
+        FILE_LIST: path.join(directory, "files.txt"),
+        DATA_LIST: path.join(directory, "data.txt"),
+        RUNNER_TEMP: directory,
+      },
+      prFiles: [file("src/a.js")],
+      comments,
+      compares,
+    });
+  };
+  const changed = unmovedBase([
+    file("src/a.js", { patch: "@@ -1 +1 @@\n-x\n+y", changes: 2 }),
+  ]);
+
+  test("pr-review-cli: a newer legacy marker at the head neither skips nor narrows the review", async () => {
+    const { outputs } = await scopeCli(
+      [cliMarker(LAST, OWN), legacyMarker(HEAD)],
+      changed,
+    );
+    assert.equal(outputs.review, "true");
+    assert.equal(outputs.scope, "incremental");
+    assert.equal(outputs.since, LAST);
+    assert.equal(outputs["marker-id"], "41");
+  });
+
+  test("pr-review-cli: a legacy marker alone means a whole review", async () => {
+    const { outputs } = await scopeCli([legacyMarker(HEAD)]);
+    assert.equal(outputs.review, "true");
+    assert.equal(outputs.scope, "whole");
+    assert.equal(outputs["marker-id"], undefined);
+  });
+
+  test("pr-review-cli: another caller's marker at the head means a whole review", async () => {
+    const { outputs } = await scopeCli([
+      cliMarker(HEAD, ".github/workflows/other.yml"),
+    ]);
+    assert.equal(outputs.review, "true");
+    assert.equal(outputs.scope, "whole");
+    assert.equal(outputs["marker-id"], undefined);
+  });
+
+  test("pr-review-cli: its own marker at the head still skips", async () => {
+    const { outputs } = await scopeCli([cliMarker(HEAD, OWN)], {
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } },
+    });
+    assert.equal(outputs.review, "false");
+    assert.equal(outputs.skip, "no-change");
+    assert.equal(outputs["last-summary"], "Earlier summary.");
+  });
+
+  for (const lane of [codeLane, securityLane]) {
+    test(`${lane.file}: a marker naming a caller records no review of this lane`, async () => {
+      const marker = cliMarker(HEAD, OWN);
+      marker.body = marker.body.replace("claude-review", lane.lane);
+      const { outputs } = await runScope(lane, {
+        prFiles: [file("src/a.js")],
+        comments: [marker],
+      });
+      assert.equal(outputs.review, "true");
+      assert.equal(outputs["marker-id"], undefined);
+    });
+  }
+}
 
 test("the record step writes the base it reviewed against on the marker's second line", async () => {
   const withBase = await record(codeLane, {

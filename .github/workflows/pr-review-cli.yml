@@ -606,6 +606,8 @@ jobs:
             const head = env.HEAD_SHA;
             const FILE_CAP = 300;
             const MARKER = `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=`;
+            // publish.cjs writes the same value on the marker's second line.
+            const CALLER = (env.GITHUB_WORKFLOW_REF ?? "").split("@")[0].split("/").slice(2).join("/").replace(/\s/gu, "_");
 
             const globToRegExp = (glob) => {
               let out = "";
@@ -796,10 +798,12 @@ jobs:
               core.setOutput("bytes", String(Buffer.byteLength(kept.map(([, section]) => section).join("\n"), "utf8")));
             };
 
-            // The newest marker comment this lane's job token wrote: the head it
-            // reviewed, on its second line the base branch and merge base, then a
-            // status line and the review summary, which a skip carries forward.
-            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}) -->$/u;
+            // The newest marker comment this reusable wrote for this lane and this
+            // caller: the head it reviewed, on its second line the base branch, merge
+            // base and caller, then a status line and the review summary, which a skip
+            // carries forward. Another caller's marker, or one from pr-review.yml,
+            // which names no caller, records no review of this one.
+            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}|none) caller=(\S+) -->$/u;
             const readMarker = async () => {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
@@ -808,18 +812,22 @@ jobs:
                 per_page: 100,
               });
               const marker = comments
-                .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER))
+                .filter(
+                  (comment) =>
+                    comment.user?.login === "github-actions[bot]" &&
+                    comment.body?.startsWith(MARKER) &&
+                    BASE_LINE.exec(comment.body.split("\n")[1] ?? "")?.[3] === CALLER,
+                )
                 .at(-1);
               if (!marker) return { sha: "", ref: "", mergeBase: "" };
               core.setOutput("marker-id", String(marker.id));
               const lines = marker.body.split("\n");
-              const base = BASE_LINE.exec(lines[1] ?? "");
-              const visible = lines.slice(base ? 2 : 1);
-              core.setOutput("last-summary", visible.slice(1).join("\n").trim());
+              const base = BASE_LINE.exec(lines[1]);
+              core.setOutput("last-summary", lines.slice(3).join("\n").trim());
               return {
                 sha: marker.body.slice(MARKER.length, MARKER.length + 40),
-                ref: base?.[1] ?? "",
-                mergeBase: base?.[2] ?? "",
+                ref: base[1],
+                mergeBase: base[2] === "none" ? "" : base[2],
               };
             };
 
@@ -2495,6 +2503,8 @@ jobs:
             const head = env.HEAD_SHA;
             const FILE_CAP = 300;
             const MARKER = `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=`;
+            // publish.cjs writes the same value on the marker's second line.
+            const CALLER = (env.GITHUB_WORKFLOW_REF ?? "").split("@")[0].split("/").slice(2).join("/").replace(/\s/gu, "_");
 
             const globToRegExp = (glob) => {
               let out = "";
@@ -2685,10 +2695,12 @@ jobs:
               core.setOutput("bytes", String(Buffer.byteLength(kept.map(([, section]) => section).join("\n"), "utf8")));
             };
 
-            // The newest marker comment this lane's job token wrote: the head it
-            // reviewed, on its second line the base branch and merge base, then a
-            // status line and the review summary, which a skip carries forward.
-            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}) -->$/u;
+            // The newest marker comment this reusable wrote for this lane and this
+            // caller: the head it reviewed, on its second line the base branch, merge
+            // base and caller, then a status line and the review summary, which a skip
+            // carries forward. Another caller's marker, or one from pr-review.yml,
+            // which names no caller, records no review of this one.
+            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}|none) caller=(\S+) -->$/u;
             const readMarker = async () => {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
@@ -2697,18 +2709,22 @@ jobs:
                 per_page: 100,
               });
               const marker = comments
-                .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER))
+                .filter(
+                  (comment) =>
+                    comment.user?.login === "github-actions[bot]" &&
+                    comment.body?.startsWith(MARKER) &&
+                    BASE_LINE.exec(comment.body.split("\n")[1] ?? "")?.[3] === CALLER,
+                )
                 .at(-1);
               if (!marker) return { sha: "", ref: "", mergeBase: "" };
               core.setOutput("marker-id", String(marker.id));
               const lines = marker.body.split("\n");
-              const base = BASE_LINE.exec(lines[1] ?? "");
-              const visible = lines.slice(base ? 2 : 1);
-              core.setOutput("last-summary", visible.slice(1).join("\n").trim());
+              const base = BASE_LINE.exec(lines[1]);
+              core.setOutput("last-summary", lines.slice(3).join("\n").trim());
               return {
                 sha: marker.body.slice(MARKER.length, MARKER.length + 40),
-                ref: base?.[1] ?? "",
-                mergeBase: base?.[2] ?? "",
+                ref: base[1],
+                mergeBase: base[2] === "none" ? "" : base[2],
               };
             };
 
@@ -4389,6 +4405,8 @@ jobs:
             const head = env.HEAD_SHA;
             const FILE_CAP = 300;
             const MARKER = `<!-- claude-lane-reviewed-head lane=${env.LANE} sha=`;
+            // publish.cjs writes the same value on the marker's second line.
+            const CALLER = (env.GITHUB_WORKFLOW_REF ?? "").split("@")[0].split("/").slice(2).join("/").replace(/\s/gu, "_");
 
             const globToRegExp = (glob) => {
               let out = "";
@@ -4579,10 +4597,12 @@ jobs:
               core.setOutput("bytes", String(Buffer.byteLength(kept.map(([, section]) => section).join("\n"), "utf8")));
             };
 
-            // The newest marker comment this lane's job token wrote: the head it
-            // reviewed, on its second line the base branch and merge base, then a
-            // status line and the review summary, which a skip carries forward.
-            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}) -->$/u;
+            // The newest marker comment this reusable wrote for this lane and this
+            // caller: the head it reviewed, on its second line the base branch, merge
+            // base and caller, then a status line and the review summary, which a skip
+            // carries forward. Another caller's marker, or one from pr-review.yml,
+            // which names no caller, records no review of this one.
+            const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}|none) caller=(\S+) -->$/u;
             const readMarker = async () => {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
@@ -4591,18 +4611,22 @@ jobs:
                 per_page: 100,
               });
               const marker = comments
-                .filter((comment) => comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(MARKER))
+                .filter(
+                  (comment) =>
+                    comment.user?.login === "github-actions[bot]" &&
+                    comment.body?.startsWith(MARKER) &&
+                    BASE_LINE.exec(comment.body.split("\n")[1] ?? "")?.[3] === CALLER,
+                )
                 .at(-1);
               if (!marker) return { sha: "", ref: "", mergeBase: "" };
               core.setOutput("marker-id", String(marker.id));
               const lines = marker.body.split("\n");
-              const base = BASE_LINE.exec(lines[1] ?? "");
-              const visible = lines.slice(base ? 2 : 1);
-              core.setOutput("last-summary", visible.slice(1).join("\n").trim());
+              const base = BASE_LINE.exec(lines[1]);
+              core.setOutput("last-summary", lines.slice(3).join("\n").trim());
               return {
                 sha: marker.body.slice(MARKER.length, MARKER.length + 40),
-                ref: base?.[1] ?? "",
-                mergeBase: base?.[2] ?? "",
+                ref: base[1],
+                mergeBase: base[2] === "none" ? "" : base[2],
               };
             };
 

@@ -1369,7 +1369,10 @@ changes no file of the pull request is not reviewed again, and neither is a
 rebase or restack onto the same base branch that leaves the pull request's
 files, their statuses, and every one of those paths' mode, type and content
 as reviewed. The marker comment's second line records the base branch and
-merge base each review used. A skip is taken only while the pull request's
+merge base each review used and, from `pr-review-cli.yml`, its caller workflow.
+That lane reads only a marker naming its own caller, so another caller's or the
+legacy `pr-review.yml`'s record never narrows or skips its review, and
+`pr-review.yml` ignores a marker naming a caller. A skip is taken only while the pull request's
 live head is still the run's head.
 
 **The lane's comment.** Each lane posts one pull request comment of its own,
