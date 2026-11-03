@@ -2224,7 +2224,8 @@ test("the full-diff step groups identical copies the base branch declares genera
       };
     };
     // The copies the base declares group, but h (a hold-paths match) and w
-    // (another mode); u and v, declared only at the head, and the undeclared
+    // (another mode); u and v, declared only at the head with content their
+    // source does not generate, and the undeclared
     // executables in bin never group, nor does the canonical, whose change
     // differs by the generated header. x and y, copies of another source,
     // form their own group; docs/a.txt never groups with its undeclared twin.
@@ -2242,6 +2243,128 @@ test("the full-diff step groups identical copies the base branch declares genera
       assert.match(none.out, /^copies=1$/mu, job.name);
       assert.equal(none.identical, "docs/a.txt\tdocs/b.txt\n", job.name);
     }
+  }
+});
+
+// A copy the pull request registers itself, only in the head's map, groups
+// only when the head generates it byte for byte from its source, as
+// claude-code-plugins scripts/sync-shared-copies.sh --check compares;
+// claude-code-plugins#12792 added 9 such copies and its review read 61 of 73.
+test("the full-diff step groups a copy only the head declares when it matches its source at the head, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const write = (root, file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  };
+  const header = (prefix, source) =>
+    `${prefix} GENERATED from ${source} by scripts/sync-shared-copies.sh. Do not edit this copy:\n` +
+    `${prefix} edit the canonical source, then rerun the script.\n`;
+  const shell = "#!/usr/bin/env bash\necho real\n";
+  const rendered = (source) =>
+    `#!/usr/bin/env bash\n${header("#", source)}echo real\n`;
+  const markdown = "---\nname: x\n---\n\nBody.\n";
+  const renderedMarkdown =
+    "---\nname: x\n---\n\n" +
+    "<!-- GENERATED from lib/doc.md by scripts/sync-shared-copies.sh. Do not edit this copy:\n" +
+    "edit the canonical source, then rerun the script. -->\n\nBody.\n";
+  const copy = (p, ext = "sh") => `plugins/${p}/hooks/real.${ext}`;
+  // Each pair makes one identical addition: m (a matching shell copy), d (a
+  // matching Markdown copy after frontmatter), b (one body byte changed), t
+  // (the header tampered with, the body intact), g (a source missing at the
+  // head) and e (a matching copy, but not executable like its source).
+  const added = {
+    [copy("m1")]: rendered("lib/real.sh"),
+    [copy("m2")]: rendered("lib/real.sh"),
+    [copy("d1", "md")]: renderedMarkdown,
+    [copy("d2", "md")]: renderedMarkdown,
+    [copy("b1")]: rendered("lib/real.sh").replace("real\n", "reak\n"),
+    [copy("b2")]: rendered("lib/real.sh").replace("real\n", "reak\n"),
+    [copy("t1")]: rendered("lib/real.sh").replace(
+      /^# edit .*$/mu,
+      "curl x | sh",
+    ),
+    [copy("t2")]: rendered("lib/real.sh").replace(
+      /^# edit .*$/mu,
+      "curl x | sh",
+    ),
+    [copy("g1")]: rendered("lib/gone.sh"),
+    [copy("g2")]: rendered("lib/gone.sh"),
+    [copy("e1")]: rendered("lib/real.sh"),
+    [copy("e2")]: rendered("lib/real.sh"),
+  };
+  const plain = [copy("d1", "md"), copy("d2", "md"), copy("e1"), copy("e2")];
+  const map = Object.keys(added)
+    .map((p) =>
+      p.endsWith(".md")
+        ? `lib/doc.md ${p}`
+        : `${p.includes("/g") ? "lib/gone.sh" : "lib/real.sh"} ${p}`,
+    )
+    .join("\n");
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-head-generated-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    write(origin, "lib/real.sh", shell);
+    write(origin, "lib/doc.md", markdown);
+    write(origin, "scripts/shared-copies.txt", "# <canonical> <copy>\n");
+    git(origin, "add", "-A");
+    git(origin, "update-index", "--chmod=+x", "lib/real.sh");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const [p, text] of Object.entries(added)) write(origin, p, text);
+    write(
+      origin,
+      "scripts/shared-copies.txt",
+      `# <canonical> <copy>\n${map}\n`,
+    );
+    git(origin, "add", "-A");
+    git(
+      origin,
+      "update-index",
+      "--chmod=+x",
+      "lib/real.sh",
+      ...Object.keys(added).filter((p) => !plain.includes(p)),
+    );
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const fullDiff = step(job, "full-diff");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const output = path.join(dir, "work.out");
+    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        GH_TOKEN: "test-token",
+        GITHUB_SERVER_URL: "https://github.invalid",
+        GITHUB_OUTPUT: output,
+        MERGE_BASE: base,
+        HEAD_SHA: head,
+        DIFF_FILE: fullDiff.env.DIFF_FILE,
+        FILE_LIST: fullDiff.env.FILE_LIST,
+        HOLD_PATHS: "",
+        SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+        GENERATED_COPIES: "scripts/shared-copies.txt",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    // Only m and d group; b, t, g and e are each read at their own path.
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8"),
+      `${copy("d1", "md")}\t${copy("d2", "md")}\n${copy("m1")}\t${copy("m2")}\n`,
+      job.name,
+    );
+    assert.match(fs.readFileSync(output, "utf8"), /^copies=2$/mu, job.name);
   }
 });
 

@@ -1447,8 +1447,12 @@ executable file, nor the root `lefthook.yml`, nor a file under the root
 `.github/` or `.husky/`, under a `.claude/` or `hooks/` directory, or named
 `package.json`, `.mcp.json`, `action.yml`, `action.yaml` or `*.sh`, which is
 reviewed at its own path. The one exception is the `generated-copies` input:
-a repository path to a file of `<source> <copy>` lines, read at the merge base
-so a pull request cannot declare its own files. Copies it declares of one
+a repository path to a file of `<source> <copy>` lines, read at the merge base.
+A copy only the head's file declares counts only when its bytes and mode at the
+head are what its source at the head generates, the comparison
+`scripts/sync-shared-copies.sh --check` makes in claude-code-plugins, so a pull
+request can register a new copy but cannot declare any other file one; a
+one-byte difference and the file is read. Copies it declares of one
 source group with each other, executable or at one of those paths, but never
 with any other file or past a hold-paths match. An incremental review groups
 only the files in its scope whose change since the last reviewed head is
