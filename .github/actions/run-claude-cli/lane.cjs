@@ -645,25 +645,43 @@ function holdsCredential(text, secretValues) {
   );
 }
 
+// Classes a token leg's rejected rate_limit_event overrides: with retries on,
+// the CLI waits out a rejected window until the leg timeout kills it, or
+// ends with no error it can name.
+const LIMIT_MASKED_CLASSES = new Set(["timeout", "other"]);
+
 // What the finished leg means for the run: success or a stop with a class.
-// Only the key leg can end in a credit stop.
+// Only the key leg can end in a credit stop. A token leg that recorded a
+// rejected rate_limit_event and then timed out or failed unnamed is a limit
+// stop (rate-limit with the rejected window's reset).
 function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   const messages = readMessages(executionFile) ?? [];
   const result = messages.findLast((message) => message?.type === "result");
   if (!timedOut && exitCode === 0 && result && result.is_error === false) {
     return { failureClass: "", resets: null, messages };
   }
-  const { failureClass } = classifyExecutionFile(executionFile, {
+  let { failureClass } = classifyExecutionFile(executionFile, {
     timedOut,
     maxTurns,
     detectCreditStop: leg.leg === "api-key",
     exitCode,
   });
-  let resets = null;
-  if (failureClass === "credit-stop") resets = creditStopResetsAt(messages);
-  if (failureClass === "rate-limit")
-    resets = readRunRecord(executionFile).resetsAt;
-  return { failureClass, resets, messages };
+  if (failureClass === "credit-stop") {
+    return { failureClass, resets: creditStopResetsAt(messages), messages };
+  }
+  const { resetsAt } = readRunRecord(executionFile);
+  if (
+    leg.leg !== "api-key" &&
+    resetsAt !== null &&
+    LIMIT_MASKED_CLASSES.has(failureClass)
+  ) {
+    failureClass = "rate-limit";
+  }
+  return {
+    failureClass,
+    resets: failureClass === "rate-limit" ? resetsAt : null,
+    messages,
+  };
 }
 
 // The content of each file-command file the step was given, so restoreFiles
