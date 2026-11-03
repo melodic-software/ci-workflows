@@ -403,6 +403,27 @@ jobs:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const requested = process.env.REQUESTED;
             if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
               core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
@@ -497,6 +518,27 @@ jobs:
           BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const issue_number = Number(process.env.ISSUE_NUMBER);
@@ -585,6 +627,27 @@ jobs:
           INSTRUCTIONS: ${{ inputs.instructions }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -938,6 +1001,16 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # The subscription leg, as its own job on a fresh VM: the claude job's
   # processes, files and environment do not reach it. Its steps repeat the
   # claude job's but for the credential (a test holds them equal), so the
@@ -987,6 +1060,27 @@ jobs:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const requested = process.env.REQUESTED;
             if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
               core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
@@ -1081,6 +1175,27 @@ jobs:
           BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const issue_number = Number(process.env.ISSUE_NUMBER);
@@ -1169,6 +1284,27 @@ jobs:
           INSTRUCTIONS: ${{ inputs.instructions }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -1522,6 +1658,16 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # The fallback leg, the central fallback subscription, as its own job on
   # a fresh VM, only after the subscription job handed off (a limit stop, a
   # credit stop, or a 401 or 402, with the fallback token set). Its steps
@@ -1571,6 +1717,27 @@ jobs:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const requested = process.env.REQUESTED;
             if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
               core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
@@ -1665,6 +1832,27 @@ jobs:
           BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const issue_number = Number(process.env.ISSUE_NUMBER);
@@ -1753,6 +1941,27 @@ jobs:
           INSTRUCTIONS: ${{ inputs.instructions }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -2106,6 +2315,16 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # The one job that writes to the issue. No model runs here and nothing is
   # checked out. It reads the fallback job's outputs when that job ran, else
   # the subscription job's, else the claude job's, so a credit stop applies exactly once, and takes
@@ -2150,6 +2369,27 @@ jobs:
           FB_TRIAGE: ${{ needs.fallback.outputs.triage }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const env = process.env;
             // The last leg that ran: fallback, else subscription, else key.
             const leg = env.FB_RESULT && env.FB_RESULT !== "skipped" ? "FB" : env.SUB_RESULT === "skipped" ? "KEY" : "SUB";
@@ -2448,6 +2688,16 @@ jobs:
             await core.summary.addRaw(summary.join("\n")).write();
             if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
 
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # One status for the run, and no lane record (each leg writes its own): the
   # fallback job's outcome when it ran, else the subscription job's, else
   # the claude job's, and red
@@ -2570,6 +2820,27 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         with:
           script: |
+            // Each response's rate-limit reading, the line report-api-budget's
+            // api-budget.cjs writes (a test holds them equal), for the job's
+            // api-budget notice. A failed write only drops the reading.
+            const budget = (status, headers) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              throw error;
+            });
             const env = process.env;
             const bot = env.ACTOR.endsWith("[bot]");
             const [input, list] = bot ? ["allowed-bot-sender-ids", env.BOT_IDS] : ["allowed-author-ids", env.AUTHOR_IDS];
@@ -2602,3 +2873,13 @@ jobs:
               }
             }
             await core.summary.addRaw(["### claude-intake-triage skipped", "", `- ${message}`, `- Skipped label: ${label}`].join("\n")).write();
+
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
