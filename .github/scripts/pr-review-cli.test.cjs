@@ -1106,7 +1106,7 @@ test("the prompt carries the FULL DIFF, REVIEW SCOPE and PR CONTEXT lines the re
   }
 });
 
-async function extract(files, env = {}) {
+async function extract(files, env = {}, job = key) {
   const dir = makeTemporaryDirectory("pr-review-cli-extract-");
   const paths = {};
   for (const [name, content] of Object.entries(files)) {
@@ -1139,7 +1139,7 @@ async function extract(files, env = {}) {
     await new AsyncFunction(
       "require",
       "core",
-      step(key, "extract").with.script,
+      step(job, "extract").with.script,
     )(require, {
       setOutput: (k, v) => {
         outputs[k] = v;
@@ -2204,10 +2204,402 @@ test("the full-diff step groups identical copies the base branch declares genera
   }
 });
 
-test("the prompt names the identical files only for a whole review that holds them once", async () => {
+// A push like claude-code-plugins#12767's: 21 files changed since the last
+// review, most of them identical copies, while the whole pull request holds
+// more copies than the push. Here 19 of the 21 are executable hook copies the
+// base branch declares of one source. The scope, full-diff, split, compose and
+// extract steps run in order on one git fixture of a base, a reviewed head and
+// a pushed head.
+function incrementalCopiesFixture() {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-incremental-copies-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const copy = (name) => `plugins/${name}/hooks/hook-utils.sh`;
+  const copies = Array.from({ length: 19 }, (_, i) =>
+    copy(`p${String(i).padStart(2, "0")}`),
+  );
+  const executable = [
+    "lib/hook-utils.sh",
+    "lib/other.sh",
+    ...copies,
+    copy("x"),
+    copy("y"),
+  ];
+  // Each commit writes the files given, from the base's tree.
+  const commit = (parent, files) => {
+    if (parent) git(origin, "checkout", "--quiet", "--detach", parent);
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+      fs.writeFileSync(path.join(origin, file), text);
+    }
+    git(origin, "add", "-A");
+    git(origin, "update-index", "--chmod=+x", ...executable);
+    git(origin, "commit", "--quiet", "-m", "c");
+    const sha = git(origin, "rev-parse", "HEAD");
+    // A branch per commit, so a clone holds it.
+    if (parent) git(origin, "branch", `c-${sha}`, sha);
+    return sha;
+  };
+  const tree = (version, overrides = {}) => ({
+    "lib/hook-utils.sh": `${version}\n`,
+    "lib/other.sh": `other ${version}\n`,
+    ...Object.fromEntries(copies.map((p) => [p, `# GENERATED\n${version}\n`])),
+    [copy("x")]: `# GENERATED other\n${version}\n`,
+    [copy("y")]: `# GENERATED other\n${version}\n`,
+    "src/a.js": `a ${version}\n`,
+    ...overrides,
+  });
+  const base = commit("", {
+    ...tree("v1"),
+    "scripts/shared-copies.txt": `${[
+      ...copies.map((p) => `lib/hook-utils.sh ${p}`),
+      `lib/other.sh ${copy("x")}`,
+      `lib/other.sh ${copy("y")}`,
+    ].join("\n")}\n`,
+  });
+  const clone = () => {
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", "--no-checkout", origin, work);
+    return work;
+  };
+  // The compare API's view of a push: each file changed since the reviewed
+  // head, with git's own patch from the first hunk on.
+  const since = (last, head) =>
+    git(origin, "diff", "--name-status", "--no-renames", last, head)
+      .split("\n")
+      .map((line) => {
+        const [status, filename] = line.split("\t");
+        const patch = git(origin, "diff", last, head, "--", filename);
+        return {
+          filename,
+          status: { M: "modified", A: "added" }[status],
+          patch: patch.slice(patch.indexOf("@@")),
+          changes: 2,
+        };
+      });
+  const prFiles = (head) =>
+    git(origin, "diff", "--name-status", "--no-renames", base, head)
+      .split("\n")
+      .map((line) => {
+        const [status, filename] = line.split("\t");
+        return { filename, status: { M: "modified", A: "added" }[status] };
+      });
+  return { dir, base, commit, tree, copy, copies, clone, since, prFiles };
+}
+
+// Runs one leg's scope, full-diff, split and compose steps for a push from
+// last to head, then its extract step on a review that read `filesRead`.
+async function incrementalReview(
+  fixture,
+  job,
+  last,
+  head,
+  filesRead,
+  change = {},
+) {
+  const { spawnSync } = require("node:child_process");
+  const work = fixture.clone();
+  const scopeStep = step(job, "scope");
+  const fullDiff = step(job, "full-diff");
+  const compares = {
+    [`main...${head}`]: { merge_base_commit: { sha: fixture.base } },
+    [`main...${last}`]: { merge_base_commit: { sha: fixture.base } },
+    [`${last}...${head}`]: {
+      status: "ahead",
+      files: fixture.since(last, head),
+    },
+  };
+  const prFiles = fixture.prFiles(head);
+  const github = {
+    hook: { after: () => {}, error: () => {} },
+    paginate: async (fn) => fn(),
+    rest: {
+      issues: {
+        listComments: () => [
+          {
+            id: 41,
+            user: { login: "github-actions[bot]" },
+            body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${last} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=${fixture.base} caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
+          },
+        ],
+      },
+      pulls: {
+        listFiles: () => prFiles,
+        get: async () => ({
+          data: { head: { sha: head }, changed_files: prFiles.length },
+        }),
+      },
+      repos: {
+        compareCommitsWithBasehead: async ({ basehead }) => {
+          assert.ok(basehead in compares, basehead);
+          return { data: compares[basehead] };
+        },
+      },
+    },
+  };
+  const scope = {};
+  const values = {
+    GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
+    LANE: "claude-review",
+    INCREMENTAL: "true",
+    DOCS_ONLY_PATHS: "",
+    EVENT_ACTION: "synchronize",
+    PR_NUMBER: "7",
+    HEAD_SHA: head,
+    BASE_REF: "main",
+    DIFF_FILE: scopeStep.env.DIFF_FILE,
+    FILE_LIST: scopeStep.env.FILE_LIST,
+    DATA_LIST: scopeStep.env.DATA_LIST,
+    HOLD_PATHS: "",
+    GENERATED_DATA: "",
+    GIT_TOKEN: "test-token",
+    GITHUB_SERVER_URL: "https://github.invalid",
+    RUNNER_TEMP: work,
+  };
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  const cwd = process.cwd();
+  Object.assign(process.env, values);
+  process.chdir(work);
+  try {
+    await new AsyncFunction(
+      "require",
+      "github",
+      "context",
+      "core",
+      scopeStep.with.script,
+    )(
+      require,
+      github,
+      { repo: { owner: "o", repo: "r" } },
+      {
+        setSecret: () => {},
+        setOutput: (k, v) => {
+          scope[k] = v;
+        },
+        info: () => {},
+        warning: (message) => assert.fail(message),
+      },
+    );
+  } finally {
+    process.chdir(cwd);
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  assert.equal(scope.scope, "incremental", job.name);
+  // The full-diff step, with the scope step's outputs as the workflow wires them.
+  const output = `${work}.full-diff.out`;
+  const run = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      HOME: fixture.dir,
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      GITHUB_OUTPUT: output,
+      MERGE_BASE: scope["merge-base"],
+      HEAD_SHA: head,
+      DIFF_FILE: fullDiff.env.DIFF_FILE,
+      FILE_LIST: fullDiff.env.FILE_LIST,
+      HOLD_PATHS: "",
+      SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+      GENERATED_COPIES: "scripts/shared-copies.txt",
+      SCOPE: scope.scope,
+      SINCE: scope.since,
+      SCOPE_LIST: scopeStep.env.FILE_LIST,
+      ...change,
+    },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(
+    fullDiff.env.SCOPE,
+    `\${{ steps.scope.outputs.scope }}`,
+    job.name,
+  );
+  assert.equal(
+    fullDiff.env.SINCE,
+    `\${{ steps.scope.outputs.since }}`,
+    job.name,
+  );
+  assert.equal(fullDiff.env.SCOPE_LIST, scopeStep.env.FILE_LIST, job.name);
+  const full = fs.readFileSync(output, "utf8");
+  const copies = /^copies=(.*)$/mu.exec(full)?.[1];
+  const identicalFile = path.join(work, ".claude-lane/identical.txt");
+  const identical = fs.existsSync(identicalFile)
+    ? fs.readFileSync(identicalFile, "utf8")
+    : undefined;
+  const splitStep = step(job, "split");
+  const splitOut = `${work}.split.out`;
+  fs.writeFileSync(splitOut, "");
+  const cut = spawnSync("bash", ["-e", "-c", splitStep.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      GITHUB_OUTPUT: splitOut,
+      ...workflow.env,
+      SOURCE: path.join(fixture.dir, "no-source"),
+      SCOPE_DIFF: ".claude-lane/incremental.diff",
+      SCOPE_BYTES: scope.bytes,
+      CHUNK_DIR: splitStep.env.CHUNK_DIR,
+      READ_BUDGET: splitStep.env.READ_BUDGET,
+      MAX_CHUNKS: splitStep.env.MAX_CHUNKS,
+      SCOPE: scope.scope,
+      COPIES: copies,
+    },
+  });
+  assert.equal(cut.status, 0, cut.stderr);
+  const chunks = /^chunks=(.*)$/mu.exec(fs.readFileSync(splitOut, "utf8"))?.[1];
+  const prompt = fs.readFileSync(
+    (
+      await composeOutputs(
+        {
+          SCOPE: scope.scope,
+          COPIES: copies,
+          CHUNKS: chunks,
+          SCOPE_NOTE: scope.note,
+        },
+        job,
+      )
+    )["prompt-file"],
+    "utf8",
+  );
+  const extracted = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: filesRead,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    {
+      SCOPE: scope.scope,
+      FULL_DIFF: "",
+      SCOPE_FILES: scope.files,
+      SCOPE_DIFF: path.join(work, ".claude-lane/incremental.diff"),
+      SCOPE_BYTES: scope.bytes,
+      CHUNKS: chunks,
+      COPIES: copies,
+    },
+    job,
+  );
+  return {
+    scope,
+    full,
+    stdout: run.stdout,
+    copies,
+    identical,
+    prompt,
+    coverage: JSON.parse(extracted.review).coverage,
+  };
+}
+
+test("an incremental review counts the declared copies in its scope as read, in every leg", async () => {
+  const fixture = incrementalCopiesFixture();
+  const { tree, copy, copies } = fixture;
+  // The reviewed head changed every file; the push changes the source, the
+  // 19 copies and src/a.js again: 21 files, 3 of them distinct. x and y, the
+  // other source's identical copies, are out of the push's scope.
+  const last = fixture.commit(fixture.base, tree("v2"));
+  const head = fixture.commit(
+    last,
+    tree("v3", {
+      "lib/other.sh": "other v2\n",
+      [copy("x")]: "# GENERATED other\nv2\n",
+      [copy("y")]: "# GENERATED other\nv2\n",
+    }),
+  );
+  for (const job of [key, subscription, fallback]) {
+    const review = await incrementalReview(fixture, job, last, head, 3);
+    // 3 distinct files read and 18 copies counted: 21 of 21.
+    assert.deepEqual(review.coverage, { read: 21, changed: 21 }, job.name);
+    assert.equal(review.scope.files, "21", job.name);
+    assert.equal(review.copies, "18", job.name);
+    assert.equal(review.identical, `${copies.join("\t")}\n`, job.name);
+    assert.match(
+      review.prompt,
+      /^IDENTICAL FILES: each line of \.claude-lane\/identical\.txt /mu,
+      job.name,
+    );
+    assert.match(
+      review.prompt,
+      /files_read counts\nthe first path only/u,
+      job.name,
+    );
+    // A review that read one distinct file fewer stays partial.
+    assert.deepEqual(
+      (await incrementalReview(fixture, job, last, head, 2)).coverage,
+      { read: 20, changed: 21 },
+      job.name,
+    );
+  }
+});
+
+test("an incremental review groups only copies in its scope whose change since the review is identical, in every leg", async () => {
+  const fixture = incrementalCopiesFixture();
+  const { tree, copy, copies } = fixture;
+  // At the reviewed head p05 differed from its group, and x already had the
+  // push's content; y, x's one mate, changes alone. Every copy's whole change
+  // from the base is identical to its group's.
+  const stale = copies[5];
+  const last = fixture.commit(
+    fixture.base,
+    tree("v2", {
+      "lib/other.sh": "other v3\n",
+      [stale]: "# GENERATED\nstale\n",
+      [copy("x")]: "# GENERATED other\nv3\n",
+    }),
+  );
+  const head = fixture.commit(last, tree("v3"));
+  for (const job of [key, subscription, fallback]) {
+    // In scope: the source, src/a.js, the 19 copies and y.
+    const review = await incrementalReview(fixture, job, last, head, 3);
+    assert.equal(review.scope.files, "22", job.name);
+    assert.equal(review.copies, "17", job.name);
+    assert.equal(
+      review.identical,
+      `${copies.filter((p) => p !== stale).join("\t")}\n`,
+      job.name,
+    );
+    // p05 and y are read at their own paths: 5 distinct files.
+    assert.deepEqual(review.coverage, { read: 20, changed: 22 }, job.name);
+    assert.deepEqual(
+      (await incrementalReview(fixture, job, last, head, 5)).coverage,
+      { read: 22, changed: 22 },
+      job.name,
+    );
+    // A reviewed head the job cannot fetch groups nothing, with a warning.
+    const unfetched = await incrementalReview(fixture, job, last, head, 3, {
+      SINCE: "f".repeat(40),
+    });
+    assert.equal(unfetched.copies, "0", job.name);
+    assert.equal(unfetched.identical, undefined, job.name);
+    assert.match(unfetched.full, /^written=true$/mu, job.name);
+    assert.match(unfetched.stdout, /^::warning::/mu, job.name);
+    assert.doesNotMatch(unfetched.prompt, /IDENTICAL FILES/u, job.name);
+    assert.deepEqual(unfetched.coverage, { read: 3, changed: 22 }, job.name);
+  }
+});
+
+test("the prompt names the identical files only for a review that holds them once", async () => {
   const line =
     /^IDENTICAL FILES: each line of \.claude-lane\/identical\.txt /mu;
   assert.match(await compose({ COPIES: "8", SCOPE: "whole" }), line);
+  assert.match(await compose({ COPIES: "8", SCOPE: "incremental" }), line);
   assert.match(
     await compose({ COPIES: "8", SCOPE: "whole" }),
     /files_read counts\nthe first path only/u,
@@ -2233,12 +2625,23 @@ test("the prompt names the identical files only for a whole review that holds th
     );
     assert.doesNotMatch(text, /skip its copies/u);
   }
+  const chunkedIncremental = await composeOutputs({
+    COPIES: "8",
+    EXCLUDED: "8",
+    SCOPE: "incremental",
+    CHUNKS: "2",
+    CHUNK_FILES: "10,9",
+  });
+  assert.match(
+    fs.readFileSync(chunkedIncremental["prompt-file-2"], "utf8"),
+    line,
+  );
   for (const env of [
     { COPIES: "0", SCOPE: "whole" },
     { COPIES: "", SCOPE: "whole" },
     { COPIES: "8x", SCOPE: "whole" },
-    { COPIES: "8", SCOPE: "incremental" },
     { COPIES: "8", SCOPE: "whole", CHUNKS: "2", CHUNK_FILES: "10,9" },
+    { COPIES: "8", SCOPE: "incremental", CHUNKS: "2", CHUNK_FILES: "10,9" },
     {
       COPIES: "8",
       EXCLUDED: "0",
@@ -2248,7 +2651,7 @@ test("the prompt names the identical files only for a whole review that holds th
     },
     {
       COPIES: "8",
-      EXCLUDED: "8",
+      EXCLUDED: "0",
       SCOPE: "incremental",
       CHUNKS: "2",
       CHUNK_FILES: "10,9",
@@ -2268,7 +2671,7 @@ test("the prompt names the identical files only for a whole review that holds th
   }
 });
 
-test("the copies count as read in one whole review, and coverage stays partial below the files in scope", async () => {
+test("the copies count as read in one review, and coverage stays partial below the files in scope", async () => {
   const review = (files_read) =>
     JSON.stringify({ findings: 0, files_read, summary: "S", comments: [] });
   const coverage = async (files_read, env) =>
@@ -2293,13 +2696,23 @@ test("the copies count as read in one whole review, and coverage stays partial b
     read: 19,
     changed: 19,
   });
-  // No well-formed count below the files in scope, or an incremental review: no credit.
+  // An incremental review counts the copies against its own scope.
+  const incremental = {
+    SCOPE: "incremental",
+    FULL_DIFF: "",
+    SCOPE_FILES: "19",
+  };
+  assert.deepEqual(await coverage(11, { ...incremental, COPIES: "8" }), {
+    read: 19,
+    changed: 19,
+  });
+  // No well-formed count below the files in scope: no credit.
   for (const env of [
     {},
     { COPIES: "" },
     { COPIES: "8x" },
     { COPIES: "19" },
-    { COPIES: "8", SCOPE: "incremental", FULL_DIFF: "", SCOPE_FILES: "19" },
+    { ...incremental, COPIES: "19" },
   ]) {
     assert.deepEqual(
       await coverage(11, env),
@@ -2320,17 +2733,25 @@ test("the copies count as read in one whole review, and coverage stays partial b
     await chunkedCoverage({ COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "1,1" }),
     { read: 4, changed: 4 },
   );
-  for (const env of [
-    { COPIES: "2", EXCLUDED: "0", CHUNK_FILES: "1,1" },
-    { COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "2,1" },
-    {
+  const chunkedIncremental = {
+    SCOPE: "incremental",
+    FULL_DIFF: "",
+    SCOPE_FILES: "4",
+  };
+  assert.deepEqual(
+    await chunkedCoverage({
+      ...chunkedIncremental,
       COPIES: "2",
       EXCLUDED: "2",
       CHUNK_FILES: "1,1",
-      SCOPE: "incremental",
-      FULL_DIFF: "",
-      SCOPE_FILES: "4",
-    },
+    }),
+    { read: 4, changed: 4 },
+  );
+  for (const env of [
+    { COPIES: "2", EXCLUDED: "0", CHUNK_FILES: "1,1" },
+    { COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "2,1" },
+    { ...chunkedIncremental, COPIES: "2", EXCLUDED: "0", CHUNK_FILES: "1,1" },
+    { ...chunkedIncremental, COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "2,1" },
   ]) {
     assert.equal((await chunkedCoverage(env)).read, 2, JSON.stringify(env));
   }
@@ -2458,7 +2879,7 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   );
   assert.match(many.out, /^chunks=2$/mu);
   // When the files but the copies fit one review, it is one review, which
-  // skips the copies; an incremental review never leaves them out.
+  // skips the copies, on a whole and an incremental review alike.
   const withCopies = (env) =>
     split({ SCOPE_BYTES: "1000", COPIES: "10", ...env }, (work) => {
       fs.writeFileSync(
@@ -2474,7 +2895,7 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
       );
     });
   assert.equal(withCopies().out, "chunks=1\n");
-  assert.match(withCopies({ SCOPE: "incremental" }).out, /^excluded=0$/mu);
+  assert.equal(withCopies({ SCOPE: "incremental" }).out, "chunks=1\n");
   // A copies count that does not match the file leaves nothing out.
   assert.match(withCopies({ COPIES: "9" }).out, /^excluded=0$/mu);
   // A diff within the budget, or a size the job could not read, is one review.
@@ -2583,16 +3004,21 @@ test("one review of more files that are not copies than the cap is partial", asy
     await coverage(41, { WHOLE_FILES: String(cap + 5), COPIES: "4" }),
     { read: cap + 5, changed: cap + 5, over_files: cap + 1 },
   );
-  // An incremental review counts its own scope, with no copies.
-  assert.deepEqual(
-    await coverage(cap + 1, {
-      SCOPE: "incremental",
-      FULL_DIFF: "",
-      SCOPE_FILES: String(cap + 1),
-      COPIES: "10",
-    }),
-    { read: cap + 1, changed: cap + 1, over_files: cap + 1 },
-  );
+  // An incremental review counts its own scope, past the copies in it.
+  const incremental = {
+    SCOPE: "incremental",
+    FULL_DIFF: "",
+    SCOPE_FILES: String(cap + 1),
+  };
+  assert.deepEqual(await coverage(cap + 1, { ...incremental, COPIES: "0" }), {
+    read: cap + 1,
+    changed: cap + 1,
+    over_files: cap + 1,
+  });
+  assert.deepEqual(await coverage(cap + 1, { ...incremental, COPIES: "10" }), {
+    read: cap + 1,
+    changed: cap + 1,
+  });
   // A chunked review is never over the cap here: the split step checked it.
   const good = { findings: 0, files_read: 2, summary: "S", comments: [] };
   assert.deepEqual(
