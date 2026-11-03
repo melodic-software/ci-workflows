@@ -283,9 +283,12 @@ on:
         description: >-
           Repository path of a file whose lines read `<source> <copy>`
           (blank lines and `#` comments skipped), declaring each copy
-          generated from its source. It is read at the merge base, never the
-          head. Identical changes to copies of one source group as copies even
-          when executable or at a SENSITIVE_PATHS match. Empty, none does.
+          generated from its source. It is read at the merge base; a copy
+          only the head's file declares counts only when the head generates
+          it exactly from its source, as claude-code-plugins
+          scripts/sync-shared-copies.sh --check compares. Identical changes
+          to copies of one source group as copies even when executable or at
+          a SENSITIVE_PATHS match. Empty, none does.
         type: string
         default: ""
       generated-data:
@@ -1131,8 +1134,9 @@ jobs:
           # or executable never does, nor a path matching a hold-paths glob
           # (globbed as the scope step's docs-only-paths) or a SENSITIVE_PATHS
           # glob (nothing when that list is empty). The one exception: a copy
-          # the generated-copies file at the merge base declares, executable
-          # or at a SENSITIVE_PATHS match, groups with the copies of the same
+          # the generated-copies file declares (at the merge base, or at the
+          # head when the head generates it exactly, as below), executable or
+          # at a SENSITIVE_PATHS match, groups with the copies of the same
           # source only. An incremental review groups only the files on the
           # scope step's list, each keyed on its raw diff line from the
           # reviewed head too, so a copy also changed since the last review
@@ -1145,8 +1149,87 @@ jobs:
           copies=0
           generated=""
           if [ -n "$GENERATED_COPIES" ] && ! generated="$(git cat-file blob "$base:$GENERATED_COPIES")"; then
-            echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; no copy is declared."
+            echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; only a copy the head generates exactly from its source is declared."
             generated=""
+          fi
+          # A copy only the head's generated-copies file declares, parsed as
+          # the base's, counts when its bytes and mode at the head are what
+          # claude-code-plugins scripts/sync-shared-copies.sh --check wants
+          # from its source at the head: render() and check_copy(), lines
+          # 98-141 and 175-186 at ee1539061603f903e2efa9ed673d5ffd3cd87711.
+          # That is the source with a two-line `GENERATED from <source> by
+          # <generator>` comment after any shebang (in Markdown, an HTML
+          # comment after any frontmatter, with a blank line) and the source's
+          # mode. A copy the merge base declares keeps the base's entry, and
+          # only a changed file is checked. A path outside letters, digits and
+          # `._/@+-` or with a `.` or `..` segment, a source that is not a
+          # regular file at the head, an unknown extension or a one-byte
+          # difference counts none, so the file is read in full.
+          if [ -n "$GENERATED_COPIES" ] && declared="$(git cat-file blob "$HEAD_SHA:$GENERATED_COPIES" 2>/dev/null)"; then
+            verify="$(mktemp -d)"
+            while IFS=$'\t' read -r src copy; do
+              case "$src" in
+                *.mjs | *.cjs | *.js | *.ts) prefix='//' ;;
+                *.sh | *.bash | *.py | *.ps1 | *.psm1 | *.awk) prefix='#' ;;
+                *.md) prefix='<!--' ;;
+                *) continue ;;
+              esac
+              # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
+              mode='$2 == ENVIRON["P"] { split($1, f, " "); if (f[2] == "blob" && f[1] ~ /^100(644|755)$/) print f[1] }'
+              src_mode="$(git ls-tree "$HEAD_SHA" -- "$src" 2>/dev/null | P="$src" awk -F '\t' "$mode")" || continue
+              copy_mode="$(git ls-tree "$HEAD_SHA" -- "$copy" 2>/dev/null | P="$copy" awk -F '\t' "$mode")" || continue
+              if [ -z "$src_mode" ] || [ "$src_mode" != "$copy_mode" ] ||
+                ! git cat-file blob "$HEAD_SHA:$src" > "$verify/source" 2>/dev/null ||
+                ! git cat-file blob "$HEAD_SHA:$copy" > "$verify/copy" 2>/dev/null; then
+                continue
+              fi
+              # The generator the copy's header names, a plain path.
+              lead="$prefix GENERATED from $src by "
+              by="$(LEAD="$lead" awk 'index($0, ENVIRON["LEAD"]) == 1 { print substr($0, length(ENVIRON["LEAD"]) + 1); exit }' "$verify/copy")"
+              by="${by%. Do not edit this copy:}"
+              [[ "$by" =~ ^[A-Za-z0-9._/-]+$ ]] || continue
+              first=""
+              IFS= read -r first < "$verify/source" || true
+              if [ "$prefix" = '<!--' ]; then
+                close=""
+                if [ "$first" = '---' ]; then
+                  close="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$verify/source")"
+                fi
+                {
+                  if [ -n "$close" ]; then
+                    head -n "$close" "$verify/source"
+                    printf '\n'
+                  fi
+                  printf '<!-- GENERATED from %s by %s. Do not edit this copy:\n' "$src" "$by"
+                  printf 'edit the canonical source, then rerun the script. -->\n'
+                  if [ -n "$close" ]; then
+                    tail -n +"$((close + 1))" "$verify/source"
+                  else
+                    printf '\n'
+                    cat "$verify/source"
+                  fi
+                } > "$verify/rendered"
+              else
+                {
+                  if [[ "$first" == '#!'* ]]; then printf '%s\n' "$first"; fi
+                  printf '%s GENERATED from %s by %s. Do not edit this copy:\n' "$prefix" "$src" "$by"
+                  printf '%s edit the canonical source, then rerun the script.\n' "$prefix"
+                  if [[ "$first" == '#!'* ]]; then tail -n +2 "$verify/source"; else cat "$verify/source"; fi
+                } > "$verify/rendered"
+              fi
+              if cmp -s "$verify/rendered" "$verify/copy"; then
+                generated="$generated"$'\n'"$src $copy"
+              fi
+            done < <(printf '%s\n' "$declared" | BASE_MAP="$generated" awk '
+              BEGIN {
+                m = split(ENVIRON["BASE_MAP"], line, "\n")
+                for (i = 1; i <= m; i++) if (line[i] !~ /^[ \t]*#/ && split(line[i], pair, " ") == 2) base[pair[2]] = 1
+                while ((getline p < ENVIRON["FILE_LIST"]) > 0) changed[p] = 1
+              }
+              /^[ \t]*#/ || split($0, pair, " ") != 2 { next }
+              { for (i = 1; i <= 2; i++) if (pair[i] !~ /^[A-Za-z0-9._\/@+-]+$/ || length(pair[i]) > 500 || ("/" pair[i] "/") ~ /\/\.\.?\//) next }
+              !(pair[2] in base) && (pair[2] in changed) { print pair[1] "\t" pair[2] }')
+            rm -rf "${verify:?}"
           fi
           scoped=""
           since=""
@@ -3080,8 +3163,9 @@ jobs:
           # or executable never does, nor a path matching a hold-paths glob
           # (globbed as the scope step's docs-only-paths) or a SENSITIVE_PATHS
           # glob (nothing when that list is empty). The one exception: a copy
-          # the generated-copies file at the merge base declares, executable
-          # or at a SENSITIVE_PATHS match, groups with the copies of the same
+          # the generated-copies file declares (at the merge base, or at the
+          # head when the head generates it exactly, as below), executable or
+          # at a SENSITIVE_PATHS match, groups with the copies of the same
           # source only. An incremental review groups only the files on the
           # scope step's list, each keyed on its raw diff line from the
           # reviewed head too, so a copy also changed since the last review
@@ -3094,8 +3178,87 @@ jobs:
           copies=0
           generated=""
           if [ -n "$GENERATED_COPIES" ] && ! generated="$(git cat-file blob "$base:$GENERATED_COPIES")"; then
-            echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; no copy is declared."
+            echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; only a copy the head generates exactly from its source is declared."
             generated=""
+          fi
+          # A copy only the head's generated-copies file declares, parsed as
+          # the base's, counts when its bytes and mode at the head are what
+          # claude-code-plugins scripts/sync-shared-copies.sh --check wants
+          # from its source at the head: render() and check_copy(), lines
+          # 98-141 and 175-186 at ee1539061603f903e2efa9ed673d5ffd3cd87711.
+          # That is the source with a two-line `GENERATED from <source> by
+          # <generator>` comment after any shebang (in Markdown, an HTML
+          # comment after any frontmatter, with a blank line) and the source's
+          # mode. A copy the merge base declares keeps the base's entry, and
+          # only a changed file is checked. A path outside letters, digits and
+          # `._/@+-` or with a `.` or `..` segment, a source that is not a
+          # regular file at the head, an unknown extension or a one-byte
+          # difference counts none, so the file is read in full.
+          if [ -n "$GENERATED_COPIES" ] && declared="$(git cat-file blob "$HEAD_SHA:$GENERATED_COPIES" 2>/dev/null)"; then
+            verify="$(mktemp -d)"
+            while IFS=$'\t' read -r src copy; do
+              case "$src" in
+                *.mjs | *.cjs | *.js | *.ts) prefix='//' ;;
+                *.sh | *.bash | *.py | *.ps1 | *.psm1 | *.awk) prefix='#' ;;
+                *.md) prefix='<!--' ;;
+                *) continue ;;
+              esac
+              # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
+              mode='$2 == ENVIRON["P"] { split($1, f, " "); if (f[2] == "blob" && f[1] ~ /^100(644|755)$/) print f[1] }'
+              src_mode="$(git ls-tree "$HEAD_SHA" -- "$src" 2>/dev/null | P="$src" awk -F '\t' "$mode")" || continue
+              copy_mode="$(git ls-tree "$HEAD_SHA" -- "$copy" 2>/dev/null | P="$copy" awk -F '\t' "$mode")" || continue
+              if [ -z "$src_mode" ] || [ "$src_mode" != "$copy_mode" ] ||
+                ! git cat-file blob "$HEAD_SHA:$src" > "$verify/source" 2>/dev/null ||
+                ! git cat-file blob "$HEAD_SHA:$copy" > "$verify/copy" 2>/dev/null; then
+                continue
+              fi
+              # The generator the copy's header names, a plain path.
+              lead="$prefix GENERATED from $src by "
+              by="$(LEAD="$lead" awk 'index($0, ENVIRON["LEAD"]) == 1 { print substr($0, length(ENVIRON["LEAD"]) + 1); exit }' "$verify/copy")"
+              by="${by%. Do not edit this copy:}"
+              [[ "$by" =~ ^[A-Za-z0-9._/-]+$ ]] || continue
+              first=""
+              IFS= read -r first < "$verify/source" || true
+              if [ "$prefix" = '<!--' ]; then
+                close=""
+                if [ "$first" = '---' ]; then
+                  close="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$verify/source")"
+                fi
+                {
+                  if [ -n "$close" ]; then
+                    head -n "$close" "$verify/source"
+                    printf '\n'
+                  fi
+                  printf '<!-- GENERATED from %s by %s. Do not edit this copy:\n' "$src" "$by"
+                  printf 'edit the canonical source, then rerun the script. -->\n'
+                  if [ -n "$close" ]; then
+                    tail -n +"$((close + 1))" "$verify/source"
+                  else
+                    printf '\n'
+                    cat "$verify/source"
+                  fi
+                } > "$verify/rendered"
+              else
+                {
+                  if [[ "$first" == '#!'* ]]; then printf '%s\n' "$first"; fi
+                  printf '%s GENERATED from %s by %s. Do not edit this copy:\n' "$prefix" "$src" "$by"
+                  printf '%s edit the canonical source, then rerun the script.\n' "$prefix"
+                  if [[ "$first" == '#!'* ]]; then tail -n +2 "$verify/source"; else cat "$verify/source"; fi
+                } > "$verify/rendered"
+              fi
+              if cmp -s "$verify/rendered" "$verify/copy"; then
+                generated="$generated"$'\n'"$src $copy"
+              fi
+            done < <(printf '%s\n' "$declared" | BASE_MAP="$generated" awk '
+              BEGIN {
+                m = split(ENVIRON["BASE_MAP"], line, "\n")
+                for (i = 1; i <= m; i++) if (line[i] !~ /^[ \t]*#/ && split(line[i], pair, " ") == 2) base[pair[2]] = 1
+                while ((getline p < ENVIRON["FILE_LIST"]) > 0) changed[p] = 1
+              }
+              /^[ \t]*#/ || split($0, pair, " ") != 2 { next }
+              { for (i = 1; i <= 2; i++) if (pair[i] !~ /^[A-Za-z0-9._\/@+-]+$/ || length(pair[i]) > 500 || ("/" pair[i] "/") ~ /\/\.\.?\//) next }
+              !(pair[2] in base) && (pair[2] in changed) { print pair[1] "\t" pair[2] }')
+            rm -rf "${verify:?}"
           fi
           scoped=""
           since=""
@@ -5001,8 +5164,9 @@ jobs:
           # or executable never does, nor a path matching a hold-paths glob
           # (globbed as the scope step's docs-only-paths) or a SENSITIVE_PATHS
           # glob (nothing when that list is empty). The one exception: a copy
-          # the generated-copies file at the merge base declares, executable
-          # or at a SENSITIVE_PATHS match, groups with the copies of the same
+          # the generated-copies file declares (at the merge base, or at the
+          # head when the head generates it exactly, as below), executable or
+          # at a SENSITIVE_PATHS match, groups with the copies of the same
           # source only. An incremental review groups only the files on the
           # scope step's list, each keyed on its raw diff line from the
           # reviewed head too, so a copy also changed since the last review
@@ -5015,8 +5179,87 @@ jobs:
           copies=0
           generated=""
           if [ -n "$GENERATED_COPIES" ] && ! generated="$(git cat-file blob "$base:$GENERATED_COPIES")"; then
-            echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; no copy is declared."
+            echo "::warning::The merge base holds no generated-copies file at $GENERATED_COPIES; only a copy the head generates exactly from its source is declared."
             generated=""
+          fi
+          # A copy only the head's generated-copies file declares, parsed as
+          # the base's, counts when its bytes and mode at the head are what
+          # claude-code-plugins scripts/sync-shared-copies.sh --check wants
+          # from its source at the head: render() and check_copy(), lines
+          # 98-141 and 175-186 at ee1539061603f903e2efa9ed673d5ffd3cd87711.
+          # That is the source with a two-line `GENERATED from <source> by
+          # <generator>` comment after any shebang (in Markdown, an HTML
+          # comment after any frontmatter, with a blank line) and the source's
+          # mode. A copy the merge base declares keeps the base's entry, and
+          # only a changed file is checked. A path outside letters, digits and
+          # `._/@+-` or with a `.` or `..` segment, a source that is not a
+          # regular file at the head, an unknown extension or a one-byte
+          # difference counts none, so the file is read in full.
+          if [ -n "$GENERATED_COPIES" ] && declared="$(git cat-file blob "$HEAD_SHA:$GENERATED_COPIES" 2>/dev/null)"; then
+            verify="$(mktemp -d)"
+            while IFS=$'\t' read -r src copy; do
+              case "$src" in
+                *.mjs | *.cjs | *.js | *.ts) prefix='//' ;;
+                *.sh | *.bash | *.py | *.ps1 | *.psm1 | *.awk) prefix='#' ;;
+                *.md) prefix='<!--' ;;
+                *) continue ;;
+              esac
+              # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
+              mode='$2 == ENVIRON["P"] { split($1, f, " "); if (f[2] == "blob" && f[1] ~ /^100(644|755)$/) print f[1] }'
+              src_mode="$(git ls-tree "$HEAD_SHA" -- "$src" 2>/dev/null | P="$src" awk -F '\t' "$mode")" || continue
+              copy_mode="$(git ls-tree "$HEAD_SHA" -- "$copy" 2>/dev/null | P="$copy" awk -F '\t' "$mode")" || continue
+              if [ -z "$src_mode" ] || [ "$src_mode" != "$copy_mode" ] ||
+                ! git cat-file blob "$HEAD_SHA:$src" > "$verify/source" 2>/dev/null ||
+                ! git cat-file blob "$HEAD_SHA:$copy" > "$verify/copy" 2>/dev/null; then
+                continue
+              fi
+              # The generator the copy's header names, a plain path.
+              lead="$prefix GENERATED from $src by "
+              by="$(LEAD="$lead" awk 'index($0, ENVIRON["LEAD"]) == 1 { print substr($0, length(ENVIRON["LEAD"]) + 1); exit }' "$verify/copy")"
+              by="${by%. Do not edit this copy:}"
+              [[ "$by" =~ ^[A-Za-z0-9._/-]+$ ]] || continue
+              first=""
+              IFS= read -r first < "$verify/source" || true
+              if [ "$prefix" = '<!--' ]; then
+                close=""
+                if [ "$first" = '---' ]; then
+                  close="$(awk 'NR > 1 && /^---$/ { print NR; exit }' "$verify/source")"
+                fi
+                {
+                  if [ -n "$close" ]; then
+                    head -n "$close" "$verify/source"
+                    printf '\n'
+                  fi
+                  printf '<!-- GENERATED from %s by %s. Do not edit this copy:\n' "$src" "$by"
+                  printf 'edit the canonical source, then rerun the script. -->\n'
+                  if [ -n "$close" ]; then
+                    tail -n +"$((close + 1))" "$verify/source"
+                  else
+                    printf '\n'
+                    cat "$verify/source"
+                  fi
+                } > "$verify/rendered"
+              else
+                {
+                  if [[ "$first" == '#!'* ]]; then printf '%s\n' "$first"; fi
+                  printf '%s GENERATED from %s by %s. Do not edit this copy:\n' "$prefix" "$src" "$by"
+                  printf '%s edit the canonical source, then rerun the script.\n' "$prefix"
+                  if [[ "$first" == '#!'* ]]; then tail -n +2 "$verify/source"; else cat "$verify/source"; fi
+                } > "$verify/rendered"
+              fi
+              if cmp -s "$verify/rendered" "$verify/copy"; then
+                generated="$generated"$'\n'"$src $copy"
+              fi
+            done < <(printf '%s\n' "$declared" | BASE_MAP="$generated" awk '
+              BEGIN {
+                m = split(ENVIRON["BASE_MAP"], line, "\n")
+                for (i = 1; i <= m; i++) if (line[i] !~ /^[ \t]*#/ && split(line[i], pair, " ") == 2) base[pair[2]] = 1
+                while ((getline p < ENVIRON["FILE_LIST"]) > 0) changed[p] = 1
+              }
+              /^[ \t]*#/ || split($0, pair, " ") != 2 { next }
+              { for (i = 1; i <= 2; i++) if (pair[i] !~ /^[A-Za-z0-9._\/@+-]+$/ || length(pair[i]) > 500 || ("/" pair[i] "/") ~ /\/\.\.?\//) next }
+              !(pair[2] in base) && (pair[2] in changed) { print pair[1] "\t" pair[2] }')
+            rm -rf "${verify:?}"
           fi
           scoped=""
           since=""
