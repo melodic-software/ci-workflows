@@ -847,7 +847,7 @@ jobs:
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -1431,7 +1431,7 @@ jobs:
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -2015,7 +2015,7 @@ jobs:
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract

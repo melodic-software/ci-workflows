@@ -193,7 +193,7 @@ test("a missing, empty or linked transcript seals nothing; a bad job id fails", 
   }
 });
 
-test("an empty key skips the scan, and a scan that is not clean withholds the seal", () => {
+test("the step conditions skip the scan on an empty key and seal only after a clean scan", () => {
   const [scan, seal] = ACTION.runs.steps;
   assert.match(scan.run, /\/\.\.\/scan-upload\/scan\.cjs"$/u);
   assert.equal(scan.env.SCAN_PATHS, `\${{ inputs.execution-file }}`);

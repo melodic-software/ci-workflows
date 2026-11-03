@@ -208,11 +208,9 @@ test("every model job's leg uploads its sealed transcript under a job id unique 
     );
     assert.equal(uploads.length, 1, name);
     const [upload] = uploads;
-    assert.ok(
-      job.steps.indexOf(upload) >
-        job.steps.findIndex((step) => step.id === "review-outcome"),
-      name,
-    );
+    const outcome = job.steps.findIndex((step) => step.id === "review-outcome");
+    assert.ok(outcome >= 0, name);
+    assert.ok(job.steps.indexOf(upload) > outcome, name);
     assert.equal(upload["continue-on-error"], true);
     assert.equal(
       upload.if,

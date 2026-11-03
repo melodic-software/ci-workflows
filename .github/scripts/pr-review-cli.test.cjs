@@ -3479,6 +3479,7 @@ test("every model leg uploads its sealed transcript under a job id unique in the
     "review-fallback": fallback,
   })) {
     const outcome = job.steps.findIndex((s) => s.id === "review-outcome");
+    assert.ok(outcome >= 0, `${name} has the outcome step`);
     const uploads = job.steps
       .map((s, index) => ({ s, index }))
       .filter(({ s }) => s.uses === "$/.github/actions/upload-lane-transcript");
