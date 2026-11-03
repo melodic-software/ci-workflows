@@ -1,9 +1,10 @@
 "use strict";
 
-// check-key-credit reads one artifact name, the key job's credit-stop marker,
-// and skips the key job only on a marker uploaded inside the window; every
-// other answer, and every failure, runs the key. Its calls: one, on every
-// path that reads.
+// check-key-credit reads the key job's credit-stop marker and skips the key
+// job on a marker uploaded inside the window. Past the window, with that
+// marker still kept, it reads the probing marker too and skips while another
+// gate's probe is fresh. Every other answer, and every failure, runs the key.
+// Its calls: one, or two after a credit stop past the window.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -15,6 +16,7 @@ const {
   judgeMarkers,
   main,
   markerName,
+  probeName,
 } = require("../actions/check-key-credit/gate.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
@@ -165,6 +167,7 @@ function env(dir, extra = {}) {
   return {
     KEY_JOB: KEY,
     WINDOW_HOURS: "6",
+    PROBE_MINUTES: "15",
     WORKFLOW_REF:
       "o/r/.github/workflows/pr-review-hosted.yml@refs/pull/1/merge",
     GITHUB_REPOSITORY: "o/r",
@@ -222,7 +225,7 @@ test("main skips on a marker in the window with one call, reads no run or job li
   );
   assert.equal(
     fs.readFileSync(path.join(dir, "output"), "utf8"),
-    `skip-key=true\norigin-run=98\nmarker=${NAME}\n`,
+    `skip-key=true\norigin-run=98\nmarker=${NAME}\nprobing-marker=\n`,
   );
   // The response's rate-limit reading, for report-api-budget.
   assert.equal(
@@ -231,11 +234,13 @@ test("main skips on a marker in the window with one call, reads no run or job li
   );
 });
 
-test("main runs the key with one call when no marker is in the window, a topped-up key included", async () => {
+// A credit stop past the window takes a second call, the probing markers:
+// see the probe tests below.
+test("main runs the key with one call when no credit-stop marker counts", async () => {
   const fork = marker(98, 1, {
     workflow_run: { id: 98, repository_id: 1, head_repository_id: 2 },
   });
-  for (const artifacts of [[], [marker(98, 6.5)], [fork]]) {
+  for (const artifacts of [[], [fork]]) {
     const dir = makeTemporaryDirectory("check-key-credit-");
     const { urls, fetchImpl } = fakeFetch([[ARTIFACTS, { artifacts }]]);
     const { verdict, lines } = await main(env(dir), fetchImpl, now);
@@ -247,7 +252,7 @@ test("main runs the key with one call when no marker is in the window, a topped-
     );
     assert.equal(
       fs.readFileSync(path.join(dir, "output"), "utf8"),
-      `skip-key=false\norigin-run=\nmarker=${NAME}\n`,
+      `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`,
     );
   }
 });
@@ -270,9 +275,182 @@ test("main runs the key on a refused read, an unreadable ref or a window of 0, s
     // while the gate is off; an unreadable ref leaves it empty.
     assert.equal(
       fs.readFileSync(path.join(dir, "output"), "utf8"),
-      `skip-key=false\norigin-run=\nmarker=${name}\n`,
+      `skip-key=false\norigin-run=\nmarker=${name}\nprobing-marker=\n`,
     );
   }
+});
+
+// The probing marker: the gate that passes the key after a credit stop's
+// window ends uploads it, and gates that read it while it is fresh skip.
+const PROBE = "key-credit-probing-pr-review-hosted.yml-claude-review-key";
+const PROBES =
+  /^https:\/\/api\.example\/repos\/o\/r\/actions\/artifacts\?name=key-credit-probing-pr-review-hosted\.yml-claude-review-key&per_page=100$/u;
+const minutesAgo = (minutes) =>
+  new Date(NOW - minutes * 60 * 1000).toISOString();
+const probe = (run, minutes, extra = {}) =>
+  marker(run, 0, { name: PROBE, created_at: minutesAgo(minutes), ...extra });
+const output = (dir) => fs.readFileSync(path.join(dir, "output"), "utf8");
+
+test("the probing marker is named apart from the credit-stop marker", () => {
+  assert.equal(probeName("pr-review-hosted.yml", KEY), PROBE);
+  assert.notEqual(probeName("other.yml", KEY), PROBE);
+  assert.notEqual(PROBE, NAME);
+});
+
+test("a fresh probing marker after the credit stop skips the key, citing the probing run", async () => {
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { urls, fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: [marker(90, 7)] }],
+    [PROBES, { artifacts: [probe(95, 5)] }],
+  ]);
+  const { verdict, lines } = await main(env(dir), fetchImpl, now);
+  assert.equal(verdict.skip, true);
+  assert.equal(verdict.origin, "95");
+  assert.deepEqual(
+    urls.map((u) => [ARTIFACTS, PROBES].findIndex((r) => r.test(u))),
+    [0, 1],
+  );
+  assert.match(
+    lines[0],
+    /^::notice title=check-key-credit::claude-review-key skips the key: run 95 \(https:\/\/example\/o\/r\/actions\/runs\/95\) is probing the key, 5 minutes ago, inside the 15-minute probe window/u,
+  );
+  assert.equal(
+    output(dir),
+    `skip-key=true\norigin-run=95\nmarker=${NAME}\nprobing-marker=\n`,
+  );
+});
+
+test("the first gate after the window ends passes the key and names the probing marker to upload", async () => {
+  // A probe from before the credit stop does not count: the stop is newer.
+  for (const probes of [[], [probe(80, 7.5 * 60)]]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const { urls, fetchImpl } = fakeFetch([
+      [ARTIFACTS, { artifacts: [marker(90, 7)] }],
+      [PROBES, { artifacts: probes }],
+    ]);
+    const { verdict } = await main(env(dir), fetchImpl, now);
+    assert.equal(verdict.skip, false, JSON.stringify(probes));
+    assert.equal(urls.length, 2);
+    assert.equal(
+      output(dir),
+      `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=${PROBE}\n`,
+    );
+  }
+});
+
+test("an expired probing marker after the credit stop runs the key and writes no new probe", async () => {
+  // 20 minutes ago, past the 15-minute probe window: that probe hit no credit
+  // stop, so the key works again.
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { urls, fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: [marker(90, 7)] }],
+    [PROBES, { artifacts: [probe(95, 20)] }],
+  ]);
+  const { verdict, lines } = await main(env(dir), fetchImpl, now);
+  assert.equal(verdict.skip, false);
+  assert.equal(urls.length, 2);
+  assert.match(
+    lines[0],
+    /^check-key-credit: claude-review-key runs the key: run 95 probed the key after its credit stop with no new credit stop$/u,
+  );
+  assert.equal(
+    output(dir),
+    `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`,
+  );
+});
+
+test("a credit-stop marker in the window still skips, with one call and no probe", async () => {
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { urls, fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: [marker(98, 1)] }],
+    [PROBES, { artifacts: [probe(95, 5)] }],
+  ]);
+  const { verdict } = await main(env(dir), fetchImpl, now);
+  assert.deepEqual(verdict, { skip: true, origin: "98" });
+  assert.equal(urls.length, 1);
+  assert.equal(
+    output(dir),
+    `skip-key=true\norigin-run=98\nmarker=${NAME}\nprobing-marker=\n`,
+  );
+});
+
+test("a healthy key, with no credit-stop marker in retention, reads once and writes no probe", async () => {
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { urls, fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: [] }],
+    [PROBES, { artifacts: [probe(95, 5)] }],
+  ]);
+  const { verdict } = await main(env(dir), fetchImpl, now);
+  assert.equal(verdict.skip, false);
+  assert.equal(urls.length, 1);
+  assert.equal(
+    output(dir),
+    `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`,
+  );
+});
+
+test("a failed probing-marker read runs the key and writes no probe", async () => {
+  for (const probes of [undefined, {}]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const routes = [[ARTIFACTS, { artifacts: [marker(90, 7)] }]];
+    if (probes) routes.push([PROBES, probes]);
+    const { urls, fetchImpl } = fakeFetch(routes);
+    const { verdict, lines } = await main(env(dir), fetchImpl, now);
+    assert.equal(verdict.skip, false, JSON.stringify(probes));
+    assert.equal(urls.length, 2);
+    assert.match(
+      lines[0],
+      /^check-key-credit: claude-review-key runs the key: the probing marker(s were not read \(HTTP 404\)| list was not a list)$/u,
+    );
+    assert.equal(
+      output(dir),
+      `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`,
+    );
+  }
+});
+
+test("a fork's probing marker, or a probe window of 0 or out of range, never skips", async () => {
+  const fork = probe(95, 5, {
+    workflow_run: { id: 95, repository_id: 1, head_repository_id: 2 },
+  });
+  for (const [extra, probes, calls, written] of [
+    [{}, [fork], 2, PROBE],
+    [{ PROBE_MINUTES: "0" }, [probe(95, 5)], 1, ""],
+    [{ PROBE_MINUTES: "1441" }, [probe(95, 5)], 1, ""],
+    [{ PROBE_MINUTES: "abc" }, [probe(95, 5)], 1, ""],
+  ]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const { urls, fetchImpl } = fakeFetch([
+      [ARTIFACTS, { artifacts: [marker(90, 7)] }],
+      [PROBES, { artifacts: probes }],
+    ]);
+    const { verdict } = await main(env(dir, extra), fetchImpl, now);
+    assert.equal(verdict.skip, false, JSON.stringify(extra));
+    assert.equal(urls.length, calls, JSON.stringify(extra));
+    assert.equal(
+      output(dir),
+      `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=${written}\n`,
+    );
+  }
+});
+
+test("the action passes the probe window to the gate and the probing marker out", () => {
+  const { parseWorkflow } = require("./workflow-yaml.cjs");
+  const action = parseWorkflow(
+    fs.readFileSync(
+      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    action.runs.steps[0].env.PROBE_MINUTES,
+    `\${{ inputs.probe-minutes }}`,
+  );
+  assert.equal(action.inputs["probe-minutes"].default, "15");
+  assert.equal(
+    action.outputs["probing-marker"].value,
+    `\${{ steps.gate.outputs.probing-marker }}`,
+  );
 });
 
 test("the action passes the caller's workflow ref and the window to the gate, and the marker out", () => {
