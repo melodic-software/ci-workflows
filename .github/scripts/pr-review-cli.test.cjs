@@ -604,44 +604,71 @@ test("the key job runs unless check-key-credit says exactly true, a failed check
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
 });
 
-test("the credit record steps carry the names and conditions check-key-credit reads", () => {
-  const {
-    MODEL_STEP,
-    RECORD_PATTERN,
-  } = require("../actions/check-key-credit/gate.cjs");
-  const render = (name, context) =>
-    name.replace(/\$\{\{\s*([^}]+?)\s*\}\}/gu, (_, expr) =>
-      String(evaluate(expr, context)),
-    );
-  for (const job of [key, subscription]) {
-    const record = job.steps.find((s) => s.name.startsWith("Record the key"));
-    assert.match(
-      render(record.name, { github: { run_id: "123" } }),
-      RECORD_PATTERN,
-    );
-    assert.equal(step(job, "claude").name, MODEL_STEP);
-    const runsAfter = (laneClass) =>
-      Boolean(
-        evaluate(record.if, {
-          steps: { claude: { outputs: { "lane-class": laneClass } } },
-        }),
-      );
-    assert.equal(runsAfter("credit-stop"), true);
-    for (const laneClass of ["auth", "rate-limit", "", "other"]) {
-      assert.equal(runsAfter(laneClass), false, laneClass);
-    }
-  }
-  const carry = workflow.jobs["check-key-credit"].steps[1];
-  const context = (skip) => ({
-    steps: { gate: { outputs: { "skip-key": skip, "origin-run": "99" } } },
-  });
-  assert.match(render(carry.name, context("true")), RECORD_PATTERN);
-  assert.equal(
-    render(carry.name, context("true")).match(RECORD_PATTERN)[1],
-    "99",
+test("only the key job uploads the gate's marker, only after a credit stop, kept one day", () => {
+  const marker = step(key, "credit-marker");
+  const upload = key.steps.find(
+    (s) => s.name === "Upload the key's credit-stop marker",
   );
-  assert.equal(Boolean(evaluate(carry.if, context("true"))), true);
-  assert.equal(Boolean(evaluate(carry.if, context(""))), false);
+  const context = (
+    laneClass,
+    name = "key-credit-stop-w.yml-claude-review-key",
+  ) => ({
+    needs: { "check-key-credit": { outputs: { marker: name } } },
+    steps: {
+      claude: { outputs: { "lane-class": laneClass } },
+      "claude-3": { outputs: { "lane-class": "" } },
+    },
+  });
+  const writes = (...args) => Boolean(evaluate(marker.if, context(...args)));
+  assert.equal(writes("credit-stop"), true);
+  for (const laneClass of ["auth", "rate-limit", "", "other"]) {
+    assert.equal(writes(laneClass), false, laneClass);
+  }
+  // An unreadable gate names no marker, so nothing uploads.
+  assert.equal(writes("credit-stop", ""), false);
+  // A later chunk's credit stop records too.
+  assert.equal(
+    Boolean(
+      evaluate(marker.if, {
+        ...context(""),
+        steps: { "claude-3": { outputs: { "lane-class": "credit-stop" } } },
+      }),
+    ),
+    true,
+  );
+  assert.match(
+    marker.run,
+    /"\$GITHUB_RUN_ID" >"\$RUNNER_TEMP\/key-credit-stop\/run-id"$/mu,
+  );
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
+  assert.equal(
+    upload.if,
+    "always() && steps.credit-marker.outcome == 'success' && steps.credit-marker-scan.outputs.clean == 'true'",
+  );
+  assert.equal(
+    upload.with.name,
+    `\${{ needs.check-key-credit.outputs.marker }}`,
+  );
+  assert.equal(upload.with.path, `\${{ runner.temp }}/key-credit-stop/run-id`);
+  assert.equal(upload.with["retention-days"], 1);
+  assert.equal(upload["continue-on-error"], true);
+  // The gate hands the marker name on and carries nothing forward: the
+  // window counts from the upload.
+  const gate = workflow.jobs["check-key-credit"];
+  assert.equal(gate.outputs.marker, `\${{ steps.gate.outputs.marker }}`);
+  assert.deepEqual(
+    gate.steps.map((s) => s.name),
+    ["Read the key's credit history", "Log the API budget"],
+  );
+  for (const job of Object.values(workflow.jobs)) {
+    assert.equal(
+      job.steps.some((s) =>
+        /credit stop in run|credit-stop marker/u.test(s.name),
+      ),
+      job === key,
+      job.name,
+    );
+  }
 });
 
 test("after a credit skip the status job runs and reads the subscription job's scope", () => {
@@ -763,9 +790,20 @@ test("the subscription job repeats the key job's steps but for the credential an
       if (copy.id === "review-outcome") delete copy.with["fallback-reason"];
       return copy;
     });
+  // Only the key leg's credit stop says the key is out, so only it uploads
+  // the gate's marker.
+  const keyOnly = new Set([
+    "Write the key's credit-stop marker",
+    "Scan the key's credit-stop marker for credentials",
+    "Upload the key's credit-stop marker",
+  ]);
   assert.deepEqual(
     strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
-    strip(key.steps, "CLAUDE_API_KEY", "api-key"),
+    strip(
+      key.steps.filter((s) => !keyOnly.has(s.name)),
+      "CLAUDE_API_KEY",
+      "api-key",
+    ),
   );
   for (const field of [
     "permissions",
@@ -3756,6 +3794,7 @@ test("every upload follows a credential scan over the same path, and a scan that
       );
       const steps = {
         "handoff-file": { outputs: { sha256: "a".repeat(64) } },
+        "credit-marker": { outcome: "success" },
         [scan.id]: { outputs: { clean: "true" } },
       };
       const inputs = { publish: "shadow" };
@@ -3774,7 +3813,9 @@ test("every upload follows a credential scan over the same path, and a scan that
       }
     });
   }
+  // The key job's credit-stop marker, then each leg's review handoff.
   assert.deepEqual(uploads, [
+    "review-key",
     "review-key",
     "review-subscription",
     "review-fallback",

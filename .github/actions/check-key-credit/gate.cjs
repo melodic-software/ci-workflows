@@ -1,39 +1,29 @@
 // check-key-credit: whether a keyed lane's key job should skip the model
 // because the key ended in a credit stop inside the window.
 //
-// It reads the calling workflow's completed runs created inside the window
-// (one list call) and, newest first, at most MAX_JOB_READS of their job lists
-// (one call each), and stops at the first run that settles the question:
-//   - the key job or this gate's job has a successful step whose name is
-//     RECORD_STEP and an origin run id that is one of the listed runs: skip,
-//     citing that origin;
-//   - that record names a run outside the list: the credit stop expired, run;
-//   - the key job's model step (MODEL_STEP) ran with no record: the key ran
-//     with no credit stop, run.
-// A run that settles nothing (cancelled, no key job, no review needed) is
-// passed over. Any failure, an unreadable answer or no settling run within
-// the cap runs the key, as before this gate: it never skips the subscription
-// path and never fails the step.
+// The key job uploads an artifact named markerName(workflow, keyJob) after
+// the launcher's lane-class `credit-stop` (run-claude-cli: classify.cjs
+// isCreditStop), so an auth stop (401, or 402 without the credit text) never
+// writes one. This gate makes one call, the repository's artifacts of that
+// exact name, and skips the key when the newest unexpired one was created
+// inside the window, citing the run that uploaded it. The window counts from
+// that upload, so a topped-up or rotated key is tried on the first run after
+// it. No marker in the window, any failure or an unreadable answer runs the
+// key, as before this gate: it never skips the subscription path and never
+// fails the step.
 //
-// The record step runs in the key job only after the launcher's lane-class
-// `credit-stop` (run-claude-cli: classify.cjs isCreditStop), so an auth stop
-// (401, or 402 without the credit text) never counts, and names its own run.
-// When this gate skips the key, its job's record step names the origin run
-// instead, so the window runs from the credit stop itself, not from the
-// last skip. A same-repository pull request that edits the caller workflow
-// could write a record; the worst it does is move reviews to the
-// subscription for the window, and such writers already hold the secrets.
-// More than 100 completed runs in the window can push the origin off the
-// list, which runs the key.
+// The name carries the caller workflow's file and the key job, so each
+// caller's key is judged on its own credit stops. Any workflow in the
+// repository can upload an artifact of that name; the worst a forged one
+// does is move reviews to the subscription for the window, and such writers
+// already hold the secrets. More than 100 markers of one name in retention
+// can push the newest off the page, which runs the key.
 "use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
 
-const RECORD_STEP = "Record the key's credit stop in run ";
-const RECORD_PATTERN = /^Record the key's credit stop in run (\d{1,20})$/u;
-const MODEL_STEP = "Claude review";
-const MAX_JOB_READS = 3;
+const MARKER_PREFIX = "key-credit-stop-";
 const MAX_WINDOW_HOURS = 168;
 const WORKFLOW_REF = /^[\w.-]+\/[\w.-]+\/\.github\/workflows\/([\w.-]+\.ya?ml)@/u;
 
@@ -61,88 +51,46 @@ function recordBudget(response, runnerTemp) {
   }
 }
 
-// The job named `name` in one run's job list: exactly, or `<caller job> /
-// name` when a caller's job runs the reusable.
-function jobNamed(jobs, name) {
-  return jobs.find(
-    (job) =>
-      typeof job?.name === "string" &&
-      job.status === "completed" &&
-      Array.isArray(job.steps) &&
-      (job.name === name || job.name.endsWith(` / ${name}`)),
-  );
+// The artifact name the key job uploads and this gate reads.
+function markerName(workflow, keyJob) {
+  return `${MARKER_PREFIX}${workflow}-${keyJob}`;
 }
 
-// What one run's job list settles: { skip, origin } or { skip: false,
-// reason }, or null when it settles nothing. The record is the key job's
-// own, or the gate job's (`<key job>-credit`) carried from an earlier run.
-function judgeRun(jobs, keyJob, windowIds) {
-  const list = Array.isArray(jobs) ? jobs : [];
-  const key = jobNamed(list, keyJob);
-  const gate = jobNamed(list, `${keyJob}-credit`);
-  for (const step of [...(gate?.steps ?? []), ...(key?.steps ?? [])]) {
-    const match =
-      step?.conclusion === "success" && typeof step.name === "string"
-        ? step.name.match(RECORD_PATTERN)
-        : null;
-    if (!match) continue;
-    return windowIds.has(match[1])
-      ? { skip: true, origin: match[1] }
-      : {
-          skip: false,
-          reason: `the credit stop in run ${match[1]} is outside the window`,
-        };
-  }
-  const model = key?.steps.find((step) => step?.name === MODEL_STEP);
-  if (model?.conclusion === "success" || model?.conclusion === "failure") {
-    return { skip: false, reason: "the key ran with no credit stop" };
-  }
-  return null;
-}
-
-// The decision, from injected readers; never throws.
-async function decide({
-  listRuns,
-  listJobs,
-  currentRunId,
-  keyJob,
-  maxJobReads = MAX_JOB_READS,
-}) {
-  let runs;
-  try {
-    runs = await listRuns();
-  } catch (error) {
-    return { skip: false, reason: `the run list was not read (${error.message})` };
-  }
-  if (!Array.isArray(runs)) {
-    return { skip: false, reason: "the run list was not a list" };
-  }
-  const candidates = runs.filter(
-    (run) => Number.isSafeInteger(run?.id) && String(run.id) !== currentRunId,
-  );
-  const windowIds = new Set(candidates.map((run) => String(run.id)));
-  // A skipped run has no key job to settle anything, so it spends no read.
-  const readable = candidates.filter((run) => run.conclusion !== "skipped");
-  for (const run of readable.slice(0, maxJobReads)) {
-    let jobs;
-    try {
-      jobs = await listJobs(run.id);
-    } catch (error) {
-      return {
-        skip: false,
-        reason: `run ${run.id}'s jobs were not read (${error.message})`,
-      };
+// The decision from one artifact listing: the newest unexpired marker of the
+// exact name created at or after `sinceMs` skips, citing its run.
+function judgeMarkers(artifacts, name, sinceMs) {
+  let newest = null;
+  for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
+    const created = Date.parse(artifact?.created_at ?? "");
+    const run = artifact?.workflow_run?.id;
+    if (
+      artifact?.name !== name ||
+      artifact.expired !== false ||
+      !Number.isFinite(created) ||
+      created < sinceMs ||
+      !Number.isSafeInteger(run)
+    ) {
+      continue;
     }
-    const verdict = judgeRun(jobs, keyJob, windowIds);
-    if (verdict) return { ...verdict, run: String(run.id) };
+    if (!newest || created > newest.created) newest = { created, run };
   }
-  return {
-    skip: false,
-    reason:
-      readable.length === 0
-        ? "no completed, unskipped run in the window"
-        : `no run of the newest ${Math.min(readable.length, maxJobReads)} settles it`,
-  };
+  return newest
+    ? { skip: true, origin: String(newest.run) }
+    : { skip: false, reason: "no credit-stop marker in the window" };
+}
+
+// The decision, from an injected reader; never throws.
+async function decide({ listArtifacts, name, sinceMs }) {
+  let artifacts;
+  try {
+    artifacts = await listArtifacts();
+  } catch (error) {
+    return { skip: false, reason: `the markers were not read (${error.message})` };
+  }
+  if (!Array.isArray(artifacts)) {
+    return { skip: false, reason: "the marker list was not a list" };
+  }
+  return judgeMarkers(artifacts, name, sinceMs);
 }
 
 function readEnv(env) {
@@ -150,21 +98,20 @@ function readEnv(env) {
   const hours = Number(env.WINDOW_HOURS);
   const workflow = (env.WORKFLOW_REF ?? "").match(WORKFLOW_REF)?.[1] ?? null;
   const repository = env.GITHUB_REPOSITORY ?? "";
+  const valid =
+    /^[a-z][a-z0-9-]{0,99}$/u.test(keyJob) &&
+    /^[\w.-]+\/[\w.-]+$/u.test(repository) &&
+    workflow !== null;
   return {
     keyJob,
     hours,
-    workflow,
     repository,
+    marker: valid ? markerName(workflow, keyJob) : "",
     api: env.GITHUB_API_URL || "https://api.github.com",
     server: env.GITHUB_SERVER_URL || "https://github.com",
-    runId: env.GITHUB_RUN_ID ?? "",
     token: env.GITHUB_TOKEN ?? "",
     runnerTemp: env.RUNNER_TEMP ?? "",
-    valid:
-      /^[a-z][a-z0-9-]{0,99}$/u.test(keyJob) &&
-      /^[\w.-]+\/[\w.-]+$/u.test(repository) &&
-      workflow !== null &&
-      /^\d{1,20}$/u.test(env.GITHUB_RUN_ID ?? ""),
+    valid,
   };
 }
 
@@ -175,36 +122,27 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
   if (!(config.hours > 0 && config.hours <= MAX_WINDOW_HOURS)) {
     verdict = { skip: false, reason: "the window is off" };
   } else if (!config.valid || config.token === "") {
-    verdict = { skip: false, reason: "the run, workflow, job or token is unreadable" };
+    verdict = { skip: false, reason: "the workflow, job or token is unreadable" };
   } else {
-    const get = async (url) => {
-      const response = await fetchImpl(url, {
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${config.token}`,
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-      recordBudget(response, config.runnerTemp);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
-    };
-    const since = new Date(now().getTime() - config.hours * 3600 * 1000)
-      .toISOString()
-      .replace(/\.\d{3}Z$/u, "Z");
-    const base = `${config.api}/repos/${config.repository}/actions`;
     verdict = await decide({
-      currentRunId: config.runId,
-      keyJob: config.keyJob,
-      listRuns: async () =>
-        (
-          await get(
-            `${base}/workflows/${config.workflow}/runs?status=completed&exclude_pull_requests=true&per_page=100&created=${encodeURIComponent(`>=${since}`)}`,
-          )
-        )?.workflow_runs,
-      listJobs: async (id) =>
-        (await get(`${base}/runs/${id}/jobs?filter=latest&per_page=100`))?.jobs,
+      name: config.marker,
+      sinceMs: now().getTime() - config.hours * 3600 * 1000,
+      listArtifacts: async () => {
+        const response = await fetchImpl(
+          `${config.api}/repos/${config.repository}/actions/artifacts?name=${encodeURIComponent(config.marker)}&per_page=100`,
+          {
+            headers: {
+              Accept: "application/vnd.github+json",
+              Authorization: `Bearer ${config.token}`,
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+            signal: AbortSignal.timeout(15000),
+          },
+        );
+        recordBudget(response, config.runnerTemp);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return (await response.json())?.artifacts;
+      },
     });
   }
   if (verdict.skip) {
@@ -217,7 +155,7 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
   if (env.GITHUB_OUTPUT) {
     fs.appendFileSync(
       env.GITHUB_OUTPUT,
-      `skip-key=${verdict.skip}\norigin-run=${verdict.skip ? verdict.origin : ""}\n`,
+      `skip-key=${verdict.skip}\norigin-run=${verdict.skip ? verdict.origin : ""}\nmarker=${config.marker}\n`,
     );
   }
   return { verdict, lines };
@@ -233,11 +171,9 @@ if (require.main === module) {
 }
 
 module.exports = {
-  MAX_JOB_READS,
-  MODEL_STEP,
-  RECORD_PATTERN,
-  RECORD_STEP,
+  MARKER_PREFIX,
   decide,
-  judgeRun,
+  judgeMarkers,
   main,
+  markerName,
 };
