@@ -31,6 +31,7 @@ name: intake-triage
 #           issue-number: ${{ inputs.issue-number }}
 #           allowed-author-ids: <comma-separated user ids>
 #           role: automations
+#           lane-transcript-public-key: ${{ vars.LANE_TRANSCRIPT_PUBLIC_KEY }}
 #         secrets:
 #           CLAUDE_API_KEY: ${{ secrets.AUTOMATIONS_CLAUDE_API_KEY }}
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN }}
@@ -65,6 +66,10 @@ name: intake-triage
 #     issues: read, and `cache-mode: none` closes the Actions cache, which
 #     a workflow_dispatch run could otherwise write. The run-claude-cli step's
 #     env holds the one Claude credential and no GitHub token.
+#   - Each leg's execution file, which holds every tool result and model reply,
+#     reaches no log or artifact in plaintext: with lane-transcript-public-key
+#     set, upload-lane-transcript scans it, seals it to that key, which CI
+#     cannot open with, and uploads only the sealed file.
 #   - The model has no GitHub access and runs no commands: the tool set is
 #     Read, Grep and Glob (run-claude-cli runs the CLI with --restricted,
 #     which drops Bash unless `tools` names it, and Bash is also disallowed),
@@ -261,6 +266,13 @@ on:
           trailing or doubled comma, skips every bot.
         type: string
         default: ""
+      lane-transcript-public-key:
+        description: >-
+          The caller's vars.LANE_TRANSCRIPT_PUBLIC_KEY. Each model leg's
+          transcript is sealed to it and uploaded for 7 days
+          (.github/actions/upload-lane-transcript). Empty keeps none.
+        type: string
+        default: ""
     outputs:
       triage-failed:
         description: >-
@@ -306,8 +318,9 @@ jobs:
     name: claude-intake-triage
     runs-on: ${{ inputs.runner }}
     # The triage step (12 minutes, CLI install included) leaves four minutes
-    # for runner isolation, checkout and the github-script steps.
-    timeout-minutes: 16
+    # for runner isolation, checkout and the github-script steps, and three
+    # for the transcript upload.
+    timeout-minutes: 19
     # Author gate: a run spends the subscription, so it starts only when the
     # sender opened the issue and is its author: a person whose user id is in
     # allowed-author-ids, or a bot whose sender id is in
@@ -819,10 +832,22 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
 
+      # After the outcome step: its timeout check reads the clock when it
+      # runs, so time spent here must not count against a failed leg.
+      - name: Upload the sealed transcript
+        if: always() && steps.claude.outputs.execution-file != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: $/.github/actions/upload-lane-transcript
+        with:
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          public-key: ${{ inputs.lane-transcript-public-key }}
+          job-id: intake-${{ github.job }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -925,7 +950,7 @@ jobs:
     needs: claude
     if: needs.claude.outputs.handoff == 'true' || needs.claude.outputs.credential-present == 'false'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -1391,10 +1416,22 @@ jobs:
           # Why this job ran, for this leg's lane record (ci-workflows#806).
           fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
 
+      # After the outcome step: its timeout check reads the clock when it
+      # runs, so time spent here must not count against a failed leg.
+      - name: Upload the sealed transcript
+        if: always() && steps.claude.outputs.execution-file != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: $/.github/actions/upload-lane-transcript
+        with:
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          public-key: ${{ inputs.lane-transcript-public-key }}
+          job-id: intake-${{ github.job }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -1497,7 +1534,7 @@ jobs:
     needs: [claude, subscription]
     if: needs.subscription.outputs.handoff == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -1963,10 +2000,22 @@ jobs:
           # Why this job ran, for this leg's lane record.
           fallback-reason: ${{ needs.subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}
 
+      # After the outcome step: its timeout check reads the clock when it
+      # runs, so time spent here must not count against a failed leg.
+      - name: Upload the sealed transcript
+        if: always() && steps.claude.outputs.execution-file != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: $/.github/actions/upload-lane-transcript
+        with:
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          public-key: ${{ inputs.lane-transcript-public-key }}
+          job-id: intake-${{ github.job }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract

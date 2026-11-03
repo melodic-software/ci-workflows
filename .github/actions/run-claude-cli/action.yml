@@ -237,7 +237,8 @@ outputs:
     description: >-
       The leg's CLI messages as a JSON array (the execution_file shape
       claude-code-action writes). It holds every tool result and model reply
-      and is never scanned for credentials, so do not upload it.
+      and this action never scans it for credentials, so upload it only
+      through upload-lane-transcript, which scans and seals it.
     value: ${{ steps.run.outputs.execution-file }}
   log-file:
     description: JSONL execution log, one object for the leg; empty when the credential scan failed.
