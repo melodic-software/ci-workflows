@@ -1445,16 +1445,19 @@ additions of the same content and mode) are grouped in
 `.claude-lane/identical.txt`; a hold-paths match never groups, nor an
 executable file, nor the root `lefthook.yml`, nor a file under the root
 `.github/` or `.husky/`, under a `.claude/` or `hooks/` directory, or named
-`package.json`, `.mcp.json`, `action.yml`, `action.yaml` or `*.sh`, which is
+`package.json`, `.mcp.json`, `action.yml`, `action.yaml`, `*.sh`, `*.bash`,
+`*.zsh`, `*.ps1` or `*.psm1`, which is
 reviewed at its own path. The one exception is the `generated-copies` input:
 a repository path to a file of `<source> <copy>` lines, read at the merge base.
 A copy only the head's file declares counts only when its bytes and mode at the
 head are what its source at the head generates, the comparison
 `scripts/sync-shared-copies.sh --check` makes in claude-code-plugins, so a pull
 request can register a new copy but cannot declare any other file one; a
-one-byte difference and the file is read. Copies it declares of one
-source group with each other, executable or at one of those paths, but never
-with any other file or past a hold-paths match. An incremental review groups
+one-byte difference and the file is read. A copy only the head declares at one
+of those paths is read in full; only a merge-base declaration, reviewed in an
+earlier pull request, lets a copy there group. Copies it declares of one
+source group with each other, executable or (declared at the merge base) at one
+of those paths, but never with any other file or past a hold-paths match. An incremental review groups
 only the files in its scope whose change since the last reviewed head is
 identical too; when the job cannot compare that head, nothing groups. The
 review reads each group's first path, and the job counts the copies as read.
