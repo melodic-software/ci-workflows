@@ -650,10 +650,27 @@ function holdsCredential(text, secretValues) {
 // ends with no error it can name.
 const LIMIT_MASKED_CLASSES = new Set(["timeout", "other"]);
 
+// Whether the run ended still held by a rejection: its newest rate_limit_event
+// (any window) is rejected and no assistant or tool message came after it.
+function rejectionInForce(messages) {
+  const at = messages.findLastIndex(
+    (message) => message?.type === "rate_limit_event",
+  );
+  return (
+    at !== -1 &&
+    messages[at].rate_limit_info?.status === "rejected" &&
+    !messages
+      .slice(at + 1)
+      .some(
+        (message) => message?.type === "assistant" || message?.type === "user",
+      )
+  );
+}
+
 // What the finished leg means for the run: success or a stop with a class.
-// Only the key leg can end in a credit stop. A token leg that recorded a
-// rejected rate_limit_event and then timed out or failed unnamed is a limit
-// stop (rate-limit with the rejected window's reset).
+// Only the key leg can end in a credit stop. A token leg that timed out or
+// failed unnamed while a rejection was still in force is a limit stop
+// (rate-limit with the rejected window's reset).
 function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   const messages = readMessages(executionFile) ?? [];
   const result = messages.findLast((message) => message?.type === "result");
@@ -673,7 +690,8 @@ function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
   if (
     leg.leg !== "api-key" &&
     resetsAt !== null &&
-    LIMIT_MASKED_CLASSES.has(failureClass)
+    LIMIT_MASKED_CLASSES.has(failureClass) &&
+    rejectionInForce(messages)
   ) {
     failureClass = "rate-limit";
   }

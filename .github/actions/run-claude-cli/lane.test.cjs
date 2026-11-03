@@ -694,6 +694,54 @@ test("a subscription leg that times out with no rejected window stays timeout an
   }
 });
 
+test("a subscription leg that times out after a rejection that no longer holds stays timeout and does not hand off", () => {
+  const assistant = {
+    type: "assistant",
+    message: { content: [{ type: "text", text: "Still working." }] },
+  };
+  for (const [name, sub] of [
+    [
+      "rejected then allowed",
+      [
+        ...rejectedThenHang("seven_day_opus", 1767830400),
+        {
+          type: "rate_limit_event",
+          rate_limit_info: { status: "allowed", rateLimitType: "five_hour" },
+        },
+        assistant,
+        assistant,
+      ],
+    ],
+    [
+      "rejected then assistant message",
+      [...rejectedThenHang("seven_day_opus", 1767830400), assistant],
+    ],
+  ]) {
+    const { outputs, records } = runCase({
+      sub,
+      fallbackReady: true,
+      hang: true,
+      legTimeoutMs: 300,
+    });
+    assert.equal(outputs["lane-class"], "timeout", name);
+    assert.equal(outputs["lane-resets"], "", name);
+    assert.equal(outputs.handoff, "false", name);
+    assert.equal(records[0].next, null, name);
+  }
+});
+
+test("a subscription leg that fails unnamed after a rejected window is a limit stop and hands off", () => {
+  const { outputs, records } = runCase({
+    sub: rejectedThenHang("seven_day", 1767830400),
+    fallbackReady: true,
+  });
+  assert.equal(outputs["lane-class"], "rate-limit");
+  assert.equal(outputs["lane-resets"], "2026-01-08T00:00:00Z");
+  assert.equal(outputs.handoff, "true");
+  assert.equal(outputs["handoff-reason"], "limit-stop");
+  assert.equal(records[0].next, "fallback");
+});
+
 test("the fallback leg that times out after a rejected window is a limit stop that hands off nothing", () => {
   const { outputs, records } = runCase({
     fallback: rejectedThenHang("seven_day", 1767830400),
