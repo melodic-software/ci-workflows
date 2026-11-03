@@ -651,6 +651,9 @@ test("a partial review states its coverage first, records no head and fails, wit
     });
     assert.equal(log.failed.length, 1);
     assert.match(log.failed[0], /^claude-review: failure-class=partial: /u);
+    // The failure names the coverage and the reason, as the status line does.
+    const detail = /\((read .*)\)$/u.exec(log.failed[0])?.[1];
+    assert.match(`${detail}. `, size, log.failed[0]);
     assert.deepEqual(log.notices, []);
     const [marker] = writes;
     assert.equal(marker[0], "createComment");

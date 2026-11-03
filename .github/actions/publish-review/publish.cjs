@@ -180,11 +180,9 @@ function isPartial(coverage) {
   );
 }
 
-// The marker's status line, which states coverage before the finding count.
-function statusLine(lane, head, coverage, findings, inline) {
-  const read = coverageText(coverage);
-  if (!isPartial(coverage))
-    return `**${lane}** reviewed \`${head}\`: ${read}; ${findings} finding(s), ${inline} as inline comments.`;
+// Why a review that read its whole scope is still partial: its diff is over
+// one review's read budget or file cap.
+function partialReason(coverage) {
   const size =
     coverage.over_budget === undefined
       ? ""
@@ -193,7 +191,15 @@ function statusLine(lane, head, coverage, findings, inline) {
     coverage.over_files === undefined
       ? ""
       : `; one review faced ${coverage.over_files} files that are not copies, more than it reads whole`;
-  return `**${lane}** partial review of \`${head}\`: ${read}${size}${files}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.`;
+  return `${size}${files}`;
+}
+
+// The marker's status line, which states coverage before the finding count.
+function statusLine(lane, head, coverage, findings, inline) {
+  const read = coverageText(coverage);
+  if (!isPartial(coverage))
+    return `**${lane}** reviewed \`${head}\`: ${read}; ${findings} finding(s), ${inline} as inline comments.`;
+  return `**${lane}** partial review of \`${head}\`: ${read}${partialReason(coverage)}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.`;
 }
 
 // The leg whose outputs count: the subscription job's when it ran, else the
@@ -602,7 +608,7 @@ async function publish({ github, context, core, env }) {
   }
 
   const partial = isPartial(review.coverage);
-  const coverage = `read ${review.coverage.read} of ${review.coverage.changed} changed file(s)`;
+  const coverage = `read ${review.coverage.read} of ${review.coverage.changed} changed file(s)${partialReason(review.coverage)}`;
   if (!comments) {
     await shadowReport(core, env, {
       ...facts,

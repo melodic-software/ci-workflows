@@ -1434,7 +1434,9 @@ scope and the diff's bytes itself. A review that read fewer files than it
 changed, whose diff is over one review's 300000-byte read budget, or that was
 one review of more than 40 files that are not identical copies, is
 `partial`: red, no completion notice, and its comment's first visible line
-states `read <n> of <m> changed file(s)` before the findings count, with the
+states `read <n> of <m> changed file(s)` and, for a diff over the read budget
+or the file cap, its bytes or files before the findings count, as the failure
+line does, with the
 hidden marker at `sha=none` so the next push reviews the whole pull request
 and no merge gate reads the head as reviewed. A review with no `files_read`
 is `incomplete`.
@@ -1488,8 +1490,11 @@ is split at file boundaries, each file whole, into at most 4 chunks of at most
 default-branch tip, and each chunk gets its own model step in the leg, in
 order. The identical copies in scope are left out first: when the
 whole diff fits the read budget and the rest fits 40 files it is one review;
-when the rest alone is over either cap only the rest is split, with the
-copies counted as read; otherwise the whole diff is split, copies included.
+when only the rest fits both caps it is one review of the rest, written to
+`.claude-lane/chunks/distinct.diff`, whose size is the one checked against the
+read budget; when the rest alone is over either cap only the rest is split;
+in both the copies count as read. Otherwise the whole diff is split, copies
+included.
 The review's findings, comments and files read are the
 chunks' sums, each chunk's files read capped at the files the job counted in
 it. A chunk whose step failed, did not run, handed off or returned no

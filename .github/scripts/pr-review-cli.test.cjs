@@ -3103,6 +3103,120 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.equal(planted.out, "chunks=1\n");
 });
 
+// claude-code-plugins#12896: a whole diff too large for MAX_CHUNKS chunks
+// whose files but the copies fit one review. It is one review of the diff
+// without the copies, which credits them, and is complete when read whole.
+test("a diff over every chunk whose files but the copies fit one review is one review of those files", async () => {
+  const body = (n) => "+x\n".repeat(n);
+  // f0 and its 36 copies at 40,000 bytes each, and 38 small distinct files.
+  const diff = [
+    ...Array.from(
+      { length: 37 },
+      (_, i) => `diff --git a/f${i} b/f${i}\n${body(13333)}`,
+    ),
+    ...Array.from(
+      { length: 38 },
+      (_, i) => `diff --git a/g${i} b/g${i}\n${body(10)}`,
+    ),
+  ].join("");
+  const bytes = String(Buffer.byteLength(diff));
+  assert.ok(Number(bytes) > 4 * 300000, bytes);
+  const cut = split({ SCOPE_BYTES: bytes, COPIES: "36" }, (work) => {
+    fs.writeFileSync(path.join(work, ".claude-lane/pr.diff"), diff);
+    fs.writeFileSync(
+      path.join(work, ".claude-lane/identical.txt"),
+      `${Array.from({ length: 37 }, (_, i) => `f${i}`).join("\t")}\n`,
+    );
+  });
+  assert.equal(cut.status, 0);
+  const out = Object.fromEntries(
+    cut.out
+      .trim()
+      .split("\n")
+      .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+  );
+  const distinct = fs.readFileSync(
+    path.join(cut.work, ".claude-lane/chunks/distinct.diff"),
+    "utf8",
+  );
+  assert.deepEqual(out, {
+    chunks: "1",
+    excluded: "36",
+    "distinct-bytes": String(Buffer.byteLength(distinct)),
+  });
+  assert.ok(Buffer.byteLength(distinct) <= 300000);
+  assert.deepEqual(
+    [...distinct.matchAll(/^diff --git a\/(\S+) /gmu)].map((m) => m[1]),
+    ["f0", ...Array.from({ length: 38 }, (_, i) => `g${i}`)],
+  );
+  // The one review reads the diff without the copies, and only then.
+  const note = /^DISTINCT DIFF: .*\n.*\.claude-lane\/chunks\/distinct\.diff/mu;
+  const prompt = await compose({
+    COPIES: "36",
+    EXCLUDED: out.excluded,
+    SCOPE: "whole",
+    CHUNKS: out.chunks,
+  });
+  assert.match(prompt, note);
+  assert.doesNotMatch(prompt, /skip its copies/u);
+  for (const env of [
+    { COPIES: "36", EXCLUDED: "", SCOPE: "whole", CHUNKS: "1" },
+    { COPIES: "36", EXCLUDED: "35", SCOPE: "whole", CHUNKS: "1" },
+    { COPIES: "0", EXCLUDED: "0", SCOPE: "whole", CHUNKS: "1" },
+    {
+      COPIES: "36",
+      EXCLUDED: "36",
+      SCOPE: "whole",
+      CHUNKS: "2",
+      CHUNK_FILES: "20,19",
+    },
+  ]) {
+    assert.doesNotMatch(await compose(env), note, JSON.stringify(env));
+  }
+  // Read whole: complete, with no over_budget, its size the diff it read.
+  const coverage = async (env) =>
+    JSON.parse(
+      (
+        await extract(
+          {
+            structured: JSON.stringify({
+              findings: 0,
+              files_read: 39,
+              summary: "S",
+              comments: [],
+            }),
+          },
+          {
+            WHOLE_FILES: "75",
+            SCOPE_BYTES: bytes,
+            COPIES: "36",
+            EXCLUDED: out.excluded,
+            DISTINCT_BYTES: out["distinct-bytes"],
+            ...env,
+          },
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage({}), { read: 75, changed: 75 });
+  // Without the split step's distinct diff, the whole diff's size counts.
+  for (const env of [
+    { EXCLUDED: "" },
+    { EXCLUDED: "35" },
+    { DISTINCT_BYTES: "" },
+    { DISTINCT_BYTES: "1e5" },
+  ]) {
+    assert.equal(
+      (await coverage(env)).over_budget,
+      Number(bytes),
+      JSON.stringify(env),
+    );
+  }
+  assert.equal(
+    (await coverage({ DISTINCT_BYTES: "300001" })).over_budget,
+    300001,
+  );
+});
+
 // A split-diff.py that ignores the file cap (an older claude-code-plugins
 // tip) must not leave a chunk too large to read whole.
 test("a chunk over the file cap reviews unsplit, and two sections of one file count once", () => {
