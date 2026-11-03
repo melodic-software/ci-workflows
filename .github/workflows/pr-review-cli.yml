@@ -343,6 +343,12 @@ env:
   # not copies partial. claude-code-plugins#12052's reviews read 50 and 68 of
   # a 195-file chunk whole, and every file of a 3- and a 4-file chunk.
   MAX_CHUNK_FILES: "40"
+  # The size a declared generated data file's diff section must exceed to
+  # leave the review: one file's even share of one review's read budget
+  # (300000 bytes, the split and extract steps' READ_BUDGET) over the files it
+  # reads whole (MAX_CHUNK_FILES, 40). A smaller change, such as one deleted
+  # record, still fits a review and is reviewed.
+  DATA_FLOOR_BYTES: "7500"
   # Paths where a changed file never groups as an identical copy, globbed as
   # hold-paths: the same content can act differently there, so each is
   # reviewed at its own path. An executable file never groups either, unless
@@ -664,7 +670,7 @@ jobs:
                 .map(globToRegExp);
             const dataFiles = (base) => {
               const found = new Set();
-              if (!env.GENERATED_DATA) return found;
+              if (!env.GENERATED_DATA || !/^[0-9]{1,9}$/u.test(env.DATA_FLOOR_BYTES ?? "")) return found;
               let declared;
               try {
                 git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", base]);
@@ -747,14 +753,24 @@ jobs:
               if (moved) return { full: moved };
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
-              const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              const changedFiles = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              // A generated data file whose change is over DATA_FLOOR_BYTES leaves
+              // the scope first, so a large data patch the API dropped does not
+              // force a whole review; a smaller change to it is still reviewed.
+              const data = changedFiles.length > 0 ? dataFiles(now) : new Set();
+              const floor = Number(env.DATA_FLOOR_BYTES);
+              const left = changedFiles.filter((file) => {
+                const patch = data.has(file.filename) ? patches.get(file.filename).patch : "";
+                return data.has(file.filename) && (patch === undefined || Buffer.byteLength(patch, "utf8") > floor);
+              });
+              const files = changedFiles.filter((file) => !left.includes(file));
               // The API drops the patch of a large text change; only a whole review covers it.
               const unshown = files.find((file) => {
                 const change = patches.get(file.filename) ?? patches.get(file.previous_filename);
                 return change.patch === undefined && change.changes > 0;
               });
               if (unshown) return { full: `the API returned no patch for ${unshown.filename}` };
-              return { files, patches };
+              return { files, patches, left: left.map((file) => file.filename) };
             };
 
             const writeDiff = (files, patches) => {
@@ -859,11 +875,11 @@ jobs:
                   core.info(`Reviewing the whole pull request: ${result.full}.`);
                 } else {
                   last = recorded.sha;
-                  // A generated data file leaves the list, the count and the
-                  // diff, as in the full-diff step, and DATA_LIST names it.
-                  const data = result.files.length > 0 ? dataFiles(now) : new Set();
-                  scope = result.files.filter((file) => !data.has(file.filename));
-                  const left = result.files.filter((file) => data.has(file.filename)).map((file) => file.filename);
+                  // The generated data files sinceLastReview left out of the
+                  // list, the count and the diff, as in the full-diff step;
+                  // DATA_LIST names them.
+                  scope = result.files;
+                  const left = result.left ?? [];
                   dataOnly = left.length > 0 && scope.length === 0;
                   dataLeft = left.length;
                   fs.rmSync(env.DATA_LIST, { force: true });
@@ -993,15 +1009,18 @@ jobs:
           # merge base declares (globbed as hold-paths). Only a modification or
           # addition of a non-executable regular file at a plain path counts,
           # never a hold-paths or SENSITIVE_PATHS match, and none when that
-          # list is empty. Each leaves every diff, list, total and size below
-          # and is named in $data_list for the review summary. A list only the
-          # head holds, or any failure, declares none.
+          # list is empty; and only when its diff section is over
+          # DATA_FLOOR_BYTES, so a small edit to it is still reviewed. Each
+          # leaves every diff, list, total and size below and is named in
+          # $data_list for the review summary. A list only the head holds, or
+          # any failure, declares none.
           data_list=.claude-lane/data-files.txt
           rm -f "$data_list"
           data=()
-          if [ -n "$GENERATED_DATA" ]; then
+          candidates=()
+          if [ -n "$GENERATED_DATA" ] && [[ "$DATA_FLOOR_BYTES" =~ ^[0-9]{1,9}$ ]]; then
             if declared="$(git cat-file blob "$base:$GENERATED_DATA")"; then
-              mapfile -t data < <(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | DECLARED="$declared" awk -F '\t' "$globs"'
+              mapfile -t candidates < <(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | DECLARED="$declared" awk -F '\t' "$globs"'
                 BEGIN {
                   h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive)
                   d = globs(ENVIRON["DECLARED"], declared)
@@ -1010,11 +1029,15 @@ jobs:
                 s == 0 || NF != 2 || $2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500 { next }
                 !(f[5] == "M" && f[1] == ":100644" && f[2] == "100644") && !(f[5] == "A" && f[1] == ":000000" && f[2] == "100644") { next }
                 { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-                { for (i = 1; i <= d; i++) if ($2 ~ declared[i]) { print $2; next } }') || data=()
+                { for (i = 1; i <= d; i++) if ($2 ~ declared[i]) { print $2; next } }') || candidates=()
             else
               echo "::warning::The merge base holds no generated-data file at $GENERATED_DATA; no data file is declared."
             fi
           fi
+          for p in "${candidates[@]}"; do
+            size="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" -- ":(literal)$p" | wc -c | tr -d ' ')"
+            if [ "$size" -gt "$DATA_FLOOR_BYTES" ]; then data+=("$p"); fi
+          done
           # Every diff below takes this pathspec, so the data files leave the
           # diff, the list, the counts and the copy groups alike.
           only=()
@@ -2536,7 +2559,7 @@ jobs:
                 .map(globToRegExp);
             const dataFiles = (base) => {
               const found = new Set();
-              if (!env.GENERATED_DATA) return found;
+              if (!env.GENERATED_DATA || !/^[0-9]{1,9}$/u.test(env.DATA_FLOOR_BYTES ?? "")) return found;
               let declared;
               try {
                 git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", base]);
@@ -2619,14 +2642,24 @@ jobs:
               if (moved) return { full: moved };
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
-              const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              const changedFiles = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              // A generated data file whose change is over DATA_FLOOR_BYTES leaves
+              // the scope first, so a large data patch the API dropped does not
+              // force a whole review; a smaller change to it is still reviewed.
+              const data = changedFiles.length > 0 ? dataFiles(now) : new Set();
+              const floor = Number(env.DATA_FLOOR_BYTES);
+              const left = changedFiles.filter((file) => {
+                const patch = data.has(file.filename) ? patches.get(file.filename).patch : "";
+                return data.has(file.filename) && (patch === undefined || Buffer.byteLength(patch, "utf8") > floor);
+              });
+              const files = changedFiles.filter((file) => !left.includes(file));
               // The API drops the patch of a large text change; only a whole review covers it.
               const unshown = files.find((file) => {
                 const change = patches.get(file.filename) ?? patches.get(file.previous_filename);
                 return change.patch === undefined && change.changes > 0;
               });
               if (unshown) return { full: `the API returned no patch for ${unshown.filename}` };
-              return { files, patches };
+              return { files, patches, left: left.map((file) => file.filename) };
             };
 
             const writeDiff = (files, patches) => {
@@ -2731,11 +2764,11 @@ jobs:
                   core.info(`Reviewing the whole pull request: ${result.full}.`);
                 } else {
                   last = recorded.sha;
-                  // A generated data file leaves the list, the count and the
-                  // diff, as in the full-diff step, and DATA_LIST names it.
-                  const data = result.files.length > 0 ? dataFiles(now) : new Set();
-                  scope = result.files.filter((file) => !data.has(file.filename));
-                  const left = result.files.filter((file) => data.has(file.filename)).map((file) => file.filename);
+                  // The generated data files sinceLastReview left out of the
+                  // list, the count and the diff, as in the full-diff step;
+                  // DATA_LIST names them.
+                  scope = result.files;
+                  const left = result.left ?? [];
                   dataOnly = left.length > 0 && scope.length === 0;
                   dataLeft = left.length;
                   fs.rmSync(env.DATA_LIST, { force: true });
@@ -2865,15 +2898,18 @@ jobs:
           # merge base declares (globbed as hold-paths). Only a modification or
           # addition of a non-executable regular file at a plain path counts,
           # never a hold-paths or SENSITIVE_PATHS match, and none when that
-          # list is empty. Each leaves every diff, list, total and size below
-          # and is named in $data_list for the review summary. A list only the
-          # head holds, or any failure, declares none.
+          # list is empty; and only when its diff section is over
+          # DATA_FLOOR_BYTES, so a small edit to it is still reviewed. Each
+          # leaves every diff, list, total and size below and is named in
+          # $data_list for the review summary. A list only the head holds, or
+          # any failure, declares none.
           data_list=.claude-lane/data-files.txt
           rm -f "$data_list"
           data=()
-          if [ -n "$GENERATED_DATA" ]; then
+          candidates=()
+          if [ -n "$GENERATED_DATA" ] && [[ "$DATA_FLOOR_BYTES" =~ ^[0-9]{1,9}$ ]]; then
             if declared="$(git cat-file blob "$base:$GENERATED_DATA")"; then
-              mapfile -t data < <(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | DECLARED="$declared" awk -F '\t' "$globs"'
+              mapfile -t candidates < <(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | DECLARED="$declared" awk -F '\t' "$globs"'
                 BEGIN {
                   h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive)
                   d = globs(ENVIRON["DECLARED"], declared)
@@ -2882,11 +2918,15 @@ jobs:
                 s == 0 || NF != 2 || $2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500 { next }
                 !(f[5] == "M" && f[1] == ":100644" && f[2] == "100644") && !(f[5] == "A" && f[1] == ":000000" && f[2] == "100644") { next }
                 { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-                { for (i = 1; i <= d; i++) if ($2 ~ declared[i]) { print $2; next } }') || data=()
+                { for (i = 1; i <= d; i++) if ($2 ~ declared[i]) { print $2; next } }') || candidates=()
             else
               echo "::warning::The merge base holds no generated-data file at $GENERATED_DATA; no data file is declared."
             fi
           fi
+          for p in "${candidates[@]}"; do
+            size="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" -- ":(literal)$p" | wc -c | tr -d ' ')"
+            if [ "$size" -gt "$DATA_FLOOR_BYTES" ]; then data+=("$p"); fi
+          done
           # Every diff below takes this pathspec, so the data files leave the
           # diff, the list, the counts and the copy groups alike.
           only=()
@@ -4413,7 +4453,7 @@ jobs:
                 .map(globToRegExp);
             const dataFiles = (base) => {
               const found = new Set();
-              if (!env.GENERATED_DATA) return found;
+              if (!env.GENERATED_DATA || !/^[0-9]{1,9}$/u.test(env.DATA_FLOOR_BYTES ?? "")) return found;
               let declared;
               try {
                 git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", base]);
@@ -4496,14 +4536,24 @@ jobs:
               if (moved) return { full: moved };
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
-              const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              const changedFiles = prFiles.filter((file) => names(file).some((name) => patches.has(name)));
+              // A generated data file whose change is over DATA_FLOOR_BYTES leaves
+              // the scope first, so a large data patch the API dropped does not
+              // force a whole review; a smaller change to it is still reviewed.
+              const data = changedFiles.length > 0 ? dataFiles(now) : new Set();
+              const floor = Number(env.DATA_FLOOR_BYTES);
+              const left = changedFiles.filter((file) => {
+                const patch = data.has(file.filename) ? patches.get(file.filename).patch : "";
+                return data.has(file.filename) && (patch === undefined || Buffer.byteLength(patch, "utf8") > floor);
+              });
+              const files = changedFiles.filter((file) => !left.includes(file));
               // The API drops the patch of a large text change; only a whole review covers it.
               const unshown = files.find((file) => {
                 const change = patches.get(file.filename) ?? patches.get(file.previous_filename);
                 return change.patch === undefined && change.changes > 0;
               });
               if (unshown) return { full: `the API returned no patch for ${unshown.filename}` };
-              return { files, patches };
+              return { files, patches, left: left.map((file) => file.filename) };
             };
 
             const writeDiff = (files, patches) => {
@@ -4608,11 +4658,11 @@ jobs:
                   core.info(`Reviewing the whole pull request: ${result.full}.`);
                 } else {
                   last = recorded.sha;
-                  // A generated data file leaves the list, the count and the
-                  // diff, as in the full-diff step, and DATA_LIST names it.
-                  const data = result.files.length > 0 ? dataFiles(now) : new Set();
-                  scope = result.files.filter((file) => !data.has(file.filename));
-                  const left = result.files.filter((file) => data.has(file.filename)).map((file) => file.filename);
+                  // The generated data files sinceLastReview left out of the
+                  // list, the count and the diff, as in the full-diff step;
+                  // DATA_LIST names them.
+                  scope = result.files;
+                  const left = result.left ?? [];
                   dataOnly = left.length > 0 && scope.length === 0;
                   dataLeft = left.length;
                   fs.rmSync(env.DATA_LIST, { force: true });
@@ -4742,15 +4792,18 @@ jobs:
           # merge base declares (globbed as hold-paths). Only a modification or
           # addition of a non-executable regular file at a plain path counts,
           # never a hold-paths or SENSITIVE_PATHS match, and none when that
-          # list is empty. Each leaves every diff, list, total and size below
-          # and is named in $data_list for the review summary. A list only the
-          # head holds, or any failure, declares none.
+          # list is empty; and only when its diff section is over
+          # DATA_FLOOR_BYTES, so a small edit to it is still reviewed. Each
+          # leaves every diff, list, total and size below and is named in
+          # $data_list for the review summary. A list only the head holds, or
+          # any failure, declares none.
           data_list=.claude-lane/data-files.txt
           rm -f "$data_list"
           data=()
-          if [ -n "$GENERATED_DATA" ]; then
+          candidates=()
+          if [ -n "$GENERATED_DATA" ] && [[ "$DATA_FLOOR_BYTES" =~ ^[0-9]{1,9}$ ]]; then
             if declared="$(git cat-file blob "$base:$GENERATED_DATA")"; then
-              mapfile -t data < <(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | DECLARED="$declared" awk -F '\t' "$globs"'
+              mapfile -t candidates < <(git diff --raw --no-abbrev "$base" "$HEAD_SHA" | DECLARED="$declared" awk -F '\t' "$globs"'
                 BEGIN {
                   h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive)
                   d = globs(ENVIRON["DECLARED"], declared)
@@ -4759,11 +4812,15 @@ jobs:
                 s == 0 || NF != 2 || $2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500 { next }
                 !(f[5] == "M" && f[1] == ":100644" && f[2] == "100644") && !(f[5] == "A" && f[1] == ":000000" && f[2] == "100644") { next }
                 { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-                { for (i = 1; i <= d; i++) if ($2 ~ declared[i]) { print $2; next } }') || data=()
+                { for (i = 1; i <= d; i++) if ($2 ~ declared[i]) { print $2; next } }') || candidates=()
             else
               echo "::warning::The merge base holds no generated-data file at $GENERATED_DATA; no data file is declared."
             fi
           fi
+          for p in "${candidates[@]}"; do
+            size="$(git diff --no-color --no-ext-diff --no-textconv --text "$base" "$HEAD_SHA" -- ":(literal)$p" | wc -c | tr -d ' ')"
+            if [ "$size" -gt "$DATA_FLOOR_BYTES" ]; then data+=("$p"); fi
+          done
           # Every diff below takes this pathspec, so the data files leave the
           # diff, the list, the counts and the copy groups alike.
           only=()

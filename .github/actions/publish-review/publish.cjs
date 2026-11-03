@@ -153,13 +153,21 @@ function validCoverage(coverage) {
   );
 }
 
-// The files read, then the generated data files the review never read.
+// The files read, then the generated data files the review never read: the
+// first DATA_NAMES by name, then how many more.
+const DATA_NAMES = 10;
 function coverageText(coverage) {
   const data = coverage.data_files ?? [];
+  const named = data
+    .slice(0, DATA_NAMES)
+    .map((name) => `\`${name}\``)
+    .join(", ");
+  const more =
+    data.length > DATA_NAMES ? ` and ${data.length - DATA_NAMES} more` : "";
   return `read ${coverage.read} of ${coverage.changed} changed file(s)${
     data.length === 0
       ? ""
-      : `; ${data.length} data file(s) not reviewed: ${data.map((name) => `\`${name}\``).join(", ")}`
+      : `; ${data.length} data file(s) not reviewed: ${named}${more}`
   }`;
 }
 

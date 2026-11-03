@@ -3879,6 +3879,13 @@ function dataFixture() {
     fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
     fs.writeFileSync(path.join(origin, file), text);
   };
+  // 400 records of about 30 bytes: a change to every record, or the file
+  // added whole, is a diff section well over DATA_FLOOR_BYTES (7500); one
+  // record deleted is a section of a few hundred bytes.
+  const records = (tag, skip = -1) =>
+    Array.from({ length: 400 }, (_, i) =>
+      i === skip ? "" : `{"id":${i},"verdict":"${tag}"}\n`,
+    ).join("");
   write(
     "scripts/data-files.txt",
     "# generated verdict records\n\ndata/*.json\nbin/*.json\n.github/*.json\nheld/*.json\nlink.json\n",
@@ -3886,8 +3893,9 @@ function dataFixture() {
   for (const [file, text] of [
     [".github/data.json", "g1\n"],
     ["bin/tool.json", "t1\n"],
-    ["data/other.json", "same1\n"],
-    ["data/verdicts.json", "same1\n"],
+    ["data/other.json", records("same1")],
+    ["data/small.json", records("FAIL")],
+    ["data/verdicts.json", records("same1")],
     ["docs/a.txt", "doc1\n"],
     ["docs/b.txt", "doc1\n"],
     ["held/data.json", "h1\n"],
@@ -3900,9 +3908,10 @@ function dataFixture() {
   for (const [file, text] of [
     [".github/data.json", "g2\n"],
     ["bin/tool.json", "t2\n"],
-    ["data/other.json", "same2\n"],
-    ["data/verdicts.json", "same2\n"],
-    ["data/new.json", "n\n"],
+    ["data/other.json", records("same2")],
+    ["data/small.json", records("FAIL", 200)],
+    ["data/verdicts.json", records("same2")],
+    ["data/new.json", records("new")],
     ["data/odd name.json", "o\n"],
     ["docs/a.txt", "doc2\n"],
     ["docs/b.txt", "doc2\n"],
@@ -3929,14 +3938,16 @@ function dataFixture() {
 // and data/verdicts.json are the base list's data files. Each other path is
 // kept: bin/tool.json turned executable, .github/data.json matches
 // SENSITIVE_PATHS, held/data.json matches hold-paths, link.json is a symlink,
-// "data/odd name.json" is outside the plain-path characters, and the rest are
-// declared by no list the base holds.
+// "data/odd name.json" is outside the plain-path characters, data/small.json's
+// one deleted record is under DATA_FLOOR_BYTES, and the rest are declared by
+// no list the base holds.
 const DATA_CHANGED = [
   ".github/data.json",
   "bin/tool.json",
   "data/new.json",
   "data/odd name.json",
   "data/other.json",
+  "data/small.json",
   "data/verdicts.json",
   "docs/a.txt",
   "docs/b.txt",
@@ -3977,6 +3988,7 @@ test("the full-diff step leaves the data files the base branch declares out of t
           SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
           GENERATED_COPIES: "",
           GENERATED_DATA: generatedData,
+          DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
         },
       });
       assert.equal(result.status, 0, result.stderr);
@@ -3996,7 +4008,7 @@ test("the full-diff step leaves the data files the base branch declares out of t
     const declared = run("scripts/data-files.txt");
     const kept = DATA_CHANGED.filter((p) => !DATA_DECLARED.includes(p));
     assert.equal(declared.list, `${kept.join("\n")}\n`, job.name);
-    assert.match(declared.out, /^files=10$/mu, job.name);
+    assert.match(declared.out, /^files=11$/mu, job.name);
     assert.match(declared.out, /^data=3$/mu, job.name);
     assert.equal(declared.data, `${DATA_DECLARED.join("\n")}\n`, job.name);
     for (const p of DATA_DECLARED)
@@ -4028,7 +4040,7 @@ test("the full-diff step leaves the data files the base branch declares out of t
     ]) {
       const none = run(generatedData);
       assert.equal(none.list, `${DATA_CHANGED.join("\n")}\n`, generatedData);
-      assert.match(none.out, /^files=13$/mu, generatedData);
+      assert.match(none.out, /^files=14$/mu, generatedData);
       assert.match(none.out, /^data=0$/mu, generatedData);
       assert.equal(none.data, undefined, generatedData);
       assert.match(none.out, /^copies=2$/mu, generatedData);
@@ -4047,7 +4059,11 @@ test("the full-diff step leaves the data files the base branch declares out of t
 test("an incremental review leaves the data files the base branch declares out of its list, count and diff, in every leg", async () => {
   const fixture = dataFixture();
   const LAST = "b".repeat(40);
-  const scope = async (job, generatedData, changed) => {
+  // A declared data file's change since the last review is about 12 KB, over
+  // DATA_FLOOR_BYTES (7500); every other file's, data/small.json's included,
+  // is one line. A file in `omitted` has the patch the API drops when large.
+  const BIG = `@@ -1,2000 +1,2000 @@\n${"-x\n+y\n".repeat(2000)}`.trimEnd();
+  const scope = async (job, generatedData, changed, omitted = []) => {
     const work = fixture.clone();
     const dir = path.join(`${work}.lane`);
     fs.mkdirSync(dir);
@@ -4059,7 +4075,13 @@ test("an incremental review leaves the data files the base branch declares out o
         files: changed.map((filename) => ({
           filename,
           status: "modified",
-          patch: "@@ -1 +1 @@\n-x\n+y",
+          ...(omitted.includes(filename)
+            ? {}
+            : {
+                patch: DATA_DECLARED.includes(filename)
+                  ? BIG
+                  : "@@ -1 +1 @@\n-x\n+y",
+              }),
           changes: 2,
         })),
       },
@@ -4108,6 +4130,7 @@ test("an incremental review leaves the data files the base branch declares out o
       HOLD_PATHS: "held/**\n",
       SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
       GENERATED_DATA: generatedData,
+      DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
       GIT_TOKEN: "test-token",
       GITHUB_SERVER_URL: "https://github.invalid",
       RUNNER_TEMP: dir,
@@ -4161,7 +4184,7 @@ test("an incremental review leaves the data files the base branch declares out o
     const kept = DATA_CHANGED.filter((p) => !DATA_DECLARED.includes(p));
     const mixed = await scope(job, "scripts/data-files.txt", DATA_CHANGED);
     assert.equal(mixed.outputs.scope, "incremental", job.name);
-    assert.equal(mixed.outputs.files, "10", job.name);
+    assert.equal(mixed.outputs.files, "11", job.name);
     assert.equal(mixed.list, `${kept.join("\n")}\n`, job.name);
     assert.equal(mixed.outputs.data, "3", job.name);
     assert.equal(mixed.data, `${DATA_DECLARED.join("\n")}\n`, job.name);
@@ -4190,6 +4213,26 @@ test("an incremental review leaves the data files the base branch declares out o
       dataOnly.outputs["skip-reason"],
       `every file changed since the review of ${LAST} is a generated data file the base branch declares`,
     );
+    // A data file whose large patch the API dropped leaves the scope before
+    // the missing-patch check, so the push stays incremental; a dropped
+    // patch on any other file still needs a whole review.
+    const unshown = await scope(
+      job,
+      "scripts/data-files.txt",
+      ["data/verdicts.json", "src/a.js"],
+      ["data/verdicts.json"],
+    );
+    assert.equal(unshown.outputs.scope, "incremental", job.name);
+    assert.equal(unshown.outputs.files, "1", job.name);
+    assert.equal(unshown.list, "src/a.js\n", job.name);
+    assert.equal(unshown.data, "data/verdicts.json\n", job.name);
+    const unshownCode = await scope(
+      job,
+      "scripts/data-files.txt",
+      ["data/verdicts.json", "src/a.js"],
+      ["src/a.js"],
+    );
+    assert.equal(unshownCode.outputs.scope, "whole", job.name);
     // A list only the head holds declares nothing, with a warning.
     const headOnly = await scope(job, "scripts/head-data.txt", [
       "head-only/x.json",

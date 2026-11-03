@@ -1452,10 +1452,12 @@ its own files; a file missing there warns and declares none. A changed file it
 declares leaves the diff, the file list and the file total, on a whole and an
 incremental review alike, so a large generated file no review can read whole
 does not make every review `partial`. Only a modification or addition of a
-non-executable regular file at a path of letters, digits and `._/@+-` is left
-out; an executable file, a symlink, a rename, or a `hold-paths` or
-SENSITIVE_PATHS match is still reviewed. The comment's first visible line names
-each file left out (`; <n> data file(s) not reviewed: <path>`), and the
+non-executable regular file at a path of letters, digits and `._/@+-`, whose
+diff section is over 7500 bytes (one review's 300000-byte read budget over the
+40 files it reads whole), is left out; a smaller edit, an executable file, a
+symlink, a rename, or a `hold-paths` or SENSITIVE_PATHS match is still
+reviewed. The comment's first visible line names the first 10 files left out
+(`; <n> data file(s) not reviewed: <path>, ... and <m> more`), and the
 coverage in the shadow report lists them as `data_files`. A push that changes
 only data files needs no new review. Gitleaks and every other check still scan
 the file.

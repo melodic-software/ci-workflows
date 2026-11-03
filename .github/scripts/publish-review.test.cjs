@@ -717,6 +717,32 @@ test("a complete review names each generated data file it left out", async () =>
   );
 });
 
+test("the status line names the first 10 data files and counts the rest", async () => {
+  const names = (n) => Array.from({ length: n }, (_, i) => `d/${i + 1}.json`);
+  const status = async (n) => {
+    const { writes } = await publish({
+      KEY_REVIEW: JSON.stringify({
+        ...REVIEW,
+        coverage: { read: 1, changed: 1, data_files: names(n) },
+      }),
+    });
+    return writes[1][1].body.split("\n")[2];
+  };
+  const ten = names(10)
+    .map((name) => `\`${name}\``)
+    .join(", ");
+  assert.ok(
+    (await status(10)).includes(
+      `; 10 data file(s) not reviewed: ${ten}; 1 finding(s)`,
+    ),
+  );
+  assert.ok(
+    (await status(12)).includes(
+      `; 12 data file(s) not reviewed: ${ten} and 2 more; 1 finding(s)`,
+    ),
+  );
+});
+
 test("a review with no coverage, or coverage past its scope, is incomplete", async () => {
   for (const coverage of [
     undefined,
