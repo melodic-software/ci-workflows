@@ -578,7 +578,7 @@ for (const action of ["publish-review", "apply-review-hold"]) {
 }
 
 // URL or path, route and the names in the input no route may carry, tab
-// separated (the names comma separated): the routes
+// separated (the names comma separated, "-" for none): the routes
 // in claude-code-plugins' .github/actions/log-api-budget/rate-guard.vectors.json,
 // whose routeOf and API_BUDGET_ROUTE these ports keep.
 const ROUTE_VECTORS =
@@ -586,7 +586,7 @@ const ROUTE_VECTORS =
 repos/{owner}/{repo}/pulls/7/files	repos/{repo}/pulls/{n}/files	{owner}
 /repos/o/r/commits/0123456789abcdef0123456789abcdef01234567/check-runs	repos/{repo}/commits/{sha}/check-runs	0123456789abcdef
 repos/o/r/actions/runs/39931677333/attempts/2/jobs	repos/{repo}/actions/runs/{n}/attempts/{n}/jobs	39931677333
-https://api.github.com/graphql	graphql	
+https://api.github.com/graphql	graphql	-
 https://ghe.example/api/graphql	graphql	ghe.example
 https://ghe.example/api/v3/repos/o/r/labels/needs-human	repos/{repo}/labels/{x}	ghe.example,needs-human
 user/github_pat_abc	user/{x}	github_pat_abc
@@ -606,15 +606,15 @@ repos/someowner	repos/{x}	someowner
 applications/Iv1abcdef/token	{x}/{x}/{x}	applications,Iv1abcdef,token
 https://github.com/someowner/somerepo/pull/5	other	someowner,somerepo,github.com
 https://uploads.github.com/repos/o/r/releases/9/assets?name=secret-asset.zip	repos/{repo}/releases/{n}/{x}	secret-asset,assets
-rate_limit	rate_limit	
-https://api.github.com/	other	
-repos/o/r/issues/issues/issues/issues/issues/issues/issues/issues/issues/issues/issues/issues/comments	other	
+rate_limit	rate_limit	-
+https://api.github.com/	other	-
+repos/o/r/issues/issues/issues/issues/issues/issues/issues/issues/issues/issues/issues/issues/comments	other	-
 repos/o/r/commits/ABCDEF0123/statuses	repos/{repo}/commits/{sha}/statuses	ABCDEF0123
 repos/o/r/actions/workflows/pr-require-checks.yml/runs?event=workflow_dispatch&branch=main&per_page=20	repos/{repo}/actions/workflows/{x}/runs	pr-require-checks,event,main
 repos/o/r/merge-async	repos/{repo}/{x}	merge-async`
     .split("\n")
     .map((row) => row.split("\t"))
-    .map(([url, route, names]) => [url, route, names ? names.split(",") : []])
+    .map(([url, route, names]) => [url, route, names && names !== "-" ? names.split(",") : []])
     .concat([["", "other", []]]);
 
 // Each inline recorder's `budget` function, cut from its step's script.
