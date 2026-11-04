@@ -3096,7 +3096,12 @@ function split(env = {}, prepare = () => {}) {
       },
     },
   );
-  return { status: result.status, out: fs.readFileSync(output, "utf8"), work };
+  return {
+    status: result.status,
+    out: fs.readFileSync(output, "utf8"),
+    stdout: result.stdout,
+    work,
+  };
 }
 
 test("the split step cuts only a diff over the read budget or the file cap, counting each chunk's files", () => {
@@ -3115,6 +3120,12 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.match(cut.out, /^chunks=2$/mu);
   assert.match(cut.out, /^files=2,1$/mu);
   assert.match(cut.out, /^excluded=0$/mu);
+  // The notice names the distinct bytes on a split too: with no copies they
+  // are the whole scope.
+  assert.match(
+    cut.stdout,
+    /^::notice title=pr-review-cli chunks::chunks=2 bytes=700000 distinct-bytes=700000 files=2,1 excluded=0$/mu,
+  );
   // Within the budget, more files than one review reads whole are cut too.
   const many = split({ SCOPE_BYTES: "1000" }, (work) =>
     fs.writeFileSync(

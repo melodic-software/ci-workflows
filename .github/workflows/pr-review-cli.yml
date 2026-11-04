@@ -1532,6 +1532,8 @@ jobs:
           # files in scope but the copies.
           input="$SCOPE_DIFF"
           excluded=0
+          # With no copies left out, the distinct diff is the whole scope.
+          distinct_bytes=$SCOPE_BYTES
           identical=.claude-lane/identical.txt
           if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
@@ -1573,7 +1575,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
@@ -3646,6 +3648,8 @@ jobs:
           # files in scope but the copies.
           input="$SCOPE_DIFF"
           excluded=0
+          # With no copies left out, the distinct diff is the whole scope.
+          distinct_bytes=$SCOPE_BYTES
           identical=.claude-lane/identical.txt
           if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
@@ -3687,7 +3691,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
@@ -5732,6 +5736,8 @@ jobs:
           # files in scope but the copies.
           input="$SCOPE_DIFF"
           excluded=0
+          # With no copies left out, the distinct diff is the whole scope.
+          distinct_bytes=$SCOPE_BYTES
           identical=.claude-lane/identical.txt
           if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
@@ -5773,7 +5779,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
