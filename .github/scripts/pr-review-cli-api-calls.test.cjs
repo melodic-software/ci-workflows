@@ -578,8 +578,9 @@ test("each run shape spends the requests pinned here, reading the file list once
 // The api-budget notice reads the headers of the requests above and adds
 // none: one reading per job-token request, and the key and status jobs each
 // end with one core line whose cost is the rise in used since the job's
-// first reading, na when the job made one request, then an api-calls line
-// counting the requests the fake answered for that job.
+// first reading, na when the job made one request, after an api-calls line
+// counting the requests the fake answered for that job and its api-routes
+// line.
 test("each job logs one reading per request it made and its api-budget line, adding no request", async () => {
   for (const [name, shape] of Object.entries(SHAPES)) {
     const { total, keyRequests, keyBudget, statusBudget } = await spend(shape);
@@ -597,12 +598,14 @@ test("each job logs one reading per request it made and its api-budget line, add
       ["review-key", keyBudget, 1, keyRequests],
       ["status", statusBudget, keyRequests + 1, total],
     ]) {
+      // The fake's responses carry no URL, so every route is other.
       assert.deepEqual(
         budget.notices,
         [
+          `::notice title=api-calls::github-token=${last - first + 1} not-modified=0 graphql=0`,
+          `::notice title=api-routes::github-token other=${last - first + 1} rest=0`,
           `::notice title=api-budget::token=github-token workflow=.github/workflows/review.yml job=${job} run=1 attempt=1 ` +
             `limit=1000 remaining=${1000 - last} used=${last} reset=${RESET} resource=core cost=${last === first ? "na" : last - first}`,
-          `::notice title=api-calls::github-token=${last - first + 1} not-modified=0 graphql=0`,
         ],
         `${name}: ${job}`,
       );
