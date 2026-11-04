@@ -50,7 +50,8 @@ const MAX_PROBE_MINUTES = 1440;
 const WORKFLOW_REF = /^[\w.-]+\/[\w.-]+\/\.github\/workflows\/([\w.-]+\.ya?ml)@/u;
 
 // The rate-limit reading report-api-budget reads, as the scope step writes
-// it. A failed write only drops the reading.
+// it, under the route of the gate's one request (the artifact list). A
+// failed write only drops the reading.
 function recordBudget(response, runnerTemp) {
   if (!runnerTemp) return;
   const values = ["limit", "remaining", "used", "reset", "resource"].map(
@@ -66,7 +67,7 @@ function recordBudget(response, runnerTemp) {
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(
       path.join(dir, "github-token"),
-      `${response.status} ${values.join(" ")}\n`,
+      `${response.status} ${values.join(" ")} repos/{repo}/actions/artifacts\n`,
     );
   } catch {
     // No reading: the notice is only missing one.

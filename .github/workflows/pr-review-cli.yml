@@ -617,27 +617,59 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
-            // Each response's rate-limit reading, the line report-api-budget's
-            // api-budget.cjs writes (a test holds them equal), for the job's
-            // api-budget notice. A failed write only drops the reading.
-            const budget = (status, headers) => {
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
               const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
                 const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
                 return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
               });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
               try {
                 const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
                 require("node:fs").mkdirSync(dir, { recursive: true });
-                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
               } catch {
                 // No reading: the notice is only missing one.
               }
             };
-            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
-              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)
@@ -2677,27 +2709,59 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
-            // Each response's rate-limit reading, the line report-api-budget's
-            // api-budget.cjs writes (a test holds them equal), for the job's
-            // api-budget notice. A failed write only drops the reading.
-            const budget = (status, headers) => {
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
               const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
                 const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
                 return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
               });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
               try {
                 const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
                 require("node:fs").mkdirSync(dir, { recursive: true });
-                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
               } catch {
                 // No reading: the notice is only missing one.
               }
             };
-            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
-              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)
@@ -4709,27 +4773,59 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         with:
           script: |
-            // Each response's rate-limit reading, the line report-api-budget's
-            // api-budget.cjs writes (a test holds them equal), for the job's
-            // api-budget notice. A failed write only drops the reading.
-            const budget = (status, headers) => {
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
               const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
                 const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
                 return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
               });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
               try {
                 const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
                 require("node:fs").mkdirSync(dir, { recursive: true });
-                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")}\n`);
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
               } catch {
                 // No reading: the notice is only missing one.
               }
             };
-            github.hook.after("request", (response) => budget(response.status, response.headers));
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
             // A failed GitHub API call logs its status and rate-limit headers, then
             // throws as before: these lanes stay advisory and add no retry.
             github.hook.error("request", (error, options) => {
-              if (error.response) budget(error.status ?? error.response.status, error.response.headers);
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
               const headers = error.response?.headers ?? {};
               const fields = ["x-ratelimit-remaining", "x-ratelimit-reset", "retry-after"]
                 .filter((name) => headers[name] !== undefined)

@@ -230,7 +230,7 @@ test("main skips on a marker in the window with one call, reads no run or job li
   // The response's rate-limit reading, for report-api-budget.
   assert.equal(
     fs.readFileSync(path.join(dir, "api-budget", "github-token"), "utf8"),
-    "200 1000 999 1 1 core\n",
+    "200 1000 999 1 1 core repos/{repo}/actions/artifacts\n",
   );
 });
 
