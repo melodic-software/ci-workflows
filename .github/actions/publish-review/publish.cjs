@@ -131,11 +131,17 @@ function parseReview(text) {
 // The extract step's coverage: files read of the changed files in scope, the
 // diff's size when it is over one review's read budget, its files that are
 // not copies when one review faced more than it reads whole, and the
-// generated data files left out of the scope. A review without it is not one.
+// generated data files left out of the scope, and the binary files in it. A
+// review without it is not one.
 const DATA_PATH = /^[A-Za-z0-9._/@+-]{1,500}$/u;
 function validCoverage(coverage) {
   const absentOrPositive = (n) =>
     n === undefined || (Number.isSafeInteger(n) && n > 0);
+  const absentOrPaths = (list) =>
+    list === undefined ||
+    (Array.isArray(list) &&
+      list.length > 0 &&
+      list.every((name) => typeof name === "string" && DATA_PATH.test(name)));
   return (
     Number.isSafeInteger(coverage?.changed) &&
     coverage.changed >= 0 &&
@@ -144,30 +150,29 @@ function validCoverage(coverage) {
     coverage.read <= coverage.changed &&
     absentOrPositive(coverage.over_budget) &&
     absentOrPositive(coverage.over_files) &&
-    (coverage.data_files === undefined ||
-      (Array.isArray(coverage.data_files) &&
-        coverage.data_files.length > 0 &&
-        coverage.data_files.every(
-          (name) => typeof name === "string" && DATA_PATH.test(name),
-        )))
+    absentOrPaths(coverage.data_files) &&
+    absentOrPaths(coverage.binary_files)
   );
 }
 
-// The files read, then the generated data files the review never read: the
-// first DATA_NAMES by name, then how many more.
+// The first DATA_NAMES paths by name, then how many more.
 const DATA_NAMES = 10;
-function coverageText(coverage) {
-  const data = coverage.data_files ?? [];
-  const named = data
+function named(paths) {
+  const more =
+    paths.length > DATA_NAMES ? ` and ${paths.length - DATA_NAMES} more` : "";
+  return `${paths
     .slice(0, DATA_NAMES)
     .map((name) => `\`${name}\``)
-    .join(", ");
-  const more =
-    data.length > DATA_NAMES ? ` and ${data.length - DATA_NAMES} more` : "";
+    .join(", ")}${more}`;
+}
+
+// The files read, then the generated data files the review never read.
+function coverageText(coverage) {
+  const data = coverage.data_files ?? [];
   return `read ${coverage.read} of ${coverage.changed} changed file(s)${
     data.length === 0
       ? ""
-      : `; ${data.length} data file(s) not reviewed: ${named}${more}`
+      : `; ${data.length} data file(s) not reviewed: ${named(data)}`
   }`;
 }
 
@@ -180,8 +185,8 @@ function isPartial(coverage) {
   );
 }
 
-// Why a review that read its whole scope is still partial: its diff is over
-// one review's read budget or file cap.
+// Why a review is partial: its diff is over one review's read budget or file
+// cap, or its scope holds binary files no review reads as text.
 function partialReason(coverage) {
   const size =
     coverage.over_budget === undefined
@@ -191,7 +196,12 @@ function partialReason(coverage) {
     coverage.over_files === undefined
       ? ""
       : `; one review faced ${coverage.over_files} files that are not copies, more than it reads whole`;
-  return `${size}${files}`;
+  const binary = coverage.binary_files ?? [];
+  const binaries =
+    binary.length === 0
+      ? ""
+      : `; ${binary.length} binary file(s) not reviewable as text: ${named(binary)}`;
+  return `${size}${files}${binaries}`;
 }
 
 // The marker's status line, which states coverage before the finding count.
