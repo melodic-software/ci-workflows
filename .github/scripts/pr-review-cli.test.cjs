@@ -3154,8 +3154,15 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
     });
   assert.equal(withCopies().out, "chunks=1\n");
   assert.equal(withCopies({ SCOPE: "incremental" }).out, "chunks=1\n");
-  // A copies count that does not match the file leaves nothing out.
-  assert.match(withCopies({ COPIES: "9" }).out, /^excluded=0$/mu);
+  // A copies count that does not match the file leaves nothing out, and the
+  // notice's distinct bytes are then the whole scope, never the measured
+  // remainder.
+  const mismatched = withCopies({ COPIES: "9" });
+  assert.match(mismatched.out, /^excluded=0$/mu);
+  assert.match(
+    mismatched.stdout,
+    /chunks::chunks=\d+ bytes=1000 distinct-bytes=1000 files=[\d,]+ excluded=0$/mu,
+  );
   // A diff within the budget, or a size the job could not read, is one review.
   for (const bytes of ["300000", "", "x"]) {
     const one = split({ SCOPE_BYTES: bytes });
