@@ -5145,3 +5145,133 @@ test("the extract step names the data files the job left out, and a count its li
   );
   assert.deepEqual(JSON.parse(none.review).coverage, { read: 2, changed: 2 });
 });
+
+// Binary files (claude-code-plugins#13097's fixtures.tar.gz archives): the
+// full-diff step names the files in scope numstat counts no lines for, and
+// the extract step records them in the coverage without changing a count.
+test("the full-diff step names the binary files in scope, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-binary-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const write = (file, data) => {
+    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+    fs.writeFileSync(path.join(origin, file), data);
+  };
+  const gz = (n) => Buffer.from([0x1f, 0x8b, 0x08, 0x00, n, 0x00, 0xff]);
+  write("a/fixtures.tar.gz", gz(1));
+  write("gone.bin", gz(9));
+  write("src/a.js", "a1\n");
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  write("a/fixtures.tar.gz", gz(2));
+  write("b/fixtures.tar.gz", gz(3));
+  write("odd name.bin", gz(4));
+  write("src/a.js", "a2\n");
+  fs.rmSync(path.join(origin, "gone.bin"));
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  for (const job of [key, subscription, fallback]) {
+    const fullDiff = step(job, "full-diff");
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", origin, work);
+    const output = `${work}.out`;
+    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        GH_TOKEN: "test-token",
+        GITHUB_SERVER_URL: "https://github.invalid",
+        GITHUB_OUTPUT: output,
+        MERGE_BASE: base,
+        HEAD_SHA: head,
+        DIFF_FILE: fullDiff.env.DIFF_FILE,
+        FILE_LIST: fullDiff.env.FILE_LIST,
+        HOLD_PATHS: "",
+        SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+        GENERATED_COPIES: "",
+        GENERATED_DATA: "",
+        DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const out = fs.readFileSync(output, "utf8");
+    // Every file stays in scope; the deleted one is on no list, and the
+    // binary with a space in its name is counted in scope but not named.
+    assert.match(out, /^files=4$/mu, job.name);
+    assert.match(out, /^binary=2$/mu, job.name);
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/binary-files.txt"), "utf8"),
+      "a/fixtures.tar.gz\nb/fixtures.tar.gz\n",
+      job.name,
+    );
+    assert.equal(
+      step(job, "extract").env.BINARY,
+      `\${{ steps.full-diff.outputs.binary }}`,
+    );
+    assert.equal(
+      step(job, "extract").env.BINARY_LIST,
+      ".claude-lane/binary-files.txt",
+    );
+  }
+});
+
+test("the extract step names a whole review's binary files and changes no count", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-extract-binary-");
+  const list = (name, text) => {
+    fs.writeFileSync(path.join(dir, name), text);
+    return path.join(dir, name);
+  };
+  const review = JSON.stringify({
+    findings: 0,
+    files_read: 1,
+    summary: "S",
+    comments: [],
+  });
+  const BINARY_LIST = list("ok.txt", "a/x.tar.gz\n");
+  const named = await extract(
+    { structured: review },
+    { WHOLE_FILES: "2", BINARY: "1", BINARY_LIST },
+  );
+  assert.equal(named.verdict, "complete");
+  assert.deepEqual(JSON.parse(named.review).coverage, {
+    read: 1,
+    changed: 2,
+    binary_files: ["a/x.tar.gz"],
+  });
+  // A list its count cannot back, or an incremental scope, names none and
+  // leaves the review as it was.
+  for (const [what, env] of [
+    ["one name short", { BINARY: "2", BINARY_LIST }],
+    ["an odd name", { BINARY: "1", BINARY_LIST: list("odd.txt", "a`b.gz\n") }],
+    ["no list", { BINARY: "1", BINARY_LIST: path.join(dir, "missing.txt") }],
+    [
+      "incremental",
+      { BINARY: "1", BINARY_LIST, SCOPE: "incremental", SCOPE_FILES: "2" },
+    ],
+    ["none", { BINARY: "0", BINARY_LIST }],
+  ]) {
+    const unnamed = await extract(
+      { structured: review },
+      { WHOLE_FILES: "2", ...env },
+    );
+    assert.equal(unnamed.verdict, "complete", what);
+    assert.deepEqual(
+      JSON.parse(unnamed.review).coverage,
+      { read: 1, changed: 2 },
+      what,
+    );
+  }
+});
