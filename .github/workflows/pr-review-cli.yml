@@ -1532,6 +1532,9 @@ jobs:
           # files in scope but the copies.
           input="$SCOPE_DIFF"
           excluded=0
+          # The bytes of the diff split below: the whole scope unless its
+          # copies are left out.
+          distinct_bytes=$SCOPE_BYTES
           identical=.claude-lane/identical.txt
           if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
@@ -1539,19 +1542,20 @@ jobs:
               NR == FNR { for (i = 2; i <= NF; i++) copy["diff --git a/" $i " b/" $i] = 1; next }
               /^diff --git / { skip = ($0 in copy) }
               !skip' "$identical" "$SCOPE_DIFF" >"$distinct"
-            distinct_bytes=$(wc -c <"$distinct" | tr -d ' ')
+            measured_bytes=$(wc -c <"$distinct" | tr -d ' ')
             distinct_files=$(count_files "$distinct")
             if [ $((distinct_files + COPIES)) -eq "$scope_files" ]; then
               if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
                 unsplit
               fi
-              if [ "$distinct_bytes" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
-                { echo "chunks=1"; echo "excluded=$COPIES"; echo "distinct-bytes=$distinct_bytes"; } >>"$GITHUB_OUTPUT"
-                echo "::notice title=pr-review-cli chunks::chunks=1 bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$distinct_files excluded=$COPIES"
+              if [ "$measured_bytes" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
+                { echo "chunks=1"; echo "excluded=$COPIES"; echo "distinct-bytes=$measured_bytes"; } >>"$GITHUB_OUTPUT"
+                echo "::notice title=pr-review-cli chunks::chunks=1 bytes=$SCOPE_BYTES distinct-bytes=$measured_bytes files=$distinct_files excluded=$COPIES"
                 exit 0
               fi
               input="$distinct"
               excluded=$COPIES
+              distinct_bytes=$measured_bytes
             fi
           fi
           status=0
@@ -1573,7 +1577,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
@@ -3646,6 +3650,9 @@ jobs:
           # files in scope but the copies.
           input="$SCOPE_DIFF"
           excluded=0
+          # The bytes of the diff split below: the whole scope unless its
+          # copies are left out.
+          distinct_bytes=$SCOPE_BYTES
           identical=.claude-lane/identical.txt
           if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
@@ -3653,19 +3660,20 @@ jobs:
               NR == FNR { for (i = 2; i <= NF; i++) copy["diff --git a/" $i " b/" $i] = 1; next }
               /^diff --git / { skip = ($0 in copy) }
               !skip' "$identical" "$SCOPE_DIFF" >"$distinct"
-            distinct_bytes=$(wc -c <"$distinct" | tr -d ' ')
+            measured_bytes=$(wc -c <"$distinct" | tr -d ' ')
             distinct_files=$(count_files "$distinct")
             if [ $((distinct_files + COPIES)) -eq "$scope_files" ]; then
               if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
                 unsplit
               fi
-              if [ "$distinct_bytes" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
-                { echo "chunks=1"; echo "excluded=$COPIES"; echo "distinct-bytes=$distinct_bytes"; } >>"$GITHUB_OUTPUT"
-                echo "::notice title=pr-review-cli chunks::chunks=1 bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$distinct_files excluded=$COPIES"
+              if [ "$measured_bytes" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
+                { echo "chunks=1"; echo "excluded=$COPIES"; echo "distinct-bytes=$measured_bytes"; } >>"$GITHUB_OUTPUT"
+                echo "::notice title=pr-review-cli chunks::chunks=1 bytes=$SCOPE_BYTES distinct-bytes=$measured_bytes files=$distinct_files excluded=$COPIES"
                 exit 0
               fi
               input="$distinct"
               excluded=$COPIES
+              distinct_bytes=$measured_bytes
             fi
           fi
           status=0
@@ -3687,7 +3695,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
@@ -5732,6 +5740,9 @@ jobs:
           # files in scope but the copies.
           input="$SCOPE_DIFF"
           excluded=0
+          # The bytes of the diff split below: the whole scope unless its
+          # copies are left out.
+          distinct_bytes=$SCOPE_BYTES
           identical=.claude-lane/identical.txt
           if [[ "$COPIES" =~ ^[1-9][0-9]{0,5}$ ]] && [ -f "$identical" ] && [ ! -L "$identical" ]; then
             distinct="$CHUNK_DIR/distinct.diff"
@@ -5739,19 +5750,20 @@ jobs:
               NR == FNR { for (i = 2; i <= NF; i++) copy["diff --git a/" $i " b/" $i] = 1; next }
               /^diff --git / { skip = ($0 in copy) }
               !skip' "$identical" "$SCOPE_DIFF" >"$distinct"
-            distinct_bytes=$(wc -c <"$distinct" | tr -d ' ')
+            measured_bytes=$(wc -c <"$distinct" | tr -d ' ')
             distinct_files=$(count_files "$distinct")
             if [ $((distinct_files + COPIES)) -eq "$scope_files" ]; then
               if [ "$SCOPE_BYTES" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
                 unsplit
               fi
-              if [ "$distinct_bytes" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
-                { echo "chunks=1"; echo "excluded=$COPIES"; echo "distinct-bytes=$distinct_bytes"; } >>"$GITHUB_OUTPUT"
-                echo "::notice title=pr-review-cli chunks::chunks=1 bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$distinct_files excluded=$COPIES"
+              if [ "$measured_bytes" -le "$READ_BUDGET" ] && [ "$distinct_files" -le "$MAX_CHUNK_FILES" ]; then
+                { echo "chunks=1"; echo "excluded=$COPIES"; echo "distinct-bytes=$measured_bytes"; } >>"$GITHUB_OUTPUT"
+                echo "::notice title=pr-review-cli chunks::chunks=1 bytes=$SCOPE_BYTES distinct-bytes=$measured_bytes files=$distinct_files excluded=$COPIES"
                 exit 0
               fi
               input="$distinct"
               excluded=$COPIES
+              distinct_bytes=$measured_bytes
             fi
           fi
           status=0
@@ -5773,7 +5785,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
