@@ -614,7 +614,11 @@ repos/o/r/actions/workflows/pr-require-checks.yml/runs?event=workflow_dispatch&b
 repos/o/r/merge-async	repos/{repo}/{x}	merge-async`
     .split("\n")
     .map((row) => row.split("\t"))
-    .map(([url, route, names]) => [url, route, names && names !== "-" ? names.split(",") : []])
+    .map(([url, route, names]) => [
+      url,
+      route,
+      names && names !== "-" ? names.split(",") : [],
+    ])
     .concat([["", "other", []]]);
 
 // Each inline recorder's `budget` function, cut from its step's script.
