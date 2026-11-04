@@ -1486,6 +1486,13 @@ with:
   generated-data: scripts/generated-data.txt
 ```
 
+**Binary files.** A whole review names the files in scope that
+`git diff --numstat` counts no lines for (`-<TAB>-`), at a path of letters,
+digits and `._/@+-`, as `binary_files` in its coverage. They stay in the diff,
+the file list and the file total, so a review that leaves them unread is still
+`partial`; its reason names the first 10
+(`; <n> binary file(s) not reviewable as text: <path>, ... and <m> more`).
+
 **Chunks.** A diff in scope over the read budget, or with more than 40 files,
 is split at file boundaries, each file whole, into at most 4 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
