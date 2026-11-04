@@ -770,10 +770,12 @@ consumer to audit it.
   `docs/conventions/pr-pipeline.yaml`, so the review does not repeat a finding
   on unchanged lines (its `action.yml` describes what it does).
 - `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
-  step: the `api-budget` notice (`token=github-token ... cost=N`) and the
-  `api-calls` notice (`github-token=N not-modified=M graphql=K`) the hub
-  collector reads, built from the `x-ratelimit-*` headers of the job's own
-  requests, so it spends none (its `action.yml` describes what it does).
+  step: the `api-calls` notice (`github-token=N not-modified=M graphql=K`),
+  the `api-routes` notice (`github-token <route>=<count> ... rest=<count>`)
+  and the `api-budget` notice (`token=github-token ... cost=N`) the hub
+  collector reads, built from the `x-ratelimit-*` headers and URLs of the
+  job's own requests, so it spends none (its `action.yml` describes what it
+  does).
 - `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
   inside `key-credit-window-hours` (default 1), reading one artifact name with
