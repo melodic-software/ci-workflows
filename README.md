@@ -1007,7 +1007,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the job red. The 429 and 5xx responses the config accepts are listed in the
   summary without failing the job, and so are timeouts when the config sets
   `accept_timeouts` (otherwise a timeout fails it). It opens no issue and posts
-  no comment. It holds only the
+  no comment; instead each run that checked links uploads its broken links as
+  a JSON artifact kept three days, and the `dead-links-artifact` and
+  `dead-links-count` outputs name it and count its URLs, so the caller, or a
+  workflow on `workflow_run`, can route them. It holds only the
   `GITHUB_TOKEN`, which cannot read another private repository, so lychee
   never reports a link into one as OK. **Opt-in by repository property**: a
   `schedule` run reads the caller's `opt-in-property` (default
