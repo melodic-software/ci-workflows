@@ -458,7 +458,7 @@ test("every pr-review-cli job ends by logging the job token's budget", () => {
 // The intake jobs that call the API with the job token end with the notice.
 // The status job holds no permission and makes no request, so it has none.
 test("every intake-triage job that calls the API ends by logging the job token's budget", () => {
-  const callers = ["claude", "subscription", "fallback", "apply", "skipped"];
+  const callers = ["check-key-credit", "claude", "subscription", "fallback", "apply", "skipped"];
   assert.deepEqual(
     Object.keys(INTAKE.jobs).sort(),
     [...callers, "status"].sort(),
