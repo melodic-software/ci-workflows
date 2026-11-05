@@ -76,7 +76,9 @@ on:
           no readable report.
         value: ${{ jobs.check-links.outputs.dead-links-artifact }}
       dead-links-count:
-        description: Number of distinct broken URLs in that artifact; empty when it is.
+        description: >-
+          Number of distinct broken URLs in that artifact; empty when the
+          artifact name is.
         value: ${{ jobs.check-links.outputs.dead-links-count }}
 
 permissions: {}
