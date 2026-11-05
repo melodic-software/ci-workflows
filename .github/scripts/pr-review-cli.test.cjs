@@ -176,9 +176,26 @@ test("the fallback job starts only after the subscription job succeeded and hand
   }
   // An empty subscription token hands on as an empty key does, but only to a
   // fallback token that is set (claude-code-plugins#13586).
-  assert.equal(starts({ handoff: "", "credential-present": "false", "fallback-ready": "true" }), true);
-  assert.equal(starts({ handoff: "", "credential-present": "false", "fallback-ready": "false" }), false);
-  assert.equal(starts({ handoff: "", "credential-present": "" , "fallback-ready": "true" }), false);
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "true",
+    }),
+    true,
+  );
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "false",
+    }),
+    false,
+  );
+  assert.equal(
+    starts({ handoff: "", "credential-present": "", "fallback-ready": "true" }),
+    false,
+  );
   // A fork, a draft or Dependabot never reaches it either.
   assert.equal(
     Boolean(

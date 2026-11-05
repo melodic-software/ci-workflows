@@ -134,8 +134,22 @@ test("the fallback job runs on a fixed GitHub-hosted label only after the subscr
   }
   // An empty subscription token hands on as an empty key does, but only to
   // a fallback token that is set (claude-code-plugins#13586).
-  assert.equal(starts({ handoff: "", "credential-present": "false", "fallback-ready": "true" }), true);
-  assert.equal(starts({ handoff: "", "credential-present": "false", "fallback-ready": "false" }), false);
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "true",
+    }),
+    true,
+  );
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "false",
+    }),
+    false,
+  );
   assert.equal(starts({ handoff: "", "credential-present": "false" }), false);
   assert.doesNotMatch(fallback.if, /always\(\)|failure\(\)|cancelled\(\)/u);
   for (const step of fallback.steps) {
@@ -194,7 +208,13 @@ test("the fallback job repeats the subscription job's steps but for the credenti
   for (const known of ["limit-stop", "credit-stop", "auth"])
     assert.equal(reason(known), known);
   assert.equal(
-    evaluate(value, { needs: { subscription: { outputs: { "handoff-reason": "", "credential-present": "false" } } } }),
+    evaluate(value, {
+      needs: {
+        subscription: {
+          outputs: { "handoff-reason": "", "credential-present": "false" },
+        },
+      },
+    }),
     "no-key",
   );
   for (const forged of ["", "no-key", "Limit-Stop", "limit-stop\n::error::x"]) {
