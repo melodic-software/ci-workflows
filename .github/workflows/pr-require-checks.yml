@@ -713,7 +713,7 @@ jobs:
           # <url>", and the full run re-runs it once it records `success`. A
           # failed contract cannot pass, so that red lands at once.
           yield-to-full-run: 'true'
-          yield-wait-seconds: ${{ job.status == 'failure' && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base)) && '0' || '420' }}
+          yield-wait-seconds: ${{ job.status == 'failure' && (github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && '0' || '420' }}
           rerun-contract-only-siblings: 'true'
           carry-forward-wait-seconds: '0'
           # This step's own name, so the own-step lookup never depends on
