@@ -52,9 +52,11 @@
 //     next marker starts again at the base step.
 // The step comes from the two listings the gate already reads, with no new
 // call: inside the base window any step skips, so only a credit stop past it
-// needs the step, and that path already reads the probing markers. Both
-// markers are kept 7 days, long enough for six steps at the cap; a marker
-// that expires only shortens the step. reset-at, the time the rotation tool
+// needs the step, and that path already reads the probing markers. The
+// caller sets retention: pr-review-cli.yml keeps both markers 7 days, long
+// enough for six steps at the cap; intake-triage.yml keeps its credit-stop
+// marker one day with probing off. A marker that expires only shortens the
+// step. reset-at, the time the rotation tool
 // last pushed a key (vars.KEY_CREDIT_RESET_AT), drops every credit stop
 // before it, so a new key is tried on the next run. Empty or anything but an
 // ISO-8601 UTC time is no reset. A key whose credit comes back on its
