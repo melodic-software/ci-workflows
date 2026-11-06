@@ -24,6 +24,7 @@ name: intake-triage
 #         # The reusable workflow narrows this per job: the model jobs get
 #         # contents: read and issues: read, only the apply job issues: write.
 #         permissions:
+#           actions: read    # the key-credit gate lists its credit-stop markers
 #           contents: read   # check out the default branch for AGENTS.md
 #           issues: write    # the apply job: labels, Issue Type, triage comment
 #         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@main
@@ -266,6 +267,16 @@ on:
           trailing or doubled comma, skips every bot.
         type: string
         default: ""
+      key-credit-window-hours:
+        description: >-
+          Hours a key's credit stop in this workflow keeps later runs off the
+          key: the claude job skips its key leg and the subscription job
+          triages. The first run after the window tries the key again. 0
+          always tries the key. The marker is kept one day, so a longer window
+          ends after 24 hours. The caller job must grant actions: read, which
+          the gate reads its marker with.
+        type: number
+        default: 1
       lane-transcript-public-key:
         description: >-
           The caller's vars.LANE_TRANSCRIPT_PUBLIC_KEY. Each model leg's
@@ -314,8 +325,45 @@ permissions:
   contents: read
 
 jobs:
+  # The key-credit gate, before the key leg: one artifact-list call for the
+  # marker the claude job uploads after a credit stop (check-key-credit
+  # gate.cjs). No secret, no model, no checkout; every failure runs the key.
+  # It runs for every event, so the claude job's own skip stays the author
+  # gate's alone. Probing is off.
+  check-key-credit:
+    name: claude-intake-triage-key-credit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    cache-mode: none
+    outputs:
+      skip-key: ${{ steps.gate.outputs.skip-key }}
+      marker: ${{ steps.gate.outputs.marker }}
+    steps:
+      - name: Read the key's credit history
+        id: gate
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/check-key-credit
+        with:
+          key-job: claude-intake-triage
+          window-hours: ${{ inputs.key-credit-window-hours }}
+          probe-minutes: "0"
+
+      # The job token's api-budget notice, from the readings the gate's
+      # request left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   claude:
     name: claude-intake-triage
+    needs: check-key-credit
     runs-on: ${{ inputs.runner }}
     # The triage step (12 minutes, CLI install included) leaves four minutes
     # for runner isolation, checkout and the github-script steps, and three
@@ -329,9 +377,11 @@ jobs:
     # acting on someone else's issue cannot. Other issues wait for a person,
     # and the skipped job below says so. A workflow_dispatch run starts when
     # its actor's id is listed the same way. Any other event passes so the
-    # first step can reject it loudly.
+    # first step can reject it loudly. !cancelled() runs the key leg when the
+    # check-key-credit job itself fails: every gate failure runs the key, and
+    # the credential step reads a skip from the gate's output.
     if: >-
-      ${{ (github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
+      ${{ !cancelled() && ((github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
           || (github.event_name == 'workflow_dispatch'
               && inputs.issue-number != ''
               && github.actor_id
@@ -366,7 +416,7 @@ jobs:
                       && !endsWith(inputs.allowed-bot-sender-ids, ',')
                       && !contains(inputs.allowed-bot-sender-ids, ',,')
                       && contains(format(',{0},', inputs.allowed-bot-sender-ids),
-                                  format(',{0},', github.event.sender.id))))) }}
+                                  format(',{0},', github.event.sender.id)))))) }}
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -379,6 +429,7 @@ jobs:
       handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      key-skipped: ${{ steps.credential.outputs.key-skipped }}
       fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
@@ -920,8 +971,13 @@ jobs:
           SECRET_NAME: CLAUDE_API_KEY
           # Whether the fallback leg can run, never the token.
           FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          SKIP_KEY: ${{ needs.check-key-credit.outputs.skip-key }}
         run: |
-          if [ "$PRESENT" = true ]; then
+          if [ "$SKIP_KEY" = true ]; then
+            echo "::notice::$SECRET_NAME's last credit stop is inside the key-credit window; the subscription job triages."
+            echo "present=false" >>"$GITHUB_OUTPUT"
+            echo "key-skipped=true" >>"$GITHUB_OUTPUT"
+          elif [ "$PRESENT" = true ]; then
             echo "present=true" >>"$GITHUB_OUTPUT"
           else
             echo "::warning::$SECRET_NAME is empty; this job does not triage."
@@ -991,6 +1047,38 @@ jobs:
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
+
+      # Read by the next runs' check-key-credit job: the artifact it names
+      # (gate.cjs markerName), uploaded only after the key leg's credit stop.
+      # Its upload time starts the window; one day's retention covers it.
+      - name: Write the key's credit-stop marker
+        id: credit-marker
+        if: always() && needs.check-key-credit.outputs.marker != '' && steps.claude.outputs.lane-class == 'credit-stop'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          mkdir -p "$RUNNER_TEMP/key-credit-stop"
+          echo "$GITHUB_RUN_ID" >"$RUNNER_TEMP/key-credit-stop/run-id"
+
+      - name: Scan the key's credit-stop marker for credentials
+        id: credit-marker-scan
+        if: always() && steps.credit-marker.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/scan-upload
+        with:
+          path: ${{ runner.temp }}/key-credit-stop/run-id
+
+      - name: Upload the key's credit-stop marker
+        if: always() && steps.credit-marker.outcome == 'success' && steps.credit-marker-scan.outputs.clean == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.check-key-credit.outputs.marker }}
+          path: ${{ runner.temp }}/key-credit-stop/run-id
+          if-no-files-found: error
+          retention-days: 1
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.
@@ -1744,7 +1832,7 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record (ci-workflows#806).
-          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
+          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.key-skipped == 'true' && 'credit-stop' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.
