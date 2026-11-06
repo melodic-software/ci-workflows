@@ -548,6 +548,11 @@ test("pr-review-cli picks the same legs, credentials and reasons as its old copi
                 }).outputs
               : {};
             assert.equal(decided.present ?? "", oldPresent, "key present");
+            // fallback-ready, as the old step's FALLBACK_PRESENT set it.
+            assert.equal(
+              decided["fallback-ready"] ?? "",
+              scoped ? String(fbSet) : "",
+            );
             const runs =
               decided.present === "true"
                 ? launches("key", fbSet)
@@ -610,6 +615,11 @@ test("pr-review-cli picks the same legs, credentials and reasons as its old copi
               );
             const subOldPresent = scoped ? String(subSet) : "";
             assert.equal(subDecided.present ?? "", subOldPresent);
+            // fallback-ready, as the old step's FALLBACK_PRESENT set it.
+            assert.equal(
+              subDecided["fallback-ready"] ?? "",
+              scoped ? String(fbSet) : "",
+            );
             const subRuns =
               subDecided.present === "true"
                 ? launches("subscription", fbSet)
