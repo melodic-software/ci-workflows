@@ -266,10 +266,10 @@ function readConfig(env) {
     );
   }
   // A loopback base URL routes the leg through a key proxy the caller runs.
-  // Only a Console key may go through it: Anthropic bars developers from
-  // intermediating Claude.ai credentials
+  // Anthropic bars developers from intermediating Claude.ai credentials
   // (https://code.claude.com/docs/en/legal-and-compliance), so both OAuth
-  // legs refuse it.
+  // legs refuse it. What the proxy injects upstream is the caller's: it must
+  // hold only a Console key, which this check cannot see.
   const base = expectedBaseUrl(env.LANE_LOOPBACK_BASE_URL);
   if (base.problem !== undefined) throw new LaneError(base.problem);
   if (base.baseUrl !== PINNED_BASE_URL && legName !== "api-key") {

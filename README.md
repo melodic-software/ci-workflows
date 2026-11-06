@@ -722,9 +722,17 @@ consumer to audit it.
   `fallback-token` the step fails before the leg runs, because developers
   "may not collect, store, or intermediate Claude.ai credentials or session
   tokens" ([legal and
-  compliance](https://code.claude.com/docs/en/legal-and-compliance)). Both
-  actions check the settings with the same module,
-  `run-claude-cli/managed-settings.cjs`.
+  compliance](https://code.claude.com/docs/en/legal-and-compliance)). The
+  action cannot see what the proxy injects upstream: the proxy itself must
+  hold only a Console key. Both actions check the settings with the same
+  module, `run-claude-cli/managed-settings.cjs`.
+
+  The leg's tool processes share the runner's loopback, so any of them can
+  reach the proxy. The proxy must forward only requests that carry the
+  dummy key, a random value made fresh per run and passed as `api-key` (the
+  leg's subprocess scrub keeps it from tool processes); forward only the API
+  paths and models the lane needs; and run as another user, started before
+  runner isolation, until the leg ends.
 
   **Two-job pattern for the subscription fallback.** Two legs in one job
   would share the runner user, the filesystem and the environment, so the

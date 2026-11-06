@@ -183,7 +183,10 @@ inputs:
       loopback and the leg can hold a dummy key. Allowed only on an `api-key`
       leg: with `subscription-token` or `fallback-token` the step fails
       before the leg, since an OAuth token may not be routed through a proxy
-      the caller runs. Pass apply-claude-managed-settings the same value.
+      the caller runs. The action cannot see what the proxy injects: it must
+      hold only a Console key, forward only requests carrying the per-run
+      dummy key, and run as another user (README, loopback key proxy). Pass
+      apply-claude-managed-settings the same value.
     required: false
     default: ""
 
