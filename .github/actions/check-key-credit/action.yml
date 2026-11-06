@@ -37,7 +37,7 @@ inputs:
       hours (0 turns the gate off; at most 168). Above 24 it never backs off.
       A marker kept fewer days than the window ends it sooner.
     required: false
-    default: "6"
+    default: "1"
   reset-at:
     description: >-
       An ISO-8601 UTC time (`2026-11-06T12:00:00Z`), the moment a new key was

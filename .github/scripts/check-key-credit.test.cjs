@@ -466,7 +466,7 @@ test("the action passes the caller's workflow ref and the window to the gate, an
   const run = action.runs.steps[0];
   assert.equal(run.env.WORKFLOW_REF, `\${{ github.workflow_ref }}`);
   assert.equal(run.env.WINDOW_HOURS, `\${{ inputs.window-hours }}`);
-  assert.equal(action.inputs["window-hours"].default, "6");
+  assert.equal(action.inputs["window-hours"].default, "1");
   assert.equal(
     action.outputs.marker.value,
     `\${{ steps.gate.outputs.marker }}`,
