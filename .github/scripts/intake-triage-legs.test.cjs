@@ -355,6 +355,7 @@ test("the subscription job repeats the claude job's steps but for the credential
           if (input === "api-key") {
             assert.equal(
               copy.env.SKIP_KEY,
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
               "${{ needs.check-key-credit.outputs.skip-key }}",
             );
             delete copy.env.SKIP_KEY;
@@ -399,6 +400,7 @@ test("the subscription job repeats the claude job's steps but for the credential
   }
   assert.equal(
     claude.outputs["key-skipped"],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
     "${{ steps.credential.outputs.key-skipped }}",
   );
   assert.deepEqual(claude.needs, "check-key-credit");
@@ -899,6 +901,7 @@ test("a credit-stopped key hands the triage to the subscription job before any k
   );
   assert.equal(
     upload.with.name,
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
     "${{ needs.check-key-credit.outputs.marker }}",
   );
   assert.match(
