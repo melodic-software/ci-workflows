@@ -189,7 +189,10 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
   const mode = String(env.INPUT_LEG ?? "").trim();
   const state = String(env.INPUT_STATE ?? "").trim();
   let outputs;
-  if (state !== "" && mode === "") {
+  // No leg is the call after the model. Its state is empty when the leg's
+  // first call was skipped (pr-review-cli's scope step skipped the review),
+  // which hands on nothing, as before; next() reads it so.
+  if (mode === "") {
     outputs = next({
       state,
       handoff: env.INPUT_HANDOFF,
@@ -225,7 +228,7 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
     outputs = decided.outputs;
     lines.push(...decided.lines);
   } else {
-    throw new Error("set leg (start, key, subscription or fallback), or state alone");
+    throw new Error(`leg ${JSON.stringify(mode)} is not start, key, subscription or fallback`);
   }
   writeOutputs(env, outputs);
   return { outputs, lines };

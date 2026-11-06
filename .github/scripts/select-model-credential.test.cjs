@@ -364,13 +364,75 @@ test("the leg call writes the outputs the jobs read; the next call reads its sta
   });
 });
 
-test("a role that is not lower-case kebab, or no leg and no state, fails the step", async () => {
+test("a role that is not lower-case kebab, or an unknown leg, fails the step", async () => {
   const dir = makeTemporaryDirectory("select-bad-");
   await assert.rejects(
     select.main(env(dir, { INPUT_LEG: "key", INPUT_ROLE: "ISSUE_LANE" })),
     /role/u,
   );
-  await assert.rejects(select.main(env(dir, {})), /set leg/u);
+  await assert.rejects(
+    select.main(env(dir, { INPUT_LEG: "keys" })),
+    /leg "keys"/u,
+  );
+});
+
+// pr-review-cli's credential step runs only when the scope step reviews, so
+// a skipped scope leaves `state` empty for the next-leg step, which still
+// runs: it must pass and name no next leg, as no later leg started before.
+test("a next-leg call with an empty state passes and names no next leg, in every pr-review-cli leg job", async () => {
+  const workflow = load("pr-review-cli.yml");
+  for (const id of ["review-key", "review-subscription", "review-fallback"]) {
+    const job = workflow.jobs[id];
+    const next = job.steps.find((s) => s.id === "next");
+    // The scope step skipped the review: the credential and model steps
+    // never ran, so every step output the next-leg step reads is empty.
+    const steps = {
+      credential: { outputs: {} },
+      scope: { outputs: { review: "false" } },
+    };
+    const credential = job.steps.find((s) => s.id === "credential");
+    assert.equal(
+      Boolean(evaluate(`\${{ ${credential.if} }}`, { steps })),
+      false,
+      `${id}: the credential step is skipped`,
+    );
+    const inputs = Object.fromEntries(
+      Object.entries(next.with).map(([name, value]) => [
+        `INPUT_${name.toUpperCase().replaceAll("-", "_")}`,
+        String(evaluate(value, { steps }) ?? ""),
+      ]),
+    );
+    assert.equal(inputs.INPUT_STATE, "", id);
+    const dir = makeTemporaryDirectory("select-skipped-");
+    fs.writeFileSync(path.join(dir, "output"), "");
+    const { lines } = await select.main(env(dir, inputs));
+    assert.deepEqual(outputs(dir), { "next-leg": "", "next-reason": "" }, id);
+    assert.match(lines[0], /no next leg/u);
+    // So the next job never starts.
+    const following = {
+      "review-key": "review-subscription",
+      "review-subscription": "review-fallback",
+    }[id];
+    if (following) {
+      assert.equal(
+        Boolean(
+          evaluate(workflow.jobs[following].if, {
+            github: PR,
+            inputs: {
+              "allowed-bot-sender-ids": "",
+              "dispatcher-actor-ids": "",
+            },
+            needs: {
+              [id]: { result: "success", outputs: outputs(dir) },
+              "check-key-credit": { outputs: { "next-leg": "key" } },
+            },
+          }),
+        ),
+        false,
+        following,
+      );
+    }
+  }
 });
 
 test("the action passes every input to the script and holds the job token back unless it reads", () => {
