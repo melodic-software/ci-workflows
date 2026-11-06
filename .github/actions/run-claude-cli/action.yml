@@ -173,6 +173,22 @@ inputs:
       reaches it ends with class `timeout`. Empty means none.
     required: false
     default: "30"
+  loopback-base-url:
+    description: >-
+      Empty (the default) keeps the managed settings pinned to
+      `https://api.anthropic.com`. Exactly `http://127.0.0.1:<port>` or
+      `http://[::1]:<port>` (no path, query or userinfo) instead requires the
+      managed settings to pin `env.ANTHROPIC_BASE_URL` to that value, so the
+      leg's requests go through a key proxy the caller runs on the runner's
+      loopback and the leg can hold a dummy key. Allowed only on an `api-key`
+      leg: with `subscription-token` or `fallback-token` the step fails
+      before the leg, since an OAuth token may not be routed through a proxy
+      the caller runs. The action cannot see what the proxy injects: it must
+      hold only a Console key, forward only requests carrying the per-run
+      dummy key, and run as another user (README, loopback key proxy). Pass
+      apply-claude-managed-settings the same value.
+    required: false
+    default: ""
 
 outputs:
   lane-class:
@@ -262,6 +278,7 @@ runs:
       shell: bash
       env:
         LANE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json
+        LANE_LOOPBACK_BASE_URL: ${{ inputs.loopback-base-url }}
       run: node "$GITHUB_ACTION_PATH/lane.cjs" verify-isolation
 
     - name: Prepare the work directory
@@ -303,6 +320,7 @@ runs:
         LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}
         LANE_WATCHDOG_MAX_WAIT_MS: ${{ inputs.watchdog-max-wait-ms }}
         LANE_LEG_TIMEOUT_MINUTES: ${{ inputs.leg-timeout-minutes }}
+        LANE_LOOPBACK_BASE_URL: ${{ inputs.loopback-base-url }}
         LANE_CLI_VERSION: ${{ steps.install.outputs.cli-version }}
         LANE_CLI_PATH: ${{ steps.install.outputs.cli-path }}
         LANE_WORK_DIR: ${{ steps.workdir.outputs.path }}

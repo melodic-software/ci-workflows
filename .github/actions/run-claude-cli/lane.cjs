@@ -53,6 +53,10 @@
 //   - Only the key leg can end in `credit-stop` (classify.cjs isCreditStop),
 //     judged from structured fields; a subscription leg's credit stop keeps
 //     its class and shows only as handoff-reason.
+//   - The managed settings pin env.ANTHROPIC_BASE_URL to the public API. The
+//     loopback-base-url opt-in instead pins exactly http://127.0.0.1:<port>
+//     or http://[::1]:<port>, a key proxy the caller runs, and only on an
+//     api-key leg (managed-settings.cjs, readConfig).
 //   - Secret names are derived from the role, or are FALLBACK_SECRET, and
 //     never taken from input.
 //   - The CLI's stdout is captured in memory and written to files only after
@@ -79,6 +83,11 @@ const {
 const {
   resolveNpmToolVersion,
 } = require("../../scripts/resolve-npm-tool-version.cjs");
+const {
+  PINNED_BASE_URL,
+  expectedBaseUrl,
+  settingsProblem,
+} = require("./managed-settings.cjs");
 
 const CLI_PACKAGE = "@anthropic-ai/claude-code";
 const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
@@ -130,7 +139,6 @@ const NPM_REGISTRY = "https://registry.npmjs.org/";
 const RELEASES_URL = "https://downloads.claude.ai/claude-code-releases";
 const SIGNING_KEY_URL = "https://downloads.claude.ai/keys/claude-code.asc";
 const SIGNING_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"; // gitleaks:allow (public key fingerprint)
-const PINNED_BASE_URL = "https://api.anthropic.com";
 const DOCKER_SOCKET = "/var/run/docker.sock";
 const BWRAP_PROBE = ["--unshare-pid", "--dev-bind", "/", "/", "true"];
 // Variables that load code into node or bash, or redirect or weaken TLS, so
@@ -257,6 +265,18 @@ function readConfig(env) {
       `${legName} secret name ${JSON.stringify(name)} is not an upper-case secret name`,
     );
   }
+  // A loopback base URL routes the leg through a key proxy the caller runs.
+  // Anthropic bars developers from intermediating Claude.ai credentials
+  // (https://code.claude.com/docs/en/legal-and-compliance), so both OAuth
+  // legs refuse it. What the proxy injects upstream is the caller's: it must
+  // hold only a Console key, which this check cannot see.
+  const base = expectedBaseUrl(env.LANE_LOOPBACK_BASE_URL);
+  if (base.problem !== undefined) throw new LaneError(base.problem);
+  if (base.baseUrl !== PINNED_BASE_URL && legName !== "api-key") {
+    throw new LaneError(
+      `loopback-base-url is allowed only on an api-key leg, not the ${legName} leg: an OAuth token may not be routed through a proxy the caller runs`,
+    );
+  }
   const permissionMode = (env.LANE_PERMISSION_MODE ?? "").trim();
   if (!PERMISSION_MODES.has(permissionMode)) {
     throw new LaneError(
@@ -308,6 +328,7 @@ function readConfig(env) {
   }
   return {
     leg: { leg: legName, name, value },
+    baseUrl: base.baseUrl,
     fallbackReady: fallbackReady === "true",
     lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
     role,
@@ -940,14 +961,17 @@ function writeOutputs(outputPath, outputs) {
 }
 
 // Root-owned, not writable by group or others, pinning `apiKeyHelper` and
-// `env.ANTHROPIC_BASE_URL` to the public API, disabling bypassPermissions, and
-// keeping user, project and plugin hooks from loading (`allowManagedHooksOnly`
-// or `disableAllHooks`), so head code cannot repoint the credential or run a
+// `env.ANTHROPIC_BASE_URL` to the public API (or to the loopback-base-url
+// opt-in, managed-settings.cjs), disabling bypassPermissions, and keeping
+// user, project and plugin hooks from loading (`allowManagedHooksOnly` or
+// `disableAllHooks`), so head code cannot repoint the credential or run a
 // hook through settings it writes.
 function verifyManagedSettings(
   file,
-  { stat = fs.statSync, read = fs.readFileSync } = {},
+  { stat = fs.statSync, read = fs.readFileSync, loopbackBaseUrl = "" } = {},
 ) {
+  const { baseUrl, problem } = expectedBaseUrl(loopbackBaseUrl);
+  if (problem !== undefined) throw new LaneError(problem);
   let info;
   try {
     info = stat(file);
@@ -965,31 +989,8 @@ function verifyManagedSettings(
   } catch {
     throw new LaneError(`${file} is not JSON`);
   }
-  if (
-    typeof settings !== "object" ||
-    settings === null ||
-    !Object.hasOwn(settings, "apiKeyHelper")
-  ) {
-    throw new LaneError(`${file} does not pin apiKeyHelper`);
-  }
-  if (settings.env?.ANTHROPIC_BASE_URL !== PINNED_BASE_URL) {
-    throw new LaneError(
-      `${file} does not pin env.ANTHROPIC_BASE_URL to ${PINNED_BASE_URL}`,
-    );
-  }
-  if (settings.permissions?.disableBypassPermissionsMode !== "disable") {
-    throw new LaneError(
-      `${file} does not set permissions.disableBypassPermissionsMode to "disable"`,
-    );
-  }
-  if (
-    settings.allowManagedHooksOnly !== true &&
-    settings.disableAllHooks !== true
-  ) {
-    throw new LaneError(
-      `${file} sets neither allowManagedHooksOnly nor disableAllHooks to true`,
-    );
-  }
+  const wrong = settingsProblem(settings, baseUrl);
+  if (wrong !== null) throw new LaneError(`${file} ${wrong}`);
 }
 
 // True when the runner user can still write the Docker socket, which is root
@@ -1032,7 +1033,10 @@ function verifyIsolation({
   ...io
 }) {
   verifyEnvironment(env);
-  verifyManagedSettings(managedSettings, io);
+  verifyManagedSettings(managedSettings, {
+    ...io,
+    loopbackBaseUrl: env.LANE_LOOPBACK_BASE_URL ?? "",
+  });
   if (spawn("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0) {
     throw new LaneError(
       "sudo still works: run runner isolation before run-claude-cli",

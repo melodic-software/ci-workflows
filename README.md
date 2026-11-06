@@ -707,6 +707,33 @@ consumer to audit it.
   Each entry must resolve, with no `..` part, to an existing directory inside
   `GITHUB_WORKSPACE`. Uploading the log is the caller's.
 
+  **Loopback key proxy.** By default the managed settings must pin
+  `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. A caller that
+  routes the leg through a key proxy on the runner's loopback, so the leg
+  holds a dummy key and the proxy holds the real one, sets
+  `loopback-base-url` on both this action and
+  `apply-claude-managed-settings` to exactly `http://127.0.0.1:<port>` or
+  `http://[::1]:<port>` (no path, query, fragment or userinfo; a zero or
+  default port is refused), and passes `settings` that pin that value. Claude
+  Code documents `ANTHROPIC_BASE_URL` as the way to "route requests through
+  a proxy or gateway" ([environment
+  variables](https://code.claude.com/docs/en/env-vars)). The opt-in is
+  allowed only on an `api-key` leg: with `subscription-token` or
+  `fallback-token` the step fails before the leg runs, because developers
+  "may not collect, store, or intermediate Claude.ai credentials or session
+  tokens" ([legal and
+  compliance](https://code.claude.com/docs/en/legal-and-compliance)). The
+  action cannot see what the proxy injects upstream: the proxy itself must
+  hold only a Console key. Both actions check the settings with the same
+  module, `run-claude-cli/managed-settings.cjs`.
+
+  The leg's tool processes share the runner's loopback, so any of them can
+  reach the proxy. The proxy must forward only requests that carry the
+  dummy key, a random value made fresh per run and passed as `api-key` (the
+  leg's subprocess scrub keeps it from tool processes); forward only the API
+  paths and models the lane needs; and run as another user, started before
+  runner isolation, until the leg ends.
+
   **Two-job pattern for the subscription fallback.** Two legs in one job
   would share the runner user, the filesystem and the environment, so the
   fallback runs on a new VM. Job A runs the key leg with `api-key` only
@@ -751,6 +778,8 @@ consumer to audit it.
   `allowManagedHooksOnly` (or the caller's `disableAllHooks`), so head code
   cannot repoint the lane's credential or add a hook. Needs sudo, so it runs
   before runner isolation; run-claude-cli refuses to run without the file.
+  `loopback-base-url` lets the settings pin a loopback key proxy instead of
+  the public API (see run-claude-cli's loopback key proxy above).
 - `.github/actions/publish-review` — `pr-review-cli.yml`'s publish step,
   with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
