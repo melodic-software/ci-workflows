@@ -799,7 +799,8 @@ consumer to audit it.
   `docs/conventions/pr-pipeline.yaml`, so the review does not repeat a finding
   on unchanged lines (its `action.yml` describes what it does).
 - `.github/actions/resolve-pull-request` — `pr-review-cli.yml`'s
-  `resolve-pull-request` job, for a `workflow_run` caller that sets `pr-number`: one
+  `resolve-pull-request` job, for a `workflow_run` or `workflow_dispatch`
+  caller that sets `pr-number`: one
   `pulls.get`, whose state, draft flag, head repository, author, head and
   base the lane's gates read in place of the `pull_request` event's, and a
   skip with a notice when the head is no longer `head-sha` (its `action.yml`
@@ -1260,7 +1261,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
   the pull request once, the gates check its state, draft flag, head
   repository and author from that read, and the lane skips with a notice
-  when the head moved. With no `pr-number`, a `pull_request` caller runs as
+  when the head moved. A `workflow_dispatch` caller sets the same inputs.
+  When its own workflow dispatches with `GITHUB_TOKEN`, the actor is
+  `github-actions[bot]`, so it also sets `dispatcher-actor-ids` (`41898282`).
+  That id lets the bot start the model jobs on a `workflow_dispatch` run with
+  `pr-number` and nothing else. Unlike `allowed-bot-sender-ids`, it never
+  trusts a closing issue's author. The lane cannot see which workflow
+  dispatched the run, so the calling repository proves the dispatch came
+  from its trusted workflow. With no `pr-number`, a `pull_request` caller runs as
   before. With `hold-label` set, comments mode also holds the
   pull request for a person: when the review returns a `hold` with criterion
   `cost` (only a change that can cause a real charge, as the compose step's
@@ -1404,7 +1412,8 @@ makes one attempt.
 fork changes by hand) and every bot actor whose event sender id is not in
 `allowed-bot-sender-ids` (the action rejects bots it was not told to allow).
 Calling either lane from `pull_request_target` or
-`workflow_run` fails the job.
+`workflow_run` fails the job. (`pr-review-cli.yml` differs: it accepts a
+`workflow_run` or `workflow_dispatch` caller that sets `pr-number`.)
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
 request; each lane writes its whole diff to `.claude-lane/pr.diff`.
