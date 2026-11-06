@@ -428,6 +428,7 @@ jobs:
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       key-skipped: ${{ steps.credential.outputs.key-skipped }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -1218,6 +1219,7 @@ jobs:
       handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -1956,7 +1958,9 @@ jobs:
   fallback:
     name: claude-intake-triage-fallback
     needs: [claude, subscription]
-    if: needs.subscription.outputs.handoff == 'true'
+    if: >-
+      needs.subscription.outputs.handoff == 'true'
+      || needs.subscription.outputs.credential-present == 'false' && needs.subscription.outputs.fallback-ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
@@ -1971,6 +1975,7 @@ jobs:
       handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -2581,7 +2586,7 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record.
-          fallback-reason: ${{ needs.subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}
+          fallback-reason: ${{ needs.subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || needs.subscription.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.

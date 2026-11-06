@@ -118,7 +118,7 @@ test("every model job tells its launcher whether the fallback token is set, neve
   }
 });
 
-test("the fallback job runs on a fixed GitHub-hosted label only after the subscription job hands off", () => {
+test("the fallback job runs on a fixed GitHub-hosted label only after the subscription job hands off or finds its token empty with the fallback token set", () => {
   assert.equal(fallback.name, "claude-intake-triage-fallback");
   assert.equal(fallback["runs-on"], "ubuntu-24.04");
   assert.deepEqual(fallback.needs, ["claude", "subscription"]);
@@ -132,7 +132,24 @@ test("the fallback job runs on a fixed GitHub-hosted label only after the subscr
       JSON.stringify(handoff),
     );
   }
-  // An empty subscription token is not a handoff: no fallback.
+  // An empty subscription token hands on as an empty key does, but only to
+  // a fallback token that is set (claude-code-plugins#13586).
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "true",
+    }),
+    true,
+  );
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "false",
+    }),
+    false,
+  );
   assert.equal(starts({ handoff: "", "credential-present": "false" }), false);
   assert.doesNotMatch(fallback.if, /always\(\)|failure\(\)|cancelled\(\)/u);
   for (const step of fallback.steps) {
@@ -149,7 +166,8 @@ test("the fallback job runs on a fixed GitHub-hosted label only after the subscr
 const FALLBACK_LEG_REASON =
   `\${{ needs.subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || ` +
   "needs.subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || " +
-  "needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}";
+  "needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || " +
+  "needs.subscription.outputs.credential-present == 'false' && 'no-key' || '' }}";
 
 test("the fallback job repeats the subscription job's steps but for the credential and the fallback reason", () => {
   const strip = (steps, secret, input) =>
@@ -189,6 +207,16 @@ test("the fallback job repeats the subscription job's steps but for the credenti
     });
   for (const known of ["limit-stop", "credit-stop", "auth"])
     assert.equal(reason(known), known);
+  assert.equal(
+    evaluate(value, {
+      needs: {
+        subscription: {
+          outputs: { "handoff-reason": "", "credential-present": "false" },
+        },
+      },
+    }),
+    "no-key",
+  );
   for (const forged of ["", "no-key", "Limit-Stop", "limit-stop\n::error::x"]) {
     assert.equal(reason(forged), "", JSON.stringify(forged));
   }

@@ -174,6 +174,28 @@ test("the fallback job starts only after the subscription job succeeded and hand
   for (const result of ["failure", "cancelled", "skipped"]) {
     assert.equal(starts({ handoff: "true" }, result), false, result);
   }
+  // An empty subscription token hands on as an empty key does, but only to a
+  // fallback token that is set (claude-code-plugins#13586).
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "true",
+    }),
+    true,
+  );
+  assert.equal(
+    starts({
+      handoff: "",
+      "credential-present": "false",
+      "fallback-ready": "false",
+    }),
+    false,
+  );
+  assert.equal(
+    starts({ handoff: "", "credential-present": "", "fallback-ready": "true" }),
+    false,
+  );
   // A fork, a draft or Dependabot never reaches it either.
   assert.equal(
     Boolean(
@@ -198,7 +220,8 @@ test("the fallback job starts only after the subscription job succeeded and hand
 const FALLBACK_LEG_REASON =
   `\${{ needs.review-subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || ` +
   "needs.review-subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || " +
-  "needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}";
+  "needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || " +
+  "needs.review-subscription.outputs.credential-present == 'false' && 'no-key' || '' }}";
 
 test("the fallback job repeats the subscription job's steps but for the credential and the fallback reason", () => {
   const strip = (steps, secret, input) =>
