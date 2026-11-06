@@ -337,33 +337,48 @@ const FALLBACK_REASON =
 
 test("the subscription job repeats the claude job's steps but for the credential and the fallback reason", () => {
   // The key leg alone reads the key-credit gate and writes its marker.
-  const KEY_ONLY = new Set(["credit-marker", "credit-marker-scan", "Upload the key's credit-stop marker"]);
+  const KEY_ONLY = new Set([
+    "credit-marker",
+    "credit-marker-scan",
+    "Upload the key's credit-stop marker",
+  ]);
   const strip = (steps, secret, input) =>
-    steps.filter((step) => !KEY_ONLY.has(step.id) && !KEY_ONLY.has(step.name)).map((step) => {
-      const copy = structuredClone(step);
-      if (copy.id === "credential") {
-        assert.equal(copy.env.PRESENT, `\${{ secrets.${secret} != '' }}`);
-        assert.equal(copy.env.SECRET_NAME, secret);
-        delete copy.env.PRESENT;
-        delete copy.env.SECRET_NAME;
-        if (input === "api-key") {
-          assert.equal(copy.env.SKIP_KEY, "${{ needs.check-key-credit.outputs.skip-key }}");
-          delete copy.env.SKIP_KEY;
-          // The skip branch comes first and sets present=false; the rest is the subscription leg's check.
-          assert.match(copy.run, /^if \[ "\$SKIP_KEY" = true \]; then\n[^]*?echo "key-skipped=true" >>"\$GITHUB_OUTPUT"\nelif \[ "\$PRESENT" = true \]; then\n/);
-          copy.run = copy.run.replace(/^if \[ "\$SKIP_KEY" = true \]; then\n[^]*?echo "key-skipped=true" >>"\$GITHUB_OUTPUT"\nelif /, "if ");
+    steps
+      .filter((step) => !KEY_ONLY.has(step.id) && !KEY_ONLY.has(step.name))
+      .map((step) => {
+        const copy = structuredClone(step);
+        if (copy.id === "credential") {
+          assert.equal(copy.env.PRESENT, `\${{ secrets.${secret} != '' }}`);
+          assert.equal(copy.env.SECRET_NAME, secret);
+          delete copy.env.PRESENT;
+          delete copy.env.SECRET_NAME;
+          if (input === "api-key") {
+            assert.equal(
+              copy.env.SKIP_KEY,
+              "${{ needs.check-key-credit.outputs.skip-key }}",
+            );
+            delete copy.env.SKIP_KEY;
+            // The skip branch comes first and sets present=false; the rest is the subscription leg's check.
+            assert.match(
+              copy.run,
+              /^if \[ "\$SKIP_KEY" = true \]; then\n[\s\S]*?echo "key-skipped=true" >>"\$GITHUB_OUTPUT"\nelif \[ "\$PRESENT" = true \]; then\n/,
+            );
+            copy.run = copy.run.replace(
+              /^if \[ "\$SKIP_KEY" = true \]; then\n[\s\S]*?echo "key-skipped=true" >>"\$GITHUB_OUTPUT"\nelif /,
+              "if ",
+            );
+          }
         }
-      }
-      if (copy.id === "claude") {
-        assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
-        delete copy.with[input];
-      }
-      if (copy.id === "review-outcome" && input === "subscription-token") {
-        assert.equal(copy.with["fallback-reason"], FALLBACK_REASON);
-        delete copy.with["fallback-reason"];
-      }
-      return copy;
-    });
+        if (copy.id === "claude") {
+          assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
+          delete copy.with[input];
+        }
+        if (copy.id === "review-outcome" && input === "subscription-token") {
+          assert.equal(copy.with["fallback-reason"], FALLBACK_REASON);
+          delete copy.with["fallback-reason"];
+        }
+        return copy;
+      });
   assert.deepEqual(
     strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
     strip(claude.steps, "CLAUDE_API_KEY", "api-key"),
@@ -376,9 +391,16 @@ test("the subscription job repeats the claude job's steps but for the credential
   ]) {
     // key-skipped is the key leg's alone: the credit gate skipped its key.
     const { "key-skipped": keySkipped, ...keyOutputs } = claude.outputs;
-    assert.deepEqual(subscription[key], key === "outputs" ? keyOutputs : claude[key], key);
+    assert.deepEqual(
+      subscription[key],
+      key === "outputs" ? keyOutputs : claude[key],
+      key,
+    );
   }
-  assert.equal(claude.outputs["key-skipped"], "${{ steps.credential.outputs.key-skipped }}");
+  assert.equal(
+    claude.outputs["key-skipped"],
+    "${{ steps.credential.outputs.key-skipped }}",
+  );
   assert.deepEqual(claude.needs, "check-key-credit");
   // The hardening runs before the checkout in both jobs.
   const order = subscription.steps.map((step) => step.name);
@@ -842,7 +864,11 @@ test("exactly one job, with no model, writes the triage", () => {
 test("a credit-stopped key hands the triage to the subscription job before any key call", () => {
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  assert.equal(gate.if, undefined, "it runs for every event, so the claude job's skip stays the author gate's");
+  assert.equal(
+    gate.if,
+    undefined,
+    "it runs for every event, so the claude job's skip stays the author gate's",
+  );
   const read = gate.steps.find((step) => step.id === "gate");
   assert.equal(read.uses, "$/.github/actions/check-key-credit");
   assert.equal(read.with["key-job"], "claude-intake-triage");
@@ -852,14 +878,31 @@ test("a credit-stopped key hands the triage to the subscription job before any k
     const dir = makeTemporaryDirectory("intake-skip-");
     const output = path.join(dir, "out");
     fs.writeFileSync(output, "");
-    spawnSync("bash", ["-e", "-c", credential.run], { env: { PATH: process.env.PATH, PRESENT: present, SECRET_NAME: "X", FALLBACK_PRESENT: "true", SKIP_KEY: skip, GITHUB_OUTPUT: output } });
+    spawnSync("bash", ["-e", "-c", credential.run], {
+      env: {
+        PATH: process.env.PATH,
+        PRESENT: present,
+        SECRET_NAME: "X",
+        FALLBACK_PRESENT: "true",
+        SKIP_KEY: skip,
+        GITHUB_OUTPUT: output,
+      },
+    });
     return fs.readFileSync(output, "utf8");
   };
   assert.match(run("true", "true"), /^present=false$/mu);
   assert.match(run("true", "true"), /^key-skipped=true$/mu);
   assert.match(run("", "true"), /^present=true$/mu);
   assert.doesNotMatch(run("", "true"), /key-skipped/u);
-  const upload = claude.steps.find((step) => step.name === "Upload the key's credit-stop marker");
-  assert.equal(upload.with.name, "${{ needs.check-key-credit.outputs.marker }}");
-  assert.match(claude.steps.find((step) => step.id === "credit-marker").if, /steps\.claude\.outputs\.lane-class == 'credit-stop'/u);
+  const upload = claude.steps.find(
+    (step) => step.name === "Upload the key's credit-stop marker",
+  );
+  assert.equal(
+    upload.with.name,
+    "${{ needs.check-key-credit.outputs.marker }}",
+  );
+  assert.match(
+    claude.steps.find((step) => step.id === "credit-marker").if,
+    /steps\.claude\.outputs\.lane-class == 'credit-stop'/u,
+  );
 });
