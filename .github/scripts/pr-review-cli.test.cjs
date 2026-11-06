@@ -1046,11 +1046,16 @@ test("the key job runs unless check-key-credit says exactly true, a failed check
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
   assert.equal(gate.steps[0].uses, "$/.github/actions/check-key-credit");
+  // The caller's reset time reaches the gate as an input, never inline.
+  assert.equal(
+    gate.steps[0].with["reset-at"],
+    `\${{ inputs.key-credit-reset-at }}`,
+  );
   assert.equal(gate.outputs["skip-key"], `\${{ steps.gate.outputs.skip-key }}`);
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
 });
 
-test("only the key job uploads the gate's marker, only after a credit stop, kept one day", () => {
+test("only the key job uploads the gate's marker, only after a credit stop, kept 7 days", () => {
   const marker = step(key, "credit-marker");
   const upload = key.steps.find(
     (s) => s.name === "Upload the key's credit-stop marker",
@@ -1096,7 +1101,7 @@ test("only the key job uploads the gate's marker, only after a credit stop, kept
     `\${{ needs.check-key-credit.outputs.marker }}`,
   );
   assert.equal(upload.with.path, `\${{ runner.temp }}/key-credit-stop/run-id`);
-  assert.equal(upload.with["retention-days"], 1);
+  assert.equal(upload.with["retention-days"], 7);
   assert.equal(upload["continue-on-error"], true);
   // The gate hands the marker name on and writes no credit-stop marker of
   // its own: the window counts from the key job's upload.
@@ -1113,7 +1118,7 @@ test("only the key job uploads the gate's marker, only after a credit stop, kept
   }
 });
 
-test("the gate job uploads the probing marker it names, right after the read, kept one day", () => {
+test("the gate job uploads the probing marker it names, right after the read, kept 7 days", () => {
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(
     gate.steps.map((s) => s.name),
@@ -1151,7 +1156,7 @@ test("the gate job uploads the probing marker it names, right after the read, ke
     upload.with.path,
     `\${{ runner.temp }}/key-credit-probing/run-id`,
   );
-  assert.equal(upload.with["retention-days"], 1);
+  assert.equal(upload.with["retention-days"], 7);
   assert.equal(upload["continue-on-error"], true);
   // An artifact upload uses the runner's token, not the job token, so the
   // gate keeps actions: read and nothing more.

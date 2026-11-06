@@ -102,7 +102,7 @@ name: pr-review-cli
 #     but still kept, a second read finds the probing marker
 #     (key-credit-probing-<workflow>-<key-job>, same fork rule): a fresh one
 #     skips the key job the same way; none makes this run the probe, and the
-#     job uploads one (its runner token, kept one day). A failed or unclear
+#     job uploads one (its runner token, kept 7 days). A failed or unclear
 #     read runs the key job as before and writes no probe
 #     (.github/actions/check-key-credit).
 #   - The model jobs cannot write: contents: read and pull-requests: read,
@@ -343,10 +343,20 @@ on:
           Hours a key's credit stop in this workflow keeps later runs off the
           key: their key job is skipped and the subscription job reviews.
           The first run after the window tries the key again, so a new cycle
-          or a replaced key is picked up. 0 always tries the key. The marker
-          is kept one day, so a longer window ends after 24 hours.
+          or a replaced key is picked up. 0 always tries the key. It is the
+          backoff's base step: each consecutive credit stop doubles it,
+          capped at 24 hours (.github/actions/check-key-credit).
         type: number
         default: 1
+      key-credit-reset-at:
+        description: >-
+          The caller's vars.KEY_CREDIT_RESET_AT, an ISO-8601 UTC time the
+          rotation tool writes after each key push. Credit stops before it
+          no longer count, so the next run tries the new key. Empty, every
+          kept credit stop counts; a key set by hand waits out the current
+          step, at most 24 hours.
+        type: string
+        default: ""
       lane-transcript-public-key:
         description: >-
           The caller's vars.LANE_TRANSCRIPT_PUBLIC_KEY. Each model leg's
@@ -574,13 +584,16 @@ jobs:
         with:
           key-job: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
           window-hours: ${{ inputs.key-credit-window-hours }}
+          reset-at: ${{ inputs.key-credit-reset-at }}
 
       # Read by the next runs' gates: the probing marker the gate names when
       # this run passes the key after a credit stop's window, so they skip
       # while this run's key leg tries the key. Uploaded right after the read
       # to keep the gap short; the key leg's own credit stop takes over if it
-      # comes. An artifact upload uses the runner's token, not the job token,
-      # so this job keeps actions: read.
+      # comes. Kept as long as the credit-stop marker, so the backoff still
+      # sees the key run that worked between two credit stops. An artifact
+      # upload uses the runner's token, not the job token, so this job keeps
+      # actions: read.
       - name: Write the key's probing marker
         id: probe-marker
         if: always() && steps.gate.outputs.probing-marker != ''
@@ -608,7 +621,7 @@ jobs:
           name: ${{ steps.gate.outputs.probing-marker }}
           path: ${{ runner.temp }}/key-credit-probing/run-id
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
       # The job token's api-budget notice, from the readings the gate's
       # requests left. It spends no request.
@@ -2271,7 +2284,7 @@ jobs:
       # Read by the next runs' check-key-credit job: the artifact it names
       # (gate.cjs markerName), uploaded only after the launcher's credit stop,
       # which only the key leg can end in. Its upload time starts the window;
-      # one day's retention covers the default 6-hour window.
+      # 7 days' retention keeps the six backoff steps at the 24-hour cap.
       - name: Write the key's credit-stop marker
         id: credit-marker
         if: always() && needs.check-key-credit.outputs.marker != '' && (steps.claude.outputs.lane-class == 'credit-stop' || steps.claude-2.outputs.lane-class == 'credit-stop' || steps.claude-3.outputs.lane-class == 'credit-stop' || steps.claude-4.outputs.lane-class == 'credit-stop')
@@ -2299,7 +2312,7 @@ jobs:
           name: ${{ needs.check-key-credit.outputs.marker }}
           path: ${{ runner.temp }}/key-credit-stop/run-id
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
