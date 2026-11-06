@@ -1,0 +1,75 @@
+name: resolve-pull-request
+description: >-
+  pr-review-cli's resolve-pull-request job, for a workflow_run caller: one pulls.get
+  of the caller's pull request, with no model and no write. Outputs the facts
+  the lane's gates check (state, draft, head repository, author) from that
+  read, never from the caller, and proceed `true` only when the pull
+  request's head is still head-sha. read.cjs documents the env it reads.
+
+inputs:
+  pr-number:
+    description: The pull request's number.
+    required: true
+  head-sha:
+    description: The head commit the caller asks the lane to review.
+    required: true
+  base-sha:
+    description: The base commit the caller saw; a difference is only logged.
+    default: ""
+  event-action:
+    description: The pull_request action the caller's run started on, or empty.
+    default: ""
+
+outputs:
+  proceed:
+    description: "`true` when the pull request's head is head-sha, else `false`."
+    value: ${{ steps.read.outputs.proceed }}
+  number:
+    description: The pull request's number, as read.
+    value: ${{ steps.read.outputs.number }}
+  state:
+    description: open or closed, as read.
+    value: ${{ steps.read.outputs.state }}
+  draft:
+    description: "`true` or `false`, as read."
+    value: ${{ steps.read.outputs.draft }}
+  head-repo:
+    description: The head repository's full name, as read; empty for a deleted fork.
+    value: ${{ steps.read.outputs.head-repo }}
+  author:
+    description: The pull request author's login, as read.
+    value: ${{ steps.read.outputs.author }}
+  head-sha:
+    description: The pull request's head commit, as read.
+    value: ${{ steps.read.outputs.head-sha }}
+  head-ref:
+    description: The head branch, as read.
+    value: ${{ steps.read.outputs.head-ref }}
+  base-sha:
+    description: The pull request's base commit, as read.
+    value: ${{ steps.read.outputs.base-sha }}
+  base-ref:
+    description: The base branch, as read.
+    value: ${{ steps.read.outputs.base-ref }}
+  action:
+    description: event-action, checked for shape.
+    value: ${{ steps.read.outputs.action }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the pull request
+      id: read
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        EVENT_ACTION: ${{ inputs.event-action }}
+      with:
+        script: |
+          const path = require("node:path");
+          require(path.join(process.env.ACTION_PATH, "..", "report-api-budget", "api-budget.cjs")).watch(github, "github-token");
+          const { run } = require(path.join(process.env.ACTION_PATH, "read.cjs"));
+          await run({ github, context, core });

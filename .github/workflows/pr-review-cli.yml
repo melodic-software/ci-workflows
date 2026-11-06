@@ -36,13 +36,31 @@ name: pr-review-cli
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.REVIEWS_CLAUDE_CODE_OAUTH_TOKEN }}
 #           FALLBACK_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
 #
+# A workflow_run caller (review after another workflow finishes on the pull
+# request) names the pull request and head itself, since its event carries
+# no pull_request; the same permissions and secrets apply, plus:
+#
+#         with:
+#           pr-number: <the pull request's number>
+#           head-sha: ${{ github.event.workflow_run.head_sha }}
+#           base-sha: <optional; the lane uses the pull request's base>
+#           event-action: <optional; synchronize allows an incremental review>
+#
 # SECURITY MODEL:
 #   - Only a `pull_request` run on an open pull request from a branch of
 #     this repository, not a draft, reaches a secret: every job that holds
 #     one repeats that gate. A
 #     bot passes only when the event sender's id is in
 #     allowed-bot-sender-ids, and Dependabot never passes, as actor or as
-#     the pull request's author. Any other event skips the lane.
+#     the pull request's author. Any other event skips the lane, with one
+#     exception: a `workflow_run` run whose caller sets pr-number and
+#     head-sha. There the resolve-pull-request job, with pull-requests:
+#     read and no secret, reads the pull request once, and the gate checks the same
+#     facts from that read, never from the caller: open, not a draft, head
+#     in this repository, author not Dependabot, and head still head-sha
+#     (else the lane skips with a notice). The pull request's own base,
+#     not the caller's base-sha, picks the trusted-actor list. pr-number
+#     on any other event skips the lane.
 #   - The API key runs in the review-key job. The subscription token runs
 #     only in the review-subscription job, and only when the key job's
 #     handoff output is exactly `true` (run-claude-cli: a credit stop, or the
@@ -320,6 +338,36 @@ on:
           (.github/actions/upload-lane-transcript). Empty keeps none.
         type: string
         default: ""
+      pr-number:
+        description: >-
+          A workflow_run caller's pull request number. Set, the lane runs
+          only on a workflow_run event and reads the pull request's state,
+          draft flag, head repository, author, head and base from one API
+          read in the resolve-pull-request job, never from the caller. Empty, the
+          lane reads the pull_request event as before.
+        type: string
+        default: ""
+      head-sha:
+        description: >-
+          With pr-number, the head commit to review. When the pull request's
+          head is no longer this commit, the lane skips with a notice.
+          Required with pr-number.
+        type: string
+        default: ""
+      base-sha:
+        description: >-
+          With pr-number, the base commit the caller saw. The lane uses the
+          pull request's own base, which picks the trusted-actor list, and
+          logs a notice when the two differ. Optional.
+        type: string
+        default: ""
+      event-action:
+        description: >-
+          With pr-number, the pull_request action the caller's run started
+          on (opened, synchronize, reopened, ready_for_review): synchronize
+          allows an incremental review. Empty reviews the whole pull request.
+        type: string
+        default: ""
     outputs:
       hold:
         description: "`true` when this run held the pull request, else `false`."
@@ -381,6 +429,57 @@ env:
     .husky/**
 
 jobs:
+  # A workflow_run caller's pull request (pr-number set): one pulls.get with
+  # pull-requests: read and no secret. Its outputs are the facts every
+  # secret-bearing job's gate checks in place of the pull_request event's,
+  # and proceed is `true` only when the head is still head-sha. A
+  # pull_request caller skips this job, and every job after it reads the
+  # event as before; each of their gates opens with a status function, so
+  # this skip does not skip them.
+  resolve-pull-request:
+    name: ${{ inputs.lane == 'security' && 'security-review-resolve-pull-request' || 'claude-review-resolve-pull-request' }}
+    if: inputs.pr-number && github.event_name == 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      pull-requests: read
+    cache-mode: none
+    outputs:
+      proceed: ${{ steps.read.outputs.proceed }}
+      number: ${{ steps.read.outputs.number }}
+      state: ${{ steps.read.outputs.state }}
+      draft: ${{ steps.read.outputs.draft }}
+      head-repo: ${{ steps.read.outputs.head-repo }}
+      author: ${{ steps.read.outputs.author }}
+      head-sha: ${{ steps.read.outputs.head-sha }}
+      head-ref: ${{ steps.read.outputs.head-ref }}
+      base-sha: ${{ steps.read.outputs.base-sha }}
+      base-ref: ${{ steps.read.outputs.base-ref }}
+      action: ${{ steps.read.outputs.action }}
+    steps:
+      - name: Read the pull request
+        id: read
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 2
+        uses: $/.github/actions/resolve-pull-request
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        with:
+          pr-number: ${{ inputs.pr-number }}
+          head-sha: ${{ inputs.head-sha }}
+          base-sha: ${{ inputs.base-sha }}
+          event-action: ${{ inputs.event-action }}
+
+      # The job token's api-budget notice, from the read's readings. It
+      # spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # Whether the key is still out of credits: a key-job credit stop in this
   # workflow inside the window skips the key job. The key job uploads the
   # gate's `marker` artifact after a credit stop, and the gate reads that
@@ -391,15 +490,26 @@ jobs:
   # job: its `if` starts with !cancelled().
   check-key-credit:
     name: ${{ inputs.lane == 'security' && 'security-review-key-credit' || 'claude-review-key-credit' }}
+    needs: resolve-pull-request
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     if: >-
-      github.event_name == 'pull_request'
-      && github.event.pull_request.state == 'open'
-      && github.event.pull_request.draft == false
-      && github.event.pull_request.head.repo.full_name == github.repository
+      !cancelled()
+      && (!inputs.pr-number
+       && github.event_name == 'pull_request'
+       && github.event.pull_request.state == 'open'
+       && github.event.pull_request.draft == false
+       && github.event.pull_request.head.repo.full_name == github.repository
+       && github.event.pull_request.user.login != 'dependabot[bot]'
+       || inputs.pr-number
+       && github.event_name == 'workflow_run'
+       && needs.resolve-pull-request.result == 'success'
+       && needs.resolve-pull-request.outputs.proceed == 'true'
+       && needs.resolve-pull-request.outputs.state == 'open'
+       && needs.resolve-pull-request.outputs.draft == 'false'
+       && needs.resolve-pull-request.outputs.head-repo == github.repository
+       && needs.resolve-pull-request.outputs.author != 'dependabot[bot]')
       && github.actor != 'dependabot[bot]'
-      && github.event.pull_request.user.login != 'dependabot[bot]'
       && (!endsWith(github.actor, '[bot]')
           || (inputs.allowed-bot-sender-ids != ''
               && !startsWith(inputs.allowed-bot-sender-ids, ',')
@@ -471,19 +581,28 @@ jobs:
 
   review-key:
     name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
-    needs: check-key-credit
+    needs: [resolve-pull-request, check-key-credit]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
       needs.check-key-credit.outputs.skip-key != 'true'
       && !cancelled()
       &&
-      github.event_name == 'pull_request'
-      && github.event.pull_request.state == 'open'
-      && github.event.pull_request.draft == false
-      && github.event.pull_request.head.repo.full_name == github.repository
+      (!inputs.pr-number
+       && github.event_name == 'pull_request'
+       && github.event.pull_request.state == 'open'
+       && github.event.pull_request.draft == false
+       && github.event.pull_request.head.repo.full_name == github.repository
+       && github.event.pull_request.user.login != 'dependabot[bot]'
+       || inputs.pr-number
+       && github.event_name == 'workflow_run'
+       && needs.resolve-pull-request.result == 'success'
+       && needs.resolve-pull-request.outputs.proceed == 'true'
+       && needs.resolve-pull-request.outputs.state == 'open'
+       && needs.resolve-pull-request.outputs.draft == 'false'
+       && needs.resolve-pull-request.outputs.head-repo == github.repository
+       && needs.resolve-pull-request.outputs.author != 'dependabot[bot]')
       && github.actor != 'dependabot[bot]'
-      && github.event.pull_request.user.login != 'dependabot[bot]'
       && (!endsWith(github.actor, '[bot]')
           || (inputs.allowed-bot-sender-ids != ''
               && !startsWith(inputs.allowed-bot-sender-ids, ',')
@@ -590,7 +709,7 @@ jobs:
         timeout-minutes: 3
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           filter: blob:none
           persist-credentials: false
 
@@ -606,10 +725,10 @@ jobs:
           LANE: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           INCREMENTAL: ${{ inputs.incremental-review }}
           DOCS_ONLY_PATHS: ${{ inputs.docs-only-paths }}
-          EVENT_ACTION: ${{ github.event.action }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_ACTION: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.action || github.event.action }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}
           DIFF_FILE: .claude-lane/incremental.diff
           FILE_LIST: .claude-lane/incremental-files.txt
           DATA_LIST: .claude-lane/incremental-data-files.txt
@@ -1036,8 +1155,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
           FILE_LIST: .claude-lane/files.txt
@@ -1343,7 +1462,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
         run: |
           # shellcheck disable=SC2016 # $owner and the jq variables are GraphQL and jq syntax, not shell.
           query='query($owner: String!, $name: String!, $number: Int!) {
@@ -1595,6 +1714,10 @@ jobs:
         with:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
+          pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          base-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}
+          head-ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-ref || github.event.pull_request.head.ref }}
 
       # This lane's own earlier findings (github-actions bot posts carrying
       # its footer or reviewed-head marker), whether the lines under each
@@ -1612,6 +1735,8 @@ jobs:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/prior-findings.md
           lane: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+          pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
@@ -1630,8 +1755,8 @@ jobs:
           MODEL_ARGS: ${{ inputs.model-args }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
@@ -2499,7 +2624,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
           if-no-files-found: error
           overwrite: true
@@ -2588,7 +2713,7 @@ jobs:
   # writes them into a script.
   review-subscription:
     name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
-    needs: [check-key-credit, review-key]
+    needs: [resolve-pull-request, check-key-credit, review-key]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
@@ -2597,12 +2722,21 @@ jobs:
        || (needs.review-key.result == 'skipped' && needs.check-key-credit.outputs.skip-key == 'true'))
       && !cancelled()
       &&
-      github.event_name == 'pull_request'
-      && github.event.pull_request.state == 'open'
-      && github.event.pull_request.draft == false
-      && github.event.pull_request.head.repo.full_name == github.repository
+      (!inputs.pr-number
+       && github.event_name == 'pull_request'
+       && github.event.pull_request.state == 'open'
+       && github.event.pull_request.draft == false
+       && github.event.pull_request.head.repo.full_name == github.repository
+       && github.event.pull_request.user.login != 'dependabot[bot]'
+       || inputs.pr-number
+       && github.event_name == 'workflow_run'
+       && needs.resolve-pull-request.result == 'success'
+       && needs.resolve-pull-request.outputs.proceed == 'true'
+       && needs.resolve-pull-request.outputs.state == 'open'
+       && needs.resolve-pull-request.outputs.draft == 'false'
+       && needs.resolve-pull-request.outputs.head-repo == github.repository
+       && needs.resolve-pull-request.outputs.author != 'dependabot[bot]')
       && github.actor != 'dependabot[bot]'
-      && github.event.pull_request.user.login != 'dependabot[bot]'
       && (!endsWith(github.actor, '[bot]')
           || (inputs.allowed-bot-sender-ids != ''
               && !startsWith(inputs.allowed-bot-sender-ids, ',')
@@ -2709,7 +2843,7 @@ jobs:
         timeout-minutes: 3
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           filter: blob:none
           persist-credentials: false
 
@@ -2725,10 +2859,10 @@ jobs:
           LANE: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           INCREMENTAL: ${{ inputs.incremental-review }}
           DOCS_ONLY_PATHS: ${{ inputs.docs-only-paths }}
-          EVENT_ACTION: ${{ github.event.action }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_ACTION: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.action || github.event.action }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}
           DIFF_FILE: .claude-lane/incremental.diff
           FILE_LIST: .claude-lane/incremental-files.txt
           DATA_LIST: .claude-lane/incremental-data-files.txt
@@ -3155,8 +3289,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
           FILE_LIST: .claude-lane/files.txt
@@ -3462,7 +3596,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
         run: |
           # shellcheck disable=SC2016 # $owner and the jq variables are GraphQL and jq syntax, not shell.
           query='query($owner: String!, $name: String!, $number: Int!) {
@@ -3714,6 +3848,10 @@ jobs:
         with:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
+          pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          base-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}
+          head-ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-ref || github.event.pull_request.head.ref }}
 
       # This lane's own earlier findings (github-actions bot posts carrying
       # its footer or reviewed-head marker), whether the lines under each
@@ -3731,6 +3869,8 @@ jobs:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/prior-findings.md
           lane: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+          pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
@@ -3749,8 +3889,8 @@ jobs:
           MODEL_ARGS: ${{ inputs.model-args }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
@@ -4586,7 +4726,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
           if-no-files-found: error
           overwrite: true
@@ -4680,7 +4820,7 @@ jobs:
   # leg and never hands off.
   review-fallback:
     name: ${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}
-    needs: [check-key-credit, review-key, review-subscription]
+    needs: [resolve-pull-request, check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
@@ -4690,12 +4830,21 @@ jobs:
           && needs.review-subscription.outputs.fallback-ready == 'true')
       && !cancelled()
       &&
-      github.event_name == 'pull_request'
-      && github.event.pull_request.state == 'open'
-      && github.event.pull_request.draft == false
-      && github.event.pull_request.head.repo.full_name == github.repository
+      (!inputs.pr-number
+       && github.event_name == 'pull_request'
+       && github.event.pull_request.state == 'open'
+       && github.event.pull_request.draft == false
+       && github.event.pull_request.head.repo.full_name == github.repository
+       && github.event.pull_request.user.login != 'dependabot[bot]'
+       || inputs.pr-number
+       && github.event_name == 'workflow_run'
+       && needs.resolve-pull-request.result == 'success'
+       && needs.resolve-pull-request.outputs.proceed == 'true'
+       && needs.resolve-pull-request.outputs.state == 'open'
+       && needs.resolve-pull-request.outputs.draft == 'false'
+       && needs.resolve-pull-request.outputs.head-repo == github.repository
+       && needs.resolve-pull-request.outputs.author != 'dependabot[bot]')
       && github.actor != 'dependabot[bot]'
-      && github.event.pull_request.user.login != 'dependabot[bot]'
       && (!endsWith(github.actor, '[bot]')
           || (inputs.allowed-bot-sender-ids != ''
               && !startsWith(inputs.allowed-bot-sender-ids, ',')
@@ -4802,7 +4951,7 @@ jobs:
         timeout-minutes: 3
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           filter: blob:none
           persist-credentials: false
 
@@ -4818,10 +4967,10 @@ jobs:
           LANE: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           INCREMENTAL: ${{ inputs.incremental-review }}
           DOCS_ONLY_PATHS: ${{ inputs.docs-only-paths }}
-          EVENT_ACTION: ${{ github.event.action }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_ACTION: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.action || github.event.action }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}
           DIFF_FILE: .claude-lane/incremental.diff
           FILE_LIST: .claude-lane/incremental-files.txt
           DATA_LIST: .claude-lane/incremental-data-files.txt
@@ -5248,8 +5397,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           MERGE_BASE: ${{ steps.scope.outputs.merge-base }}
           DIFF_FILE: .claude-lane/pr.diff
           FILE_LIST: .claude-lane/files.txt
@@ -5555,7 +5704,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
         run: |
           # shellcheck disable=SC2016 # $owner and the jq variables are GraphQL and jq syntax, not shell.
           query='query($owner: String!, $name: String!, $number: Int!) {
@@ -5807,6 +5956,10 @@ jobs:
         with:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/settled-threads.md
+          pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          base-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}
+          head-ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-ref || github.event.pull_request.head.ref }}
 
       # This lane's own earlier findings (github-actions bot posts carrying
       # its footer or reviewed-head marker), whether the lines under each
@@ -5824,6 +5977,8 @@ jobs:
           source: ${{ runner.temp }}/claude-code-plugins
           output-file: .claude-lane/prior-findings.md
           lane: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
+          pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # model-args, when set, replaces the flags it carries. started-at lets
@@ -5842,8 +5997,8 @@ jobs:
           MODEL_ARGS: ${{ inputs.model-args }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           SCOPE_NOTE: ${{ steps.scope.outputs.note }}
           FULL_DIFF_NOTE: ${{ steps.full-diff.outputs.note }}
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
@@ -6677,7 +6832,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          name: pr-review-cli-handoff-${{ inputs.lane }}-${{ github.job }}-${{ github.run_id }}-${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
           if-no-files-found: error
           overwrite: true
@@ -6769,7 +6924,7 @@ jobs:
   # with the action's inputs, not the workflow's.
   status:
     name: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
-    needs: [review-key, review-subscription, review-fallback]
+    needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 22
@@ -6828,7 +6983,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: pr-review-cli-handoff-${{ inputs.lane }}-*-${{ github.run_id }}-${{ github.event.pull_request.head.sha }}
+          pattern: pr-review-cli-handoff-${{ inputs.lane }}-*-${{ github.run_id }}-${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/review-handoff
           merge-multiple: true
 
@@ -6927,9 +7082,9 @@ jobs:
         env:
           PUBLISH: ${{ inputs.publish }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
           ARTIFACT_DIR: ${{ runner.temp }}/shadow-report
           SCOPE_REVIEW: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.scope-review || needs.review-key.outputs.scope-review }}
@@ -6980,9 +7135,9 @@ jobs:
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           STATUS_JOB: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
+          BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}
           PUBLISH_GATE: ${{ steps.gate.outputs.path }}
           PR_FILES: ${{ needs.review-key.result == 'skipped' && needs.review-subscription.outputs.pr-files || needs.review-key.outputs.pr-files }}
           KEY_LANE_CLASS: ${{ needs.review-key.outputs.lane-class }}

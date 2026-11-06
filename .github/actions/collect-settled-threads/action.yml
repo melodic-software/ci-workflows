@@ -15,6 +15,18 @@ inputs:
   output-file:
     description: Where the threads file is written, inside the checkout.
     required: true
+  pr-number:
+    description: The pull request's number. Defaults to the pull_request event's.
+    default: ${{ github.event.pull_request.number }}
+  head-sha:
+    description: The head commit. Defaults to the pull_request event's.
+    default: ${{ github.event.pull_request.head.sha }}
+  base-sha:
+    description: The base commit whose trusted-actor list is read. Defaults to the pull_request event's.
+    default: ${{ github.event.pull_request.base.sha }}
+  head-ref:
+    description: The head branch. Defaults to the pull_request event's.
+    default: ${{ github.event.pull_request.head.ref }}
 
 outputs:
   note:
@@ -29,10 +41,10 @@ runs:
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         ACTION_PATH: ${{ github.action_path }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        HEAD_REF: ${{ inputs.head-ref }}
         SOURCE: ${{ inputs.source }}
         OUTPUT_FILE: ${{ inputs.output-file }}
         GIT_TOKEN: ${{ github.token }}
