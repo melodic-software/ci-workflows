@@ -71,6 +71,11 @@ const path = require("node:path");
 const MARKER_PREFIX = "key-credit-stop-";
 const PROBE_PREFIX = "key-credit-probing-";
 const MAX_WINDOW_HOURS = 168;
+// The base window when window-hours is empty, so a caller passes an unset
+// vars.KEY_CREDIT_WINDOW_HOURS as it is; the one place this default lives.
+const DEFAULT_WINDOW_HOURS = 1;
+// The probe window when probe-minutes is empty.
+const DEFAULT_PROBE_MINUTES = 15;
 // The longest backed-off window; a larger base is used as it is.
 const MAX_STEP_HOURS = 24;
 const MAX_PROBE_MINUTES = 1440;
@@ -250,8 +255,10 @@ async function decide({ listArtifacts, name, sinceMs, probe = null, probeSinceMs
 
 function readEnv(env) {
   const keyJob = env.KEY_JOB ?? "";
-  const hours = Number(env.WINDOW_HOURS);
-  const probeMinutes = Number(env.PROBE_MINUTES);
+  const window = String(env.WINDOW_HOURS ?? "").trim();
+  const hours = window === "" ? DEFAULT_WINDOW_HOURS : Number(window);
+  const probe = String(env.PROBE_MINUTES ?? "").trim();
+  const probeMinutes = probe === "" ? DEFAULT_PROBE_MINUTES : Number(probe);
   const workflow = (env.WORKFLOW_REF ?? "").match(WORKFLOW_REF)?.[1] ?? null;
   const repository = env.GITHUB_REPOSITORY ?? "";
   const valid =
@@ -342,6 +349,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  DEFAULT_WINDOW_HOURS,
   MARKER_PREFIX,
   PROBE_PREFIX,
   backoff,

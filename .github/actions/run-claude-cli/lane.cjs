@@ -1409,6 +1409,7 @@ module.exports = {
   NPM_REGISTRY,
   SIGNING_KEY_FINGERPRINT,
   cliArgs,
+  handoffReason,
   holdsCredential,
   install,
   judgeLeg,

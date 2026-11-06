@@ -448,7 +448,8 @@ test("the action passes the probe window to the gate and the probing marker out"
     action.runs.steps[0].env.PROBE_MINUTES,
     `\${{ inputs.probe-minutes }}`,
   );
-  assert.equal(action.inputs["probe-minutes"].default, "15");
+  // Empty is gate.cjs's default, so the default lives in one place.
+  assert.equal(action.inputs["probe-minutes"].default, "");
   assert.equal(
     action.outputs["probing-marker"].value,
     `\${{ steps.gate.outputs.probing-marker }}`,
@@ -466,12 +467,68 @@ test("the action passes the caller's workflow ref and the window to the gate, an
   const run = action.runs.steps[0];
   assert.equal(run.env.WORKFLOW_REF, `\${{ github.workflow_ref }}`);
   assert.equal(run.env.WINDOW_HOURS, `\${{ inputs.window-hours }}`);
-  assert.equal(action.inputs["window-hours"].default, "1");
+  assert.equal(action.inputs["window-hours"].default, "");
   assert.equal(
     action.outputs.marker.value,
     `\${{ steps.gate.outputs.marker }}`,
   );
   assert.match(run.run, /\|\| true$/u);
+});
+
+// A caller passes an unset vars.KEY_CREDIT_WINDOW_HOURS as it is, an empty
+// string the action's default never replaces: empty must mean 1 hour and
+// 15 probe minutes, never 0 (the gate off).
+test("an empty window or probe window is the 1-hour and 15-minute default; 0 stays off", async () => {
+  const {
+    DEFAULT_WINDOW_HOURS,
+  } = require("../actions/check-key-credit/gate.cjs");
+  assert.equal(DEFAULT_WINDOW_HOURS, 1);
+  for (const [window, skip] of [
+    ["", true],
+    [" ", true],
+    ["0", false],
+  ]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const { urls, fetchImpl } = fakeFetch([
+      [ARTIFACTS, { artifacts: [marker(98, 0.5)] }],
+    ]);
+    const { verdict } = await main(
+      env(dir, { WINDOW_HOURS: window }),
+      fetchImpl,
+      now,
+    );
+    assert.equal(verdict.skip, skip, JSON.stringify(window));
+    assert.equal(urls.length, skip ? 1 : 0, JSON.stringify(window));
+  }
+  // Half an hour past a 1-hour window, a probe 10 minutes ago skips only
+  // with probing on: empty is 15 minutes, 0 is off.
+  const PROBE = /actions\/artifacts\?name=key-credit-probing-/u;
+  for (const [probe, skip] of [
+    ["", true],
+    ["0", false],
+  ]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const { fetchImpl } = fakeFetch([
+      [ARTIFACTS, { artifacts: [marker(98, 1.5)] }],
+      [
+        PROBE,
+        {
+          artifacts: [
+            {
+              ...marker(99, 10 / 60),
+              name: probeName("pr-review-hosted.yml", KEY),
+            },
+          ],
+        },
+      ],
+    ]);
+    const { verdict } = await main(
+      env(dir, { WINDOW_HOURS: "", PROBE_MINUTES: probe }),
+      fetchImpl,
+      now,
+    );
+    assert.equal(verdict.skip, skip, JSON.stringify(probe));
+  }
 });
 
 // The backoff: window-hours is the base step, each consecutive credit stop
