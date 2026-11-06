@@ -769,6 +769,12 @@ consumer to audit it.
   against `loop.review-rounds`, read from the default branch's
   `docs/conventions/pr-pipeline.yaml`, so the review does not repeat a finding
   on unchanged lines (its `action.yml` describes what it does).
+- `.github/actions/resolve-pull-request` — `pr-review-cli.yml`'s
+  `resolve-pull-request` job, for a `workflow_run` caller that sets `pr-number`: one
+  `pulls.get`, whose state, draft flag, head repository, author, head and
+  base the lane's gates read in place of the `pull_request` event's, and a
+  skip with a notice when the head is no longer `head-sha` (its `action.yml`
+  describes what it does).
 - `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
   step: the `api-calls` notice (`github-token=N not-modified=M graphql=K`),
   the `api-routes` notice (`github-token <route>=<count> ... rest=<count>`)
@@ -1220,7 +1226,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   credit stop, and `actions: read` with `checks: read` for the status job,
   which reads its earlier runs' cost hold notices. GitHub fails the run at
   startup when the caller does not grant both. The workflow header carries the canonical caller and
-  the security model. With `hold-label` set, comments mode also holds the
+  the security model. A `workflow_run` caller, such as review after another
+  workflow finishes on the pull request, sets `pr-number` and `head-sha`
+  (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
+  the pull request once, the gates check its state, draft flag, head
+  repository and author from that read, and the lane skips with a notice
+  when the head moved. With no `pr-number`, a `pull_request` caller runs as
+  before. With `hold-label` set, comments mode also holds the
   pull request for a person: when the review returns a `hold` with criterion
   `cost` (only a change that can cause a real charge, as the compose step's
   prompt lists) or `critical-security`, and a reason, the status job adds

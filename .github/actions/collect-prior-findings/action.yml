@@ -20,6 +20,12 @@ inputs:
   lane:
     description: The lane's footer name, claude-review or claude-security-review.
     required: true
+  pr-number:
+    description: The pull request's number. Defaults to the pull_request event's.
+    default: ${{ github.event.pull_request.number }}
+  head-sha:
+    description: The head commit. Defaults to the pull_request event's.
+    default: ${{ github.event.pull_request.head.sha }}
 
 outputs:
   note:
@@ -37,8 +43,8 @@ runs:
         OUTPUT_PATH: ${{ inputs.output-file }}
         LANE: ${{ inputs.lane }}
         REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         GH_TOKEN: ${{ github.token }}
         GITHUB_TOKEN: ${{ github.token }}
