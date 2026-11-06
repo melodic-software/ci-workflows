@@ -36,7 +36,7 @@ inputs:
     required: false
     default: ""
   credential-set:
-    description: "Whether this leg's secret is set: `${{ secrets.X != '' }}`, never the value."
+    description: "Whether this leg's secret is set (the caller passes the expression secrets.X != ''), never the value."
     required: false
     default: "false"
   fallback-set:
