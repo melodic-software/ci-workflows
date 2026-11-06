@@ -8,9 +8,9 @@
 // exact name, and skips the key when the newest unexpired one was created
 // inside the window, citing the run that uploaded it. The window counts from
 // that upload, so a topped-up or rotated key is tried on the first run after
-// it. No marker in the window, any failure or an unreadable answer runs the
-// key, as before this gate: it never skips the subscription path and never
-// fails the step.
+// it (the window backs off: see below). No marker in the window, any failure
+// or an unreadable answer runs the key, as before this gate: it never skips
+// the subscription path and never fails the step.
 //
 // The name carries the caller workflow's file and the key job, so each
 // caller's key is judged on its own credit stops. A fork's pull_request run
@@ -20,7 +20,8 @@
 // the run-history read's exclude_pull_requests did. Any workflow of this
 // repository can still upload one; the worst it does is move reviews to the
 // subscription for the window. More than 100 markers of one name in
-// retention can push the newest off the page, which runs the key.
+// retention can push the newest off the page, which runs the key or shortens
+// the step.
 //
 // The probing marker closes the re-probe race: when the window has ended but
 // a credit-stop marker is still in retention, every gate until the first
@@ -37,6 +38,29 @@
 // failed probe read runs the key and writes no probe. A probe run cancelled
 // before its key leg leaves no credit stop either, so the next gate after it
 // expires runs the key as healthy.
+//
+// The window backs off: window-hours is the base step, and each consecutive
+// credit stop doubles it, capped at 24 hours (1, 2, 4, 8, 16, 24 from a base
+// of 1; a base above 24 hours never backs off). Consecutive credit stops are
+// the credit-stop markers created after reset-at, oldest first, where:
+//   - a marker counts as the next step only when it was created at or after
+//     the previous counted marker plus that marker's window, so it came from
+//     a run let through to try the key again; markers inside a window, from
+//     runs already in flight when the key stopped, add no step;
+//   - a probing marker between two markers that no credit-stop marker
+//     followed inside the probe window is a key run that worked, and the
+//     next marker starts again at the base step.
+// The step comes from the two listings the gate already reads, with no new
+// call: inside the base window any step skips, so only a credit stop past it
+// needs the step, and that path already reads the probing markers. Both
+// markers are kept 7 days, long enough for six steps at the cap; a marker
+// that expires only shortens the step. reset-at, the time the rotation tool
+// last pushed a key (vars.KEY_CREDIT_RESET_AT), drops every credit stop
+// before it, so a new key is tried on the next run. Empty or anything but an
+// ISO-8601 UTC time is no reset. A key whose credit comes back on its
+// account's monthly cycle, or one set by hand with `gh secret set`, writes no
+// reset-at, so it waits out the current step, at most 24 hours; action.yml
+// gives the one-line manual reset.
 "use strict";
 
 const fs = require("node:fs");
@@ -45,9 +69,13 @@ const path = require("node:path");
 const MARKER_PREFIX = "key-credit-stop-";
 const PROBE_PREFIX = "key-credit-probing-";
 const MAX_WINDOW_HOURS = 168;
-// The markers are kept one day, so a longer probe window would outlive them.
+// The longest backed-off window; a larger base is used as it is.
+const MAX_STEP_HOURS = 24;
 const MAX_PROBE_MINUTES = 1440;
 const WORKFLOW_REF = /^[\w.-]+\/[\w.-]+\/\.github\/workflows\/([\w.-]+\.ya?ml)@/u;
+// The shape the rotation tool writes, optionally with milliseconds. Date.parse
+// alone takes far looser text ("2026"), which is no reset here.
+const RESET_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/u;
 
 // The rate-limit reading report-api-budget reads, as the scope step writes
 // it, under the route of the gate's one request (the artifact list). A
@@ -84,10 +112,10 @@ function probeName(workflow, keyJob) {
   return `${PROBE_PREFIX}${workflow}-${keyJob}`;
 }
 
-// The newest unexpired marker of the exact name, created at or after
-// `sinceMs` by a run whose head is this repository, or null.
-function newestMarker(artifacts, name, sinceMs) {
-  let newest = null;
+// The unexpired markers of the exact name, created at or after `sinceMs` by
+// a run whose head is this repository, oldest first.
+function markers(artifacts, name, sinceMs) {
+  const found = [];
   for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
     const created = Date.parse(artifact?.created_at ?? "");
     const run = artifact?.workflow_run?.id;
@@ -103,9 +131,47 @@ function newestMarker(artifacts, name, sinceMs) {
     ) {
       continue;
     }
-    if (!newest || created > newest.created) newest = { created, run };
+    found.push({ created, run });
   }
-  return newest;
+  return found.sort((a, b) => a.created - b.created);
+}
+
+// The newest of those markers, or null.
+function newestMarker(artifacts, name, sinceMs) {
+  return markers(artifacts, name, sinceMs).at(-1) ?? null;
+}
+
+// Step `steps` of the backoff from a base window, in milliseconds.
+function stepMs(baseMs, steps) {
+  const cap = Math.max(MAX_STEP_HOURS * 3600 * 1000, baseMs);
+  return Math.min(cap, baseMs * 2 ** Math.min(steps - 1, 30));
+}
+
+// How many consecutive credit stops end at the newest of `stops` (oldest
+// first, all after reset-at), and that step's window: see the header.
+function backoff(stops, probes, baseMs, probeMs) {
+  let steps = 0;
+  let counted = -Infinity;
+  for (const [index, stop] of stops.entries()) {
+    const previous = index > 0 ? stops[index - 1].created : -Infinity;
+    const worked = probes.some(
+      (probe) =>
+        probe.created > previous && probe.created + probeMs < stop.created,
+    );
+    if (worked) steps = 0;
+    if (steps === 0 || stop.created >= counted + stepMs(baseMs, steps)) {
+      steps++;
+      counted = stop.created;
+    }
+  }
+  return { steps, windowMs: stepMs(baseMs, Math.max(steps, 1)) };
+}
+
+// reset-at as milliseconds, or -Infinity (no reset) for anything else.
+function parseReset(text) {
+  const value = String(text ?? "").trim();
+  const ms = RESET_AT.test(value) ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? ms : -Infinity;
 }
 
 // The decision from one credit-stop listing: a marker inside the window
@@ -129,18 +195,36 @@ async function read(listArtifacts, name, what) {
 }
 
 // The decision, from an injected reader of one exact name; never throws.
-// `probe` (the probing marker's name and `probeSinceMs`) is optional: without
-// it the gate reads and judges the credit-stop marker alone. `probe: true` on
-// a verdict asks the gate job to upload the probing marker.
-async function decide({ listArtifacts, name, sinceMs, probe = null, probeSinceMs = 0, nowMs = 0 }) {
-  const stops = await read(listArtifacts, name, "marker");
-  if (!stops.artifacts) return { skip: false, reason: stops.reason };
-  const verdict = judgeMarkers(stops.artifacts, name, sinceMs);
-  if (verdict.skip || !probe) return verdict;
-  const stop = newestMarker(stops.artifacts, name, -Infinity);
+// `sinceMs` is the base window's start (nowMs minus window-hours), and only
+// credit stops after `resetMs` count. `probe` (the probing marker's name and
+// `probeSinceMs`) is optional: without it the gate reads the credit-stop
+// marker alone and the backoff sees no key run that worked. `probe: true` on
+// a verdict asks the gate job to upload the probing marker; `steps` on a
+// credit-stop skip is the backoff step and `hours` its window.
+async function decide({ listArtifacts, name, sinceMs, probe = null, probeSinceMs = 0, nowMs = 0, resetMs = -Infinity }) {
+  const listed = await read(listArtifacts, name, "marker");
+  if (!listed.artifacts) return { skip: false, reason: listed.reason };
+  const after = resetMs + 1;
+  const verdict = judgeMarkers(listed.artifacts, name, Math.max(sinceMs, after));
+  if (verdict.skip) return verdict;
+  const stops = markers(listed.artifacts, name, after);
+  const stop = stops.at(-1);
   if (!stop) return verdict;
-  const probes = await read(listArtifacts, probe, "probing marker");
-  if (!probes.artifacts) return { skip: false, reason: probes.reason };
+  let probes = { artifacts: [] };
+  if (probe) {
+    probes = await read(listArtifacts, probe, "probing marker");
+    if (!probes.artifacts) return { skip: false, reason: probes.reason };
+  }
+  const { steps, windowMs } = backoff(
+    stops,
+    probe ? markers(probes.artifacts, probe, -Infinity) : [],
+    nowMs - sinceMs,
+    nowMs - probeSinceMs,
+  );
+  if (stop.created >= nowMs - windowMs) {
+    return { skip: true, origin: String(stop.run), steps, hours: windowMs / 3600000 };
+  }
+  if (!probe) return verdict;
   const prior = newestMarker(probes.artifacts, probe, stop.created);
   if (!prior) {
     return {
@@ -185,6 +269,7 @@ function readEnv(env) {
     server: env.GITHUB_SERVER_URL || "https://github.com",
     token: env.GITHUB_TOKEN ?? "",
     runnerTemp: env.RUNNER_TEMP ?? "",
+    resetMs: parseReset(env.RESET_AT),
     valid,
   };
 }
@@ -205,6 +290,7 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
       probe: config.probeMinutes > 0 ? config.probe : null,
       probeSinceMs: nowMs - config.probeMinutes * 60 * 1000,
       nowMs,
+      resetMs: config.resetMs,
       // The API's name filter takes one exact name, so each marker is a call.
       listArtifacts: async (name) => {
         const response = await fetchImpl(
@@ -230,7 +316,7 @@ async function main(env = process.env, fetchImpl = globalThis.fetch, now = () =>
     );
   } else if (verdict.skip) {
     lines.push(
-      `::notice title=check-key-credit::${config.keyJob} skips the key: the key's credit stop in run ${verdict.origin} (${config.server}/${config.repository}/actions/runs/${verdict.origin}) is inside the ${config.hours}-hour window; the subscription job reviews`,
+      `::notice title=check-key-credit::${config.keyJob} skips the key: the key's credit stop in run ${verdict.origin} (${config.server}/${config.repository}/actions/runs/${verdict.origin}) is inside the ${verdict.hours ?? config.hours}-hour window${verdict.steps ? ` (credit stop ${verdict.steps} in a row)` : ""}; the subscription job reviews`,
     );
   } else {
     lines.push(`check-key-credit: ${config.keyJob || "the key job"} runs the key: ${verdict.reason}`);
@@ -256,9 +342,11 @@ if (require.main === module) {
 module.exports = {
   MARKER_PREFIX,
   PROBE_PREFIX,
+  backoff,
   decide,
   judgeMarkers,
   main,
   markerName,
+  parseReset,
   probeName,
 };

@@ -12,10 +12,12 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  backoff,
   decide,
   judgeMarkers,
   main,
   markerName,
+  parseReset,
   probeName,
 } = require("../actions/check-key-credit/gate.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
@@ -470,4 +472,190 @@ test("the action passes the caller's workflow ref and the window to the gate, an
     `\${{ steps.gate.outputs.marker }}`,
   );
   assert.match(run.run, /\|\| true$/u);
+});
+
+// The backoff: window-hours is the base step, each consecutive credit stop
+// doubles it up to 24 hours, and reset-at starts it over.
+const HOUR = 3600 * 1000;
+const PROBE_MS = 15 * 60 * 1000;
+const stopsAt = (...hours) => hours.map((h, i) => ({ created: h * HOUR, run: i + 1 }));
+
+test("each consecutive credit stop doubles a 1-hour base: 1, 2, 4, 8, 16, then 24 hours and no more", () => {
+  for (const lagMs of [0, 30 * 60 * 1000]) {
+    const stops = [];
+    let created = 0;
+    const seen = [];
+    for (let run = 1; run <= 8; run++) {
+      stops.push({ created, run });
+      const { steps, windowMs } = backoff(stops, [], HOUR, PROBE_MS);
+      seen.push([steps, windowMs / HOUR]);
+      // The next credit stop comes from the first run let through after the
+      // window, at once or after a quiet spell.
+      created += windowMs + lagMs;
+    }
+    assert.deepEqual(
+      seen,
+      [[1, 1], [2, 2], [3, 4], [4, 8], [5, 16], [6, 24], [7, 24], [8, 24]],
+      String(lagMs),
+    );
+  }
+});
+
+test("credit stops from runs already in flight add no step", () => {
+  // Three runs hit the empty key within minutes: still the first step.
+  assert.deepEqual(backoff(stopsAt(0, 0.03, 0.06), [], HOUR, PROBE_MS), {
+    steps: 1,
+    windowMs: HOUR,
+  });
+  // The same after the first re-try: the second step, not the fourth.
+  assert.equal(backoff(stopsAt(0, 1, 1.03, 1.06), [], HOUR, PROBE_MS).steps, 2);
+});
+
+test("a probe with no credit stop after it is a key run that worked, so the next stop starts at the base", () => {
+  const probe = (hours) => ({ created: hours * HOUR, run: 50 });
+  // Stops at 0 and 1 h; the probe at 3 h worked; the key stops again at 10 h.
+  assert.deepEqual(backoff(stopsAt(0, 1, 10), [probe(3)], HOUR, PROBE_MS), {
+    steps: 1,
+    windowMs: HOUR,
+  });
+  // A probe its own credit stop followed inside the probe window did not work.
+  assert.equal(backoff(stopsAt(0, 1, 3.05), [probe(3)], HOUR, PROBE_MS).steps, 3);
+  // A probe from before the stops does not reset them.
+  assert.equal(backoff(stopsAt(5, 6), [probe(1)], HOUR, PROBE_MS).steps, 2);
+});
+
+test("a base above 24 hours never backs off; a base of 6 caps at 24", () => {
+  assert.equal(backoff(stopsAt(0, 48, 144), [], 48 * HOUR, PROBE_MS).windowMs, 48 * HOUR);
+  assert.deepEqual(
+    [stopsAt(0), stopsAt(0, 6), stopsAt(0, 6, 18), stopsAt(0, 6, 18, 42)].map(
+      (stops) => backoff(stops, [], 6 * HOUR, PROBE_MS).windowMs / HOUR,
+    ),
+    [6, 12, 24, 24],
+  );
+});
+
+test("reset-at takes the rotation tool's ISO-8601 UTC time and nothing looser", () => {
+  assert.equal(
+    parseReset("2026-11-06T12:00:00Z"),
+    Date.parse("2026-11-06T12:00:00Z"),
+  );
+  assert.equal(
+    parseReset("2026-11-06T12:00:00.123Z"),
+    Date.parse("2026-11-06T12:00:00.123Z"),
+  );
+  for (const text of [
+    "",
+    undefined,
+    "2026",
+    "not a time",
+    "2026-11-06",
+    "2026-11-06T12:00:00",
+    "2026-11-06T12:00:00+01:00",
+    "2026-11-06 12:00:00Z",
+    "2026-13-45T99:99:99Z",
+  ]) {
+    assert.equal(parseReset(text), -Infinity, String(text));
+  }
+});
+
+const seconds = (hoursAgo) => at(hoursAgo).replace(/\.\d{3}Z$/u, "Z");
+// Credit stops 6, 5 and 3 hours ago from a 1-hour base: the third step, a
+// 4-hour window, so the newest still skips.
+const CHAIN = [marker(91, 6), marker(92, 5), marker(93, 3)];
+
+test("main skips inside the backed-off window, naming the step, with the two calls it already made", async () => {
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { urls, fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: CHAIN }],
+    [PROBES, { artifacts: [] }],
+  ]);
+  const { verdict, lines } = await main(env(dir, { WINDOW_HOURS: "1" }), fetchImpl, now);
+  assert.deepEqual(verdict, { skip: true, origin: "93", steps: 3, hours: 4 });
+  assert.equal(urls.length, 2);
+  assert.match(
+    lines[0],
+    /^::notice title=check-key-credit::claude-review-key skips the key: the key's credit stop in run 93 \(https:\/\/example\/o\/r\/actions\/runs\/93\) is inside the 4-hour window \(credit stop 3 in a row\); the subscription job reviews$/u,
+  );
+  assert.equal(output(dir), `skip-key=true\norigin-run=93\nmarker=${NAME}\nprobing-marker=\n`);
+});
+
+test("main probes the key once the backed-off window ends", async () => {
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: [marker(91, 7.5), marker(92, 6.5), marker(93, 4.5)] }],
+    [PROBES, { artifacts: [] }],
+  ]);
+  const { verdict } = await main(env(dir, { WINDOW_HOURS: "1" }), fetchImpl, now);
+  assert.equal(verdict.skip, false);
+  assert.equal(verdict.probe, true);
+  assert.equal(output(dir), `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=${PROBE}\n`);
+});
+
+test("reset-at counts only the credit stops after it", async () => {
+  for (const [resetAt, expected, calls] of [
+    // After the first stop: two steps left, a 2-hour window, past already.
+    [seconds(5.5), { skip: false, probe: true }, 2],
+    // After every stop: a new key, tried at once with one call.
+    [seconds(1), { skip: false, reason: "no credit-stop marker in the window" }, 1],
+    // No reset, or text that is not one: the full chain.
+    ["", { skip: true, origin: "93", steps: 3, hours: 4 }, 2],
+    ["2026", { skip: true, origin: "93", steps: 3, hours: 4 }, 2],
+  ]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const { urls, fetchImpl } = fakeFetch([
+      [ARTIFACTS, { artifacts: CHAIN }],
+      [PROBES, { artifacts: [] }],
+    ]);
+    const { verdict } = await main(
+      env(dir, { WINDOW_HOURS: "1", RESET_AT: resetAt }),
+      fetchImpl,
+      now,
+    );
+    assert.equal(verdict.skip, expected.skip, resetAt);
+    for (const [key, value] of Object.entries(expected)) {
+      if (key !== "reason") assert.equal(verdict[key], value, `${resetAt} ${key}`);
+    }
+    if (expected.reason) assert.equal(verdict.reason, expected.reason);
+    assert.equal(urls.length, calls, resetAt);
+  }
+  // A stop inside the base window but before the reset no longer skips.
+  const dir = makeTemporaryDirectory("check-key-credit-");
+  const { urls, fetchImpl } = fakeFetch([[ARTIFACTS, { artifacts: [marker(98, 0.5)] }]]);
+  const { verdict } = await main(
+    env(dir, { WINDOW_HOURS: "1", RESET_AT: seconds(0.25) }),
+    fetchImpl,
+    now,
+  );
+  assert.equal(verdict.skip, false);
+  assert.equal(urls.length, 1);
+});
+
+test("a failed read inside the backed-off window tries the key, never a longer skip", async () => {
+  for (const routes of [
+    [[ARTIFACTS, { artifacts: CHAIN }]],
+    [[ARTIFACTS, { artifacts: CHAIN }], [PROBES, {}]],
+    [[ARTIFACTS, {}]],
+    [],
+  ]) {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    const { fetchImpl } = fakeFetch(routes);
+    const { verdict, lines } = await main(env(dir, { WINDOW_HOURS: "1" }), fetchImpl, now);
+    assert.equal(verdict.skip, false, JSON.stringify(routes.length));
+    assert.match(lines[0], /^check-key-credit: claude-review-key runs the key: the (probing )?marker/u);
+    assert.equal(output(dir), `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`);
+  }
+});
+
+test("the action passes reset-at to the gate and says a hand-set key waits out the step", () => {
+  const { parseWorkflow } = require("./workflow-yaml.cjs");
+  const action = parseWorkflow(
+    fs.readFileSync(
+      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
+      "utf8",
+    ),
+  );
+  assert.equal(action.runs.steps[0].env.RESET_AT, `\${{ inputs.reset-at }}`);
+  assert.equal(action.inputs["reset-at"].default, "");
+  assert.match(action.description, /gh secret set/u);
+  assert.match(action.description, /at most 24\s+hours/u);
 });

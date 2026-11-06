@@ -818,9 +818,15 @@ consumer to audit it.
   the job token (one call), and runs the key on any failure. Past the window,
   while that marker is still kept, a second call reads the probing marker
   `key-credit-probing-<workflow>-<key-job>`: the first gate to pass the key
-  uploads it (kept one day), and later gates skip while it is newer than the
+  uploads it (kept 7 days), and later gates skip while it is newer than the
   action's `probe-minutes` input (default 15). A gate that reads before the
-  probe is listed still passes the key. Another keyed lane adopts it with four pieces: a gate job
+  probe is listed still passes the key. The window backs off from those same
+  reads: each consecutive credit stop doubles it, capped at 24 hours, and
+  `key-credit-reset-at` (the rotation tool's `vars.KEY_CREDIT_RESET_AT`)
+  starts it over. A key whose credit returns on its monthly cycle, or one set
+  by hand with `gh secret set`, writes no reset, so it waits out the current
+  step, at most 24 hours; the action's `action.yml` gives the one-line manual
+  reset. Another keyed lane adopts it with four pieces: a gate job
   before its key job, an upload of the gate's `probing-marker` artifact in
   that gate job when the output is set, an upload of the gate's `marker`
   artifact after the launcher's `credit-stop`, and a subscription job that

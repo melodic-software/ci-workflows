@@ -272,11 +272,23 @@ on:
           Hours a key's credit stop in this workflow keeps later runs off the
           key: the claude job skips its key leg and the subscription job
           triages. The first run after the window tries the key again. 0
-          always tries the key. The marker is kept one day, so a longer window
-          ends after 24 hours. The caller job must grant actions: read, which
-          the gate reads its marker with.
+          always tries the key. It is the backoff's base step: each
+          consecutive credit stop doubles it, capped at 24 hours. The marker
+          is kept one day, and with probing off no key run that worked is
+          seen, so the backoff counts only the last day's credit stops. The
+          caller job must grant actions: read, which the gate reads its
+          marker with.
         type: number
         default: 1
+      key-credit-reset-at:
+        description: >-
+          The caller's vars.KEY_CREDIT_RESET_AT, an ISO-8601 UTC time the
+          rotation tool writes after each key push. Credit stops before it
+          no longer count, so the next run tries the new key. Empty, every
+          kept credit stop counts; a key set by hand waits out the current
+          step, at most 24 hours.
+        type: string
+        default: ""
       lane-transcript-public-key:
         description: >-
           The caller's vars.LANE_TRANSCRIPT_PUBLIC_KEY. Each model leg's
@@ -349,6 +361,7 @@ jobs:
         with:
           key-job: claude-intake-triage
           window-hours: ${{ inputs.key-credit-window-hours }}
+          reset-at: ${{ inputs.key-credit-reset-at }}
           probe-minutes: "0"
 
       # The job token's api-budget notice, from the readings the gate's
