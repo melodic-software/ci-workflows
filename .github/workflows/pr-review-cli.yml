@@ -502,6 +502,7 @@ jobs:
       handoff-reason: ${{ steps.claude-4.outputs.handoff-reason || steps.claude-3.outputs.handoff-reason || steps.claude-2.outputs.handoff-reason || steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude-4.outputs.lane-class || steps.claude-3.outputs.lane-class || steps.claude-2.outputs.lane-class || steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
       verdict: ${{ steps.extract.outputs.verdict }}
@@ -2620,6 +2621,7 @@ jobs:
       handoff-reason: ${{ steps.claude-4.outputs.handoff-reason || steps.claude-3.outputs.handoff-reason || steps.claude-2.outputs.handoff-reason || steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude-4.outputs.lane-class || steps.claude-3.outputs.lane-class || steps.claude-2.outputs.lane-class || steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
       verdict: ${{ steps.extract.outputs.verdict }}
@@ -4683,7 +4685,9 @@ jobs:
     timeout-minutes: ${{ inputs.lane == 'security' && 117 || 109 }}
     if: >-
       needs.review-subscription.result == 'success'
-      && needs.review-subscription.outputs.handoff == 'true'
+      && (needs.review-subscription.outputs.handoff == 'true'
+          || needs.review-subscription.outputs.credential-present == 'false'
+          && needs.review-subscription.outputs.fallback-ready == 'true')
       && !cancelled()
       &&
       github.event_name == 'pull_request'
@@ -4710,6 +4714,7 @@ jobs:
       handoff-reason: ${{ steps.claude-4.outputs.handoff-reason || steps.claude-3.outputs.handoff-reason || steps.claude-2.outputs.handoff-reason || steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude-4.outputs.lane-class || steps.claude-3.outputs.lane-class || steps.claude-2.outputs.lane-class || steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
       verdict: ${{ steps.extract.outputs.verdict }}
@@ -6699,7 +6704,7 @@ jobs:
           known-failure-class: ${{ steps.claude-4.outputs.lane-class || steps.claude-3.outputs.lane-class || steps.claude-2.outputs.lane-class || steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude-4.outputs.handoff || steps.claude-3.outputs.handoff || steps.claude-2.outputs.handoff || steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record.
-          fallback-reason: ${{ needs.review-subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.review-subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}
+          fallback-reason: ${{ needs.review-subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.review-subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || needs.review-subscription.outputs.credential-present == 'false' && 'no-key' || '' }}
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.
