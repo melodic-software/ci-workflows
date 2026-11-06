@@ -32,6 +32,19 @@ const {
 const step = (job, id) => job.steps.find((s) => s.id === id);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
+// The shared credential step (select-model-credential), called as the leg
+// jobs call it: `decide` is a leg job's first call, `handedOn` the job
+// outputs its last call leaves for the next job.
+const select = require("../actions/select-model-credential/select.cjs");
+const decide = (leg, flags = {}) =>
+  select.leg({ leg, role: "reviews", credentialSet: "true", ...flags });
+const handedOn = (leg, flags = {}, launcher = {}) =>
+  select.next({
+    state: decide(leg, flags).outputs.state,
+    handoff: launcher.handoff,
+    handoffReason: launcher["handoff-reason"],
+  });
+
 const PR = {
   event_name: "pull_request",
   actor: "kyle-sexton",
@@ -91,7 +104,12 @@ test("only the subscription job references the OAuth token, only the key job the
 test("every model job tells its launcher whether the fallback token is set, never its value", () => {
   for (const job of [key, subscription, fallback]) {
     assert.equal(
-      step(job, "credential").env.FALLBACK_PRESENT,
+      step(job, "credential").uses,
+      "$/.github/actions/select-model-credential",
+      job.name,
+    );
+    assert.equal(
+      step(job, "credential").with["fallback-set"],
       `\${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}`,
       job.name,
     );
@@ -115,32 +133,11 @@ test("every model job tells its launcher whether the fallback token is set, neve
       job.name,
     );
   }
-  const dir = makeTemporaryDirectory("pr-review-cli-credential-");
-  const ready = (present) => {
-    const output = path.join(dir, `out-${present}`);
-    fs.writeFileSync(output, "");
-    require("node:child_process").spawnSync(
-      "bash",
-      ["-e", "-c", step(subscription, "credential").run],
-      {
-        env: {
-          PATH: process.env.PATH,
-          PRESENT: "true",
-          SECRET_NAME: "X",
-          FALLBACK_PRESENT: present,
-          GITHUB_OUTPUT: output,
-        },
-      },
-    );
-    return fs.readFileSync(output, "utf8");
-  };
-  assert.match(ready("true"), /^fallback-ready=true$/mu);
+  const ready = (present) =>
+    decide("subscription", { fallbackSet: present }).outputs["fallback-ready"];
+  assert.equal(ready("true"), "true");
   for (const present of ["false", "", "True"]) {
-    assert.match(
-      ready(present),
-      /^fallback-ready=false$/mu,
-      JSON.stringify(present),
-    );
+    assert.equal(ready(present), "false", JSON.stringify(present));
   }
 });
 
@@ -155,48 +152,49 @@ test("the fallback job starts only after the subscription job succeeded and hand
     fallback.name,
     `\${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}`,
   );
-  const starts = (outputs, result = "success", keyResult = "success") =>
+  // The subscription job's outputs, as its last step leaves them.
+  const starts = (outputs, keyResult = "success") =>
     Boolean(
       evaluate(fallback.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
           "review-key": { result: keyResult, outputs: {} },
-          "review-subscription": { result, outputs },
+          "review-subscription": { result: "success", outputs },
         },
       }),
     );
-  assert.equal(starts({ handoff: "true" }), true);
+  const ready = { fallbackSet: "true" };
+  const limit = { handoff: "true", "handoff-reason": "limit-stop" };
+  assert.equal(starts(handedOn("subscription", ready, limit)), true);
   // After a credit skip of the key job too.
-  assert.equal(starts({ handoff: "true" }, "success", "skipped"), true);
+  assert.equal(starts(handedOn("subscription", ready, limit), "skipped"), true);
   for (const handoff of ["", "false", "True", "true ", "1"]) {
-    assert.equal(starts({ handoff }), false, JSON.stringify(handoff));
+    assert.equal(
+      starts(handedOn("subscription", ready, { ...limit, handoff })),
+      false,
+      JSON.stringify(handoff),
+    );
   }
-  for (const result of ["failure", "cancelled", "skipped"]) {
-    assert.equal(starts({ handoff: "true" }, result), false, result);
-  }
+  // The next-leg step is the subscription job's last and runs only when
+  // every step before it passed (no if:), so a failed, cancelled or skipped
+  // subscription job leaves no next-leg and the fallback job never starts.
+  assert.equal(subscription.steps.at(-2).id, "next");
+  assert.equal(subscription.steps.at(-2).if, undefined);
+  assert.equal(starts({}), false);
   // An empty subscription token hands on as an empty key does, but only to a
   // fallback token that is set (claude-code-plugins#13586).
   assert.equal(
-    starts({
-      handoff: "",
-      "credential-present": "false",
-      "fallback-ready": "true",
-    }),
+    starts(handedOn("subscription", { credentialSet: "false", ...ready })),
     true,
   );
   assert.equal(
-    starts({
-      handoff: "",
-      "credential-present": "false",
-      "fallback-ready": "false",
-    }),
+    starts(handedOn("subscription", { credentialSet: "false" })),
     false,
   );
-  assert.equal(
-    starts({ handoff: "", "credential-present": "", "fallback-ready": "true" }),
-    false,
-  );
+  // A leg that never decided (the scope step skipped the review) hands on
+  // nothing.
+  assert.equal(starts(select.next({ state: "" })), false);
   // A fork, a draft or Dependabot never reaches it either.
   assert.equal(
     Boolean(
@@ -208,7 +206,7 @@ test("the fallback job starts only after the subscription job succeeded and hand
         needs: {
           "review-subscription": {
             result: "success",
-            outputs: { handoff: "true" },
+            outputs: handedOn("subscription", ready, limit),
           },
         },
       }),
@@ -218,32 +216,46 @@ test("the fallback job starts only after the subscription job succeeded and hand
   assert.doesNotMatch(fallback.if, /always\(\)|failure\(\)/u);
 });
 
-const FALLBACK_LEG_REASON =
-  `\${{ needs.review-subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || ` +
-  "needs.review-subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || " +
-  "needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || " +
-  "needs.review-subscription.outputs.credential-present == 'false' && 'no-key' || '' }}";
+// The reason a leg runs comes from select-model-credential, which checks the
+// previous leg's next-reason against report-lane-outcome's closed list.
+const LEG_REASON = `\${{ steps.credential.outputs.fallback-reason }}`;
 
 test("the fallback job repeats the subscription job's steps but for the credential and the fallback reason", () => {
-  const strip = (steps, secret, input) =>
+  const strip = (steps, leg, secret, input, previous) =>
     steps.map((s) => {
       const copy = structuredClone(s);
       if (copy.id === "credential") {
-        assert.equal(copy.env.SECRET_NAME, secret);
-        assert.equal(copy.env.PRESENT, `\${{ secrets.${secret} != '' }}`);
-        delete copy.env.PRESENT;
-        delete copy.env.SECRET_NAME;
+        assert.equal(copy.with.leg, leg);
+        assert.equal(
+          copy.with["credential-set"],
+          `\${{ secrets.${secret} != '' }}`,
+        );
+        assert.equal(copy.with.reason, previous);
+        delete copy.with.leg;
+        delete copy.with["credential-set"];
+        delete copy.with.reason;
       }
       if (/^claude(-[2-4])?$/u.test(copy.id)) {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
         delete copy.with[input];
       }
-      if (copy.id === "review-outcome") delete copy.with["fallback-reason"];
       return copy;
     });
   assert.deepEqual(
-    strip(fallback.steps, "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN", "fallback-token"),
-    strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
+    strip(
+      fallback.steps,
+      "fallback",
+      "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+      "fallback-token",
+      `\${{ needs.review-subscription.outputs.next-reason }}`,
+    ),
+    strip(
+      subscription.steps,
+      "subscription",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "subscription-token",
+      `\${{ needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}`,
+    ),
   );
   for (const field of [
     "permissions",
@@ -254,18 +266,43 @@ test("the fallback job repeats the subscription job's steps but for the credenti
   ]) {
     assert.deepEqual(fallback[field], subscription[field], field);
   }
-  const value = step(fallback, "review-outcome").with["fallback-reason"];
-  assert.equal(value, FALLBACK_LEG_REASON);
+  assert.equal(
+    step(fallback, "review-outcome").with["fallback-reason"],
+    LEG_REASON,
+  );
+  assert.equal(
+    step(subscription, "review-outcome").with["fallback-reason"],
+    LEG_REASON,
+  );
+  // The subscription job's handoff reason reaches the fallback leg's record;
+  // a reason the launcher cannot give a subscription leg hands on nothing.
   const reason = (handoffReason) =>
-    evaluate(value, {
-      needs: {
-        "review-subscription": { outputs: { "handoff-reason": handoffReason } },
-      },
-    });
+    decide("fallback", {
+      reason: handedOn(
+        "subscription",
+        { fallbackSet: "true" },
+        { handoff: "true", "handoff-reason": handoffReason },
+      )["next-reason"],
+    }).outputs["fallback-reason"];
   for (const known of ["limit-stop", "credit-stop", "auth"])
     assert.equal(reason(known), known);
   for (const forged of ["", "no-key", "Auth"])
     assert.equal(reason(forged), "", forged);
+  // An empty subscription token with the fallback token set: no-key.
+  assert.equal(
+    decide("fallback", {
+      reason: handedOn("subscription", {
+        credentialSet: "false",
+        fallbackSet: "true",
+      })["next-reason"],
+    }).outputs["fallback-reason"],
+    "no-key",
+  );
+  // A forged next-reason never reaches the record.
+  assert.equal(
+    decide("fallback", { reason: "planted" }).outputs["fallback-reason"],
+    "",
+  );
 });
 
 test("the status job counts the fallback leg when it ran, else the subscription leg", async () => {
@@ -511,6 +548,7 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
             outputs: {
               handoff: "true",
               "credential-present": "true",
+              "next-leg": "subscription",
               ...outputs,
             },
           },
@@ -612,11 +650,15 @@ const reaches = (job, github, inputs, read, result = "success") =>
         "check-key-credit": { result: "success", outputs: {} },
         "review-key": {
           result: "success",
-          outputs: { handoff: "true", "credential-present": "true" },
+          outputs: {
+            handoff: "true",
+            "credential-present": "true",
+            "next-leg": "subscription",
+          },
         },
         "review-subscription": {
           result: "success",
-          outputs: { handoff: "true" },
+          outputs: { handoff: "true", "next-leg": "fallback" },
         },
       },
     }),
@@ -982,76 +1024,85 @@ test("each pull request value reads the resolve-pull-request job's output with p
 });
 
 test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
-  const starts = (outputs, result = "success", skipKey = "") =>
+  // The check-key-credit job's start call names the first leg; the key job's
+  // last step names the next one.
+  const starts = (keyOutputs, result = "success", skipKey = false) =>
     Boolean(
       evaluate(subscription.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
-          "check-key-credit": { outputs: { "skip-key": skipKey } },
-          "review-key": { result, outputs },
+          "check-key-credit": { outputs: select.start({ skipKey }) },
+          "review-key": { result, outputs: keyOutputs },
         },
       }),
     );
-  // A key job skipped by check-key-credit's exact `true`, and no other skip.
-  assert.equal(starts({}, "skipped", "true"), true);
-  for (const skipKey of ["", "false", "True", "true ", "1"]) {
-    assert.equal(
-      starts({}, "skipped", skipKey),
-      false,
-      JSON.stringify(skipKey),
-    );
-  }
-  // A key job that failed or was cancelled starts nothing, as before.
+  // A key job skipped by the credit read, and no other skip.
+  assert.equal(starts({}, "skipped", true), true);
+  assert.equal(starts({}, "skipped", false), false);
+  // A key job that failed or was cancelled starts nothing, as before: its
+  // next-leg step is its last and has no if:, so it never ran.
+  assert.equal(key.steps.at(-2).id, "next");
+  assert.equal(key.steps.at(-2).if, undefined);
   for (const result of ["failure", "cancelled"]) {
-    assert.equal(starts({ handoff: "true" }, result, "true"), false, result);
+    assert.equal(starts({}, result), false, result);
   }
   assert.deepEqual(subscription.needs, [
     "resolve-pull-request",
     "check-key-credit",
     "review-key",
   ]);
-  assert.equal(starts({ handoff: "true", "credential-present": "true" }), true);
-  assert.equal(starts({ handoff: "", "credential-present": "false" }), true);
+  const credit = { handoff: "true", "handoff-reason": "credit-stop" };
+  assert.equal(starts(handedOn("key", {}, credit)), true);
+  assert.equal(
+    starts(handedOn("key", {}, { ...credit, "handoff-reason": "auth" })),
+    true,
+  );
+  assert.equal(starts(handedOn("key", { credentialSet: "false" })), true);
   for (const handoff of ["", "false", "True", "true ", "1"]) {
     assert.equal(
-      starts({ handoff, "credential-present": "true" }),
+      starts(handedOn("key", {}, { ...credit, handoff })),
       false,
       JSON.stringify(handoff),
     );
   }
-  // A review the scope step skipped sets no credential-present at all.
-  assert.equal(starts({ handoff: "", "credential-present": "" }), false);
+  // A key leg that never decided (the scope step skipped the review) hands
+  // on nothing.
+  assert.equal(starts(select.next({ state: "" })), false);
   assert.doesNotMatch(subscription.if, /always\(\)|failure\(\)/u);
 });
 
-test("the key job runs unless check-key-credit says exactly true, a failed check-key-credit included", () => {
-  const runs = (skipKey, result = "success") =>
+test("the key job runs unless the start call names the subscription leg, a failed check-key-credit included", () => {
+  const runs = (outputs, result = "success") =>
     Boolean(
       evaluate(key.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
-          "check-key-credit": { result, outputs: { "skip-key": skipKey } },
+          "check-key-credit": { result, outputs },
         },
       }),
     );
-  assert.equal(runs("true"), false);
-  for (const skipKey of ["", "false", "True"]) {
-    assert.equal(runs(skipKey), true, JSON.stringify(skipKey));
-  }
-  assert.equal(runs("", "failure"), true);
-  assert.equal(runs("", "skipped"), true);
+  assert.equal(runs(select.start({ skipKey: true })), false);
+  assert.equal(runs(select.start({ skipKey: false })), true);
+  // A failed or skipped start call leaves next-leg empty: the key runs.
+  assert.equal(runs({}, "failure"), true);
+  assert.equal(runs({}, "skipped"), true);
   assert.deepEqual(key.needs, ["resolve-pull-request", "check-key-credit"]);
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  assert.equal(gate.steps[0].uses, "$/.github/actions/check-key-credit");
-  // The caller's reset time reaches the gate as an input, never inline.
+  assert.equal(gate.steps[0].uses, "$/.github/actions/select-model-credential");
+  assert.equal(gate.steps[0].with.leg, "start");
+  // The caller's window and reset time reach the gate as inputs, never inline.
+  assert.equal(
+    gate.steps[0].with["window-hours"],
+    `\${{ inputs.key-credit-window-hours }}`,
+  );
   assert.equal(
     gate.steps[0].with["reset-at"],
     `\${{ inputs.key-credit-reset-at }}`,
   );
-  assert.equal(gate.outputs["skip-key"], `\${{ steps.gate.outputs.skip-key }}`);
+  assert.equal(gate.outputs["next-leg"], `\${{ steps.gate.outputs.next-leg }}`);
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
 });
 
@@ -1211,12 +1262,21 @@ test("after a credit skip the status job runs and reads the subscription job's s
     evaluate(publish.SCOPE_REVIEW, { needs: needs("skipped", "success") }),
     "sub",
   );
-  // The subscription leg records the skip as the credit stop it follows.
+  // The subscription leg records the skip as the credit stop it follows: the
+  // start call's next-reason, the key job having left none.
+  const previous = evaluate(step(subscription, "credential").with.reason, {
+    needs: {
+      "review-key": { result: "skipped", outputs: {} },
+      "check-key-credit": { outputs: select.start({ skipKey: true }) },
+    },
+  });
   assert.equal(
-    evaluate(step(subscription, "review-outcome").with["fallback-reason"], {
-      needs: { "review-key": { result: "skipped", outputs: {} } },
-    }),
+    decide("subscription", { reason: previous }).outputs["fallback-reason"],
     "credit-stop",
+  );
+  assert.equal(
+    step(subscription, "review-outcome").with["fallback-reason"],
+    LEG_REASON,
   );
 });
 
@@ -1267,13 +1327,21 @@ test("the status job takes the last summary from the subscription leg when the k
 });
 
 test("the subscription job repeats the key job's steps but for the credential and the fallback reason", () => {
-  const strip = (steps, secret, input) =>
+  // The credential step differs only in its leg, its secret, and the inputs
+  // only one of the two legs takes (key-off on the key leg, the previous
+  // leg's reason on the subscription leg).
+  const strip = (steps, leg, secret, input) =>
     steps.map((s) => {
       const copy = structuredClone(s);
-      if (copy.id === "credential") delete copy.env.PRESENT;
       if (copy.id === "credential") {
-        assert.equal(copy.env.SECRET_NAME, secret);
-        delete copy.env.SECRET_NAME;
+        assert.equal(copy.with.leg, leg);
+        assert.equal(
+          copy.with["credential-set"],
+          `\${{ secrets.${secret} != '' }}`,
+        );
+        for (const name of ["leg", "credential-set", "key-off", "reason"]) {
+          delete copy.with[name];
+        }
       }
       if (/^claude(-[2-4])?$/u.test(copy.id)) {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
@@ -1282,6 +1350,12 @@ test("the subscription job repeats the key job's steps but for the credential an
       if (copy.id === "review-outcome") delete copy.with["fallback-reason"];
       return copy;
     });
+  assert.equal(
+    step(key, "credential").with["key-off"],
+    `\${{ vars.REVIEWS_KEY_EXHAUSTED }}`,
+  );
+  assert.equal(step(key, "credential").with.reason, undefined);
+  assert.equal(step(subscription, "credential").with["key-off"], undefined);
   // Only the key leg's credit stop says the key is out, so only it uploads
   // the gate's marker.
   const keyOnly = new Set([
@@ -1290,9 +1364,15 @@ test("the subscription job repeats the key job's steps but for the credential an
     "Upload the key's credit-stop marker",
   ]);
   assert.deepEqual(
-    strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
+    strip(
+      subscription.steps,
+      "subscription",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "subscription-token",
+    ),
     strip(
       key.steps.filter((s) => !keyOnly.has(s.name)),
+      "key",
       "CLAUDE_API_KEY",
       "api-key",
     ),
@@ -1362,33 +1442,49 @@ test("a leg whose runner isolation failed reports install-failed, not no-outcome
 });
 
 test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED is true", () => {
-  const present = (secret, exhausted) =>
-    evaluate(step(key, "credential").env.PRESENT, {
-      secrets: { CLAUDE_API_KEY: secret },
-      vars: { REVIEWS_KEY_EXHAUSTED: exhausted },
-    });
-  assert.equal(present("k", ""), true);
-  assert.equal(present("k", "false"), true);
-  assert.equal(present("k", "true"), false);
-  assert.equal(present("", ""), false);
+  // The step's inputs as the runner hands them to the action: strings.
+  const present = (job, leg, secrets, exhausted) => {
+    const inputs = step(job, "credential").with;
+    const context = { secrets, vars: { REVIEWS_KEY_EXHAUSTED: exhausted } };
+    return decide(leg, {
+      credentialSet: String(evaluate(inputs["credential-set"], context)),
+      keyOff:
+        inputs["key-off"] === undefined
+          ? ""
+          : String(evaluate(inputs["key-off"], context) ?? ""),
+    }).outputs.present;
+  };
+  const keyPresent = (secret, exhausted) =>
+    present(key, "key", { CLAUDE_API_KEY: secret }, exhausted);
+  assert.equal(keyPresent("k", ""), "true");
+  assert.equal(keyPresent("k", undefined), "true");
+  assert.equal(keyPresent("k", "false"), "true");
+  assert.equal(keyPresent("k", "true"), "false");
+  assert.equal(keyPresent("", ""), "false");
   assert.equal(
-    evaluate(step(subscription, "credential").env.PRESENT, {
-      secrets: { CLAUDE_CODE_OAUTH_TOKEN: "t" },
-      vars: { REVIEWS_KEY_EXHAUSTED: "true" },
-    }),
-    true,
+    present(
+      subscription,
+      "subscription",
+      { CLAUDE_CODE_OAUTH_TOKEN: "t" },
+      "true",
+    ),
+    "true",
   );
-  // The reason the subscription leg records.
-  const reason = (outputs) =>
-    evaluate(step(subscription, "review-outcome").with["fallback-reason"], {
-      needs: { "review-key": { outputs } },
-    });
-  assert.equal(reason({ "lane-class": "credit-stop" }), "credit-stop");
-  assert.equal(reason({ "lane-class": "auth" }), "auth");
+  // The reason the subscription leg records, from the key job's next-reason.
+  const reason = (flags, launcher) =>
+    decide("subscription", {
+      reason: handedOn("key", flags, launcher)["next-reason"],
+    }).outputs["fallback-reason"];
   assert.equal(
-    reason({ "lane-class": "", "credential-present": "false" }),
-    "no-key",
+    reason({}, { handoff: "true", "handoff-reason": "credit-stop" }),
+    "credit-stop",
   );
+  assert.equal(
+    reason({}, { handoff: "true", "handoff-reason": "auth" }),
+    "auth",
+  );
+  assert.equal(reason({ credentialSet: "false" }), "no-key");
+  assert.equal(reason({ keyOff: "true" }), "no-key");
 });
 
 const minutes = (value, lane) =>

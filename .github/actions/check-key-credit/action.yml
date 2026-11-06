@@ -35,9 +35,11 @@ inputs:
     description: >-
       The backoff's base step: how far back a single credit stop counts, in
       hours (0 turns the gate off; at most 168). Above 24 it never backs off.
-      A marker kept fewer days than the window ends it sooner.
+      A marker kept fewer days than the window ends it sooner. Empty is 1
+      hour (gate.cjs DEFAULT_WINDOW_HOURS), so callers pass an unset
+      vars.KEY_CREDIT_WINDOW_HOURS as it is.
     required: false
-    default: "1"
+    default: ""
   reset-at:
     description: >-
       An ISO-8601 UTC time (`2026-11-06T12:00:00Z`), the moment a new key was
@@ -51,9 +53,10 @@ inputs:
       How long another gate's probing marker keeps this gate off the key, in
       minutes (0 turns probing off; at most 1440, one
       day). It covers the longest measured gate-to-key-leg gap plus a
-      margin, so the probe's own credit stop lands before it ends.
+      margin, so the probe's own credit stop lands before it ends. Empty is
+      15 (gate.cjs DEFAULT_PROBE_MINUTES).
     required: false
-    default: "15"
+    default: ""
   github-token:
     description: "The job token, with actions: read."
     required: false

@@ -277,9 +277,10 @@ on:
           is kept one day, and with probing off no key run that worked is
           seen, so the backoff counts only the last day's credit stops. The
           caller job must grant actions: read, which the gate reads its
-          marker with.
-        type: number
-        default: 1
+          marker with. Empty is check-key-credit's default, 1 hour, so a
+          caller passes an unset vars.KEY_CREDIT_WINDOW_HOURS as it is.
+        type: string
+        default: ""
       key-credit-reset-at:
         description: >-
           The caller's vars.KEY_CREDIT_RESET_AT, an ISO-8601 UTC time the
@@ -350,15 +351,16 @@ jobs:
       actions: read
     cache-mode: none
     outputs:
-      skip-key: ${{ steps.gate.outputs.skip-key }}
+      next-leg: ${{ steps.gate.outputs.next-leg }}
       marker: ${{ steps.gate.outputs.marker }}
     steps:
       - name: Read the key's credit history
         id: gate
         continue-on-error: true
         timeout-minutes: 2
-        uses: $/.github/actions/check-key-credit
+        uses: $/.github/actions/select-model-credential
         with:
+          leg: start
           key-job: claude-intake-triage
           window-hours: ${{ inputs.key-credit-window-hours }}
           reset-at: ${{ inputs.key-credit-reset-at }}
@@ -444,6 +446,8 @@ jobs:
       credential-present: ${{ steps.credential.outputs.present }}
       key-skipped: ${{ steps.credential.outputs.key-skipped }}
       fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
+      next-leg: ${{ steps.next.outputs.next-leg }}
+      next-reason: ${{ steps.next.outputs.next-reason }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -979,28 +983,13 @@ jobs:
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
         id: credential
-        env:
-          PRESENT: ${{ secrets.CLAUDE_API_KEY != '' }}
-          SECRET_NAME: CLAUDE_API_KEY
-          # Whether the fallback leg can run, never the token.
-          FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          SKIP_KEY: ${{ needs.check-key-credit.outputs.skip-key }}
-        run: |
-          if [ "$SKIP_KEY" = true ]; then
-            echo "::notice::$SECRET_NAME's last credit stop is inside the key-credit window; the subscription job triages."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-            echo "key-skipped=true" >>"$GITHUB_OUTPUT"
-          elif [ "$PRESENT" = true ]; then
-            echo "present=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::$SECRET_NAME is empty; this job does not triage."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-          fi
-          if [ "$FALLBACK_PRESENT" = true ]; then
-            echo "fallback-ready=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "fallback-ready=false" >>"$GITHUB_OUTPUT"
-          fi
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: key
+          role: ${{ inputs.role }}
+          credential-set: ${{ secrets.CLAUDE_API_KEY != '' }}
+          fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          selected: ${{ needs.check-key-credit.outputs.next-leg }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -1199,6 +1188,20 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The leg the next job runs, from this job's credential decision and
+      # the launcher's handoff (select-model-credential). It has no if:,
+      # so only when every step before it passed, and only the budget log
+      # (always, never failing) follows it: the next job starts only
+      # after a leg job that succeeded, as it did before.
+      - name: Pick the next leg
+        id: next
+        timeout-minutes: 1
+        uses: $/.github/actions/select-model-credential
+        with:
+          state: ${{ steps.credential.outputs.state }}
+          handoff: ${{ steps.claude.outputs.handoff }}
+          handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
+
       # The job token's api-budget notice, from the readings the script
       # steps' requests left. It spends no request.
       - name: Log the API budget
@@ -1212,14 +1215,15 @@ jobs:
   # The subscription leg, as its own job on a fresh VM: the claude job's
   # processes, files and environment do not reach it. Its steps repeat the
   # claude job's but for the credential (a test holds them equal), so the
-  # hardening runs again before the checkout. It reads three outputs of the
-  # claude job, each compared to a fixed string here and never written into
-  # a run: script, and nothing else from that job. It does not use
+  # hardening runs again before the checkout. It reads two outputs of the
+  # claude job, select-model-credential's next-leg, compared to a fixed
+  # string here, and next-reason, which that action checks against a closed
+  # list; neither reaches a run: script. It does not use
   # inputs.runner: a caller's runner could keep state between jobs.
   subscription:
     name: claude-intake-triage-subscription
     needs: claude
-    if: needs.claude.outputs.handoff == 'true' || needs.claude.outputs.credential-present == 'false'
+    if: needs.claude.outputs.next-leg == 'subscription'
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
@@ -1235,6 +1239,8 @@ jobs:
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
+      next-leg: ${{ steps.next.outputs.next-leg }}
+      next-reason: ${{ steps.next.outputs.next-reason }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -1770,23 +1776,13 @@ jobs:
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
         id: credential
-        env:
-          PRESENT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          SECRET_NAME: CLAUDE_CODE_OAUTH_TOKEN
-          # Whether the fallback leg can run, never the token.
-          FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          if [ "$PRESENT" = true ]; then
-            echo "present=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::$SECRET_NAME is empty; this job does not triage."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-          fi
-          if [ "$FALLBACK_PRESENT" = true ]; then
-            echo "fallback-ready=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "fallback-ready=false" >>"$GITHUB_OUTPUT"
-          fi
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: subscription
+          role: ${{ inputs.role }}
+          credential-set: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          reason: ${{ needs.claude.outputs.next-reason }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -1845,7 +1841,7 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record (ci-workflows#806).
-          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.key-skipped == 'true' && 'credit-stop' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
+          fallback-reason: ${{ steps.credential.outputs.fallback-reason }}
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.
@@ -1953,6 +1949,20 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The leg the next job runs, from this job's credential decision and
+      # the launcher's handoff (select-model-credential). It has no if:,
+      # so only when every step before it passed, and only the budget log
+      # (always, never failing) follows it: the next job starts only
+      # after a leg job that succeeded, as it did before.
+      - name: Pick the next leg
+        id: next
+        timeout-minutes: 1
+        uses: $/.github/actions/select-model-credential
+        with:
+          state: ${{ steps.credential.outputs.state }}
+          handoff: ${{ steps.claude.outputs.handoff }}
+          handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
+
       # The job token's api-budget notice, from the readings the script
       # steps' requests left. It spends no request.
       - name: Log the API budget
@@ -1967,15 +1977,13 @@ jobs:
   # a fresh VM, only after the subscription job handed off (a limit stop, a
   # credit stop, or a 401 or 402, with the fallback token set). Its steps
   # repeat the subscription job's but for the credential and the fallback
-  # reason (a test holds them equal). It reads two outputs of the
-  # subscription job, each compared to a fixed string here and never
-  # written into a run: script. It is the last leg and never hands off.
+  # reason (a test holds them equal). It reads the subscription job's
+  # next-leg and next-reason the same way. It is the last leg and never
+  # hands off.
   fallback:
     name: claude-intake-triage-fallback
     needs: [claude, subscription]
-    if: >-
-      needs.subscription.outputs.handoff == 'true'
-      || needs.subscription.outputs.credential-present == 'false' && needs.subscription.outputs.fallback-ready == 'true'
+    if: needs.subscription.outputs.next-leg == 'fallback'
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
@@ -1991,6 +1999,8 @@ jobs:
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
       fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
+      next-leg: ${{ steps.next.outputs.next-leg }}
+      next-reason: ${{ steps.next.outputs.next-reason }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -2526,23 +2536,13 @@ jobs:
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
         id: credential
-        env:
-          PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          SECRET_NAME: FALLBACK_CLAUDE_CODE_OAUTH_TOKEN
-          # Whether the fallback leg can run, never the token.
-          FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          if [ "$PRESENT" = true ]; then
-            echo "present=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::$SECRET_NAME is empty; this job does not triage."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-          fi
-          if [ "$FALLBACK_PRESENT" = true ]; then
-            echo "fallback-ready=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "fallback-ready=false" >>"$GITHUB_OUTPUT"
-          fi
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: fallback
+          role: ${{ inputs.role }}
+          credential-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          reason: ${{ needs.subscription.outputs.next-reason }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -2601,7 +2601,7 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record.
-          fallback-reason: ${{ needs.subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || needs.subscription.outputs.credential-present == 'false' && 'no-key' || '' }}
+          fallback-reason: ${{ steps.credential.outputs.fallback-reason }}
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.
@@ -2708,6 +2708,20 @@ jobs:
               `- Reason: ${typeof raw?.reason === "string" ? raw.reason.slice(0, 500) : "(none)"}`,
             ];
             await core.summary.addRaw(summary.join("\n")).write();
+
+      # The leg the next job runs, from this job's credential decision and
+      # the launcher's handoff (select-model-credential). It has no if:,
+      # so only when every step before it passed, and only the budget log
+      # (always, never failing) follows it: the next job starts only
+      # after a leg job that succeeded, as it did before.
+      - name: Pick the next leg
+        id: next
+        timeout-minutes: 1
+        uses: $/.github/actions/select-model-credential
+        with:
+          state: ${{ steps.credential.outputs.state }}
+          handoff: ${{ steps.claude.outputs.handoff }}
+          handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
 
       # The job token's api-budget notice, from the readings the script
       # steps' requests left. It spends no request.

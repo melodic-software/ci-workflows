@@ -826,11 +826,21 @@ consumer to audit it.
   starts it over. A key whose credit returns on its monthly cycle, or one set
   by hand with `gh secret set`, writes no reset, so it waits out the current
   step, at most 24 hours; the action's `action.yml` gives the one-line manual
-  reset. Another keyed lane adopts it with four pieces: a gate job
-  before its key job, an upload of the gate's `probing-marker` artifact in
-  that gate job when the output is set, an upload of the gate's `marker`
-  artifact after the launcher's `credit-stop`, and a subscription job that
-  also starts on the gate's skip (its `action.yml` describes the inputs).
+  reset. An empty `window-hours` or `probe-minutes` is the default, so
+  callers pass an unset `vars.KEY_CREDIT_WINDOW_HOURS` as it is. Lanes call
+  it through `select-model-credential` (below), not directly.
+- `.github/actions/select-model-credential` — the one place every Claude
+  model lane picks its credential: the role's API key, then its subscription
+  token, then the central fallback token, each leg its own job. A `start`
+  call reads the key's credit history (`check-key-credit`, its calls only)
+  and names the first leg; a call first in each leg job decides whether that
+  leg's model runs from whether its secret is set (passed as
+  `secrets.X != ''`, never a value); a call last in each leg job names the
+  next job's leg from the launcher's handoff. Each job's `if:` compares that
+  `next-leg` output to its own leg. `key-off` (pr-review-cli passes
+  `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
+  history cannot (its `action.yml` describes the inputs; `select.cjs` the
+  rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
 - `.github/actions/upload-lane-transcript` — the step after each model leg in
   `pr-review-cli.yml` and `intake-triage.yml`: scans the leg's execution file,
   seals it to the caller's `lane-transcript-public-key` input and uploads only
@@ -1240,7 +1250,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   after a handoff, with no key, or when the caller repository's
   `REVIEWS_KEY_EXHAUSTED` variable is `true`, and the optional
   `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` secret in `review-fallback` after the
-  subscription job hands off. The model jobs are read-only
+  subscription job hands off, each choice made by
+  `.github/actions/select-model-credential`. The model jobs are read-only
   (`contents: read`, `pull-requests: read`, `cache-mode: none`, no
   `id-token`), and the model gets Read, Grep, Glob, Skill and Agent under
   `--permission-mode dontAsk`, the review plugin from claude-code-plugins'
