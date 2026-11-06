@@ -404,6 +404,9 @@ test("the subscription job repeats the claude job's steps but for the credential
     "${{ steps.credential.outputs.key-skipped }}",
   );
   assert.deepEqual(claude.needs, "check-key-credit");
+  // A failed or skipped gate job still runs the key leg: the if opens with
+  // !cancelled(), so it carries no implicit success() of its needs.
+  assert.match(claude.if, /^\$\{\{ !cancelled\(\) && \(/);
   // The hardening runs before the checkout in both jobs.
   const order = subscription.steps.map((step) => step.name);
   assert.ok(

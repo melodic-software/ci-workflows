@@ -377,9 +377,11 @@ jobs:
     # acting on someone else's issue cannot. Other issues wait for a person,
     # and the skipped job below says so. A workflow_dispatch run starts when
     # its actor's id is listed the same way. Any other event passes so the
-    # first step can reject it loudly.
+    # first step can reject it loudly. !cancelled() runs the key leg when the
+    # check-key-credit job itself fails: every gate failure runs the key, and
+    # the credential step reads a skip from the gate's output.
     if: >-
-      ${{ (github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
+      ${{ !cancelled() && ((github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
           || (github.event_name == 'workflow_dispatch'
               && inputs.issue-number != ''
               && github.actor_id
@@ -414,7 +416,7 @@ jobs:
                       && !endsWith(inputs.allowed-bot-sender-ids, ',')
                       && !contains(inputs.allowed-bot-sender-ids, ',,')
                       && contains(format(',{0},', inputs.allowed-bot-sender-ids),
-                                  format(',{0},', github.event.sender.id))))) }}
+                                  format(',{0},', github.event.sender.id)))))) }}
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
