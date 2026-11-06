@@ -769,8 +769,8 @@ consumer to audit it.
   against `loop.review-rounds`, read from the default branch's
   `docs/conventions/pr-pipeline.yaml`, so the review does not repeat a finding
   on unchanged lines (its `action.yml` describes what it does).
-- `.github/actions/read-pull-request` — `pr-review-cli.yml`'s
-  `pull-request` job, for a `workflow_run` caller that sets `pr-number`: one
+- `.github/actions/resolve-pull-request` — `pr-review-cli.yml`'s
+  `resolve-pull-request` job, for a `workflow_run` caller that sets `pr-number`: one
   `pulls.get`, whose state, draft flag, head repository, author, head and
   base the lane's gates read in place of the `pull_request` event's, and a
   skip with a notice when the head is no longer `head-sha` (its `action.yml`
@@ -1228,7 +1228,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   startup when the caller does not grant both. The workflow header carries the canonical caller and
   the security model. A `workflow_run` caller, such as review after another
   workflow finishes on the pull request, sets `pr-number` and `head-sha`
-  (optionally `base-sha` and `event-action`): the `pull-request` job reads
+  (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
   the pull request once, the gates check its state, draft flag, head
   repository and author from that read, and the lane skips with a notice
   when the head moved. With no `pr-number`, a `pull_request` caller runs as

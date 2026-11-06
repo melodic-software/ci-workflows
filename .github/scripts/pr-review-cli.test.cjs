@@ -146,7 +146,7 @@ test("every model job tells its launcher whether the fallback token is set, neve
 
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
   assert.deepEqual(fallback.needs, [
-    "pull-request",
+    "resolve-pull-request",
     "check-key-credit",
     "review-key",
     "review-subscription",
@@ -270,7 +270,7 @@ test("the fallback job repeats the subscription job's steps but for the credenti
 
 test("the status job counts the fallback leg when it ran, else the subscription leg", async () => {
   assert.deepEqual(status.needs, [
-    "pull-request",
+    "resolve-pull-request",
     "review-key",
     "review-subscription",
     "review-fallback",
@@ -565,14 +565,18 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
 });
 
 // A workflow_run caller's run: its event carries no pull_request, so the
-// pull-request job's read (READ) stands in for it. A forged pull_request in
+// resolve-pull-request job's read (READ) stands in for it. A forged pull_request in
 // the payload must never count.
 const HEAD = "a".repeat(40);
 const WR = {
   event_name: "workflow_run",
   actor: "kyle-sexton",
   repository: "o/r",
-  event: { action: "completed", sender: { id: 1 }, workflow_run: { head_sha: HEAD } },
+  event: {
+    action: "completed",
+    sender: { id: 1 },
+    workflow_run: { head_sha: HEAD },
+  },
 };
 const READ = {
   proceed: "true",
@@ -600,7 +604,7 @@ const reaches = (job, github, inputs, read, result = "success") =>
       github,
       inputs: { "allowed-bot-sender-ids": "", ...inputs },
       needs: {
-        "pull-request": { result, outputs: read },
+        "resolve-pull-request": { result, outputs: read },
         "check-key-credit": { result: "success", outputs: {} },
         "review-key": {
           result: "success",
@@ -614,8 +618,8 @@ const reaches = (job, github, inputs, read, result = "success") =>
     }),
   );
 
-test("a pull_request caller with no pr-number skips the pull-request job and every gate reads the event as before", () => {
-  const read = workflow.jobs["pull-request"];
+test("a pull_request caller with no pr-number skips the resolve-pull-request job and every gate reads the event as before", () => {
+  const read = workflow.jobs["resolve-pull-request"];
   for (const inputs of [{}, { "pr-number": "" }]) {
     assert.equal(Boolean(evaluate(read.if, { github: PR, inputs })), false);
     for (const job of SECRET_JOBS()) {
@@ -642,11 +646,19 @@ test("a workflow_run caller with pr-number reaches every secret-bearing job only
       "no read": {},
     };
     for (const [why, read] of Object.entries(refused)) {
-      assert.equal(reaches(job, WR, WR_INPUTS, read), false, `${job.name}: ${why}`);
+      assert.equal(
+        reaches(job, WR, WR_INPUTS, read),
+        false,
+        `${job.name}: ${why}`,
+      );
     }
     // A failed or skipped read refuses whatever outputs it left.
     for (const result of ["failure", "skipped", "cancelled"]) {
-      assert.equal(reaches(job, WR, WR_INPUTS, READ, result), false, `${job.name}: ${result}`);
+      assert.equal(
+        reaches(job, WR, WR_INPUTS, READ, result),
+        false,
+        `${job.name}: ${result}`,
+      );
     }
     // A pull_request the payload claims counts for nothing.
     const forged = structuredClone(WR);
@@ -658,11 +670,19 @@ test("a workflow_run caller with pr-number reaches every secret-bearing job only
     );
     // workflow_run with no pr-number, and pr-number on any other event, skip.
     assert.equal(reaches(job, WR, {}, READ), false, job.name);
-    for (const event_name of ["pull_request", "pull_request_target", "workflow_dispatch"]) {
+    for (const event_name of [
+      "pull_request",
+      "pull_request_target",
+      "workflow_dispatch",
+    ]) {
       const other = withPr((g) => {
         g.event_name = event_name;
       });
-      assert.equal(reaches(job, other, WR_INPUTS, READ), false, `${job.name}: ${event_name}`);
+      assert.equal(
+        reaches(job, other, WR_INPUTS, READ),
+        false,
+        `${job.name}: ${event_name}`,
+      );
     }
     // The actor and bot checks still apply.
     const dependabot = structuredClone(WR);
@@ -680,17 +700,24 @@ test("a workflow_run caller with pr-number reaches every secret-bearing job only
   }
 });
 
-test("the pull-request job reads only a workflow_run caller's pull request, holds no secret and cannot write", () => {
-  const read = workflow.jobs["pull-request"];
-  const runs = (github, inputs) => Boolean(evaluate(read.if, { github, inputs }));
+test("the resolve-pull-request job reads only a workflow_run caller's pull request, holds no secret and cannot write", () => {
+  const read = workflow.jobs["resolve-pull-request"];
+  const runs = (github, inputs) =>
+    Boolean(evaluate(read.if, { github, inputs }));
   assert.equal(runs(WR, WR_INPUTS), true);
   assert.equal(runs(WR, {}), false);
-  assert.equal(runs(withPr((g) => (g.event_name = "pull_request_target")), WR_INPUTS), false);
+  assert.equal(
+    runs(
+      withPr((g) => (g.event_name = "pull_request_target")),
+      WR_INPUTS,
+    ),
+    false,
+  );
   assert.equal(read.needs, undefined);
   assert.deepEqual(read.permissions, { "pull-requests": "read" });
   assert.doesNotMatch(JSON.stringify(read), /secrets\./u);
   const s = step(read, "read");
-  assert.equal(s.uses, "$/.github/actions/read-pull-request");
+  assert.equal(s.uses, "$/.github/actions/resolve-pull-request");
   assert.deepEqual(s.with, {
     "pr-number": `\${{ inputs.pr-number }}`,
     "head-sha": `\${{ inputs.head-sha }}`,
@@ -698,15 +725,19 @@ test("the pull-request job reads only a workflow_run caller's pull request, hold
     "event-action": `\${{ inputs.event-action }}`,
   });
   for (const name of ["proceed", "state", "draft", "head-repo", "author"]) {
-    assert.equal(read.outputs[name], `\${{ steps.read.outputs.${name} }}`, name);
+    assert.equal(
+      read.outputs[name],
+      `\${{ steps.read.outputs.${name} }}`,
+      name,
+    );
   }
 });
 
 // GitHub skips a job whose need was skipped unless its if names a status
 // function; the expression tests above stub cancelled(), so this pins it.
-test("every job that needs the pull-request job opens its gate with a status function", () => {
+test("every job that needs the resolve-pull-request job opens its gate with a status function", () => {
   const dependents = Object.entries(workflow.jobs).filter(([, job]) =>
-    [job.needs].flat().includes("pull-request"),
+    [job.needs].flat().includes("resolve-pull-request"),
   );
   assert.deepEqual(dependents.map(([name]) => name).sort(), [
     "check-key-credit",
@@ -720,7 +751,7 @@ test("every job that needs the pull-request job opens its gate with a status fun
   }
 });
 
-test("each pull request value reads the pull-request job's output with pr-number, else the event", () => {
+test("each pull request value reads the resolve-pull-request job's output with pr-number, else the event", () => {
   const event = {
     number: 9,
     "head-sha": "c".repeat(40),
@@ -733,21 +764,38 @@ test("each pull request value reads the pull-request job's output with pr-number
     g.event.action = event.action;
     Object.assign(g.event.pull_request, {
       number: event.number,
-      head: { ...g.event.pull_request.head, sha: event["head-sha"], ref: event["head-ref"] },
+      head: {
+        ...g.event.pull_request.head,
+        sha: event["head-sha"],
+        ref: event["head-ref"],
+      },
       base: { sha: event["base-sha"], ref: event["base-ref"] },
     });
   });
   let seen = 0;
   for (const [name, job] of Object.entries(workflow.jobs)) {
     for (const s of job.steps) {
-      for (const value of [...Object.values(s.env ?? {}), ...Object.values(s.with ?? {})]) {
-        const expressions = [...String(value).matchAll(/\$\{\{([^}]*needs\.pull-request\.outputs\.([\w-]+)[^}]*)\}\}/gu)];
+      for (const value of [
+        ...Object.values(s.env ?? {}),
+        ...Object.values(s.with ?? {}),
+      ]) {
+        const expressions = [
+          ...String(value).matchAll(
+            /\$\{\{([^}]*needs\.resolve-pull-request\.outputs\.([\w-]+)[^}]*)\}\}/gu,
+          ),
+        ];
         if (expressions.length === 0) continue;
         assert.equal(expressions.length, 1, `${name} / ${s.name}`);
         const [, expression, field] = expressions[0];
         assert.ok(field in event, `${name} / ${s.name}: ${field}`);
         const at = (github, inputs) =>
-          String(evaluate(expression, { github, inputs, needs: { "pull-request": { outputs: READ } } }));
+          String(
+            evaluate(expression, {
+              github,
+              inputs,
+              needs: { "resolve-pull-request": { outputs: READ } },
+            }),
+          );
         assert.equal(at(pr, {}), String(event[field]), `${name} / ${s.name}`);
         assert.equal(at(WR, WR_INPUTS), READ[field], `${name} / ${s.name}`);
         seen += 1;
@@ -786,7 +834,7 @@ test("the subscription job starts only on an exact handoff, a key job with no ke
     assert.equal(starts({ handoff: "true" }, result, "true"), false, result);
   }
   assert.deepEqual(subscription.needs, [
-    "pull-request",
+    "resolve-pull-request",
     "check-key-credit",
     "review-key",
   ]);
@@ -821,7 +869,7 @@ test("the key job runs unless check-key-credit says exactly true, a failed check
   }
   assert.equal(runs("", "failure"), true);
   assert.equal(runs("", "skipped"), true);
-  assert.deepEqual(key.needs, ["pull-request", "check-key-credit"]);
+  assert.deepEqual(key.needs, ["resolve-pull-request", "check-key-credit"]);
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
   assert.equal(gate.steps[0].uses, "$/.github/actions/check-key-credit");
@@ -1797,7 +1845,7 @@ test("the hold step runs only in comments mode with hold-label set, even after a
 });
 
 test("the review leaves each leg as an artifact named for the run, head and leg, and only its sha256 as an output", () => {
-  const name = `pr-review-cli-handoff-\${{ inputs.lane }}-\${{ github.job }}-\${{ github.run_id }}-\${{ inputs.pr-number && needs.pull-request.outputs.head-sha || github.event.pull_request.head.sha }}`;
+  const name = `pr-review-cli-handoff-\${{ inputs.lane }}-\${{ github.job }}-\${{ github.run_id }}-\${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}`;
   for (const job of [key, subscription, fallback]) {
     assert.equal(job.outputs.review, undefined);
     assert.equal(job.outputs["last-summary"], undefined);

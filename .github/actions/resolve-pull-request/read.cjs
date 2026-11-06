@@ -1,4 +1,4 @@
-// pr-review-cli's pull-request job, for a workflow_run caller. No model runs
+// pr-review-cli's resolve-pull-request job, for a workflow_run caller. No model runs
 // here. A workflow_run event carries no pull_request, so the caller names the
 // pull request and head; this step reads the pull request once and outputs
 // the facts the lane's gates check from that read, never from the caller.

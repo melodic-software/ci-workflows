@@ -1,6 +1,6 @@
 "use strict";
 
-// read-pull-request reads a workflow_run caller's pull request once and
+// resolve-pull-request reads a workflow_run caller's pull request once and
 // outputs the facts pr-review-cli's gates check from that read, never from
 // the caller; proceed is `true` only when the head is still the caller's
 // head-sha.
@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { run } = require("../actions/read-pull-request/read.cjs");
+const { run } = require("../actions/resolve-pull-request/read.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const HEAD = "a".repeat(40);
@@ -82,7 +82,10 @@ test("an unmoved head proceeds, with every fact taken from the read", async () =
 });
 
 test("a moved head does not proceed and says so once", async () => {
-  const { outputs, notices, error } = await read({ PR_NUMBER: "7", HEAD_SHA: MOVED });
+  const { outputs, notices, error } = await read({
+    PR_NUMBER: "7",
+    HEAD_SHA: MOVED,
+  });
   assert.equal(error, undefined);
   assert.equal(outputs.proceed, "false");
   assert.equal(outputs["head-sha"], HEAD);
@@ -104,12 +107,19 @@ test("a draft, a fork head or a closed pull request is reported as read, for the
   assert.equal(outputs["head-repo"], "fork/r");
   assert.equal(outputs.author, "dependabot[bot]");
   // A deleted fork has no head repository: an empty name never matches.
-  const gone = await read({ PR_NUMBER: "7", HEAD_SHA: HEAD }, { ...PULL, head: { ...PULL.head, repo: null } });
+  const gone = await read(
+    { PR_NUMBER: "7", HEAD_SHA: HEAD },
+    { ...PULL, head: { ...PULL.head, repo: null } },
+  );
   assert.equal(gone.outputs["head-repo"], "");
 });
 
 test("a caller's base-sha that is not the pull request's only logs a notice; the read base is the output", async () => {
-  const { outputs, notices } = await read({ PR_NUMBER: "7", HEAD_SHA: HEAD, BASE_SHA: "f".repeat(40) });
+  const { outputs, notices } = await read({
+    PR_NUMBER: "7",
+    HEAD_SHA: HEAD,
+    BASE_SHA: "f".repeat(40),
+  });
   assert.equal(outputs["base-sha"], BASE);
   assert.equal(outputs.proceed, "true");
   assert.equal(notices.length, 1);
@@ -136,14 +146,26 @@ test("a malformed input throws before any request", async () => {
 });
 
 test("a read that returns another pull request throws and sets no proceed", async () => {
-  const { outputs, error } = await read({ PR_NUMBER: "7", HEAD_SHA: HEAD }, { ...PULL, number: 8 });
+  const { outputs, error } = await read(
+    { PR_NUMBER: "7", HEAD_SHA: HEAD },
+    { ...PULL, number: 8 },
+  );
   assert.ok(error instanceof Error);
   assert.equal(outputs.proceed, undefined);
 });
 
 test("the action passes its inputs through env and records the read for the api-budget notice", () => {
   const action = parseWorkflow(
-    fs.readFileSync(path.join(__dirname, "..", "actions", "read-pull-request", "action.yml"), "utf8"),
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        "..",
+        "actions",
+        "resolve-pull-request",
+        "action.yml",
+      ),
+      "utf8",
+    ),
   );
   const [s] = action.runs.steps;
   assert.match(s.uses, /^actions\/github-script@[0-9a-f]{40} ?/u);
@@ -155,5 +177,8 @@ test("the action passes its inputs through env and records the read for the api-
     EVENT_ACTION: `\${{ inputs.event-action }}`,
   });
   assert.doesNotMatch(s.with.script, /\$\{\{/u);
-  assert.match(s.with.script, /api-budget\.cjs"\)\)\.watch\(github, "github-token"\)/u);
+  assert.match(
+    s.with.script,
+    /api-budget\.cjs"\)\)\.watch\(github, "github-token"\)/u,
+  );
 });

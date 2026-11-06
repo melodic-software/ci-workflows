@@ -1,6 +1,6 @@
-name: read-pull-request
+name: resolve-pull-request
 description: >-
-  pr-review-cli's pull-request job, for a workflow_run caller: one pulls.get
+  pr-review-cli's resolve-pull-request job, for a workflow_run caller: one pulls.get
   of the caller's pull request, with no model and no write. Outputs the facts
   the lane's gates check (state, draft, head repository, author) from that
   read, never from the caller, and proceed `true` only when the pull
