@@ -8,7 +8,7 @@ name: release-tag
 #   - NO commit is pushed to main — only a tag is created — so the branch
 #     `required_signatures` rule never applies and there is no bot-signing
 #     problem. The tag references the already-signed HEAD commit.
-#   - A github-iac ruleset lets only the melodic-plugin-release App create,
+#   - A github-iac ruleset lets only the melodic-release App create,
 #     move or delete v* tags, so the release is created with that App's token.
 #     Its key is an environment secret the plugin-release environment admits on
 #     main only. No PAT and no stored signing key: the tag is unsigned, but it
