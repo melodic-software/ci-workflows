@@ -478,7 +478,8 @@ test("the action passes the caller's workflow ref and the window to the gate, an
 // doubles it up to 24 hours, and reset-at starts it over.
 const HOUR = 3600 * 1000;
 const PROBE_MS = 15 * 60 * 1000;
-const stopsAt = (...hours) => hours.map((h, i) => ({ created: h * HOUR, run: i + 1 }));
+const stopsAt = (...hours) =>
+  hours.map((h, i) => ({ created: h * HOUR, run: i + 1 }));
 
 test("each consecutive credit stop doubles a 1-hour base: 1, 2, 4, 8, 16, then 24 hours and no more", () => {
   for (const lagMs of [0, 30 * 60 * 1000]) {
@@ -495,7 +496,16 @@ test("each consecutive credit stop doubles a 1-hour base: 1, 2, 4, 8, 16, then 2
     }
     assert.deepEqual(
       seen,
-      [[1, 1], [2, 2], [3, 4], [4, 8], [5, 16], [6, 24], [7, 24], [8, 24]],
+      [
+        [1, 1],
+        [2, 2],
+        [3, 4],
+        [4, 8],
+        [5, 16],
+        [6, 24],
+        [7, 24],
+        [8, 24],
+      ],
       String(lagMs),
     );
   }
@@ -519,13 +529,19 @@ test("a probe with no credit stop after it is a key run that worked, so the next
     windowMs: HOUR,
   });
   // A probe its own credit stop followed inside the probe window did not work.
-  assert.equal(backoff(stopsAt(0, 1, 3.05), [probe(3)], HOUR, PROBE_MS).steps, 3);
+  assert.equal(
+    backoff(stopsAt(0, 1, 3.05), [probe(3)], HOUR, PROBE_MS).steps,
+    3,
+  );
   // A probe from before the stops does not reset them.
   assert.equal(backoff(stopsAt(5, 6), [probe(1)], HOUR, PROBE_MS).steps, 2);
 });
 
 test("a base above 24 hours never backs off; a base of 6 caps at 24", () => {
-  assert.equal(backoff(stopsAt(0, 48, 144), [], 48 * HOUR, PROBE_MS).windowMs, 48 * HOUR);
+  assert.equal(
+    backoff(stopsAt(0, 48, 144), [], 48 * HOUR, PROBE_MS).windowMs,
+    48 * HOUR,
+  );
   assert.deepEqual(
     [stopsAt(0), stopsAt(0, 6), stopsAt(0, 6, 18), stopsAt(0, 6, 18, 42)].map(
       (stops) => backoff(stops, [], 6 * HOUR, PROBE_MS).windowMs / HOUR,
@@ -569,26 +585,43 @@ test("main skips inside the backed-off window, naming the step, with the two cal
     [ARTIFACTS, { artifacts: CHAIN }],
     [PROBES, { artifacts: [] }],
   ]);
-  const { verdict, lines } = await main(env(dir, { WINDOW_HOURS: "1" }), fetchImpl, now);
+  const { verdict, lines } = await main(
+    env(dir, { WINDOW_HOURS: "1" }),
+    fetchImpl,
+    now,
+  );
   assert.deepEqual(verdict, { skip: true, origin: "93", steps: 3, hours: 4 });
   assert.equal(urls.length, 2);
   assert.match(
     lines[0],
     /^::notice title=check-key-credit::claude-review-key skips the key: the key's credit stop in run 93 \(https:\/\/example\/o\/r\/actions\/runs\/93\) is inside the 4-hour window \(credit stop 3 in a row\); the subscription job reviews$/u,
   );
-  assert.equal(output(dir), `skip-key=true\norigin-run=93\nmarker=${NAME}\nprobing-marker=\n`);
+  assert.equal(
+    output(dir),
+    `skip-key=true\norigin-run=93\nmarker=${NAME}\nprobing-marker=\n`,
+  );
 });
 
 test("main probes the key once the backed-off window ends", async () => {
   const dir = makeTemporaryDirectory("check-key-credit-");
   const { fetchImpl } = fakeFetch([
-    [ARTIFACTS, { artifacts: [marker(91, 7.5), marker(92, 6.5), marker(93, 4.5)] }],
+    [
+      ARTIFACTS,
+      { artifacts: [marker(91, 7.5), marker(92, 6.5), marker(93, 4.5)] },
+    ],
     [PROBES, { artifacts: [] }],
   ]);
-  const { verdict } = await main(env(dir, { WINDOW_HOURS: "1" }), fetchImpl, now);
+  const { verdict } = await main(
+    env(dir, { WINDOW_HOURS: "1" }),
+    fetchImpl,
+    now,
+  );
   assert.equal(verdict.skip, false);
   assert.equal(verdict.probe, true);
-  assert.equal(output(dir), `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=${PROBE}\n`);
+  assert.equal(
+    output(dir),
+    `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=${PROBE}\n`,
+  );
 });
 
 test("reset-at counts only the credit stops after it", async () => {
@@ -596,7 +629,11 @@ test("reset-at counts only the credit stops after it", async () => {
     // After the first stop: two steps left, a 2-hour window, past already.
     [seconds(5.5), { skip: false, probe: true }, 2],
     // After every stop: a new key, tried at once with one call.
-    [seconds(1), { skip: false, reason: "no credit-stop marker in the window" }, 1],
+    [
+      seconds(1),
+      { skip: false, reason: "no credit-stop marker in the window" },
+      1,
+    ],
     // No reset, or text that is not one: the full chain.
     ["", { skip: true, origin: "93", steps: 3, hours: 4 }, 2],
     ["2026", { skip: true, origin: "93", steps: 3, hours: 4 }, 2],
@@ -613,14 +650,17 @@ test("reset-at counts only the credit stops after it", async () => {
     );
     assert.equal(verdict.skip, expected.skip, resetAt);
     for (const [key, value] of Object.entries(expected)) {
-      if (key !== "reason") assert.equal(verdict[key], value, `${resetAt} ${key}`);
+      if (key !== "reason")
+        assert.equal(verdict[key], value, `${resetAt} ${key}`);
     }
     if (expected.reason) assert.equal(verdict.reason, expected.reason);
     assert.equal(urls.length, calls, resetAt);
   }
   // A stop inside the base window but before the reset no longer skips.
   const dir = makeTemporaryDirectory("check-key-credit-");
-  const { urls, fetchImpl } = fakeFetch([[ARTIFACTS, { artifacts: [marker(98, 0.5)] }]]);
+  const { urls, fetchImpl } = fakeFetch([
+    [ARTIFACTS, { artifacts: [marker(98, 0.5)] }],
+  ]);
   const { verdict } = await main(
     env(dir, { WINDOW_HOURS: "1", RESET_AT: seconds(0.25) }),
     fetchImpl,
@@ -633,16 +673,29 @@ test("reset-at counts only the credit stops after it", async () => {
 test("a failed read inside the backed-off window tries the key, never a longer skip", async () => {
   for (const routes of [
     [[ARTIFACTS, { artifacts: CHAIN }]],
-    [[ARTIFACTS, { artifacts: CHAIN }], [PROBES, {}]],
+    [
+      [ARTIFACTS, { artifacts: CHAIN }],
+      [PROBES, {}],
+    ],
     [[ARTIFACTS, {}]],
     [],
   ]) {
     const dir = makeTemporaryDirectory("check-key-credit-");
     const { fetchImpl } = fakeFetch(routes);
-    const { verdict, lines } = await main(env(dir, { WINDOW_HOURS: "1" }), fetchImpl, now);
+    const { verdict, lines } = await main(
+      env(dir, { WINDOW_HOURS: "1" }),
+      fetchImpl,
+      now,
+    );
     assert.equal(verdict.skip, false, JSON.stringify(routes.length));
-    assert.match(lines[0], /^check-key-credit: claude-review-key runs the key: the (probing )?marker/u);
-    assert.equal(output(dir), `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`);
+    assert.match(
+      lines[0],
+      /^check-key-credit: claude-review-key runs the key: the (probing )?marker/u,
+    );
+    assert.equal(
+      output(dir),
+      `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`,
+    );
   }
 });
 
