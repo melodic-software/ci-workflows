@@ -46,6 +46,17 @@ name: pr-review-cli
 #           base-sha: <optional; the lane uses the pull request's base>
 #           event-action: <optional; synchronize allows an incremental review>
 #
+# A workflow_dispatch caller passes the same inputs from its own dispatch
+# inputs. When its trusted workflow dispatches with GITHUB_TOKEN, the run's
+# actor is github-actions[bot], so it also sets
+# dispatcher-actor-ids: "41898282", after proving the dispatch came from that
+# workflow:
+#
+#         with:
+#           pr-number: ${{ inputs.pr-number }}
+#           head-sha: ${{ inputs.head-sha }}
+#           dispatcher-actor-ids: "41898282"
+#
 # SECURITY MODEL:
 #   - Only a `pull_request` run on an open pull request from a branch of
 #     this repository, not a draft, reaches a secret: every job that holds
@@ -53,14 +64,19 @@ name: pr-review-cli
 #     bot passes only when the event sender's id is in
 #     allowed-bot-sender-ids, and Dependabot never passes, as actor or as
 #     the pull request's author. Any other event skips the lane, with one
-#     exception: a `workflow_run` run whose caller sets pr-number and
-#     head-sha. There the resolve-pull-request job, with pull-requests:
-#     read and no secret, reads the pull request once, and the gate checks the same
+#     exception: a `workflow_run` or `workflow_dispatch` run whose caller
+#     sets pr-number and head-sha. There the resolve-pull-request job, with
+#     pull-requests: read and no secret, reads the pull request once, and the gate checks the same
 #     facts from that read, never from the caller: open, not a draft, head
 #     in this repository, author not Dependabot, and head still head-sha
 #     (else the lane skips with a notice). The pull request's own base,
 #     not the caller's base-sha, picks the trusted-actor list. pr-number
-#     on any other event skips the lane.
+#     on any other event skips the lane. On such a `workflow_dispatch` run
+#     only, a bot sender whose id is in dispatcher-actor-ids also passes the
+#     bot check. That grants it nothing else: closing-issue trust still reads
+#     only allowed-author-ids and allowed-bot-sender-ids. This lane cannot
+#     see which workflow dispatched the run, so the caller proves that before
+#     calling.
 #   - The API key runs in the review-key job. The subscription token runs
 #     only in the review-subscription job, and only when the key job's
 #     handoff output is exactly `true` (run-claude-cli: a credit stop, or the
@@ -340,8 +356,9 @@ on:
         default: ""
       pr-number:
         description: >-
-          A workflow_run caller's pull request number. Set, the lane runs
-          only on a workflow_run event and reads the pull request's state,
+          A workflow_run or workflow_dispatch caller's pull request number.
+          Set, the lane runs only on one of those two events and reads the
+          pull request's state,
           draft flag, head repository, author, head and base from one API
           read in the resolve-pull-request job, never from the caller. Empty, the
           lane reads the pull_request event as before.
@@ -366,6 +383,20 @@ on:
           With pr-number, the pull_request action the caller's run started
           on (opened, synchronize, reopened, ready_for_review): synchronize
           allows an incremental review. Empty reviews the whole pull request.
+        type: string
+        default: ""
+      dispatcher-actor-ids:
+        description: >-
+          Comma-separated numeric GitHub user ids, no spaces, of bot senders
+          allowed to start the model jobs on a workflow_dispatch run with
+          pr-number set, such as github-actions[bot] (41898282) when the
+          caller's own workflow dispatches with GITHUB_TOKEN. Read on no
+          other event, and it grants nothing else: unlike
+          allowed-bot-sender-ids, it never trusts a closing issue's author.
+          This lane cannot tell which workflow dispatched the run, so the
+          calling repository must prove the dispatch came from its trusted
+          workflow before calling. Empty, or a leading, trailing or doubled
+          comma, allows none.
         type: string
         default: ""
     outputs:
@@ -429,7 +460,8 @@ env:
     .husky/**
 
 jobs:
-  # A workflow_run caller's pull request (pr-number set): one pulls.get with
+  # A workflow_run or workflow_dispatch caller's pull request (pr-number
+  # set): one pulls.get with
   # pull-requests: read and no secret. Its outputs are the facts every
   # secret-bearing job's gate checks in place of the pull_request event's,
   # and proceed is `true` only when the head is still head-sha. A
@@ -438,7 +470,7 @@ jobs:
   # this skip does not skip them.
   resolve-pull-request:
     name: ${{ inputs.lane == 'security' && 'security-review-resolve-pull-request' || 'claude-review-resolve-pull-request' }}
-    if: inputs.pr-number && github.event_name == 'workflow_run'
+    if: inputs.pr-number && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     permissions:
@@ -502,7 +534,7 @@ jobs:
        && github.event.pull_request.head.repo.full_name == github.repository
        && github.event.pull_request.user.login != 'dependabot[bot]'
        || inputs.pr-number
-       && github.event_name == 'workflow_run'
+       && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
        && needs.resolve-pull-request.result == 'success'
        && needs.resolve-pull-request.outputs.proceed == 'true'
        && needs.resolve-pull-request.outputs.state == 'open'
@@ -517,6 +549,15 @@ jobs:
               && !contains(inputs.allowed-bot-sender-ids, ',,')
               && github.event.sender.id
               && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                          format(',{0},', github.event.sender.id)))
+          || (inputs.pr-number
+              && github.event_name == 'workflow_dispatch'
+              && inputs.dispatcher-actor-ids != ''
+              && !startsWith(inputs.dispatcher-actor-ids, ',')
+              && !endsWith(inputs.dispatcher-actor-ids, ',')
+              && !contains(inputs.dispatcher-actor-ids, ',,')
+              && github.event.sender.id
+              && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
       actions: read
@@ -595,7 +636,7 @@ jobs:
        && github.event.pull_request.head.repo.full_name == github.repository
        && github.event.pull_request.user.login != 'dependabot[bot]'
        || inputs.pr-number
-       && github.event_name == 'workflow_run'
+       && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
        && needs.resolve-pull-request.result == 'success'
        && needs.resolve-pull-request.outputs.proceed == 'true'
        && needs.resolve-pull-request.outputs.state == 'open'
@@ -610,6 +651,15 @@ jobs:
               && !contains(inputs.allowed-bot-sender-ids, ',,')
               && github.event.sender.id
               && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                          format(',{0},', github.event.sender.id)))
+          || (inputs.pr-number
+              && github.event_name == 'workflow_dispatch'
+              && inputs.dispatcher-actor-ids != ''
+              && !startsWith(inputs.dispatcher-actor-ids, ',')
+              && !endsWith(inputs.dispatcher-actor-ids, ',')
+              && !contains(inputs.dispatcher-actor-ids, ',,')
+              && github.event.sender.id
+              && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
       contents: read
@@ -2729,7 +2779,7 @@ jobs:
        && github.event.pull_request.head.repo.full_name == github.repository
        && github.event.pull_request.user.login != 'dependabot[bot]'
        || inputs.pr-number
-       && github.event_name == 'workflow_run'
+       && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
        && needs.resolve-pull-request.result == 'success'
        && needs.resolve-pull-request.outputs.proceed == 'true'
        && needs.resolve-pull-request.outputs.state == 'open'
@@ -2744,6 +2794,15 @@ jobs:
               && !contains(inputs.allowed-bot-sender-ids, ',,')
               && github.event.sender.id
               && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                          format(',{0},', github.event.sender.id)))
+          || (inputs.pr-number
+              && github.event_name == 'workflow_dispatch'
+              && inputs.dispatcher-actor-ids != ''
+              && !startsWith(inputs.dispatcher-actor-ids, ',')
+              && !endsWith(inputs.dispatcher-actor-ids, ',')
+              && !contains(inputs.dispatcher-actor-ids, ',,')
+              && github.event.sender.id
+              && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
       contents: read
@@ -4837,7 +4896,7 @@ jobs:
        && github.event.pull_request.head.repo.full_name == github.repository
        && github.event.pull_request.user.login != 'dependabot[bot]'
        || inputs.pr-number
-       && github.event_name == 'workflow_run'
+       && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
        && needs.resolve-pull-request.result == 'success'
        && needs.resolve-pull-request.outputs.proceed == 'true'
        && needs.resolve-pull-request.outputs.state == 'open'
@@ -4852,6 +4911,15 @@ jobs:
               && !contains(inputs.allowed-bot-sender-ids, ',,')
               && github.event.sender.id
               && contains(format(',{0},', inputs.allowed-bot-sender-ids),
+                          format(',{0},', github.event.sender.id)))
+          || (inputs.pr-number
+              && github.event_name == 'workflow_dispatch'
+              && inputs.dispatcher-actor-ids != ''
+              && !startsWith(inputs.dispatcher-actor-ids, ',')
+              && !endsWith(inputs.dispatcher-actor-ids, ',')
+              && !contains(inputs.dispatcher-actor-ids, ',,')
+              && github.event.sender.id
+              && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
       contents: read

@@ -602,7 +602,11 @@ const reaches = (job, github, inputs, read, result = "success") =>
   Boolean(
     evaluate(job.if, {
       github,
-      inputs: { "allowed-bot-sender-ids": "", ...inputs },
+      inputs: {
+        "allowed-bot-sender-ids": "",
+        "dispatcher-actor-ids": "",
+        ...inputs,
+      },
       needs: {
         "resolve-pull-request": { result, outputs: read },
         "check-key-credit": { result: "success", outputs: {} },
@@ -668,13 +672,10 @@ test("a workflow_run caller with pr-number reaches every secret-bearing job only
       false,
       job.name,
     );
-    // workflow_run with no pr-number, and pr-number on any other event, skip.
+    // workflow_run with no pr-number, and pr-number on any event but
+    // workflow_run and workflow_dispatch, skip.
     assert.equal(reaches(job, WR, {}, READ), false, job.name);
-    for (const event_name of [
-      "pull_request",
-      "pull_request_target",
-      "workflow_dispatch",
-    ]) {
+    for (const event_name of ["pull_request", "pull_request_target", "push"]) {
       const other = withPr((g) => {
         g.event_name = event_name;
       });
@@ -700,7 +701,179 @@ test("a workflow_run caller with pr-number reaches every secret-bearing job only
   }
 });
 
-test("the resolve-pull-request job reads only a workflow_run caller's pull request, holds no secret and cannot write", () => {
+// A workflow_dispatch caller's run, dispatched with GITHUB_TOKEN by the
+// caller's own workflow: GitHub records github-actions[bot] (user id
+// 41898282) as the actor and sender.
+const ACTIONS_BOT_ID = 41898282;
+const WD = {
+  event_name: "workflow_dispatch",
+  actor: "github-actions[bot]",
+  repository: "o/r",
+  event: {
+    sender: { id: ACTIONS_BOT_ID },
+    inputs: { "pr-number": "7", "head-sha": HEAD },
+  },
+};
+const WD_INPUTS = {
+  ...WR_INPUTS,
+  "dispatcher-actor-ids": String(ACTIONS_BOT_ID),
+};
+
+test("a workflow_dispatch caller with pr-number and a listed dispatcher reaches every secret-bearing job on the read's facts", () => {
+  const read = workflow.jobs["resolve-pull-request"];
+  assert.equal(
+    Boolean(evaluate(read.if, { github: WD, inputs: WD_INPUTS })),
+    true,
+  );
+  for (const job of SECRET_JOBS()) {
+    assert.equal(reaches(job, WD, WD_INPUTS, READ), true, job.name);
+    // A person who dispatches passes as on workflow_run, no list needed.
+    const person = { ...structuredClone(WD), actor: "kyle-sexton" };
+    person.event.sender.id = 1;
+    assert.equal(reaches(job, person, WR_INPUTS, READ), true, job.name);
+    // The read still decides: a moved head, a draft or a failed read skips.
+    for (const [why, readOut, result] of [
+      ["moved head", { ...READ, proceed: "false" }, "success"],
+      ["draft", { ...READ, draft: "true" }, "success"],
+      ["failed read", READ, "failure"],
+    ]) {
+      assert.equal(
+        reaches(job, WD, WD_INPUTS, readOut, result),
+        false,
+        `${job.name}: ${why}`,
+      );
+    }
+  }
+});
+
+test("on a workflow_dispatch run a bot passes the actor gate only by its id in dispatcher-actor-ids", () => {
+  for (const job of SECRET_JOBS()) {
+    // Each case passes the event gate (pr-number, a proceeding read), so a
+    // refusal comes from the actor gate.
+    const refused = {
+      "no dispatcher-actor-ids": [WD, WR_INPUTS],
+      "empty dispatcher-actor-ids": [
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": "" },
+      ],
+      "doubled comma": [
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": `${ACTIONS_BOT_ID},,5` },
+      ],
+      "leading comma": [
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": `,${ACTIONS_BOT_ID}` },
+      ],
+      "another bot": [
+        {
+          ...structuredClone(WD),
+          actor: "some-app[bot]",
+          event: { sender: { id: 7 } },
+        },
+        WD_INPUTS,
+      ],
+      "dependabot listed": [
+        {
+          ...structuredClone(WD),
+          actor: "dependabot[bot]",
+          event: { sender: { id: 49699333 } },
+        },
+        { ...WR_INPUTS, "dispatcher-actor-ids": "49699333" },
+      ],
+      // The list is read on workflow_dispatch only.
+      "workflow_run sender listed": [
+        {
+          ...structuredClone(WR),
+          actor: "github-actions[bot]",
+          event: { ...WR.event, sender: { id: ACTIONS_BOT_ID } },
+        },
+        WD_INPUTS,
+      ],
+    };
+    for (const [why, [github, inputs]] of Object.entries(refused)) {
+      assert.equal(
+        reaches(job, github, inputs, READ),
+        false,
+        `${job.name}: ${why}`,
+      );
+    }
+    assert.equal(
+      reaches(
+        job,
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": `5,${ACTIONS_BOT_ID}` },
+        READ,
+      ),
+      true,
+      job.name,
+    );
+  }
+});
+
+test("dispatcher-actor-ids changes nothing for a pull_request caller", () => {
+  const bot = withPr((g) => {
+    g.actor = "github-actions[bot]";
+    g.event.sender.id = ACTIONS_BOT_ID;
+  });
+  const listed = { "dispatcher-actor-ids": String(ACTIONS_BOT_ID) };
+  for (const job of SECRET_JOBS()) {
+    assert.equal(reaches(job, PR, listed, {}, "skipped"), true, job.name);
+    assert.equal(reaches(job, bot, listed, {}, "skipped"), false, job.name);
+    assert.equal(
+      reaches(
+        job,
+        bot,
+        { ...listed, "allowed-bot-sender-ids": String(ACTIONS_BOT_ID) },
+        {},
+        "skipped",
+      ),
+      true,
+      job.name,
+    );
+  }
+});
+
+test("dispatcher-actor-ids reaches only the secret-bearing jobs' gates, never closing-issue or settled-thread trust", () => {
+  const gates = new Set(SECRET_JOBS());
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    const { if: gate, ...rest } = job;
+    assert.equal(
+      JSON.stringify(rest).includes("dispatcher-actor-ids"),
+      false,
+      name,
+    );
+    assert.equal(
+      /dispatcher-actor-ids/u.test(String(gate ?? "")),
+      gates.has(job),
+      name,
+    );
+  }
+  for (const leg of [key, subscription, fallback]) {
+    assert.deepEqual(
+      step(leg, "pr-context-trust").with,
+      {
+        actors: `\${{ steps.pr-context-fetch.outputs.actors || '[]' }}`,
+        "allowed-author-ids": `\${{ inputs.allowed-author-ids }}`,
+        "allowed-bot-sender-ids": `\${{ inputs.allowed-bot-sender-ids }}`,
+      },
+      leg.name,
+    );
+    assert.deepEqual(
+      step(leg, "settled").with,
+      {
+        source: `\${{ runner.temp }}/claude-code-plugins`,
+        "output-file": ".claude-lane/settled-threads.md",
+        "pr-number": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}`,
+        "head-sha": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}`,
+        "base-sha": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}`,
+        "head-ref": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-ref || github.event.pull_request.head.ref }}`,
+      },
+      leg.name,
+    );
+  }
+});
+
+test("the resolve-pull-request job reads only a workflow_run or workflow_dispatch caller's pull request, holds no secret and cannot write", () => {
   const read = workflow.jobs["resolve-pull-request"];
   const runs = (github, inputs) =>
     Boolean(evaluate(read.if, { github, inputs }));
