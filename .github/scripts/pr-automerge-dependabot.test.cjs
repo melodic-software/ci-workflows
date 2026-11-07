@@ -87,12 +87,16 @@ async function runGate({
   metadataJson = JSON.stringify(updates),
   packageAutoMerge = "true",
   reviewOnly = "[]",
+  publisherAllowlist = inputDefault("publisher-allowlist").replace(
+    /^'(.*)'$/u,
+    "$1",
+  ),
 } = {}) {
   const graphqlCalls = [];
   const notices = [];
   const env = {
     UPDATED_DEPENDENCIES_JSON: metadataJson,
-    PUBLISHER_ALLOWLIST: stepEnv("PUBLISHER_ALLOWLIST"),
+    PUBLISHER_ALLOWLIST: publisherAllowlist,
     SENDER_ID: String(senderId),
     METADATA_OUTCOME: metadataOutcome,
     PACKAGE_AUTO_MERGE: packageAutoMerge,
@@ -159,13 +163,53 @@ function assertSkipped(result, reason) {
   assert.match(result.notices[0], reason);
 }
 
-test("the allowlist matches standards dependabot-policy autoMerge.publisherAllowlist", () => {
-  assert.deepEqual(JSON.parse(stepEnv("PUBLISHER_ALLOWLIST")), [
-    "actions/*",
-    "github/*",
-    "anthropics/*",
-  ]);
+test("the default allowlist matches standards dependabot-policy autoMerge.publisherAllowlist", () => {
+  assert.deepEqual(
+    JSON.parse(inputDefault("publisher-allowlist").replace(/^'(.*)'$/u, "$1")),
+    ["actions/*", "github/*", "anthropics/*"],
+  );
+  assert.equal(
+    stepEnv("PUBLISHER_ALLOWLIST"),
+    `\${{ inputs.publisher-allowlist }}`,
+  );
 });
+
+test("a narrowed allowlist skips a publisher it leaves out", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("anthropics/claude-code-action", "version-update:semver-patch"),
+      ],
+      publisherAllowlist: '["actions/*","github/*"]',
+    }),
+    /anthropics\/claude-code-action is not an allowlisted publisher/u,
+  );
+});
+
+test("a narrowed allowlist still arms a publisher it keeps", async () => {
+  const { armCalls, notices } = await runGate({
+    updates: [update("github/codeql-action", "version-update:semver-minor")],
+    publisherAllowlist: '["actions/*","github/*"]',
+  });
+  assert.equal(notices.length, 0);
+  assert.equal(armCalls.length, 1);
+});
+
+for (const malformed of [
+  "not json",
+  '{"actions/*":true}',
+  '"actions/*"',
+  '["actions/*",""]',
+  '["actions/*",7]',
+  "",
+]) {
+  test(`a malformed publisher-allowlist ${JSON.stringify(malformed)} arms nothing`, async () => {
+    assertSkipped(
+      await runGate({ publisherAllowlist: malformed }),
+      /the publisher-allowlist input is not a JSON array of non-empty globs/u,
+    );
+  });
+}
 
 test("the job runs only on pull_request events authored by Dependabot's account id", () => {
   const job = workflowLines.indexOf("  enable-auto-merge:");

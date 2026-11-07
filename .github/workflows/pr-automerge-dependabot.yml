@@ -33,9 +33,10 @@ name: pr-automerge-dependabot
 #   - every update is `github_actions`, or, unless the caller passes
 #     `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`; any other
 #     ecosystem (docker, uv, dotnet_sdk and the rest) is left for a human;
-#   - every GitHub Actions dependency name matches a PUBLISHER_ALLOWLIST glob,
-#     mirroring standards `components/dependabot-policy/policy.json`
-#     `autoMerge`;
+#   - every GitHub Actions dependency name matches a glob in the caller's
+#     `publisher-allowlist` (default mirrors standards
+#     `components/dependabot-policy/policy.json` `autoMerge`); an input that is
+#     not a JSON array of non-empty strings arms nothing;
 #   - no package dependency name is in the caller's `review-only-dependencies`
 #     (its entries in that policy's `autoMerge.reviewOnly`);
 #   - every update is a semver patch or minor, and a version below 1.0 keeps
@@ -80,6 +81,13 @@ on:
           entries in standards dependabot-policy autoMerge.reviewOnly.
         type: string
         default: "[]"
+      publisher-allowlist:
+        description: >-
+          JSON array of GitHub Actions publisher globs (`*` matches any run of
+          characters) whose patch and minor bumps are armed. Narrow it to keep
+          a publisher's bumps for a person.
+        type: string
+        default: '["actions/*","github/*","anthropics/*"]'
 
 permissions: {}
 
@@ -113,7 +121,7 @@ jobs:
           METADATA_OUTCOME: ${{ steps.metadata.outcome }}
           SENDER_ID: ${{ github.event.sender.id }}
           UPDATED_DEPENDENCIES_JSON: ${{ steps.metadata.outputs.updated-dependencies-json }}
-          PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
+          PUBLISHER_ALLOWLIST: ${{ inputs.publisher-allowlist }}
           PACKAGE_AUTO_MERGE: ${{ inputs.package-auto-merge }}
           REVIEW_ONLY_DEPENDENCIES: ${{ inputs.review-only-dependencies }}
         with:
@@ -134,7 +142,6 @@ jobs:
                 `^${glob.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join(".*")}$`,
                 "u",
               );
-            const allowlist = JSON.parse(process.env.PUBLISHER_ALLOWLIST).map(globToRegExp);
             const packageAutoMerge = process.env.PACKAGE_AUTO_MERGE === "true";
 
             const majorMinor = (version) => /^v?(\d+)\.(\d+)/u.exec(String(version ?? ""));
@@ -165,6 +172,19 @@ jobs:
               if (!Array.isArray(reviewOnly) || !reviewOnly.every((entry) => typeof entry === "string")) {
                 return "the review-only-dependencies input is not a JSON array of names";
               }
+              let publishers;
+              try {
+                publishers = JSON.parse(process.env.PUBLISHER_ALLOWLIST);
+              } catch {
+                publishers = null;
+              }
+              if (
+                !Array.isArray(publishers) ||
+                !publishers.every((entry) => typeof entry === "string" && entry.length > 0)
+              ) {
+                return "the publisher-allowlist input is not a JSON array of non-empty globs";
+              }
+              const allowlist = publishers.map(globToRegExp);
               for (const update of updates) {
                 const name = String(update?.dependencyName ?? "");
                 const ecosystem = update?.packageEcosystem;
