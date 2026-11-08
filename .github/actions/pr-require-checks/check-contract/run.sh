@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Single-run pull-request contract: title, do-not-merge label, issue linkage.
+# Single-run pull-request contract: title, do-not-merge label, issue linkage,
+# and, when `enforce-hold-label` is on, the hold label.
 #
 # One composite step, so a consumer needs exactly one required check
 # (`ci-status`). Every check reads the LIVE pull request from the API rather than the event
@@ -15,6 +16,8 @@ DO_NOT_MERGE_LABEL="${DO_NOT_MERGE_LABEL:-do-not-merge}"
 EXEMPT_AUTHORS="${EXEMPT_AUTHORS:-}"
 LINKAGE_LABEL="${LINKAGE_LABEL:-needs-issue-linkage}"
 LINKAGE_MODE="${LINKAGE_MODE:-advisory}"
+ENFORCE_HOLD_LABEL="${ENFORCE_HOLD_LABEL:-false}"
+HOLD_LABEL="${HOLD_LABEL:-needs-human}"
 # GitHub's own grammar: `#N` with an optional `OWNER/REPO` prefix.
 DEFAULT_ISSUE_REF_PATTERN='([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+'
 ISSUE_REF_PATTERN="${ISSUE_REF_PATTERN:-$DEFAULT_ISSUE_REF_PATTERN}"
@@ -82,6 +85,16 @@ case "$REQUIRE_SCOPE" in
     ;;
 esac
 
+case "$ENFORCE_HOLD_LABEL" in
+  true | false) ;;
+  *)
+    echo "::error::pr-contract: enforce-hold-label must be 'true' or 'false', got: $(escape_annotation "$ENFORCE_HOLD_LABEL")"
+    exit 1
+    ;;
+esac
+
+hold_result=skipped
+
 # The pattern reaches awk only through ENVIRON, never the program text, so it
 # cannot inject awk code. It must compile both bare and as the parenthesized
 # group the analyzer splices it into (an unbalanced `)` would otherwise escape
@@ -120,15 +133,22 @@ fi
 # An unparsable ref fails closed: a group whose pull request cannot be named
 # cannot be checked for the do-not-merge label.
 if [[ "${EVENT_NAME:-}" == merge_group ]]; then
-  merge_group_ref_pattern='^(refs/heads/)?gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$'
+  merge_group_ref_pattern='^(refs/heads/)?gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
   if [[ ! "${MERGE_GROUP_HEAD_REF:-}" =~ $merge_group_ref_pattern ]]; then
     echo "::error::pr-contract: cannot read a pull request number from the merge-group head ref '$(escape_annotation "${MERGE_GROUP_HEAD_REF:-}")'"
     emit_output title skipped
     emit_output do-not-merge fail
     emit_output linkage skipped
+    if [[ "$ENFORCE_HOLD_LABEL" == true ]]; then
+      emit_output hold fail
+    else
+      emit_output hold skipped
+    fi
     exit 1
   fi
-  PR_NUMBER="${BASH_REMATCH[2]}"
+  # The queue's branch reaches only a GraphQL variable, so it is not validated.
+  merge_group_branch="${BASH_REMATCH[2]}"
+  PR_NUMBER="${BASH_REMATCH[3]}"
 # A push, schedule or workflow_dispatch run has no pull request at all. The
 # composite is a pull-request gate; such a run must report skipped, not fail.
 elif [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
@@ -136,6 +156,7 @@ elif [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   emit_output title skipped
   emit_output do-not-merge skipped
   emit_output linkage skipped
+  emit_output hold skipped
   exit 0
 fi
 
@@ -177,16 +198,37 @@ best_effort() {
 # shellcheck disable=SC2016 # `$owner`, `$name` and `$number` are GraphQL variables.
 pr_query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { title body author { __typename login } labels(first: 100) { totalCount nodes { name } } comments(last: 100) { totalCount nodes { databaseId body author { __typename } } } } } }'
 pr_read="pull request ${REPOSITORY}#${PR_NUMBER}"
+pr_query_variables=(-f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" -F number="$PR_NUMBER")
+# A merge group lands every queued entry up to its own in one merge, so the
+# hold is read for each of them, in the same request: the queue's entries and
+# their labels. 100 entries of 100 labels stays far inside GraphQL's node limit.
+if [[ "$ENFORCE_HOLD_LABEL" == true && "${EVENT_NAME:-}" == merge_group ]]; then
+  # shellcheck disable=SC2016 # `$owner`, `$name`, `$number` and `$branch` are GraphQL variables.
+  pr_query='query($owner: String!, $name: String!, $number: Int!, $branch: String!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { title body author { __typename login } labels(first: 100) { totalCount nodes { name } } comments(last: 100) { totalCount nodes { databaseId body author { __typename } } } } mergeQueue(branch: $branch) { entries(first: 100) { totalCount nodes { position pullRequest { number labels(first: 100) { totalCount nodes { name } } } } } } } }'
+  pr_query_variables+=(-f branch="$merge_group_branch")
+fi
+# Named on every failure below, so a red that blocks a held pull request says
+# why it is red and that a re-run is what clears it.
+hold_unreadable() {
+  if [[ "$ENFORCE_HOLD_LABEL" == true ]]; then
+    hold_result=fail
+    echo "::error::pr-contract: hold-label-unreadable: cannot tell whether $1 carries the '$(escape_annotation "$HOLD_LABEL")' hold label, so this run fails; re-run this job once GitHub answers."
+  fi
+}
 # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-if ! gh_api POST graphql -f query="$pr_query" -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" -F number="$PR_NUMBER"; then
+if ! gh_api POST graphql -f query="$pr_query" "${pr_query_variables[@]}"; then
   cat "$gh_stderr" >&2
   if [[ "$GH_FAILURE" == rate-limit ]]; then
     echo "::error::pr-contract: could not read ${pr_read} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
   else
     echo "::error::pr-contract: could not read ${pr_read} (HTTP ${GH_HTTP_STATUS:-unknown}): $(escape_annotation "$GH_MESSAGE")"
   fi
+  hold_unreadable "$pr_read"
+  emit_output hold "$hold_result"
   exit 1
 fi
+pr_response="$scratch/pr-response.json"
+cp -- "$gh_stdout" "$pr_response"
 pr_json="$scratch/pr.json"
 # Every field a verdict reads must be present with its type, or the read fails
 # closed: GraphQL answers a pull request it cannot resolve with `null` and no
@@ -204,6 +246,8 @@ if ! jq -e '.data.repository.pullRequest
      user: {login: (if .author == null then "" elif .author.__typename == "Bot" then "\(.author.login)[bot]" else (.author.login // "") end)},
      labels: [.labels.nodes[] | {name}]}' <"$gh_stdout" >"$pr_json"; then
   echo "::error::pr-contract: ${pr_read} read over GraphQL lacks its title, body or complete label list; failing closed"
+  hold_unreadable "$pr_read"
+  emit_output hold "$hold_result"
   exit 1
 fi
 # The comments, in the REST listing's shape, when the one page holds them all.
@@ -258,6 +302,54 @@ if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 3b — the hold label, when `enforce-hold-label` is on. Only a person
+# removing the label releases the hold. On a merge group it is read for every
+# queue entry at or ahead of the queued pull request: the group holds their
+# changes, and a passing group merges them all, whatever their own groups
+# read earlier. Lower `position` is nearer the front.
+# ---------------------------------------------------------------------------
+if [[ "$ENFORCE_HOLD_LABEL" == true ]]; then
+  if [[ "${EVENT_NAME:-}" != merge_group ]]; then
+    hold_result=pass
+    if grep -qxF -- "$HOLD_LABEL" "$scratch/labels.txt"; then
+      hold_result=fail
+      echo "::error::pr-contract: this PR carries the '$(escape_annotation "$HOLD_LABEL")' hold label; a person removes it to release the hold."
+    fi
+  else
+    # `held <numbers>` or `clear` when the queue was read whole; empty when it
+    # was not, which fails closed.
+    # shellcheck disable=SC2016 # `$number` and `$label` are jq variables.
+    hold_verdict="$(jq -r --argjson number "$PR_NUMBER" --arg label "$HOLD_LABEL" '
+      .data.repository.mergeQueue.entries
+      | select(type == "object" and (.totalCount | type) == "number" and (.nodes | type) == "array"
+          and .totalCount == (.nodes | length)
+          and all(.nodes[]; (.position | type) == "number" and (.pullRequest | type) == "object"
+            and (.pullRequest.number | type) == "number"
+            and (.pullRequest.labels.totalCount | type) == "number" and (.pullRequest.labels.nodes | type) == "array"
+            and .pullRequest.labels.totalCount == (.pullRequest.labels.nodes | length)
+            and all(.pullRequest.labels.nodes[]; (.name | type) == "string")))
+      | .nodes as $entries
+      | [$entries[] | select(.pullRequest.number == $number)]
+      | select(length == 1)
+      | .[0].position as $own
+      | [$entries[] | select(.position <= $own and any(.pullRequest.labels.nodes[]; .name == $label)) | .pullRequest.number] | sort
+      | if length == 0 then "clear" else "held \(map(tostring) | join(" "))" end
+    ' <"$pr_response" 2>/dev/null || true)"
+    case "$hold_verdict" in
+      clear) hold_result=pass ;;
+      held\ *)
+        hold_result=fail
+        read -ra held_numbers <<<"${hold_verdict#held }"
+        for held_number in "${held_numbers[@]}"; do
+          echo "::error::pr-contract: queued pull request #${held_number} carries the '$(escape_annotation "$HOLD_LABEL")' hold label and is in this merge group; a person removes it to release the hold."
+        done
+        ;;
+      *) hold_unreadable "the merge queue of '$(escape_annotation "$merge_group_branch")' (pull request #${PR_NUMBER} absent from it, or its entries or their labels incomplete)" ;;
+    esac
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Merge group — the title and the live do-not-merge label, both re-read because
 # either can change after enqueue; a failure makes the queue drop the pull
 # request. Linkage is advisory and a group run writes no comment or label.
@@ -266,11 +358,15 @@ if [[ "${EVENT_NAME:-}" == merge_group ]]; then
   emit_output title "$title_result"
   emit_output do-not-merge "$do_not_merge_result"
   emit_output linkage skipped
-  if [[ "$title_result" == fail || "$do_not_merge_result" == fail ]]; then
+  emit_output hold "$hold_result"
+  if [[ "$title_result" == fail || "$do_not_merge_result" == fail || "$hold_result" == fail ]]; then
     echo "::error::pr-contract: queued pull request #${PR_NUMBER} fails the contract; the merge queue removes it. Fix it and re-queue to merge."
     exit 1
   fi
   echo "pr-contract: queued pull request #${PR_NUMBER} passes the title and '${DO_NOT_MERGE_LABEL}' checks."
+  if [[ "$hold_result" == pass ]]; then
+    echo "pr-contract: no pull request in this merge group carries the '${HOLD_LABEL}' hold label."
+  fi
   exit 0
 fi
 
@@ -765,18 +861,22 @@ fi
 # ---------------------------------------------------------------------------
 # Step 6 — outputs and the single exit decision.
 #
-# Every check runs before any exit so all three outputs are always emitted; an
+# Every check runs before any exit so all four outputs are always emitted; an
 # early exit on the title would leave `linkage` unset for the caller.
 # ---------------------------------------------------------------------------
 emit_output title "$title_result"
 emit_output do-not-merge "$do_not_merge_result"
 emit_output linkage "$linkage_result"
+emit_output hold "$hold_result"
 
 exit_code=0
 if [[ "$title_result" == fail ]]; then
   exit_code=1
 fi
 if [[ "$do_not_merge_result" == fail ]]; then
+  exit_code=1
+fi
+if [[ "$hold_result" == fail ]]; then
   exit_code=1
 fi
 if [[ "$linkage_result" == fail && "$LINKAGE_MODE" == enforce ]]; then
