@@ -115,11 +115,8 @@ itself pinned to a full commit SHA with a dual-form trailing comment
 merge, so only patch and minor bumps of the standards `dependabot-policy`
 publishers (`actions/*`, `github/*`, `anthropics/*`) are queued without a
 person, by `pr-automerge-dependabot-queue.yml`; any other bump waits for a
-person. Dependabot leaves
-`anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
-why. A consumer's reference to this
-repository is only as trustworthy as this repository's own pins one level
-down, and this repository keeps that chain closed rather than asking every
+person. A consumer's reference to this repository is only as trustworthy as
+this repository's own pins one level down, and this repository keeps that chain closed rather than asking every
 consumer to audit it.
 
 ## Actions
