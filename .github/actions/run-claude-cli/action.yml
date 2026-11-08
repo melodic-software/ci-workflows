@@ -13,7 +13,9 @@ description: >-
   subscription leg that ends in a limit stop (a rejected rate_limit_event
   with its reset), a credit stop, or a 401 or 402 sets handoff `true` too,
   and the caller runs the fallback leg on `fallback-token` as a third job;
-  that leg never hands off. handoff-reason names the stop.
+  that leg never hands off. With `fallback-ready: handoff-only`, a
+  subscription leg hands off on the same stops with no leg after it, so a
+  last leg can end green on a capacity stop. handoff-reason names the stop.
   The leg's CLI environment has every credential and file-command variable
   removed and its one credential set, and the CLI runs with `--restricted`
   and `--strict-mcp-config`; the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
@@ -46,7 +48,7 @@ description: >-
   subscription token the API refused (401 or 402) that hands off to the
   fallback job adds one warning annotation naming the secret, so a green
   run still shows the dead token; that leg's summary row says the fallback
-  job runs instead.
+  job runs instead, or, with `handoff-only`, that no further leg runs.
   Uploading the log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
 
@@ -95,8 +97,12 @@ inputs:
     description: >-
       `true` when the caller runs a fallback leg after this one, so a
       subscription leg may hand off to it; pass
-      `secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != ''`. `false` or empty
-      keeps the subscription leg the last. Any other value fails the step.
+      `secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != ''`. `handoff-only` when
+      this subscription leg is the last but the caller still wants handoff
+      and handoff-reason on those stops, to end green on a capacity stop:
+      the outputs match `true`, and no note names a fallback job. `false`
+      or empty keeps the subscription leg the last with no handoff. Any
+      other value fails the step.
     required: false
     default: ""
   model:
@@ -219,7 +225,8 @@ outputs:
       leg in a separate job; `true` when a subscription leg with
       fallback-ready `true` ended in a limit stop, a credit stop, or a 401
       or 402, so the caller may run the fallback leg in a third job (403
-      stops it the same way); `false` otherwise; empty when the step failed
+      stops it the same way), and on the same stops with `handoff-only`,
+      where no leg follows; `false` otherwise; empty when the step failed
       before the leg ran. A 403 (permission_error) does not hand off: a
       Console key is bound to a workspace, or acts across several, and
       carries its identity's workspace role
@@ -243,7 +250,7 @@ outputs:
     description: >-
       Why the leg handed off, a closed token: `credit-stop` or `auth` from a
       key leg; `limit-stop`, `credit-stop` or `auth` from a subscription leg
-      with fallback-ready; empty when handoff is not `true`. The next job
+      with fallback-ready `true` or `handoff-only`; empty when handoff is not `true`. The next job
       passes it as report-lane-outcome's fallback-reason.
     value: ${{ steps.run.outputs.handoff-reason }}
   credential:
