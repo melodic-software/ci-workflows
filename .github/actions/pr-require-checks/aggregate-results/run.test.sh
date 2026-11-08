@@ -36,6 +36,13 @@ automatic_closing="A full run that records ci-lanes=success on ${sha} re-runs th
 # time, so this keeps the ceiling arithmetic real while the suite runs
 # instantly, and adds nothing test-only to the shipped runner. Every sleep is
 # logged so a case can assert that none happened.
+#
+# A wait's polls back off: each interval doubles from the wait's first one up
+# to 40s, plus a jitter of the run id modulo a quarter of the interval plus
+# one. Under this harness's run id 4242 that jitter is 2s on 15 and 30, 7s on
+# 40 and nothing on 5, 10 or 20, so the waits sleep 15 -> 17 32 47 47 ...,
+# 10 -> 10 20 47 ..., 5 -> 5 10 20 47 ... and 30 -> 32 47 ..., each cut to the
+# seconds left before its ceiling.
 clock_file="$temporary_directory/clock"
 sleep_log="$temporary_directory/sleep.log"
 cat >"$shim_directory/sleep" <<'SLEEP_SHIM'
@@ -968,7 +975,7 @@ cp -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100_jobs.
 writer_jobs 4100 success
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-expect_log 'Waiting 15s for in-flight run(s) 4100'
+expect_log 'Waiting 17s for in-flight run(s) 4100'
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100_jobs.1.json"
 clear_run_fixtures
 current_run
@@ -1109,8 +1116,8 @@ current_run
 workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 '[]'
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
-expect_log "The ci-lanes status on ${sha} settled after 15s."
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "The ci-lanes status on ${sha} settled after 17s."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_gh_call "-f url=https://github.com/${repository}/actions/runs/4242 -i"
 # The load-bearing intra-poll ordering: listing after reading would let a
@@ -1133,9 +1140,9 @@ expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with i
 expect_log "${fail_prefix}${pending_remedy} (waited 30s of 30s on in-flight run(s): 4000)"
 
 # The ceiling is elapsed wall-clock time, API calls included. Each listing here
-# takes 10 seconds, so after one 15-second sleep 35 seconds have passed and the
+# takes 10 seconds, so after one 17-second sleep 37 seconds have passed and the
 # 30-second ceiling is reached on the second poll. Counting only the sleeps
-# (15, then 30) would poll a third time and report 30 of 30, which is how a
+# (17, then 13) would poll a third time and report 30 of 30, which is how a
 # large ceiling used to outlast the job budget sized for it.
 echo 'case: the ceiling counts elapsed wall-clock time, not summed sleeps'
 clear_status_fixtures
@@ -1145,8 +1152,8 @@ current_run
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 10 >"$fixtures/${workflow_runs_key}.advance"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 10s of 30s)."
-expect_log "${fail_prefix}${pending_remedy} (waited 35s of 30s on in-flight run(s): 4000)"
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 10s of 30s)."
+expect_log "${fail_prefix}${pending_remedy} (waited 37s of 30s on in-flight run(s): 4000)"
 expect_no_log 'waited 30s of 30s'
 rm -f -- "$fixtures/${workflow_runs_key}.advance"
 
@@ -1162,8 +1169,8 @@ current_run
 workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log 'Waiting 15s for in-flight run(s) 4000'
-expect_log "${fail_prefix}${failure_remedy} (waited 15s of 60s on in-flight run(s): 4000)"
+expect_log 'Waiting 17s for in-flight run(s) 4000'
+expect_log "${fail_prefix}${failure_remedy} (waited 17s of 60s on in-flight run(s): 4000)"
 
 # A settled failure ends the wait even with a sibling incomplete, when that
 # sibling is not the writer re-running (this status names no writer at all).
@@ -1220,7 +1227,7 @@ status_list_on_call 3 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 2 >"$fixtures/${workflow_runs_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log '::warning::could not read'
 # Without turning the resend off in the wait, a slow 5xx would be sent three
 # times on each poll before the degraded read.
@@ -1242,7 +1249,7 @@ status_list "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s' '"runs-v1"' >"$fixtures/${workflow_runs_key}.etag"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 15s of 60s)."
+expect_log "Waiting 32s for in-flight run(s) 4000 on ${sha} to finish (waited 17s of 60s)."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_calls "$workflow_runs_key" 3
 if [[ "$(grep -cF -- 'If-None-Match: "runs-v1"' "$gh_log")" != 2 ]]; then
@@ -1263,7 +1270,7 @@ workflow_runs "[$(run_entry 4000 completed 2026-09-05T12:00:00Z)]"
 printf '%s' '"runs-v2"' >"$fixtures/${workflow_runs_key}.etag"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_gh_call 'If-None-Match: "runs-v1"'
-expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000)"
+expect_log "${fail_prefix}${absent_remedy} (waited 17s of 60s on in-flight run(s): 4000)"
 
 echo 'case: a 403 on the current-run fetch warns and never reaches the workflow-runs endpoint'
 clear_status_fixtures
@@ -1315,6 +1322,14 @@ workflow_runs "[${earlier_full_run}]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=
 expect_log '::warning::reached the 240s carry-forward-wait-seconds ceiling with in-flight run(s) 4000'
 expect_log 'waited 240s of 240s on in-flight run(s): 4000'
+# Without the backoff this polls every 15s, 17 listings to the ceiling. With it
+# the intervals double from 15 to the 40s cap, each plus 4242's jitter (2s on
+# 15 and 30, 7s on 40), and the last is cut to the 3s left.
+if [[ "$(paste -sd' ' "$sleep_log")" != '17 32 47 47 47 47 3' ]]; then
+  echo "FAIL: expected sleeps backing off from 15s to the cap, the last cut to the ceiling, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+expect_calls "$workflow_runs_key" 8
 
 # Without the validation a negative value makes the ceiling unreachable and the
 # wait unbounded; a non-numeric one makes the arithmetic an error mid-wait.
@@ -1343,9 +1358,9 @@ status_list_on_call 2 '[]'
 status_list_on_call 3 "[$(full_run_success 100)]"
 workflow_runs "[$(run_entry 5000 in_progress "$current_run_created_at")]"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 5000 on ${sha} to finish (waited 0s of 60s)."
-expect_log "Waiting 15s for in-flight run(s) 5000 on ${sha} to finish (waited 15s of 60s)."
-expect_log "The ci-lanes status on ${sha} settled after 30s."
+expect_log "Waiting 17s for in-flight run(s) 5000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "Waiting 32s for in-flight run(s) 5000 on ${sha} to finish (waited 17s of 60s)."
+expect_log "The ci-lanes status on ${sha} settled after 49s."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 # The enumerate still precedes the read WITHIN a poll. A sibling writes the
 # status and flips to `completed` moments later; reading first would let that
@@ -1379,7 +1394,7 @@ current_run
 status_list '[]'
 workflow_runs "[$(run_entry 4100 in_progress "$current_run_created_at"),$(run_entry 4300 in_progress "$current_run_created_at")]"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=30
-expect_log "Waiting 15s for in-flight run(s) 4100 4300 on ${sha} to finish (waited 0s of 30s)."
+expect_log "Waiting 17s for in-flight run(s) 4100 4300 on ${sha} to finish (waited 0s of 30s)."
 expect_log '::warning::reached the 30s carry-forward-wait-seconds ceiling with in-flight run(s) 4100 4300'
 expect_log "${fail_prefix}${absent_remedy} (waited 30s of 30s on in-flight run(s): 4100 4300)"
 
@@ -1416,8 +1431,8 @@ status_list_on_call 2 "[$(writer_status 200 success 2026-09-05T12:04:00Z 4000),$
 workflow_runs_on_call 1 "[${writer_rerun}]"
 workflow_runs_on_call 2 '[]'
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
-expect_log "The ci-lanes status on ${sha} settled after 15s."
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "The ci-lanes status on ${sha} settled after 17s."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
 # Without the ceiling a re-run slower than it holds the run forever, and
@@ -1470,8 +1485,8 @@ status_list '[]'
 workflow_runs_on_call 1 "[${writer_rerun}]"
 workflow_runs_on_call 2 '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
-expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000)."
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "${fail_prefix}${absent_remedy} (waited 17s of 60s on in-flight run(s): 4000)."
 expect_no_log 'Carried forward'
 
 # Without the closing remedy a red that outlived its failure gets a new commit
@@ -1548,7 +1563,7 @@ status_list_on_call 4 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
 printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
 expect_no_log 'sending it again'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
@@ -1568,7 +1583,7 @@ workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 "[${earlier_full_run},$(run_entry 4700 in_progress "$current_run_created_at")]"
 printf '%s\n' 2-4 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000 4700)"
+expect_log "${fail_prefix}${absent_remedy} (waited 17s of 60s on in-flight run(s): 4000 4700)"
 rm -f -- "$fixtures/${statuses_key}.fail-on-call"
 
 # A sibling can finish without ever recording a verdict: cancelled, or failed
@@ -1582,9 +1597,9 @@ status_list '[]'
 workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 '[]'
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
-expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
-expect_log "No run on ${sha} is still in flight after 15s; using the ci-lanes status."
-expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000)"
+expect_log "Waiting 17s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
+expect_log "No run on ${sha} is still in flight after 17s; using the ci-lanes status."
+expect_log "${fail_prefix}${absent_remedy} (waited 17s of 60s on in-flight run(s): 4000)"
 
 # A truncated body is what a cut-off response looks like: valid JSON up to the
 # point the connection dropped. `status_list` writes its argument verbatim, so
@@ -1991,6 +2006,19 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_log 'superseded'
 expect_status_reads 2
 
+# Without keeping a contract-only answer, every poll of the wait reads the jobs
+# of a contract-only sibling again, though its skipped jobs stay skipped.
+echo 'case: a yield wait reads the jobs of a contract-only sibling once across its polls'
+reset_yield_fixtures
+status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
+workflow_runs "[$(attempt_entry 4000 in_progress 2026-09-05T12:00:00Z 1 2026-09-05T12:00:00Z),$(attempt_entry 4300 in_progress 2026-09-05T12:00:20Z 1 2026-09-05T12:00:20Z)]"
+writer_running_then_success
+jobs_raw 4300 "$contract_only_jobs"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_status_reads 2
+expect_calls GET_repos_melodic-software_ci-workflows_actions_runs_4300_jobs 1
+
 # Without the ceiling a writer step that never finishes (a cancelled run) would
 # hold this run to the job timeout; without failing at it, the unproven
 # success would pass.
@@ -2026,11 +2054,11 @@ jobs_raw 4000 "$full_run_jobs"
 run_of_workflow 4000 777
 writer_jobs 4000 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
-expect_log "Holding 30s for full run(s) 4000 in flight on ${sha} (720s left of 720s)."
+expect_log "Holding 32s for full run(s) 4000 in flight on ${sha} (720s left of 720s)."
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_log 'superseded'
-if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 60 ]]; then
-  echo "FAIL: expected two 30s holds, got: $(paste -sd' ' "$sleep_log")"
+if [[ "$(paste -sd' ' "$sleep_log")" != '32 47' ]]; then
+  echo "FAIL: expected a 32s hold, then a 47s one, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 
@@ -2044,7 +2072,7 @@ workflow_runs_on_call 1 "[${held_run}]"
 workflow_runs "[${held_run_done}]"
 jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
-expect_log "Holding 30s for full run(s) 4000"
+expect_log "Holding 32s for full run(s) 4000"
 expect_log "${fail_prefix}${writer_failure_remedy}"
 expect_no_log 'Carried forward'
 expect_no_log 'superseded'
@@ -2059,8 +2087,8 @@ jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=45
 expect_log "${superseded_prefix}${superseded_manual}"
 expect_no_log 'Carried forward'
-if [[ "$(paste -sd' ' "$sleep_log")" != '30 15' ]]; then
-  echo "FAIL: expected holds of 30 and 15 seconds, got: $(paste -sd' ' "$sleep_log")"
+if [[ "$(paste -sd' ' "$sleep_log")" != '32 13' ]]; then
+  echo "FAIL: expected holds of 32 and 13 seconds, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 
@@ -2172,8 +2200,8 @@ jobs_raw 4200 "$full_run_jobs"
 run_of_workflow 4200 777
 writer_jobs 4200 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
-expect_log 'Holding 30s for full run(s) 4000'
-expect_log 'Holding 30s for full run(s) 4200'
+expect_log 'Holding 32s for full run(s) 4000'
+expect_log 'Holding 47s for full run(s) 4200'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
 # Without the filter on both ids the hold ends when either completes.
@@ -2187,9 +2215,9 @@ workflow_runs "[${held_run_done},$(attempt_entry 4200 completed 2026-09-05T12:01
 jobs_raw 4000 "$full_run_jobs"
 jobs_raw 4200 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
-expect_log 'Holding 30s for full run(s) 4000 4200'
-if [[ "$(paste -sd' ' "$sleep_log")" != '30 30' ]]; then
-  echo "FAIL: expected two 30s holds, got: $(paste -sd' ' "$sleep_log")"
+expect_log 'Holding 32s for full run(s) 4000 4200'
+if [[ "$(paste -sd' ' "$sleep_log")" != '32 47' ]]; then
+  echo "FAIL: expected a 32s hold, then a 47s one, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 
@@ -2203,8 +2231,8 @@ workflow_runs "[${held_run}]"
 jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log "${fail_prefix}${writer_failure_remedy}"
-if [[ "$(paste -sd' ' "$sleep_log")" != '30' ]]; then
-  echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
+if [[ "$(paste -sd' ' "$sleep_log")" != '32' ]]; then
+  echo "FAIL: expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 
@@ -2223,7 +2251,7 @@ run_of_workflow 4000 777
 writer_jobs 4000 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-if [[ "$(paste -sd' ' "$sleep_log")" != '30 30' ]]; then
+if [[ "$(paste -sd' ' "$sleep_log")" != '32 47' ]]; then
   echo "FAIL: expected a second poll after the failed listing, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
@@ -2244,8 +2272,8 @@ jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RATE_LIMIT_WAIT_SECONDS=0
 expect_log "::error::could not list this workflow's runs on ${sha}"
 expect_no_log 'Carried forward'
-if [[ "$(head -1 "$sleep_log")" != 30 || "$(grep -c '^30$' "$sleep_log")" -ne 1 ]]; then
-  echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
+if [[ "$(head -1 "$sleep_log")" != 32 || "$(grep -c '^32$' "$sleep_log")" -ne 1 ]]; then
+  echo "FAIL: expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 
@@ -2260,8 +2288,8 @@ done
 jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RATE_LIMIT_WAIT_SECONDS=0
 expect_no_log 'Carried forward'
-if [[ "$(grep -c '^30$' "$sleep_log")" -ne 1 ]]; then
-  echo "FAIL: expected one 30s hold, got: $(paste -sd' ' "$sleep_log")"
+if [[ "$(grep -c '^32$' "$sleep_log")" -ne 1 ]]; then
+  echo "FAIL: expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 rm -f -- "$fixtures/${statuses_key}".*.err
@@ -2279,10 +2307,10 @@ for call in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
 done
 writer_jobs 4000 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
-expect_log 'holding 30s (waited 30s of 720s).'
+expect_log 'holding 32s (waited 30s of 720s).'
 expect_no_log '::warning::the step'
-if [[ "$(paste -sd' ' "$sleep_log")" != '5 5 5 5 5 5 30 30' ]]; then
-  echo "FAIL: expected six 5s polls, then 30s polls, got: $(paste -sd' ' "$sleep_log")"
+if [[ "$(paste -sd' ' "$sleep_log")" != '5 10 15 32 47 47 47 47' ]]; then
+  echo "FAIL: expected writer polls backing off from 5s to the 30s ceiling, then hold polls from 32s, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
 expect_log "Carried forward: ci-lanes is success on ${sha}"
@@ -2520,6 +2548,27 @@ expect_no_sleep
 expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
 expect_no_gh_call 'actions/runs/5300/rerun-failed-jobs'
 
+# Without keeping a known full run, every poll of the wait reads its jobs again,
+# though a job that is running or ran never turns back into a skipped one.
+echo 'case: a full-mode wait reads the jobs of an in-flight full run once across its polls'
+reset_yield_fixtures
+workflow_runs_on_call 1 "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z),$(run_entry 5400 in_progress 2026-09-05T12:00:50Z)]"
+workflow_runs_on_call 2 "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z),$(run_entry 5400 in_progress 2026-09-05T12:00:50Z)]"
+workflow_runs "[$(completed_run 5300 failure),$(run_entry 5400 in_progress 2026-09-05T12:00:50Z)]"
+printf '{"jobs":%s}' "$inflight_contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.1.json"
+printf '{"jobs":%s}' "$inflight_contract_only_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.2.json"
+jobs_for 5300 failure skipped
+jobs_raw 5400 "$inflight_full_jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
+if [[ "$(paste -sd' ' "$sleep_log")" != '10 20' ]]; then
+  echo "FAIL: expected sleeps of 10s and 20s, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+expect_calls GET_repos_melodic-software_ci-workflows_actions_runs_5400_jobs 1
+expect_calls GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs 3
+expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
+expect_no_gh_call 'actions/runs/5400/rerun-failed-jobs'
+
 # Without the mode check, a polling contract-only run, which waits on this run
 # to finish, and this run, waiting on it, would hold each other to the ceiling.
 echo 'case: with a carry-forward wait above 0 and no yield a full-mode success does not wait'
@@ -2562,8 +2611,12 @@ if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 90 ]];
   echo "FAIL: expected the wait to sleep 90s in total, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
-if [[ "$(cat "$rerun_runs_count")" -ne 10 ]]; then
-  echo "FAIL: expected 10 run listings (one per 10s poll plus the last), got: $(cat "$rerun_runs_count")"
+if [[ "$(paste -sd' ' "$sleep_log")" != '10 20 47 13' ]]; then
+  echo "FAIL: expected sleeps backing off from 10s, the last cut to the ceiling, got: $(paste -sd' ' "$sleep_log")"
+  failures=$((failures + 1))
+fi
+if [[ "$(cat "$rerun_runs_count")" -ne 5 ]]; then
+  echo "FAIL: expected 5 run listings (one per poll at 0, 10, 30, 77 and 90s), got: $(cat "$rerun_runs_count")"
   failures=$((failures + 1))
 fi
 

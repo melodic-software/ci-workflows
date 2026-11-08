@@ -111,15 +111,16 @@ STATUS_CREATOR="${STATUS_CREATOR:-github-actions[bot]}"
 # Ceiling on the carry-forward wait, in seconds; `0` disables the wait.
 # Validated below, once `escape_annotation` exists.
 CARRY_FORWARD_WAIT_SECONDS="${CARRY_FORWARD_WAIT_SECONDS:-240}"
-# Poll interval, deliberately not a caller input: it is an implementation detail
-# of the wait, and the only knob a consumer should reason about is the ceiling.
+# First poll interval, deliberately not a caller input: it is an implementation
+# detail of the wait, and the only knob a consumer should reason about is the
+# ceiling. Every poll interval here backs off; see `poll_interval`.
 CARRY_FORWARD_POLL_SECONDS=15
 # Ceiling, in seconds, on how long a full run that records `success` waits for
 # in-flight contract-only siblings to finish before re-running the failed ones;
 # see `rerun_failed_contract_only_siblings`. `0` disables the wait. The default
 # fits inside the 7-minute `timeout-minutes` the README recommends for the
-# ci-status job. Validated below. The re-list interval is fixed, like the poll
-# above.
+# ci-status job. Validated below. Its first re-list interval is fixed, like the
+# poll above.
 RERUN_WAIT_SECONDS="${RERUN_WAIT_SECONDS:-90}"
 RERUN_WAIT_POLL_SECONDS=10
 # Ceiling, in seconds, on a yielding run's wait for the step of the full run
@@ -131,10 +132,13 @@ RERUN_WAIT_POLL_SECONDS=10
 YIELD_WRITER_WAIT_SECONDS=30
 YIELD_WRITER_POLL_SECONDS=5
 # Ceiling, in seconds, on a yielding run's hold for the full runs that supersede
-# it; see the yield block. `0` never holds. Validated below. The poll is fixed,
-# like the others, and each poll is one listing and one status read.
+# it; see the yield block. `0` never holds. Validated below. The first poll
+# interval is fixed, like the others, and each poll is one listing and one
+# status read.
 YIELD_WAIT_SECONDS="${YIELD_WAIT_SECONDS:-0}"
 YIELD_WAIT_POLL_SECONDS=30
+# No poll interval grows past this, before jitter.
+POLL_BACKOFF_CAP_SECONDS=40
 # GitHub run statuses that mean "this run has not finished yet". `completed` is
 # the only other value, and a completed run either wrote the status or never
 # will.
@@ -922,6 +926,36 @@ resolve_workflow_id() {
 # shellcheck disable=SC2016 # `$url` is a GraphQL variable.
 run_workflow_query='query($url: URI!) { run: resource(url: $url) { __typename ... on WorkflowRun { databaseId workflow { databaseId } } } }'
 
+# poll_interval <first-interval> <polls-already-slept> <seconds-left>
+# Sets `poll_sleep` to the next sleep of a wait: the first interval doubled once
+# per poll already slept, up to POLL_BACKOFF_CAP_SECONDS, plus a jitter of up to
+# a quarter of it, then cut to the seconds left so no wait passes its ceiling.
+# A sibling that finishes mid-wait is seen at most one interval later, the cap
+# plus its jitter at the most. The jitter comes from this run's id, so
+# it is fixed for a run but differs between the sibling runs one event starts
+# together, which then stop polling in step. Bash's RANDOM would spread them
+# too, but no environment variable seeds it, and the harness asserts every
+# sleep.
+poll_sleep=0
+poll_interval() {
+  local interval="$1" polls="$2" remaining="$3" seed=0
+  while [[ "$polls" -gt 0 && "$interval" -lt "$POLL_BACKOFF_CAP_SECONDS" ]]; do
+    interval=$((interval * 2))
+    polls=$((polls - 1))
+  done
+  if [[ "$interval" -gt "$POLL_BACKOFF_CAP_SECONDS" ]]; then
+    interval="$POLL_BACKOFF_CAP_SECONDS"
+  fi
+  if [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]{1,18}$ ]]; then
+    seed=$((10#$GITHUB_RUN_ID))
+  fi
+  interval=$((interval + seed % (interval / 4 + 1)))
+  if [[ "$interval" -gt "$remaining" ]]; then
+    interval="$remaining"
+  fi
+  poll_sleep="$interval"
+}
+
 # Wall-clock seconds since the wait began, and the sibling run ids waited on,
 # for the ceiling message. Set by wait_for_sibling_runs.
 carry_forward_waited=0
@@ -948,7 +982,7 @@ set_wait_note() {
 # that fails closed on its own failure; there is no outcome that passes without
 # one completed read.
 wait_for_sibling_runs() {
-  local ids all_ids="" sleep_for remaining wait_started now
+  local ids all_ids="" remaining wait_started now polls=0
   local no_wait='Reading the recorded status without waiting.'
   # `date`, not bash's `SECONDS`: an external clock is one the harness can
   # advance from its `sleep` and `gh` shims, so the ceiling arithmetic stays
@@ -1000,9 +1034,9 @@ wait_for_sibling_runs() {
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
     if ! GH_API_RETRY_ERRORS=false read_carried_state listed; then
       # The same degraded path the listing failure above takes, for the same
-      # reason. This endpoint is read once per poll, up to sixteen times
+      # reason. This endpoint is read once per poll, up to eight times
       # under the 240s ceiling, so failing the run on the first transient 5xx
-      # would let one bad read of sixteen turn the sole required check red. Break
+      # would let one bad read of eight turn the sole required check red. Break
       # instead, and let the caller take its single fresh re-read, which fails
       # closed when it fails too. Still no pass without a completed read.
       #
@@ -1050,12 +1084,10 @@ wait_for_sibling_runs() {
       set_wait_note "$all_ids"
       return 1
     fi
-    sleep_for="$CARRY_FORWARD_POLL_SECONDS"
-    if [[ "$sleep_for" -gt "$remaining" ]]; then
-      sleep_for="$remaining"
-    fi
-    echo "Waiting ${sleep_for}s for in-flight run(s) ${ids} on ${SHA} to finish (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s)."
-    sleep "$sleep_for"
+    poll_interval "$CARRY_FORWARD_POLL_SECONDS" "$polls" "$remaining"
+    polls=$((polls + 1))
+    echo "Waiting ${poll_sleep}s for in-flight run(s) ${ids} on ${SHA} to finish (waited ${carry_forward_waited}s of ${CARRY_FORWARD_WAIT_SECONDS}s)."
+    sleep "$poll_sleep"
   done
   set_wait_note "$all_ids"
 }
@@ -1114,7 +1146,7 @@ fail_carry_forward() {
 # re-running failed siblings, after its last listing of them, so a red here
 # would never be re-run. The success cannot be carried yet, because a running
 # step cannot prove it wrote the status (see `verify_writer_step`), so this run
-# re-lists and re-reads every YIELD_WRITER_POLL_SECONDS until that step
+# re-lists and re-reads, from YIELD_WRITER_POLL_SECONDS apart, until that step
 # finishes, up to YIELD_WRITER_WAIT_SECONDS, then decides as above. At the
 # ceiling it fails superseded: a full run still waiting on this run re-runs it
 # once it completes.
@@ -1199,10 +1231,20 @@ list_in_flight_full_runs() {
 
 # Sets `sibling_shape` to run `$1`'s shape under gate name `$2`, reading its
 # jobs. Anything unread stays `unknown`, which every caller takes as a full run.
+# A `contract` answer is kept per run attempt and not read again on a later
+# poll: it needs every job listed and all but the gate skipped, and a skipped
+# job stays skipped. `full` and `unknown` are read every time, since a job
+# still queued counts as ran and may yet be skipped.
 sibling_shape=unknown
+contract_sibling_attempts=" "
 read_sibling_shape() {
-  local id="$1" gate="$2"
+  local id="$1" gate="$2" attempt
   sibling_shape=unknown
+  attempt="$(jq -r --arg id "$id" 'first(.workflow_runs[]? | select((.id | tostring) == $id) | .run_attempt // 1) // ""' <"$scratch/runs.json")" || attempt=""
+  if [[ -n "$attempt" && "$contract_sibling_attempts" == *" ${id}:${attempt}:${gate} "* ]]; then
+    sibling_shape=contract
+    return 0
+  fi
   # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling counts as a full run.
   if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
     sibling_shape="$(job_shape "$gh_stdout" "$gate")"
@@ -1221,6 +1263,9 @@ read_sibling_shape() {
       warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/attempts/1/jobs" 'actions: read' "Counting run ${id} as a full run in flight."
     fi
   fi
+  if [[ "$sibling_shape" == contract && -n "$attempt" ]]; then
+    contract_sibling_attempts="${contract_sibling_attempts}${id}:${attempt}:${gate} "
+  fi
 }
 
 # Holds until none of the full runs `$1` is incomplete, the newest status is no
@@ -1231,7 +1276,7 @@ read_sibling_shape() {
 # Adds `$1` to `yield_held_ids`.
 yield_held_ids=""
 yield_hold() {
-  local waiting="$1" remaining sleep_for id
+  local waiting="$1" remaining id
   for id in $waiting; do
     if [[ " ${yield_held_ids} " != *" ${id} "* ]]; then
       yield_held_ids="${yield_held_ids}${yield_held_ids:+ }${id}"
@@ -1242,12 +1287,10 @@ yield_hold() {
     if [[ "$remaining" -le 0 ]]; then
       return 0
     fi
-    sleep_for="$YIELD_WAIT_POLL_SECONDS"
-    if [[ "$sleep_for" -gt "$remaining" ]]; then
-      sleep_for="$remaining"
-    fi
-    echo "Holding ${sleep_for}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
-    sleep "$sleep_for"
+    poll_interval "$YIELD_WAIT_POLL_SECONDS" "$yield_hold_polls" "$remaining"
+    yield_hold_polls=$((yield_hold_polls + 1))
+    echo "Holding ${poll_sleep}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
+    sleep "$poll_sleep"
     # The next poll is this read's retry, so `gh_api` sends it once.
     # shellcheck disable=SC2310 # gh_api handles its own errexit; a failed read holds for one more poll.
     if GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
@@ -1346,6 +1389,11 @@ fi
 if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
   echo "Contract-only event: yielding to any full run in flight on ${SHA}, else reading the ${STATUS_CONTEXT} status."
   yield_started="$(date +%s)"
+  # Polls slept so far, for `poll_interval`: one count for the writer wait and
+  # one for the hold, kept across every pass of the loop below so a hold
+  # re-entered after a re-listing keeps backing off rather than starting over.
+  yield_writer_polls=0
+  yield_hold_polls=0
   while :; do
     # shellcheck disable=SC2310 # list_in_flight_full_runs warns itself; the caller fails closed.
     if ! list_in_flight_full_runs; then
@@ -1375,23 +1423,19 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
       yield_waited=$(($(date +%s) - yield_started))
       yield_remaining=$((YIELD_WRITER_WAIT_SECONDS - yield_waited))
       if [[ "$yield_remaining" -gt 0 ]]; then
-        yield_sleep="$YIELD_WRITER_POLL_SECONDS"
-        if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
-          yield_sleep="$yield_remaining"
-        fi
-        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WRITER_WAIT_SECONDS}s)."
-        sleep "$yield_sleep"
+        poll_interval "$YIELD_WRITER_POLL_SECONDS" "$yield_writer_polls" "$yield_remaining"
+        yield_writer_polls=$((yield_writer_polls + 1))
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; waiting ${poll_sleep}s (waited ${yield_waited}s of ${YIELD_WRITER_WAIT_SECONDS}s)."
+        sleep "$poll_sleep"
         continue
       fi
       # Past the writer's own ceiling a hold keeps re-reading, on its slower poll.
       yield_remaining=$((YIELD_WAIT_SECONDS - yield_waited))
       if [[ "$yield_remaining" -gt 0 ]]; then
-        yield_sleep="$YIELD_WAIT_POLL_SECONDS"
-        if [[ "$yield_sleep" -gt "$yield_remaining" ]]; then
-          yield_sleep="$yield_remaining"
-        fi
-        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; holding ${yield_sleep}s (waited ${yield_waited}s of ${YIELD_WAIT_SECONDS}s)."
-        sleep "$yield_sleep"
+        poll_interval "$YIELD_WAIT_POLL_SECONDS" "$yield_hold_polls" "$yield_remaining"
+        yield_hold_polls=$((yield_hold_polls + 1))
+        echo "Run ${superseding} recorded ${STATUS_CONTEXT}=success on ${SHA} and its step is still finishing; holding ${poll_sleep}s (waited ${yield_waited}s of ${YIELD_WAIT_SECONDS}s)."
+        sleep "$poll_sleep"
         continue
       fi
       echo "::warning::the step of run ${superseding} that recorded ${STATUS_CONTEXT}=success on ${SHA} was still running after ${yield_waited}s."
@@ -1533,7 +1577,7 @@ fi
 # still running) and will finish red. It cannot be re-run while in flight, so
 # under `yield-to-full-run`, or a carry-forward wait of `0`, where such a run
 # reads the status once and never polls, this waits up to `rerun-wait-seconds`
-# for it to complete, re-listing every RERUN_WAIT_POLL_SECONDS. A run that
+# for it to complete, re-listing from RERUN_WAIT_POLL_SECONDS apart. A run that
 # polls (a wait above `0` without yield) reads this success itself once this
 # step finishes, so nothing waits for it: it would be waiting on this run. The
 # same goes for a run holding under `yield-wait-seconds`, which this run's input
@@ -1555,7 +1599,7 @@ fi
 # a refusal warns and moves on.
 rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
-  local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining sleep_for ran
+  local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining ran polls=0 attempt full_runs=" "
   local wait_for_in_flight=false
   if [[ "$RERUN_WAIT_SECONDS" -gt 0 && "$YIELD_WAIT_SECONDS" -eq 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
     wait_for_in_flight=true
@@ -1580,6 +1624,12 @@ rerun_failed_contract_only_siblings() {
       <"$runs")"
     waiting=""
     for id in $in_flight; do
+      # A run attempt known to be a full run stays one: a job that is running
+      # or ran never turns back into a skipped one, so it is not read again.
+      attempt="$(jq -r --arg id "$id" 'first(.workflow_runs[]? | select((.id | tostring) == $id) | .run_attempt // 1) // ""' <"$runs")" || attempt=""
+      if [[ -n "$attempt" && "$full_runs" == *" ${id}:${attempt} "* ]]; then
+        continue
+      fi
       ran=0
       # The next poll is this read's retry, so `gh_api` sends it once.
       # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling is waited for.
@@ -1588,6 +1638,8 @@ rerun_failed_contract_only_siblings() {
       fi
       if [[ ! "$ran" =~ ^[0-9]+$ || "$ran" -lt 2 ]]; then
         waiting="${waiting}${waiting:+ }${id}"
+      elif [[ -n "$attempt" ]]; then
+        full_runs="${full_runs}${id}:${attempt} "
       fi
     done
     if [[ -z "$waiting" ]]; then
@@ -1599,12 +1651,10 @@ rerun_failed_contract_only_siblings() {
       echo "::warning::contract-only run(s) ${waiting} still in flight on ${SHA} after ${waited}s; not waiting longer to re-run them."
       break
     fi
-    sleep_for="$RERUN_WAIT_POLL_SECONDS"
-    if [[ "$sleep_for" -gt "$remaining" ]]; then
-      sleep_for="$remaining"
-    fi
-    echo "Waiting ${sleep_for}s for in-flight run(s) ${waiting} on ${SHA} to finish before re-running failed contract-only runs."
-    sleep "$sleep_for"
+    poll_interval "$RERUN_WAIT_POLL_SECONDS" "$polls" "$remaining"
+    polls=$((polls + 1))
+    echo "Waiting ${poll_sleep}s for in-flight run(s) ${waiting} on ${SHA} to finish before re-running failed contract-only runs."
+    sleep "$poll_sleep"
   done
   candidates="$(jq -r --argjson self "$GITHUB_RUN_ID" \
     '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "failure" and (.id // $self) != $self) | .id ] | sort | join(" ")' \
