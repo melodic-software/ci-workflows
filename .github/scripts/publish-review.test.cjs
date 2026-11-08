@@ -357,6 +357,7 @@ test("comments mode fails with a named class when no review happened", async () 
     [{ KEY_FAILED: "" }, "no-outcome"],
     [{ KEY_FAILED: "", KEY_CLASS: "install-failed" }, "install-failed"],
     [{ KEY_FAILED: "true", KEY_CLASS: "max-turns" }, "max-turns"],
+    [{ KEY_FAILED: "true", KEY_CLASS: "shell-failed" }, "shell-failed"],
     [{ KEY_FAILED: "true", KEY_CLASS: "made-up" }, "other"],
     [{ KEY_VERDICT: "the leg wrote no structured output" }, "incomplete"],
     [{ KEY_REVIEW: "{}" }, "incomplete"],

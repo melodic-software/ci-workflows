@@ -239,6 +239,21 @@ for (const lane of lanes) {
     assert.doesNotMatch(result.summary, /unclassified/u);
   });
 
+  test(`${lane.file}: a review whose every allowed Bash call failed goes red and says why`, () => {
+    const outcome = job.steps.find(
+      (candidate) => candidate.id === "review-outcome",
+    );
+    assert.equal(String(outcome.with["detect-failed-shell"]), "true");
+    const result = runStep(step, {
+      REVIEW_FAILED: "true",
+      FAILURE_CLASS: "shell-failed",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.summary, /failed: `shell-failed`/u);
+    assert.match(result.summary, /no working shell/u);
+    assert.doesNotMatch(result.summary, /unclassified/u);
+  });
+
   test(`${lane.file}: every other way no review happened goes red and is named`, () => {
     for (const [failed, klass, named] of [
       ["true", "auth", "auth"],

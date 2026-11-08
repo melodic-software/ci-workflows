@@ -14,6 +14,7 @@ const {
 } = require("../../scripts/temporary-directories.cjs");
 const {
   classifyExecutionFile,
+  failedShellCalls,
   laneReport,
   readRunRecord,
   recordText,
@@ -1201,4 +1202,92 @@ test("resets and its window come from a rejected event in either field form", ()
   const camelStop = record([rateLimitEvent("rejected", NEW_YEAR, "five_hour")]);
   assert.equal(camelStop.resetsAt, "2026-01-01T00:00:00Z");
   assert.equal(camelStop.resetsWindow, "five_hour");
+});
+
+// Shapes from the #816 probe (CLI 2.1.305, stream-json): a non-zero Bash exit
+// records `{"type":"tool_result","content":"Exit code 1","is_error":true}`; a
+// denied call records `is_error: true` too and its id is listed in the result
+// message's `permission_denials` (Agent SDK `SDKPermissionDenial`).
+const shellUse = (id, name = "Bash") => ({
+  type: "assistant",
+  message: { content: [{ type: "tool_use", id, name, input: { command: "gh pr diff 7" } }] },
+});
+const shellResult = (id, isError) => ({
+  type: "user",
+  message: {
+    content: [{ type: "tool_result", tool_use_id: id, content: isError ? "Exit code 1" : "ok", is_error: isError }],
+  },
+});
+const runResult = (denied = []) => ({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  permission_denials: denied.map((id) => ({ tool_name: "Bash", tool_use_id: id, tool_input: {} })),
+});
+
+// One Bash call and its result per id, failed unless listed in `ok`.
+const calls = (ids, ok = []) =>
+  ids.flatMap((id) => [shellUse(id), shellResult(id, !ok.includes(id))]);
+
+test("a run whose allowed Bash calls all failed, at least three of them, counts those calls", () => {
+  for (const [label, messages, expected] of [
+    ["three failed calls", [...calls(["a", "b", "c"]), runResult()], 3],
+    ["four failed beside a denied one", [...calls(["a", "b", "c", "e", "d"]), runResult(["d"])], 4],
+    ["a successful Read is not a working shell", [shellUse("r", "Read"), shellResult("r", false), ...calls(["a", "b", "c"]), runResult()], 3],
+  ]) {
+    assert.equal(failedShellCalls(messages), expected, label);
+  }
+});
+
+test("the minimum is the caller's: two failed calls qualify at 2, one at 1", () => {
+  assert.equal(failedShellCalls([...calls(["a", "b"]), runResult()], 2), 2);
+  assert.equal(failedShellCalls([...calls(["a"]), runResult()], 1), 1);
+});
+
+// The tool_result texts CLI 2.1.303 (claude-code-action v1.0.253) wrote for
+// a denied Bash call in `claude -p --output-format stream-json`: no allow rule
+// matched, a --disallowedTools rule matched, and --permission-mode dontAsk.
+// The same runs listed every one of these ids in permission_denials.
+const DENIED_TEXTS = [
+  "This command requires approval",
+  "Permission to use Bash with command curl --version has been denied.",
+  "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools",
+];
+const textResult = (id, text) => ({
+  type: "user",
+  message: { content: [{ type: "tool_result", tool_use_id: id, content: text, is_error: true }] },
+});
+
+test("a denied call left off permission_denials is still not counted, by its CLI denial text", () => {
+  for (const text of DENIED_TEXTS) {
+    const denials = ["x", "y", "z"].flatMap((id) => [shellUse(id), textResult(id, text)]);
+    assert.equal(failedShellCalls([...denials, runResult()]), 0, text);
+    // Beside three real failures, only the failures count.
+    assert.equal(failedShellCalls([...denials, ...calls(["a", "b", "c"]), runResult()]), 3, text);
+  }
+  // The text form an SDK content array takes is read the same way.
+  const arrayed = ["x", "y", "z"].flatMap((id) => [
+    shellUse(id),
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: DENIED_TEXTS[0] }], is_error: true }] } },
+  ]);
+  assert.equal(failedShellCalls([...arrayed, runResult()]), 0);
+  // A failure whose output only mentions a denial is still a failure.
+  const quoted = ["x", "y", "z"].flatMap((id) => [shellUse(id), textResult(id, `Exit code 1\n${DENIED_TEXTS[1]}`)]);
+  assert.equal(failedShellCalls([...quoted, runResult()]), 3);
+});
+
+test("a run with a working, denied-only, too-short, absent or unanswered shell is not shell-failed", () => {
+  for (const [label, messages] of [
+    ["one success among failures", [...calls(["a", "b", "c", "e"], ["e"]), runResult()]],
+    ["one normal non-zero exit", [...calls(["a"]), runResult()]],
+    ["two failed calls, below the default 3", [...calls(["a", "b"]), runResult()]],
+    ["two failed and a denied call, which does not count", [...calls(["a", "b", "d"]), runResult(["d"])]],
+    ["only denied calls", [...calls(["a", "b", "c"]), runResult(["a", "b", "c"])]],
+    ["no Bash calls", [shellUse("r", "Read"), shellResult("r", true), runResult()]],
+    ["Bash calls with no result", [shellUse("a"), shellUse("b"), shellUse("c"), runResult()]],
+    ["no messages", []],
+  ]) {
+    assert.equal(failedShellCalls(messages), 0, label);
+  }
+  assert.equal(failedShellCalls(null), 0, "an unreadable execution file");
 });

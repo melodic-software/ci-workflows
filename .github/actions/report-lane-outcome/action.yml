@@ -13,7 +13,9 @@ description: >-
   and review-ran false (so callers do not count or credit a review that never
   happened). With require-completion, a success with evidence counts only
   when the lane's completion check says "complete"; anything else is a red
-  `class=incomplete`. On any other outcome it projects the last SDK result message
+  `class=incomplete`. With detect-failed-shell, a success whose allowed
+  Bash calls all failed, at least failed-shell-min-calls of them, is a red
+  `class=shell-failed`. On any other outcome it projects the last SDK result message
   from the execution file into safe, structured metadata (classify.cjs — the
   sole reader of the file's free-text fields; see its header for the
   projection and classification contract), emits the machine-readable
@@ -79,6 +81,25 @@ inputs:
       keeps the plain success rule (intake triage).
     required: false
     default: ""
+  detect-failed-shell:
+    description: >-
+      "true" makes a successful outcome with execution evidence count as a
+      review unless the run made at least failed-shell-min-calls Bash calls
+      it was allowed to make and every one returned an error (a sandbox
+      that would not start fails them all). That run concludes class
+      `shell-failed`: review-failed "true", review-ran "false". A denied
+      call is not counted. A require-completion `incomplete` is reported
+      first. Empty keeps the plain success rule.
+    required: false
+    default: ""
+  failed-shell-min-calls:
+    description: >-
+      The fewest allowed Bash calls, all failed, that detect-failed-shell
+      reads as no working shell. Fewer are normal non-zero exits, such as a
+      grep with no match. A whole number from 1; anything else fails the
+      step before it reports.
+    required: false
+    default: "3"
   completion:
     description: >-
       The lane's completion check: "complete", or the reason no completed
@@ -170,7 +191,8 @@ outputs:
       One class from docs/lane-outcome.md "Failure classes", or the
       caller's known-failure-class as given (empty on a genuine success;
       skipped-validation when the action skipped itself; incomplete when
-      require-completion found no completed review).
+      require-completion found no completed review; shell-failed when
+      detect-failed-shell found every allowed Bash call failed).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -204,6 +226,8 @@ runs:
         STEP_TIMEOUT_MINUTES: ${{ inputs.step-timeout-minutes }}
         REQUIRE_COMPLETION: ${{ inputs.require-completion }}
         COMPLETION: ${{ inputs.completion }}
+        DETECT_FAILED_SHELL: ${{ inputs.detect-failed-shell }}
+        FAILED_SHELL_MIN_CALLS: ${{ inputs.failed-shell-min-calls }}
         CREDENTIAL: ${{ inputs.credential }}
         FALLBACK_REASON: ${{ inputs.fallback-reason }}
         MAX_TURNS: ${{ inputs.max-turns }}
@@ -223,9 +247,11 @@ runs:
           const {
             CLASS_PATTERN,
             classifyExecutionFile,
+            failedShellCalls,
             FALLBACK_REASONS,
             laneReport,
             readLegLog,
+            readMessages,
             readRunRecord,
             recordText,
             runContext,
@@ -237,6 +263,11 @@ runs:
             core.setFailed(
               `fallback-reason must be empty or one of: ${FALLBACK_REASONS.join(", ")}.`,
             );
+            return;
+          }
+          const minShellCalls = process.env.FAILED_SHELL_MIN_CALLS ?? "";
+          if (minShellCalls !== "" && !/^[1-9]\d{0,5}$/u.test(minShellCalls)) {
+            core.setFailed("failed-shell-min-calls must be a whole number from 1.");
             return;
           }
 
@@ -316,6 +347,28 @@ runs:
                 );
                 core.setOutput("failure_class", "incomplete");
                 core.setOutput("review_detail", "(no completed review was found)");
+                core.setOutput("review_failed", "true");
+                core.setOutput("review_ran", "false");
+                return;
+              }
+              // A run whose every allowed Bash call failed saw nothing it
+              // needed a shell for, yet the step is green.
+              const failedShell =
+                process.env.DETECT_FAILED_SHELL === "true"
+                  ? failedShellCalls(
+                      readMessages(executionFile),
+                      minShellCalls === "" ? undefined : Number(minShellCalls),
+                    )
+                  : 0;
+              if (failedShell > 0) {
+                const { tokens, after } = report(outcome, "", "shell-failed");
+                core.error(
+                  `${lane} concluded: ${outcome} class=shell-failed${tokens} — all ` +
+                    `${failedShell} allowed Bash call(s) failed, so the review ran ` +
+                    `with no working shell.${after}`,
+                );
+                core.setOutput("failure_class", "shell-failed");
+                core.setOutput("review_detail", "(every allowed Bash call failed)");
                 core.setOutput("review_failed", "true");
                 core.setOutput("review_ran", "false");
                 return;
