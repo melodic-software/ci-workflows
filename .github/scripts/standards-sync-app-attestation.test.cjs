@@ -106,6 +106,7 @@ async function runAttestation({
     EXPECTED_REPOSITORIES: JSON.stringify(expected),
     GITHUB_API_URL: "https://api.github.com",
     INSTALLATION_ID: "144867070",
+    TRUST_ROOT_REPOSITORIES: "melodic-software/azure-iac",
     ...env,
   });
   try {
@@ -299,6 +300,32 @@ test("an extra selected repository is an over-grant finding, not a failed attest
   assert.match(
     result.warnings[0],
     /over-grant: melodic-software\/excess selected on installation 144867070/u,
+  );
+});
+
+// Issue #922: azure-iac, a trust root, must stay out of the App's reach.
+test("an over-grant that reaches azure-iac fails the whole attestation", async () => {
+  await assert.rejects(
+    runAttestation({
+      pages: [
+        {
+          total_count: 3,
+          repositories: [
+            repository("repository-1", 1),
+            repository("repository-2", 2),
+            repository("azure-iac", 3),
+          ],
+        },
+      ],
+    }),
+    /trust root melodic-software\/azure-iac is selected on installation 144867070/u,
+  );
+});
+
+test("the workflow names azure-iac as a trust root", () => {
+  assert.match(
+    workflow,
+    /TRUST_ROOT_REPOSITORIES: melodic-software\/azure-iac\n/u,
   );
 });
 

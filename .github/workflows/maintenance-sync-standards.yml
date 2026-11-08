@@ -189,6 +189,7 @@ jobs:
           EXPECTED_INSTALLATION_ID: '144867070'
           EXPECTED_OWNER: melodic-software
           EXPECTED_REPOSITORIES: ${{ needs.plan.outputs.expected-repositories }}
+          TRUST_ROOT_REPOSITORIES: melodic-software/azure-iac
           GITHUB_API_URL: ${{ github.api_url }}
           INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
         with:
@@ -370,6 +371,12 @@ jobs:
             const actualSet = new Set(secondSnapshot);
             const missing = [...expectedSet].filter((repository) => !actualSet.has(repository)).sort();
             const excess = secondSnapshot.filter((repository) => !expectedSet.has(repository));
+            // A trust root in reach of this write-capable App is the one over-grant that stops every target.
+            const trustRoots = required('TRUST_ROOT_REPOSITORIES').split(',').map((name) => name.trim());
+            const reachableTrustRoots = excess.filter((repository) => trustRoots.includes(repository));
+            if (reachableTrustRoots.length > 0) {
+              fail(`trust root ${reachableTrustRoots.join(', ')} is selected on installation ${expectedInstallationId}; remove it under Repository access before any sync runs`);
+            }
             // A missing target fails only its own sync job; excess access is reported, never blocking.
             core.setOutput('unreachable-repositories', JSON.stringify(missing));
             // One annotation per kind: GitHub caps warning annotations per step.
