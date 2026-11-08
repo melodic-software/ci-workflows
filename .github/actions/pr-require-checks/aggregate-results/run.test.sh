@@ -3477,6 +3477,12 @@ run_case 0 'success success' pass ''
 expect_log '::notice title=api-calls::github-token=0 not-modified=1 graphql=0'
 rm -f -- "$fixtures/${calls_post_key}.headers"
 
+# Without the guarded summary write an unwritable summary fails the step.
+echo 'case: an unwritable step summary changes neither the exit status nor the notice'
+run_case 0 'success success' pass '' true "GITHUB_STEP_SUMMARY=$temporary_directory"
+expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=0'
+expect_no_log 'Is a directory'
+
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
   exit 1

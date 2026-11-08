@@ -135,7 +135,7 @@ gh_api_calls_report() {
   [[ -n "$line" ]] || return 0
   printf '%s\n' "$line"
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-    printf 'API calls: %s\n' "${line#*title=api-calls::}" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+    printf '\nAPI calls: %s\n' "${line#*title=api-calls::}" 2>/dev/null >>"$GITHUB_STEP_SUMMARY" || true
   fi
   return 0
 }

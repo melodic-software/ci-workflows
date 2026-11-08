@@ -1544,10 +1544,31 @@ rm -f -- "$fixtures/${pull_key}.fail-times"
 
 # Without the 304 branch a not-modified answer counts as a charged request.
 echo 'case: a 304 answer counts as not-modified, not as a request'
-printf 'HTTP/2.0 304 Not Modified\r\n' >"$fixtures/${pull_key}.headers"
+set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+printf 'HTTP/2.0 304 Not Modified\r\n' >"$fixtures/POST_${labels_key}.headers"
 run_case 0
-expect_log '::notice title=api-calls::github-token=0 not-modified=1 graphql=1'
-rm -f -- "$fixtures/${pull_key}.headers"
+expect_gh_call "-X POST repos/${repository}/issues/${pr_number}/labels"
+expect_log "::notice title=api-calls::github-token=$(($(wc -l <"$gh_log") - 1)) not-modified=1 graphql=1"
+rm -f -- "$fixtures/POST_${labels_key}.headers"
+
+# Without the per-page count a three-page listing counts as one request.
+echo 'case: a paginated listing counts one request per page'
+set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+set_comments '[]'
+comments_beyond_one_page
+printf '[[%s],[%s],[%s]]' "$(user_comment 1 a)" "$(user_comment 2 b)" "$(user_comment 3 c)" >"$fixtures/GET_${comments_key}.pages.json"
+run_case 0
+expect_gh_call "-X GET repos/${repository}/issues/${pr_number}/comments"
+expect_log "::notice title=api-calls::github-token=$(($(wc -l <"$gh_log") - 1 + 3)) not-modified=0 graphql=1"
+rm -f -- "$fixtures/GET_${comments_key}.pages.json"
+set_comments '[]'
+
+# Without the guarded summary write an unwritable summary fails the step.
+echo 'case: an unwritable step summary changes neither the exit status nor the notice'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+run_case 0 GITHUB_STEP_SUMMARY="$temporary_directory"
+expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=1'
+expect_no_log 'Is a directory'
 
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
