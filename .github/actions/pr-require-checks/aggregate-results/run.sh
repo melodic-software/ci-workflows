@@ -1244,8 +1244,9 @@ yield_hold() {
     fi
     echo "Holding ${sleep_for}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
     sleep "$sleep_for"
+    # The next poll is this read's retry, so `gh_api` sends it once.
     # shellcheck disable=SC2310 # gh_api handles its own errexit; a failed read holds for one more poll.
-    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+    if GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
       waiting="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg ids " ${waiting} " \
         '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | .id | tostring | select(. as $id | $ids | contains(" \($id) ")) ] | join(" ")' \
         <"$gh_stdout")" || waiting=""
@@ -1576,8 +1577,9 @@ rerun_failed_contract_only_siblings() {
     waiting=""
     for id in $in_flight; do
       ran=0
+      # The next poll is this read's retry, so `gh_api` sends it once.
       # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling is waited for.
-      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+      if GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
         ran="$(jq -r '[ .jobs[]? | select(.status == "in_progress" or ((.conclusion // "skipped") != "skipped")) ] | length' <"$gh_stdout")" || ran=0
       fi
       if [[ ! "$ran" =~ ^[0-9]+$ || "$ran" -lt 2 ]]; then

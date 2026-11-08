@@ -2212,9 +2212,7 @@ status_list_on_call 2 "[$(full_run_success 100)]"
 status_list_on_call 3 "[$(full_run_success 100)]"
 status_list "[$(writer_status 200 success 2026-09-05T12:05:00Z 4000)]"
 workflow_runs_on_call 1 "[${held_run}]"
-for call in 2 3 4; do
-  printf 'HTTP 502: bad gateway\n' >"$fixtures/${workflow_runs_key}.${call}.err"
-done
+printf 'HTTP 502: bad gateway\n' >"$fixtures/${workflow_runs_key}.2.err"
 workflow_runs "[${held_run_done}]"
 jobs_raw 4000 "$full_run_jobs"
 run_of_workflow 4000 777
@@ -2225,6 +2223,9 @@ if [[ "$(paste -sd' ' "$sleep_log")" != '30 30' ]]; then
   echo "FAIL: expected a second poll after the failed listing, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
+# Without turning the resend off in the hold, the failed poll is sent again
+# at once instead of on the next poll.
+expect_no_log 'sending it again'
 
 # Without the rate-limit return the hold polls a limited token to the ceiling.
 echo 'case: a rate-limited read ends a hold and fails closed'
@@ -2529,11 +2530,14 @@ echo 'case: a full-mode success waits for an in-flight sibling whose jobs cannot
 reset_yield_fixtures
 workflow_runs_on_call 1 "[$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
 workflow_runs "[$(completed_run 5300 failure)]"
-printf '1-3\n' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.fail-on-call"
+printf '1\n' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.fail-on-call"
 jobs_for 5300 failure skipped
 run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
 expect_log 'Waiting 10s for in-flight run(s) 5300'
 expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
+# Without turning the resend off in the wait, the unreadable sibling is read
+# again at once instead of on the next poll.
+expect_no_log 'sending it again'
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.fail-on-call"
 
 # Without the ceiling a sibling that never finishes would hold this run's
@@ -3100,6 +3104,18 @@ echo 'case: job.check_run_id without step-name still needs the running step list
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100
 expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step after 9 reads."
 expect_no_log 'Carried forward'
+
+# Without the conditional read each of the lookup's nine reads of an unchanged
+# job is billed; with it the eight after the first carry its etag.
+echo 'case: the own-job lookup sends its etag on every read after the first'
+printf '%s' '"job-v1"' >"$fixtures/${check_job_key}.etag"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100
+expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step after 9 reads."
+if [[ "$(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")" != 8 ]]; then
+  echo "FAIL: expected 8 conditional job reads, got: $(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/${check_job_key}.etag"
 
 # Without the completed-step test, a step-name naming a step that already
 # finished would be trusted as the step running this action.
