@@ -61,7 +61,10 @@ inputs:
   carry-forward-wait-seconds:
     description: >-
       Ceiling, in seconds, on the carry-forward wait. In carry-forward mode this
-      action polls every 15 seconds. Each poll lists the runs of this same
+      action polls 15 seconds apart, then backs off: every wait in this action
+      doubles its interval after each poll up to 40 seconds, adds a jitter of
+      up to a quarter of it taken from the run id, and never sleeps past its
+      ceiling. Each poll lists the runs of this same
       workflow on this same head SHA that are still incomplete, excluding this
       run, and then reads the `status-context` status list. A `success` is a
       settled verdict and ends the poll. A `failure` or `error` ends it too,
@@ -125,7 +128,8 @@ inputs:
       `yield-to-full-run`, or a carry-forward wait of `0`, a contract-only
       sibling still in flight could have read the status before it was
       written and finish red after the listing, so the full run first waits
-      up to `rerun-wait-seconds`, re-listing every 10, for every in-flight
+      up to `rerun-wait-seconds`, re-listing 10 seconds apart and backing off
+      (see `carry-forward-wait-seconds`), for every in-flight
       sibling not
       known to be a full run (two or more jobs are running or ran) to
       complete, then re-runs. A wait above `0` without yield needs no such
@@ -187,8 +191,9 @@ inputs:
       it finishes. When the newest status is a `success` written by the
       current attempt of the one full run in flight, and that run's step that
       wrote it is still running (re-running failed siblings), it re-lists and
-      re-reads every 5 seconds for up to 30, and every 30 for the rest of any
-      `yield-wait-seconds`, until that step finishes, then
+      re-reads 5 seconds apart for up to 30, and 30 apart for the rest of any
+      `yield-wait-seconds`, each backing off (see
+      `carry-forward-wait-seconds`), until that step finishes, then
       carries the `success` once the step reads back `success`; a step still
       running at 30 seconds fails superseded, and a full run still waiting on
       this run re-runs it. Overrides
@@ -202,9 +207,10 @@ inputs:
     description: >-
       Ceiling, in seconds, on how long a run under `yield-to-full-run` holds
       instead of failing while a full run supersedes it. The job stays in
-      progress, so its `ci-status` check run has no conclusion and no red. Every
-      30 seconds it lists this workflow's runs on the head SHA and reads the
-      newest status, two reads. When the superseding runs complete or that
+      progress, so its `ci-status` check run has no conclusion and no red. It
+      lists this workflow's runs on the head SHA and reads the newest status,
+      two reads, 30 seconds apart and backing off (see
+      `carry-forward-wait-seconds`). When the superseding runs complete or that
       status changes, it lists and reads again and passes only on a `success`
       created at or after their latest start. An older `success` does not pass:
       a full run cancelled during the hold fails this run, while a held run that

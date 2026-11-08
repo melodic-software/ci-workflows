@@ -256,7 +256,10 @@ consumer to audit it.
 
   It reads the current run
   (`GET /repos/{owner}/{repo}/actions/runs/{run_id}`) for its workflow, then
-  every 15 seconds does two calls in a fixed order. First
+  on each poll does two calls in a fixed order. The polls start 15 seconds
+  apart and back off, as every wait in this action does: each interval doubles
+  up to 40 seconds, gains a jitter of up to a quarter of it taken from the run
+  id, and is cut short at the ceiling. First
   `GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs?head_sha={sha}`
   for the runs of this workflow on the same commit that are `queued`,
   `in_progress`, `waiting`, `pending` or `requested`, excluding this run. Then
@@ -376,7 +379,8 @@ consumer to audit it.
     `success` written by the current attempt of the one full run in flight,
     and that run's aggregate step is still running (re-running failed
     siblings, after its last listing of them), the run re-lists and re-reads
-    every 5 seconds for up to 30 until that step finishes. It then carries the
+    from 5 seconds apart, backing off, for up to 30 until that step finishes.
+    It then carries the
     `success` once the step reads back `success`, so a contract-only run that
     starts after the full run's sibling scan goes green instead of red with
     nothing left to re-run it. A running step cannot prove it wrote the
@@ -432,8 +436,8 @@ consumer to audit it.
     run still in flight at that point may have read the status before it was
     written and will finish red. GitHub's REST docs do not say a run in
     progress can be re-run, so the full run first waits up to
-    `rerun-wait-seconds` (default `90`, `0` never waits), re-listing every
-    10, until no sibling that is not known to be a full run (two or more jobs
+    `rerun-wait-seconds` (default `90`, `0` never waits), re-listing from 10
+    seconds apart, backing off, until no sibling that is not known to be a full run (two or more jobs
     are running or ran) is in flight, then issues every re-run. The wait
     holds the full run's own `ci-status` check open, so keep it under the
     job's `timeout-minutes`; raise it where contract-only gate jobs queue
@@ -551,7 +555,8 @@ consumer to audit it.
   **Why a hold instead of this wait.** This wait can carry an older `success`
   forward across a full run in flight; `yield-to-full-run` lists first, so a
   hold cannot. Size `yield-wait-seconds` the same way, from the measured full
-  run. A hold costs two reads per 30 seconds. GitHub's docs do not say how
+  run. A hold costs two reads per poll, 30 seconds apart at first and
+  backing off to about 40. GitHub's docs do not say how
   same-name check runs resolve; on a required `ci-status`
   ([pr-pipeline-sandbox#261](https://github.com/melodic-software/pr-pipeline-sandbox/pull/261),
   2026-10-31, one head), the newest run decided: in progress over an older
