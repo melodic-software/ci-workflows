@@ -1,0 +1,48 @@
+name: automerge-dependabot
+description: >-
+  pr-automerge-dependabot's gate and arm step on a pull_request event: runs
+  gate.cjs's gate over fetch-metadata's output and arms squash auto-merge at
+  the verified head, or disarms a skipped pull request armed on an earlier
+  head. The scheduled path, pr-automerge-dependabot-queue.yml, runs the same
+  gate through queue.cjs. Every input is untrusted PR-derived text or a
+  caller string, and reaches the script through env only.
+
+inputs:
+  metadata-outcome:
+    description: The fetch-metadata step's outcome.
+    required: true
+  updated-dependencies-json:
+    description: fetch-metadata's updated-dependencies-json output.
+    required: false
+    default: ""
+  sender-id:
+    description: The event sender's account id.
+    required: true
+  publisher-allowlist:
+    description: JSON array of GitHub Actions publisher globs.
+    required: true
+  package-auto-merge:
+    description: "`true` to also arm npm, pip, uv and NuGet bumps."
+    required: true
+  review-only-dependencies:
+    description: JSON array of package names never armed.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Gate and arm auto-merge
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        METADATA_OUTCOME: ${{ inputs.metadata-outcome }}
+        SENDER_ID: ${{ inputs.sender-id }}
+        UPDATED_DEPENDENCIES_JSON: ${{ inputs.updated-dependencies-json }}
+        PUBLISHER_ALLOWLIST: ${{ inputs.publisher-allowlist }}
+        PACKAGE_AUTO_MERGE: ${{ inputs.package-auto-merge }}
+        REVIEW_ONLY_DEPENDENCIES: ${{ inputs.review-only-dependencies }}
+      with:
+        script: |
+          const path = require("node:path");
+          const { runEvent } = require(path.join(process.env.ACTION_PATH, "gate.cjs"));
+          await runEvent({ github, context, core, env: process.env });

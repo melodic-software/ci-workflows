@@ -141,6 +141,31 @@ test("every model job tells its launcher whether the fallback token is set, neve
   }
 });
 
+// A skipped job shows its `name:` unevaluated, so an expression there would
+// show as the check name (ci-workflows#866). The caller job tells the lanes
+// apart: `pr-review / review-status`, `pr-review-security / review-status`.
+test("every job carries a literal name, the same in both lanes", () => {
+  const names = Object.fromEntries(
+    Object.entries(workflow.jobs).map(([id, job]) => [id, job.name]),
+  );
+  assert.deepEqual(names, {
+    ...names,
+    "resolve-pull-request": "resolve-pull-request",
+    "check-key-credit": "key-credit",
+    "review-key": "key",
+    "review-subscription": "subscription",
+    "review-fallback": "fallback",
+    status: "review-status",
+  });
+  for (const [id, name] of Object.entries(names)) {
+    assert.doesNotMatch(String(name ?? id), /\$\{\{/u, id);
+  }
+  assert.equal(
+    status.steps.find((s) => s.env?.STATUS_JOB)?.env.STATUS_JOB,
+    "review-status",
+  );
+});
+
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
   assert.deepEqual(fallback.needs, [
     "resolve-pull-request",
@@ -148,10 +173,6 @@ test("the fallback job starts only after the subscription job succeeded and hand
     "review-key",
     "review-subscription",
   ]);
-  assert.equal(
-    fallback.name,
-    `\${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}`,
-  );
   // The subscription job's outputs, as its last step leaves them.
   const starts = (outputs, keyResult = "success") =>
     Boolean(
@@ -1019,8 +1040,8 @@ test("each pull request value reads the resolve-pull-request job's output with p
   }
   // Each leg read the event 17 times (checkout, scope 4, full diff 2,
   // context, settled threads 4, prior findings 2, compose 2, handoff
-  // upload); the status job 7 (download, publish 3, hold 3).
-  assert.equal(seen, 3 * 17 + 7);
+  // upload); the status job 8 (download, hold note, publish 3, hold 3).
+  assert.equal(seen, 3 * 17 + 8);
 });
 
 test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
@@ -3228,7 +3249,7 @@ async function incrementalReview(
   };
   const prFiles = fixture.prFiles(head);
   const github = {
-    hook: { after: () => {}, error: () => {} },
+    hook: { after: () => {}, error: () => {}, wrap: () => {} },
     paginate: async (fn) => fn(),
     rest: {
       issues: {
@@ -4771,7 +4792,7 @@ test("an incremental review leaves a file the push deleted out of its file count
       ].join("\n"),
     };
     const github = {
-      hook: { after: () => {}, error: () => {} },
+      hook: { after: () => {}, error: () => {}, wrap: () => {} },
       paginate: async (fn) => fn(),
       rest: {
         issues: { listComments: () => [marker] },
@@ -5625,7 +5646,7 @@ test("an incremental review leaves the data files the base branch declares out o
       body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=none caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
     };
     const github = {
-      hook: { after: () => {}, error: () => {} },
+      hook: { after: () => {}, error: () => {}, wrap: () => {} },
       paginate: async (fn) => fn(),
       rest: {
         issues: { listComments: () => [marker] },

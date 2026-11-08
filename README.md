@@ -111,8 +111,11 @@ not the consumer's: every external reference its own actions and workflows
 make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
 itself pinned to a full commit SHA with a dual-form trailing comment
-(`melodic-software/standards#248`), and a bump to one waits for a person,
-since it reaches every `@main` caller on merge. Dependabot leaves
+(`melodic-software/standards#248`). A bump reaches every `@main` caller on
+merge, so only patch and minor bumps of the standards `dependabot-policy`
+publishers (`actions/*`, `github/*`, `anthropics/*`) are queued without a
+person, by `pr-automerge-dependabot-queue.yml`; any other bump waits for a
+person. Dependabot leaves
 `anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
 why. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
@@ -1137,9 +1140,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   of non-empty strings arms nothing); no package name is in the caller's
   `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
   every update is semver patch or minor, and a version below 1.0 keeps its
-  minor component; and every commit, head included, has author `49699333`, committer web-flow
+  minor component; the metadata names exactly the updates and versions the
+  title or the body's `Updates` lines name; and every commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
-  skipped PR that was armed earlier is disarmed. A repository that adopts it
+  skipped PR that was armed earlier is disarmed. The gate lives in the
+  `automerge-dependabot` composite (`gate.cjs`). A `GITHUB_TOKEN` arm never
+  enters a merge queue, so a repository whose default branch requires one
+  queues these PRs with an App token on a schedule instead, as
+  `pr-automerge-dependabot-queue.yml` does here. A repository that adopts it
   records it as the merge authority for Dependabot PRs. A repository where a
   merge can lead to a deploy passes `package-auto-merge: false`. A caller that
   wants a person on a publisher's bumps, such as a third-party action that
@@ -1166,6 +1174,19 @@ GitHub continues the normal weekly patching of each hosted image generation.
         pull-requests: write
       uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@main
   ```
+
+- `.github/workflows/pr-automerge-dependabot-queue.yml` — this repository's
+  own Dependabot merge path, not a reusable. Every 30 minutes and on dispatch,
+  on main only, it lists the open PRs authored by `49699333`, reads each head
+  commit's Dependabot metadata, runs the same gate with the reusable's
+  default inputs, and requires a `ci-status` check run that succeeded on the
+  head. It then arms each passing PR with the melodic-release App token from
+  the `plugin-release` environment, at the verified head and with no merge
+  method, so the merge queue takes it. Out-of-tier PRs are left alone with a
+  notice, and one armed on an earlier head is disarmed. Arming a PR that changes a workflow file needs the App's
+  `workflows: write`; without it the run warns
+  `melodic-release lacks workflows: write` and moves on. No failure fails the
+  job, and it logs both tokens' `api-calls`.
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
@@ -1296,8 +1317,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   default-branch tip, and the diff and pull request context as files whose
   `FULL DIFF:`, `REVIEW SCOPE: incremental` and `PR CONTEXT:` prompt lines
   name them. It returns its findings, summary and inline comments as
-  structured output. The status job (`claude-review-status` or
-  `security-review`), with no model, posts them through
+  structured output. The status job (`review-status` in both lanes, so its
+  check is `<caller job> / review-status`), with no model, posts them through
   `.github/actions/publish-review`. `publish: comments` posts one COMMENT
   review as `github-actions[bot]`, the lane's marker comment and the
   `claude-lane-review-complete` notice, and goes red when no review

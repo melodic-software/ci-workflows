@@ -47,7 +47,7 @@ const TRUST_PATHS = [
 // pushed at 10:45.
 const RUN_ID = 99;
 const RUN_PATH = ".github/workflows/pr-review-hosted.yml";
-const STATUS_JOB = "claude-review-status";
+const STATUS_JOB = "review-status";
 const laneRun = ({
   id = 11,
   sha = "a".repeat(40),
