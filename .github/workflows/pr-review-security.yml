@@ -1125,6 +1125,12 @@ jobs:
             const succeeded = (ids) => results.some((result) => result.is_error !== true && ids.has(result.tool_use_id));
             const DIFF_FILE = /(?:^|\/)\.claude-lane\/(?:pr|incremental)\.diff$/u;
             const diffReads = toolIds((part) => part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""));
+            // The model often reads the diff file with cat or sed in Bash. Such a
+            // call counts only when its output shows diff content, so a command
+            // that merely names the file (ls, wc -l) is no read.
+            const DIFF_IN_COMMAND = /(?:^|[\s/"'])\.claude-lane\/(?:pr|incremental)\.diff\b/u;
+            const DIFF_CONTENT = /^(?:diff --git |@@ )/mu;
+            const bashDiffReads = toolIds((part) => part.name === "Bash" && DIFF_IN_COMMAND.test(String(part.input?.command ?? "")));
             const bashCalls = toolIds((part) => part.name === "Bash");
             const prDiffs = toolIds((part) => part.name === "Bash" && String(part.input?.command ?? "").includes("gh pr diff"));
             // The first line of a failed Bash result that opens with the sandbox's
@@ -1174,7 +1180,11 @@ jobs:
               .find((line) => SANDBOX_ERROR.test(line))
               ?.trim()
               .slice(0, 300);
-            const readDiff = succeeded(diffReads);
+            const readDiff =
+              succeeded(diffReads) ||
+              results.some(
+                (result) => result.is_error !== true && bashDiffReads.has(result.tool_use_id) && DIFF_CONTENT.test(text(result.content)),
+              );
             if (noShell && !readDiff) {
               return incomplete(`the sandbox could not start, so the shell failed, and the diff file was never read, so the review saw no change; sandbox error: ${noShell}`);
             }
@@ -1190,7 +1200,7 @@ jobs:
               core.info(`${lane}: ${messages.filter((message) => message?.parent_tool_use_id).length} execution-file message(s) came from a subagent.`);
             }
             if (Array.isArray(messages) && !readDiff && !printedDiff) {
-              core.warning("The execution file shows no successful Read of the diff file and no successful gh pr diff.");
+              core.warning("The execution file shows no successful read of the diff file (Read, or a Bash command naming it) and no successful gh pr diff.");
             }
             // Every `manifest <field>: flag` line in the summary is a finding, so a
             // count below those lines is raised to them, never trusted.

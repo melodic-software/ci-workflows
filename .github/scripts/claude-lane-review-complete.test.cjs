@@ -763,7 +763,7 @@ const deadShell = (line) =>
   `A Bash call failed in the sandbox, so this review ran with no working shell; it did read its diff file. Sandbox error: ${line}`;
 const DEAD_SHELL = deadShell(BWRAP);
 const NO_DIFF_ACCESS =
-  "The execution file shows no successful Read of the diff file and no successful gh pr diff.";
+  "The execution file shows no successful read of the diff file (Read, or a Bash command naming it) and no successful gh pr diff.";
 
 for (const lane of lanes) {
   test(`${lane.lane}: the verify step reads the attempt that counts' execution file`, () => {
@@ -795,6 +795,12 @@ for (const lane of lanes) {
       ],
       // A Read with no result in the file proves nothing was read.
       [...blindShell, toolUse("r1", "Read", { file_path: diffPath("pr") })],
+      // A later Bash call that only names the diff file shows no diff content.
+      [
+        ...blindShell,
+        toolUse("w1", "Bash", { command: "wc -l .claude-lane/pr.diff" }),
+        toolResult("w1", "84 .claude-lane/pr.diff", false),
+      ],
     ];
     for (const messages of blind) {
       const { outputs } = await verify(lane, {
@@ -921,6 +927,25 @@ for (const lane of lanes) {
         toolUse("r1", "Read", { file_path: diffPath("pr") }),
         toolResult("r1", "File does not exist.", true),
       ],
+      // A failed Bash read of the diff file is no read.
+      [
+        toolUse("b1", "Bash", { command: "cat .claude-lane/pr.diff" }),
+        toolResult("b1", "Exit code 1", true),
+      ],
+      // A Bash command naming another file is no read of the diff.
+      [
+        toolUse("b1", "Bash", { command: "cat x.claude-lane/pr.diffs" }),
+        toolResult("b1", "text", false),
+      ],
+      // A Bash command that names the diff file but prints none of it.
+      [
+        toolUse("b1", "Bash", { command: "ls -l .claude-lane/pr.diff" }),
+        toolResult(
+          "b1",
+          "-rw-r--r-- 1 runner runner 81962 .claude-lane/pr.diff",
+          false,
+        ),
+      ],
     ];
     for (const messages of unseen) {
       const { outputs, messages: logged } = await verify(lane, {
@@ -942,6 +967,19 @@ for (const lane of lanes) {
           "diff --git a/README.md b/README.md\n@@ -1 +1 @@",
           false,
         ),
+      ],
+      // The model often reads the diff file with cat or sed in Bash.
+      [
+        toolUse("b1", "Bash", {
+          command: "wc -l .claude-lane/pr.diff && cat .claude-lane/pr.diff",
+        }),
+        toolResult("b1", "84 .claude-lane/pr.diff\ndiff --git a/x b/x", false),
+      ],
+      [
+        toolUse("b1", "Bash", {
+          command: "sed -n 1,40p /w/.claude-lane/incremental.diff",
+        }),
+        toolResult("b1", "@@ -1 +1 @@", false),
       ],
     ];
     for (const messages of seen) {
