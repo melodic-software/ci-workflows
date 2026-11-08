@@ -1,9 +1,10 @@
 version: 2
 updates:
-  # Keep SHA-pinned actions current. Every PR here is reviewed by hand, the
-  # vendor-actions group included: melodic-software callers float on this
-  # repository's main, so a merged bump runs next in their secret-holding
-  # lanes, and no workflow here arms auto-merge. The "/"
+  # Keep SHA-pinned actions current. pr-automerge-dependabot-queue.yml queues
+  # patch and minor bumps of the standards dependabot-policy publishers
+  # (actions/*, github/*, anthropics/*) once ci-status passes. Every other PR
+  # waits for a person: melodic-software callers float on this repository's
+  # main, so a merged bump runs next in their secret-holding lanes. The "/"
   # target scans .github/workflows; the glob target is required to also scan
   # the composite actions' own action.yml files (Dependabot does not descend
   # into .github/actions/<name>/ from "/" alone).

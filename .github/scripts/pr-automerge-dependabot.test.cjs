@@ -5,7 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+const actionDir = path.join(__dirname, "..", "actions", "automerge-dependabot");
+const { runEvent } = require(path.join(actionDir, "gate.cjs"));
 const workflowPath = path.join(
   __dirname,
   "..",
@@ -16,38 +17,34 @@ const workflowLines = fs.readFileSync(workflowPath, "utf8").split(/\r?\n/u);
 const gateStepIndex = workflowLines.findIndex((line) =>
   line.includes("- name: Gate and arm auto-merge"),
 );
+const actionLines = fs
+  .readFileSync(path.join(actionDir, "action.yml"), "utf8")
+  .split(/\r?\n/u);
 
-// Same inline-script extraction standards-sync-automerge-arm.test.cjs uses:
-// the reusable runs in the caller's repository with no checkout, so the gate
-// lives in the github-script body and the test runs that body directly.
-function extractGateScript() {
-  assert.notEqual(gateStepIndex, -1, "gate step must exist");
-  const scriptIndex = workflowLines.findIndex(
-    (line, index) => index > gateStepIndex && /^ {10}script: \|$/u.test(line),
-  );
-  assert.notEqual(scriptIndex, -1, "gate script block must exist");
-  const body = [];
-  for (let index = scriptIndex + 1; index < workflowLines.length; index += 1) {
-    const line = workflowLines[index];
-    if (line.length > 0 && !line.startsWith("            ")) break;
-    body.push(line.startsWith("            ") ? line.slice(12) : "");
-  }
-  return body.join("\n");
-}
-
-function stepEnv(name) {
+// A `with:` value the reusable passes the gate composite.
+function stepInput(name) {
   const line = workflowLines
     .slice(gateStepIndex)
     .find((candidate) => candidate.trim().startsWith(`${name}:`));
-  assert.ok(line, `${name} must be set on the gate step`);
+  assert.ok(line, `${name} must be passed to the gate step`);
   return line
     .trim()
     .slice(name.length + 1)
-    .trim()
-    .replace(/^'(.*)'$/u, "$1");
+    .trim();
 }
 
-const gateScript = extractGateScript();
+// The env value the composite's script step reads.
+function actionEnv(name) {
+  const line = actionLines.find((candidate) =>
+    candidate.trim().startsWith(`${name}:`),
+  );
+  assert.ok(line, `${name} must be set on the composite's step`);
+  return line
+    .trim()
+    .slice(name.length + 1)
+    .trim();
+}
+
 const DEPENDABOT_ID = 49699333;
 const HEAD = "a".repeat(40);
 
@@ -73,8 +70,19 @@ const update = (
   dependencyName,
   updateType,
   packageEcosystem,
+  prevVersion: "1.0.0",
+  newVersion: "1.0.1",
   ...versions,
 });
+
+// The body shape Dependabot writes for a grouped PR, as on ci-workflows #997.
+const updatesBody = (updates) =>
+  updates
+    .map(
+      (u) =>
+        `Updates \`${u?.dependencyName}\` from ${u?.prevVersion} to ${u?.newVersion}`,
+    )
+    .join("\n");
 
 async function runGate({
   armError = null,
@@ -85,6 +93,8 @@ async function runGate({
   senderId = DEPENDABOT_ID,
   metadataOutcome = "success",
   metadataJson = JSON.stringify(updates),
+  title = "build: bump the vendor-actions group across 1 directory",
+  body = Array.isArray(updates) ? updatesBody(updates) : "",
   packageAutoMerge = "true",
   reviewOnly = "[]",
   publisherAllowlist = inputDefault("publisher-allowlist").replace(
@@ -103,51 +113,39 @@ async function runGate({
     REVIEW_ONLY_DEPENDENCIES: reviewOnly,
   };
   const warnings = [];
-  const original = { ...process.env };
-  Object.assign(process.env, env);
-  try {
-    const github = {
-      rest: { pulls: { listCommits: Symbol("listCommits") } },
-      paginate: async (route, params) => {
-        assert.equal(route, github.rest.pulls.listCommits);
-        assert.equal(params.pull_number, 7);
-        return commits;
+  const github = {
+    rest: { pulls: { listCommits: Symbol("listCommits") } },
+    paginate: async (route, params) => {
+      assert.equal(route, github.rest.pulls.listCommits);
+      assert.equal(params.pull_number, 7);
+      return commits;
+    },
+    graphql: async (query, variables) => {
+      graphqlCalls.push({ query, variables });
+      if (armError && /enablePullRequestAutoMerge/u.test(query)) throw armError;
+      return {};
+    },
+  };
+  const context = {
+    repo: { owner: "melodic-software", repo: "medley" },
+    payload: {
+      pull_request: {
+        number: 7,
+        node_id: "PR_node",
+        user: { id: authorId },
+        title,
+        body,
+        head: { sha: HEAD },
+        auto_merge: autoMerge,
       },
-      graphql: async (query, variables) => {
-        graphqlCalls.push({ query, variables });
-        if (armError && /enablePullRequestAutoMerge/u.test(query))
-          throw armError;
-        return {};
-      },
-    };
-    const context = {
-      repo: { owner: "melodic-software", repo: "medley" },
-      payload: {
-        pull_request: {
-          number: 7,
-          node_id: "PR_node",
-          user: { id: authorId },
-          head: { sha: HEAD },
-          auto_merge: autoMerge,
-        },
-      },
-    };
-    const core = {
-      notice: (message) => notices.push(message),
-      warning: (message) => warnings.push(message),
-      info: () => {},
-    };
-    await new AsyncFunction("github", "context", "core", gateScript)(
-      github,
-      context,
-      core,
-    );
-  } finally {
-    for (const key of Object.keys(env)) {
-      if (original[key] === undefined) delete process.env[key];
-      else process.env[key] = original[key];
-    }
-  }
+    },
+  };
+  const core = {
+    notice: (message) => notices.push(message),
+    warning: (message) => warnings.push(message),
+    info: () => {},
+  };
+  await runEvent({ github, context, core, env });
   const armCalls = graphqlCalls.filter((call) =>
     /enablePullRequestAutoMerge/u.test(call.query),
   );
@@ -169,7 +167,11 @@ test("the default allowlist matches standards dependabot-policy autoMerge.publis
     ["actions/*", "github/*", "anthropics/*"],
   );
   assert.equal(
-    stepEnv("PUBLISHER_ALLOWLIST"),
+    stepInput("publisher-allowlist"),
+    `\${{ inputs.publisher-allowlist }}`,
+  );
+  assert.equal(
+    actionEnv("PUBLISHER_ALLOWLIST"),
     `\${{ inputs.publisher-allowlist }}`,
   );
 });
@@ -221,12 +223,37 @@ test("the job runs only on pull_request events authored by Dependabot's account 
 });
 
 test("the sender and metadata outcome come from the event and the metadata step", () => {
-  assert.equal(stepEnv("SENDER_ID"), `\${{ github.event.sender.id }}`);
-  assert.equal(stepEnv("METADATA_OUTCOME"), `\${{ steps.metadata.outcome }}`);
+  assert.notEqual(gateStepIndex, -1, "gate step must exist");
+  assert.equal(stepInput("sender-id"), `\${{ github.event.sender.id }}`);
+  assert.equal(stepInput("metadata-outcome"), `\${{ steps.metadata.outcome }}`);
+  assert.equal(
+    stepInput("updated-dependencies-json"),
+    `\${{ steps.metadata.outputs.updated-dependencies-json }}`,
+  );
+  assert.equal(actionEnv("SENDER_ID"), `\${{ inputs.sender-id }}`);
+  assert.equal(
+    actionEnv("METADATA_OUTCOME"),
+    `\${{ inputs.metadata-outcome }}`,
+  );
+  assert.equal(
+    actionEnv("UPDATED_DEPENDENCIES_JSON"),
+    `\${{ inputs.updated-dependencies-json }}`,
+  );
+});
+
+test("the reusable runs the shared gate composite through $/", () => {
+  assert.equal(
+    workflowLines[gateStepIndex + 2].trim(),
+    "uses: $/.github/actions/automerge-dependabot",
+  );
 });
 
 test("PR-derived values reach the script through env, never an expression", () => {
-  assert.doesNotMatch(gateScript, /\$\{\{/u);
+  const script = actionLines.findIndex((line) =>
+    /^ {8}script: \|$/u.test(line),
+  );
+  assert.notEqual(script, -1, "the composite's script block must exist");
+  assert.doesNotMatch(actionLines.slice(script).join("\n"), /\$\{\{/u);
 });
 
 test("a vendor patch is armed for squash at the verified head", async () => {
@@ -427,11 +454,19 @@ test("package auto-merge is on by default with no review-only names", () => {
   assert.equal(inputDefault("package-auto-merge"), "true");
   assert.equal(inputDefault("review-only-dependencies"), '"[]"');
   assert.equal(
-    stepEnv("PACKAGE_AUTO_MERGE"),
+    stepInput("package-auto-merge"),
     `\${{ inputs.package-auto-merge }}`,
   );
   assert.equal(
-    stepEnv("REVIEW_ONLY_DEPENDENCIES"),
+    stepInput("review-only-dependencies"),
+    `\${{ inputs.review-only-dependencies }}`,
+  );
+  assert.equal(
+    actionEnv("PACKAGE_AUTO_MERGE"),
+    `\${{ inputs.package-auto-merge }}`,
+  );
+  assert.equal(
+    actionEnv("REVIEW_ONLY_DEPENDENCIES"),
     `\${{ inputs.review-only-dependencies }}`,
   );
 });
@@ -576,11 +611,9 @@ test("a skipped PR that was never armed makes no disarm call", async () => {
   assert.equal(result.disarmCalls.length, 0);
 });
 
-// melodic-software callers float on this repository's main, so a bump merged
-// here runs next in every consumer's secret-holding lanes. This repository's
-// own Dependabot pull requests therefore wait for a person: no workflow here
-// calls the arm, at any ref.
-test("no workflow in this repository arms its own Dependabot bumps", () => {
+// Its GITHUB_TOKEN arm never enters main's merge queue; the scheduled
+// pr-automerge-dependabot-queue.yml arms this repository's bumps instead.
+test("no workflow here calls the reusable", () => {
   const workflowsDir = path.dirname(workflowPath);
   const callers = fs
     .readdirSync(workflowsDir)
@@ -591,6 +624,83 @@ test("no workflow in this repository arms its own Dependabot bumps", () => {
       ),
     );
   assert.deepEqual(callers, []);
+});
+
+// Title from ci-workflows #989; body lines from #997.
+const setupDotnet = update(
+  "actions/setup-dotnet",
+  "version-update:semver-minor",
+  "github_actions",
+  {
+    prevVersion: "6.0.0",
+    newVersion: "6.1.0",
+  },
+);
+
+test("a single update whose title names its versions arms", async () => {
+  const { armCalls, notices } = await runGate({
+    updates: [setupDotnet],
+    title:
+      "build: bump actions/setup-dotnet from 6.0.0 to 6.1.0 in /.github/actions/dotnet-format",
+    body: "Bumps [actions/setup-dotnet](https://github.com/actions/setup-dotnet) from 6.0.0 to 6.1.0.",
+  });
+  assert.deepEqual(notices, []);
+  assert.equal(armCalls.length, 1);
+});
+
+test("a grouped update whose Updates lines name its versions arms", async () => {
+  const { armCalls, notices } = await runGate({
+    updates: [setupDotnet, setupDotnet],
+    title:
+      "build: bump the vendor-actions group across 2 directories with 1 update",
+    body: "Updates `actions/setup-dotnet` from 6.0.0 to 6.1.0\nUpdates `actions/setup-dotnet` from 6.0.0 to 6.1.0",
+  });
+  assert.deepEqual(notices, []);
+  assert.equal(armCalls.length, 1);
+});
+
+test("a title naming other versions than the metadata skips and disarms", async () => {
+  const result = await runGate({
+    updates: [setupDotnet],
+    title: "build: bump actions/setup-dotnet from 6.0.0 to 6.0.1",
+    body: "",
+    autoMerge: { enabled_by: { login: "github-actions[bot]" } },
+  });
+  assert.equal(result.armCalls.length, 0);
+  assert.match(
+    result.notices[0],
+    /do not name actions\/setup-dotnet from 6\.0\.0 to 6\.1\.0/u,
+  );
+  assert.equal(result.disarmCalls.length, 1);
+});
+
+test("an Updates line the metadata lacks skips", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [setupDotnet],
+      title:
+        "build: bump the vendor-actions group across 1 directory with 2 updates",
+      body: "Updates `actions/setup-dotnet` from 6.0.0 to 6.1.0\nUpdates `actions/checkout` from 5.0.0 to 6.0.0",
+    }),
+    /metadata does not include actions\/checkout from 5\.0\.0 to 6\.0\.0/u,
+  );
+});
+
+test("metadata without versions skips", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        {
+          dependencyName: "actions/setup-dotnet",
+          updateType: "version-update:semver-minor",
+          packageEcosystem: "github_actions",
+        },
+      ],
+      title: "build: bump actions/setup-dotnet from 6.0.0 to 6.1.0",
+      body: "",
+    }),
+    /has no from or to version/u,
+  );
 });
 
 // GitHub refuses to arm a PR that is already mergeable; the wording below is
