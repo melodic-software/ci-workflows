@@ -757,16 +757,15 @@ consumer to audit it.
   `GITHUB_WORKSPACE`. Uploading the log is the caller's.
 
   **Sandbox.** `sandbox` (`true` by default) passes the CLI
-  `--settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":["github.com","api.github.com"]}}}'`:
+  `--settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"failIfUnavailable":true,"network":{"allowedDomains":["github.com","api.github.com"]}}}'`:
   Bash runs under bubblewrap, a command that fails there is not retried
-  unsandboxed, and its network reaches only GitHub through the sandbox's
+  unsandboxed, a sandbox that cannot start fails the leg at startup, and its
+  network reaches only GitHub through the sandbox's
   proxy, which uses socat
   ([sandboxing](https://code.claude.com/docs/en/sandboxing)). A caller
   whose Bash needs other hosts, such as a nested `claude` or `npm ci`, sets
   `sandbox: false`, which passes no settings and skips the socat check, so
-  that Bash runs unsandboxed as the runner user. The settings do not set
-  `failIfUnavailable`, so a sandbox that cannot start leaves Bash
-  unsandboxed rather than failing the leg.
+  that Bash runs unsandboxed as the runner user.
 
   **Loopback key proxy.** By default the managed settings must pin
   `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. A caller that
