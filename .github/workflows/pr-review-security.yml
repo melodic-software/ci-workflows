@@ -1124,7 +1124,14 @@ jobs:
               new Set(parts.filter((part) => part?.type === "tool_use" && matches(part)).map((part) => part.id));
             const succeeded = (ids) => results.some((result) => result.is_error !== true && ids.has(result.tool_use_id));
             const DIFF_FILE = /(?:^|\/)\.claude-lane\/(?:pr|incremental)\.diff$/u;
-            const diffReads = toolIds((part) => part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""));
+            // A Read of the diff file, or a Bash command that names it (the model
+            // often reads it with cat or sed), counts as reading the diff.
+            const DIFF_IN_COMMAND = /(?:^|[\s/"'])\.claude-lane\/(?:pr|incremental)\.diff\b/u;
+            const diffReads = toolIds(
+              (part) =>
+                (part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? "")) ||
+                (part.name === "Bash" && DIFF_IN_COMMAND.test(String(part.input?.command ?? ""))),
+            );
             const bashCalls = toolIds((part) => part.name === "Bash");
             const prDiffs = toolIds((part) => part.name === "Bash" && String(part.input?.command ?? "").includes("gh pr diff"));
             // The first line of a failed Bash result that opens with the sandbox's
@@ -1190,7 +1197,7 @@ jobs:
               core.info(`${lane}: ${messages.filter((message) => message?.parent_tool_use_id).length} execution-file message(s) came from a subagent.`);
             }
             if (Array.isArray(messages) && !readDiff && !printedDiff) {
-              core.warning("The execution file shows no successful Read of the diff file and no successful gh pr diff.");
+              core.warning("The execution file shows no successful read of the diff file (Read, or a Bash command naming it) and no successful gh pr diff.");
             }
             // Every `manifest <field>: flag` line in the summary is a finding, so a
             // count below those lines is raised to them, never trusted.
