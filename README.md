@@ -179,7 +179,11 @@ consumer to audit it.
   unconditionally redacts secret values, validates requested reports, and fails
   closed on missing, malformed, or operationally incomplete results.
 - `.github/actions/actionlint` — actionlint over the repo's GitHub Actions
-  workflow files, with the canonical checksum-pinned ShellCheck release
+  workflow files. It installs the checksum-pinned
+  [kjanat/actionlint](https://github.com/kjanat/actionlint) fork, which accepts
+  `$/` refs and `concurrency.queue` and turns on its
+  [cache safety policies](https://github.com/kjanat/actionlint/blob/08bb2c4f0d039744455b87aef1c647fb8b66d37b/docs/checks.md#cache-policies)
+  by default, and the canonical checksum-pinned ShellCheck release
   installed explicitly so embedded shell validation is identical on hosted and
   self-hosted workers.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML

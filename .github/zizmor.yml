@@ -9,8 +9,3 @@ rules:
       policies:
         "melodic-software/*": ref-pin
         "*": hash-pin
-  # `./` keeps actionlint's input validation on these calls; drop this ignore
-  # once rhysd/actionlint#732 ships and the pinned actionlint is bumped.
-  self-repository:
-    ignore:
-      - pr-require-checks.yml
