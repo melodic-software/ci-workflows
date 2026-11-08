@@ -20,6 +20,8 @@
 # message is "Resource not accessible by integration" or the
 # `x-accepted-github-permissions` header is present.
 #
+# A call is sent at most `GH_API_ATTEMPTS` (3) times.
+#
 # A rate limit waits, then retries once: `retry-after` seconds when present,
 # else until `x-ratelimit-reset` when remaining is `0`, else 60 seconds, the
 # order GitHub documents
@@ -27,8 +29,25 @@
 # `RATE_LIMIT_WAIT_SECONDS` caps the waits of the whole step, summed. A wait
 # that does not fit in what is left of the cap is not taken: the call fails at
 # once and the warning names the reset time. A second rate limit after the wait
-# fails too. The caller's handling of a failed call decides the verdict, and no
-# path turns a failure into a pass.
+# fails too. GitHub refused a rate-limited request, so any method is retried.
+#
+# A 5xx, or a failure with no HTTP status (a network error), is sent again
+# after a full-jitter wait of 0 to `GH_API_RETRY_BASE_SECONDS` seconds, then 0
+# to twice that, but only when a resend cannot do the write twice: GET, PUT,
+# PATCH, DELETE, a GraphQL call (every one these runners send is a query), or a
+# POST whose caller sets `GH_API_RESEND=true` because it sends the same state
+# each time. Any other POST may have taken effect before the error, so it is
+# never resent. A caller whose own poll already reads again sets
+# `GH_API_RETRY_ERRORS=false`, so a poll never multiplies the sends. Any other
+# 4xx fails at once. The caller's handling of a failed call decides the
+# verdict, and no path turns a failure into a pass.
+#
+# A GET sent with `-i` and answered with an `etag` is remembered with its body,
+# keyed by the whole call. Sent again, it carries `If-None-Match`, and a `304`
+# reuses the remembered body: GitHub bills no primary rate limit for an
+# authorized `304`
+# (https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate).
+# A paginated call sends no `etag`, since it is not read with `-i`.
 #
 # Headers come from `gh api -i`, which mixes them into stdout, so they are split
 # off here. `-i` is not passed with `--paginate`: gh prints a header block per
@@ -52,6 +71,12 @@
 
 RATE_LIMIT_WAIT_SECONDS="${RATE_LIMIT_WAIT_SECONDS:-60}"
 RATE_LIMIT_WAITED=0
+GH_API_ATTEMPTS=3
+# Overridable only so a harness can run without the waits.
+GH_API_RETRY_BASE_SECONDS="${GH_API_RETRY_BASE_SECONDS:-4}"
+[[ "$GH_API_RETRY_BASE_SECONDS" =~ ^[0-9]{1,3}$ ]] || GH_API_RETRY_BASE_SECONDS=4
+GH_API_RESEND=false
+GH_API_RETRY_ERRORS=true
 GH_HTTP_STATUS=""
 GH_MESSAGE=""
 GH_FAILURE=""
@@ -74,7 +99,8 @@ gh_header() {
 gh_api_once() {
   local method="$1" path="$2"
   shift 2
-  local status=0 include=true argument
+  local status=0 include=true argument cached="" etag code
+  local -a conditional=()
   for argument in "$@"; do
     if [[ "$argument" == --paginate ]]; then
       include=false
@@ -88,11 +114,18 @@ gh_api_once() {
   GH_FAILURE=""
   GH_GRAPHQL_ERRORS=false
   GH_GRAPHQL_ERROR_TYPES=""
+  if [[ "$include" == true && "$method" == GET ]]; then
+    mkdir -p -- "$gh_stdout.etag"
+    cached="$gh_stdout.etag/$(printf '%s\0' "$method" "$path" "$@" | sha256sum | cut -c1-64)"
+    if [[ -s "$cached.etag" && -f "$cached.body" ]]; then
+      conditional=(-H "If-None-Match: $(cat -- "$cached.etag")")
+    fi
+  fi
   # `set +e` around the call: a failed API call is classified by the caller,
   # not aborted by errexit.
   set +e
   if [[ "$include" == true ]]; then
-    gh api -X "$method" "$path" "$@" -i >"$gh_stdout.raw" 2>"$gh_stderr"
+    gh api -X "$method" "$path" "$@" "${conditional[@]}" -i >"$gh_stdout.raw" 2>"$gh_stderr"
     status=$?
     # Headers run from the `HTTP/` status line to the first empty line. Output
     # that does not open with a status line is all body.
@@ -107,6 +140,23 @@ gh_api_once() {
     status=$?
   fi
   set -e
+  code="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$gh_headers")"
+  if [[ -n "$cached" ]]; then
+    # gh exits 1 on a `304`, with `gh: HTTP 304` and no body.
+    if [[ "$code" == 304 && ${#conditional[@]} -gt 0 ]]; then
+      cp -- "$cached.body" "$gh_stdout"
+      status=0
+    elif [[ "$status" -eq 0 ]]; then
+      # shellcheck disable=SC2311 # gh_header is one awk read; errexit has nothing to stop in it.
+      etag="$(gh_header etag)"
+      if [[ -n "$etag" ]]; then
+        printf '%s' "$etag" >"$cached.etag"
+        cp -- "$gh_stdout" "$cached.body"
+      else
+        rm -f -- "$cached.etag" "$cached.body"
+      fi
+    fi
+  fi
   if [[ "$path" == graphql ]] && jq -e 'type == "object" and ((.errors // []) | length > 0)' <"$gh_stdout" >/dev/null 2>&1; then
     GH_GRAPHQL_ERRORS=true
     GH_GRAPHQL_ERROR_TYPES="$(jq -r '[.errors[]? | .type? | strings] | join(",")' <"$gh_stdout" 2>/dev/null || true)"
@@ -116,6 +166,11 @@ gh_api_once() {
   fi
   if [[ "$status" -ne 0 ]]; then
     GH_HTTP_STATUS="$(sed -n 's/.*(HTTP \([0-9][0-9]*\)).*/\1/p' "$gh_stderr" | head -n1)"
+    # A response with no error message, such as a `304`, reads `gh: HTTP 304`;
+    # the status line still names the status.
+    if [[ -z "$GH_HTTP_STATUS" && "$code" =~ ^[0-9]{3}$ ]]; then
+      GH_HTTP_STATUS="$code"
+    fi
     GH_MESSAGE="$(sed -n 's/^gh: \(.*\) (HTTP [0-9][0-9]*)$/\1/p' "$gh_stderr" | head -n1)"
     if [[ "$GH_GRAPHQL_ERRORS" == true ]]; then
       if [[ -z "$GH_HTTP_STATUS" ]]; then
@@ -153,46 +208,75 @@ gh_classify() {
   echo "::warning::${method} ${path} returned HTTP ${GH_HTTP_STATUS:-unknown}${GH_GRAPHQL_ERROR_TYPES:+ with GraphQL error $(escape_annotation "$GH_GRAPHQL_ERROR_TYPES")} (${GH_FAILURE}): $(escape_annotation "$GH_MESSAGE"); x-ratelimit-remaining=$(escape_annotation "${gh_remaining:-absent}") x-ratelimit-reset=$(escape_annotation "${gh_reset:-absent}") retry-after=$(escape_annotation "${gh_retry_after:-absent}") x-accepted-github-permissions=$(escape_annotation "${gh_accepted:-absent}")"
 }
 
+# Whether a 5xx or a network error may be sent again; see the header.
+gh_api_resendable() {
+  local method="$1" path="$2"
+  case "$method" in
+    GET | HEAD | PUT | PATCH | DELETE) return 0 ;;
+    POST) [[ "$path" == graphql || "$GH_API_RESEND" == true ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 gh_api() {
   local method="$1" path="$2"
-  local status reset_at wait left
-  # shellcheck disable=SC2310 # gh_api_once handles its own errexit; the status is classified below.
-  gh_api_once "$@" && return 0
-  status=$?
-  # shellcheck disable=SC2310 # gh_classify reports a status it does not classify through its return.
-  if ! gh_classify "$method" "$path" || [[ "$GH_FAILURE" != rate-limit ]]; then
-    return "$status"
-  fi
-  # At most ten digits, read as decimal: a longer or non-numeric value is
-  # treated as absent, so the arithmetic never overflows or reads octal.
-  if [[ "$gh_retry_after" =~ ^[0-9]{1,10}$ ]]; then
-    wait=$((10#$gh_retry_after))
-  elif [[ "$gh_remaining" == 0 && "$gh_reset" =~ ^[0-9]{1,10}$ ]]; then
-    wait=$((10#$gh_reset - $(date +%s)))
-    if [[ "$wait" -lt 1 ]]; then
-      wait=1
+  local status reset_at wait left attempt=1 rate_waited=false ceiling
+  while :; do
+    # shellcheck disable=SC2310 # gh_api_once handles its own errexit; the status is classified below.
+    gh_api_once "$@" && return 0
+    status=$?
+    # shellcheck disable=SC2310 # gh_classify reports a status it does not classify through its return.
+    if gh_classify "$method" "$path"; then
+      if [[ "$GH_FAILURE" != rate-limit ]]; then
+        return "$status"
+      fi
+      if [[ "$rate_waited" == true ]]; then
+        echo "::warning::${method} ${path} is still rate limited after the wait; not retrying."
+        return "$status"
+      fi
+      if [[ "$attempt" -ge "$GH_API_ATTEMPTS" ]]; then
+        return "$status"
+      fi
+      # At most ten digits, read as decimal: a longer or non-numeric value is
+      # treated as absent, so the arithmetic never overflows or reads octal.
+      if [[ "$gh_retry_after" =~ ^[0-9]{1,10}$ ]]; then
+        wait=$((10#$gh_retry_after))
+      elif [[ "$gh_remaining" == 0 && "$gh_reset" =~ ^[0-9]{1,10}$ ]]; then
+        wait=$((10#$gh_reset - $(date +%s)))
+        if [[ "$wait" -lt 1 ]]; then
+          wait=1
+        fi
+      else
+        wait=60
+      fi
+      left=$((RATE_LIMIT_WAIT_SECONDS - RATE_LIMIT_WAITED))
+      if [[ "$wait" -gt "$left" ]]; then
+        reset_at="an unknown time"
+        if [[ "$gh_reset" =~ ^[0-9]{1,10}$ ]]; then
+          reset_at="${gh_reset} ($(jq -rn --arg epoch "$gh_reset" '$epoch | tonumber | todate'))"
+        fi
+        echo "::warning::${method} ${path} is rate limited and needs a ${wait}s wait, more than the ${left}s left of rate-limit-wait-seconds (${RATE_LIMIT_WAIT_SECONDS}); not waiting. The limit resets at ${reset_at}."
+        return "$status"
+      fi
+      echo "::warning::${method} ${path} is rate limited; waiting ${wait}s, then retrying once."
+      sleep "$wait"
+      RATE_LIMIT_WAITED=$((RATE_LIMIT_WAITED + wait))
+      rate_waited=true
+    else
+      # shellcheck disable=SC2310 # gh_api_resendable answers through its status.
+      if [[ "$attempt" -ge "$GH_API_ATTEMPTS" || "$GH_API_RETRY_ERRORS" != true ]] ||
+        [[ -n "$GH_HTTP_STATUS" && ! "$GH_HTTP_STATUS" =~ ^5[0-9][0-9]$ ]] ||
+        ! gh_api_resendable "$method" "$path"; then
+        return "$status"
+      fi
+      # Full jitter: a random wait from 0 to a ceiling that doubles per attempt.
+      ceiling=$((10#$GH_API_RETRY_BASE_SECONDS * (1 << (attempt - 1))))
+      wait=$((RANDOM % (ceiling + 1)))
+      echo "::warning::${method} ${path} failed (HTTP ${GH_HTTP_STATUS:-unknown}); sending it again in ${wait}s (attempt $((attempt + 1)) of ${GH_API_ATTEMPTS})."
+      if [[ "$wait" -gt 0 ]]; then
+        sleep "$wait"
+      fi
     fi
-  else
-    wait=60
-  fi
-  left=$((RATE_LIMIT_WAIT_SECONDS - RATE_LIMIT_WAITED))
-  if [[ "$wait" -gt "$left" ]]; then
-    reset_at="an unknown time"
-    if [[ "$gh_reset" =~ ^[0-9]{1,10}$ ]]; then
-      reset_at="${gh_reset} ($(jq -rn --arg epoch "$gh_reset" '$epoch | tonumber | todate'))"
-    fi
-    echo "::warning::${method} ${path} is rate limited and needs a ${wait}s wait, more than the ${left}s left of rate-limit-wait-seconds (${RATE_LIMIT_WAIT_SECONDS}); not waiting. The limit resets at ${reset_at}."
-    return "$status"
-  fi
-  echo "::warning::${method} ${path} is rate limited; waiting ${wait}s, then retrying once."
-  sleep "$wait"
-  RATE_LIMIT_WAITED=$((RATE_LIMIT_WAITED + wait))
-  # shellcheck disable=SC2310 # gh_api_once handles its own errexit; the status is classified below.
-  gh_api_once "$@" && return 0
-  status=$?
-  # shellcheck disable=SC2310 # gh_classify reports a status it does not classify through its return.
-  if gh_classify "$method" "$path" && [[ "$GH_FAILURE" == rate-limit ]]; then
-    echo "::warning::${method} ${path} is still rate limited after the wait; not retrying."
-  fi
-  return "$status"
+    attempt=$((attempt + 1))
+  done
 }

@@ -705,6 +705,8 @@ upsert_marker_comment() {
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.
 add_linkage_label() {
+  # Adding a label the pull request already carries changes nothing.
+  local GH_API_RESEND=true
   jq -n --arg label "$LINKAGE_LABEL" '{labels: [$label]}' >"$scratch/label-payload.json"
   gh_api POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels" --input "$scratch/label-payload.json"
 }
