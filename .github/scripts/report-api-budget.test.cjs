@@ -325,6 +325,31 @@ test("the action counts a 304 as not-modified, not as a request", () => {
   );
 });
 
+// One request per reading line, whatever its status: a 304 is counted apart,
+// as GitHub does not count it, and a GraphQL reading again as graphql.
+test("api_budget_emit_calls counts each reading as a request, a 304 as not-modified and a graphql one as graphql", () => {
+  const dir = makeTemporaryDirectory("api-budget-calls-");
+  record(
+    dir,
+    { used: 1 },
+    { status: 304, used: 1 },
+    { used: 3, resource: "graphql" },
+    { status: 403, used: 1000 },
+  );
+  assert.equal(
+    bash(dir, "api_budget_emit_calls github-token lanes-app 'Bad Name'").stdout,
+    `${CALLS}github-token=3 not-modified=1 graphql=1\n${CALLS}lanes-app=0 not-modified=0 graphql=0\n`,
+    "a bad token name is skipped and a token with no reading counts 0",
+  );
+  assert.equal(
+    bash(dir, "api_budget_emit_calls github-token", {
+      env: { RUNNER_TEMP: "" },
+    }).stdout,
+    "",
+    "no RUNNER_TEMP writes no line",
+  );
+});
+
 test("the action writes only zero api-calls and api-routes lines for a job that made no request, and never fails", () => {
   const dir = makeTemporaryDirectory("api-budget-none-");
   const { out, summary, output } = runAction(dir, {
