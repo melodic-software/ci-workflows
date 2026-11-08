@@ -141,6 +141,28 @@ test("every model job tells its launcher whether the fallback token is set, neve
   }
 });
 
+// A skipped job shows its `name:` unevaluated, so an expression there would
+// show as the check name (ci-workflows#866). The caller job tells the lanes
+// apart: `pr-review / review-status`, `pr-review-security / review-status`.
+test("every job carries a literal name, the same in both lanes", () => {
+  const names = Object.fromEntries(
+    Object.entries(workflow.jobs).map(([id, job]) => [id, job.name]),
+  );
+  assert.deepEqual(names, {
+    ...names,
+    "resolve-pull-request": "resolve-pull-request",
+    "check-key-credit": "key-credit",
+    "review-key": "key",
+    "review-subscription": "subscription",
+    "review-fallback": "fallback",
+    status: "review-status",
+  });
+  for (const [id, name] of Object.entries(names)) {
+    assert.doesNotMatch(String(name ?? id), /\$\{\{/u, id);
+  }
+  assert.equal(status.steps.find((s) => s.env?.STATUS_JOB)?.env.STATUS_JOB, "review-status");
+});
+
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
   assert.deepEqual(fallback.needs, [
     "resolve-pull-request",
@@ -148,10 +170,6 @@ test("the fallback job starts only after the subscription job succeeded and hand
     "review-key",
     "review-subscription",
   ]);
-  assert.equal(
-    fallback.name,
-    `\${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}`,
-  );
   // The subscription job's outputs, as its last step leaves them.
   const starts = (outputs, keyResult = "success") =>
     Boolean(

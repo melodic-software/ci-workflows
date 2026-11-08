@@ -221,8 +221,8 @@ name: pr-review-cli
 # counts the moved CRITICAL findings too. A comment whose path, line or side
 # is malformed goes to the summary the same way, and the other comments still
 # post inline; one with no body is dropped with a warning. Its status job is
-# named `claude-review-status` (code) or
-# `security-review` (security) and goes red, naming the class, when no
+# named `review-status` in both lanes (the caller job tells them apart, as in
+# `pr-review / review-status`) and goes red, naming the class, when no
 # review happened. Any other value is summary mode: no comment, no review,
 # no marker and no notice; the status job writes a job summary and uploads
 # a credential-scanned JSON artifact (the findings and comments, turns, the
@@ -486,7 +486,7 @@ jobs:
   # event as before; each of their gates opens with a status function, so
   # this skip does not skip them.
   resolve-pull-request:
-    name: ${{ inputs.lane == 'security' && 'security-review-resolve-pull-request' || 'claude-review-resolve-pull-request' }}
+    name: resolve-pull-request
     if: inputs.pr-number && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 8
@@ -538,7 +538,7 @@ jobs:
   # so gates that read after it lands skip. Every failure runs the key
   # job: its `if` starts with !cancelled().
   check-key-credit:
-    name: ${{ inputs.lane == 'security' && 'security-review-key-credit' || 'claude-review-key-credit' }}
+    name: key-credit
     needs: resolve-pull-request
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -643,7 +643,7 @@ jobs:
           tokens: github-token
 
   review-key:
-    name: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
+    name: key
     needs: [resolve-pull-request, check-key-credit]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 118 || 110 }}
@@ -2796,7 +2796,7 @@ jobs:
   # them equal). It reads only compared outputs of the key job and never
   # writes them into a script.
   review-subscription:
-    name: ${{ inputs.lane == 'security' && 'security-review-subscription' || 'claude-review-subscription' }}
+    name: subscription
     needs: [resolve-pull-request, check-key-credit, review-key]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 118 || 110 }}
@@ -4922,7 +4922,7 @@ jobs:
   # subscription job and never writes them into a script. It is the last
   # leg and never hands off.
   review-fallback:
-    name: ${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}
+    name: fallback
     needs: [resolve-pull-request, check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 118 || 110 }}
@@ -7044,7 +7044,7 @@ jobs:
   # continue-on-error: once the composite has run, the runner evaluates that
   # with the action's inputs, not the workflow's.
   status:
-    name: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
+    name: review-status
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
@@ -7255,7 +7255,7 @@ jobs:
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
-          STATUS_JOB: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
+          STATUS_JOB: review-status
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}
