@@ -40,7 +40,8 @@ description: >-
   other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
   execution log (one object for the leg) and, with json-schema-file, the
   result's structured output, each written only after a scan finds no
-  credential in it, and a job summary table of closed tokens. The log holds
+  credential in it, execution-file-clean, the same scan of the execution
+  file, and a job summary table of closed tokens. The log holds
   the leg's token usage and each subscription window's highest utilization,
   reset and last status; pass it to report-lane-outcome's log-file for the
   lane-outcome record. A window at allowed_warning or rejected, or at 0.70
@@ -259,10 +260,19 @@ outputs:
   execution-file:
     description: >-
       The leg's CLI messages as a JSON array (the execution_file shape
-      claude-code-action writes). It holds every tool result and model reply
-      and this action never scans it for credentials, so upload it only
-      through upload-lane-transcript, which scans and seals it.
+      claude-code-action writes). It holds every tool result and model reply.
+      The action scans it but keeps it whatever the scan finds, since
+      callers parse it: gate any upload on execution-file-clean == 'true',
+      and upload it only through upload-lane-transcript, which scans and
+      seals it.
     value: ${{ steps.run.outputs.execution-file }}
+  execution-file-clean:
+    description: >-
+      `true` when execution-file was read and a scan found no credential in
+      it (an Anthropic-key shape or the leg's secret value); `false` when it
+      holds one, is missing or cannot be read; empty when the step failed
+      before writing its outputs. Gate on `== 'true'`, so empty stays closed.
+    value: ${{ steps.run.outputs.execution-file-clean }}
   log-file:
     description: JSONL execution log, one object for the leg; empty when the credential scan failed.
     value: ${{ steps.run.outputs.log-file }}

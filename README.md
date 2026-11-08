@@ -698,8 +698,13 @@ consumer to audit it.
   on a successful leg with `json-schema-file`, a `structured-output-file`
   holding the result's `structured_output`; the action writes each of the
   last two only after a credential scan, and a hit on the structured output
-  fails the step. Read the structured output from that file, never from the
-  unscanned `execution-file`. Every log line records the `lane` and
+  fails the step. Read the structured output from that file, never from
+  `execution-file`. The action scans `execution-file` the same way but keeps
+  it, since callers parse it, and reports the scan as
+  `execution-file-clean`: `true` only when the file read and held no
+  credential, `false` on a hit or a missing or unreadable file. Gate any
+  upload of it on `execution-file-clean == 'true'`, so an empty value from a
+  step that failed early stays closed. Every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names are
   always the role's, `<ROLE>_CLAUDE_API_KEY` and
   `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake, or the fixed

@@ -25,6 +25,7 @@ const {
   NPM_REGISTRY,
   SIGNING_KEY_FINGERPRINT,
   cliArgs,
+  fileClean,
   holdsCredential,
   install,
   legEnv,
@@ -1588,6 +1589,47 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
     /\| 1 \| AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN \| rate-limit \| .* \| limit stop: rerun after the reset \|/u,
   );
   assert.equal(summaryText.includes("session limit"), false);
+});
+
+test("fileClean is true only for a readable file with no credential", () => {
+  const dir = path.join(root, "file-clean");
+  fs.mkdirSync(dir);
+  const write = (name, text) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, text);
+    return file;
+  };
+  assert.equal(fileClean(write("clean.json", '[{"type":"result"}]'), [TOKEN]), true, "clean");
+  assert.equal(
+    fileClean(write("key.json", '[{"text":"sk-ant-api03-abcdefghij"}]'), [TOKEN]),
+    false,
+    "key-shaped string",
+  );
+  assert.equal(fileClean(write("secret.json", `[{"text":"${TOKEN}"}]`), [TOKEN]), false, "leg secret");
+  assert.equal(fileClean(path.join(dir, "missing.json"), [TOKEN]), false, "missing file");
+});
+
+test("run writes execution-file-clean from a scan of the execution file", () => {
+  for (const [name, messages, expected] of [
+    ["clean", SESSION_LIMIT, "true"],
+    [
+      "secret",
+      [
+        { type: "user", message: { content: [{ type: "tool_result", content: `env: ${TOKEN}` }] } },
+        ...SESSION_LIMIT,
+      ],
+      "false",
+    ],
+  ]) {
+    const dir = path.join(root, `run-execution-file-${name}`);
+    const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
+    env.FAKE_SUB = legFile(dir, "sub.jsonl", messages);
+    env.FAKE_SUB_EXIT = "1";
+    assert.throws(() => run(env), /class=rate-limit/u, name);
+    const outputs = readOutputs(env.GITHUB_OUTPUT);
+    assert.equal(outputs["execution-file-clean"], expected, name);
+    assert.ok(fs.existsSync(outputs["execution-file"]), `${name}: the file is kept`);
+  }
 });
 
 test("run on a key-leg credit stop sets lane-class credit-stop and starts no subscription leg", () => {
