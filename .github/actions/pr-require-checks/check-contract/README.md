@@ -8,6 +8,7 @@ one required status check (`ci-status`) instead of four.
 | Conventional Commits title | Fails the step. |
 | `do-not-merge` label present | Fails the step. |
 | Issue linkage (closing keyword plus the four contract sections) | Advisory by default: a warning, one upserted marker comment, and a label. `linkage-mode: enforce` fails the step instead. |
+| `hold-label` (default `needs-human`) present, with `enforce-hold-label: true` | Fails the step. Off by default. |
 
 The three checks come from the `semantic-pr`, `do-not-merge-gate` and
 `pr-issue-linkage` reusable workflows; the semantics are ported, not redesigned.
@@ -50,9 +51,10 @@ Every input's meaning and default is documented inline in
 
 ## Outputs
 
-`title`, `do-not-merge`, and `linkage`. Every check runs before the step exits,
-so all three are always set: `pass`, `fail`, `skipped` (no pull request in this
-event, or `linkage` on a `merge_group` run), and additionally `exempt` for `linkage` when the author is exempt.
+`title`, `do-not-merge`, `linkage`, and `hold`. Every check runs before the step exits,
+so all four are always set: `pass`, `fail`, `skipped` (no pull request in this
+event, `linkage` on a `merge_group` run, or `hold` with `enforce-hold-label`
+off), and additionally `exempt` for `linkage` when the author is exempt.
 
 ## Permissions
 
@@ -80,6 +82,19 @@ own comment and would post a new one on every failing run.
   enqueue; a failure makes the queue drop it. `linkage` reports `skipped` and
   nothing is written. A ref it cannot parse, or a pull request it cannot read,
   fails the step.
+- With `enforce-hold-label: true`, the hold label is read live with the pull
+  request. A review lane adds it to hold a merge, and only a person removing
+  it releases the hold; the `unlabeled` run then passes. On a `merge_group` run
+  the same request reads the queue of the head ref's base branch, and the step
+  fails when any entry at or ahead of the queued pull request (lower
+  `position`) carries the label, since a passing group merges all of them.
+- A hold label that cannot be read fails the step with
+  `hold-label-unreadable`. That happens after `gh-api.sh` has resent the read
+  (up to 3 sends on a 5xx or network error, one bounded rate-limit wait), and
+  also when the queue lacks the queued pull request or a page of entries or
+  labels is incomplete. A re-run reads again, so the red lasts only as long as
+  GitHub's failure. The check adds no request, so the step's worst case stays
+  about 132 s, inside a 3-minute `ci-status` job.
 - The head ref names only the last pull request in the group, so the merge
   queue must use `grouping_strategy: ALLGREEN`. Under `HEADGREEN` a pull request
   that failed its own group, a `do-not-merge` one included, can still merge

@@ -1,7 +1,8 @@
 name: pr-contract
 description: >-
   One step carrying the whole pull-request contract: Conventional Commits title,
-  do-not-merge label, and issue linkage. The title and label checks gate; the
+  do-not-merge label, issue linkage, and an opt-in hold label. The title and
+  label checks gate; the
   linkage check is advisory by default (a marker comment plus a label) so a body
   edit never re-runs the file-lint lanes.
 
@@ -39,6 +40,20 @@ inputs:
   do-not-merge-label:
     description: Label whose presence blocks the merge.
     default: do-not-merge
+  enforce-hold-label:
+    description: >-
+      `true` to fail the step while the pull request carries `hold-label`, read
+      live from the API. A review lane adds that label to hold a merge; a
+      person removing it releases the hold, and the `unlabeled` run passes. On
+      a `merge_group` run every queue entry at or ahead of the queued pull
+      request is read in the same request, since a passing group merges them
+      all. A label that cannot be read, after the read's resends, fails the
+      step with `hold-label-unreadable`; a re-run reads it again, so the
+      failure never outlasts GitHub's answer. Off by default.
+    default: 'false'
+  hold-label:
+    description: Label whose presence holds the merge while `enforce-hold-label` is on.
+    default: needs-human
   exempt-authors:
     description: >-
       Comma-separated exact PR-author logins that skip the issue-linkage check
@@ -101,6 +116,11 @@ outputs:
       `pass`, `fail`, `exempt` (an exempt author), or `skipped` (no pull request
       in this event, or a `merge_group` event).
     value: ${{ steps.contract.outputs.linkage }}
+  hold:
+    description: >-
+      `pass`, `fail`, or `skipped` (`enforce-hold-label` off, or no pull
+      request in this event).
+    value: ${{ steps.contract.outputs.hold }}
 
 runs:
   using: composite
@@ -115,6 +135,8 @@ runs:
         TYPES: ${{ inputs.types }}
         REQUIRE_SCOPE: ${{ inputs.require-scope }}
         DO_NOT_MERGE_LABEL: ${{ inputs.do-not-merge-label }}
+        ENFORCE_HOLD_LABEL: ${{ inputs.enforce-hold-label }}
+        HOLD_LABEL: ${{ inputs.hold-label }}
         EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
         LINKAGE_LABEL: ${{ inputs.linkage-label }}
         LINKAGE_MODE: ${{ inputs.linkage-mode }}

@@ -188,9 +188,39 @@ chmod +x "$shim_directory/date"
 # `user.type` are its `databaseId` and `author.__typename`.
 graphql_pull="$fixtures/graphql-pull.json"
 graphql_comments="$fixtures/graphql-comments.json"
+graphql_queue="$fixtures/graphql-queue.json"
 compose_pull_read() {
-  jq -n --slurpfile pr "$graphql_pull" --slurpfile comments "$graphql_comments" \
-    '{data: {repository: {pullRequest: ($pr[0] + {comments: $comments[0]})}}}' >"$fixtures/${pull_key}.json"
+  local queue='{}'
+  if [[ -f "$graphql_queue" ]]; then
+    queue="$(jq '{mergeQueue: .}' "$graphql_queue")"
+  fi
+  jq -n --slurpfile pr "$graphql_pull" --slurpfile comments "$graphql_comments" --argjson queue "$queue" \
+    '{data: {repository: ({pullRequest: ($pr[0] + {comments: $comments[0]})} + $queue)}}' >"$fixtures/${pull_key}.json"
+}
+
+# set_queue <position:number:labels-csv>...
+# The merge queue the GraphQL read returns beside the pull request, one entry
+# per argument. `set_queue null` returns no queue; `clear_queue` drops the field.
+set_queue() {
+  if [[ "$1" == null ]]; then
+    printf 'null' >"$graphql_queue"
+  else
+    printf '%s\n' "$@" | jq -R 'split(":") | {position: (.[0] | tonumber), pullRequest: {number: (.[1] | tonumber), labels: ((.[2] // "") | if . == "" then [] else split(",") end | {totalCount: length, nodes: map({name: .})})}}' |
+      jq -s '{entries: {totalCount: length, nodes: .}}' >"$graphql_queue"
+  fi
+  compose_pull_read
+}
+
+clear_queue() {
+  rm -f -- "${graphql_queue:?}"
+  compose_pull_read
+}
+
+# truncate_read <jq-path>
+# Raises one totalCount in the composed read past what its page holds.
+truncate_read() {
+  jq "$1 = 101" <"$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
+  mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
 }
 
 printf '{"totalCount":0,"nodes":[]}' >"$graphql_comments"
@@ -1313,23 +1343,161 @@ run_case 0 'LINKAGE_LABEL=needs-issue-linkage-é'
 expect_output 'linkage=pass'
 expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issue-linkage-%C3%A9"
 
+# --- hold label ------------------------------------------------------------
+
+# Without the opt-in default every caller on main would start failing held pull
+# requests at merge.
+echo 'case: the hold label is not checked unless enforce-hold-label is on'
+set_comments '[]'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-human'
+run_case 0
+expect_output 'hold=skipped'
+expect_no_log 'hold label'
+
+# Without the hold check the label is read and ignored.
+echo 'case: enforce-hold-label fails a pull request that carries needs-human'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation,needs-human'
+run_case 1 ENFORCE_HOLD_LABEL=true
+expect_output 'hold=fail'
+expect_output 'do-not-merge=pass'
+expect_log "::error::pr-contract: this PR carries the 'needs-human' hold label; a person removes it to release the hold."
+
+# Without the exact-line match a label that only starts with the hold label holds.
+echo 'case: enforce-hold-label passes a pull request without the hold label'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation,needs-human-review'
+run_case 0 ENFORCE_HOLD_LABEL=true
+expect_output 'hold=pass'
+expect_no_log 'hold label'
+
+# Without the hold-label input the label stays needs-human whatever the caller sets.
+echo 'case: hold-label names the label that holds'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-human'
+run_case 0 ENFORCE_HOLD_LABEL=true 'HOLD_LABEL=owner hold'
+expect_output 'hold=pass'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'owner hold'
+run_case 1 ENFORCE_HOLD_LABEL=true 'HOLD_LABEL=owner hold'
+expect_output 'hold=fail'
+expect_log "carries the 'owner hold' hold label"
+
+# Without the validation a typo such as `True` would leave the hold off.
+echo 'case: an enforce-hold-label other than true or false fails before any read'
+run_case 1 ENFORCE_HOLD_LABEL=True
+expect_log "::error::pr-contract: enforce-hold-label must be 'true' or 'false', got: True"
+expect_no_gh_calls_at_all
+
+# Without the named error an unreadable label reads as a plain read failure,
+# and the red says neither that the hold is why nor that a re-run clears it.
+echo 'case: a label read that fails after its resends fails the hold by name'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+printf '99\n' >"$fixtures/${pull_key}.fail-times"
+run_case 1 ENFORCE_HOLD_LABEL=true
+expect_output 'hold=fail'
+expect_log "::error::pr-contract: hold-label-unreadable: cannot tell whether pull request ${repository}#${pr_number} carries the 'needs-human' hold label, so this run fails; re-run this job once GitHub answers."
+if [[ "$(cat "$calls/${pull_key}.count")" != 3 ]]; then
+  echo "FAIL: expected the label read to be sent 3 times, got $(cat "$calls/${pull_key}.count")"
+  failures=$((failures + 1))
+fi
+printf '99\n' >"$fixtures/${pull_key}.fail-times"
+run_case 1
+expect_output 'hold=skipped'
+expect_no_log 'hold-label-unreadable'
+printf '0\n' >"$fixtures/${pull_key}.fail-times"
+
+# Without the incomplete-page check a label past the first 100 is never seen.
+echo 'case: an incomplete label page fails the hold by name'
+set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation'
+truncate_read '.data.repository.pullRequest.labels.totalCount'
+run_case 1 ENFORCE_HOLD_LABEL=true
+expect_output 'hold=fail'
+expect_log 'hold-label-unreadable'
+
+hold_queue_ref="refs/heads/gh-readonly-queue/main/pr-${pr_number}-0123456789abcdef0123456789abcdef01234567"
+
+# Without the off switch reaching the query, every merge group would pay for
+# the queue read.
+echo 'case: a merge group with the hold off reads no merge queue'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_queue "1:5:needs-human" "2:${pr_number}:"
+run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref"
+expect_output 'hold=skipped'
+expect_no_gh_call 'mergeQueue'
+
+# Without the group walk only the queued pull request is read, and the held
+# entry ahead of it merges inside this group.
+echo 'case: a merge group fails when a pull request ahead in it carries the hold label'
+set_queue "1:4:" "2:5:needs-human" "3:${pr_number}:" "4:9:needs-human"
+run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
+expect_output 'hold=fail'
+expect_log "::error::pr-contract: queued pull request #5 carries the 'needs-human' hold label and is in this merge group; a person removes it to release the hold."
+expect_no_log 'queued pull request #4 carries'
+expect_no_log 'queued pull request #9 carries'
+expect_log "queued pull request #${pr_number} fails the contract"
+# shellcheck disable=SC2016 # `$branch` is the GraphQL variable the query names.
+expect_gh_call 'mergeQueue(branch: $branch)'
+expect_gh_call '-f branch=main'
+
+# Without the position bound a held pull request behind this one would fail a
+# group that does not hold it, and drop this one from the queue.
+echo 'case: a merge group passes when only a pull request behind it carries the hold label'
+set_queue "1:4:" "2:${pr_number}:documentation" "3:9:needs-human"
+run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
+expect_output 'hold=pass'
+expect_log "pr-contract: no pull request in this merge group carries the 'needs-human' hold label."
+
+# Without the queued pull request in its own group walk a hold added after
+# enqueue would land.
+echo 'case: a merge group fails when the queued pull request itself carries the hold label'
+set_queue "1:4:" "2:${pr_number}:needs-human"
+run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
+expect_output 'hold=fail'
+expect_log "queued pull request #${pr_number} carries the 'needs-human' hold label"
+
+# Without the fail-closed reads each of these would find no label and pass.
+echo 'case: a merge group whose queue cannot be read whole fails the hold by name'
+for queue_shape in absent-entry null-queue short-labels short-entries; do
+  case "$queue_shape" in
+    absent-entry) set_queue "1:4:" "2:5:" ;;
+    null-queue) set_queue null ;;
+    short-labels)
+      set_queue "1:4:" "2:${pr_number}:"
+      truncate_read '.data.repository.mergeQueue.entries.nodes[0].pullRequest.labels.totalCount'
+      ;;
+    *)
+      set_queue "1:4:" "2:${pr_number}:"
+      truncate_read '.data.repository.mergeQueue.entries.totalCount'
+      ;;
+  esac
+  run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
+  expect_output 'hold=fail'
+  expect_log "::error::pr-contract: hold-label-unreadable: cannot tell whether the merge queue of 'main' (pull request #${pr_number} absent from it, or its entries or their labels incomplete) carries the 'needs-human' hold label"
+done
+
+# Without taking the branch from the head ref a queue on a branch with a slash
+# in its name would be read as another branch's.
+echo 'case: a merge group on a branch with a slash reads that branch queue'
+set_queue "1:${pr_number}:"
+run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="refs/heads/gh-readonly-queue/release/v1/pr-${pr_number}-0123456789abcdef0123456789abcdef01234567" ENFORCE_HOLD_LABEL=true
+expect_output 'hold=pass'
+expect_gh_call '-f branch=release/v1'
+clear_queue
+
 # --- metadata contract -----------------------------------------------------
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in token repository pr-number types require-scope do-not-merge-label exempt-authors linkage-label linkage-mode issue-ref-pattern rate-limit-wait-seconds; do
+for input_name in token repository pr-number types require-scope do-not-merge-label enforce-hold-label hold-label exempt-authors linkage-label linkage-mode issue-ref-pattern rate-limit-wait-seconds; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${input_name}' input"
     failures=$((failures + 1))
   fi
 done
-for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN RATE_LIMIT_WAIT_SECONDS EVENT_NAME MERGE_GROUP_HEAD_REF; do
+for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL ENFORCE_HOLD_LABEL HOLD_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN RATE_LIMIT_WAIT_SECONDS EVENT_NAME MERGE_GROUP_HEAD_REF; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
     failures=$((failures + 1))
   fi
 done
-for output_name in title do-not-merge linkage; do
+for output_name in title do-not-merge linkage hold; do
   if ! grep -qE "^  ${output_name}:" "$action_metadata"; then
     echo "FAIL: action.yml declares no '${output_name}' output"
     failures=$((failures + 1))
