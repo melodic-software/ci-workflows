@@ -239,12 +239,14 @@ const SESSION_LIMIT = [
 
 // Runs the one leg against the fake CLI. Set exactly one of `key`, `sub` and
 // `fallback`, the message list that leg prints; `fallbackReady` is the
-// fallback-ready input a token leg reads.
+// fallback-ready input a token leg reads, and `handoffOnly` its
+// `handoff-only` value.
 function runCase({
   key = null,
   sub = null,
   fallback = null,
   fallbackReady = false,
+  handoffOnly = false,
   keyExit = 1,
   subExit = 1,
   keySleep = false,
@@ -290,6 +292,7 @@ function runCase({
         ? { leg: "fallback", name: FALLBACK_NAME, value: FALLBACK_TOKEN }
         : { leg: "subscription", name: TOKEN_NAME, value: TOKEN },
     fallbackReady,
+    handoffOnly,
     lane: "fix-ci",
     role: "automations",
     model: "claude-sonnet-5",
@@ -573,6 +576,30 @@ test("a key leg hands off only to the subscription job, fallback ready or not", 
   }
 });
 
+test("with handoff-only, a last subscription leg hands off on the same stops and names no next leg", () => {
+  for (const [name, sub, reason, laneClass] of [
+    ["limit stop", SESSION_LIMIT, "limit-stop", "rate-limit"],
+    ["credit stop", CREDIT_STOP, "credit-stop", "other"],
+    ["401", authLeg({ status: 401 }), "auth", "auth"],
+    ["402", authLeg({ status: 402 }), "auth", "auth"],
+  ]) {
+    const { outputs, records } = runCase({ sub, fallbackReady: true, handoffOnly: true });
+    assert.equal(outputs.handoff, "true", name);
+    assert.equal(outputs["handoff-reason"], reason, name);
+    assert.equal(outputs["lane-class"], laneClass, name);
+    assert.equal(records[0].next, null, name);
+  }
+  const permission = runCase({
+    sub: authLeg({ status: 403, text: PERMISSION_TEXT }),
+    fallbackReady: true,
+    handoffOnly: true,
+  });
+  assert.equal(permission.outputs.handoff, "false", "403");
+  const key = runCase({ key: CREDIT_STOP, fallbackReady: true, handoffOnly: true });
+  assert.equal(key.outputs["handoff-reason"], "credit-stop", "key leg");
+  assert.equal(key.records[0].next, "subscription", "key leg");
+});
+
 test("with no fallback ready, a subscription leg stops as before", () => {
   for (const [name, sub, laneClass] of [
     ["limit stop", SESSION_LIMIT, "rate-limit"],
@@ -780,6 +807,9 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
   ]) {
     assert.ok(call.args.includes(flag), flag);
   }
+  // --restricted already loads only managed settings and --settings
+  // (code.claude.com/docs/en/cli-reference); every source --setting-sources
+  // can name is a file head code can write.
   assert.equal(call.args.includes("--setting-sources"), false);
   // Callers float on @main and rely on this: under `none` the default mode
   // denies every call no rule allows, as dontAsk does.
@@ -1384,7 +1414,10 @@ test("readConfig takes the fallback token under its fixed name, one credential o
   assert.equal(readConfig(configEnv()).fallbackReady, false);
   assert.equal(readConfig(configEnv({ LANE_FALLBACK_READY: "false" })).fallbackReady, false);
   assert.equal(readConfig(configEnv({ LANE_FALLBACK_READY: "true" })).fallbackReady, true);
-  for (const value of ["True", "1", "yes"]) {
+  assert.equal(readConfig(configEnv({ LANE_FALLBACK_READY: "true" })).handoffOnly, false);
+  const last = readConfig(configEnv({ LANE_FALLBACK_READY: "handoff-only" }));
+  assert.deepEqual([last.fallbackReady, last.handoffOnly], [true, true]);
+  for (const value of ["True", "1", "yes", "Handoff-only"]) {
     assert.throws(
       () => readConfig(configEnv({ LANE_FALLBACK_READY: value })),
       (error) => error instanceof LaneError && /fallback-ready/u.test(error.message),
@@ -1808,6 +1841,53 @@ test("a handoff to the fallback job says the fallback job runs instead, whatever
     summaryTable([record("auth", "subscription")], "auth"),
     /\| subscription \| credential unusable: 401 or 402 hands off to the subscription job/u,
   );
+});
+
+test("a handoff with no further leg says so and names no fallback job", () => {
+  const record = (failureClass) => ({
+    leg: 1,
+    secret: TOKEN_NAME,
+    class: failureClass,
+    num_turns: 0,
+    denials: { count: 0 },
+    resets: null,
+    next: null,
+  });
+  for (const [failureClass, reason, note] of [
+    ["auth", "auth", "credential refused: handed off, no further leg runs; the owner replaces the secret"],
+    ["other", "credit-stop", "credits used up: handed off, no further leg runs"],
+    ["rate-limit", "limit-stop", "limit stop: handed off, no further leg runs"],
+  ]) {
+    const table = summaryTable([record(failureClass)], reason);
+    assert.match(table, new RegExp(`\\|  \\| ${note} \\|$`, "mu"), reason);
+    assert.doesNotMatch(table, /fallback/u, reason);
+  }
+});
+
+test("run on a refused last subscription leg with handoff-only warns once and names no fallback job", () => {
+  const dir = path.join(root, "run-handoff-only-auth");
+  const env = runEnv(dir, {
+    LANE_API_KEY: "",
+    LANE_SUBSCRIPTION_TOKEN: TOKEN,
+    LANE_FALLBACK_READY: "handoff-only",
+  });
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", AUTH);
+  env.FAKE_SUB_EXIT = "1";
+  const lines = captureStdout(() => run(env));
+  assert.deepEqual(
+    lines.filter((l) => l.includes("run-claude-cli credential")),
+    [
+      "::warning title=run-claude-cli credential::class=auth: the API refused AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN; the owner must replace the secret. No further leg runs.",
+    ],
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.deepEqual([outputs.handoff, outputs["handoff-reason"]], ["true", "auth"]);
+  const summary = fs.readFileSync(env.GITHUB_STEP_SUMMARY, "utf8");
+  assert.match(
+    summary,
+    /\|  \| credential refused: handed off, no further leg runs; the owner replaces the secret \|/u,
+  );
+  assert.doesNotMatch(summary, /fallback/u);
 });
 
 test("run on a refused subscription token with a fallback ready warns the owner once, after the stop-commands block", () => {
