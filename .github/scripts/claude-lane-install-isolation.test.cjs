@@ -100,6 +100,7 @@ test("every review attempt runs Bash under the full sandbox", () => {
           sandbox: {
             enabled: true,
             allowUnsandboxedCommands: false,
+            failIfUnavailable: true,
             network: { allowedDomains: ["github.com", "api.github.com"] },
           },
         },

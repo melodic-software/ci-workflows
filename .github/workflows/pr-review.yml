@@ -46,7 +46,8 @@ name: pr-review
 #   - Bash runs under Claude Code's full sandbox (the review steps'
 #     settings): writes are limited to the workspace and temp directory,
 #     network to github.com and api.github.com, and a command that fails
-#     in the sandbox is never retried outside it.
+#     in the sandbox is never retried outside it. If the sandbox cannot
+#     start, Claude Code exits instead of running commands unsandboxed.
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
@@ -896,7 +897,7 @@ jobs:
           # still needs a matching --allowedTools rule
           # (code.claude.com/docs/en/settings-reference,
           # sandbox.autoAllowBashIfSandboxed). A test holds the value.
-          settings: '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":["github.com","api.github.com"]}}}'
+          settings: '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"failIfUnavailable":true,"network":{"allowedDomains":["github.com","api.github.com"]}}}'
           # No track_progress: on a pull_request event with a prompt the action
           # runs in agent mode, which posts no tracking comment and gives the
           # model no comment tool (claude-code-action src/modes/detector.ts,
@@ -1087,7 +1088,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
           # The first attempt's sandbox settings; its comment says why.
-          settings: '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":["github.com","api.github.com"]}}}'
+          settings: '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"failIfUnavailable":true,"network":{"allowedDomains":["github.com","api.github.com"]}}}'
           # No track_progress: on a pull_request event with a prompt the action
           # runs in agent mode, which posts no tracking comment and gives the
           # model no comment tool (claude-code-action src/modes/detector.ts,
