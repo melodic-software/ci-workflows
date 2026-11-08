@@ -203,6 +203,18 @@ class PublishGuardTest(unittest.TestCase):
             run.assert_called_once()
             self.assertTrue(row["autoMerge"])
 
+    def test_author_dated_sources_wait_from_first_sighting(self) -> None:
+        # The module proxy's .info Time is the tagged commit's date, which its author sets;
+        # a registry's publish time is the registry's own.
+        rows = [
+            {"sourceType": "goproxy", "targetCooldown": 3},
+            {"sourceType": "github-tag", "targetCooldown": 7},
+            {"sourceType": "npm", "targetCooldown": 9},
+        ]
+        self.assertEqual(bump.tag_cooldown(rows), 7)
+        self.assertEqual(bump.tag_cooldown(rows[:1]), 3)
+        self.assertEqual(bump.tag_cooldown(rows[2:]), 0)
+
     def test_release_source_arms_at_once(self) -> None:
         row = {"pr": 9, "tagCooldown": 0}
         now = dt.datetime.now(dt.UTC).isoformat()
@@ -286,6 +298,42 @@ class RegistryParseTest(unittest.TestCase):
         rels = bump.pypi_releases(doc)
         self.assertEqual([r.version for r in rels], ["1.0.0"])
         self.assertEqual(rels[0].date, dt.datetime(2026, 10, 1, tzinfo=dt.UTC))
+
+    def test_goproxy_case_encodes_upper_case(self) -> None:
+        self.assertEqual(
+            bump.goproxy_path("github.com/BurntSushi/toml"),
+            "github.com/!burnt!sushi/toml",
+        )
+
+    def test_goproxy_keeps_release_tags_only(self) -> None:
+        rels = bump.goproxy_versions(
+            "v1.2.0\nv1.3.0-rc.1\nv2.0.0+incompatible\nv1.10.0\n"
+        )
+        self.assertEqual(
+            [(r.version, r.tag) for r in rels],
+            [("1.2.0", "v1.2.0"), ("1.10.0", "v1.10.0")],
+        )
+
+    def test_nuget_drops_unlisted_and_prerelease(self) -> None:
+        def leaf(version: str, listed: bool = True) -> dict[str, Any]:
+            return {
+                "packageContent": f"https://example.test/{version}.nupkg",
+                "catalogEntry": {
+                    "@id": f"https://example.test/{version}.json",
+                    "version": version,
+                    "listed": listed,
+                    "published": "2026-10-25T17:07:30.2+00:00",
+                },
+            }
+
+        pages = [
+            {"items": [leaf("10.0.13"), leaf("10.0.14", listed=False)]},
+            {"items": [leaf("11.0.0-rc.1")]},
+        ]
+        rels = bump.nuget_releases(pages)
+        self.assertEqual([r.version for r in rels], ["10.0.13"])
+        self.assertEqual(rels[0].meta["nupkg"], "https://example.test/10.0.13.nupkg")
+        self.assertEqual(rels[0].date.year, 2026)
 
     def test_npm_drops_deprecated_and_undated(self) -> None:
         doc: dict[str, Any] = {
