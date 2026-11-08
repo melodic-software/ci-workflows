@@ -7,13 +7,15 @@ description: >-
   through ANTHROPIC_BASE_URL or a helper that outranks
   CLAUDE_CODE_OAUTH_TOKEN) or add a hook. Needs sudo: run it before
   runner isolation removes sudo and before any head checkout. run-claude-cli
-  refuses to run without the file.
+  refuses to run without the file. The check is
+  run-claude-cli/managed-settings.cjs, the same rule run-claude-cli applies.
 
 inputs:
   settings:
     description: >-
       The managed settings JSON. It must be an object that sets
-      `apiKeyHelper`, `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`,
+      `apiKeyHelper`, `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`
+      (or to loopback-base-url when that is set),
       `permissions.disableBypassPermissionsMode` to `disable`, and
       `allowManagedHooksOnly` or `disableAllHooks` to `true`; run-claude-cli
       refuses anything else.
@@ -22,6 +24,17 @@ inputs:
       {"apiKeyHelper": "", "allowManagedHooksOnly": true,
       "env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
       "permissions": {"disableBypassPermissionsMode": "disable"}}
+  loopback-base-url:
+    description: >-
+      Empty (the default) requires `env.ANTHROPIC_BASE_URL` to be
+      `https://api.anthropic.com`. Exactly `http://127.0.0.1:<port>` or
+      `http://[::1]:<port>` (no path, query or userinfo) instead requires
+      `settings` to pin it to that value, for a key proxy on the runner's
+      loopback. Pass run-claude-cli's loopback-base-url the same value; that
+      action refuses it on a subscription or fallback (OAuth) leg, which this
+      action cannot see.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -30,17 +43,9 @@ runs:
       shell: bash
       env:
         SETTINGS: ${{ inputs.settings }}
+        LOOPBACK_BASE_URL: ${{ inputs.loopback-base-url }}
       run: |
-        node -e '
-          const s = JSON.parse(process.env.SETTINGS);
-          if (typeof s !== "object" || s === null || Array.isArray(s) ||
-              !Object.hasOwn(s, "apiKeyHelper") ||
-              s.env?.ANTHROPIC_BASE_URL !== "https://api.anthropic.com" ||
-              s.permissions?.disableBypassPermissionsMode !== "disable" ||
-              (s.allowManagedHooksOnly !== true && s.disableAllHooks !== true)) {
-            throw new Error("settings must set apiKeyHelper, env.ANTHROPIC_BASE_URL https://api.anthropic.com, permissions.disableBypassPermissionsMode disable, and allowManagedHooksOnly or disableAllHooks true");
-          }
-        '
+        node "$GITHUB_ACTION_PATH/../run-claude-cli/managed-settings.cjs"
         if ! sudo -n true 2>/dev/null; then
           echo "::error title=apply-claude-managed-settings::sudo is unavailable: run apply-claude-managed-settings before runner isolation"
           exit 1

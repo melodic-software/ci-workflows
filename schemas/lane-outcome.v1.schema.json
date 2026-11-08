@@ -12,13 +12,35 @@
     "outcome": {
       "enum": ["success", "failure", "timeout", "skip", "cancellation", "error"]
     },
-    "class": { "type": "string", "pattern": "^[a-z][a-z-]{0,39}$" },
+    "class": {
+      "description": "One closed failure class (docs/lane-outcome.md, Failure classes). New values are added only within a major version.",
+      "enum": [
+        "auth",
+        "credit-stop",
+        "rate-limit",
+        "overloaded",
+        "max-turns",
+        "timeout",
+        "install-failed",
+        "no-execution",
+        "sandbox-unavailable",
+        "skipped-validation",
+        "incomplete",
+        "no-credential",
+        "no-outcome",
+        "other"
+      ]
+    },
     "credential": {
       "type": "object",
       "required": ["secret", "kind"],
       "additionalProperties": true,
       "properties": {
-        "secret": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,99}$" },
+        "secret": {
+          "type": "string",
+          "description": "The secret's NAME, never its value.",
+          "pattern": "^(?:(?:[A-Z][A-Z0-9_]{0,75}_)?CLAUDE_CODE_OAUTH_TOKEN|[A-Z][A-Z0-9_]{0,84}_CLAUDE_API_KEY)$"
+        },
         "kind": { "enum": ["oauth-token", "api-key"] },
         "role": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,99}$" }
       }
@@ -54,6 +76,33 @@
     },
     "turns": { "type": "integer", "minimum": 0, "maximum": 999999 },
     "maxTurns": { "type": "integer", "minimum": 0, "maximum": 999999 },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The leg's run time in milliseconds, the result message's duration_ms."
+    },
+    "runId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "runAttempt": { "type": "integer", "minimum": 1, "maximum": 9999 },
+    "traceId": {
+      "type": "string",
+      "description": "W3C trace-context shape; the first 32 hex digits of SHA-256 over `lane-outcome:<runId>:<runAttempt>`.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "spanId": {
+      "type": "string",
+      "description": "W3C trace-context shape; the first 16 hex digits of SHA-256 over `<traceId>:<job>:<lane>:<credential.secret>`.",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "githubCalls": {
+      "type": "object",
+      "description": "The job's GitHub API calls before the report, per token, from the api-budget readings.",
+      "additionalProperties": true,
+      "properties": {
+        "githubToken": { "$ref": "#/$defs/calls" },
+        "lanesApp": { "$ref": "#/$defs/calls" }
+      }
+    },
     "costUsd": {
       "type": "number",
       "minimum": 0,
@@ -90,6 +139,16 @@
   },
   "$defs": {
     "tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "calls": {
+      "type": "object",
+      "required": ["requests", "graphql", "notModified"],
+      "additionalProperties": true,
+      "properties": {
+        "requests": { "$ref": "#/$defs/tokens" },
+        "graphql": { "$ref": "#/$defs/tokens" },
+        "notModified": { "$ref": "#/$defs/tokens" }
+      }
+    },
     "window": {
       "type": "object",
       "required": ["status"],

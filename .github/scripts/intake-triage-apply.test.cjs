@@ -65,6 +65,8 @@ async function runScript(script, env, github) {
       },
     };
     const context = { repo: { owner: "o", repo: "r" } };
+    // The api-budget recorder's hooks; report-api-budget.test.cjs tests them.
+    const hook = { after: () => {}, error: () => {} };
     await new AsyncFunction(
       "github",
       "context",
@@ -72,7 +74,7 @@ async function runScript(script, env, github) {
       "require",
       "process",
       script,
-    )(github, context, core, require, process);
+    )({ hook, ...github }, context, core, require, process);
     return { failed, warnings, infos, outputs, summary };
   } finally {
     for (const [key, value] of Object.entries(original)) {

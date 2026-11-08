@@ -167,10 +167,10 @@ outputs:
     value: ${{ steps.outcome.outputs.review_ran }}
   failure-class:
     description: >-
-      auth | rate-limit | overloaded | max-turns | timeout |
-      install-failed | no-execution | other (empty on
-      a genuine success; skipped-validation when the action skipped itself;
-      incomplete when require-completion found no completed review).
+      One class from docs/lane-outcome.md "Failure classes", or the
+      caller's known-failure-class as given (empty on a genuine success;
+      skipped-validation when the action skipped itself; incomplete when
+      require-completion found no completed review).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -182,6 +182,12 @@ outputs:
       On class rate-limit, the ISO 8601 UTC time the limit resets, from the
       run's newest rejected rate_limit_event; empty when it carried none.
     value: ${{ steps.outcome.outputs.resets_at }}
+  record:
+    description: >-
+      The lane-outcome record this step wrote after the `lane-outcome `
+      marker, as the same one JSON object without the marker
+      (docs/lane-outcome.md); empty when no record was written.
+    value: ${{ steps.outcome.outputs.record }}
 
 runs:
   using: composite
@@ -205,6 +211,10 @@ runs:
         KNOWN_FAILURE_CLASS: ${{ inputs.known-failure-class }}
         LANE_ID: ${{ inputs.lane-id }}
         HANDOFF: ${{ inputs.handoff }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        JOB_ID: ${{ github.job }}
+        API_BUDGET_DIR: ${{ runner.temp }}/api-budget
         ACTION_PATH: ${{ github.action_path }}
       with:
         script: |
@@ -218,6 +228,7 @@ runs:
             readLegLog,
             readRunRecord,
             recordText,
+            runContext,
           } = require(path.join(process.env.ACTION_PATH, "classify.cjs"));
 
           // A caller wiring error, not a lane outcome: fail before reporting.
@@ -246,6 +257,16 @@ runs:
           // sentence's models= token stays short.
           const laneId = process.env.LANE_ID ?? "";
           const credential = process.env.CREDENTIAL ?? "";
+          // The run id, attempt, trace and span ids, and the job's GitHub
+          // API calls so far, from the runner's context; record only.
+          const runCtx = runContext({
+            runId: process.env.RUN_ID ?? "",
+            runAttempt: process.env.RUN_ATTEMPT ?? "",
+            job: process.env.JOB_ID ?? "",
+            laneId,
+            credential,
+            budgetDir: process.env.API_BUDGET_DIR ?? "",
+          });
           // `failureClass` builds the tokens as they have always been built;
           // `recordClass` is the record's class where the tokens carry none.
           // With no record every message is what it was before the record.
@@ -259,6 +280,7 @@ runs:
               credential,
               fallbackReason,
               handoff: process.env.HANDOFF ?? "",
+              context: runCtx,
             });
             // Only a caller that opted in with lane-id warns; one that
             // passes only a credential is not wired for the record yet.
@@ -268,6 +290,9 @@ runs:
                   `${missing.length === 1 ? "is" : "are"} empty or invalid.`,
               );
             }
+            // The same object, so a reader of the step's outputs gets the
+            // record without reading annotations.
+            if (record !== null) core.setOutput("record", JSON.stringify(record));
             const line = recordText(record);
             return {
               tokens: tokens === "" ? "" : ` ${tokens}`,
@@ -366,15 +391,22 @@ runs:
           // lane-id gets a notice, whether or not its record could be
           // written. With no lane-id the level is what it always was.
           const annotate = laneId !== "" && process.env.HANDOFF === "true" ? core.notice : core.error;
+          // A run past its turn cap is a sizing stop, not an infrastructure
+          // error: the work is bigger than one run allows.
           annotate(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
                   `(${lane} exited with: ${outcome} class=rate-limit${tokens}). ` +
                   `${before}Last SDK result: ${reviewDetail}`
-              : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
-                  `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
-                  "OIDC failure, SDK crash, is_error result, or max-turns exhaustion). " +
-                  `${before}Last SDK result: ${reviewDetail}`,
+              : failureClass === "max-turns"
+                ? `${lane} stopped: turn budget used ` +
+                    `(${lane} exited with: ${outcome} class=max-turns${tokens}); ` +
+                    "the work is too big for one run, split it. " +
+                    `${before}Last SDK result: ${reviewDetail}`
+                : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
+                    `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
+                    "OIDC failure, SDK crash, or is_error result). " +
+                    `${before}Last SDK result: ${reviewDetail}`,
           );
 
           core.setOutput("failure_class", failureClass);

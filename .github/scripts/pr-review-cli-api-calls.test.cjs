@@ -320,6 +320,7 @@ async function spend({
       ...renderEnv(scope, { ...contexts, steps: {} }),
       DIFF_FILE: path.join(dir, "incremental.diff"),
       GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
       RUNNER_TEMP: dir,
     },
     () =>
@@ -459,10 +460,16 @@ async function spend({
 
 const INLINE = {
   findings: 1,
+  coverage: { read: 1, changed: 1 },
   summary: "One finding.",
   comments: [{ path: "a.js", line: 2, side: "RIGHT", body: "Off by one." }],
 };
-const NONE = { findings: 0, summary: "Nothing found.", comments: [] };
+const NONE = {
+  findings: 0,
+  coverage: { read: 1, changed: 1 },
+  summary: "Nothing found.",
+  comments: [],
+};
 const A = { filename: "a.js", status: "modified", patch: PATCH, changes: 3 };
 const CODEOWNERS = {
   filename: "CODEOWNERS",
@@ -475,7 +482,7 @@ const marker = {
   user: { login: BOT },
   body: [
     `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`,
-    `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} -->`,
+    `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} caller=.github/workflows/review.yml -->`,
     "**claude-review** reviewed it.",
     "",
     "Earlier summary.",
@@ -571,9 +578,10 @@ test("each run shape spends the requests pinned here, reading the file list once
 // The api-budget notice reads the headers of the requests above and adds
 // none: one reading per job-token request, and the key and status jobs each
 // end with one core line whose cost is the rise in used since the job's
-// first reading, na when the job made one request, then the api-calls line
-// with the job's own request count.
-test("each job logs one reading per request it made, its api-budget line and its api-calls count, adding no request", async () => {
+// first reading, na when the job made one request, after an api-calls line
+// counting the requests the fake answered for that job and its api-routes
+// line.
+test("each job logs one reading per request it made and its api-budget line, adding no request", async () => {
   for (const [name, shape] of Object.entries(SHAPES)) {
     const { total, keyRequests, keyBudget, statusBudget } = await spend(shape);
     assert.equal(
@@ -590,12 +598,14 @@ test("each job logs one reading per request it made, its api-budget line and its
       ["review-key", keyBudget, 1, keyRequests],
       ["status", statusBudget, keyRequests + 1, total],
     ]) {
+      // The fake's responses carry no URL, so every route is other.
       assert.deepEqual(
         budget.notices,
         [
+          `::notice title=api-calls::github-token=${last - first + 1} not-modified=0 graphql=0`,
+          `::notice title=api-routes::github-token other=${last - first + 1} rest=0`,
           `::notice title=api-budget::token=github-token workflow=.github/workflows/review.yml job=${job} run=1 attempt=1 ` +
             `limit=1000 remaining=${1000 - last} used=${last} reset=${RESET} resource=core cost=${last === first ? "na" : last - first}`,
-          `::notice title=api-calls::github-token=${last - first + 1} not-modified=0 graphql=0`,
         ],
         `${name}: ${job}`,
       );
@@ -747,6 +757,7 @@ test("a review quoting a registered secret's value still reaches publish through
   const secret = "SENTINEL-4711";
   const review = {
     findings: 1,
+    coverage: { read: 1, changed: 1 },
     summary: `The test fixture hard-codes ${secret}.`,
     comments: [
       { path: "a.js", line: 2, side: "RIGHT", body: `Move ${secret} out.` },
@@ -782,4 +793,27 @@ test("the status job refuses a handoff file whose sha256 does not match the key 
     }),
     /failure-class=incomplete: the model returned no usable review/u,
   );
+});
+
+// A partial review's marker records no head (sha=none), so the next push
+// reviews the whole pull request rather than only what changed since.
+test("a push after a partial review reviews the whole pull request", async () => {
+  const partial = {
+    id: 41,
+    user: { login: BOT },
+    body: [
+      "<!-- claude-lane-reviewed-head lane=claude-review sha=none -->",
+      `<!-- claude-lane-reviewed-base ref=main merge-base=${MB_OLD} caller=.github/workflows/review.yml -->`,
+      `**claude-review** partial review of \`${LAST}\`: read 1 of 2 changed file(s). 0 finding(s) in what was read, 0 as inline comments. This head is not reviewed.`,
+    ].join("\n"),
+  };
+  const { keyOutputs } = await spend({
+    action: "synchronize",
+    prFiles: [A],
+    comments: [partial],
+    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    review: NONE,
+  });
+  assert.equal(keyOutputs.scope, "whole");
+  assert.equal(keyOutputs.since, "");
 });

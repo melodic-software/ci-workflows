@@ -269,10 +269,16 @@ test("the existing comment filter still applies to a same-repository issue", () 
       authorAssociation: "NONE",
       author: { login: "s" },
     },
+    {
+      body: "COLLABORATOR-NOTE",
+      authorAssociation: "COLLABORATOR",
+      author: { login: "c" },
+    },
   ];
   const file = context([issue(13, user(STRANGER), { comments })]);
   assert.ok(file.includes("MEMBER-NOTE"));
   assert.ok(!file.includes("STRANGER-NOTE"));
+  assert.ok(!file.includes("COLLABORATOR-NOTE"));
 });
 
 test("check-author-trust: each type is checked only against its own list", () => {

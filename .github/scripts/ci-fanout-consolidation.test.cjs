@@ -211,7 +211,6 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
   for (const name of [
     "pr-review",
     "pr-review-security",
-    "pr-automerge-dependabot",
     "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
@@ -236,7 +235,6 @@ test("the advisory lanes and issue labeler stay out of ci-status", () => {
   for (const job of [
     "pr-review",
     "pr-review-security",
-    "pr-automerge-dependabot",
     "check-actionlint-kjanat-soak",
     ISSUE_JOB,
   ]) {
@@ -355,9 +353,23 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
     `carry-forward-wait-seconds ${waitSeconds} is not at least 60s below timeout-minutes ${timeoutMinutes}`,
   );
 
-  // A contract-only run yields to an in-flight full run instead of waiting,
-  // and the full run re-runs its red contract-only siblings on success.
-  assert.equal(timeoutMinutes, 5);
+  // A contract-only run holds for an in-flight full run under a ceiling, and
+  // the full run re-runs any red contract-only sibling on success. The budget
+  // holds the hold plus the job's other waits (two 60 s rate-limit waits and
+  // the 120 s own-job lookup), so the timeout cannot preempt the ceiling's red.
+  const holdSeconds = Number(
+    /^ {10}yield-wait-seconds: .*'(?<seconds>[1-9]\d*)' \}\}$/mu.exec(
+      ciStatusJob,
+    )?.groups?.seconds,
+  );
+  assert.ok(
+    Number.isInteger(holdSeconds),
+    "ci-status has no yield-wait-seconds",
+  );
+  assert.ok(
+    holdSeconds + 240 <= timeoutMinutes * 60,
+    `yield-wait-seconds ${holdSeconds} leaves too little of timeout-minutes ${timeoutMinutes}`,
+  );
   assert.equal(waitSeconds, 0);
   assert.match(ciStatusJob, /^ {10}yield-to-full-run: 'true'$/mu);
   assert.match(ciStatusJob, /^ {10}rerun-contract-only-siblings: 'true'$/mu);

@@ -38,12 +38,17 @@ checkout of this repo. (Public is required because a public consumer such as
   global-standard defaults. Consumers override repo-specific scope (globs,
   paths, tool versions, config location) through inputs — never by editing the
   action.
-- **Pin by SHA.** Reference every action at a full commit SHA with a `# vX.Y.Z`
-  comment. Consumers keep this repository out of Dependabot's `github-actions`
-  updates (an `ignore` entry) and move the pin by reviewed pull request in their
-  own repository, so a fix landed here does not reach a consumer until it
-  repins — see Versioning. For the third-party actions a consumer does let
-  Dependabot track, Dependabot updates only `uses:` SHAs — the tool versions
+- **First-party consumers reference reusable workflows at `@main` and actions
+  at a full commit SHA.** A reusable-workflow change merged here reaches every
+  melodic-software consumer on its next run, inside workflows that hold the
+  consumer's secrets. The org Actions policy requires every action, this
+  repository's included, to be pinned to a full-length commit SHA, while
+  "Reusable workflows can still be referenced by tag"
+  ([Disabling or limiting GitHub Actions for your organization][org-actions-policy]),
+  so an action change reaches a consumer when it moves its pin. Third-party
+  actions stay pinned by full commit SHA.
+  For the third-party actions a consumer lets Dependabot track,
+  Dependabot updates only `uses:` SHAs — the tool versions
   pinned in each action's `version:`/`analyzer-version:` input default (and the
   checksum-verified install URLs) have no package manifest it can track, so
   bumping one is a reviewed pull request in this repository.
@@ -63,21 +68,12 @@ checkout of this repo. (Public is required because a public consumer such as
 
 ## Versioning
 
-Every tag is full SemVer (`vX.Y.Z`). A release is cut whenever `main` changes
-by something worth pinning to — `release-tag.yml`'s manual `workflow_dispatch`
-(patch/minor/major) makes each release a deliberate act, and cutting one after
-every meaningful change keeps a tagged SHA available for consumers to pin to.
-Consumers are never bumped automatically: each pins this repository by full
-commit SHA with a `# vX.Y.Z` comment, and moving that pin is a reviewed pull
-request in the consumer's own repository. Nothing cuts a release
-automatically. There is no calendar cadence; GitHub's own guidance is
-silent on release frequency, and a tag-per-change policy is a closer fit for a
-repository whose only "release" event is "a consumer might need to pin to
-this." GitHub's reusable-workflow reference guidance treats a SHA, a release
-tag, and a branch as equally valid `{ref}` forms and states plainly that
-"Using the commit SHA is the safest option for stability and security"
-([Reuse workflows][reuse-workflows]) — this repo's tag-per-change practice and
-every consumer's SHA pin both sit inside that guidance, not around it.
+Every tag is full SemVer (`vX.Y.Z`), cut by `release-tag.yml`'s manual
+`workflow_dispatch` (patch/minor/major). First-party consumers reference
+reusable workflows at `@main` and actions at a full commit SHA, never a tag, so a release is a changelog marker, not a step a change
+needs before it reaches a consumer. A consumer outside melodic-software that
+wants a fixed version pins a full commit SHA, which GitHub calls "the safest
+option for stability and security" ([Reuse workflows][reuse-workflows]).
 
 **No floating major tag (`v1`).** GitHub's action-release guidance recommends
 "keeping major (`v1`) and minor (`v1.1`) tags current to the latest
@@ -86,18 +82,9 @@ receiving non-breaking updates automatically
 ([Releasing and maintaining actions][releasing-actions]). That guidance is
 scoped to actions consumed by a floating tag resolved at Actions runtime, and
 its own reusable-workflow reference page makes no equivalent recommendation.
-Neither the letter nor the premise of that guidance applies here: every
-consumer of this repository pins by 40-character commit SHA — the
-runner-policy allowlist requires it fleet-wide — so no consumer's workflow run
-ever resolves `@v1`, and a floating major tag would exist only as a label
-nothing at runtime reads. It would also actively conflict with the
-pin-comment convention consumers now follow
-(`melodic-software/standards#248`): that convention's primary form,
-`# vX.Y.Z`, asserts the comment names *the* release the pinned SHA
-corresponds to, a claim a moving tag cannot keep true once it moves. This is
-declined outright, not deferred by oversight; the trigger for revisiting it is
-this repository ever moving consumers onto tag-resolved-at-runtime references,
-which the current SHA-pin governance model gives no reason to expect.
+First-party consumers already float reusable workflows on `@main` and pin
+actions to a full commit SHA, so a moving major tag would be a ref that no
+consumer reads. Declined, not deferred.
 
 **`v0.x` carries no stability guarantee.** Per SemVer's own terms, "Major
 version zero (0.y.z) is for initial development. Anything MAY change at any
@@ -109,10 +96,11 @@ API" milestone ([SemVer, item 5][semver]) — is a deliberate, separate decision
 this document defers rather than resolves; nothing here should be read as an
 implicit 1.0 commitment or a timeline toward one.
 
-**A caller's SHA pin does not cascade.** Pinning this repository by SHA proves
-only that the one referenced file's bytes are fixed at that commit; GitHub
-resolves a reusable workflow's own nested calls to further reusable workflows
-or actions independently, at their own `{ref}`
+**A caller's ref does not cascade.** melodic-software callers reference this
+repository's reusable workflows at `@main` and run whatever main holds, and pin
+its actions to a full commit SHA; outside callers pin a full commit SHA. A SHA pin proves only that the one referenced file's bytes are
+fixed at that commit; GitHub resolves a reusable workflow's own nested calls
+to further reusable workflows or actions independently, at their own `{ref}`
 ([Reusing workflow configurations][reusing-workflow-configurations]). GitHub's
 docs do not call this out directly, but it follows structurally from that
 per-reference resolution model, and it is exactly the gap reported in a
@@ -122,8 +110,11 @@ workflow file to a commit. This repository closes that gap on its own side,
 not the consumer's: every external reference its own actions and workflows
 make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
-itself pinned to a full commit SHA with the same dual-form trailing comment
-consumers use (`melodic-software/standards#248`). A consumer's pin on this
+itself pinned to a full commit SHA with a dual-form trailing comment
+(`melodic-software/standards#248`), and a bump to one waits for a person,
+since it reaches every `@main` caller on merge. Dependabot leaves
+`anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
+why. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
 down, and this repository keeps that chain closed rather than asking every
 consumer to audit it.
@@ -293,8 +284,8 @@ consumer to audit it.
   - **The wait never turns a verdict green.** Reaching the ceiling prints
     `::error::no successful <context> status on <sha>; <remedy>`, extended
     with how long it waited and on which run ids, and exits 1. There is no
-    pass-on-timeout path. The ceiling counts elapsed wall-clock time from the
-    start of the wait, API calls included, so it overruns by at most the few
+    pass-on-timeout path. The ceiling counts elapsed wall-clock time from
+    before the own-job lookup, API calls included, so it overruns by at most the few
     seconds one poll's calls take.
 
   Every carry-forward red names the remedy for the state it read. `pending`
@@ -335,18 +326,23 @@ consumer to audit it.
   consumer should have to reason about is the ceiling.
 
   **Recommended: no contract-only run waits for another.** Three opt-in
-  settings together remove the wait, and with it the dependency on how long
-  the full run takes. The one wait left is the full run's, bounded by
-  `rerun-wait-seconds`, and only while a contract-only sibling is in flight
-  (see `rerun-contract-only-siblings` below):
+  settings together remove the wait on anything but a full run in flight. The
+  one wait left is the full run's, bounded by `rerun-wait-seconds`, and only
+  while a contract-only sibling is in flight (see
+  `rerun-contract-only-siblings` below). Add `yield-wait-seconds` to hold
+  instead of going red, at the cost of a runner for the hold:
 
-  - `yield-to-full-run: 'true'` and `timeout-minutes: 5` on the `ci-status`
-    job. A contract-only run lists this workflow's in-flight runs on the head
-    SHA, then reads the status, and finishes in seconds. A full run
+  - `yield-to-full-run: 'true'` and `timeout-minutes: 7` on the `ci-status`
+    job, plus `yield-wait-seconds` on `timeout-minutes` if it holds. A contract-only run lists this workflow's in-flight runs on the head
+    SHA, then reads the status, and with no hold finishes in seconds. A full run
     in flight supersedes it: it fails with `superseded by full run <url>`,
     because that run's own `ci-status` check run is newer and decides the merge
-    gate. With nothing in flight it is green on a recorded `success` and red
-    otherwise. An in-flight sibling whose latest attempt skipped every job but
+    gate. With `yield-wait-seconds` above `0` it holds instead, up to that many
+    seconds, with its check run in progress: no conclusion, so no red. Once the
+    superseding runs complete or the status changes, it passes only on a
+    `success` created at or after their latest start, so a full run cancelled
+    during the hold fails it, and at the ceiling it fails as above. With nothing in flight it is green on a
+    recorded `success` and red otherwise. An in-flight sibling whose latest attempt skipped every job but
     one, and that one has this run's gate name, is contract-only and ignored,
     and so is a re-run attempt whose first attempt had that shape (a re-run
     keeps its event, and the full run's own re-runs of failed contract-only
@@ -370,22 +366,32 @@ consumer to audit it.
     `actions: read`, and fails the run when the listing fails three times.
     This run's own gate job, whose name a contract-only sibling must match and
     whose step names the writer step to verify, is the job `job.check_run_id`
-    names, read directly and required to be in progress in this run. Where
+    names, read directly and required to belong to this run (not to be in
+    progress: the jobs API can list a running re-run attempt's job as queued). Where
     `job.check_run_id` is empty (GHES, or a runner before v2.324.0) it is the
     one in-progress job of this run on this runner (`RUNNER_NAME`), and a
     runner name shared by two such jobs fails closed. Either way a sibling job
     of this run still queued, or an extra job that ran, does not hide it. `step-name` (default `''`) names the
     step that runs the action, which must be in progress and which a job
     running steps in parallel needs; left empty, it is the one step of that
-    job in progress. A read that does not resolve, or a jobs read that fails
-    other than with HTTP 403, is retried after 1, 2, 4 and 8 seconds; a 403
-    fails at once with no retry. Then the run fails
-    closed with a warning naming the cause (no key, a job id not in progress
-    in this run, no job or more than one job in progress on the runner, or no
+    job in progress. Keyed by `job.check_run_id`, a named step the jobs API
+    does not list yet is taken as given, unless it is listed only as
+    completed; set `step-name` on every caller, because the jobs API has
+    listed a running job's steps as `[]` for minutes. A writer gate job that
+    completed with `success` and lists no steps reads as a succeeded writer
+    step, since that step cannot fail once its `success` write lands; any
+    other conclusion with no steps fails closed.
+    Both are looked up once per run, before any run listing:
+    a read that does not resolve, or a jobs read that fails other than with
+    HTTP 403 or 429, is read again, up to 9 reads over 120 seconds in all; a
+    403 or 429 fails at once with no retry. Then the run fails
+    closed with a warning naming the cause (no key, a job id not in this
+    run, no job or more than one job in progress on the runner, or no
     single matching step).
-    (`carry-forward-wait-seconds: '0'` alone reads the status once with no
-    listing, so it can carry an older `success` across a full run that is
-    queued or has not yet written its `pending` marker.)
+    (`carry-forward-wait-seconds: '0'` alone never waits: it lists the runs
+    only to verify a `success` and reads the status again after that listing,
+    so it can still carry an older `success` across a full run that is queued
+    or has not yet written its `pending` marker.)
   - `record-pending: 'true'`, called as the first step of the full run's first
     job (for example `changes`). It marks `status-context` `pending` on the
     head SHA, so a contract-only run on that SHA while the lanes run reads
@@ -412,7 +418,8 @@ consumer to audit it.
     holds the full run's own `ci-status` check open, so keep it under the
     job's `timeout-minutes`; raise it where contract-only gate jobs queue
     longer for a runner. A polling contract-only run (a wait above `0`
-    without yield) reads the success itself, so nothing waits for it.
+    without yield) reads the success itself, so nothing waits for it, and
+    neither does a holding one (`yield-wait-seconds` above `0`).
 
   A red contract-only check does not hold a merge in the meantime: GitHub's
   docs do not say how several same-name check runs on one SHA are judged, and
@@ -458,20 +465,20 @@ consumer to audit it.
         statuses: write
       steps:
         - name: Mark the lanes verdict pending
-          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
           with:
             record-pending: 'true'
         # ... change detection
     ci-status:
       if: always()
-      timeout-minutes: 5
+      timeout-minutes: 7
       permissions:
         contents: read
         statuses: write
         actions: write
       steps:
         - name: Aggregate lane results
-          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # <tag>
+          uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
           with:
             yield-to-full-run: 'true'
             rerun-contract-only-siblings: 'true'
@@ -506,8 +513,18 @@ consumer to audit it.
 
   The `240` default therefore suits only a repository whose full run finishes in
   well under two minutes. This repository's own `ci-status` uses
-  `yield-to-full-run` and `rerun-contract-only-siblings` with no wait, without
-  `record-pending`.
+  `yield-to-full-run`, `yield-wait-seconds` and `rerun-contract-only-siblings`,
+  without `record-pending`.
+
+  **Why a hold instead of this wait.** This wait can carry an older `success`
+  forward across a full run in flight; `yield-to-full-run` lists first, so a
+  hold cannot. Size `yield-wait-seconds` the same way, from the measured full
+  run. A hold costs two reads per 30 seconds. GitHub's docs do not say how
+  same-name check runs resolve; on a required `ci-status`
+  ([pr-pipeline-sandbox#261](https://github.com/melodic-software/pr-pipeline-sandbox/pull/261),
+  2026-10-31, one head), the newest run decided: in progress over an older
+  `success` read `BLOCKED`, and a newer `success` stayed mergeable when an older
+  run ended `failure` after it.
 
   A waiting run holds a fleet runner slot, or bills a hosted minute per minute,
   for as long as it waits, so the ceiling is a real cost and not a free margin.
@@ -550,7 +567,10 @@ consumer to audit it.
   carry the defect they gate on. This repo's own `pr-require-checks.yml` `changes` job is
   the reference wiring.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
-  reference-integrity over the repo's docs (deterministic; no network).
+  reference-integrity over the repo's docs (deterministic; no network). A
+  caller with no root `lychee.toml` gets the canonical one this repository
+  carries from the standards sync, so a repository outside that sync needs no
+  copy of its own.
 - `.github/actions/check-markdown-references` — resolves `file.md` "Anchor" prose
   citations against each cited file's headings and bold lead-ins (dependency-free
   awk); pairs with `lychee-offline`, which covers link/fragment targets.
@@ -687,6 +707,33 @@ consumer to audit it.
   Each entry must resolve, with no `..` part, to an existing directory inside
   `GITHUB_WORKSPACE`. Uploading the log is the caller's.
 
+  **Loopback key proxy.** By default the managed settings must pin
+  `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. A caller that
+  routes the leg through a key proxy on the runner's loopback, so the leg
+  holds a dummy key and the proxy holds the real one, sets
+  `loopback-base-url` on both this action and
+  `apply-claude-managed-settings` to exactly `http://127.0.0.1:<port>` or
+  `http://[::1]:<port>` (no path, query, fragment or userinfo; a zero or
+  default port is refused), and passes `settings` that pin that value. Claude
+  Code documents `ANTHROPIC_BASE_URL` as the way to "route requests through
+  a proxy or gateway" ([environment
+  variables](https://code.claude.com/docs/en/env-vars)). The opt-in is
+  allowed only on an `api-key` leg: with `subscription-token` or
+  `fallback-token` the step fails before the leg runs, because developers
+  "may not collect, store, or intermediate Claude.ai credentials or session
+  tokens" ([legal and
+  compliance](https://code.claude.com/docs/en/legal-and-compliance)). The
+  action cannot see what the proxy injects upstream: the proxy itself must
+  hold only a Console key. Both actions check the settings with the same
+  module, `run-claude-cli/managed-settings.cjs`.
+
+  The leg's tool processes share the runner's loopback, so any of them can
+  reach the proxy. The proxy must forward only requests that carry the
+  dummy key, a random value made fresh per run and passed as `api-key` (the
+  leg's subprocess scrub keeps it from tool processes); forward only the API
+  paths and models the lane needs; and run as another user, started before
+  runner isolation, until the leg ends.
+
   **Two-job pattern for the subscription fallback.** Two legs in one job
   would share the runner user, the filesystem and the environment, so the
   fallback runs on a new VM. Job A runs the key leg with `api-key` only
@@ -731,26 +778,75 @@ consumer to audit it.
   `allowManagedHooksOnly` (or the caller's `disableAllHooks`), so head code
   cannot repoint the lane's credential or add a hook. Needs sudo, so it runs
   before runner isolation; run-claude-cli refuses to run without the file.
+  `loopback-base-url` lets the settings pin a loopback key proxy instead of
+  the public API (see run-claude-cli's loopback key proxy above).
 - `.github/actions/publish-review` — `pr-review-cli.yml`'s publish step,
   with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
 - `.github/actions/apply-review-hold` — `pr-review-cli.yml`'s add-only hold
   step, with no model; internal to that workflow, which passes it
   everything through env (its `action.yml` describes what it does).
-- `.github/actions/report-api-budget` — the last step of each
-  `pr-review-cli.yml` and `pr-require-checks-trust-paths.yml` job: the
-  `api-budget` notice (`token=github-token ... cost=N`) and the `api-calls`
-  notice (`github-token=N not-modified=M graphql=K`, the job's own requests)
-  the hub collector reads, built from the `x-ratelimit-*` headers of the job's
-  own requests, so it spends none (its `action.yml` describes what it does).
+- `.github/actions/collect-settled-threads` — `pr-review-cli.yml`'s
+  settled-threads step, with no model: the pull request's review threads a
+  listed account resolved or a listed person answered, text kept only through claude-code-plugins'
+  `select-trusted-text`, each with whether its lines changed since it was
+  settled, so the review does not re-raise a settled point (its
+  `action.yml` describes what it does).
+- `.github/actions/collect-prior-findings` — `pr-review-cli.yml`'s
+  prior-findings step, with no model: runs claude-code-plugins'
+  `prior-findings.mjs` for the lane's own earlier findings and its rounds
+  against `loop.review-rounds`, read from the default branch's
+  `docs/conventions/pr-pipeline.yaml`, so the review does not repeat a finding
+  on unchanged lines (its `action.yml` describes what it does).
+- `.github/actions/resolve-pull-request` — `pr-review-cli.yml`'s
+  `resolve-pull-request` job, for a `workflow_run` or `workflow_dispatch`
+  caller that sets `pr-number`: one
+  `pulls.get`, whose state, draft flag, head repository, author, head and
+  base the lane's gates read in place of the `pull_request` event's, and a
+  skip with a notice when the head is no longer `head-sha` (its `action.yml`
+  describes what it does).
+- `.github/actions/report-api-budget` — each `pr-review-cli.yml` job's last
+  step: the `api-calls` notice (`github-token=N not-modified=M graphql=K`),
+  the `api-routes` notice (`github-token <route>=<count> ... rest=<count>`)
+  and the `api-budget` notice (`token=github-token ... cost=N`) the hub
+  collector reads, built from the `x-ratelimit-*` headers and URLs of the
+  job's own requests, so it spends none (its `action.yml` describes what it
+  does).
 - `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
-  inside `key-credit-window-hours` (default 6), reading the workflow's runs
-  with the job token (one list call, at most three job-list calls), and runs
-  the key on any failure. Another keyed lane adopts it with the same three
-  pieces: a gate job before its key job, a record step named for its run
-  after the launcher's `credit-stop`, and a subscription job that also starts
-  on the gate's skip (its `action.yml` describes the inputs).
+  inside `key-credit-window-hours` (default 1), reading one artifact name with
+  the job token (one call), and runs the key on any failure. Past the window,
+  while that marker is still kept, a second call reads the probing marker
+  `key-credit-probing-<workflow>-<key-job>`: the first gate to pass the key
+  uploads it (kept 7 days), and later gates skip while it is newer than the
+  action's `probe-minutes` input (default 15). A gate that reads before the
+  probe is listed still passes the key. The window backs off from those same
+  reads: each consecutive credit stop doubles it, capped at 24 hours, and
+  `key-credit-reset-at` (the rotation tool's `vars.KEY_CREDIT_RESET_AT`)
+  starts it over. A key whose credit returns on its monthly cycle, or one set
+  by hand with `gh secret set`, writes no reset, so it waits out the current
+  step, at most 24 hours; the action's `action.yml` gives the one-line manual
+  reset. An empty `window-hours` or `probe-minutes` is the default, so
+  callers pass an unset `vars.KEY_CREDIT_WINDOW_HOURS` as it is. Lanes call
+  it through `select-model-credential` (below), not directly.
+- `.github/actions/select-model-credential` — the one place every Claude
+  model lane picks its credential: the role's API key, then its subscription
+  token, then the central fallback token, each leg its own job. A `start`
+  call reads the key's credit history (`check-key-credit`, its calls only)
+  and names the first leg; a call first in each leg job decides whether that
+  leg's model runs from whether its secret is set (passed as
+  `secrets.X != ''`, never a value); a call last in each leg job names the
+  next job's leg from the launcher's handoff. Each job's `if:` compares that
+  `next-leg` output to its own leg. `key-off` (pr-review-cli passes
+  `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
+  history cannot (its `action.yml` describes the inputs; `select.cjs` the
+  rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
+- `.github/actions/upload-lane-transcript` — the step after each model leg in
+  `pr-review-cli.yml` and `intake-triage.yml`: scans the leg's execution file,
+  seals it to the caller's `lane-transcript-public-key` input and uploads only
+  the sealed file for 7 days, for claude-code-plugins' transcript puller. An
+  empty key skips with a notice (its `action.yml` describes the record and
+  artifact name).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
@@ -789,7 +885,7 @@ so there is no changed-file output to feed in; the list comes from git:
 
 - name: Lint shell scripts
   if: steps.changed_shell.outputs.files != ''
-  uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha> # <tag>
+  uses: melodic-software/ci-workflows/.github/actions/shellcheck@<sha>
   with:
     files: ${{ steps.changed_shell.outputs.files }}
 ```
@@ -857,7 +953,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   **fails the job** rather than skipping the validation: a gate that disappears
   on a typo is the failure mode this lane exists to prevent.
   `machine-specific-paths-exclude` and
-  `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans.
+  `comment-hygiene-exclude` pass a Git pathspec exclusion to those two scans;
+  `lychee-offline-exclude` passes space-separated path regexes to lychee.
   `markdown-extra-globs` (default empty) appends extra markdownlint-cli2 glob
   arguments after the composite default `**/*.md`. The value is space-separated:
   the markdown composite word-splits `globs` with `read -a` on IFS whitespace,
@@ -893,8 +990,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
 
   The composites run through `$/.github/actions/<x>`, which resolves against
   the repository and commit that host the called workflow, not the caller's
-  checkout. A consumer pinned to a tag therefore runs the composite bodies at
-  that tag, and this repository's own `./` call runs them at the commit under
+  checkout. A consumer therefore runs the composite bodies at the ref it
+  calls (`@main` or a SHA), and this repository's own `./` call runs them at the commit under
   test.
 
   ```yaml
@@ -903,7 +1000,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
       permissions:
         contents: read
         pull-requests: read
-      uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/pr-run-checks.yml@main
       with:
         runner: ubuntu-24.04
         filters: |
@@ -944,7 +1041,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     issue-triage-label:
       permissions:
         issues: write
-      uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@main
   ```
 
   Loop-safe by construction: adding a label emits `issues.labeled`, never
@@ -962,7 +1059,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the job red. The 429 and 5xx responses the config accepts are listed in the
   summary without failing the job, and so are timeouts when the config sets
   `accept_timeouts` (otherwise a timeout fails it). It opens no issue and posts
-  no comment. It holds only the
+  no comment; instead each run that checked links uploads its broken links as
+  a JSON artifact kept three days, and the `dead-links-artifact` and
+  `dead-links-count` outputs name it and count its URLs, so the caller, or a
+  workflow on `workflow_run`, can route them. It holds only the
   `GITHUB_TOKEN`, which cannot read another private repository, so lychee
   never reports a link into one as OK. **Opt-in by repository property**: a
   `schedule` run reads the caller's `opt-in-property` (default
@@ -988,7 +1088,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
     check-links:
       permissions:
         contents: read
-      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/maintenance-check-links-online.yml@main
       with:
         runner: ubuntu-24.04
   ```
@@ -1030,74 +1130,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
       permissions:
         contents: write
         pull-requests: write
-      uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@<sha>
+      uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@main
   ```
-
-- `.github/workflows/pr-require-checks-trust-paths.yml` — holds a pull request
-  for a person when an agent GitHub App touched it and it changes a privileged
-  path. It posts the commit status `ci-status` on the head SHA: `pending`
-  first, then `failure` on a hold, else `success`. When a ruleset requires
-  `ci-status`, a check run and a commit status of that name must both pass, so
-  the failure blocks the merge while the pull request's own `ci-status` check
-  run passes. The caller runs on `pull_request_target`, so the workflow, the
-  caller and the config all come from the default branch and the pull request
-  cannot edit its hold away; nothing from the head is checked out or run. The
-  job uses GITHUB_TOKEN with `contents: read`, `pull-requests: read` and
-  `statuses: write`, and no secret.
-
-  The config is JSON, read at the default branch's last commit over the
-  contents API from the `config-path` input (default
-  `.github/trust-path-hold.json`):
-
-  ```json
-  {
-    "paths": [".github/workflows/**", ".github/actions/**", "CODEOWNERS", "*/CODEOWNERS"],
-    "apps": ["melodic-agent[bot]"]
-  }
-  ```
-
-  `paths` (required, non-empty) are globs matched against the whole path,
-  case-insensitively: `*` and `**` match any characters, `/` included, and `?`
-  matches one. `apps` (required, non-empty) are App `[bot]` logins. Any other
-  key fails. The config file and the caller workflow are always privileged.
-  A changed file's path or a renamed file's old path can match. A listed App
-  is involved when it opened the pull request, is the author or committer of
-  one of its commits (by login or noreply address), or is the actor of an
-  entry in the head branch's activity (`repos/<o>/<r>/activity`, the fork's
-  for a fork, read newest first until it ends, a listed App's entry shows,
-  or 20 pages: it keeps a branch name's history across deletions). Commits
-  and activity are read only after a path matched.
-
-  It fails closed. A missing or invalid config, a failed read, or a job that
-  errors or is cancelled posts `failure` (the fallback step). So does a
-  privileged change with more than 250 commits, a commit list shorter than
-  the pull request, a deleted head repository or activity past 20 pages
-  (2000 entries). A file list shorter than the pull request, or at GitHub's
-  3000-file cap, counts as a match. The caller:
-
-  ```yaml
-  on:
-    pull_request_target:
-      types: [opened, synchronize, reopened, edited]
-  concurrency:
-    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-    cancel-in-progress: true
-  permissions: {}
-  jobs:
-    pr-require-checks-trust-paths:
-      permissions:
-        contents: read
-        pull-requests: read
-        statuses: write
-      uses: melodic-software/ci-workflows/.github/workflows/pr-require-checks-trust-paths.yml@<sha> # vX.Y.Z
-  ```
-
-  The concurrency block is the standards concurrency-policy canonical form. A
-  run cancelled by a newer run on the same head can post its fallback
-  `failure` after the newer result; that is a false hold, cleared by
-  re-running the newer run. A run that never starts
-  posts nothing, and the required check run alone decides. Any workflow with
-  `statuses: write` can post a later `ci-status`, and the latest status wins.
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The
@@ -1216,7 +1250,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   after a handoff, with no key, or when the caller repository's
   `REVIEWS_KEY_EXHAUSTED` variable is `true`, and the optional
   `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` secret in `review-fallback` after the
-  subscription job hands off. The model jobs are read-only
+  subscription job hands off, each choice made by
+  `.github/actions/select-model-credential`. The model jobs are read-only
   (`contents: read`, `pull-requests: read`, `cache-mode: none`, no
   `id-token`), and the model gets Read, Grep, Glob, Skill and Agent under
   `--permission-mode dontAsk`, the review plugin from claude-code-plugins'
@@ -1238,7 +1273,20 @@ GitHub continues the normal weekly patching of each hosted image generation.
   credit stop, and `actions: read` with `checks: read` for the status job,
   which reads its earlier runs' cost hold notices. GitHub fails the run at
   startup when the caller does not grant both. The workflow header carries the canonical caller and
-  the security model. With `hold-label` set, comments mode also holds the
+  the security model. A `workflow_run` caller, such as review after another
+  workflow finishes on the pull request, sets `pr-number` and `head-sha`
+  (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
+  the pull request once, the gates check its state, draft flag, head
+  repository and author from that read, and the lane skips with a notice
+  when the head moved. A `workflow_dispatch` caller sets the same inputs.
+  When its own workflow dispatches with `GITHUB_TOKEN`, the actor is
+  `github-actions[bot]`, so it also sets `dispatcher-actor-ids` (`41898282`).
+  That id lets the bot start the model jobs on a `workflow_dispatch` run with
+  `pr-number` and nothing else. Unlike `allowed-bot-sender-ids`, it never
+  trusts a closing issue's author. The lane cannot see which workflow
+  dispatched the run, so the calling repository proves the dispatch came
+  from its trusted workflow. With no `pr-number`, a `pull_request` caller runs as
+  before. With `hold-label` set, comments mode also holds the
   pull request for a person: when the review returns a `hold` with criterion
   `cost` (only a change that can cause a real charge, as the compose step's
   prompt lists) or `critical-security`, and a reason, the status job adds
@@ -1336,7 +1384,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/<lane>.yml@<sha>
+    uses: melodic-software/ci-workflows/.github/workflows/<lane>.yml@main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -1381,10 +1429,11 @@ makes one attempt.
 fork changes by hand) and every bot actor whose event sender id is not in
 `allowed-bot-sender-ids` (the action rejects bots it was not told to allow).
 Calling either lane from `pull_request_target` or
-`workflow_run` fails the job.
+`workflow_run` fails the job. (`pr-review-cli.yml` differs: it accepts a
+`workflow_run` or `workflow_dispatch` caller that sets `pr-number`.)
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
-request; the code-review lane writes its whole diff to `.claude-lane/pr.diff`.
+request; each lane writes its whole diff to `.claude-lane/pr.diff`.
 A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
 their diff to `.claude-lane/incremental.diff`. A push
@@ -1397,7 +1446,10 @@ changes no file of the pull request is not reviewed again, and neither is a
 rebase or restack onto the same base branch that leaves the pull request's
 files, their statuses, and every one of those paths' mode, type and content
 as reviewed. The marker comment's second line records the base branch and
-merge base each review used. A skip is taken only while the pull request's
+merge base each review used and, from `pr-review-cli.yml`, its caller workflow.
+That lane reads only a marker naming its own caller, so another caller's or the
+legacy `pr-review.yml`'s record never narrows or skips its review, and
+`pr-review.yml` ignores a marker naming a caller. A skip is taken only while the pull request's
 live head is still the run's head.
 
 **The lane's comment.** Each lane posts one pull request comment of its own,
@@ -1423,8 +1475,8 @@ the cause, whenever no review happened: a failed attempt (`auth`,
 skipping itself because the
 PR edits the caller workflow (`skipped-validation`), bubblewrap unable to
 create a namespace so no review ran (`sandbox-unavailable`), a review that did
-not complete (`incomplete`), or a job that ended before the review reported
-(`no-outcome`). A review that was not needed
+not complete (`incomplete`), a review that read only part of its scope
+(`partial`), or a job that ended before the review reported (`no-outcome`). A review that was not needed
 (nothing changed, or docs only) stays green and says why in the job summary.
 
 **Completion.** A green Claude step is not taken as a review. The model
@@ -1439,11 +1491,99 @@ head in that window with no footer fails the review of every lane whose window
 covers it, since it belongs to neither lane. The footer is plain text
 because the action's comment tool deletes HTML comments before posting.
 Anything less is `incomplete`: red, and the reviewed-head marker is not
-written. On a whole review the code-review lane
+written. On a whole review each lane
 reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
 the API returns only part of a large pull request's diff; when that diff
-cannot be written, the review is `incomplete`. The security lane reviews from
-the API diff.
+cannot be written, the review is `incomplete`. A review is also `incomplete`
+when its execution file holds a failed Bash result naming `bwrap:` and no
+successful Read of the diff file; with that Read it stays complete and warns.
+An execution file that cannot be read warns and proves nothing, and one that
+shows no successful Read of the diff file and no successful `gh pr diff` warns.
+
+**Coverage.** In `pr-review-cli.yml` the model also returns `files_read`, how
+many of the changed files in scope it read whole; the job counts the files in
+scope and the diff's bytes itself. A review that read fewer files than it
+changed, whose diff is over one review's 300000-byte read budget, or that was
+one review of more than 40 files that are not identical copies, is
+`partial`: red, no completion notice, and its comment's first visible line
+states `read <n> of <m> changed file(s)` and, for a diff over the read budget
+or the file cap, its bytes or files before the findings count, as the failure
+line does, with the
+hidden marker at `sha=none` so the next push reviews the whole pull request
+and no merge gate reads the head as reviewed. A review with no `files_read`
+is `incomplete`.
+
+**Identical copies.** Changed files whose whole change is
+identical (modifications with the same content and mode before and after, or
+additions of the same content and mode) are grouped in
+`.claude-lane/identical.txt`; a hold-paths match never groups, nor an
+executable file, nor the root `lefthook.yml`, nor a file under the root
+`.github/` or `.husky/`, under a `.claude/` or `hooks/` directory, or named
+`package.json`, `.mcp.json`, `action.yml`, `action.yaml`, `*.sh`, `*.bash`,
+`*.zsh`, `*.ps1` or `*.psm1`, which is
+reviewed at its own path. The one exception is the `generated-copies` input:
+a repository path to a file of `<source> <copy>` lines, read at the merge base.
+A copy only the head's file declares counts only when its bytes and mode at the
+head are what its source at the head generates, the comparison
+`scripts/sync-shared-copies.sh --check` makes in claude-code-plugins, so a pull
+request can register a new copy but cannot declare any other file one; a
+one-byte difference and the file is read. A copy only the head declares at one
+of those paths is read in full; only a merge-base declaration, reviewed in an
+earlier pull request, lets a copy there group. Copies it declares of one
+source group with each other, executable or (declared at the merge base) at one
+of those paths, but never with any other file or past a hold-paths match. An incremental review groups
+only the files in its scope whose change since the last reviewed head is
+identical too; when the job cannot compare that head, nothing groups. The
+review reads each group's first path, and the job counts the copies as read.
+
+**Generated data files.** The `generated-data` input is a repository path to a
+file of paths or globs, one per line (globbed as `hold-paths`; blank lines and
+`#` comments skipped), read at the merge base so a pull request cannot declare
+its own files; a file missing there warns and declares none. A changed file it
+declares leaves the diff, the file list and the file total, on a whole and an
+incremental review alike, so a large generated file no review can read whole
+does not make every review `partial`. Only a modification or addition of a
+non-executable regular file at a path of letters, digits and `._/@+-`, whose
+diff section is over 7500 bytes (one review's 300000-byte read budget over the
+40 files it reads whole), is left out; a smaller edit, an executable file, a
+symlink, a rename, or a `hold-paths` or SENSITIVE_PATHS match is still
+reviewed. The comment's first visible line names the first 10 files left out
+(`; <n> data file(s) not reviewed: <path>, ... and <m> more`), and the
+coverage in the shadow report lists them as `data_files`. A push that changes
+only data files needs no new review. Gitleaks and every other check still scan
+the file.
+
+```yaml
+with:
+  generated-data: scripts/generated-data.txt
+```
+
+**Binary files.** A whole review names the files in scope that
+`git diff --numstat` counts no lines for (`-<TAB>-`), at a path of letters,
+digits and `._/@+-`, as `binary_files` in its coverage. They stay in the diff,
+the file list and the file total, so a review that leaves them unread is still
+`partial`; its reason names the first 10
+(`; <n> binary file(s) not reviewable as text: <path>, ... and <m> more`).
+
+**Chunks.** A diff in scope over the read budget, or with more than 40 files,
+is split at file boundaries, each file whole, into at most 4 chunks of at most
+300000 bytes and 40 files by claude-code-plugins'
+`.github/scripts/pr-review-main/split-diff.py`, read from that repository's
+default-branch tip, and each chunk gets its own model step in the leg, in
+order. The identical copies in scope are left out first: when the
+whole diff fits the read budget and the rest fits 40 files it is one review;
+when only the rest fits both caps it is one review of the rest, written to
+`.claude-lane/chunks/distinct.diff`, whose size is the one checked against the
+read budget; when the rest alone is over either cap only the rest is split;
+in both the copies count as read. Otherwise the whole diff is split, copies
+included.
+The review's findings, comments and files read are the
+chunks' sums, each chunk's files read capped at the files the job counted in
+it. A chunk whose step failed, did not run, handed off or returned no
+well-formed review leaves no verdict, so the review is `incomplete`; a handoff
+sends the next leg to review every chunk again. A diff the split refuses (a
+file over the budget, more than 4 chunks, so more than 160 files that are not
+copies, or a chunk over 40 files) is reviewed whole and stays `partial`.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
@@ -1465,6 +1605,9 @@ their number, with a log line. A failed, skipped or
 incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
 reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
+A `max-turns` failure stays red but reads "<lane> stopped: turn budget used",
+a sizing stop rather than an infrastructure error (the `class=max-turns` token
+is unchanged).
 Every outcome annotation, and a notice on a run that completed, also carries
 the run record as bare tokens, each omitted when unknown: `turns=<n>`,
 `max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
@@ -1526,6 +1669,7 @@ mirrors of the standards catalog.
 
 [gh-actions-conventions]: https://github.com/melodic-software/standards/blob/main/components/github-actions-conventions/README.md
 [nested-pin-discussion]: https://github.com/orgs/community/discussions/70237
+[org-actions-policy]: https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization
 [osv-installation]: https://google.github.io/osv-scanner/installation/
 [osv-release-v2-5]: https://github.com/google/osv-scanner/releases/tag/v2.5.1
 [pssa-1708]: https://github.com/PowerShell/PSScriptAnalyzer/issues/1708

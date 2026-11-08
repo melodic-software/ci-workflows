@@ -1,0 +1,30 @@
+name: Scan an upload for credentials
+description: >
+  Before an actions/upload-artifact step: run claude-code-plugins'
+  lib/publish-gate.mjs scanLeak, fetched from that repository's default-branch
+  tip, over every file the upload is about to send, with the same `path`
+  input. A credential, a hidden assignment, a link, a compressed file, a glob
+  or an unfetchable gate fails the step and sets no `clean` output; the
+  upload's `if:` must require clean == 'true', so a hit withholds it even
+  under always() or continue-on-error. Nothing printed carries a matched value
+  or a file name. See scan.cjs.
+
+inputs:
+  path:
+    description: The upload step's `path` input, verbatim.
+    required: true
+
+outputs:
+  clean:
+    description: "`true` only when every file was judged clean."
+    value: ${{ steps.scan.outputs.clean }}
+
+runs:
+  using: composite
+  steps:
+    - name: Scan the files
+      id: scan
+      shell: bash
+      env:
+        SCAN_PATHS: ${{ inputs.path }}
+      run: node "$GITHUB_ACTION_PATH/scan.cjs"

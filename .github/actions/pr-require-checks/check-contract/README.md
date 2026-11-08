@@ -134,13 +134,13 @@ Both steps go in the `ci-status` job, in this order:
       actions: read
     runs-on: ubuntu-24.04
     steps:
-      - uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@<sha> # vX.Y.Z
+      - uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@<sha>
       - name: Aggregate lane results
         # `!cancelled()` so a failing pr-contract step does not skip the
         # aggregation: the job still fails on the contract step's exit code, and
         # the ci-lanes status lands on the SHA for the next contract-only run.
         if: ${{ !cancelled() }}
-        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha> # vX.Y.Z
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/aggregate-results@<sha>
         with:
           results: ${{ needs.lane-a.result }} ${{ needs.lane-b.result }}
 ```

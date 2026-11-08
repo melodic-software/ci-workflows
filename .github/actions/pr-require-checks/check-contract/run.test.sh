@@ -635,7 +635,7 @@ expect_output 'linkage=pass'
 # Without the bounded backward scan in negation_trigger, and the single gsub
 # pass in scan_line, one long unpunctuated line of closing keywords costs
 # super-quadratic time: about 111 s at 4000 repeats, against the ci-status job's
-# 5-minute timeout. Linear work keeps the 8000/4000 ratio near 2; best of two
+# 7-minute timeout. Linear work keeps the 8000/4000 ratio near 2; best of two
 # runs damps runner noise.
 # time_repeats <repeats>: sets best_time to the faster of two runs, in seconds.
 time_repeats() {

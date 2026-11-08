@@ -32,6 +32,19 @@ const {
 const step = (job, id) => job.steps.find((s) => s.id === id);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
+// The shared credential step (select-model-credential), called as the leg
+// jobs call it: `decide` is a leg job's first call, `handedOn` the job
+// outputs its last call leaves for the next job.
+const select = require("../actions/select-model-credential/select.cjs");
+const decide = (leg, flags = {}) =>
+  select.leg({ leg, role: "reviews", credentialSet: "true", ...flags });
+const handedOn = (leg, flags = {}, launcher = {}) =>
+  select.next({
+    state: decide(leg, flags).outputs.state,
+    handoff: launcher.handoff,
+    handoffReason: launcher["handoff-reason"],
+  });
+
 const PR = {
   event_name: "pull_request",
   actor: "kyle-sexton",
@@ -91,7 +104,12 @@ test("only the subscription job references the OAuth token, only the key job the
 test("every model job tells its launcher whether the fallback token is set, never its value", () => {
   for (const job of [key, subscription, fallback]) {
     assert.equal(
-      step(job, "credential").env.FALLBACK_PRESENT,
+      step(job, "credential").uses,
+      "$/.github/actions/select-model-credential",
+      job.name,
+    );
+    assert.equal(
+      step(job, "credential").with["fallback-set"],
       `\${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}`,
       job.name,
     );
@@ -100,43 +118,32 @@ test("every model job tells its launcher whether the fallback token is set, neve
       `\${{ steps.credential.outputs.fallback-ready }}`,
       job.name,
     );
+    // The reason of the chunk step that handed off: a later chunk runs
+    // only when the one before it handed nothing on.
+    const reason = (steps) =>
+      evaluate(job.outputs["handoff-reason"], { steps });
+    const off = (why) => ({
+      outputs: { handoff: "true", "handoff-reason": why },
+    });
+    const on = { outputs: { handoff: "false" } };
+    assert.equal(reason({ claude: off("limit-stop") }), "limit-stop", job.name);
     assert.equal(
-      job.outputs["handoff-reason"],
-      `\${{ steps.claude.outputs.handoff-reason }}`,
+      reason({ claude: on, "claude-2": on, "claude-3": off("auth") }),
+      "auth",
       job.name,
     );
   }
-  const dir = makeTemporaryDirectory("pr-review-cli-credential-");
-  const ready = (present) => {
-    const output = path.join(dir, `out-${present}`);
-    fs.writeFileSync(output, "");
-    require("node:child_process").spawnSync(
-      "bash",
-      ["-e", "-c", step(subscription, "credential").run],
-      {
-        env: {
-          PATH: process.env.PATH,
-          PRESENT: "true",
-          SECRET_NAME: "X",
-          FALLBACK_PRESENT: present,
-          GITHUB_OUTPUT: output,
-        },
-      },
-    );
-    return fs.readFileSync(output, "utf8");
-  };
-  assert.match(ready("true"), /^fallback-ready=true$/mu);
+  const ready = (present) =>
+    decide("subscription", { fallbackSet: present }).outputs["fallback-ready"];
+  assert.equal(ready("true"), "true");
   for (const present of ["false", "", "True"]) {
-    assert.match(
-      ready(present),
-      /^fallback-ready=false$/mu,
-      JSON.stringify(present),
-    );
+    assert.equal(ready(present), "false", JSON.stringify(present));
   }
 });
 
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
   assert.deepEqual(fallback.needs, [
+    "resolve-pull-request",
     "check-key-credit",
     "review-key",
     "review-subscription",
@@ -145,26 +152,49 @@ test("the fallback job starts only after the subscription job succeeded and hand
     fallback.name,
     `\${{ inputs.lane == 'security' && 'security-review-fallback' || 'claude-review-fallback' }}`,
   );
-  const starts = (outputs, result = "success", keyResult = "success") =>
+  // The subscription job's outputs, as its last step leaves them.
+  const starts = (outputs, keyResult = "success") =>
     Boolean(
       evaluate(fallback.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
           "review-key": { result: keyResult, outputs: {} },
-          "review-subscription": { result, outputs },
+          "review-subscription": { result: "success", outputs },
         },
       }),
     );
-  assert.equal(starts({ handoff: "true" }), true);
+  const ready = { fallbackSet: "true" };
+  const limit = { handoff: "true", "handoff-reason": "limit-stop" };
+  assert.equal(starts(handedOn("subscription", ready, limit)), true);
   // After a credit skip of the key job too.
-  assert.equal(starts({ handoff: "true" }, "success", "skipped"), true);
+  assert.equal(starts(handedOn("subscription", ready, limit), "skipped"), true);
   for (const handoff of ["", "false", "True", "true ", "1"]) {
-    assert.equal(starts({ handoff }), false, JSON.stringify(handoff));
+    assert.equal(
+      starts(handedOn("subscription", ready, { ...limit, handoff })),
+      false,
+      JSON.stringify(handoff),
+    );
   }
-  for (const result of ["failure", "cancelled", "skipped"]) {
-    assert.equal(starts({ handoff: "true" }, result), false, result);
-  }
+  // The next-leg step is the subscription job's last and runs only when
+  // every step before it passed (no if:), so a failed, cancelled or skipped
+  // subscription job leaves no next-leg and the fallback job never starts.
+  assert.equal(subscription.steps.at(-2).id, "next");
+  assert.equal(subscription.steps.at(-2).if, undefined);
+  assert.equal(starts({}), false);
+  // An empty subscription token hands on as an empty key does, but only to a
+  // fallback token that is set (claude-code-plugins#13586).
+  assert.equal(
+    starts(handedOn("subscription", { credentialSet: "false", ...ready })),
+    true,
+  );
+  assert.equal(
+    starts(handedOn("subscription", { credentialSet: "false" })),
+    false,
+  );
+  // A leg that never decided (the scope step skipped the review) hands on
+  // nothing.
+  assert.equal(starts(select.next({ state: "" })), false);
   // A fork, a draft or Dependabot never reaches it either.
   assert.equal(
     Boolean(
@@ -176,7 +206,7 @@ test("the fallback job starts only after the subscription job succeeded and hand
         needs: {
           "review-subscription": {
             result: "success",
-            outputs: { handoff: "true" },
+            outputs: handedOn("subscription", ready, limit),
           },
         },
       }),
@@ -186,31 +216,46 @@ test("the fallback job starts only after the subscription job succeeded and hand
   assert.doesNotMatch(fallback.if, /always\(\)|failure\(\)/u);
 });
 
-const FALLBACK_LEG_REASON =
-  `\${{ needs.review-subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || ` +
-  "needs.review-subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || " +
-  "needs.review-subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}";
+// The reason a leg runs comes from select-model-credential, which checks the
+// previous leg's next-reason against report-lane-outcome's closed list.
+const LEG_REASON = `\${{ steps.credential.outputs.fallback-reason }}`;
 
 test("the fallback job repeats the subscription job's steps but for the credential and the fallback reason", () => {
-  const strip = (steps, secret, input) =>
+  const strip = (steps, leg, secret, input, previous) =>
     steps.map((s) => {
       const copy = structuredClone(s);
       if (copy.id === "credential") {
-        assert.equal(copy.env.SECRET_NAME, secret);
-        assert.equal(copy.env.PRESENT, `\${{ secrets.${secret} != '' }}`);
-        delete copy.env.PRESENT;
-        delete copy.env.SECRET_NAME;
+        assert.equal(copy.with.leg, leg);
+        assert.equal(
+          copy.with["credential-set"],
+          `\${{ secrets.${secret} != '' }}`,
+        );
+        assert.equal(copy.with.reason, previous);
+        delete copy.with.leg;
+        delete copy.with["credential-set"];
+        delete copy.with.reason;
       }
-      if (copy.id === "claude") {
+      if (/^claude(-[2-4])?$/u.test(copy.id)) {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
         delete copy.with[input];
       }
-      if (copy.id === "review-outcome") delete copy.with["fallback-reason"];
       return copy;
     });
   assert.deepEqual(
-    strip(fallback.steps, "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN", "fallback-token"),
-    strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
+    strip(
+      fallback.steps,
+      "fallback",
+      "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+      "fallback-token",
+      `\${{ needs.review-subscription.outputs.next-reason }}`,
+    ),
+    strip(
+      subscription.steps,
+      "subscription",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "subscription-token",
+      `\${{ needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}`,
+    ),
   );
   for (const field of [
     "permissions",
@@ -221,22 +266,48 @@ test("the fallback job repeats the subscription job's steps but for the credenti
   ]) {
     assert.deepEqual(fallback[field], subscription[field], field);
   }
-  const value = step(fallback, "review-outcome").with["fallback-reason"];
-  assert.equal(value, FALLBACK_LEG_REASON);
+  assert.equal(
+    step(fallback, "review-outcome").with["fallback-reason"],
+    LEG_REASON,
+  );
+  assert.equal(
+    step(subscription, "review-outcome").with["fallback-reason"],
+    LEG_REASON,
+  );
+  // The subscription job's handoff reason reaches the fallback leg's record;
+  // a reason the launcher cannot give a subscription leg hands on nothing.
   const reason = (handoffReason) =>
-    evaluate(value, {
-      needs: {
-        "review-subscription": { outputs: { "handoff-reason": handoffReason } },
-      },
-    });
+    decide("fallback", {
+      reason: handedOn(
+        "subscription",
+        { fallbackSet: "true" },
+        { handoff: "true", "handoff-reason": handoffReason },
+      )["next-reason"],
+    }).outputs["fallback-reason"];
   for (const known of ["limit-stop", "credit-stop", "auth"])
     assert.equal(reason(known), known);
   for (const forged of ["", "no-key", "Auth"])
     assert.equal(reason(forged), "", forged);
+  // An empty subscription token with the fallback token set: no-key.
+  assert.equal(
+    decide("fallback", {
+      reason: handedOn("subscription", {
+        credentialSet: "false",
+        fallbackSet: "true",
+      })["next-reason"],
+    }).outputs["fallback-reason"],
+    "no-key",
+  );
+  // A forged next-reason never reaches the record.
+  assert.equal(
+    decide("fallback", { reason: "planted" }).outputs["fallback-reason"],
+    "",
+  );
 });
 
 test("the status job counts the fallback leg when it ran, else the subscription leg", async () => {
   assert.deepEqual(status.needs, [
+    "resolve-pull-request",
     "review-key",
     "review-subscription",
     "review-fallback",
@@ -339,7 +410,8 @@ test("after a key-credit skip, publish reads the counted token leg's success, no
   const { judge } = require("../actions/publish-review/publish.cjs");
   const pick = step(status, "token-leg");
   assert.equal(pick.with["result-encoding"] ?? "json", "json");
-  const REVIEW = '{"findings":0,"summary":"No findings.","comments":[]}';
+  const REVIEW =
+    '{"findings":0,"coverage":{"read":1,"changed":1},"summary":"No findings.","comments":[]}';
   const ok = {
     PRESENT: "true",
     FAILED: "false",
@@ -476,6 +548,7 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
             outputs: {
               handoff: "true",
               "credential-present": "true",
+              "next-leg": "subscription",
               ...outputs,
             },
           },
@@ -529,109 +602,616 @@ test("each secret-bearing job turns away forks, drafts, Dependabot, unlisted bot
   }
 });
 
+// A workflow_run caller's run: its event carries no pull_request, so the
+// resolve-pull-request job's read (READ) stands in for it. A forged pull_request in
+// the payload must never count.
+const HEAD = "a".repeat(40);
+const WR = {
+  event_name: "workflow_run",
+  actor: "kyle-sexton",
+  repository: "o/r",
+  event: {
+    action: "completed",
+    sender: { id: 1 },
+    workflow_run: { head_sha: HEAD },
+  },
+};
+const READ = {
+  proceed: "true",
+  number: "7",
+  state: "open",
+  draft: "false",
+  "head-repo": "o/r",
+  author: "kyle-sexton",
+  "head-sha": HEAD,
+  "head-ref": "feature",
+  "base-sha": "b".repeat(40),
+  "base-ref": "main",
+  action: "synchronize",
+};
+const WR_INPUTS = { "pr-number": "7", "head-sha": HEAD };
+const SECRET_JOBS = () => [
+  workflow.jobs["check-key-credit"],
+  key,
+  subscription,
+  fallback,
+];
+const reaches = (job, github, inputs, read, result = "success") =>
+  Boolean(
+    evaluate(job.if, {
+      github,
+      inputs: {
+        "allowed-bot-sender-ids": "",
+        "dispatcher-actor-ids": "",
+        ...inputs,
+      },
+      needs: {
+        "resolve-pull-request": { result, outputs: read },
+        "check-key-credit": { result: "success", outputs: {} },
+        "review-key": {
+          result: "success",
+          outputs: {
+            handoff: "true",
+            "credential-present": "true",
+            "next-leg": "subscription",
+          },
+        },
+        "review-subscription": {
+          result: "success",
+          outputs: { handoff: "true", "next-leg": "fallback" },
+        },
+      },
+    }),
+  );
+
+test("a pull_request caller with no pr-number skips the resolve-pull-request job and every gate reads the event as before", () => {
+  const read = workflow.jobs["resolve-pull-request"];
+  for (const inputs of [{}, { "pr-number": "" }]) {
+    assert.equal(Boolean(evaluate(read.if, { github: PR, inputs })), false);
+    for (const job of SECRET_JOBS()) {
+      assert.equal(reaches(job, PR, inputs, {}, "skipped"), true, job.name);
+      // The event's own facts still turn a draft away.
+      const draft = withPr((g) => {
+        g.event.pull_request.draft = true;
+      });
+      assert.equal(reaches(job, draft, inputs, {}, "skipped"), false, job.name);
+    }
+  }
+});
+
+test("a workflow_run caller with pr-number reaches every secret-bearing job only on the pull request read's facts", () => {
+  for (const job of SECRET_JOBS()) {
+    assert.equal(reaches(job, WR, WR_INPUTS, READ), true, job.name);
+    const refused = {
+      "moved head": { ...READ, proceed: "false" },
+      draft: { ...READ, draft: "true" },
+      closed: { ...READ, state: "closed" },
+      fork: { ...READ, "head-repo": "fork/r" },
+      "deleted head repository": { ...READ, "head-repo": "" },
+      dependabot: { ...READ, author: "dependabot[bot]" },
+      "no read": {},
+    };
+    for (const [why, read] of Object.entries(refused)) {
+      assert.equal(
+        reaches(job, WR, WR_INPUTS, read),
+        false,
+        `${job.name}: ${why}`,
+      );
+    }
+    // A failed or skipped read refuses whatever outputs it left.
+    for (const result of ["failure", "skipped", "cancelled"]) {
+      assert.equal(
+        reaches(job, WR, WR_INPUTS, READ, result),
+        false,
+        `${job.name}: ${result}`,
+      );
+    }
+    // A pull_request the payload claims counts for nothing.
+    const forged = structuredClone(WR);
+    forged.event.pull_request = structuredClone(PR.event.pull_request);
+    assert.equal(
+      reaches(job, forged, WR_INPUTS, { ...READ, draft: "true" }),
+      false,
+      job.name,
+    );
+    // workflow_run with no pr-number, and pr-number on any event but
+    // workflow_run and workflow_dispatch, skip.
+    assert.equal(reaches(job, WR, {}, READ), false, job.name);
+    for (const event_name of ["pull_request", "pull_request_target", "push"]) {
+      const other = withPr((g) => {
+        g.event_name = event_name;
+      });
+      assert.equal(
+        reaches(job, other, WR_INPUTS, READ),
+        false,
+        `${job.name}: ${event_name}`,
+      );
+    }
+    // The actor and bot checks still apply.
+    const dependabot = structuredClone(WR);
+    dependabot.actor = "dependabot[bot]";
+    assert.equal(reaches(job, dependabot, WR_INPUTS, READ), false, job.name);
+    const bot = structuredClone(WR);
+    bot.actor = "some-app[bot]";
+    bot.event.sender.id = 7;
+    assert.equal(reaches(job, bot, WR_INPUTS, READ), false, job.name);
+    assert.equal(
+      reaches(job, bot, { ...WR_INPUTS, "allowed-bot-sender-ids": "7" }, READ),
+      true,
+      job.name,
+    );
+  }
+});
+
+// A workflow_dispatch caller's run, dispatched with GITHUB_TOKEN by the
+// caller's own workflow: GitHub records github-actions[bot] (user id
+// 41898282) as the actor and sender.
+const ACTIONS_BOT_ID = 41898282;
+const WD = {
+  event_name: "workflow_dispatch",
+  actor: "github-actions[bot]",
+  repository: "o/r",
+  event: {
+    sender: { id: ACTIONS_BOT_ID },
+    inputs: { "pr-number": "7", "head-sha": HEAD },
+  },
+};
+const WD_INPUTS = {
+  ...WR_INPUTS,
+  "dispatcher-actor-ids": String(ACTIONS_BOT_ID),
+};
+
+test("a workflow_dispatch caller with pr-number and a listed dispatcher reaches every secret-bearing job on the read's facts", () => {
+  const read = workflow.jobs["resolve-pull-request"];
+  assert.equal(
+    Boolean(evaluate(read.if, { github: WD, inputs: WD_INPUTS })),
+    true,
+  );
+  for (const job of SECRET_JOBS()) {
+    assert.equal(reaches(job, WD, WD_INPUTS, READ), true, job.name);
+    // A person who dispatches passes as on workflow_run, no list needed.
+    const person = { ...structuredClone(WD), actor: "kyle-sexton" };
+    person.event.sender.id = 1;
+    assert.equal(reaches(job, person, WR_INPUTS, READ), true, job.name);
+    // The read still decides: a moved head, a draft or a failed read skips.
+    for (const [why, readOut, result] of [
+      ["moved head", { ...READ, proceed: "false" }, "success"],
+      ["draft", { ...READ, draft: "true" }, "success"],
+      ["failed read", READ, "failure"],
+    ]) {
+      assert.equal(
+        reaches(job, WD, WD_INPUTS, readOut, result),
+        false,
+        `${job.name}: ${why}`,
+      );
+    }
+  }
+});
+
+test("on a workflow_dispatch run a bot passes the actor gate only by its id in dispatcher-actor-ids", () => {
+  for (const job of SECRET_JOBS()) {
+    // Each case passes the event gate (pr-number, a proceeding read), so a
+    // refusal comes from the actor gate.
+    const refused = {
+      "no dispatcher-actor-ids": [WD, WR_INPUTS],
+      "empty dispatcher-actor-ids": [
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": "" },
+      ],
+      "doubled comma": [
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": `${ACTIONS_BOT_ID},,5` },
+      ],
+      "leading comma": [
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": `,${ACTIONS_BOT_ID}` },
+      ],
+      "another bot": [
+        {
+          ...structuredClone(WD),
+          actor: "some-app[bot]",
+          event: { sender: { id: 7 } },
+        },
+        WD_INPUTS,
+      ],
+      "dependabot listed": [
+        {
+          ...structuredClone(WD),
+          actor: "dependabot[bot]",
+          event: { sender: { id: 49699333 } },
+        },
+        { ...WR_INPUTS, "dispatcher-actor-ids": "49699333" },
+      ],
+      // The list is read on workflow_dispatch only.
+      "workflow_run sender listed": [
+        {
+          ...structuredClone(WR),
+          actor: "github-actions[bot]",
+          event: { ...WR.event, sender: { id: ACTIONS_BOT_ID } },
+        },
+        WD_INPUTS,
+      ],
+    };
+    for (const [why, [github, inputs]] of Object.entries(refused)) {
+      assert.equal(
+        reaches(job, github, inputs, READ),
+        false,
+        `${job.name}: ${why}`,
+      );
+    }
+    assert.equal(
+      reaches(
+        job,
+        WD,
+        { ...WR_INPUTS, "dispatcher-actor-ids": `5,${ACTIONS_BOT_ID}` },
+        READ,
+      ),
+      true,
+      job.name,
+    );
+  }
+});
+
+test("dispatcher-actor-ids changes nothing for a pull_request caller", () => {
+  const bot = withPr((g) => {
+    g.actor = "github-actions[bot]";
+    g.event.sender.id = ACTIONS_BOT_ID;
+  });
+  const listed = { "dispatcher-actor-ids": String(ACTIONS_BOT_ID) };
+  for (const job of SECRET_JOBS()) {
+    assert.equal(reaches(job, PR, listed, {}, "skipped"), true, job.name);
+    assert.equal(reaches(job, bot, listed, {}, "skipped"), false, job.name);
+    assert.equal(
+      reaches(
+        job,
+        bot,
+        { ...listed, "allowed-bot-sender-ids": String(ACTIONS_BOT_ID) },
+        {},
+        "skipped",
+      ),
+      true,
+      job.name,
+    );
+  }
+});
+
+test("dispatcher-actor-ids reaches only the secret-bearing jobs' gates, never closing-issue or settled-thread trust", () => {
+  const gates = new Set(SECRET_JOBS());
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    const { if: gate, ...rest } = job;
+    assert.equal(
+      JSON.stringify(rest).includes("dispatcher-actor-ids"),
+      false,
+      name,
+    );
+    assert.equal(
+      /dispatcher-actor-ids/u.test(String(gate ?? "")),
+      gates.has(job),
+      name,
+    );
+  }
+  for (const leg of [key, subscription, fallback]) {
+    assert.deepEqual(
+      step(leg, "pr-context-trust").with,
+      {
+        actors: `\${{ steps.pr-context-fetch.outputs.actors || '[]' }}`,
+        "allowed-author-ids": `\${{ inputs.allowed-author-ids }}`,
+        "allowed-bot-sender-ids": `\${{ inputs.allowed-bot-sender-ids }}`,
+      },
+      leg.name,
+    );
+    assert.deepEqual(
+      step(leg, "settled").with,
+      {
+        source: `\${{ runner.temp }}/claude-code-plugins`,
+        "output-file": ".claude-lane/settled-threads.md",
+        "pr-number": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}`,
+        "head-sha": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}`,
+        "base-sha": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-sha || github.event.pull_request.base.sha }}`,
+        "head-ref": `\${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-ref || github.event.pull_request.head.ref }}`,
+      },
+      leg.name,
+    );
+  }
+});
+
+test("the resolve-pull-request job reads only a workflow_run or workflow_dispatch caller's pull request, holds no secret and cannot write", () => {
+  const read = workflow.jobs["resolve-pull-request"];
+  const runs = (github, inputs) =>
+    Boolean(evaluate(read.if, { github, inputs }));
+  assert.equal(runs(WR, WR_INPUTS), true);
+  assert.equal(runs(WR, {}), false);
+  assert.equal(
+    runs(
+      withPr((g) => (g.event_name = "pull_request_target")),
+      WR_INPUTS,
+    ),
+    false,
+  );
+  assert.equal(read.needs, undefined);
+  assert.deepEqual(read.permissions, { "pull-requests": "read" });
+  assert.doesNotMatch(JSON.stringify(read), /secrets\./u);
+  const s = step(read, "read");
+  assert.equal(s.uses, "$/.github/actions/resolve-pull-request");
+  assert.deepEqual(s.with, {
+    "pr-number": `\${{ inputs.pr-number }}`,
+    "head-sha": `\${{ inputs.head-sha }}`,
+    "base-sha": `\${{ inputs.base-sha }}`,
+    "event-action": `\${{ inputs.event-action }}`,
+  });
+  for (const name of ["proceed", "state", "draft", "head-repo", "author"]) {
+    assert.equal(
+      read.outputs[name],
+      `\${{ steps.read.outputs.${name} }}`,
+      name,
+    );
+  }
+});
+
+// GitHub skips a job whose need was skipped unless its if names a status
+// function; the expression tests above stub cancelled(), so this pins it.
+test("every job that needs the resolve-pull-request job opens its gate with a status function", () => {
+  const dependents = Object.entries(workflow.jobs).filter(([, job]) =>
+    [job.needs].flat().includes("resolve-pull-request"),
+  );
+  assert.deepEqual(dependents.map(([name]) => name).sort(), [
+    "check-key-credit",
+    "review-fallback",
+    "review-key",
+    "review-subscription",
+    "status",
+  ]);
+  for (const [name, job] of dependents) {
+    assert.match(String(job.if), /!cancelled\(\)|always\(\)/u, name);
+  }
+});
+
+test("each pull request value reads the resolve-pull-request job's output with pr-number, else the event", () => {
+  const event = {
+    number: 9,
+    "head-sha": "c".repeat(40),
+    "base-sha": "d".repeat(40),
+    "base-ref": "trunk",
+    "head-ref": "topic",
+    action: "opened",
+  };
+  const pr = withPr((g) => {
+    g.event.action = event.action;
+    Object.assign(g.event.pull_request, {
+      number: event.number,
+      head: {
+        ...g.event.pull_request.head,
+        sha: event["head-sha"],
+        ref: event["head-ref"],
+      },
+      base: { sha: event["base-sha"], ref: event["base-ref"] },
+    });
+  });
+  let seen = 0;
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    for (const s of job.steps) {
+      for (const value of [
+        ...Object.values(s.env ?? {}),
+        ...Object.values(s.with ?? {}),
+      ]) {
+        const expressions = [
+          ...String(value).matchAll(
+            /\$\{\{([^}]*needs\.resolve-pull-request\.outputs\.([\w-]+)[^}]*)\}\}/gu,
+          ),
+        ];
+        if (expressions.length === 0) continue;
+        assert.equal(expressions.length, 1, `${name} / ${s.name}`);
+        const [, expression, field] = expressions[0];
+        assert.ok(field in event, `${name} / ${s.name}: ${field}`);
+        const at = (github, inputs) =>
+          String(
+            evaluate(expression, {
+              github,
+              inputs,
+              needs: { "resolve-pull-request": { outputs: READ } },
+            }),
+          );
+        assert.equal(at(pr, {}), String(event[field]), `${name} / ${s.name}`);
+        assert.equal(at(WR, WR_INPUTS), READ[field], `${name} / ${s.name}`);
+        seen += 1;
+      }
+    }
+  }
+  // Each leg read the event 17 times (checkout, scope 4, full diff 2,
+  // context, settled threads 4, prior findings 2, compose 2, handoff
+  // upload); the status job 7 (download, publish 3, hold 3).
+  assert.equal(seen, 3 * 17 + 7);
+});
+
 test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
-  const starts = (outputs, result = "success", skipKey = "") =>
+  // The check-key-credit job's start call names the first leg; the key job's
+  // last step names the next one.
+  const starts = (keyOutputs, result = "success", skipKey = false) =>
     Boolean(
       evaluate(subscription.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
-          "check-key-credit": { outputs: { "skip-key": skipKey } },
-          "review-key": { result, outputs },
+          "check-key-credit": { outputs: select.start({ skipKey }) },
+          "review-key": { result, outputs: keyOutputs },
         },
       }),
     );
-  // A key job skipped by check-key-credit's exact `true`, and no other skip.
-  assert.equal(starts({}, "skipped", "true"), true);
-  for (const skipKey of ["", "false", "True", "true ", "1"]) {
-    assert.equal(
-      starts({}, "skipped", skipKey),
-      false,
-      JSON.stringify(skipKey),
-    );
-  }
-  // A key job that failed or was cancelled starts nothing, as before.
+  // A key job skipped by the credit read, and no other skip.
+  assert.equal(starts({}, "skipped", true), true);
+  assert.equal(starts({}, "skipped", false), false);
+  // A key job that failed or was cancelled starts nothing, as before: its
+  // next-leg step is its last and has no if:, so it never ran.
+  assert.equal(key.steps.at(-2).id, "next");
+  assert.equal(key.steps.at(-2).if, undefined);
   for (const result of ["failure", "cancelled"]) {
-    assert.equal(starts({ handoff: "true" }, result, "true"), false, result);
+    assert.equal(starts({}, result), false, result);
   }
-  assert.deepEqual(subscription.needs, ["check-key-credit", "review-key"]);
-  assert.equal(starts({ handoff: "true", "credential-present": "true" }), true);
-  assert.equal(starts({ handoff: "", "credential-present": "false" }), true);
+  assert.deepEqual(subscription.needs, [
+    "resolve-pull-request",
+    "check-key-credit",
+    "review-key",
+  ]);
+  const credit = { handoff: "true", "handoff-reason": "credit-stop" };
+  assert.equal(starts(handedOn("key", {}, credit)), true);
+  assert.equal(
+    starts(handedOn("key", {}, { ...credit, "handoff-reason": "auth" })),
+    true,
+  );
+  assert.equal(starts(handedOn("key", { credentialSet: "false" })), true);
   for (const handoff of ["", "false", "True", "true ", "1"]) {
     assert.equal(
-      starts({ handoff, "credential-present": "true" }),
+      starts(handedOn("key", {}, { ...credit, handoff })),
       false,
       JSON.stringify(handoff),
     );
   }
-  // A review the scope step skipped sets no credential-present at all.
-  assert.equal(starts({ handoff: "", "credential-present": "" }), false);
+  // A key leg that never decided (the scope step skipped the review) hands
+  // on nothing.
+  assert.equal(starts(select.next({ state: "" })), false);
   assert.doesNotMatch(subscription.if, /always\(\)|failure\(\)/u);
 });
 
-test("the key job runs unless check-key-credit says exactly true, a failed check-key-credit included", () => {
-  const runs = (skipKey, result = "success") =>
+test("the key job runs unless the start call names the subscription leg, a failed check-key-credit included", () => {
+  const runs = (outputs, result = "success") =>
     Boolean(
       evaluate(key.if, {
         github: PR,
         inputs: { "allowed-bot-sender-ids": "" },
         needs: {
-          "check-key-credit": { result, outputs: { "skip-key": skipKey } },
+          "check-key-credit": { result, outputs },
         },
       }),
     );
-  assert.equal(runs("true"), false);
-  for (const skipKey of ["", "false", "True"]) {
-    assert.equal(runs(skipKey), true, JSON.stringify(skipKey));
-  }
-  assert.equal(runs("", "failure"), true);
-  assert.equal(runs("", "skipped"), true);
-  assert.equal(key.needs, "check-key-credit");
+  assert.equal(runs(select.start({ skipKey: true })), false);
+  assert.equal(runs(select.start({ skipKey: false })), true);
+  // A failed or skipped start call leaves next-leg empty: the key runs.
+  assert.equal(runs({}, "failure"), true);
+  assert.equal(runs({}, "skipped"), true);
+  assert.deepEqual(key.needs, ["resolve-pull-request", "check-key-credit"]);
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  assert.equal(gate.steps[0].uses, "$/.github/actions/check-key-credit");
-  assert.equal(gate.outputs["skip-key"], `\${{ steps.gate.outputs.skip-key }}`);
+  assert.equal(gate.steps[0].uses, "$/.github/actions/select-model-credential");
+  assert.equal(gate.steps[0].with.leg, "start");
+  // The caller's window and reset time reach the gate as inputs, never inline.
+  assert.equal(
+    gate.steps[0].with["window-hours"],
+    `\${{ inputs.key-credit-window-hours }}`,
+  );
+  assert.equal(
+    gate.steps[0].with["reset-at"],
+    `\${{ inputs.key-credit-reset-at }}`,
+  );
+  assert.equal(gate.outputs["next-leg"], `\${{ steps.gate.outputs.next-leg }}`);
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
 });
 
-test("the credit record steps carry the names and conditions check-key-credit reads", () => {
-  const {
-    MODEL_STEP,
-    RECORD_PATTERN,
-  } = require("../actions/check-key-credit/gate.cjs");
-  const render = (name, context) =>
-    name.replace(/\$\{\{\s*([^}]+?)\s*\}\}/gu, (_, expr) =>
-      String(evaluate(expr, context)),
-    );
-  for (const job of [key, subscription]) {
-    const record = job.steps.find((s) => s.name.startsWith("Record the key"));
-    assert.match(
-      render(record.name, { github: { run_id: "123" } }),
-      RECORD_PATTERN,
-    );
-    assert.equal(step(job, "claude").name, MODEL_STEP);
-    const runsAfter = (laneClass) =>
-      Boolean(
-        evaluate(record.if, {
-          steps: { claude: { outputs: { "lane-class": laneClass } } },
-        }),
-      );
-    assert.equal(runsAfter("credit-stop"), true);
-    for (const laneClass of ["auth", "rate-limit", "", "other"]) {
-      assert.equal(runsAfter(laneClass), false, laneClass);
-    }
-  }
-  const carry = workflow.jobs["check-key-credit"].steps[1];
-  const context = (skip) => ({
-    steps: { gate: { outputs: { "skip-key": skip, "origin-run": "99" } } },
-  });
-  assert.match(render(carry.name, context("true")), RECORD_PATTERN);
-  assert.equal(
-    render(carry.name, context("true")).match(RECORD_PATTERN)[1],
-    "99",
+test("only the key job uploads the gate's marker, only after a credit stop, kept 7 days", () => {
+  const marker = step(key, "credit-marker");
+  const upload = key.steps.find(
+    (s) => s.name === "Upload the key's credit-stop marker",
   );
-  assert.equal(Boolean(evaluate(carry.if, context("true"))), true);
-  assert.equal(Boolean(evaluate(carry.if, context(""))), false);
+  const context = (
+    laneClass,
+    name = "key-credit-stop-w.yml-claude-review-key",
+  ) => ({
+    needs: { "check-key-credit": { outputs: { marker: name } } },
+    steps: {
+      claude: { outputs: { "lane-class": laneClass } },
+      "claude-3": { outputs: { "lane-class": "" } },
+    },
+  });
+  const writes = (...args) => Boolean(evaluate(marker.if, context(...args)));
+  assert.equal(writes("credit-stop"), true);
+  for (const laneClass of ["auth", "rate-limit", "", "other"]) {
+    assert.equal(writes(laneClass), false, laneClass);
+  }
+  // An unreadable gate names no marker, so nothing uploads.
+  assert.equal(writes("credit-stop", ""), false);
+  // A later chunk's credit stop records too.
+  assert.equal(
+    Boolean(
+      evaluate(marker.if, {
+        ...context(""),
+        steps: { "claude-3": { outputs: { "lane-class": "credit-stop" } } },
+      }),
+    ),
+    true,
+  );
+  assert.match(
+    marker.run,
+    /"\$GITHUB_RUN_ID" >"\$RUNNER_TEMP\/key-credit-stop\/run-id"$/mu,
+  );
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
+  assert.equal(
+    upload.if,
+    "always() && steps.credit-marker.outcome == 'success' && steps.credit-marker-scan.outputs.clean == 'true'",
+  );
+  assert.equal(
+    upload.with.name,
+    `\${{ needs.check-key-credit.outputs.marker }}`,
+  );
+  assert.equal(upload.with.path, `\${{ runner.temp }}/key-credit-stop/run-id`);
+  assert.equal(upload.with["retention-days"], 7);
+  assert.equal(upload["continue-on-error"], true);
+  // The gate hands the marker name on and writes no credit-stop marker of
+  // its own: the window counts from the key job's upload.
+  const gate = workflow.jobs["check-key-credit"];
+  assert.equal(gate.outputs.marker, `\${{ steps.gate.outputs.marker }}`);
+  for (const job of Object.values(workflow.jobs)) {
+    assert.equal(
+      job.steps.some((s) =>
+        /credit stop in run|credit-stop marker/u.test(s.name),
+      ),
+      job === key,
+      job.name,
+    );
+  }
+});
+
+test("the gate job uploads the probing marker it names, right after the read, kept 7 days", () => {
+  const gate = workflow.jobs["check-key-credit"];
+  assert.deepEqual(
+    gate.steps.map((s) => s.name),
+    [
+      "Read the key's credit history",
+      "Write the key's probing marker",
+      "Scan the key's probing marker for credentials",
+      "Upload the key's probing marker",
+      "Log the API budget",
+    ],
+  );
+  const write = step(gate, "probe-marker");
+  const writes = (name) =>
+    Boolean(
+      evaluate(write.if, {
+        steps: { gate: { outputs: { "probing-marker": name } } },
+      }),
+    );
+  assert.equal(writes("key-credit-probing-w.yml-claude-review-key"), true);
+  assert.equal(writes(""), false);
+  assert.match(
+    write.run,
+    /"\$GITHUB_RUN_ID" >"\$RUNNER_TEMP\/key-credit-probing\/run-id"$/mu,
+  );
+  const upload = gate.steps.find(
+    (s) => s.name === "Upload the key's probing marker",
+  );
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
+  assert.equal(
+    upload.if,
+    "always() && steps.probe-marker.outcome == 'success' && steps.probe-marker-scan.outputs.clean == 'true'",
+  );
+  assert.equal(upload.with.name, `\${{ steps.gate.outputs.probing-marker }}`);
+  assert.equal(
+    upload.with.path,
+    `\${{ runner.temp }}/key-credit-probing/run-id`,
+  );
+  assert.equal(upload.with["retention-days"], 7);
+  assert.equal(upload["continue-on-error"], true);
+  // An artifact upload uses the runner's token, not the job token, so the
+  // gate keeps actions: read and nothing more.
+  assert.deepEqual(gate.permissions, { actions: "read" });
 });
 
 test("after a credit skip the status job runs and reads the subscription job's scope", () => {
@@ -682,12 +1262,21 @@ test("after a credit skip the status job runs and reads the subscription job's s
     evaluate(publish.SCOPE_REVIEW, { needs: needs("skipped", "success") }),
     "sub",
   );
-  // The subscription leg records the skip as the credit stop it follows.
+  // The subscription leg records the skip as the credit stop it follows: the
+  // start call's next-reason, the key job having left none.
+  const previous = evaluate(step(subscription, "credential").with.reason, {
+    needs: {
+      "review-key": { result: "skipped", outputs: {} },
+      "check-key-credit": { outputs: select.start({ skipKey: true }) },
+    },
+  });
   assert.equal(
-    evaluate(step(subscription, "review-outcome").with["fallback-reason"], {
-      needs: { "review-key": { result: "skipped", outputs: {} } },
-    }),
+    decide("subscription", { reason: previous }).outputs["fallback-reason"],
     "credit-stop",
+  );
+  assert.equal(
+    step(subscription, "review-outcome").with["fallback-reason"],
+    LEG_REASON,
   );
 });
 
@@ -738,24 +1327,55 @@ test("the status job takes the last summary from the subscription leg when the k
 });
 
 test("the subscription job repeats the key job's steps but for the credential and the fallback reason", () => {
-  const strip = (steps, secret, input) =>
+  // The credential step differs only in its leg, its secret, and the inputs
+  // only one of the two legs takes (key-off on the key leg, the previous
+  // leg's reason on the subscription leg).
+  const strip = (steps, leg, secret, input) =>
     steps.map((s) => {
       const copy = structuredClone(s);
-      if (copy.id === "credential") delete copy.env.PRESENT;
       if (copy.id === "credential") {
-        assert.equal(copy.env.SECRET_NAME, secret);
-        delete copy.env.SECRET_NAME;
+        assert.equal(copy.with.leg, leg);
+        assert.equal(
+          copy.with["credential-set"],
+          `\${{ secrets.${secret} != '' }}`,
+        );
+        for (const name of ["leg", "credential-set", "key-off", "reason"]) {
+          delete copy.with[name];
+        }
       }
-      if (copy.id === "claude") {
+      if (/^claude(-[2-4])?$/u.test(copy.id)) {
         assert.equal(copy.with[input], `\${{ secrets.${secret} }}`);
         delete copy.with[input];
       }
       if (copy.id === "review-outcome") delete copy.with["fallback-reason"];
       return copy;
     });
+  assert.equal(
+    step(key, "credential").with["key-off"],
+    `\${{ vars.REVIEWS_KEY_EXHAUSTED }}`,
+  );
+  assert.equal(step(key, "credential").with.reason, undefined);
+  assert.equal(step(subscription, "credential").with["key-off"], undefined);
+  // Only the key leg's credit stop says the key is out, so only it uploads
+  // the gate's marker.
+  const keyOnly = new Set([
+    "Write the key's credit-stop marker",
+    "Scan the key's credit-stop marker for credentials",
+    "Upload the key's credit-stop marker",
+  ]);
   assert.deepEqual(
-    strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
-    strip(key.steps, "CLAUDE_API_KEY", "api-key"),
+    strip(
+      subscription.steps,
+      "subscription",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "subscription-token",
+    ),
+    strip(
+      key.steps.filter((s) => !keyOnly.has(s.name)),
+      "key",
+      "CLAUDE_API_KEY",
+      "api-key",
+    ),
   );
   for (const field of [
     "permissions",
@@ -822,33 +1442,49 @@ test("a leg whose runner isolation failed reports install-failed, not no-outcome
 });
 
 test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED is true", () => {
-  const present = (secret, exhausted) =>
-    evaluate(step(key, "credential").env.PRESENT, {
-      secrets: { CLAUDE_API_KEY: secret },
-      vars: { REVIEWS_KEY_EXHAUSTED: exhausted },
-    });
-  assert.equal(present("k", ""), true);
-  assert.equal(present("k", "false"), true);
-  assert.equal(present("k", "true"), false);
-  assert.equal(present("", ""), false);
+  // The step's inputs as the runner hands them to the action: strings.
+  const present = (job, leg, secrets, exhausted) => {
+    const inputs = step(job, "credential").with;
+    const context = { secrets, vars: { REVIEWS_KEY_EXHAUSTED: exhausted } };
+    return decide(leg, {
+      credentialSet: String(evaluate(inputs["credential-set"], context)),
+      keyOff:
+        inputs["key-off"] === undefined
+          ? ""
+          : String(evaluate(inputs["key-off"], context) ?? ""),
+    }).outputs.present;
+  };
+  const keyPresent = (secret, exhausted) =>
+    present(key, "key", { CLAUDE_API_KEY: secret }, exhausted);
+  assert.equal(keyPresent("k", ""), "true");
+  assert.equal(keyPresent("k", undefined), "true");
+  assert.equal(keyPresent("k", "false"), "true");
+  assert.equal(keyPresent("k", "true"), "false");
+  assert.equal(keyPresent("", ""), "false");
   assert.equal(
-    evaluate(step(subscription, "credential").env.PRESENT, {
-      secrets: { CLAUDE_CODE_OAUTH_TOKEN: "t" },
-      vars: { REVIEWS_KEY_EXHAUSTED: "true" },
-    }),
-    true,
+    present(
+      subscription,
+      "subscription",
+      { CLAUDE_CODE_OAUTH_TOKEN: "t" },
+      "true",
+    ),
+    "true",
   );
-  // The reason the subscription leg records.
-  const reason = (outputs) =>
-    evaluate(step(subscription, "review-outcome").with["fallback-reason"], {
-      needs: { "review-key": { outputs } },
-    });
-  assert.equal(reason({ "lane-class": "credit-stop" }), "credit-stop");
-  assert.equal(reason({ "lane-class": "auth" }), "auth");
+  // The reason the subscription leg records, from the key job's next-reason.
+  const reason = (flags, launcher) =>
+    decide("subscription", {
+      reason: handedOn("key", flags, launcher)["next-reason"],
+    }).outputs["fallback-reason"];
   assert.equal(
-    reason({ "lane-class": "", "credential-present": "false" }),
-    "no-key",
+    reason({}, { handoff: "true", "handoff-reason": "credit-stop" }),
+    "credit-stop",
   );
+  assert.equal(
+    reason({}, { handoff: "true", "handoff-reason": "auth" }),
+    "auth",
+  );
+  assert.equal(reason({ credentialSet: "false" }), "no-key");
+  assert.equal(reason({ keyOff: "true" }), "no-key");
 });
 
 const minutes = (value, lane) =>
@@ -1058,7 +1694,7 @@ test("the prompt carries the FULL DIFF, REVIEW SCOPE and PR CONTEXT lines the re
   }
 });
 
-async function extract(files, env = {}) {
+async function extract(files, env = {}, job = key) {
   const dir = makeTemporaryDirectory("pr-review-cli-extract-");
   const paths = {};
   for (const [name, content] of Object.entries(files)) {
@@ -1067,12 +1703,19 @@ async function extract(files, env = {}) {
   }
   const outputs = {};
   const warnings = [];
+  const diff = path.join(dir, "pr.diff");
+  fs.writeFileSync(diff, files.diff ?? "diff --git a/a.js b/a.js\n");
   const values = {
     STRUCTURED_FILE: paths.structured ?? "",
     LOG_FILE: paths.log ?? "",
     MODE_OK: "true",
     SCOPE: "whole",
     FULL_DIFF: "true",
+    SCOPE_FILES: "",
+    WHOLE_FILES: "1",
+    SCOPE_DIFF: diff,
+    SCOPE_BYTES: "24",
+    MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     ...env,
   };
   const saved = Object.fromEntries(
@@ -1084,7 +1727,7 @@ async function extract(files, env = {}) {
     await new AsyncFunction(
       "require",
       "core",
-      step(key, "extract").with.script,
+      step(job, "extract").with.script,
     )(require, {
       setOutput: (k, v) => {
         outputs[k] = v;
@@ -1116,6 +1759,7 @@ test("the extract step passes on a well-formed review with the scanned log's fac
   const outputs = await extract({
     structured: JSON.stringify({
       findings: 0,
+      files_read: 1,
       summary: "One issue.<!-- hidden -->\n- `manifest name: flag`",
       comments: [COMMENT],
     }),
@@ -1125,6 +1769,7 @@ test("the extract step passes on a well-formed review with the scanned log's fac
   // Raised to the larger of one comment and one manifest flag line.
   assert.deepEqual(JSON.parse(outputs.review), {
     findings: 1,
+    coverage: { read: 1, changed: 1 },
     summary: "One issue.\n- `manifest name: flag`",
     comments: [COMMENT],
   });
@@ -1136,7 +1781,12 @@ test("the extract step passes on a well-formed review with the scanned log's fac
 });
 
 test("the extract step calls a review incomplete on every gap it checks", async () => {
-  const good = { findings: 1, summary: "S", comments: [COMMENT] };
+  const good = {
+    files_read: 1,
+    findings: 1,
+    summary: "S",
+    comments: [COMMENT],
+  };
   for (const [files, env, reason] of [
     [
       { structured: JSON.stringify(good) },
@@ -1163,7 +1813,7 @@ test("the extract step calls a review incomplete on every gap it checks", async 
   // An incremental review needs no full diff.
   const outputs = await extract(
     { structured: JSON.stringify(good) },
-    { FULL_DIFF: "", SCOPE: "incremental" },
+    { FULL_DIFF: "", SCOPE: "incremental", SCOPE_FILES: "1" },
   );
   assert.equal(outputs.verdict, "complete");
 });
@@ -1179,6 +1829,7 @@ test("the extract step keeps the valid comments and passes a malformed one on fo
     const outputs = await extract({
       structured: JSON.stringify({
         findings: 0,
+        files_read: 1,
         summary: "S",
         comments: [bad, COMMENT],
       }),
@@ -1195,6 +1846,7 @@ test("the extract step keeps the valid comments and passes a malformed one on fo
   const located = await extract({
     structured: JSON.stringify({
       findings: 1,
+      files_read: 1,
       summary: "S",
       comments: [
         { path: "a.js", line: 7, side: "BOTH", body: "B" },
@@ -1212,6 +1864,7 @@ test("the extract step drops a comment with no body, with a warning", async () =
   const outputs = await extract({
     structured: JSON.stringify({
       findings: 1,
+      files_read: 1,
       summary: "S",
       comments: [COMMENT, { ...COMMENT, body: "  " }, { path: "a.js" }],
     }),
@@ -1229,6 +1882,7 @@ test("the extract step passes on a review no larger than one environment string 
   const comment = (body) => ({ ...COMMENT, body });
   const largest = {
     findings: 25,
+    files_read: 1,
     summary: "s".repeat(20000),
     comments: Array.from({ length: 25 }, () => comment("b".repeat(3000))),
   };
@@ -1247,7 +1901,7 @@ test("the extract step passes on a review no larger than one environment string 
 });
 
 test("the extract step carries a well-formed hold and calls a malformed one incomplete", async () => {
-  const good = { findings: 0, summary: "S", comments: [] };
+  const good = { files_read: 1, findings: 0, summary: "S", comments: [] };
   const held = await extract({
     structured: JSON.stringify({
       ...good,
@@ -1300,6 +1954,10 @@ test("the schema offers the hold criteria the extract step accepts, in both lane
 });
 
 async function compose(env) {
+  return fs.readFileSync((await composeOutputs(env))["prompt-file"], "utf8");
+}
+
+async function composeOutputs(env, job = key) {
   const dir = makeTemporaryDirectory("pr-review-cli-compose-");
   const outputs = {};
   const values = {
@@ -1327,7 +1985,7 @@ async function compose(env) {
     await new AsyncFunction(
       "require",
       "core",
-      step(key, "compose").with.script,
+      step(job, "compose").with.script,
     )(require, {
       setOutput: (k, v) => {
         outputs[k] = v;
@@ -1342,7 +2000,7 @@ async function compose(env) {
       else process.env[k] = v;
     }
   }
-  return fs.readFileSync(outputs["prompt-file"], "utf8");
+  return outputs;
 }
 
 // Owner decisions Q52 and Q53 (2026-10-24): only a real security issue or a
@@ -1402,6 +2060,7 @@ test("the prompt sends hold-paths to extra security scrutiny and holds cost only
 test("the review with the largest hold still fits one environment string", async () => {
   const largest = {
     findings: 25,
+    files_read: 1,
     summary: "s".repeat(20000),
     comments: Array.from({ length: 25 }, () => ({
       ...COMMENT,
@@ -1460,7 +2119,7 @@ test("the hold step runs only in comments mode with hold-label set, even after a
 });
 
 test("the review leaves each leg as an artifact named for the run, head and leg, and only its sha256 as an output", () => {
-  const name = `pr-review-cli-handoff-\${{ inputs.lane }}-\${{ github.job }}-\${{ github.run_id }}-\${{ github.event.pull_request.head.sha }}`;
+  const name = `pr-review-cli-handoff-\${{ inputs.lane }}-\${{ github.job }}-\${{ github.run_id }}-\${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}`;
   for (const job of [key, subscription, fallback]) {
     assert.equal(job.outputs.review, undefined);
     assert.equal(job.outputs["last-summary"], undefined);
@@ -1473,7 +2132,9 @@ test("the review leaves each leg as an artifact named for the run, head and leg,
     const upload = job.steps.find(
       (s) => s.name === "Upload the review handoff",
     );
-    assert.equal(names.indexOf("handoff-file") + 1, job.steps.indexOf(upload));
+    // Only the handoff's credential scan sits between the file and its upload.
+    assert.equal(names[names.indexOf("handoff-file") + 1], "handoff-scan");
+    assert.equal(names.indexOf("handoff-file") + 2, job.steps.indexOf(upload));
     assert.equal(upload.with.name, name);
     assert.equal(upload.with.overwrite, true);
     assert.equal(upload.with["retention-days"], 1);
@@ -1564,6 +2225,7 @@ test("the full diff shows text the base or head marks -diff or binary, or hides 
           HEAD_SHA: head,
           MERGE_BASE: base,
           DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
         },
       },
     );
@@ -1590,6 +2252,3591 @@ test("the full diff shows text the base or head marks -diff or binary, or hides 
     assert.match(
       fs.readFileSync(path.join(dir, "output"), "utf8"),
       /^written=true$/mu,
+    );
+  }
+});
+
+// Coverage: files read of the changed files in scope. The count in scope and
+// the diff's size come from the job; the model gives only files_read.
+test("the extract step records coverage from the job's counts and the model's files_read", async () => {
+  const review = (files_read) =>
+    JSON.stringify({ findings: 0, files_read, summary: "S", comments: [] });
+  const full = await extract({ structured: review(3) }, { WHOLE_FILES: "3" });
+  assert.equal(full.verdict, "complete");
+  assert.deepEqual(JSON.parse(full.review).coverage, { read: 3, changed: 3 });
+  const partial = await extract(
+    { structured: review(2) },
+    { WHOLE_FILES: "1186" },
+  );
+  assert.equal(partial.verdict, "complete");
+  assert.deepEqual(JSON.parse(partial.review).coverage, {
+    read: 2,
+    changed: 1186,
+    over_files: 1186,
+  });
+  // A count past the scope is capped at it.
+  const over = await extract({ structured: review(9) }, { WHOLE_FILES: "3" });
+  assert.deepEqual(JSON.parse(over.review).coverage, { read: 3, changed: 3 });
+  // An incremental review counts the files in its scope, not the whole diff's.
+  const incremental = await extract(
+    { structured: review(1) },
+    {
+      SCOPE: "incremental",
+      FULL_DIFF: "",
+      SCOPE_FILES: "2",
+      WHOLE_FILES: "40",
+    },
+  );
+  assert.deepEqual(JSON.parse(incremental.review).coverage, {
+    read: 1,
+    changed: 2,
+  });
+});
+
+test("a diff over one review's read budget is partial whatever the model reports", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-budget-");
+  const diff = path.join(dir, "pr.diff");
+  fs.writeFileSync(diff, "+".repeat(300001));
+  const outputs = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 5,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300001" },
+  );
+  assert.equal(outputs.verdict, "complete");
+  assert.deepEqual(JSON.parse(outputs.review).coverage, {
+    read: 5,
+    changed: 5,
+    over_budget: 300001,
+  });
+  fs.writeFileSync(diff, "+".repeat(300000));
+  const fits = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 5,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300000" },
+  );
+  assert.deepEqual(JSON.parse(fits.review).coverage, { read: 5, changed: 5 });
+});
+
+test("the extract step calls a review with no coverage it can check incomplete", async () => {
+  const good = { findings: 0, files_read: 1, summary: "S", comments: [] };
+  for (const [structured, env, reason] of [
+    [{ ...good, files_read: undefined }, {}, /no files_read count/u],
+    [{ ...good, files_read: -1 }, {}, /no files_read count/u],
+    [{ ...good, files_read: 1.5 }, {}, /no files_read count/u],
+    [good, { WHOLE_FILES: "" }, /could not count the changed files/u],
+    [good, { WHOLE_FILES: "3x" }, /could not count the changed files/u],
+    [
+      good,
+      { SCOPE: "incremental", SCOPE_FILES: "" },
+      /could not count the changed files/u,
+    ],
+    [
+      good,
+      { SCOPE_DIFF: "/nonexistent/pr.diff" },
+      /diff file in scope is missing or not a regular file/u,
+    ],
+    [good, { SCOPE_BYTES: "" }, /could not measure the diff/u],
+  ]) {
+    const outputs = await extract(
+      { structured: JSON.stringify(structured) },
+      env,
+    );
+    assert.match(outputs.verdict, reason, JSON.stringify(env));
+    assert.equal(outputs.review, undefined);
+  }
+});
+
+// A head that commits a symlink at the diff path (to /dev/null, say) must not
+// pass for a small diff: the size comes from the writing step, and the path
+// must be a regular file.
+test("a diff path the head replaced with a symlink is incomplete", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-symlink-");
+  const link = path.join(dir, "pr.diff");
+  fs.symlinkSync("/dev/null", link);
+  const outputs = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: 1,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    { SCOPE_DIFF: link, SCOPE_BYTES: "0" },
+  );
+  assert.match(outputs.verdict, /not a regular file/u);
+  assert.equal(outputs.review, undefined);
+});
+
+test("every model leg wires the coverage counts and asks the model for files_read", () => {
+  for (const job of [key, subscription, fallback]) {
+    const env = step(job, "extract").env;
+    assert.equal(
+      env.SCOPE_FILES,
+      `\${{ steps.scope.outputs.files }}`,
+      job.name,
+    );
+    assert.equal(
+      env.WHOLE_FILES,
+      `\${{ steps.full-diff.outputs.files }}`,
+      job.name,
+    );
+    assert.equal(
+      env.SCOPE_DIFF,
+      `\${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}`,
+      job.name,
+    );
+    assert.equal(
+      step(job, "scope").env.DIFF_FILE,
+      ".claude-lane/incremental.diff",
+    );
+    assert.equal(step(job, "full-diff").env.DIFF_FILE, ".claude-lane/pr.diff");
+    assert.match(step(job, "full-diff").run, /^ {2}echo "files=\$files"$/mu);
+    assert.match(step(job, "full-diff").run, /^ {2}echo "bytes=\$bytes"$/mu);
+    assert.match(step(job, "full-diff").run, /\| tee "\$DIFF_FILE" \| wc -c/u);
+    assert.match(step(job, "full-diff").run, /^set -o pipefail$/mu);
+    assert.match(step(job, "scope").with.script, /core\.setOutput\("bytes", /u);
+    assert.equal(
+      env.SCOPE_BYTES,
+      `\${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}`,
+      job.name,
+    );
+    // Each count is the length of the list the model counts against.
+    assert.match(
+      step(job, "scope").with.script,
+      /core\.setOutput\("files", String\(kept\.length\)\);/u,
+    );
+    assert.equal(
+      step(job, "scope").env.FILE_LIST,
+      ".claude-lane/incremental-files.txt",
+    );
+    assert.equal(
+      step(job, "full-diff").env.FILE_LIST,
+      ".claude-lane/files.txt",
+    );
+    assert.match(
+      step(job, "full-diff").run,
+      /files="\$\(git diff --name-only --diff-filter=d "\$base" "\$HEAD_SHA" "\$\{only\[@\]\}" \| tee "\$FILE_LIST" \| wc -l/u,
+    );
+    // The data files the extract step names are the ones the scope's own
+    // step left out: the scope step's on an incremental review, else the
+    // full-diff step's.
+    assert.equal(
+      env.DATA,
+      `\${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.data || steps.full-diff.outputs.data }}`,
+      job.name,
+    );
+    assert.equal(
+      env.DATA_LIST,
+      `\${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-data-files.txt' || '.claude-lane/data-files.txt' }}`,
+      job.name,
+    );
+    assert.equal(
+      step(job, "scope").env.DATA_LIST,
+      ".claude-lane/incremental-data-files.txt",
+    );
+    assert.equal(
+      step(job, "full-diff").env.GENERATED_DATA,
+      `\${{ inputs.generated-data }}`,
+    );
+    assert.equal(
+      step(job, "scope").env.GENERATED_DATA,
+      `\${{ inputs.generated-data }}`,
+    );
+    assert.equal(
+      step(job, "scope").env.HOLD_PATHS,
+      `\${{ inputs.hold-paths }}`,
+    );
+    const compose = step(job, "compose").with.script;
+    assert.match(
+      compose,
+      /required: \["findings", "files_read", "summary", "comments"\]/u,
+    );
+    assert.match(compose, /"- files_read: /u);
+    for (const s of ["compose", "extract"]) {
+      assert.equal(
+        step(job, s).env.COPIES,
+        `\${{ steps.full-diff.outputs.copies }}`,
+        `${job.name} ${s}`,
+      );
+      assert.equal(step(job, s).env.SCOPE, `\${{ steps.scope.outputs.scope }}`);
+    }
+    assert.match(
+      step(job, "full-diff").run,
+      /^echo "copies=\$copies" >> "\$GITHUB_OUTPUT"$/mu,
+    );
+    assert.equal(
+      step(job, "extract").with.script,
+      step(key, "extract").with.script,
+    );
+  }
+});
+
+// Identical changes: the full-diff step groups modified regular files whose
+// modes and blobs match on both sides, the prompt names the groups, and the
+// copies count as read.
+// One path per SENSITIVE_PATHS glob, nested where the glob allows.
+const SENSITIVE_ADDITIONS = [
+  ".github/workflows/zz-ci.yml",
+  "plugins/p/hooks/guard.mjs",
+  "tools/package.json",
+  "scripts/deep/setup.sh",
+  "scripts/deep/setup.bash",
+  "scripts/deep/setup.zsh",
+  "scripts/deep/Setup.ps1",
+  "scripts/deep/Setup.psm1",
+  "plugins/p/.claude/settings.json",
+  "plugins/p/.mcp.json",
+  "actions/x/action.yaml",
+  "lefthook.yml",
+  ".husky/pre-commit",
+];
+
+test("the workflow names one sensitive list and one file cap, which no job or step overrides", () => {
+  assert.deepEqual(workflow.env.SENSITIVE_PATHS.trim().split("\n"), [
+    ".github/**",
+    "**/hooks/**",
+    "**/package.json",
+    "**/*.sh",
+    "**/*.bash",
+    "**/*.zsh",
+    "**/*.ps1",
+    "**/*.psm1",
+    "**/.claude/**",
+    "**/.mcp.json",
+    "**/action.y*ml",
+    "lefthook.yml",
+    ".husky/**",
+  ]);
+  assert.match(workflow.env.MAX_CHUNK_FILES, /^[1-9][0-9]*$/u);
+  for (const job of [key, subscription, fallback]) {
+    assert.equal(job.env?.SENSITIVE_PATHS, undefined, job.name);
+    assert.equal(job.env?.MAX_CHUNK_FILES, undefined, job.name);
+  }
+  for (const job of [key, subscription, fallback])
+    for (const s of job.steps) {
+      assert.equal(s.env?.SENSITIVE_PATHS, undefined, s.name);
+      assert.equal(s.env?.MAX_CHUNK_FILES, undefined, s.name);
+    }
+});
+
+test("the full-diff step groups identical modifications, and identical additions apart, never a hold-paths match, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const write = (root, file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-identical-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    // a, b and c make one identical change; .github/CODEOWNERS, d (made
+    // executable) and 0/package.json (a sensitive path that sorts first) make
+    // it too but must not join. x and y converge on one post-image from
+    // different pre-images, as do control.yml and aaa.txt truncated to empty.
+    for (const p of ["a", "b", "c", "d"])
+      write(origin, `${p}/lib.mjs`, "old\n");
+    write(origin, ".github/CODEOWNERS", "old\n");
+    write(origin, "0/package.json", "old\n");
+    write(origin, "gone.mjs", "old\n");
+    write(origin, "x.js", "timeout = 10\n");
+    write(origin, "y.js", "timeout = 300\n");
+    write(origin, "aaa.txt", "harmless\n");
+    write(origin, "control.yml", "kill-switch: on\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const p of ["a", "b", "c", "d"])
+      write(origin, `${p}/lib.mjs`, "synced\n");
+    write(origin, ".github/CODEOWNERS", "synced\n");
+    write(origin, "0/package.json", "synced\n");
+    fs.rmSync(path.join(origin, "gone.mjs"));
+    // added.mjs and added2.mjs add the same file, which joins no modification;
+    // run.sh adds it executable, so it joins neither, and bin/tool-a and
+    // bin/tool-b add it executable at paths no glob lists, which never group.
+    write(origin, "added.mjs", "synced\n");
+    write(origin, "added2.mjs", "synced\n");
+    write(origin, "run.sh", "synced\n");
+    write(origin, "bin/tool-a", "synced\n");
+    write(origin, "bin/tool-b", "synced\n");
+    // The same addition at a sensitive path joins no group, whatever sorts
+    // first.
+    for (const sensitive of SENSITIVE_ADDITIONS)
+      write(origin, sensitive, "synced\n");
+    write(origin, "x.js", "timeout = 20\n");
+    write(origin, "y.js", "timeout = 20\n");
+    write(origin, "aaa.txt", "");
+    write(origin, "control.yml", "");
+    git(origin, "add", "-A");
+    git(
+      origin,
+      "update-index",
+      "--chmod=+x",
+      "d/lib.mjs",
+      "run.sh",
+      "bin/tool-a",
+      "bin/tool-b",
+    );
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const run = (
+      prepare = () => {},
+      holdPaths = "**/CODEOWNERS\n",
+      sensitivePaths = workflow.env.SENSITIVE_PATHS,
+    ) => {
+      const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+      git(dir, "clone", "--quiet", origin, work);
+      prepare(work);
+      const output = path.join(work, "..", `${path.basename(work)}.out`);
+      const fullDiff = step(job, "full-diff");
+      const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          MERGE_BASE: base,
+          HEAD_SHA: head,
+          DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
+          HOLD_PATHS: holdPaths,
+          SENSITIVE_PATHS: sensitivePaths,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return { out: fs.readFileSync(output, "utf8"), work };
+    };
+    assert.equal(
+      step(job, "full-diff").env.HOLD_PATHS,
+      `\${{ inputs.hold-paths }}`,
+    );
+    // The sensitive list is the workflow's one, which no step overrides.
+    assert.equal(step(job, "full-diff").env.SENSITIVE_PATHS, undefined);
+    // Different pre-images (x and y, control.yml and aaa.txt), a mode
+    // change (d), a deletion, an executable addition, a hold-paths match and
+    // a sensitive modification or addition never group.
+    const grouped = run();
+    assert.match(grouped.out, /^written=true$/mu, job.name);
+    assert.match(grouped.out, /^copies=3$/mu, job.name);
+    assert.equal(
+      fs.readFileSync(
+        path.join(grouped.work, ".claude-lane/identical.txt"),
+        "utf8",
+      ),
+      "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\nadded.mjs\tadded2.mjs\n",
+    );
+    // With no hold-paths the trusted file still stays out, as a sensitive
+    // modification; a hold-paths match in any position leaves the group.
+    const identical = (holdPaths) =>
+      fs.readFileSync(
+        path.join(run(undefined, holdPaths).work, ".claude-lane/identical.txt"),
+        "utf8",
+      );
+    assert.equal(
+      identical(""),
+      "a/lib.mjs\tb/lib.mjs\tc/lib.mjs\nadded.mjs\tadded2.mjs\n",
+    );
+    assert.equal(
+      identical(" **/CODEOWNERS \nc/**\nadded2.mjs\n"),
+      "a/lib.mjs\tb/lib.mjs\n",
+    );
+    // With no sensitive list, nothing groups.
+    const unlisted = run(undefined, undefined, "");
+    assert.match(unlisted.out, /^copies=0$/mu);
+    assert.equal(
+      fs.existsSync(path.join(unlisted.work, ".claude-lane/identical.txt")),
+      false,
+    );
+    // A file the head planted at the path groups nothing and is left as is.
+    const planted = run((work) =>
+      write(work, ".claude-lane/identical.txt", "x\n"),
+    );
+    assert.match(planted.out, /^copies=0$/mu);
+    assert.equal(
+      fs.readFileSync(
+        path.join(planted.work, ".claude-lane/identical.txt"),
+        "utf8",
+      ),
+      "x\n",
+    );
+  }
+});
+
+// A generated copy the base branch's generated-copies map declares groups
+// with the other copies of its source despite its mode or a SENSITIVE_PATHS
+// match; claude-code-plugins#12354 changes 20 such hook-utils.sh copies.
+test("the full-diff step groups identical copies the base branch declares generated, and only those, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const write = (root, file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  };
+  const copy = (p) => `plugins/${p}/hooks/hook-utils.sh`;
+  // p, q, r and h are declared at the base; u and v only at the head; w is
+  // declared but stays a regular file while the others are executable. x and
+  // y are declared from a second source with the same content and mode as p,
+  // q and r, so they group apart. docs/a.txt is declared and docs/b.txt is
+  // not; with the same content, neither groups.
+  const declared = ["p", "q", "r", "h", "w"];
+  const map = (names) =>
+    `# <canonical> <copy>\n${names.map((p) => `lib/hook-utils.sh ${copy(p)}`).join("\n")}\n` +
+    `lib/other.sh ${copy("x")}\nlib/other.sh ${copy("y")}\nlib/doc.txt docs/a.txt\n`;
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-generated-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    const tree = (version, names) => {
+      write(origin, "lib/hook-utils.sh", `${version}\n`);
+      write(origin, "lib/other.sh", `other ${version}\n`);
+      write(origin, "lib/doc.txt", `doc source ${version}\n`);
+      for (const p of [...declared, "u", "v", "x", "y"])
+        write(origin, copy(p), `# GENERATED\n${version}\n`);
+      for (const p of ["docs/a.txt", "docs/b.txt"])
+        write(origin, p, `doc ${version}\n`);
+      for (const p of ["bin/tool-a", "bin/tool-b"])
+        write(origin, p, `${version}\n`);
+      write(origin, "scripts/shared-copies.txt", map(names));
+      git(origin, "add", "-A");
+      git(
+        origin,
+        "update-index",
+        "--chmod=+x",
+        "lib/hook-utils.sh",
+        ...["p", "q", "r", "h", "u", "v", "x", "y"].map(copy),
+        "bin/tool-a",
+        "bin/tool-b",
+      );
+      git(origin, "commit", "--quiet", "-m", version);
+      return git(origin, "rev-parse", "HEAD");
+    };
+    const base = tree("v1", declared);
+    const head = tree("v2", [...declared, "u", "v"]);
+    const fullDiff = step(job, "full-diff");
+    assert.equal(
+      fullDiff.env.GENERATED_COPIES,
+      `\${{ inputs.generated-copies }}`,
+    );
+    const run = (generatedCopies) => {
+      const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+      git(dir, "clone", "--quiet", origin, work);
+      const output = path.join(work, "..", `${path.basename(work)}.out`);
+      const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          MERGE_BASE: base,
+          HEAD_SHA: head,
+          DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
+          HOLD_PATHS: "plugins/h/**\n",
+          SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+          GENERATED_COPIES: generatedCopies,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const identical = path.join(work, ".claude-lane/identical.txt");
+      return {
+        out: fs.readFileSync(output, "utf8"),
+        identical: fs.existsSync(identical)
+          ? fs.readFileSync(identical, "utf8")
+          : undefined,
+      };
+    };
+    // The copies the base declares group, but h (a hold-paths match) and w
+    // (another mode); u and v, declared only at the head with content their
+    // source does not generate, and the undeclared
+    // executables in bin never group, nor does the canonical, whose change
+    // differs by the generated header. x and y, copies of another source,
+    // form their own group; docs/a.txt never groups with its undeclared twin.
+    const grouped = run("scripts/shared-copies.txt");
+    assert.match(grouped.out, /^copies=3$/mu, job.name);
+    assert.equal(
+      grouped.identical,
+      `${["p", "q", "r"].map(copy).join("\t")}\n${["x", "y"].map(copy).join("\t")}\n`,
+    );
+    // With no map, or a map the base does not hold, no copy is declared: only
+    // the two identical regular files in docs group, as any undeclared pair.
+    for (const generatedCopies of ["", "scripts/missing.txt"]) {
+      const none = run(generatedCopies);
+      assert.match(none.out, /^written=true$/mu, job.name);
+      assert.match(none.out, /^copies=1$/mu, job.name);
+      assert.equal(none.identical, "docs/a.txt\tdocs/b.txt\n", job.name);
+    }
+  }
+});
+
+// Runs one leg's full-diff step on a base holding `base` and a head adding
+// `added`, each a map of path to text, with `baseMap` and `headMap` as the
+// generated-copies file at each; `executable` paths are mode 755 at both.
+// Returns the identical-files list (or undefined) and the step's outputs.
+function headCopiesRun(job, { base, added, baseMap, headMap, executable }) {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const write = (root, file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-head-generated-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const commit = (files, map) => {
+    for (const [p, text] of Object.entries(files)) write(origin, p, text);
+    write(origin, "scripts/shared-copies.txt", `# <canonical> <copy>\n${map}`);
+    git(origin, "add", "-A");
+    const modes = executable.filter((p) => fs.existsSync(path.join(origin, p)));
+    if (modes.length) git(origin, "update-index", "--chmod=+x", ...modes);
+    git(origin, "commit", "--quiet", "-m", "c");
+    return git(origin, "rev-parse", "HEAD");
+  };
+  const baseSha = commit(base, baseMap);
+  const head = commit(added, headMap);
+  const fullDiff = step(job, "full-diff");
+  const work = path.join(dir, "work");
+  git(dir, "clone", "--quiet", origin, work);
+  const output = path.join(dir, "work.out");
+  const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      HOME: dir,
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      GITHUB_OUTPUT: output,
+      MERGE_BASE: baseSha,
+      HEAD_SHA: head,
+      DIFF_FILE: fullDiff.env.DIFF_FILE,
+      FILE_LIST: fullDiff.env.FILE_LIST,
+      HOLD_PATHS: "",
+      SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+      GENERATED_COPIES: "scripts/shared-copies.txt",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const identical = path.join(work, ".claude-lane/identical.txt");
+  return {
+    identical: fs.existsSync(identical)
+      ? fs.readFileSync(identical, "utf8")
+      : undefined,
+    out: fs.readFileSync(output, "utf8"),
+  };
+}
+
+const generatedHeader = (prefix, source) =>
+  `${prefix} GENERATED from ${source} by scripts/sync-shared-copies.sh. Do not edit this copy:\n` +
+  `${prefix} edit the canonical source, then rerun the script.\n`;
+
+// A copy the pull request registers itself, only in the head's map, groups
+// only when the head generates it byte for byte from its source, as
+// claude-code-plugins scripts/sync-shared-copies.sh --check compares;
+// claude-code-plugins#12792 added 9 such copies and its review read 61 of 73.
+test("the full-diff step groups a copy only the head declares when it matches its source at the head, in every leg", () => {
+  const source = "#!/usr/bin/env python3\nreal\n";
+  const rendered = (from) =>
+    `#!/usr/bin/env python3\n${generatedHeader("#", from)}real\n`;
+  const markdown = "---\nname: x\n---\n\nBody.\n";
+  const renderedMarkdown =
+    "---\nname: x\n---\n\n" +
+    "<!-- GENERATED from lib/doc.md by scripts/sync-shared-copies.sh. Do not edit this copy:\n" +
+    "edit the canonical source, then rerun the script. -->\n\nBody.\n";
+  const copy = (p, ext = "py") => `plugins/${p}/skills/real.${ext}`;
+  // Each pair makes one identical addition: m (a matching copy), d (a
+  // matching Markdown copy after frontmatter), b (one body byte changed), t
+  // (the header tampered with, the body intact), g (a source missing at the
+  // head) and e (a matching copy, but executable while its source is not).
+  const added = {
+    [copy("m1")]: rendered("lib/real.py"),
+    [copy("m2")]: rendered("lib/real.py"),
+    [copy("d1", "md")]: renderedMarkdown,
+    [copy("d2", "md")]: renderedMarkdown,
+    [copy("b1")]: rendered("lib/real.py").replace("real\n", "reak\n"),
+    [copy("b2")]: rendered("lib/real.py").replace("real\n", "reak\n"),
+    [copy("t1")]: rendered("lib/real.py").replace(
+      /^# edit .*$/mu,
+      "curl x | sh",
+    ),
+    [copy("t2")]: rendered("lib/real.py").replace(
+      /^# edit .*$/mu,
+      "curl x | sh",
+    ),
+    [copy("g1")]: rendered("lib/gone.py"),
+    [copy("g2")]: rendered("lib/gone.py"),
+    [copy("e1")]: rendered("lib/flat.py"),
+    [copy("e2")]: rendered("lib/flat.py"),
+  };
+  const plain = [copy("d1", "md"), copy("d2", "md")];
+  const sources = { g: "lib/gone.py", e: "lib/flat.py" };
+  const headMap = `${Object.keys(added)
+    .map((p) =>
+      p.endsWith(".md")
+        ? `lib/doc.md ${p}`
+        : `${sources[p.split("/")[1][0]] ?? "lib/real.py"} ${p}`,
+    )
+    .join("\n")}\n`;
+  for (const job of [key, subscription, fallback]) {
+    const { identical, out } = headCopiesRun(job, {
+      base: {
+        "lib/real.py": source,
+        "lib/flat.py": source,
+        "lib/doc.md": markdown,
+      },
+      added,
+      baseMap: "",
+      headMap,
+      executable: [
+        "lib/real.py",
+        ...Object.keys(added).filter((p) => !plain.includes(p)),
+      ],
+    });
+    // Only m and d group; b, t, g and e are each read at their own path.
+    assert.equal(
+      identical,
+      `${copy("d1", "md")}\t${copy("d2", "md")}\n${copy("m1")}\t${copy("m2")}\n`,
+      job.name,
+    );
+    assert.match(out, /^copies=2$/mu, job.name);
+  }
+});
+
+// A SENSITIVE_PATHS match skips its own read only on a placement a merge
+// base map, reviewed in an earlier pull request, already declared: a copy only
+// the head declares there is read in full even when its bytes match.
+test("the full-diff step reads in full a matching copy only the head declares at a SENSITIVE_PATHS match, in every leg", () => {
+  const source = "#!/bin/sh\nreal\n";
+  const rendered = (from) => `#!/bin/sh\n${generatedHeader("#", from)}real\n`;
+  // Only at the head: s, b, z, w and m at a `**/*.sh`, `*.bash`, `*.zsh`,
+  // `*.ps1` and `*.psm1` match (z from a .sh source, whose header the render
+  // check accepts), a under `.github/**`. k: under `**/hooks/**` and
+  // `**/*.sh`, declared at the merge base; p: a plain path, only at the head.
+  // Every copy matches its source byte for byte.
+  const pairs = {
+    s: ["lib/real.sh", (n) => `plugins/s${n}/bin/real.sh`],
+    b: ["lib/real.bash", (n) => `plugins/b${n}/bin/real.bash`],
+    z: ["lib/real.sh", (n) => `plugins/z${n}/bin/real.zsh`],
+    w: ["lib/real.ps1", (n) => `plugins/w${n}/bin/real.ps1`],
+    m: ["lib/real.psm1", (n) => `plugins/m${n}/bin/real.psm1`],
+    a: ["lib/real.py", (n) => `.github/scripts/a${n}/real.py`],
+    k: ["lib/real.sh", (n) => `plugins/k${n}/hooks/real.sh`],
+    p: ["lib/real.py", (n) => `plugins/p${n}/skills/real.py`],
+  };
+  const sources = [...new Set(Object.values(pairs).map(([from]) => from))];
+  const line = (id) =>
+    [1, 2].map((n) => `${pairs[id][0]} ${pairs[id][1](n)}\n`).join("");
+  const added = Object.fromEntries(
+    Object.values(pairs).flatMap(([from, to]) =>
+      [1, 2].map((n) => [to(n), rendered(from)]),
+    ),
+  );
+  for (const job of [key, subscription, fallback]) {
+    const { identical, out } = headCopiesRun(job, {
+      base: Object.fromEntries(sources.map((from) => [from, source])),
+      added,
+      baseMap: line("k"),
+      headMap: Object.keys(pairs).map(line).join(""),
+      executable: Object.keys(added).concat(sources),
+    });
+    assert.equal(
+      identical,
+      `${pairs.k[1](1)}\t${pairs.k[1](2)}\n${pairs.p[1](1)}\t${pairs.p[1](2)}\n`,
+      job.name,
+    );
+    assert.match(out, /^copies=2$/mu, job.name);
+  }
+});
+
+// A push like claude-code-plugins#12767's: 21 files changed since the last
+// review, most of them identical copies, while the whole pull request holds
+// more copies than the push. Here 19 of the 21 are executable hook copies the
+// base branch declares of one source. The scope, full-diff, split, compose and
+// extract steps run in order on one git fixture of a base, a reviewed head and
+// a pushed head.
+function incrementalCopiesFixture() {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-incremental-copies-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const copy = (name) => `plugins/${name}/hooks/hook-utils.sh`;
+  const copies = Array.from({ length: 19 }, (_, i) =>
+    copy(`p${String(i).padStart(2, "0")}`),
+  );
+  const executable = [
+    "lib/hook-utils.sh",
+    "lib/other.sh",
+    ...copies,
+    copy("x"),
+    copy("y"),
+  ];
+  // Each commit writes the files given, from the base's tree.
+  const commit = (parent, files) => {
+    if (parent) git(origin, "checkout", "--quiet", "--detach", parent);
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+      fs.writeFileSync(path.join(origin, file), text);
+    }
+    git(origin, "add", "-A");
+    git(origin, "update-index", "--chmod=+x", ...executable);
+    git(origin, "commit", "--quiet", "-m", "c");
+    const sha = git(origin, "rev-parse", "HEAD");
+    // A branch per commit, so a clone holds it.
+    if (parent) git(origin, "branch", `c-${sha}`, sha);
+    return sha;
+  };
+  const tree = (version, overrides = {}) => ({
+    "lib/hook-utils.sh": `${version}\n`,
+    "lib/other.sh": `other ${version}\n`,
+    ...Object.fromEntries(copies.map((p) => [p, `# GENERATED\n${version}\n`])),
+    [copy("x")]: `# GENERATED other\n${version}\n`,
+    [copy("y")]: `# GENERATED other\n${version}\n`,
+    "src/a.js": `a ${version}\n`,
+    ...overrides,
+  });
+  const base = commit("", {
+    ...tree("v1"),
+    "scripts/shared-copies.txt": `${[
+      ...copies.map((p) => `lib/hook-utils.sh ${p}`),
+      `lib/other.sh ${copy("x")}`,
+      `lib/other.sh ${copy("y")}`,
+    ].join("\n")}\n`,
+  });
+  const clone = () => {
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", "--no-checkout", origin, work);
+    return work;
+  };
+  // The compare API's view of a push: each file changed since the reviewed
+  // head, with git's own patch from the first hunk on.
+  const since = (last, head) =>
+    git(origin, "diff", "--name-status", "--no-renames", last, head)
+      .split("\n")
+      .map((line) => {
+        const [status, filename] = line.split("\t");
+        const patch = git(origin, "diff", last, head, "--", filename);
+        return {
+          filename,
+          status: { M: "modified", A: "added" }[status],
+          patch: patch.slice(patch.indexOf("@@")),
+          changes: 2,
+        };
+      });
+  const prFiles = (head) =>
+    git(origin, "diff", "--name-status", "--no-renames", base, head)
+      .split("\n")
+      .map((line) => {
+        const [status, filename] = line.split("\t");
+        return { filename, status: { M: "modified", A: "added" }[status] };
+      });
+  return { dir, base, commit, tree, copy, copies, clone, since, prFiles };
+}
+
+// Runs one leg's scope, full-diff, split and compose steps for a push from
+// last to head, then its extract step on a review that read `filesRead`.
+async function incrementalReview(
+  fixture,
+  job,
+  last,
+  head,
+  filesRead,
+  change = {},
+) {
+  const { spawnSync } = require("node:child_process");
+  const work = fixture.clone();
+  const scopeStep = step(job, "scope");
+  const fullDiff = step(job, "full-diff");
+  const compares = {
+    [`main...${head}`]: { merge_base_commit: { sha: fixture.base } },
+    [`main...${last}`]: { merge_base_commit: { sha: fixture.base } },
+    [`${last}...${head}`]: {
+      status: "ahead",
+      files: fixture.since(last, head),
+    },
+  };
+  const prFiles = fixture.prFiles(head);
+  const github = {
+    hook: { after: () => {}, error: () => {} },
+    paginate: async (fn) => fn(),
+    rest: {
+      issues: {
+        listComments: () => [
+          {
+            id: 41,
+            user: { login: "github-actions[bot]" },
+            body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${last} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=${fixture.base} caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
+          },
+        ],
+      },
+      pulls: {
+        listFiles: () => prFiles,
+        get: async () => ({
+          data: { head: { sha: head }, changed_files: prFiles.length },
+        }),
+      },
+      repos: {
+        compareCommitsWithBasehead: async ({ basehead }) => {
+          assert.ok(basehead in compares, basehead);
+          return { data: compares[basehead] };
+        },
+      },
+    },
+  };
+  const scope = {};
+  const values = {
+    GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
+    LANE: "claude-review",
+    INCREMENTAL: "true",
+    DOCS_ONLY_PATHS: "",
+    EVENT_ACTION: "synchronize",
+    PR_NUMBER: "7",
+    HEAD_SHA: head,
+    BASE_REF: "main",
+    DIFF_FILE: scopeStep.env.DIFF_FILE,
+    FILE_LIST: scopeStep.env.FILE_LIST,
+    DATA_LIST: scopeStep.env.DATA_LIST,
+    HOLD_PATHS: "",
+    GENERATED_DATA: "",
+    GIT_TOKEN: "test-token",
+    GITHUB_SERVER_URL: "https://github.invalid",
+    RUNNER_TEMP: work,
+  };
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  const cwd = process.cwd();
+  Object.assign(process.env, values);
+  process.chdir(work);
+  try {
+    await new AsyncFunction(
+      "require",
+      "github",
+      "context",
+      "core",
+      scopeStep.with.script,
+    )(
+      require,
+      github,
+      { repo: { owner: "o", repo: "r" } },
+      {
+        setSecret: () => {},
+        setOutput: (k, v) => {
+          scope[k] = v;
+        },
+        info: () => {},
+        warning: (message) => assert.fail(message),
+      },
+    );
+  } finally {
+    process.chdir(cwd);
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  assert.equal(scope.scope, "incremental", job.name);
+  // The full-diff step, with the scope step's outputs as the workflow wires them.
+  const output = `${work}.full-diff.out`;
+  const run = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      HOME: fixture.dir,
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      GITHUB_OUTPUT: output,
+      MERGE_BASE: scope["merge-base"],
+      HEAD_SHA: head,
+      DIFF_FILE: fullDiff.env.DIFF_FILE,
+      FILE_LIST: fullDiff.env.FILE_LIST,
+      HOLD_PATHS: "",
+      SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+      GENERATED_COPIES: "scripts/shared-copies.txt",
+      SCOPE: scope.scope,
+      SINCE: scope.since,
+      SCOPE_LIST: scopeStep.env.FILE_LIST,
+      ...change,
+    },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(
+    fullDiff.env.SCOPE,
+    `\${{ steps.scope.outputs.scope }}`,
+    job.name,
+  );
+  assert.equal(
+    fullDiff.env.SINCE,
+    `\${{ steps.scope.outputs.since }}`,
+    job.name,
+  );
+  assert.equal(fullDiff.env.SCOPE_LIST, scopeStep.env.FILE_LIST, job.name);
+  const full = fs.readFileSync(output, "utf8");
+  const copies = /^copies=(.*)$/mu.exec(full)?.[1];
+  const identicalFile = path.join(work, ".claude-lane/identical.txt");
+  const identical = fs.existsSync(identicalFile)
+    ? fs.readFileSync(identicalFile, "utf8")
+    : undefined;
+  const splitStep = step(job, "split");
+  const splitOut = `${work}.split.out`;
+  fs.writeFileSync(splitOut, "");
+  const cut = spawnSync("bash", ["-e", "-c", splitStep.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      GITHUB_OUTPUT: splitOut,
+      ...workflow.env,
+      SOURCE: path.join(fixture.dir, "no-source"),
+      SCOPE_DIFF: ".claude-lane/incremental.diff",
+      SCOPE_BYTES: scope.bytes,
+      CHUNK_DIR: splitStep.env.CHUNK_DIR,
+      READ_BUDGET: splitStep.env.READ_BUDGET,
+      MAX_CHUNKS: splitStep.env.MAX_CHUNKS,
+      SCOPE: scope.scope,
+      COPIES: copies,
+    },
+  });
+  assert.equal(cut.status, 0, cut.stderr);
+  const chunks = /^chunks=(.*)$/mu.exec(fs.readFileSync(splitOut, "utf8"))?.[1];
+  const prompt = fs.readFileSync(
+    (
+      await composeOutputs(
+        {
+          SCOPE: scope.scope,
+          COPIES: copies,
+          CHUNKS: chunks,
+          SCOPE_NOTE: scope.note,
+        },
+        job,
+      )
+    )["prompt-file"],
+    "utf8",
+  );
+  const extracted = await extract(
+    {
+      structured: JSON.stringify({
+        findings: 0,
+        files_read: filesRead,
+        summary: "S",
+        comments: [],
+      }),
+    },
+    {
+      SCOPE: scope.scope,
+      FULL_DIFF: "",
+      SCOPE_FILES: scope.files,
+      SCOPE_DIFF: path.join(work, ".claude-lane/incremental.diff"),
+      SCOPE_BYTES: scope.bytes,
+      CHUNKS: chunks,
+      COPIES: copies,
+    },
+    job,
+  );
+  return {
+    scope,
+    full,
+    stdout: run.stdout,
+    copies,
+    identical,
+    prompt,
+    coverage: JSON.parse(extracted.review).coverage,
+  };
+}
+
+test("an incremental review counts the declared copies in its scope as read, in every leg", async () => {
+  const fixture = incrementalCopiesFixture();
+  const { tree, copy, copies } = fixture;
+  // The reviewed head changed every file; the push changes the source, the
+  // 19 copies and src/a.js again: 21 files, 3 of them distinct. x and y, the
+  // other source's identical copies, are out of the push's scope.
+  const last = fixture.commit(fixture.base, tree("v2"));
+  const head = fixture.commit(
+    last,
+    tree("v3", {
+      "lib/other.sh": "other v2\n",
+      [copy("x")]: "# GENERATED other\nv2\n",
+      [copy("y")]: "# GENERATED other\nv2\n",
+    }),
+  );
+  for (const job of [key, subscription, fallback]) {
+    const review = await incrementalReview(fixture, job, last, head, 3);
+    // 3 distinct files read and 18 copies counted: 21 of 21.
+    assert.deepEqual(review.coverage, { read: 21, changed: 21 }, job.name);
+    assert.equal(review.scope.files, "21", job.name);
+    assert.equal(review.copies, "18", job.name);
+    assert.equal(review.identical, `${copies.join("\t")}\n`, job.name);
+    assert.match(
+      review.prompt,
+      /^IDENTICAL FILES: each line of \.claude-lane\/identical\.txt /mu,
+      job.name,
+    );
+    assert.match(
+      review.prompt,
+      /files_read counts\nthe first path only/u,
+      job.name,
+    );
+    // A review that read one distinct file fewer stays partial.
+    assert.deepEqual(
+      (await incrementalReview(fixture, job, last, head, 2)).coverage,
+      { read: 20, changed: 21 },
+      job.name,
+    );
+  }
+});
+
+test("an incremental review groups only copies in its scope whose change since the review is identical, in every leg", async () => {
+  const fixture = incrementalCopiesFixture();
+  const { tree, copy, copies } = fixture;
+  // At the reviewed head p05 differed from its group, and x already had the
+  // push's content; y, x's one mate, changes alone. Every copy's whole change
+  // from the base is identical to its group's.
+  const stale = copies[5];
+  const last = fixture.commit(
+    fixture.base,
+    tree("v2", {
+      "lib/other.sh": "other v3\n",
+      [stale]: "# GENERATED\nstale\n",
+      [copy("x")]: "# GENERATED other\nv3\n",
+    }),
+  );
+  const head = fixture.commit(last, tree("v3"));
+  for (const job of [key, subscription, fallback]) {
+    // In scope: the source, src/a.js, the 19 copies and y.
+    const review = await incrementalReview(fixture, job, last, head, 3);
+    assert.equal(review.scope.files, "22", job.name);
+    assert.equal(review.copies, "17", job.name);
+    assert.equal(
+      review.identical,
+      `${copies.filter((p) => p !== stale).join("\t")}\n`,
+      job.name,
+    );
+    // p05 and y are read at their own paths: 5 distinct files.
+    assert.deepEqual(review.coverage, { read: 20, changed: 22 }, job.name);
+    assert.deepEqual(
+      (await incrementalReview(fixture, job, last, head, 5)).coverage,
+      { read: 22, changed: 22 },
+      job.name,
+    );
+    // A reviewed head the job cannot fetch groups nothing, with a warning.
+    const unfetched = await incrementalReview(fixture, job, last, head, 3, {
+      SINCE: "f".repeat(40),
+    });
+    assert.equal(unfetched.copies, "0", job.name);
+    assert.equal(unfetched.identical, undefined, job.name);
+    assert.match(unfetched.full, /^written=true$/mu, job.name);
+    assert.match(unfetched.stdout, /^::warning::/mu, job.name);
+    assert.doesNotMatch(unfetched.prompt, /IDENTICAL FILES/u, job.name);
+    assert.deepEqual(unfetched.coverage, { read: 3, changed: 22 }, job.name);
+  }
+});
+
+// The prompt is built by one script copied into each leg; a copy that drifts
+// tells one leg's model something the others do not.
+test("every model leg composes its prompt with the same script", () => {
+  for (const job of [subscription, fallback])
+    assert.equal(
+      step(job, "compose").with.script,
+      step(key, "compose").with.script,
+      job.name,
+    );
+});
+
+test("the prompt names the identical files only for a review that holds them once", async () => {
+  const line =
+    /^IDENTICAL FILES: each line of \.claude-lane\/identical\.txt /mu;
+  assert.match(await compose({ COPIES: "8", SCOPE: "whole" }), line);
+  assert.match(await compose({ COPIES: "8", SCOPE: "incremental" }), line);
+  assert.match(
+    await compose({ COPIES: "8", SCOPE: "whole" }),
+    /files_read counts\nthe first path only/u,
+  );
+  assert.match(
+    await compose({ COPIES: "8", SCOPE: "whole" }),
+    /^each copy's path, and report a copy whose path changes what its content does\.$/mu,
+  );
+  // Chunks the split step left the copies out of: every chunk's prompt says so.
+  const chunked = await composeOutputs({
+    COPIES: "8",
+    EXCLUDED: "8",
+    SCOPE: "whole",
+    CHUNKS: "2",
+    CHUNK_FILES: "10,9",
+  });
+  for (const file of [chunked["prompt-file"], chunked["prompt-file-2"]]) {
+    const text = fs.readFileSync(file, "utf8");
+    assert.match(text, line);
+    assert.match(
+      text,
+      /^The job left the copies out of every chunk and counts them as read\. Each first path is an ordinary file of\nits chunk: read its whole change and count it in files_read like any other file\.$/mu,
+    );
+    assert.doesNotMatch(text, /skip its copies/u);
+  }
+  const chunkedIncremental = await composeOutputs({
+    COPIES: "8",
+    EXCLUDED: "8",
+    SCOPE: "incremental",
+    CHUNKS: "2",
+    CHUNK_FILES: "10,9",
+  });
+  assert.match(
+    fs.readFileSync(chunkedIncremental["prompt-file-2"], "utf8"),
+    line,
+  );
+  for (const env of [
+    { COPIES: "0", SCOPE: "whole" },
+    { COPIES: "", SCOPE: "whole" },
+    { COPIES: "8x", SCOPE: "whole" },
+    { COPIES: "8", SCOPE: "whole", CHUNKS: "2", CHUNK_FILES: "10,9" },
+    { COPIES: "8", SCOPE: "incremental", CHUNKS: "2", CHUNK_FILES: "10,9" },
+    {
+      COPIES: "8",
+      EXCLUDED: "0",
+      SCOPE: "whole",
+      CHUNKS: "2",
+      CHUNK_FILES: "10,9",
+    },
+    {
+      COPIES: "8",
+      EXCLUDED: "0",
+      SCOPE: "incremental",
+      CHUNKS: "2",
+      CHUNK_FILES: "10,9",
+    },
+  ]) {
+    const outputs = await composeOutputs(env);
+    for (const file of [
+      outputs["prompt-file"],
+      outputs["prompt-file-2"],
+    ].filter(Boolean)) {
+      assert.doesNotMatch(
+        fs.readFileSync(file, "utf8"),
+        line,
+        JSON.stringify(env),
+      );
+    }
+  }
+});
+
+test("the copies count as read in one review, and coverage stays partial below the files in scope", async () => {
+  const review = (files_read) =>
+    JSON.stringify({ findings: 0, files_read, summary: "S", comments: [] });
+  const coverage = async (files_read, env) =>
+    JSON.parse(
+      (
+        await extract(
+          { structured: review(files_read) },
+          { WHOLE_FILES: "19", ...env },
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage(11, { COPIES: "8" }), {
+    read: 19,
+    changed: 19,
+  });
+  assert.deepEqual(await coverage(10, { COPIES: "8" }), {
+    read: 18,
+    changed: 19,
+  });
+  // An overclaim is capped before the copies are added.
+  assert.deepEqual(await coverage(19, { COPIES: "8" }), {
+    read: 19,
+    changed: 19,
+  });
+  // An incremental review counts the copies against its own scope.
+  const incremental = {
+    SCOPE: "incremental",
+    FULL_DIFF: "",
+    SCOPE_FILES: "19",
+  };
+  assert.deepEqual(await coverage(11, { ...incremental, COPIES: "8" }), {
+    read: 19,
+    changed: 19,
+  });
+  // No well-formed count below the files in scope: no credit.
+  for (const env of [
+    {},
+    { COPIES: "" },
+    { COPIES: "8x" },
+    { COPIES: "19" },
+    { ...incremental, COPIES: "19" },
+  ]) {
+    assert.deepEqual(
+      await coverage(11, env),
+      { read: 11, changed: 19 },
+      JSON.stringify(env),
+    );
+  }
+  // A chunked review gets credit only when its chunks hold exactly the
+  // files but the copies, which the split step left out.
+  const good = { findings: 0, files_read: 1, summary: "S", comments: [] };
+  const chunkedCoverage = async (env) =>
+    JSON.parse((await extractChunks([good, good], env)).review).coverage;
+  assert.deepEqual(await chunkedCoverage({ COPIES: "2" }), {
+    read: 2,
+    changed: 4,
+  });
+  assert.deepEqual(
+    await chunkedCoverage({ COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "1,1" }),
+    { read: 4, changed: 4 },
+  );
+  const chunkedIncremental = {
+    SCOPE: "incremental",
+    FULL_DIFF: "",
+    SCOPE_FILES: "4",
+  };
+  assert.deepEqual(
+    await chunkedCoverage({
+      ...chunkedIncremental,
+      COPIES: "2",
+      EXCLUDED: "2",
+      CHUNK_FILES: "1,1",
+    }),
+    { read: 4, changed: 4 },
+  );
+  for (const env of [
+    { COPIES: "2", EXCLUDED: "0", CHUNK_FILES: "1,1" },
+    { COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "2,1" },
+    { ...chunkedIncremental, COPIES: "2", EXCLUDED: "0", CHUNK_FILES: "1,1" },
+    { ...chunkedIncremental, COPIES: "2", EXCLUDED: "2", CHUNK_FILES: "2,1" },
+  ]) {
+    assert.equal((await chunkedCoverage(env)).read, 2, JSON.stringify(env));
+  }
+});
+
+test("the full-diff step fails when git diff fails inside its pipe", () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-pipefail-");
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, "git"),
+    '#!/usr/bin/env bash\n[ "$1" = diff ] && exit 128\nexit 0\n',
+    { mode: 0o755 },
+  );
+  const output = path.join(dir, "out");
+  fs.writeFileSync(output, "");
+  const result = require("node:child_process").spawnSync(
+    "bash",
+    ["-e", "-c", step(key, "full-diff").run],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        GH_TOKEN: "t",
+        MERGE_BASE: "b".repeat(40),
+        HEAD_SHA: "a".repeat(40),
+        DIFF_FILE: ".claude-lane/pr.diff",
+        FILE_LIST: ".claude-lane/files.txt",
+        GITHUB_OUTPUT: output,
+        GITHUB_SERVER_URL: "https://github.com",
+      },
+    },
+  );
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(fs.readFileSync(output, "utf8"), /written=true/u);
+});
+
+// A diff in scope over one review's read budget is reviewed in chunks of
+// whole files, one model step each, and only every chunk's verdict together
+// is a complete review.
+
+// Runs the split step in a fresh checkout with a stand-in for split-diff.py
+// that writes the chunks the real one would for the fixture: two files, then
+// one. The legs' split steps are one step by construction (the subscription
+// and fallback jobs repeat the key job's steps, asserted above), so the key
+// job's stands for all three.
+function split(env = {}, prepare = () => {}) {
+  const dir = makeTemporaryDirectory("pr-review-cli-split-");
+  const source = path.join(dir, "source");
+  const script = path.join(source, ".github/scripts/pr-review-main");
+  fs.mkdirSync(script, { recursive: true });
+  fs.writeFileSync(
+    path.join(script, "split-diff.py"),
+    [
+      "import sys",
+      "from pathlib import Path",
+      "patch, out = sys.argv[1], Path(sys.argv[2])",
+      "if Path(sys.argv[1]).read_text().startswith('TOO LARGE'): sys.exit(3)",
+      "(out / 'chunk-1.patch').write_text('diff --git a/a b/a\\n+1\\ndiff --git a/b b/b\\n+2\\n')",
+      "(out / 'chunk-2.patch').write_text('diff --git a/c b/c\\n+3\\n')",
+      "Path(sys.argv[5]).write_text('chunk 1 modified a\\n')",
+      "",
+    ].join("\n"),
+  );
+  const work = path.join(dir, "work");
+  fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
+  fs.writeFileSync(
+    path.join(work, ".claude-lane/pr.diff"),
+    "diff --git a/a b/a\n",
+  );
+  prepare(work);
+  const output = path.join(dir, "out");
+  fs.writeFileSync(output, "");
+  const s = step(key, "split");
+  const result = require("node:child_process").spawnSync(
+    "bash",
+    ["-e", "-c", s.run],
+    {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        SOURCE: source,
+        SCOPE_DIFF: ".claude-lane/pr.diff",
+        SCOPE_BYTES: "700000",
+        CHUNK_DIR: s.env.CHUNK_DIR,
+        READ_BUDGET: s.env.READ_BUDGET,
+        MAX_CHUNKS: s.env.MAX_CHUNKS,
+        MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
+        SCOPE: "whole",
+        COPIES: "0",
+        GITHUB_OUTPUT: output,
+        ...env,
+      },
+    },
+  );
+  return {
+    status: result.status,
+    out: fs.readFileSync(output, "utf8"),
+    stdout: result.stdout,
+    work,
+  };
+}
+
+test("the split step cuts only a diff over the read budget or the file cap, counting each chunk's files", () => {
+  const s = step(key, "split");
+  assert.equal(s.env.READ_BUDGET, "300000");
+  assert.match(
+    s.run,
+    /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
+  );
+  assert.match(
+    s.run,
+    /"\$CHUNK_DIR\/manifest\.txt" "\$READ_BUDGET" "\$MAX_CHUNK_FILES" \|\| status=\$\?$/mu,
+  );
+  const cut = split();
+  assert.equal(cut.status, 0);
+  assert.match(cut.out, /^chunks=2$/mu);
+  assert.match(cut.out, /^files=2,1$/mu);
+  assert.match(cut.out, /^excluded=0$/mu);
+  // The notice names the distinct bytes on a split too: with no copies they
+  // are the whole scope.
+  assert.match(
+    cut.stdout,
+    /^::notice title=pr-review-cli chunks::chunks=2 bytes=700000 distinct-bytes=700000 files=2,1 excluded=0$/mu,
+  );
+  // Within the budget, more files than one review reads whole are cut too.
+  const many = split({ SCOPE_BYTES: "1000" }, (work) =>
+    fs.writeFileSync(
+      path.join(work, ".claude-lane/pr.diff"),
+      Array.from({ length: 41 }, (_, i) => `diff --git a/f${i} b/f${i}\n`).join(
+        "",
+      ),
+    ),
+  );
+  assert.match(many.out, /^chunks=2$/mu);
+  // When the files but the copies fit one review, it is one review, which
+  // skips the copies, on a whole and an incremental review alike.
+  const withCopies = (env) =>
+    split({ SCOPE_BYTES: "1000", COPIES: "10", ...env }, (work) => {
+      fs.writeFileSync(
+        path.join(work, ".claude-lane/pr.diff"),
+        Array.from(
+          { length: 45 },
+          (_, i) => `diff --git a/f${i} b/f${i}\n`,
+        ).join(""),
+      );
+      fs.writeFileSync(
+        path.join(work, ".claude-lane/identical.txt"),
+        `${Array.from({ length: 11 }, (_, i) => `f${i}`).join("\t")}\n`,
+      );
+    });
+  assert.equal(withCopies().out, "chunks=1\n");
+  assert.equal(withCopies({ SCOPE: "incremental" }).out, "chunks=1\n");
+  // A copies count that does not match the file leaves nothing out, and the
+  // notice's distinct bytes are then the whole scope, never the measured
+  // remainder.
+  const mismatched = withCopies({ COPIES: "9" });
+  assert.match(mismatched.out, /^excluded=0$/mu);
+  assert.match(
+    mismatched.stdout,
+    /chunks::chunks=\d+ bytes=1000 distinct-bytes=1000 files=[\d,]+ excluded=0$/mu,
+  );
+  // A diff within the budget, or a size the job could not read, is one review.
+  for (const bytes of ["300000", "", "x"]) {
+    const one = split({ SCOPE_BYTES: bytes });
+    assert.equal(one.out, "chunks=1\n", JSON.stringify(bytes));
+    assert.equal(
+      fs.existsSync(path.join(one.work, ".claude-lane/chunks")),
+      false,
+    );
+  }
+  // A refused split, or a diff path the head made a symlink, is one review,
+  // which the extract step then calls partial for its size.
+  assert.equal(
+    split({}, (work) =>
+      fs.writeFileSync(path.join(work, ".claude-lane/pr.diff"), "TOO LARGE"),
+    ).out,
+    "chunks=1\n",
+  );
+  const linked = split({}, (work) => {
+    fs.rmSync(path.join(work, ".claude-lane/pr.diff"));
+    fs.symlinkSync("/dev/null", path.join(work, ".claude-lane/pr.diff"));
+  });
+  assert.equal(linked.out, "chunks=1\n");
+  // A chunk directory the head planted: one review, with a warning.
+  const planted = split({}, (work) =>
+    fs.mkdirSync(path.join(work, ".claude-lane/chunks")),
+  );
+  assert.equal(planted.status, 0);
+  assert.equal(planted.out, "chunks=1\n");
+});
+
+// claude-code-plugins#12896: a whole diff too large for MAX_CHUNKS chunks
+// whose files but the copies fit one review. It is one review of the diff
+// without the copies, which credits them, and is complete when read whole.
+test("a diff over every chunk whose files but the copies fit one review is one review of those files", async () => {
+  const body = (n) => "+x\n".repeat(n);
+  // f0 and its 36 copies at 40,000 bytes each, and 38 small distinct files.
+  const diff = [
+    ...Array.from(
+      { length: 37 },
+      (_, i) => `diff --git a/f${i} b/f${i}\n${body(13333)}`,
+    ),
+    ...Array.from(
+      { length: 38 },
+      (_, i) => `diff --git a/g${i} b/g${i}\n${body(10)}`,
+    ),
+  ].join("");
+  const bytes = String(Buffer.byteLength(diff));
+  assert.ok(Number(bytes) > 4 * 300000, bytes);
+  const cut = split({ SCOPE_BYTES: bytes, COPIES: "36" }, (work) => {
+    fs.writeFileSync(path.join(work, ".claude-lane/pr.diff"), diff);
+    fs.writeFileSync(
+      path.join(work, ".claude-lane/identical.txt"),
+      `${Array.from({ length: 37 }, (_, i) => `f${i}`).join("\t")}\n`,
+    );
+  });
+  assert.equal(cut.status, 0);
+  const out = Object.fromEntries(
+    cut.out
+      .trim()
+      .split("\n")
+      .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+  );
+  const distinct = fs.readFileSync(
+    path.join(cut.work, ".claude-lane/chunks/distinct.diff"),
+    "utf8",
+  );
+  assert.deepEqual(out, {
+    chunks: "1",
+    excluded: "36",
+    "distinct-bytes": String(Buffer.byteLength(distinct)),
+  });
+  assert.ok(Buffer.byteLength(distinct) <= 300000);
+  assert.deepEqual(
+    [...distinct.matchAll(/^diff --git a\/(\S+) /gmu)].map((m) => m[1]),
+    ["f0", ...Array.from({ length: 38 }, (_, i) => `g${i}`)],
+  );
+  // The one review reads the diff without the copies, and only then.
+  const note = /^DISTINCT DIFF: .*\n.*\.claude-lane\/chunks\/distinct\.diff/mu;
+  const prompt = await compose({
+    COPIES: "36",
+    EXCLUDED: out.excluded,
+    SCOPE: "whole",
+    CHUNKS: out.chunks,
+  });
+  assert.match(prompt, note);
+  assert.doesNotMatch(prompt, /skip its copies/u);
+  for (const env of [
+    { COPIES: "36", EXCLUDED: "", SCOPE: "whole", CHUNKS: "1" },
+    { COPIES: "36", EXCLUDED: "35", SCOPE: "whole", CHUNKS: "1" },
+    { COPIES: "0", EXCLUDED: "0", SCOPE: "whole", CHUNKS: "1" },
+    {
+      COPIES: "36",
+      EXCLUDED: "36",
+      SCOPE: "whole",
+      CHUNKS: "2",
+      CHUNK_FILES: "20,19",
+    },
+  ]) {
+    assert.doesNotMatch(await compose(env), note, JSON.stringify(env));
+  }
+  // Read whole: complete, with no over_budget, its size the diff it read.
+  const coverage = async (env) =>
+    JSON.parse(
+      (
+        await extract(
+          {
+            structured: JSON.stringify({
+              findings: 0,
+              files_read: 39,
+              summary: "S",
+              comments: [],
+            }),
+          },
+          {
+            WHOLE_FILES: "75",
+            SCOPE_BYTES: bytes,
+            COPIES: "36",
+            EXCLUDED: out.excluded,
+            DISTINCT_BYTES: out["distinct-bytes"],
+            ...env,
+          },
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage({}), { read: 75, changed: 75 });
+  // Without the split step's distinct diff, the whole diff's size counts.
+  for (const env of [
+    { EXCLUDED: "" },
+    { EXCLUDED: "35" },
+    { DISTINCT_BYTES: "" },
+    { DISTINCT_BYTES: "1e5" },
+  ]) {
+    assert.equal(
+      (await coverage(env)).over_budget,
+      Number(bytes),
+      JSON.stringify(env),
+    );
+  }
+  assert.equal(
+    (await coverage({ DISTINCT_BYTES: "300001" })).over_budget,
+    300001,
+  );
+});
+
+// A split-diff.py that ignores the file cap (an older claude-code-plugins
+// tip) must not leave a chunk too large to read whole.
+test("a chunk over the file cap reviews unsplit, and two sections of one file count once", () => {
+  const standIn = (chunk1) => (work) =>
+    fs.writeFileSync(
+      path.join(
+        work,
+        "..",
+        "source/.github/scripts/pr-review-main/split-diff.py",
+      ),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "out = Path(sys.argv[2])",
+        `(out / 'chunk-1.patch').write_text(${JSON.stringify(chunk1)})`,
+        "(out / 'chunk-2.patch').write_text('diff --git a/c b/c\\n+3\\n')",
+        "",
+      ].join("\n"),
+    );
+  const headers = (n) =>
+    Array.from(
+      { length: n },
+      (_, i) => `diff --git a/f${i} b/f${i}\n+${i}\n`,
+    ).join("");
+  const cap = Number(workflow.env.MAX_CHUNK_FILES);
+  assert.equal(split({}, standIn(headers(cap + 1))).out, "chunks=1\n");
+  assert.match(
+    split({}, standIn(headers(cap))).out,
+    new RegExp(`^files=${cap},1$`, "mu"),
+  );
+  // A type change is two sections of one file: one file, as git counts it.
+  assert.match(
+    split({}, standIn("diff --git a/l b/l\n-x\ndiff --git a/l b/l\n+y\n")).out,
+    /^files=1,1$/mu,
+  );
+});
+
+// A split refused for file count (split-diff.py's TooLarge, a planted chunk
+// directory, a chunk over the cap) leaves one review of more files than it
+// reads whole: partial, past the copies it skips.
+test("one review of more files that are not copies than the cap is partial", async () => {
+  const cap = Number(workflow.env.MAX_CHUNK_FILES);
+  const coverage = async (files_read, env) =>
+    JSON.parse(
+      (
+        await extract(
+          {
+            structured: JSON.stringify({
+              findings: 0,
+              files_read,
+              summary: "S",
+              comments: [],
+            }),
+          },
+          env,
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage(170, { WHOLE_FILES: "170" }), {
+    read: 170,
+    changed: 170,
+    over_files: 170,
+  });
+  assert.deepEqual(await coverage(cap, { WHOLE_FILES: String(cap) }), {
+    read: cap,
+    changed: cap,
+  });
+  // The copies one whole review skips do not count against the cap.
+  assert.deepEqual(
+    await coverage(35, { WHOLE_FILES: String(cap + 5), COPIES: "10" }),
+    { read: cap + 5, changed: cap + 5 },
+  );
+  assert.deepEqual(
+    await coverage(41, { WHOLE_FILES: String(cap + 5), COPIES: "4" }),
+    { read: cap + 5, changed: cap + 5, over_files: cap + 1 },
+  );
+  // An incremental review counts its own scope, past the copies in it.
+  const incremental = {
+    SCOPE: "incremental",
+    FULL_DIFF: "",
+    SCOPE_FILES: String(cap + 1),
+  };
+  assert.deepEqual(await coverage(cap + 1, { ...incremental, COPIES: "0" }), {
+    read: cap + 1,
+    changed: cap + 1,
+    over_files: cap + 1,
+  });
+  assert.deepEqual(await coverage(cap + 1, { ...incremental, COPIES: "10" }), {
+    read: cap + 1,
+    changed: cap + 1,
+  });
+  // A chunked review is never over the cap here: the split step checked it.
+  const good = { findings: 0, files_read: 2, summary: "S", comments: [] };
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await extractChunks([good, good], {
+          CHUNK_FILES: `${cap},${cap}`,
+          WHOLE_FILES: String(2 * cap),
+        })
+      ).review,
+    ).coverage,
+    { read: 4, changed: 2 * cap },
+  );
+  // A cap the job cannot read checks nothing: incomplete.
+  for (const bad of ["", "0", "40x"]) {
+    const outputs = await extract(
+      {
+        structured: JSON.stringify({
+          findings: 0,
+          files_read: 1,
+          summary: "S",
+          comments: [],
+        }),
+      },
+      { MAX_CHUNK_FILES: bad },
+    );
+    assert.match(outputs.verdict, /files one review reads whole/u, bad);
+  }
+});
+
+// claude-code-plugins#12052's shape: over 150 small added files, some of them
+// byte-identical across eval cases. The full-diff step groups the added
+// copies, the split step leaves them out and cuts the rest at
+// MAX_CHUNK_FILES, and a review that reads every file of every chunk is
+// complete.
+test("a diff of many small added files, some identical, is chunked without its copies and read whole", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-many-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  fs.writeFileSync(path.join(origin, "README.md"), "base\n");
+  git(origin, "add", ".");
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  const add = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+    fs.writeFileSync(path.join(origin, file), text);
+  };
+  // 30 cases of 5 distinct files, and two samples repeated in 30 and 21
+  // cases: 201 files, 152 distinct, 49 copies.
+  for (let c = 0; c < 30; c++) {
+    for (const name of [
+      "case.yaml",
+      "prompt.md",
+      "scaffold.sh",
+      "samples/a.json",
+      "samples/b.json",
+    ])
+      add(
+        `evals/case-${String(c).padStart(2, "0")}/${name}`,
+        `${name} of case ${c}\n${"x".repeat(900)}\n`,
+      );
+    add(
+      `evals/case-${String(c).padStart(2, "0")}/samples/no-write.json`,
+      '{"tool":"Write","allowed":false}\n',
+    );
+    if (c < 21)
+      add(
+        `evals/case-${String(c).padStart(2, "0")}/samples/no-edit.json`,
+        '{"tool":"Edit","allowed":false}\n',
+      );
+  }
+  git(origin, "add", ".");
+  git(origin, "commit", "--quiet", "-m", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  const work = path.join(dir, "work");
+  git(dir, "clone", "--quiet", origin, work);
+  const run = (id, env) => {
+    const output = path.join(dir, `${id}.out`);
+    fs.writeFileSync(output, "");
+    const result = spawnSync("bash", ["-e", "-c", step(key, id).run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        GITHUB_OUTPUT: output,
+        ...workflow.env,
+        ...env,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return Object.fromEntries(
+      fs
+        .readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+    );
+  };
+  const fullDiff = run("full-diff", {
+    GH_TOKEN: "test-token",
+    GITHUB_SERVER_URL: "https://github.invalid",
+    MERGE_BASE: base,
+    HEAD_SHA: head,
+    DIFF_FILE: step(key, "full-diff").env.DIFF_FILE,
+    FILE_LIST: step(key, "full-diff").env.FILE_LIST,
+    HOLD_PATHS: "",
+  });
+  assert.equal(fullDiff.files, "201");
+  assert.equal(fullDiff.copies, "49");
+  assert.ok(
+    Number(fullDiff.bytes) < 300000,
+    "under the read budget: only the file count splits it",
+  );
+  // A stand-in for split-diff.py that honors max-bytes, max-chunks and the
+  // seventh argument, max-files, as the real one does.
+  const source = path.join(dir, "source");
+  const script = path.join(source, ".github/scripts/pr-review-main");
+  fs.mkdirSync(script, { recursive: true });
+  fs.writeFileSync(
+    path.join(script, "split-diff.py"),
+    [
+      "import sys",
+      "from pathlib import Path",
+      "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
+      "max_files = int(sys.argv[7])",
+      "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+      "chunks = []",
+      "for u in units:",
+      "    if not chunks or len(''.join(chunks[-1])) + len(u) > max_bytes or len(chunks[-1]) >= max_files:",
+      "        chunks.append([])",
+      "    chunks[-1].append(u)",
+      "if len(chunks) > max_chunks: sys.exit(3)",
+      "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
+      "",
+    ].join("\n"),
+  );
+  const s = step(key, "split");
+  const cut = run("split", {
+    SOURCE: source,
+    SCOPE_DIFF: ".claude-lane/pr.diff",
+    SCOPE_BYTES: fullDiff.bytes,
+    CHUNK_DIR: s.env.CHUNK_DIR,
+    READ_BUDGET: s.env.READ_BUDGET,
+    MAX_CHUNKS: s.env.MAX_CHUNKS,
+    MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
+    SCOPE: "whole",
+    COPIES: fullDiff.copies,
+  });
+  // 152 distinct files at 40 a chunk; with the copies in, 201 files would
+  // need 6 chunks, more than the leg has.
+  assert.equal(cut.chunks, "4");
+  assert.equal(cut.files, "40,40,40,32");
+  assert.equal(cut.excluded, "49");
+  const groups = fs
+    .readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => line.split("\t"));
+  const copies = groups.flatMap((group) => group.slice(1));
+  assert.equal(copies.length, 49);
+  const chunked = [1, 2, 3, 4].flatMap((k) =>
+    [
+      ...fs
+        .readFileSync(
+          path.join(work, s.env.CHUNK_DIR, `chunk-${k}.patch`),
+          "utf8",
+        )
+        .matchAll(/^diff --git a\/(\S+) b\//gmu),
+    ].map((m) => m[1]),
+  );
+  assert.equal(chunked.length, 152);
+  assert.ok(
+    copies.every((copy) => !chunked.includes(copy)),
+    "no copy is in a chunk",
+  );
+  // Each group's first path stays in the read set: exactly one chunk holds it.
+  for (const [first] of groups)
+    assert.equal(chunked.filter((p) => p === first).length, 1, first);
+  // Every chunk's prompt names the copies it left out.
+  const outputs = await composeOutputs({
+    COPIES: fullDiff.copies,
+    EXCLUDED: cut.excluded,
+    SCOPE: "whole",
+    CHUNKS: cut.chunks,
+    CHUNK_FILES: cut.files,
+  });
+  assert.equal(outputs.chunks, "4");
+  assert.match(
+    fs.readFileSync(outputs["prompt-file-4"], "utf8"),
+    /^IDENTICAL FILES: /mu,
+  );
+  // Each chunk read whole: complete. One file short: partial.
+  const review = (n) => ({
+    findings: 0,
+    files_read: n,
+    summary: "S",
+    comments: [],
+  });
+  const coverage = async (reads) =>
+    JSON.parse(
+      (
+        await extractChunks(reads.map(review), {
+          CHUNK_FILES: cut.files,
+          CHUNK_DIR: path.join(work, s.env.CHUNK_DIR),
+          WHOLE_FILES: fullDiff.files,
+          SCOPE_BYTES: fullDiff.bytes,
+          COPIES: fullDiff.copies,
+          EXCLUDED: cut.excluded,
+        })
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage([40, 40, 40, 32]), {
+    read: 201,
+    changed: 201,
+  });
+  assert.deepEqual(await coverage([40, 40, 40, 31]), {
+    read: 200,
+    changed: 201,
+  });
+});
+
+// The post-merge review of ci-workflows#958: a fixture that sorts first and
+// an identical workflow added beside it, in a diff over the file cap. The
+// workflow must be reviewed at its own path, never credited as a copy of the
+// fixture. A type change rides along: two sections of one file.
+test("an added workflow identical to a fixture is reviewed in a chunk, not credited as a copy, in every leg", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-sensitive-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    const add = (file, text) => {
+      fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+      fs.writeFileSync(path.join(origin, file), text);
+    };
+    add("README.md", "base\n");
+    add("link", "a regular file\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    const workflowText = "on: push\njobs: {}\n";
+    add("-fixtures/ci.yml", workflowText);
+    add(".github/workflows/zz-ci.yml", workflowText);
+    add("docs/a.md", "same\n");
+    add("docs/b.md", "same\n");
+    for (let i = 0; i <= 40; i++)
+      add(`f${String(i).padStart(2, "0")}.js`, `export const n = ${i};\n`);
+    fs.rmSync(path.join(origin, "link"));
+    fs.symlinkSync("README.md", path.join(origin, "link"));
+    git(origin, "add", "-A");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const run = (id, env) => {
+      const output = path.join(dir, `${id}.out`);
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          ...env,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+      );
+    };
+    const fullDiff = run("full-diff", {
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      MERGE_BASE: base,
+      HEAD_SHA: head,
+      DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      FILE_LIST: step(job, "full-diff").env.FILE_LIST,
+      HOLD_PATHS: "",
+    });
+    assert.equal(fullDiff.files, "46", job.name);
+    // Only docs/b.md is a copy.
+    assert.equal(fullDiff.copies, "1", job.name);
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8"),
+      "docs/a.md\tdocs/b.md\n",
+    );
+    // The many-files test's stand-in for split-diff.py, which honors the cap.
+    const source = path.join(dir, "source");
+    const script = path.join(source, ".github/scripts/pr-review-main");
+    fs.mkdirSync(script, { recursive: true });
+    fs.writeFileSync(
+      path.join(script, "split-diff.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
+        "max_files = int(sys.argv[7])",
+        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+        "chunks = []",
+        "for u in units:",
+        "    if not chunks or len(''.join(chunks[-1])) + len(u) > max_bytes or len(chunks[-1]) >= max_files:",
+        "        chunks.append([])",
+        "    chunks[-1].append(u)",
+        "if len(chunks) > max_chunks: sys.exit(3)",
+        "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
+        "",
+      ].join("\n"),
+    );
+    const s = step(job, "split");
+    const cut = run("split", {
+      SOURCE: source,
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: fullDiff.bytes,
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: s.env.READ_BUDGET,
+      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      SCOPE: "whole",
+      COPIES: fullDiff.copies,
+    });
+    // 45 files that are not copies, the type change counted once.
+    assert.equal(cut.chunks, "2", job.name);
+    assert.equal(cut.files, "40,5", job.name);
+    assert.equal(cut.excluded, "1", job.name);
+    const chunked = [1, 2].flatMap((k) =>
+      [
+        ...fs
+          .readFileSync(
+            path.join(work, s.env.CHUNK_DIR, `chunk-${k}.patch`),
+            "utf8",
+          )
+          .matchAll(/^diff --git a\/(\S+) b\//gmu),
+      ].map((m) => m[1]),
+    );
+    assert.ok(chunked.includes(".github/workflows/zz-ci.yml"), job.name);
+    assert.ok(chunked.includes("-fixtures/ci.yml"), job.name);
+    assert.ok(!chunked.includes("docs/b.md"), job.name);
+    // Each chunk read whole, the copy counted: complete.
+    const reviews = cut.files.split(",").map((n) => ({
+      findings: 0,
+      files_read: Number(n),
+      summary: "S",
+      comments: [],
+    }));
+    const outputs = await extractChunks(reviews, {
+      CHUNK_FILES: cut.files,
+      CHUNK_DIR: path.join(work, s.env.CHUNK_DIR),
+      WHOLE_FILES: fullDiff.files,
+      SCOPE_BYTES: fullDiff.bytes,
+      COPIES: fullDiff.copies,
+      EXCLUDED: cut.excluded,
+    });
+    assert.deepEqual(JSON.parse(outputs.review).coverage, {
+      read: 46,
+      changed: 46,
+    });
+  }
+});
+
+// claude-code-plugins#12253: a review that read every file the pull request
+// adds, changes or renames was partial because the 13 files it deletes whole
+// were counted as changed files to read. A deletion stays in the diff for
+// context but counts in no file total: not the full-diff step's, not the
+// split step's per chunk, so the chunk sum still matches it. A type change
+// (a deleted and a new section of one path) still counts once.
+test("a whole-file deletion counts in no file total, so a review of the rest is complete, in every leg", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-deleted-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    for (const name of ["gone1.js", "gone2.js", "gone3.js"])
+      fs.writeFileSync(path.join(origin, name), `${name}\n`);
+    fs.writeFileSync(path.join(origin, "keep.js"), "base\n");
+    fs.writeFileSync(path.join(origin, "link"), "a regular file\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const name of ["gone1.js", "gone2.js", "gone3.js"])
+      fs.rmSync(path.join(origin, name));
+    fs.writeFileSync(path.join(origin, "keep.js"), "head\n");
+    fs.writeFileSync(path.join(origin, "new.js"), "new\n");
+    fs.rmSync(path.join(origin, "link"));
+    fs.symlinkSync("keep.js", path.join(origin, "link"));
+    git(origin, "add", "-A");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    // A list the head planted as a symlink is replaced, not written through.
+    fs.mkdirSync(path.join(work, ".claude-lane"));
+    fs.symlinkSync(
+      path.join(dir, "outside.txt"),
+      path.join(work, ".claude-lane/files.txt"),
+    );
+    const run = (id, env) => {
+      const output = path.join(dir, `${id}.out`);
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          ...env,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+      );
+    };
+    const fullDiff = run("full-diff", {
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      MERGE_BASE: base,
+      HEAD_SHA: head,
+      DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      FILE_LIST: step(job, "full-diff").env.FILE_LIST,
+      HOLD_PATHS: "",
+    });
+    assert.equal(fs.existsSync(path.join(dir, "outside.txt")), false, job.name);
+    assert.ok(
+      !fs.lstatSync(path.join(work, ".claude-lane/files.txt")).isSymbolicLink(),
+      job.name,
+    );
+    // keep.js, new.js and link; the deletions stay in the diff but on no
+    // list, and the count is the list's.
+    assert.equal(fullDiff.files, "3", job.name);
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/files.txt"), "utf8"),
+      "keep.js\nlink\nnew.js\n",
+      job.name,
+    );
+    assert.match(
+      fs.readFileSync(path.join(work, ".claude-lane/pr.diff"), "utf8"),
+      /^-gone2\.js$/mu,
+    );
+    // One review: a model that also counted the deletions it read is capped.
+    const review = (n) => ({
+      findings: 0,
+      files_read: n,
+      summary: "S",
+      comments: [],
+    });
+    const whole = await extract(
+      { structured: JSON.stringify(review(6)) },
+      { WHOLE_FILES: fullDiff.files },
+    );
+    assert.deepEqual(JSON.parse(whole.review).coverage, {
+      read: 3,
+      changed: 3,
+    });
+    // Two sections a chunk: a chunk of deletions alone counts 0 files.
+    const source = path.join(dir, "source");
+    const script = path.join(source, ".github/scripts/pr-review-main");
+    fs.mkdirSync(script, { recursive: true });
+    fs.writeFileSync(
+      path.join(script, "split-diff.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
+        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+        "chunks = [units[i:i + 2] for i in range(0, len(units), 2)]",
+        "if len(chunks) > max_chunks: sys.exit(3)",
+        "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
+        "",
+      ].join("\n"),
+    );
+    const s = step(job, "split");
+    const cut = run("split", {
+      SOURCE: source,
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: "700000",
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: s.env.READ_BUDGET,
+      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      SCOPE: "whole",
+      COPIES: fullDiff.copies,
+    });
+    // gone1+gone2, gone3+keep.js, link's two sections, new.js.
+    assert.equal(cut.chunks, "4", job.name);
+    assert.equal(cut.files, "0,1,1,1", job.name);
+    const outputs = await composeOutputs({
+      CHUNKS: cut.chunks,
+      CHUNK_FILES: cut.files,
+    });
+    assert.equal(outputs.chunks, "4", job.name);
+    assert.equal(outputs["chunk-files"], cut.files, job.name);
+    const chunked = await extractChunks(
+      [review(2), review(2), review(1), review(1)],
+      {
+        CHUNK_FILES: cut.files,
+        CHUNK_DIR: path.join(work, s.env.CHUNK_DIR),
+        WHOLE_FILES: fullDiff.files,
+        SCOPE_BYTES: "700000",
+      },
+    );
+    assert.deepEqual(JSON.parse(chunked.review).coverage, {
+      read: 3,
+      changed: 3,
+    });
+  }
+});
+
+// claude-code-plugins#12533: a pull request whose bulk was whole-file
+// deletions (2.7 MB of fixtures) was partial, over the read budget, though the
+// review read every file it changes. The deleted sections stay in the diff
+// but not in its size, so the split step leaves it whole and the extract step
+// finds it within the budget; a changed file left unread still fails.
+test("a whole-file deletion counts in no diff size, so deletions alone put no review over the budget, in every leg", async () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-deleted-bytes-");
+    const origin = path.join(dir, "origin");
+    fs.mkdirSync(origin);
+    git(origin, "init", "--quiet", "--initial-branch=main");
+    git(origin, "config", "user.email", "t@example.com");
+    git(origin, "config", "user.name", "t");
+    // 400000 bytes of binary fixture, more than one read budget (300000).
+    fs.writeFileSync(path.join(origin, "crop.png"), Buffer.alloc(400000, 0));
+    for (const name of ["case1.md", "case2.md"])
+      fs.writeFileSync(path.join(origin, name), `${name}\n`.repeat(5000));
+    fs.writeFileSync(path.join(origin, "keep.js"), "base\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "--quiet", "-m", "base");
+    const base = git(origin, "rev-parse", "HEAD");
+    for (const name of ["crop.png", "case1.md", "case2.md"])
+      fs.rmSync(path.join(origin, name));
+    fs.writeFileSync(path.join(origin, "keep.js"), "head\n");
+    git(origin, "add", "-A");
+    git(origin, "commit", "--quiet", "-m", "head");
+    const head = git(origin, "rev-parse", "HEAD");
+    const work = path.join(dir, "work");
+    git(dir, "clone", "--quiet", origin, work);
+    const run = (id, env) => {
+      const output = path.join(dir, `${id}.out`);
+      fs.writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          ...env,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
+      );
+    };
+    const fullDiff = run("full-diff", {
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      MERGE_BASE: base,
+      HEAD_SHA: head,
+      DIFF_FILE: step(job, "full-diff").env.DIFF_FILE,
+      FILE_LIST: step(job, "full-diff").env.FILE_LIST,
+      HOLD_PATHS: "",
+    });
+    const diff = path.join(work, ".claude-lane/pr.diff");
+    // The deletions stay in the diff, which is over the budget.
+    assert.ok(fs.statSync(diff).size > 400000, job.name);
+    assert.match(fs.readFileSync(diff, "utf8"), /^-case1\.md$/mu);
+    assert.equal(fullDiff.files, "1", job.name);
+    // keep.js's section alone: "diff --git a/keep.js b/keep.js\n" (31),
+    // "index <7>..<7> 100644\n" (30), "--- a/keep.js\n" and "+++ b/keep.js\n"
+    // (14 each), "@@ -1 +1 @@\n" (12), "-base\n" and "+head\n" (6 each).
+    assert.equal(fullDiff.bytes, "113", job.name);
+    const s = step(job, "split");
+    const cut = run("split", {
+      SOURCE: path.join(dir, "no-source"),
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: fullDiff.bytes,
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: s.env.READ_BUDGET,
+      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      SCOPE: "whole",
+      COPIES: fullDiff.copies,
+    });
+    assert.equal(cut.chunks, "1", job.name);
+    const review = (n) =>
+      JSON.stringify({
+        findings: 0,
+        files_read: n,
+        summary: "S",
+        comments: [],
+      });
+    const env = {
+      WHOLE_FILES: fullDiff.files,
+      SCOPE_DIFF: diff,
+      SCOPE_BYTES: fullDiff.bytes,
+    };
+    const read = await extract({ structured: review(1) }, env);
+    assert.deepEqual(JSON.parse(read.review).coverage, {
+      read: 1,
+      changed: 1,
+    });
+    const unread = await extract({ structured: review(0) }, env);
+    assert.deepEqual(JSON.parse(unread.review).coverage, {
+      read: 0,
+      changed: 1,
+    });
+  }
+});
+
+// An incremental review counts the files in scope the same way: a file the
+// push deleted whole stays in the incremental diff, but not in its file list,
+// files or bytes, and the split step's count of that diff agrees.
+test("an incremental review leaves a file the push deleted out of its file count and size, in every leg", async () => {
+  const LAST = "b".repeat(40);
+  const HEAD = "a".repeat(40);
+  const MB = "c".repeat(40);
+  for (const job of [key, subscription, fallback]) {
+    const dir = makeTemporaryDirectory("pr-review-cli-incremental-deleted-");
+    const prFiles = [
+      { filename: "a.js", status: "modified" },
+      { filename: "gone.js", status: "removed" },
+    ];
+    const compares = {
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB } },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB } },
+      [`${LAST}...${HEAD}`]: {
+        status: "ahead",
+        files: [
+          {
+            filename: "a.js",
+            status: "modified",
+            patch: "@@ -1 +1 @@\n-x\n+y",
+            changes: 2,
+          },
+          {
+            filename: "gone.js",
+            status: "removed",
+            patch: "@@ -1 +0,0 @@\n-z",
+            changes: 1,
+          },
+        ],
+      },
+    };
+    const marker = {
+      id: 41,
+      user: { login: "github-actions[bot]" },
+      body: [
+        `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->`,
+        `<!-- claude-lane-reviewed-base ref=main merge-base=${MB} caller=.github/workflows/review.yml -->`,
+        "**claude-review** reviewed it.",
+      ].join("\n"),
+    };
+    const github = {
+      hook: { after: () => {}, error: () => {} },
+      paginate: async (fn) => fn(),
+      rest: {
+        issues: { listComments: () => [marker] },
+        pulls: {
+          listFiles: () => prFiles,
+          get: async () => ({
+            data: { head: { sha: HEAD }, changed_files: 2 },
+          }),
+        },
+        repos: {
+          compareCommitsWithBasehead: async ({ basehead }) => {
+            assert.ok(basehead in compares, basehead);
+            return { data: compares[basehead] };
+          },
+        },
+      },
+    };
+    const outputs = {};
+    const diffFile = path.join(dir, "incremental.diff");
+    const values = {
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
+      LANE: "claude-review",
+      INCREMENTAL: "true",
+      DOCS_ONLY_PATHS: "",
+      EVENT_ACTION: "synchronize",
+      PR_NUMBER: "7",
+      HEAD_SHA: HEAD,
+      BASE_REF: "main",
+      DIFF_FILE: diffFile,
+      FILE_LIST: path.join(dir, "incremental-files.txt"),
+      DATA_LIST: path.join(dir, "incremental-data-files.txt"),
+      GIT_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      RUNNER_TEMP: dir,
+    };
+    const saved = Object.fromEntries(
+      Object.keys(values).map((k) => [k, process.env[k]]),
+    );
+    Object.assign(process.env, values);
+    try {
+      await new AsyncFunction(
+        "require",
+        "github",
+        "context",
+        "core",
+        step(job, "scope").with.script,
+      )(
+        require,
+        github,
+        { repo: { owner: "o", repo: "r" } },
+        {
+          setSecret: () => {},
+          setOutput: (k, v) => {
+            outputs[k] = v;
+          },
+          info: () => {},
+          warning: (message) => assert.fail(message),
+        },
+      );
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    assert.equal(outputs.scope, "incremental", job.name);
+    assert.equal(outputs.files, "1", job.name);
+    // The list the model counts against holds a.js alone, and the note names it.
+    const list = path.join(dir, "incremental-files.txt");
+    assert.equal(fs.readFileSync(list, "utf8"), "a.js\n", job.name);
+    assert.ok(
+      outputs.note.includes(`in the files listed one per line in ${list}`),
+      job.name,
+    );
+    assert.match(fs.readFileSync(diffFile, "utf8"), /^status: removed$/mu);
+    // Nor in its size: the a.js section alone, "diff --git a/a.js b/a.js\n"
+    // (25) + "status: modified\n" (17) + "@@ -1 +1 @@\n" (12) + "-x\n+y\n" (6).
+    assert.equal(outputs.bytes, "60", job.name);
+    // The split step, one section a chunk, counts the same file.
+    const work = path.join(dir, "work");
+    fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
+    fs.copyFileSync(diffFile, path.join(work, ".claude-lane/incremental.diff"));
+    const script = path.join(dir, "source/.github/scripts/pr-review-main");
+    fs.mkdirSync(script, { recursive: true });
+    fs.writeFileSync(
+      path.join(script, "split-diff.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "patch, out = sys.argv[1], Path(sys.argv[2])",
+        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
+        "for k, u in enumerate(units, 1): (out / f'chunk-{k}.patch').write_text(u)",
+        "",
+      ].join("\n"),
+    );
+    const output = path.join(dir, "split.out");
+    fs.writeFileSync(output, "");
+    const s = step(job, "split");
+    const result = require("node:child_process").spawnSync(
+      "bash",
+      ["-e", "-c", s.run],
+      {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_OUTPUT: output,
+          ...workflow.env,
+          SOURCE: path.join(dir, "source"),
+          SCOPE_DIFF: ".claude-lane/incremental.diff",
+          SCOPE_BYTES: "700000",
+          CHUNK_DIR: s.env.CHUNK_DIR,
+          READ_BUDGET: s.env.READ_BUDGET,
+          MAX_CHUNKS: s.env.MAX_CHUNKS,
+          SCOPE: "incremental",
+          COPIES: "0",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const split = fs.readFileSync(output, "utf8");
+    assert.match(split, /^chunks=2$/mu, job.name);
+    assert.match(split, /^files=1,0$/mu, job.name);
+  }
+});
+
+test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {
+  const outputs = await composeOutputs({ CHUNKS: "3", CHUNK_FILES: "2,1,4" });
+  assert.equal(outputs.chunks, "3");
+  assert.equal(outputs["chunk-files"], "2,1,4");
+  const prompts = [
+    outputs["prompt-file"],
+    outputs["prompt-file-2"],
+    outputs["prompt-file-3"],
+  ].map((file) => fs.readFileSync(file, "utf8"));
+  for (const [i, prompt] of prompts.entries()) {
+    assert.match(prompt, new RegExp(`CHUNK ${i + 1} OF 3:`, "u"));
+    assert.match(
+      prompt,
+      new RegExp(`\\.claude-lane/chunks/chunk-${i + 1}\\.patch`, "u"),
+    );
+    assert.match(
+      prompt,
+      /at most 8 comments and a summary of at most 6666 characters/u,
+    );
+  }
+  assert.match(prompts[2], /\(4 files of the scope's file list\)/u);
+  assert.equal(outputs["prompt-file-4"], undefined);
+  const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
+  assert.equal(schema.properties.summary.maxLength, 6666);
+  assert.equal(schema.properties.comments.maxItems, 8);
+  // Without a well-formed count, one review with the whole caps.
+  for (const env of [
+    {},
+    { CHUNKS: "5", CHUNK_FILES: "1,1,1,1,1" },
+    { CHUNKS: "2", CHUNK_FILES: "1" },
+    { CHUNKS: "2", CHUNK_FILES: "1,01" },
+  ]) {
+    const one = await composeOutputs(env);
+    assert.equal(one.chunks, "1", JSON.stringify(env));
+    assert.equal(one["prompt-file-2"], undefined);
+    assert.doesNotMatch(
+      fs.readFileSync(one["prompt-file"], "utf8"),
+      /CHUNK 1 OF/u,
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(one["schema-file"], "utf8")).properties.summary
+        .maxLength,
+      20000,
+    );
+  }
+});
+
+// A chunk of 38 files beside two it deleted whole was reviewed as 36 of 38,
+// and claude-code-plugins#12563's 13 files beside one deletion as 12 of 13:
+// told to leave deletions out of a count the job had already left them out
+// of, the model left them out twice. The prompt names the job's file list and
+// has files_read count against it, with no deletion arithmetic of its own.
+test("files_read counts against the scope's file list, with no deletion left for the model to subtract, in every leg", async () => {
+  for (const job of [key, subscription, fallback]) {
+    const outputs = await composeOutputs(
+      { CHUNKS: "2", CHUNK_FILES: "38,38" },
+      job,
+    );
+    for (const file of [outputs["prompt-file"], outputs["prompt-file-2"]]) {
+      const prompt = fs.readFileSync(file, "utf8");
+      assert.match(prompt, /\(38 files of the scope's file list\)/u, job.name);
+      assert.match(
+        prompt,
+        /files_read counts the listed files of this chunk you read every hunk of, so a chunk read whole\nreturns 38\./u,
+        job.name,
+      );
+      assert.match(
+        prompt,
+        /- files_read: how many files of the scope's file list you read every hunk of in the diff\n {2}file: the list REVIEW SCOPE names for an incremental review, else the FULL DIFF list\.\n {2}Count only listed files,/u,
+        job.name,
+      );
+      assert.match(
+        prompt,
+        /A pure rename \(a header with no hunks\)\n {2}is read once you have seen its header\./u,
+        job.name,
+      );
+      // A blob id matching another file's is no read (claude-code-plugins#12792).
+      assert.match(
+        prompt,
+        /A blob id on an index line, matching another\n {2}file's or not, is not a read: read the hunks of every listed file\./u,
+        job.name,
+      );
+      assert.doesNotMatch(prompt, /deletes whole/u, job.name);
+    }
+    assert.match(
+      step(job, "full-diff").run,
+      /Its \$files changed files are listed one per line in \$FILE_LIST; a file it deletes whole is in the diff but on no list\./u,
+      job.name,
+    );
+  }
+});
+
+test("every model leg runs chunk k only after chunk k-1 succeeded and handed nothing on", () => {
+  for (const job of [key, subscription, fallback]) {
+    for (const k of [2, 3, 4]) {
+      const model = step(job, `claude-${k}`);
+      assert.equal(
+        model.with["prompt-file"],
+        `\${{ steps.compose.outputs.prompt-file-${k} }}`,
+        job.name,
+      );
+      assert.equal(step(job, `time-${k}`).if, model.if, job.name);
+      const prev = k === 2 ? "claude" : `claude-${k - 1}`;
+      const runs = (chunks, outcome, handoff = "false") =>
+        Boolean(
+          evaluate(model.if, {
+            steps: {
+              credential: { outputs: { present: "true" } },
+              compose: { outputs: { chunks } },
+              [prev]: { outcome, outputs: { handoff } },
+            },
+          }),
+        );
+      assert.equal(runs(String(k), "success"), true, `${job.name} chunk ${k}`);
+      assert.equal(runs("4", "success"), true);
+      assert.equal(runs(String(k - 1), "success"), false);
+      assert.equal(runs("", "success"), false);
+      assert.equal(runs(String(k), "failure"), false);
+      assert.equal(runs(String(k), "skipped"), false);
+      assert.equal(runs(String(k), "success", "true"), false);
+    }
+    // No extract, so no verdict, while any chunk handed off.
+    const extracts = (handoffs) =>
+      Boolean(
+        evaluate(step(job, "extract").if, {
+          steps: {
+            compose: { outcome: "success" },
+            credential: { outputs: { present: "true" } },
+            ...Object.fromEntries(
+              handoffs.map((h, i) => [
+                i === 0 ? "claude" : `claude-${i + 1}`,
+                { outputs: { handoff: h } },
+              ]),
+            ),
+          },
+        }),
+      );
+    assert.equal(extracts(["false", "false", "false", "false"]), true);
+    assert.equal(extracts(["false", "false", "true", ""]), false);
+    // The leg's outcome is the last chunk that ran.
+    const report = step(job, "review-outcome").with;
+    const ran = {
+      claude: { outcome: "success", outputs: { "log-file": "l1" } },
+      "claude-2": {
+        outcome: "failure",
+        outputs: { "log-file": "l2", "lane-class": "timeout" },
+      },
+      "claude-3": { outcome: "skipped", outputs: {} },
+      "claude-4": { outcome: "skipped", outputs: {} },
+      "time-2": { outputs: { "started-at": "200" } },
+      compose: { outputs: { "started-at": "100" } },
+    };
+    assert.equal(evaluate(report.outcome, { steps: ran }), "failure");
+    assert.equal(evaluate(report["log-file"], { steps: ran }), "l2");
+    assert.equal(evaluate(report["step-started-at"], { steps: ran }), "200");
+    assert.equal(
+      evaluate(job.outputs["failure-class"], { steps: ran }),
+      "timeout",
+    );
+  }
+});
+
+// The extract step with one review file per chunk, each chunk's diff file
+// written as the split step would.
+async function extractChunks(reviews, env = {}, sizes = reviews.map(() => 10)) {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-");
+  fs.mkdirSync(path.join(dir, "chunks"));
+  sizes.forEach((size, i) => {
+    if (size !== null)
+      fs.writeFileSync(
+        path.join(dir, "chunks", `chunk-${i + 1}.patch`),
+        "+".repeat(size),
+      );
+  });
+  const files = {};
+  const chunkEnv = {};
+  reviews.forEach((review, i) => {
+    const suffix = i === 0 ? "" : `_${i + 1}`;
+    if (review !== null) files[`structured${suffix}`] = JSON.stringify(review);
+    files[`log${suffix}`] = `${LOG}\n`;
+  });
+  const outcomes = ["", "", "", ""].map((_, i) =>
+    i < reviews.length ? "success" : "skipped",
+  );
+  const values = {
+    CHUNKS: String(reviews.length),
+    CHUNK_FILES: reviews.map(() => "2").join(","),
+    CHUNK_DIR: path.join(dir, "chunks"),
+    CHUNK_OUTCOMES: outcomes.join(","),
+    WHOLE_FILES: String(2 * reviews.length),
+    SCOPE_BYTES: "700000",
+    ...env,
+  };
+  const dirFiles = makeTemporaryDirectory("pr-review-cli-chunk-files-");
+  for (const [name, content] of Object.entries(files)) {
+    if (!name.includes("_")) continue;
+    const file = path.join(dirFiles, name);
+    fs.writeFileSync(file, content);
+    const [kind, k] = name.split("_");
+    chunkEnv[`${kind === "structured" ? "STRUCTURED_FILE" : "LOG_FILE"}_${k}`] =
+      file;
+  }
+  return extract(
+    { structured: files.structured, log: files.log },
+    { ...chunkEnv, ...values },
+  );
+}
+
+test("a chunked review sums every chunk's findings, comments and files read, and is never over budget", async () => {
+  const chunk = (n, extra = {}) => ({
+    findings: n,
+    files_read: 2,
+    summary: `S${n}`,
+    comments: Array.from({ length: n }, () => COMMENT),
+    ...extra,
+  });
+  const outputs = await extractChunks([
+    chunk(1),
+    chunk(0, { hold: { criteria: ["cost"], reason: "Bills." } }),
+    chunk(2, { files_read: 9 }),
+  ]);
+  assert.equal(outputs.verdict, "complete");
+  const review = JSON.parse(outputs.review);
+  assert.equal(review.findings, 3);
+  assert.equal(review.comments.length, 3);
+  // A chunk's overclaim is capped at the files the job counted in it.
+  assert.deepEqual(review.coverage, { read: 6, changed: 6 });
+  assert.match(
+    review.summary,
+    /^#### Chunk 1 of 3 \(2 files\)\n\nS1\n\n#### Chunk 2 of 3/u,
+  );
+  assert.deepEqual(review.hold, {
+    criteria: ["cost"],
+    reason: "Chunk 2: Bills.",
+  });
+  assert.equal(outputs.turns, "36");
+  assert.equal(outputs.cost, "1.5");
+  // Fewer files read than changed is partial coverage, which publish fails.
+  const short = await extractChunks([chunk(0), chunk(0, { files_read: 1 })]);
+  assert.deepEqual(JSON.parse(short.review).coverage, { read: 3, changed: 4 });
+  // A chunk with more than its share of comments is incomplete.
+  const many = await extractChunks([chunk(13), chunk(0)]);
+  assert.match(
+    many.verdict,
+    /^chunk 1 of 2: the review returned no comment list$/u,
+  );
+});
+
+test("a chunk that failed, did not run or returned no verdict keeps the review incomplete", async () => {
+  const good = { findings: 0, files_read: 2, summary: "S", comments: [] };
+  for (const [reviews, env, sizes, reason] of [
+    [
+      [good, good],
+      { CHUNK_OUTCOMES: "success,failure,skipped,skipped" },
+      undefined,
+      /^chunk 2 of 2: the review step did not succeed$/u,
+    ],
+    [
+      [good, good, good],
+      { CHUNK_OUTCOMES: "success,success,skipped,skipped" },
+      undefined,
+      /^chunk 3 of 3: the review step did not succeed$/u,
+    ],
+    [
+      [good, null],
+      {},
+      undefined,
+      /^chunk 2 of 2: the leg wrote no structured output$/u,
+    ],
+    [
+      [good, { ...good, files_read: undefined }],
+      {},
+      undefined,
+      /^chunk 2 of 2: the review returned no files_read count$/u,
+    ],
+    [[good, good], {}, [10, null], /^chunk 2 of 2: its diff file is missing/u],
+    [
+      [good, good],
+      {},
+      [10, 300001],
+      /^chunk 2 of 2: its diff file is missing, not a regular file, or over the read budget$/u,
+    ],
+  ]) {
+    const outputs = await extractChunks(reviews, env, sizes);
+    assert.match(outputs.verdict, reason);
+    assert.equal(outputs.review, undefined);
+  }
+  // A chunk count that does not match its file counts is one review of an
+  // over-budget diff: partial.
+  const one = await extractChunks([good, good], { CHUNK_FILES: "2" });
+  assert.equal(one.verdict, "complete");
+  assert.equal(JSON.parse(one.review).coverage.over_budget, 700000);
+});
+
+// --- every model leg keeps a sealed transcript ---
+
+test("every model leg uploads its sealed transcript under a job id unique in the run", () => {
+  const artifact = /^lane-transcript-(.+)-([1-9][0-9]{0,4})$/u;
+  const jobId = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/u;
+  const seen = new Set();
+  for (const [name, job] of Object.entries({
+    "review-key": key,
+    "review-subscription": subscription,
+    "review-fallback": fallback,
+  })) {
+    const outcome = job.steps.findIndex((s) => s.id === "review-outcome");
+    assert.ok(outcome >= 0, `${name} has the outcome step`);
+    const uploads = job.steps
+      .map((s, index) => ({ s, index }))
+      .filter(({ s }) => s.uses === "$/.github/actions/upload-lane-transcript");
+    const legs = job.steps.filter(
+      (s) => s.uses === "$/.github/actions/run-claude-cli",
+    );
+    assert.equal(uploads.length, legs.length, name);
+    assert.equal(legs.length, 4, name);
+    legs.forEach((leg, i) => {
+      const { s, index } = uploads[i];
+      assert.ok(index > outcome, `${name}: ${s.name} follows the outcome step`);
+      assert.equal(s["continue-on-error"], true);
+      assert.equal(
+        s.if,
+        `always() && steps.${leg.id}.outputs.execution-file != ''`,
+      );
+      assert.equal(
+        s.with["execution-file"],
+        `\${{ steps.${leg.id}.outputs.execution-file }}`,
+      );
+      assert.equal(
+        s.with["public-key"],
+        `\${{ inputs.lane-transcript-public-key }}`,
+      );
+      for (const lane of ["code", "security"]) {
+        const id = s.with["job-id"]
+          .replace(`\${{ inputs.lane }}`, lane)
+          .replace(`\${{ github.job }}`, name);
+        assert.match(id, jobId);
+        assert.equal(seen.has(id), false, id);
+        seen.add(id);
+        assert.equal(artifact.exec(`lane-transcript-${id}-1`)?.[1], id);
+      }
+    });
+  }
+  assert.equal(seen.size, 24);
+  assert.equal(
+    workflow.on.workflow_call.inputs["lane-transcript-public-key"].default,
+    "",
+  );
+});
+
+// --- every artifact the lane uploads is scanned for credentials first ---
+
+const SCAN_ACTION = "$/.github/actions/scan-upload";
+const isUpload = (s) =>
+  String(s.uses ?? "").startsWith("actions/upload-artifact@");
+
+test("every upload follows a credential scan over the same path, and a scan that is not clean withholds it", () => {
+  const uploads = [];
+  for (const [name, job] of Object.entries({
+    "check-key-credit": workflow.jobs["check-key-credit"],
+    "review-key": key,
+    "review-subscription": subscription,
+    "review-fallback": fallback,
+    status,
+  })) {
+    job.steps.forEach((upload, index) => {
+      if (!isUpload(upload)) return;
+      uploads.push(name);
+      const scan = job.steps
+        .slice(0, index)
+        .reverse()
+        .find((s) => s.uses === SCAN_ACTION);
+      assert.ok(scan, `${name}: ${upload.name} has a scan step before it`);
+      assert.equal(
+        scan.with.path,
+        upload.with.path,
+        `${name}: the scan reads the path the upload sends`,
+      );
+      assert.equal(
+        scan.if,
+        upload.if.replace(` && steps.${scan.id}.outputs.clean == 'true'`, ""),
+        `${name}: the scan runs whenever the upload would`,
+      );
+      const steps = {
+        "handoff-file": { outputs: { sha256: "a".repeat(64) } },
+        "credit-marker": { outcome: "success" },
+        "probe-marker": { outcome: "success" },
+        [scan.id]: { outputs: { clean: "true" } },
+      };
+      const inputs = { publish: "shadow" };
+      assert.equal(
+        evaluate(upload.if, { steps, inputs }),
+        true,
+        `${name}: a clean scan uploads`,
+      );
+      for (const clean of ["", null]) {
+        steps[scan.id].outputs.clean = clean;
+        assert.equal(
+          evaluate(upload.if, { steps, inputs }),
+          false,
+          `${name}: a hit or a failed scan withholds the upload`,
+        );
+      }
+    });
+  }
+  // The gate's probing marker, the key job's credit-stop marker, then each
+  // leg's review handoff.
+  assert.deepEqual(uploads, [
+    "check-key-credit",
+    "review-key",
+    "review-key",
+    "review-subscription",
+    "review-fallback",
+    "status",
+  ]);
+});
+
+test("scan-upload withholds a planted credential without printing it, and passes a clean file", async () => {
+  const { main, checkImports } = require("../actions/scan-upload/scan.cjs");
+  const directory = makeTemporaryDirectory("scan-upload-");
+  // A stand-in gate with the scanLeak return shape; claude-code-plugins tests the rule set itself.
+  const gate = path.join(directory, "gate.mjs");
+  fs.writeFileSync(
+    gate,
+    'export const scanLeak = (bytes) => (Buffer.from(bytes).includes("FAKE".repeat(9)) ? { block: "GitHub token", credential: true } : {});\n',
+  );
+  // Built at run time: a GitHub token prefix and 36 letters spelling FAKE, never a live token.
+  const planted = ["gh", "p_", "FAKE".repeat(9)].join("");
+  const handoff = path.join(directory, "review-key.json");
+  const output = path.join(directory, "github-output");
+  const run = async (gatePath) => {
+    fs.writeFileSync(output, "");
+    const write = process.stdout.write;
+    let printed = "";
+    process.stdout.write = (chunk) => {
+      printed += chunk;
+      return true;
+    };
+    try {
+      const code = await main(
+        { SCAN_PATHS: handoff, GITHUB_OUTPUT: output },
+        gatePath,
+      );
+      return { code, printed, outputs: fs.readFileSync(output, "utf8") };
+    } finally {
+      process.stdout.write = write;
+    }
+  };
+  fs.writeFileSync(
+    handoff,
+    JSON.stringify({ review: `a review naming ${planted}` }),
+  );
+  let result = await run(gate);
+  assert.equal(result.code, 1);
+  assert.equal(result.outputs, "", "no clean output");
+  assert.match(
+    result.printed,
+    /::error::scan-upload: GitHub token; nothing is uploaded\. Rotate this credential/u,
+  );
+  assert.ok(!result.printed.includes(planted), "the value is never printed");
+  fs.writeFileSync(handoff, JSON.stringify({ review: "a clean review" }));
+  result = await run(gate);
+  assert.equal(result.code, 0);
+  assert.equal(result.outputs, "clean=true\n");
+  // A gate that cannot load withholds the upload too.
+  result = await run(path.join(directory, "absent.mjs"));
+  assert.equal(result.code, 1);
+  assert.equal(result.outputs, "");
+  assert.throws(
+    () => checkImports('import x from "./other.mjs";'),
+    /node builtins/u,
+  );
+  checkImports('import { readFileSync } from "node:fs";');
+});
+
+test("scan-upload fetches the gate with /usr/bin/git, no system or global config and a minimal env", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "scan-upload", "scan.cjs"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /execFileSync\("\/usr\/bin\/git", \["-c", "core\.hooksPath=\/dev\/null", \.\.\.args\]/u,
+  );
+  assert.match(source, /GIT_CONFIG_NOSYSTEM: "1"/u);
+  assert.match(source, /GIT_CONFIG_GLOBAL: "\/dev\/null"/u);
+  assert.match(source, /PATH: "\/usr\/bin:\/bin"/u);
+  assert.doesNotMatch(
+    source,
+    /\.\.\.process\.env/u,
+    "no inherited environment",
+  );
+});
+
+// Generated data files (claude-code-plugins#12558's 184 KB verdict records).
+// One git fixture drives the full-diff step and the incremental scope step, so
+// their rules agree. The base's list declares data/*.json and four globs that
+// each meet one exception; the head declares more in a list only it holds.
+function dataFixture() {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-data-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const write = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+    fs.writeFileSync(path.join(origin, file), text);
+  };
+  // 400 records of about 30 bytes: a change to every record, or the file
+  // added whole, is a diff section well over DATA_FLOOR_BYTES (7500); one
+  // record deleted is a section of a few hundred bytes.
+  const records = (tag, skip = -1) =>
+    Array.from({ length: 400 }, (_, i) =>
+      i === skip ? "" : `{"id":${i},"verdict":"${tag}"}\n`,
+    ).join("");
+  write(
+    "scripts/data-files.txt",
+    "# generated verdict records\n\ndata/*.json\nbin/*.json\n.github/*.json\nheld/*.json\nlink.json\n",
+  );
+  for (const [file, text] of [
+    [".github/data.json", "g1\n"],
+    ["bin/tool.json", "t1\n"],
+    ["data/other.json", records("same1")],
+    ["data/small.json", records("FAIL")],
+    ["data/verdicts.json", records("same1")],
+    ["docs/a.txt", "doc1\n"],
+    ["docs/b.txt", "doc1\n"],
+    ["held/data.json", "h1\n"],
+    ["src/a.js", "a1\n"],
+  ])
+    write(file, text);
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  for (const [file, text] of [
+    [".github/data.json", "g2\n"],
+    ["bin/tool.json", "t2\n"],
+    ["data/other.json", records("same2")],
+    ["data/small.json", records("FAIL", 200)],
+    ["data/verdicts.json", records("same2")],
+    ["data/new.json", records("new")],
+    ["data/odd name.json", "o\n"],
+    ["docs/a.txt", "doc2\n"],
+    ["docs/b.txt", "doc2\n"],
+    ["head-only/x.json", "x\n"],
+    ["held/data.json", "h2\n"],
+    ["scripts/head-data.txt", "src/*.js\nhead-only/*.json\n"],
+    ["src/a.js", "a2\n"],
+  ])
+    write(file, text);
+  fs.symlinkSync("src/a.js", path.join(origin, "link.json"));
+  git(origin, "add", "-A");
+  git(origin, "update-index", "--chmod=+x", "bin/tool.json");
+  git(origin, "commit", "--quiet", "-m", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  const clone = () => {
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", origin, work);
+    return work;
+  };
+  return { dir, base, head, clone };
+}
+
+// Every changed path, sorted as git lists them; data/new.json, data/other.json
+// and data/verdicts.json are the base list's data files. Each other path is
+// kept: bin/tool.json turned executable, .github/data.json matches
+// SENSITIVE_PATHS, held/data.json matches hold-paths, link.json is a symlink,
+// "data/odd name.json" is outside the plain-path characters, data/small.json's
+// one deleted record is under DATA_FLOOR_BYTES, and the rest are declared by
+// no list the base holds.
+const DATA_CHANGED = [
+  ".github/data.json",
+  "bin/tool.json",
+  "data/new.json",
+  "data/odd name.json",
+  "data/other.json",
+  "data/small.json",
+  "data/verdicts.json",
+  "docs/a.txt",
+  "docs/b.txt",
+  "head-only/x.json",
+  "held/data.json",
+  "link.json",
+  "scripts/head-data.txt",
+  "src/a.js",
+];
+const DATA_DECLARED = [
+  "data/new.json",
+  "data/other.json",
+  "data/verdicts.json",
+];
+
+test("the full-diff step leaves the data files the base branch declares out of the diff, list, total and copy groups, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const fixture = dataFixture();
+  for (const job of [key, subscription, fallback]) {
+    const fullDiff = step(job, "full-diff");
+    const run = (generatedData) => {
+      const work = fixture.clone();
+      const output = `${work}.out`;
+      const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: fixture.dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          MERGE_BASE: fixture.base,
+          HEAD_SHA: fixture.head,
+          DIFF_FILE: fullDiff.env.DIFF_FILE,
+          FILE_LIST: fullDiff.env.FILE_LIST,
+          HOLD_PATHS: "held/**\n",
+          SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+          GENERATED_COPIES: "",
+          GENERATED_DATA: generatedData,
+          DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const read = (file) =>
+        fs.existsSync(path.join(work, file))
+          ? fs.readFileSync(path.join(work, file), "utf8")
+          : undefined;
+      return {
+        stdout: result.stdout,
+        out: fs.readFileSync(output, "utf8"),
+        list: read(".claude-lane/files.txt"),
+        data: read(".claude-lane/data-files.txt"),
+        diff: read(".claude-lane/pr.diff"),
+        identical: read(".claude-lane/identical.txt"),
+      };
+    };
+    const declared = run("scripts/data-files.txt");
+    const kept = DATA_CHANGED.filter((p) => !DATA_DECLARED.includes(p));
+    assert.equal(declared.list, `${kept.join("\n")}\n`, job.name);
+    assert.match(declared.out, /^files=11$/mu, job.name);
+    assert.match(declared.out, /^data=3$/mu, job.name);
+    assert.equal(declared.data, `${DATA_DECLARED.join("\n")}\n`, job.name);
+    for (const p of DATA_DECLARED)
+      assert.doesNotMatch(
+        declared.diff,
+        new RegExp(`^diff --git a/${p} `, "mu"),
+        p,
+      );
+    assert.match(declared.diff, /^diff --git a\/src\/a\.js b\/src\/a\.js$/mu);
+    // The size is the diff's own, with the data files' sections gone.
+    assert.match(
+      declared.out,
+      new RegExp(`^bytes=${Buffer.byteLength(declared.diff)}$`, "mu"),
+    );
+    // data/other.json and data/verdicts.json change identically, but they left
+    // the scope, so only the docs pair groups.
+    assert.match(declared.out, /^copies=1$/mu, job.name);
+    assert.equal(declared.identical, "docs/a.txt\tdocs/b.txt\n", job.name);
+    assert.match(
+      declared.out,
+      /3 generated data file\(s\) the base branch declares are in neither the diff nor the list/u,
+    );
+    // No list, a list the base lacks, or one only the head holds: nothing is
+    // declared, every changed file is in scope, and both pairs group.
+    for (const generatedData of [
+      "",
+      "scripts/missing.txt",
+      "scripts/head-data.txt",
+    ]) {
+      const none = run(generatedData);
+      assert.equal(none.list, `${DATA_CHANGED.join("\n")}\n`, generatedData);
+      assert.match(none.out, /^files=14$/mu, generatedData);
+      assert.match(none.out, /^data=0$/mu, generatedData);
+      assert.equal(none.data, undefined, generatedData);
+      assert.match(none.out, /^copies=2$/mu, generatedData);
+      assert.doesNotMatch(none.out, /generated data file/u, generatedData);
+      assert.equal(
+        /::warning::The merge base holds no generated-data file at /u.test(
+          none.stdout,
+        ),
+        generatedData !== "",
+        generatedData,
+      );
+    }
+  }
+});
+
+test("an incremental review leaves the data files the base branch declares out of its list, count and diff, in every leg", async () => {
+  const fixture = dataFixture();
+  const LAST = "b".repeat(40);
+  // A declared data file's change since the last review is about 12 KB, over
+  // DATA_FLOOR_BYTES (7500); every other file's, data/small.json's included,
+  // is one line. A file in `omitted` has the patch the API drops when large.
+  const BIG = `@@ -1,2000 +1,2000 @@\n${"-x\n+y\n".repeat(2000)}`.trimEnd();
+  const scope = async (job, generatedData, changed, omitted = []) => {
+    const work = fixture.clone();
+    const dir = path.join(`${work}.lane`);
+    fs.mkdirSync(dir);
+    const compares = {
+      [`main...${fixture.head}`]: { merge_base_commit: { sha: fixture.base } },
+      [`main...${LAST}`]: { merge_base_commit: { sha: fixture.base } },
+      [`${LAST}...${fixture.head}`]: {
+        status: "ahead",
+        files: changed.map((filename) => ({
+          filename,
+          status: "modified",
+          ...(omitted.includes(filename)
+            ? {}
+            : {
+                patch: DATA_DECLARED.includes(filename)
+                  ? BIG
+                  : "@@ -1 +1 @@\n-x\n+y",
+              }),
+          changes: 2,
+        })),
+      },
+    };
+    const marker = {
+      id: 41,
+      user: { login: "github-actions[bot]" },
+      body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=none caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
+    };
+    const github = {
+      hook: { after: () => {}, error: () => {} },
+      paginate: async (fn) => fn(),
+      rest: {
+        issues: { listComments: () => [marker] },
+        pulls: {
+          listFiles: () =>
+            DATA_CHANGED.map((filename) => ({ filename, status: "modified" })),
+          get: async () => ({
+            data: {
+              head: { sha: fixture.head },
+              changed_files: DATA_CHANGED.length,
+            },
+          }),
+        },
+        repos: {
+          compareCommitsWithBasehead: async ({ basehead }) => {
+            assert.ok(basehead in compares, basehead);
+            return { data: compares[basehead] };
+          },
+        },
+      },
+    };
+    const outputs = {};
+    const warnings = [];
+    const values = {
+      GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
+      LANE: "claude-review",
+      INCREMENTAL: "true",
+      DOCS_ONLY_PATHS: "",
+      EVENT_ACTION: "synchronize",
+      PR_NUMBER: "7",
+      HEAD_SHA: fixture.head,
+      BASE_REF: "main",
+      DIFF_FILE: path.join(dir, "incremental.diff"),
+      FILE_LIST: path.join(dir, "incremental-files.txt"),
+      DATA_LIST: path.join(dir, "incremental-data-files.txt"),
+      HOLD_PATHS: "held/**\n",
+      SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+      GENERATED_DATA: generatedData,
+      DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
+      GIT_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      RUNNER_TEMP: dir,
+    };
+    const saved = Object.fromEntries(
+      Object.keys(values).map((k) => [k, process.env[k]]),
+    );
+    const cwd = process.cwd();
+    Object.assign(process.env, values);
+    process.chdir(work);
+    try {
+      await new AsyncFunction(
+        "require",
+        "github",
+        "context",
+        "core",
+        step(job, "scope").with.script,
+      )(
+        require,
+        github,
+        { repo: { owner: "o", repo: "r" } },
+        {
+          setSecret: () => {},
+          setOutput: (k, v) => {
+            outputs[k] = v;
+          },
+          info: () => {},
+          warning: (message) => warnings.push(message),
+        },
+      );
+    } finally {
+      process.chdir(cwd);
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    const read = (file) =>
+      fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+    return {
+      outputs,
+      warnings,
+      list: read(values.FILE_LIST),
+      data: read(values.DATA_LIST),
+      diff: read(values.DIFF_FILE),
+    };
+  };
+  for (const job of [key, subscription, fallback]) {
+    // The push changed every file: the three data files alone leave the
+    // scope, and each exception stays, as in the full-diff step.
+    const kept = DATA_CHANGED.filter((p) => !DATA_DECLARED.includes(p));
+    const mixed = await scope(job, "scripts/data-files.txt", DATA_CHANGED);
+    assert.equal(mixed.outputs.scope, "incremental", job.name);
+    assert.equal(mixed.outputs.files, "11", job.name);
+    assert.equal(mixed.list, `${kept.join("\n")}\n`, job.name);
+    assert.equal(mixed.outputs.data, "3", job.name);
+    assert.equal(mixed.data, `${DATA_DECLARED.join("\n")}\n`, job.name);
+    for (const p of DATA_DECLARED) assert.ok(!mixed.diff.includes(p), p);
+    // Each section is "diff --git a/<p> b/<p>\nstatus: modified\n@@ -1 +1 @@\n-x\n+y\n",
+    // 2 * length + 52 bytes (60 for a.js, as above), joined by one newline.
+    assert.equal(
+      mixed.outputs.bytes,
+      String(
+        kept.reduce((sum, p) => sum + 2 * p.length + 52, 0) + kept.length - 1,
+      ),
+      job.name,
+    );
+    assert.deepEqual(mixed.warnings, [], job.name);
+    assert.match(
+      mixed.outputs.note,
+      /^The push also changed 3 generated data file\(s\) the base branch declares, in neither the diff nor the list; do not review them\.$/mu,
+    );
+    // A push of data files alone needs no review, and says why.
+    const dataOnly = await scope(job, "scripts/data-files.txt", [
+      "data/verdicts.json",
+    ]);
+    assert.equal(dataOnly.outputs.review, "false", job.name);
+    assert.equal(dataOnly.outputs.skip, "no-change", job.name);
+    assert.equal(
+      dataOnly.outputs["skip-reason"],
+      `every file changed since the review of ${LAST} is a generated data file the base branch declares`,
+    );
+    // A data file whose large patch the API dropped leaves the scope before
+    // the missing-patch check, so the push stays incremental; a dropped
+    // patch on any other file still needs a whole review.
+    const unshown = await scope(
+      job,
+      "scripts/data-files.txt",
+      ["data/verdicts.json", "src/a.js"],
+      ["data/verdicts.json"],
+    );
+    assert.equal(unshown.outputs.scope, "incremental", job.name);
+    assert.equal(unshown.outputs.files, "1", job.name);
+    assert.equal(unshown.list, "src/a.js\n", job.name);
+    assert.equal(unshown.data, "data/verdicts.json\n", job.name);
+    const unshownCode = await scope(
+      job,
+      "scripts/data-files.txt",
+      ["data/verdicts.json", "src/a.js"],
+      ["src/a.js"],
+    );
+    assert.equal(unshownCode.outputs.scope, "whole", job.name);
+    // A list only the head holds declares nothing, with a warning.
+    const headOnly = await scope(job, "scripts/head-data.txt", [
+      "head-only/x.json",
+      "src/a.js",
+    ]);
+    assert.equal(headOnly.outputs.files, "2", job.name);
+    assert.equal(headOnly.list, "head-only/x.json\nsrc/a.js\n", job.name);
+    assert.equal(headOnly.outputs.data, "0", job.name);
+    assert.equal(headOnly.data, undefined, job.name);
+    assert.match(
+      headOnly.warnings[0],
+      /^The merge base holds no generated-data file at scripts\/head-data\.txt;/u,
+    );
+  }
+});
+
+test("the extract step names the data files the job left out, and a count its list cannot back is incomplete", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-extract-data-");
+  const list = (name, text) => {
+    fs.writeFileSync(path.join(dir, name), text);
+    return path.join(dir, name);
+  };
+  const review = JSON.stringify({
+    findings: 0,
+    files_read: 2,
+    summary: "S",
+    comments: [],
+  });
+  const named = await extract(
+    { structured: review },
+    {
+      WHOLE_FILES: "2",
+      DATA: "2",
+      DATA_LIST: list("ok.txt", "data/a.json\ndata/b.json\n"),
+    },
+  );
+  assert.equal(named.verdict, "complete");
+  assert.deepEqual(JSON.parse(named.review).coverage, {
+    read: 2,
+    changed: 2,
+    data_files: ["data/a.json", "data/b.json"],
+  });
+  for (const [what, DATA_LIST] of [
+    ["one name short", list("short.txt", "data/a.json\n")],
+    [
+      "a name outside the plain characters",
+      list("odd.txt", "data/a.json\ndata/`b`.json\n"),
+    ],
+    ["no list", path.join(dir, "missing.txt")],
+  ]) {
+    const unnamed = await extract(
+      { structured: review },
+      { WHOLE_FILES: "2", DATA: "2", DATA_LIST },
+    );
+    assert.equal(
+      unnamed.verdict,
+      "the job could not name the generated data files it left out",
+      what,
+    );
+    assert.equal(unnamed.review, undefined, what);
+  }
+  // No data files: the coverage carries no list.
+  const none = await extract(
+    { structured: review },
+    { WHOLE_FILES: "2", DATA: "0", DATA_LIST: list("stale.txt", "x.json\n") },
+  );
+  assert.deepEqual(JSON.parse(none.review).coverage, { read: 2, changed: 2 });
+});
+
+// Binary files (claude-code-plugins#13097's fixtures.tar.gz archives): the
+// full-diff step names the files in scope numstat counts no lines for, and
+// the extract step records them in the coverage without changing a count.
+test("the full-diff step names the binary files in scope, in every leg", () => {
+  const { spawnSync } = require("node:child_process");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const dir = makeTemporaryDirectory("pr-review-cli-binary-");
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  const write = (file, data) => {
+    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
+    fs.writeFileSync(path.join(origin, file), data);
+  };
+  const gz = (n) => Buffer.from([0x1f, 0x8b, 0x08, 0x00, n, 0x00, 0xff]);
+  write("a/fixtures.tar.gz", gz(1));
+  write("gone.bin", gz(9));
+  write("src/a.js", "a1\n");
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  write("a/fixtures.tar.gz", gz(2));
+  write("b/fixtures.tar.gz", gz(3));
+  write("odd name.bin", gz(4));
+  write("src/a.js", "a2\n");
+  fs.rmSync(path.join(origin, "gone.bin"));
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  for (const job of [key, subscription, fallback]) {
+    const fullDiff = step(job, "full-diff");
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", origin, work);
+    const output = `${work}.out`;
+    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        GH_TOKEN: "test-token",
+        GITHUB_SERVER_URL: "https://github.invalid",
+        GITHUB_OUTPUT: output,
+        MERGE_BASE: base,
+        HEAD_SHA: head,
+        DIFF_FILE: fullDiff.env.DIFF_FILE,
+        FILE_LIST: fullDiff.env.FILE_LIST,
+        HOLD_PATHS: "",
+        SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+        GENERATED_COPIES: "",
+        GENERATED_DATA: "",
+        DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const out = fs.readFileSync(output, "utf8");
+    // Every file stays in scope; the deleted one is on no list, and the
+    // binary with a space in its name is counted in scope but not named.
+    assert.match(out, /^files=4$/mu, job.name);
+    assert.match(out, /^binary=2$/mu, job.name);
+    assert.equal(
+      fs.readFileSync(path.join(work, ".claude-lane/binary-files.txt"), "utf8"),
+      "a/fixtures.tar.gz\nb/fixtures.tar.gz\n",
+      job.name,
+    );
+    assert.equal(
+      step(job, "extract").env.BINARY,
+      `\${{ steps.full-diff.outputs.binary }}`,
+    );
+    assert.equal(
+      step(job, "extract").env.BINARY_LIST,
+      ".claude-lane/binary-files.txt",
+    );
+  }
+});
+
+test("the extract step names a whole review's binary files and changes no count", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-extract-binary-");
+  const list = (name, text) => {
+    fs.writeFileSync(path.join(dir, name), text);
+    return path.join(dir, name);
+  };
+  const review = JSON.stringify({
+    findings: 0,
+    files_read: 1,
+    summary: "S",
+    comments: [],
+  });
+  const BINARY_LIST = list("ok.txt", "a/x.tar.gz\n");
+  const named = await extract(
+    { structured: review },
+    { WHOLE_FILES: "2", BINARY: "1", BINARY_LIST },
+  );
+  assert.equal(named.verdict, "complete");
+  assert.deepEqual(JSON.parse(named.review).coverage, {
+    read: 1,
+    changed: 2,
+    binary_files: ["a/x.tar.gz"],
+  });
+  // A list its count cannot back, or an incremental scope, names none and
+  // leaves the review as it was.
+  for (const [what, env] of [
+    ["one name short", { BINARY: "2", BINARY_LIST }],
+    ["an odd name", { BINARY: "1", BINARY_LIST: list("odd.txt", "a`b.gz\n") }],
+    ["no list", { BINARY: "1", BINARY_LIST: path.join(dir, "missing.txt") }],
+    [
+      "incremental",
+      { BINARY: "1", BINARY_LIST, SCOPE: "incremental", SCOPE_FILES: "2" },
+    ],
+    ["none", { BINARY: "0", BINARY_LIST }],
+  ]) {
+    const unnamed = await extract(
+      { structured: review },
+      { WHOLE_FILES: "2", ...env },
+    );
+    assert.equal(unnamed.verdict, "complete", what);
+    assert.deepEqual(
+      JSON.parse(unnamed.review).coverage,
+      { read: 1, changed: 2 },
+      what,
     );
   }
 });

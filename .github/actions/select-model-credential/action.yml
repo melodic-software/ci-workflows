@@ -1,0 +1,169 @@
+name: Select the model credential
+description: >
+  The one place a Claude model lane picks its credential: the role's API key,
+  then its subscription token, then the central fallback token, each leg its
+  own job. Three calls cover the chain, so no lane writes a presence check,
+  skip handling or leg condition of its own (select.cjs states the rules):
+  (1) `leg: start`, in a job with actions: read and no secret, reads the
+  key's credit history (check-key-credit, its one or two artifact-list calls;
+  no other API call) and names the first leg in `next-leg`; (2) `leg: key`,
+  `subscription` or `fallback`, first in each leg job, decides whether this
+  leg's model runs (`present`) from whether its secret is set, and checks the
+  reason it runs; (3) `state` alone, last in each leg job, takes the leg's
+  launcher handoff and names the next leg in `next-leg`. The next job's `if:`
+  compares that output to its own leg; a key job's compares the start call's
+  `next-leg` with `!= 'subscription'`, so a failed read runs the key. Pass
+  whether each secret is set (`secrets.X != ''`), never a value. A key leg in
+  a job that already holds actions: read may read the credit history itself
+  (key-job set) instead of a start call. key-off is the one manual switch:
+  `true` holds the key off with no credit stop and no read, for as long as it
+  stays set, which the credit history cannot do (it holds the key off only
+  inside a credit stop's backoff window, at most 24 hours).
+
+inputs:
+  leg:
+    description: >-
+      start, key, subscription or fallback. Empty with state set is the call
+      after the model.
+    required: false
+    default: ""
+  role:
+    description: >-
+      The role, lower-case kebab as run-claude-cli takes it (issue-lane); its
+      upper-snake form is the secret-name prefix (ISSUE_LANE_CLAUDE_API_KEY,
+      ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN). Required on a key, subscription
+      or fallback call.
+    required: false
+    default: ""
+  credential-set:
+    description: "Whether this leg's secret is set (the caller passes the expression secrets.X != ''), never the value."
+    required: false
+    default: "false"
+  fallback-set:
+    description: >-
+      Whether FALLBACK_CLAUDE_CODE_OAUTH_TOKEN is set, never the value. Becomes
+      `fallback-ready`, so run-claude-cli hands a subscription stop on only when
+      a fallback leg can take it.
+    required: false
+    default: "false"
+  key-off:
+    description: >-
+      Key leg: `true` holds the key off and the subscription job runs, reason
+      no-key. A manual switch the credit history cannot replace; pr-review-cli
+      passes vars.REVIEWS_KEY_EXHAUSTED.
+    required: false
+    default: ""
+  selected:
+    description: >-
+      Key leg in a job that runs whatever the start call chose: the start
+      call's next-leg. `subscription` holds the key off (key-skipped,
+      reason credit-stop).
+    required: false
+    default: ""
+  reason:
+    description: >-
+      Subscription or fallback leg: the previous leg's next-reason. Checked
+      against report-lane-outcome's fallback reasons; anything else is empty.
+    required: false
+    default: ""
+  state:
+    description: "After the model, this job's first call's `state` output."
+    required: false
+    default: ""
+  handoff:
+    description: "After the model, run-claude-cli's handoff output for this leg."
+    required: false
+    default: ""
+  handoff-reason:
+    description: "After the model, run-claude-cli's handoff-reason output for this leg."
+    required: false
+    default: ""
+  key-job:
+    description: >-
+      Start call, or a key leg reading the credit history itself: the key
+      job's display name for check-key-credit's markers.
+    required: false
+    default: ""
+  window-hours:
+    description: >-
+      check-key-credit's window-hours, passed as it is: empty is its default
+      (1 hour), 0 turns the read off.
+    required: false
+    default: ""
+  reset-at:
+    description: check-key-credit's reset-at (vars.KEY_CREDIT_RESET_AT).
+    required: false
+    default: ""
+  probe-minutes:
+    description: check-key-credit's probe-minutes; empty is its default (15), 0 turns probing off.
+    required: false
+    default: ""
+  github-token:
+    description: "The job token, with actions: read, for the credit-history read."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  present:
+    description: "`true` when this leg's model runs in this job, else `false`."
+    value: ${{ steps.select.outputs.present }}
+  fallback-ready:
+    description: "`true` when the fallback token is set; run-claude-cli's fallback-ready."
+    value: ${{ steps.select.outputs.fallback-ready }}
+  key-skipped:
+    description: "`true` when the credit history held the key off."
+    value: ${{ steps.select.outputs.key-skipped }}
+  fallback-reason:
+    description: Why this leg runs instead of the one before (report-lane-outcome's fallback-reason), or empty.
+    value: ${{ steps.select.outputs.fallback-reason }}
+  secret-name:
+    description: The secret this leg reads.
+    value: ${{ steps.select.outputs.secret-name }}
+  state:
+    description: This leg's decision, for the call after the model.
+    value: ${{ steps.select.outputs.state }}
+  next-leg:
+    description: >-
+      Start call: key or subscription. The call after the model: the leg the
+      next job runs (subscription or fallback), or empty.
+    value: ${{ steps.select.outputs.next-leg }}
+  next-reason:
+    description: Why the next leg runs; the next job passes it as reason.
+    value: ${{ steps.select.outputs.next-reason }}
+  skip-key:
+    description: check-key-credit's skip-key, when this call read the credit history.
+    value: ${{ steps.select.outputs.skip-key }}
+  origin-run:
+    description: check-key-credit's origin-run, when this call read the credit history.
+    value: ${{ steps.select.outputs.origin-run }}
+  marker:
+    description: check-key-credit's marker, the artifact the key job uploads after a credit stop.
+    value: ${{ steps.select.outputs.marker }}
+  probing-marker:
+    description: check-key-credit's probing-marker, the artifact the calling job uploads.
+    value: ${{ steps.select.outputs.probing-marker }}
+
+runs:
+  using: composite
+  steps:
+    - name: Select the credential
+      id: select
+      shell: bash
+      env:
+        INPUT_LEG: ${{ inputs.leg }}
+        INPUT_ROLE: ${{ inputs.role }}
+        INPUT_CREDENTIAL_SET: ${{ inputs.credential-set }}
+        INPUT_FALLBACK_SET: ${{ inputs.fallback-set }}
+        INPUT_KEY_OFF: ${{ inputs.key-off }}
+        INPUT_SELECTED: ${{ inputs.selected }}
+        INPUT_REASON: ${{ inputs.reason }}
+        INPUT_STATE: ${{ inputs.state }}
+        INPUT_HANDOFF: ${{ inputs.handoff }}
+        INPUT_HANDOFF_REASON: ${{ inputs.handoff-reason }}
+        INPUT_KEY_JOB: ${{ inputs.key-job }}
+        INPUT_WINDOW_HOURS: ${{ inputs.window-hours }}
+        INPUT_RESET_AT: ${{ inputs.reset-at }}
+        INPUT_PROBE_MINUTES: ${{ inputs.probe-minutes }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        GITHUB_TOKEN: ${{ inputs.key-job != '' && inputs.github-token || '' }}
+      run: node "$GITHUB_ACTION_PATH/select.cjs"

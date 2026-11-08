@@ -1,24 +1,62 @@
 name: Key credit gate
 description: >
   Before a keyed lane's key job: whether that job should skip its key because
-  the key ended in a credit stop in this workflow inside the window. Reads
-  the workflow's completed runs created inside the window (one list call)
-  and at most three of their job lists, with the job token, which needs
-  actions: read. Any failure or an unclear answer leaves skip-key `false`,
-  so the key job runs as before. Writes one log line either way; a skip is a
-  notice naming the run whose credit stop caused it. See gate.cjs.
+  the key ended in a credit stop in this workflow inside the window, or
+  another gate is probing the key right after that window. Reads the
+  repository's artifacts named by the `marker` output (one list call) with
+  the job token, which needs actions: read; the key job uploads that marker
+  after a credit stop. When that marker is past the window but still kept, a
+  second call reads the `key-credit-probing-<workflow>-<key-job>` artifacts:
+  one created after the credit stop inside probe-minutes skips; none names
+  this run the probe in the `probing-marker` output, which the gate job
+  uploads (kept 7 days) so other gates skip while it is fresh. Any failure
+  or an unclear answer leaves skip-key `false` and writes no probe, so the
+  key job runs as before. Writes one log line either way; a skip is a notice
+  naming the run that caused it. The window backs off: each consecutive
+  credit stop doubles window-hours, capped at 24 hours (1, 2, 4, 8, 16, 24
+  from a base of 1), counted from the same two reads with no extra call, and
+  reset-at starts it over. These waits are expected, not a defect:
+  (1) a key whose credit comes back on its account's monthly cycle is picked
+  up when the current step ends, at most 24 hours, so at most one day a
+  month; (2) a key set by hand with `gh secret set` writes no reset-at, so it
+  also waits up to 24 hours; (3) for an instant reset, run
+  `gh variable set KEY_CREDIT_RESET_AT --org melodic-software --visibility all --body "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
+  passing the variable's current visibility, since gh otherwise makes it
+  private and public repositories stop reading it. See gate.cjs for the
+  exact definition.
 
 inputs:
   key-job:
     description: >-
       The key job's display name, lower-case kebab (for example
-      claude-review-key). The record steps are looked up in this job and in
-      `<key-job>-credit`, the job that runs this action.
+      claude-review-key); the marker's name carries it.
     required: true
   window-hours:
-    description: How far back a credit stop counts, in hours (0 turns the gate off; at most 168).
+    description: >-
+      The backoff's base step: how far back a single credit stop counts, in
+      hours (0 turns the gate off; at most 168). Above 24 it never backs off.
+      A marker kept fewer days than the window ends it sooner. Empty is 1
+      hour (gate.cjs DEFAULT_WINDOW_HOURS), so callers pass an unset
+      vars.KEY_CREDIT_WINDOW_HOURS as it is.
     required: false
-    default: "6"
+    default: ""
+  reset-at:
+    description: >-
+      An ISO-8601 UTC time (`2026-11-06T12:00:00Z`), the moment a new key was
+      pushed: callers pass vars.KEY_CREDIT_RESET_AT, which the rotation tool
+      writes after each key push. Only credit stops after it count, so the
+      next run tries the new key. Empty or any other text is no reset.
+    required: false
+    default: ""
+  probe-minutes:
+    description: >-
+      How long another gate's probing marker keeps this gate off the key, in
+      minutes (0 turns probing off; at most 1440, one
+      day). It covers the longest measured gate-to-key-leg gap plus a
+      margin, so the probe's own credit stop lands before it ends. Empty is
+      15 (gate.cjs DEFAULT_PROBE_MINUTES).
+    required: false
+    default: ""
   github-token:
     description: "The job token, with actions: read."
     required: false
@@ -29,8 +67,19 @@ outputs:
     description: "`true` when the key job should skip its key, else `false` or empty."
     value: ${{ steps.gate.outputs.skip-key }}
   origin-run:
-    description: The run id whose credit stop caused the skip, or empty.
+    description: The run id whose credit stop or probe caused the skip, or empty.
     value: ${{ steps.gate.outputs.origin-run }}
+  marker:
+    description: >-
+      The artifact name the key job uploads after a credit stop, or empty
+      when the workflow or key job is unreadable.
+    value: ${{ steps.gate.outputs.marker }}
+  probing-marker:
+    description: >-
+      The artifact name the gate job uploads because this run probes the key
+      after a credit stop's window, or empty: no probe is needed or the read
+      failed.
+    value: ${{ steps.gate.outputs.probing-marker }}
 
 runs:
   using: composite
@@ -41,6 +90,8 @@ runs:
       env:
         KEY_JOB: ${{ inputs.key-job }}
         WINDOW_HOURS: ${{ inputs.window-hours }}
+        PROBE_MINUTES: ${{ inputs.probe-minutes }}
+        RESET_AT: ${{ inputs.reset-at }}
         WORKFLOW_REF: ${{ github.workflow_ref }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
       run: node "$GITHUB_ACTION_PATH/gate.cjs" || true

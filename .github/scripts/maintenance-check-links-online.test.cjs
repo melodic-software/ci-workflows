@@ -25,7 +25,7 @@ const source = fs.readFileSync(
 );
 const workflow = parseWorkflow(source);
 const job = workflow.jobs["check-links"];
-const [gate, checkout, lychee, report] = job.steps;
+const [gate, checkout, lychee, report, dead, upload] = job.steps;
 
 async function runGate({ eventName, properties }) {
   const original = process.env.OPT_IN_PROPERTY;
@@ -97,6 +97,8 @@ test("every step after the gate runs only when the gate says so", () => {
     assert.equal(step.if, "steps.gate.outputs.run == 'true'");
   }
   assert.equal(report.if, "steps.gate.outputs.run == 'true' && !cancelled()");
+  assert.equal(dead.if, "steps.gate.outputs.run == 'true' && !cancelled()");
+  assert.equal(upload.if, "steps.dead.outputs.artifact != '' && !cancelled()");
 });
 
 // Recorded from lychee 0.24.2 `--format json --verbose` against a local status
@@ -329,6 +331,109 @@ test("sections are sorted by input and URL and capped with a remainder line", ()
     rows.map((row) => row.match(/404\/(\w)>|^\* \+\d+ more$/u)[1] ?? row),
     ["a", "b", "c", "* +1 more"],
   );
+});
+
+function runDead(reportBody) {
+  const directory = makeTemporaryDirectory("check-links-dead-");
+  const reportPath = path.join(directory, "report.json");
+  const deadPath = path.join(directory, "out", "dead-links.json");
+  const outputPath = path.join(directory, "output.txt");
+  fs.writeFileSync(reportPath, reportBody);
+  fs.writeFileSync(outputPath, "");
+  const result = spawnSync("bash", ["-c", dead.run], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REPORT: reportPath,
+      DEAD_LINKS: deadPath,
+      ARTIFACT: dead.env.ARTIFACT,
+      GITHUB_OUTPUT: outputPath,
+    },
+  });
+  return {
+    status: result.status,
+    output: fs.readFileSync(outputPath, "utf8"),
+    links: fs.existsSync(deadPath)
+      ? JSON.parse(fs.readFileSync(deadPath, "utf8"))
+      : undefined,
+  };
+}
+
+test("the workflow names a short-lived dead-links artifact in its outputs, with no new input", () => {
+  assert.deepEqual(Object.keys(workflow.on.workflow_call.outputs), [
+    "dead-links-artifact",
+    "dead-links-count",
+  ]);
+  assert.deepEqual(Object.keys(workflow.on.workflow_call.inputs), [
+    "runner",
+    "timeout-minutes",
+    "opt-in-property",
+    "config",
+    "extra-args",
+    "globs",
+    "lychee-version",
+  ]);
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+  assert.equal(upload.with.name, "${{ steps.dead.outputs.artifact }}");
+  assert.equal(upload.with["retention-days"], 3);
+  assert.equal(dead.env.REPORT, lychee.with.output);
+  assert.equal(
+    path.basename(dead.env.DEAD_LINKS),
+    path.basename(upload.with.path),
+  );
+});
+
+test("broken links become one entry per URL with every location, sorted by URL", () => {
+  const twice = structuredClone(recorded);
+  twice.error_map["docs/other.md"] = [
+    {
+      url: "http://127.0.0.1:18766/404/y",
+      status: { text: "Rejected status code: 404 Not Found", code: 404 },
+      span: { line: 8, column: 1 },
+    },
+  ];
+  const { status, output, links } = runDead(JSON.stringify(twice));
+  assert.equal(status, 0);
+  assert.match(output, /^artifact=link-check-online-dead-links$/mu);
+  assert.match(output, /^count=3$/mu);
+  assert.deepEqual(
+    links.map((link) => link.url),
+    [
+      "http://127.0.0.1:18766/403/y",
+      "http://127.0.0.1:18766/404/y",
+      "http://127.0.0.1:18766/410/y",
+    ],
+  );
+  assert.deepEqual(links[1], {
+    url: "http://127.0.0.1:18766/404/y",
+    status: 404,
+    detail: "Rejected status code: 404 Not Found",
+    locations: [
+      { path: "docs/links.md", line: 5, column: 2 },
+      { path: "docs/other.md", line: 8, column: 1 },
+    ],
+  });
+  // Timeouts and accepted responses are not dead links.
+  assert.doesNotMatch(JSON.stringify(links), /hang|429|503|200\/y/u);
+});
+
+test("a run with no broken links uploads an empty list", () => {
+  const { status, output, links } = runDead(
+    JSON.stringify({ ...recorded, errors: 0, error_map: {} }),
+  );
+  assert.equal(status, 0);
+  assert.match(output, /^count=0$/mu);
+  assert.deepEqual(links, []);
+});
+
+test("a missing or non-JSON report uploads no artifact", () => {
+  for (const body of ["", "not json"]) {
+    const { status, output, links } = runDead(body);
+    assert.equal(status, 0);
+    assert.equal(output, "");
+    assert.equal(links, undefined);
+  }
 });
 
 test("a dispatched run checks links without reading the property", async () => {

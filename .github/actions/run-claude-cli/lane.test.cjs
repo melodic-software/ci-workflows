@@ -101,6 +101,10 @@ if (process.env["FAKE_" + leg + "_SLEEP"]) {
   if (process.env.FAKE_SURVIVED) fs.writeFileSync(process.env.FAKE_SURVIVED, "");
 }
 process.stdout.write(fs.readFileSync(process.env["FAKE_" + leg], "utf8"));
+// A CLI that prints its events, then waits until the leg timeout kills it.
+if (process.env["FAKE_" + leg + "_HANG"]) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+}
 process.exit(Number(process.env["FAKE_" + leg + "_EXIT"] ?? 0));
 `,
 );
@@ -244,6 +248,7 @@ function runCase({
   keyExit = 1,
   subExit = 1,
   keySleep = false,
+  hang = false,
   legTimeoutMs = 0,
   extraEnv = {},
   prepare = () => ({}),
@@ -275,6 +280,7 @@ function runCase({
     baseEnv[`FAKE_${leg}_EXIT`] = String(messages === SUCCESS ? 0 : exit);
   }
   if (keySleep) baseEnv.FAKE_KEY_SLEEP = "1";
+  if (hang) baseEnv[key ? "FAKE_KEY_HANG" : "FAKE_SUB_HANG"] = "1";
   const prompt = path.join(dir, "prompt.md");
   fs.writeFileSync(prompt, "Fix the failing check.\n");
   const config = {
@@ -639,6 +645,128 @@ test("a subscription limit stop is rate-limit with the rejected window's reset",
   assert.equal(outputs.credential, TOKEN_NAME);
 });
 
+// What a CLI waiting out a rejected window leaves when the leg timeout kills
+// it: the rejected rate_limit_event and no result.
+function rejectedThenHang(rateLimitType, resetsAt) {
+  return [
+    { type: "system", subtype: "init" },
+    {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt, rateLimitType },
+    },
+  ];
+}
+
+test("a subscription leg that times out after a rejected window is a limit stop and hands off", () => {
+  for (const [window, resetsAt, iso] of [
+    ["seven_day", 1767830400, "2026-01-08T00:00:00Z"],
+    ["five_hour", 1767225600, "2026-01-01T00:00:00Z"],
+  ]) {
+    const { outputs, records } = runCase({
+      sub: rejectedThenHang(window, resetsAt),
+      fallbackReady: true,
+      hang: true,
+      legTimeoutMs: 300,
+    });
+    assert.equal(outputs["lane-class"], "rate-limit", window);
+    assert.equal(outputs["lane-resets"], iso, window);
+    assert.equal(outputs.handoff, "true", window);
+    assert.equal(outputs["handoff-reason"], "limit-stop", window);
+    assert.equal(records[0].next, "fallback", window);
+  }
+});
+
+test("a subscription leg that times out with no rejected window stays timeout and does not hand off", () => {
+  for (const [name, sub] of [
+    ["no event", [{ type: "system", subtype: "init" }]],
+    ["warning only", WARNED_THROTTLE.filter((m) => m.type !== "result")],
+  ]) {
+    const { outputs, records } = runCase({
+      sub,
+      fallbackReady: true,
+      hang: true,
+      legTimeoutMs: 300,
+    });
+    assert.equal(outputs["lane-class"], "timeout", name);
+    assert.equal(outputs["lane-resets"], "", name);
+    assert.equal(outputs.handoff, "false", name);
+    assert.equal(records[0].next, null, name);
+  }
+});
+
+test("a subscription leg that times out after a rejection that no longer holds stays timeout and does not hand off", () => {
+  const assistant = {
+    type: "assistant",
+    message: { content: [{ type: "text", text: "Still working." }] },
+  };
+  for (const [name, sub] of [
+    [
+      "rejected then allowed",
+      [
+        ...rejectedThenHang("seven_day_opus", 1767830400),
+        {
+          type: "rate_limit_event",
+          rate_limit_info: { status: "allowed", rateLimitType: "five_hour" },
+        },
+        assistant,
+        assistant,
+      ],
+    ],
+    [
+      "rejected then assistant message",
+      [...rejectedThenHang("seven_day_opus", 1767830400), assistant],
+    ],
+  ]) {
+    const { outputs, records } = runCase({
+      sub,
+      fallbackReady: true,
+      hang: true,
+      legTimeoutMs: 300,
+    });
+    assert.equal(outputs["lane-class"], "timeout", name);
+    assert.equal(outputs["lane-resets"], "", name);
+    assert.equal(outputs.handoff, "false", name);
+    assert.equal(records[0].next, null, name);
+  }
+});
+
+test("a subscription leg that fails unnamed after a rejected window is a limit stop and hands off", () => {
+  const { outputs, records } = runCase({
+    sub: rejectedThenHang("seven_day", 1767830400),
+    fallbackReady: true,
+  });
+  assert.equal(outputs["lane-class"], "rate-limit");
+  assert.equal(outputs["lane-resets"], "2026-01-08T00:00:00Z");
+  assert.equal(outputs.handoff, "true");
+  assert.equal(outputs["handoff-reason"], "limit-stop");
+  assert.equal(records[0].next, "fallback");
+});
+
+test("the fallback leg that times out after a rejected window is a limit stop that hands off nothing", () => {
+  const { outputs, records } = runCase({
+    fallback: rejectedThenHang("seven_day", 1767830400),
+    fallbackReady: true,
+    hang: true,
+    legTimeoutMs: 300,
+  });
+  assert.equal(outputs["lane-class"], "rate-limit");
+  assert.equal(outputs["lane-resets"], "2026-01-08T00:00:00Z");
+  assert.equal(outputs.handoff, "false");
+  assert.equal(outputs["handoff-reason"], "");
+  assert.equal(records[0].next, null);
+});
+
+test("a key leg that times out after a rejected window keeps class timeout", () => {
+  const { outputs } = runCase({
+    key: rejectedThenHang("seven_day", 1767830400),
+    fallbackReady: true,
+    hang: true,
+    legTimeoutMs: 300,
+  });
+  assert.equal(outputs["lane-class"], "timeout");
+  assert.equal(outputs.handoff, "false");
+});
+
 test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", () => {
   const { calls } = runCase({ key: SUCCESS });
   const [call] = calls;
@@ -653,6 +781,9 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
     assert.ok(call.args.includes(flag), flag);
   }
   assert.equal(call.args.includes("--setting-sources"), false);
+  // Callers float on @main and rely on this: under `none` the default mode
+  // denies every call no rule allows, as dontAsk does.
+  assert.equal(call.args[call.args.indexOf("--permission-prompts") + 1], "none");
   assert.equal(call.args[call.args.indexOf("--permission-mode") + 1], "auto");
   assert.equal(call.args[call.args.indexOf("--tools") + 1], "Read,Bash");
   assert.equal(
@@ -1808,27 +1939,225 @@ test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () =
   );
 });
 
-test("apply-claude-managed-settings writes settings verifyManagedSettings accepts by default", () => {
+function readAction(name) {
   const { parseWorkflow } = require("../../scripts/workflow-yaml.cjs");
-  const action = parseWorkflow(
-    fs.readFileSync(
-      path.join(__dirname, "..", "apply-claude-managed-settings", "action.yml"),
-      "utf8",
-    ),
+  return parseWorkflow(
+    fs.readFileSync(path.join(__dirname, "..", name, "action.yml"), "utf8"),
   );
+}
+
+// The apply action's own check: the shared module, run as the action runs it.
+function applyVerdict(settings, loopbackBaseUrl = "") {
+  return spawnSync(
+    process.execPath,
+    [path.join(__dirname, "managed-settings.cjs")],
+    {
+      env: {
+        SETTINGS: JSON.stringify(settings),
+        LOOPBACK_BASE_URL: loopbackBaseUrl,
+      },
+      encoding: "utf8",
+    },
+  );
+}
+
+test("apply-claude-managed-settings writes settings verifyManagedSettings accepts by default", () => {
+  const action = readAction("apply-claude-managed-settings");
   const file = path.join(root, "default-managed-settings.json");
   fs.writeFileSync(file, action.inputs.settings.default);
   assert.doesNotThrow(() =>
     verifyManagedSettings(file, { stat: () => ({ uid: 0, mode: 0o100644 }) }),
   );
-  // The action's own check runs the same rule before it writes.
-  const check = /node -e '([^']*)'/u.exec(action.runs.steps[0].run)[1];
-  const verdict = (settings) =>
-    spawnSync(process.execPath, ["-e", check], {
-      env: { SETTINGS: JSON.stringify(settings) },
-    }).status;
-  assert.equal(verdict(PINNED), 0);
-  assert.notEqual(verdict({ ...PINNED, allowManagedHooksOnly: undefined }), 0);
+  // The action's own check runs the same rule, from the same module, before
+  // it writes.
+  assert.match(
+    action.runs.steps[0].run,
+    /^node "\$GITHUB_ACTION_PATH\/\.\.\/run-claude-cli\/managed-settings\.cjs"$/mu,
+  );
+  assert.equal(applyVerdict(PINNED).status, 0);
+  assert.notEqual(
+    applyVerdict({ ...PINNED, allowManagedHooksOnly: undefined }).status,
+    0,
+  );
+});
+
+const LOOPBACK = "http://127.0.0.1:47100";
+const LOOPBACK_V6 = "http://[::1]:47100";
+const atLoopback = (url) => ({ ...PINNED, env: { ANTHROPIC_BASE_URL: url } });
+// Each is refused as the loopback-base-url opt-in, with the managed settings
+// set to the same value, so only the opt-in's own check can refuse it.
+const NOT_LOOPBACK = [
+  "http://localhost:47100",
+  "http://127.0.0.2:47100",
+  "http://0.0.0.0:47100",
+  "http://proxy.example:47100",
+  "https://proxy.example",
+  "https://api.anthropic.com",
+  "https://127.0.0.1:47100",
+  "http://127.0.0.1",
+  "http://127.0.0.1:0",
+  "http://127.0.0.1:47100/",
+  "http://127.0.0.1:47100/v1",
+  "http://127.0.0.1:47100?x=1",
+  "http://127.0.0.1:47100#x",
+  "http://127.1:47100",
+  "http://user:pw@127.0.0.1:47100",
+  "http://user@[::1]:47100",
+  "not a url",
+];
+
+test("verifyManagedSettings keeps the public API pin unless loopback-base-url opts in", () => {
+  const file = path.join(root, "loopback-settings.json");
+  const stat = () => ({ uid: 0, mode: 0o100644 });
+  for (const url of [LOOPBACK, LOOPBACK_V6]) {
+    fs.writeFileSync(file, JSON.stringify(atLoopback(url)));
+    // Default: the pin to the public API still holds.
+    assert.throws(
+      () => verifyManagedSettings(file, { stat }),
+      /does not pin env\.ANTHROPIC_BASE_URL to https:\/\/api\.anthropic\.com$/u,
+    );
+    // With the opt-in naming that exact URL, the file passes.
+    assert.doesNotThrow(() =>
+      verifyManagedSettings(file, { stat, loopbackBaseUrl: url }),
+    );
+  }
+  // With the opt-in, the file must pin that URL: the public API, or another
+  // port, is refused.
+  fs.writeFileSync(file, JSON.stringify(PINNED));
+  assert.throws(
+    () => verifyManagedSettings(file, { stat, loopbackBaseUrl: LOOPBACK }),
+    /does not pin env\.ANTHROPIC_BASE_URL to http:\/\/127\.0\.0\.1:47100$/u,
+  );
+  fs.writeFileSync(file, JSON.stringify(atLoopback("http://127.0.0.1:47101")));
+  assert.throws(
+    () => verifyManagedSettings(file, { stat, loopbackBaseUrl: LOOPBACK }),
+    /does not pin env\.ANTHROPIC_BASE_URL to http:\/\/127\.0\.0\.1:47100$/u,
+  );
+});
+
+test("verifyManagedSettings refuses a loopback-base-url that is not exactly http://127.0.0.1:<port> or http://[::1]:<port>", () => {
+  const file = path.join(root, "not-loopback-settings.json");
+  const stat = () => ({ uid: 0, mode: 0o100644 });
+  for (const url of NOT_LOOPBACK) {
+    fs.writeFileSync(file, JSON.stringify(atLoopback(url)));
+    assert.throws(
+      () => verifyManagedSettings(file, { stat, loopbackBaseUrl: url }),
+      (error) =>
+        error instanceof LaneError &&
+        error.message.startsWith(
+          `loopback-base-url ${JSON.stringify(url)} is not exactly`,
+        ),
+      url,
+    );
+  }
+});
+
+test("verifyIsolation checks the managed settings against loopback-base-url from its environment", () => {
+  const file = path.join(root, "isolation-loopback-settings.json");
+  fs.writeFileSync(file, JSON.stringify(atLoopback(LOOPBACK)));
+  const options = {
+    managedSettings: file,
+    dockerSocket: path.join(root, "absent-loopback.sock"),
+    stat: () => ({ uid: 0, mode: 0o100644 }),
+    spawn: (command) => ({ status: command === "sudo" ? 1 : 0 }),
+  };
+  assert.doesNotThrow(() =>
+    verifyIsolation({ ...options, env: { LANE_LOOPBACK_BASE_URL: LOOPBACK } }),
+  );
+  assert.throws(
+    () => verifyIsolation({ ...options, env: {} }),
+    /does not pin env\.ANTHROPIC_BASE_URL to https:\/\/api\.anthropic\.com$/u,
+  );
+});
+
+test("readConfig takes loopback-base-url only on an api-key leg", () => {
+  assert.equal(readConfig(configEnv()).baseUrl, "https://api.anthropic.com");
+  for (const url of [LOOPBACK, LOOPBACK_V6]) {
+    assert.equal(
+      readConfig(configEnv({ LANE_LOOPBACK_BASE_URL: url })).baseUrl,
+      url,
+    );
+  }
+  // Both OAuth legs, the subscription and the fallback, are refused.
+  for (const overrides of [
+    { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN },
+    { LANE_API_KEY: "", LANE_FALLBACK_TOKEN: FALLBACK_TOKEN },
+  ]) {
+    assert.throws(
+      () =>
+        readConfig(
+          configEnv({ ...overrides, LANE_LOOPBACK_BASE_URL: LOOPBACK }),
+        ),
+      (error) =>
+        error instanceof LaneError &&
+        /^loopback-base-url is allowed only on an api-key leg/u.test(
+          error.message,
+        ),
+    );
+  }
+  for (const url of NOT_LOOPBACK) {
+    assert.throws(
+      () => readConfig(configEnv({ LANE_LOOPBACK_BASE_URL: url })),
+      (error) =>
+        error instanceof LaneError &&
+        error.message.startsWith(
+          `loopback-base-url ${JSON.stringify(url)} is not exactly`,
+        ),
+      url,
+    );
+  }
+});
+
+test("run refuses loopback-base-url on a subscription leg before any leg starts", () => {
+  const dir = path.join(root, "run-loopback-subscription");
+  const env = runEnv(dir, {
+    LANE_API_KEY: "",
+    LANE_SUBSCRIPTION_TOKEN: TOKEN,
+    LANE_LOOPBACK_BASE_URL: LOOPBACK,
+  });
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
+  assert.throws(
+    () => run(env),
+    /loopback-base-url is allowed only on an api-key leg/u,
+  );
+  assert.equal(fs.existsSync(env.FAKE_CALLS), false);
+  assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
+});
+
+test("both actions take loopback-base-url, empty by default, and pass it to the check", () => {
+  const apply = readAction("apply-claude-managed-settings");
+  assert.equal(apply.inputs["loopback-base-url"].default, "");
+  assert.equal(
+    apply.runs.steps[0].env.LOOPBACK_BASE_URL,
+    "${{ inputs.loopback-base-url }}",
+  );
+  const cli = readAction("run-claude-cli");
+  assert.equal(cli.inputs["loopback-base-url"].default, "");
+  for (const id of ["isolation", "run"]) {
+    const step = cli.runs.steps.find((s) => s.id === id);
+    assert.equal(
+      step.env.LANE_LOOPBACK_BASE_URL,
+      "${{ inputs.loopback-base-url }}",
+      id,
+    );
+  }
+});
+
+test("apply-claude-managed-settings takes a loopback base URL only through loopback-base-url", () => {
+  for (const url of [LOOPBACK, LOOPBACK_V6]) {
+    assert.notEqual(applyVerdict(atLoopback(url)).status, 0);
+    assert.equal(applyVerdict(atLoopback(url), url).status, 0);
+  }
+  assert.notEqual(applyVerdict(PINNED, LOOPBACK).status, 0);
+  for (const url of NOT_LOOPBACK) {
+    const verdict = applyVerdict(atLoopback(url), url);
+    assert.notEqual(verdict.status, 0, url);
+    assert.match(
+      verdict.stdout,
+      /^::error title=apply-claude-managed-settings::loopback-base-url .* is not exactly/mu,
+      url,
+    );
+  }
 });
 
 test("verifyEnvironment refuses loader, TLS and proxy variables, NO_PROXY and empty values aside", () => {

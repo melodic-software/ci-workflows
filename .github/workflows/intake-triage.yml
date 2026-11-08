@@ -24,13 +24,15 @@ name: intake-triage
 #         # The reusable workflow narrows this per job: the model jobs get
 #         # contents: read and issues: read, only the apply job issues: write.
 #         permissions:
+#           actions: read    # the key-credit gate lists its credit-stop markers
 #           contents: read   # check out the default branch for AGENTS.md
 #           issues: write    # the apply job: labels, Issue Type, triage comment
-#         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@<sha>
+#         uses: melodic-software/ci-workflows/.github/workflows/intake-triage.yml@main
 #         with:
 #           issue-number: ${{ inputs.issue-number }}
 #           allowed-author-ids: <comma-separated user ids>
 #           role: automations
+#           lane-transcript-public-key: ${{ vars.LANE_TRANSCRIPT_PUBLIC_KEY }}
 #         secrets:
 #           CLAUDE_API_KEY: ${{ secrets.AUTOMATIONS_CLAUDE_API_KEY }}
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN }}
@@ -65,6 +67,10 @@ name: intake-triage
 #     issues: read, and `cache-mode: none` closes the Actions cache, which
 #     a workflow_dispatch run could otherwise write. The run-claude-cli step's
 #     env holds the one Claude credential and no GitHub token.
+#   - Each leg's execution file, which holds every tool result and model reply,
+#     reaches no log or artifact in plaintext: with lane-transcript-public-key
+#     set, upload-lane-transcript scans it, seals it to that key, which CI
+#     cannot open with, and uploads only the sealed file.
 #   - The model has no GitHub access and runs no commands: the tool set is
 #     Read, Grep and Glob (run-claude-cli runs the CLI with --restricted,
 #     which drops Bash unless `tools` names it, and Bash is also disallowed),
@@ -261,6 +267,36 @@ on:
           trailing or doubled comma, skips every bot.
         type: string
         default: ""
+      key-credit-window-hours:
+        description: >-
+          Hours a key's credit stop in this workflow keeps later runs off the
+          key: the claude job skips its key leg and the subscription job
+          triages. The first run after the window tries the key again. 0
+          always tries the key. It is the backoff's base step: each
+          consecutive credit stop doubles it, capped at 24 hours. The marker
+          is kept one day, and with probing off no key run that worked is
+          seen, so the backoff counts only the last day's credit stops. The
+          caller job must grant actions: read, which the gate reads its
+          marker with. Empty is check-key-credit's default, 1 hour, so a
+          caller passes an unset vars.KEY_CREDIT_WINDOW_HOURS as it is.
+        type: string
+        default: ""
+      key-credit-reset-at:
+        description: >-
+          The caller's vars.KEY_CREDIT_RESET_AT, an ISO-8601 UTC time the
+          rotation tool writes after each key push. Credit stops before it
+          no longer count, so the next run tries the new key. Empty, every
+          kept credit stop counts; a key set by hand waits out the current
+          step, at most 24 hours.
+        type: string
+        default: ""
+      lane-transcript-public-key:
+        description: >-
+          The caller's vars.LANE_TRANSCRIPT_PUBLIC_KEY. Each model leg's
+          transcript is sealed to it and uploaded for 7 days
+          (.github/actions/upload-lane-transcript). Empty keeps none.
+        type: string
+        default: ""
     outputs:
       triage-failed:
         description: >-
@@ -302,12 +338,52 @@ permissions:
   contents: read
 
 jobs:
+  # The key-credit gate, before the key leg: one artifact-list call for the
+  # marker the claude job uploads after a credit stop (check-key-credit
+  # gate.cjs). No secret, no model, no checkout; every failure runs the key.
+  # It runs for every event, so the claude job's own skip stays the author
+  # gate's alone. Probing is off.
+  check-key-credit:
+    name: claude-intake-triage-key-credit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    cache-mode: none
+    outputs:
+      next-leg: ${{ steps.gate.outputs.next-leg }}
+      marker: ${{ steps.gate.outputs.marker }}
+    steps:
+      - name: Read the key's credit history
+        id: gate
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: start
+          key-job: claude-intake-triage
+          window-hours: ${{ inputs.key-credit-window-hours }}
+          reset-at: ${{ inputs.key-credit-reset-at }}
+          probe-minutes: "0"
+
+      # The job token's api-budget notice, from the readings the gate's
+      # request left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   claude:
     name: claude-intake-triage
+    needs: check-key-credit
     runs-on: ${{ inputs.runner }}
     # The triage step (12 minutes, CLI install included) leaves four minutes
-    # for runner isolation, checkout and the github-script steps.
-    timeout-minutes: 16
+    # for runner isolation, checkout and the github-script steps, and three
+    # for the transcript upload.
+    timeout-minutes: 19
     # Author gate: a run spends the subscription, so it starts only when the
     # sender opened the issue and is its author: a person whose user id is in
     # allowed-author-ids, or a bot whose sender id is in
@@ -316,9 +392,11 @@ jobs:
     # acting on someone else's issue cannot. Other issues wait for a person,
     # and the skipped job below says so. A workflow_dispatch run starts when
     # its actor's id is listed the same way. Any other event passes so the
-    # first step can reject it loudly.
+    # first step can reject it loudly. !cancelled() runs the key leg when the
+    # check-key-credit job itself fails: every gate failure runs the key, and
+    # the credential step reads a skip from the gate's output.
     if: >-
-      ${{ (github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
+      ${{ !cancelled() && ((github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
           || (github.event_name == 'workflow_dispatch'
               && inputs.issue-number != ''
               && github.actor_id
@@ -353,7 +431,7 @@ jobs:
                       && !endsWith(inputs.allowed-bot-sender-ids, ',')
                       && !contains(inputs.allowed-bot-sender-ids, ',,')
                       && contains(format(',{0},', inputs.allowed-bot-sender-ids),
-                                  format(',{0},', github.event.sender.id))))) }}
+                                  format(',{0},', github.event.sender.id)))))) }}
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -366,6 +444,10 @@ jobs:
       handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      key-skipped: ${{ steps.credential.outputs.key-skipped }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
+      next-leg: ${{ steps.next.outputs.next-leg }}
+      next-reason: ${{ steps.next.outputs.next-reason }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -390,6 +472,59 @@ jobs:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const requested = process.env.REQUESTED;
             if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
               core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
@@ -484,6 +619,59 @@ jobs:
           BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const issue_number = Number(process.env.ISSUE_NUMBER);
@@ -572,6 +760,59 @@ jobs:
           INSTRUCTIONS: ${{ inputs.instructions }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -742,23 +983,13 @@ jobs:
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
         id: credential
-        env:
-          PRESENT: ${{ secrets.CLAUDE_API_KEY != '' }}
-          SECRET_NAME: CLAUDE_API_KEY
-          # Whether the fallback leg can run, never the token.
-          FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          if [ "$PRESENT" = true ]; then
-            echo "present=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::$SECRET_NAME is empty; this job does not triage."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-          fi
-          if [ "$FALLBACK_PRESENT" = true ]; then
-            echo "fallback-ready=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "fallback-ready=false" >>"$GITHUB_OUTPUT"
-          fi
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: key
+          role: ${{ inputs.role }}
+          credential-set: ${{ secrets.CLAUDE_API_KEY != '' }}
+          fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          selected: ${{ needs.check-key-credit.outputs.next-leg }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -819,10 +1050,54 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
 
+      # Read by the next runs' check-key-credit job: the artifact it names
+      # (gate.cjs markerName), uploaded only after the key leg's credit stop.
+      # Its upload time starts the window; one day's retention covers it.
+      - name: Write the key's credit-stop marker
+        id: credit-marker
+        if: always() && needs.check-key-credit.outputs.marker != '' && steps.claude.outputs.lane-class == 'credit-stop'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          mkdir -p "$RUNNER_TEMP/key-credit-stop"
+          echo "$GITHUB_RUN_ID" >"$RUNNER_TEMP/key-credit-stop/run-id"
+
+      - name: Scan the key's credit-stop marker for credentials
+        id: credit-marker-scan
+        if: always() && steps.credit-marker.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/scan-upload
+        with:
+          path: ${{ runner.temp }}/key-credit-stop/run-id
+
+      - name: Upload the key's credit-stop marker
+        if: always() && steps.credit-marker.outcome == 'success' && steps.credit-marker-scan.outputs.clean == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.check-key-credit.outputs.marker }}
+          path: ${{ runner.temp }}/key-credit-stop/run-id
+          if-no-files-found: error
+          retention-days: 1
+
+      # After the outcome step: its timeout check reads the clock when it
+      # runs, so time spent here must not count against a failed leg.
+      - name: Upload the sealed transcript
+        if: always() && steps.claude.outputs.execution-file != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: $/.github/actions/upload-lane-transcript
+        with:
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          public-key: ${{ inputs.lane-transcript-public-key }}
+          job-id: intake-${{ github.job }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -913,19 +1188,44 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The leg the next job runs, from this job's credential decision and
+      # the launcher's handoff (select-model-credential). It has no if:,
+      # so only when every step before it passed, and only the budget log
+      # (always, never failing) follows it: the next job starts only
+      # after a leg job that succeeded, as it did before.
+      - name: Pick the next leg
+        id: next
+        timeout-minutes: 1
+        uses: $/.github/actions/select-model-credential
+        with:
+          state: ${{ steps.credential.outputs.state }}
+          handoff: ${{ steps.claude.outputs.handoff }}
+          handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
+
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # The subscription leg, as its own job on a fresh VM: the claude job's
   # processes, files and environment do not reach it. Its steps repeat the
   # claude job's but for the credential (a test holds them equal), so the
-  # hardening runs again before the checkout. It reads three outputs of the
-  # claude job, each compared to a fixed string here and never written into
-  # a run: script, and nothing else from that job. It does not use
+  # hardening runs again before the checkout. It reads two outputs of the
+  # claude job, select-model-credential's next-leg, compared to a fixed
+  # string here, and next-reason, which that action checks against a closed
+  # list; neither reaches a run: script. It does not use
   # inputs.runner: a caller's runner could keep state between jobs.
   subscription:
     name: claude-intake-triage-subscription
     needs: claude
-    if: needs.claude.outputs.handoff == 'true' || needs.claude.outputs.credential-present == 'false'
+    if: needs.claude.outputs.next-leg == 'subscription'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -938,6 +1238,9 @@ jobs:
       handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
+      next-leg: ${{ steps.next.outputs.next-leg }}
+      next-reason: ${{ steps.next.outputs.next-reason }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -962,6 +1265,59 @@ jobs:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const requested = process.env.REQUESTED;
             if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
               core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
@@ -1056,6 +1412,59 @@ jobs:
           BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const issue_number = Number(process.env.ISSUE_NUMBER);
@@ -1144,6 +1553,59 @@ jobs:
           INSTRUCTIONS: ${{ inputs.instructions }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -1314,23 +1776,13 @@ jobs:
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
         id: credential
-        env:
-          PRESENT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          SECRET_NAME: CLAUDE_CODE_OAUTH_TOKEN
-          # Whether the fallback leg can run, never the token.
-          FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          if [ "$PRESENT" = true ]; then
-            echo "present=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::$SECRET_NAME is empty; this job does not triage."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-          fi
-          if [ "$FALLBACK_PRESENT" = true ]; then
-            echo "fallback-ready=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "fallback-ready=false" >>"$GITHUB_OUTPUT"
-          fi
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: subscription
+          role: ${{ inputs.role }}
+          credential-set: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          reason: ${{ needs.claude.outputs.next-reason }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -1389,12 +1841,24 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record (ci-workflows#806).
-          fallback-reason: ${{ needs.claude.outputs.lane-class == 'credit-stop' && 'credit-stop' || needs.claude.outputs.lane-class == 'auth' && 'auth' || needs.claude.outputs.credential-present == 'false' && 'no-key' || '' }}
+          fallback-reason: ${{ steps.credential.outputs.fallback-reason }}
+
+      # After the outcome step: its timeout check reads the clock when it
+      # runs, so time spent here must not count against a failed leg.
+      - name: Upload the sealed transcript
+        if: always() && steps.claude.outputs.execution-file != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: $/.github/actions/upload-lane-transcript
+        with:
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          public-key: ${{ inputs.lane-transcript-public-key }}
+          job-id: intake-${{ github.job }}
 
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -1485,19 +1949,43 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The leg the next job runs, from this job's credential decision and
+      # the launcher's handoff (select-model-credential). It has no if:,
+      # so only when every step before it passed, and only the budget log
+      # (always, never failing) follows it: the next job starts only
+      # after a leg job that succeeded, as it did before.
+      - name: Pick the next leg
+        id: next
+        timeout-minutes: 1
+        uses: $/.github/actions/select-model-credential
+        with:
+          state: ${{ steps.credential.outputs.state }}
+          handoff: ${{ steps.claude.outputs.handoff }}
+          handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
+
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # The fallback leg, the central fallback subscription, as its own job on
   # a fresh VM, only after the subscription job handed off (a limit stop, a
   # credit stop, or a 401 or 402, with the fallback token set). Its steps
   # repeat the subscription job's but for the credential and the fallback
-  # reason (a test holds them equal). It reads two outputs of the
-  # subscription job, each compared to a fixed string here and never
-  # written into a run: script. It is the last leg and never hands off.
+  # reason (a test holds them equal). It reads the subscription job's
+  # next-leg and next-reason the same way. It is the last leg and never
+  # hands off.
   fallback:
     name: claude-intake-triage-fallback
     needs: [claude, subscription]
-    if: needs.subscription.outputs.handoff == 'true'
+    if: needs.subscription.outputs.next-leg == 'fallback'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -1510,6 +1998,9 @@ jobs:
       handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
       credential: ${{ steps.claude.outputs.credential }}
       credential-present: ${{ steps.credential.outputs.present }}
+      fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
+      next-leg: ${{ steps.next.outputs.next-leg }}
+      next-reason: ${{ steps.next.outputs.next-reason }}
       triage-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class }}
       result-subtype: ${{ steps.extract.outputs.result-subtype }}
@@ -1534,6 +2025,59 @@ jobs:
           REQUESTED: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue-number }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const requested = process.env.REQUESTED;
             if (!/^[1-9][0-9]{0,9}$/u.test(requested)) {
               core.setFailed(`issue-number must be a positive decimal number, not '${requested}'.`);
@@ -1628,6 +2172,59 @@ jobs:
           BOT_IDS: ${{ inputs.allowed-bot-sender-ids }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const issue_number = Number(process.env.ISSUE_NUMBER);
@@ -1716,6 +2313,59 @@ jobs:
           INSTRUCTIONS: ${{ inputs.instructions }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const fs = require("node:fs");
             const path = require("node:path");
             const env = process.env;
@@ -1886,23 +2536,13 @@ jobs:
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
         id: credential
-        env:
-          PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          SECRET_NAME: FALLBACK_CLAUDE_CODE_OAUTH_TOKEN
-          # Whether the fallback leg can run, never the token.
-          FALLBACK_PRESENT: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          if [ "$PRESENT" = true ]; then
-            echo "present=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::$SECRET_NAME is empty; this job does not triage."
-            echo "present=false" >>"$GITHUB_OUTPUT"
-          fi
-          if [ "$FALLBACK_PRESENT" = true ]; then
-            echo "fallback-ready=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "fallback-ready=false" >>"$GITHUB_OUTPUT"
-          fi
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: fallback
+          role: ${{ inputs.role }}
+          credential-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          reason: ${{ needs.subscription.outputs.next-reason }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -1961,12 +2601,24 @@ jobs:
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
           # Why this job ran, for this leg's lane record.
-          fallback-reason: ${{ needs.subscription.outputs.handoff-reason == 'limit-stop' && 'limit-stop' || needs.subscription.outputs.handoff-reason == 'credit-stop' && 'credit-stop' || needs.subscription.outputs.handoff-reason == 'auth' && 'auth' || '' }}
+          fallback-reason: ${{ steps.credential.outputs.fallback-reason }}
+
+      # After the outcome step: its timeout check reads the clock when it
+      # runs, so time spent here must not count against a failed leg.
+      - name: Upload the sealed transcript
+        if: always() && steps.claude.outputs.execution-file != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: $/.github/actions/upload-lane-transcript
+        with:
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          public-key: ${{ inputs.lane-transcript-public-key }}
+          job-id: intake-${{ github.job }}
 
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Nothing else leaves the job. The
+      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -2057,6 +2709,30 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
 
+      # The leg the next job runs, from this job's credential decision and
+      # the launcher's handoff (select-model-credential). It has no if:,
+      # so only when every step before it passed, and only the budget log
+      # (always, never failing) follows it: the next job starts only
+      # after a leg job that succeeded, as it did before.
+      - name: Pick the next leg
+        id: next
+        timeout-minutes: 1
+        uses: $/.github/actions/select-model-credential
+        with:
+          state: ${{ steps.credential.outputs.state }}
+          handoff: ${{ steps.claude.outputs.handoff }}
+          handoff-reason: ${{ steps.claude.outputs.handoff-reason }}
+
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # The one job that writes to the issue. No model runs here and nothing is
   # checked out. It reads the fallback job's outputs when that job ran, else
   # the subscription job's, else the claude job's, so a credit stop applies exactly once, and takes
@@ -2101,6 +2777,59 @@ jobs:
           FB_TRIAGE: ${{ needs.fallback.outputs.triage }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const env = process.env;
             // The last leg that ran: fallback, else subscription, else key.
             const leg = env.FB_RESULT && env.FB_RESULT !== "skipped" ? "FB" : env.SUB_RESULT === "skipped" ? "KEY" : "SUB";
@@ -2399,6 +3128,16 @@ jobs:
             await core.summary.addRaw(summary.join("\n")).write();
             if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
 
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # One status for the run, and no lane record (each leg writes its own): the
   # fallback job's outcome when it ran, else the subscription job's, else
   # the claude job's, and red
@@ -2521,6 +3260,59 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
             const env = process.env;
             const bot = env.ACTOR.endsWith("[bot]");
             const [input, list] = bot ? ["allowed-bot-sender-ids", env.BOT_IDS] : ["allowed-author-ids", env.AUTHOR_IDS];
@@ -2553,3 +3345,13 @@ jobs:
               }
             }
             await core.summary.addRaw(["### claude-intake-triage skipped", "", `- ${message}`, `- Skipped label: ${label}`].join("\n")).write();
+
+      # The job token's api-budget notice, from the readings the script
+      # steps' requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token

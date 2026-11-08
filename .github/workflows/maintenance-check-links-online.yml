@@ -9,6 +9,14 @@ name: maintenance-check-links-online
 # are listed in the summary, so a host that stays down is still noticed. It
 # never opens an issue or posts a comment.
 #
+# Every run that checked links also uploads its broken links, the ones that
+# fail the run, as a small JSON artifact kept for three days, and names it in
+# the `dead-links-artifact` output, so the caller can route them: a job in the
+# caller reads the output, and a separate workflow on `workflow_run` downloads
+# the artifact by that name. The artifact holds an array of
+# {url, status, detail, locations: [{path, line, column}]}, one entry per URL,
+# sorted by URL; an empty array means the run found none.
+#
 # GITHUB_TOKEN only: it lifts the github.com rate limit, and it cannot read
 # another private repository, so lychee never reports a link into one as OK.
 # A broader token would. This workflow declares no secrets.
@@ -60,6 +68,18 @@ on:
         description: Exact lychee release tag lychee-action installs.
         type: string
         default: v0.24.2
+    outputs:
+      dead-links-artifact:
+        description: >-
+          Name of the artifact holding this run's broken links as JSON, kept
+          for three days; empty when the run checked no links or lychee wrote
+          no readable report.
+        value: ${{ jobs.check-links.outputs.dead-links-artifact }}
+      dead-links-count:
+        description: >-
+          Number of distinct broken URLs in that artifact; empty when the
+          artifact name is.
+        value: ${{ jobs.check-links.outputs.dead-links-count }}
 
 permissions: {}
 
@@ -70,6 +90,9 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    outputs:
+      dead-links-artifact: ${{ steps.upload.outcome == 'success' && steps.dead.outputs.artifact || '' }}
+      dead-links-count: ${{ steps.upload.outcome == 'success' && steps.dead.outputs.count || '' }}
     steps:
       - name: Read the opt-in property
         id: gate
@@ -210,3 +233,44 @@ jobs:
             fi
             exit 1
           fi
+
+      # The broken links for the caller to route, written after the report
+      # step so they upload on the red runs that matter. A missing or non-JSON
+      # report, which the report step already failed, uploads nothing.
+      - name: Extract the dead links
+        id: dead
+        if: steps.gate.outputs.run == 'true' && !cancelled()
+        env:
+          REPORT: ${{ runner.temp }}/lychee/report.json
+          DEAD_LINKS: ${{ runner.temp }}/dead-links/dead-links.json
+          ARTIFACT: link-check-online-dead-links
+        run: |
+          set -euo pipefail
+          if [ ! -s "$REPORT" ] || ! jq -e 'type == "object"' "$REPORT" >/dev/null 2>&1; then
+            echo "No readable lychee report: no dead-links artifact."
+            exit 0
+          fi
+          mkdir -p "$(dirname "$DEAD_LINKS")"
+          jq -c '
+            [(.error_map // {}) | to_entries[] | .key as $path | .value[]
+              | {url, status: (.status.code // null),
+                 detail: (.status.details // .status.text // "" | gsub("[\r\n]+"; " ")),
+                 location: {path: $path, line: (.span.line // null), column: (.span.column // null)}}]
+            | group_by(.url)
+            | map({url: .[0].url, status: .[0].status, detail: .[0].detail,
+                   locations: (map(.location) | unique_by([.path, .line, .column]))})
+          ' "$REPORT" >"$DEAD_LINKS"
+          {
+            echo "artifact=$ARTIFACT"
+            echo "count=$(jq 'length' "$DEAD_LINKS")"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Upload the dead links
+        id: upload
+        if: steps.dead.outputs.artifact != '' && !cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.dead.outputs.artifact }}
+          path: ${{ runner.temp }}/dead-links/dead-links.json
+          if-no-files-found: error
+          retention-days: 3

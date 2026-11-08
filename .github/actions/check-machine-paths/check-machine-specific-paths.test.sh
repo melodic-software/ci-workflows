@@ -232,6 +232,25 @@ else
   printf 'PASS: extractor miss fails closed\n'
 fi
 
+# The action's default extension list must reach chezmoi templates: a
+# `.toml.tmpl` carries a real path in a template default and `*.toml` alone
+# does not match it.
+default_extensions="$(awk '/^  extensions:/ {f=1} f && /default: >-/ {d=1; next} d && /^  exclude:/ {exit} d {gsub(/^ +/, ""); printf "%s ", $0}' "$here/action.yml")"
+tmpl_repo="$(mktemp -d "$temporary_directory/tmpl.XXXXXX")"
+init_repo "$tmpl_repo"
+printf '%s\n' 'windowsHome = {{ promptStringOnce . "windowsHome" "Windows home" "C:/Us''ers/Alice" | quote }}' >"$tmpl_repo/.chezmoi.toml.tmpl"
+commit_all "$tmpl_repo"
+set +e
+tmpl_output="$(cd "$tmpl_repo" && env EXTENSIONS="$default_extensions" bash "$driver" 2>&1)"
+tmpl_status=$?
+set -e
+if [[ "$tmpl_status" -ne 1 ]]; then
+  fail "default extensions must scan *.toml.tmpl (status $tmpl_status, extensions: ${default_extensions:-<empty>})"
+  printf '%s\n' "$tmpl_output" >&2
+else
+  printf 'PASS: default extensions scan a .toml.tmpl\n'
+fi
+
 if [[ "$failures" -gt 0 ]]; then
   printf '%d assertion(s) failed.\n' "$failures" >&2
   exit 1

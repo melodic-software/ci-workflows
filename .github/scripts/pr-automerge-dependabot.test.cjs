@@ -77,6 +77,7 @@ const update = (
 });
 
 async function runGate({
+  armError = null,
   updates = [update("actions/checkout", "version-update:semver-patch")],
   authorId = DEPENDABOT_ID,
   commits = [dependabotCommit()],
@@ -97,6 +98,7 @@ async function runGate({
     PACKAGE_AUTO_MERGE: packageAutoMerge,
     REVIEW_ONLY_DEPENDENCIES: reviewOnly,
   };
+  const warnings = [];
   const original = { ...process.env };
   Object.assign(process.env, env);
   try {
@@ -109,6 +111,8 @@ async function runGate({
       },
       graphql: async (query, variables) => {
         graphqlCalls.push({ query, variables });
+        if (armError && /enablePullRequestAutoMerge/u.test(query))
+          throw armError;
         return {};
       },
     };
@@ -126,6 +130,7 @@ async function runGate({
     };
     const core = {
       notice: (message) => notices.push(message),
+      warning: (message) => warnings.push(message),
       info: () => {},
     };
     await new AsyncFunction("github", "context", "core", gateScript)(
@@ -145,7 +150,7 @@ async function runGate({
   const disarmCalls = graphqlCalls.filter((call) =>
     /disablePullRequestAutoMerge/u.test(call.query),
   );
-  return { armCalls, disarmCalls, notices };
+  return { armCalls, disarmCalls, notices, warnings };
 }
 
 function assertSkipped(result, reason) {
@@ -524,4 +529,42 @@ test("a skipped PR armed on an earlier head is disarmed", async () => {
 test("a skipped PR that was never armed makes no disarm call", async () => {
   const result = await runGate({ authorId: 12345 });
   assert.equal(result.disarmCalls.length, 0);
+});
+
+// melodic-software callers float on this repository's main, so a bump merged
+// here runs next in every consumer's secret-holding lanes. This repository's
+// own Dependabot pull requests therefore wait for a person: no workflow here
+// calls the arm, at any ref.
+test("no workflow in this repository arms its own Dependabot bumps", () => {
+  const workflowsDir = path.dirname(workflowPath);
+  const callers = fs
+    .readdirSync(workflowsDir)
+    .filter((file) => /\.ya?ml$/u.test(file))
+    .filter((file) =>
+      /^\s*-?\s*uses:\s*\S*pr-automerge-dependabot\.yml/mu.test(
+        fs.readFileSync(path.join(workflowsDir, file), "utf8"),
+      ),
+    );
+  assert.deepEqual(callers, []);
+});
+
+// GitHub refuses to arm a PR that is already mergeable; the wording below is
+// the error standards-sync-automerge-arm.test.cjs exercises for its arm.
+for (const status of ["clean", "unstable"]) {
+  test(`an arm refused because the PR is in ${status} status only warns`, async () => {
+    const { armCalls, warnings } = await runGate({
+      armError: new Error(`Pull request is in ${status} status`),
+    });
+    assert.equal(armCalls.length, 1);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Could not arm auto-merge on #7/u);
+    assert.match(warnings[0], new RegExp(`${status} status`, "u"));
+  });
+}
+
+test("any other arm failure still fails the job", async () => {
+  await assert.rejects(
+    runGate({ armError: new Error("Head sha did not match") }),
+    /Head sha did not match/u,
+  );
 });

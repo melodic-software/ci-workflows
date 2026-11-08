@@ -1,0 +1,8 @@
+{
+  "name": "ci-workflows",
+  "private": true,
+  "description": "Test dependencies for the node --test suites under .github/scripts.",
+  "devDependencies": {
+    "graphql": "17.0.2"
+  }
+}

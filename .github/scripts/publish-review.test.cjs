@@ -174,6 +174,7 @@ function fakeCore() {
 
 const REVIEW = {
   findings: 1,
+  coverage: { read: 1, changed: 1 },
   summary: "Summary.<!-- hidden -->",
   comments: [
     { path: "a.js", line: 2, side: "RIGHT", body: "Off by one.<!-- x -->" },
@@ -183,6 +184,7 @@ const REVIEW = {
 function env(overrides = {}) {
   return {
     PUBLISH: "comments",
+    GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
     LANE_ID: "claude-review",
     PR_NUMBER: "7",
     HEAD_SHA: HEAD,
@@ -235,8 +237,8 @@ test("comments mode posts one COMMENT review of footed comments, the marker and 
     marker[1].body,
     [
       `<!-- claude-lane-reviewed-head lane=claude-review sha=${HEAD} -->`,
-      `<!-- claude-lane-reviewed-base ref=main merge-base=${"b".repeat(40)} -->`,
-      `**claude-review** reviewed \`${HEAD}\`: 1 finding(s), 1 as inline comments.`,
+      `<!-- claude-lane-reviewed-base ref=main merge-base=${"b".repeat(40)} caller=.github/workflows/review.yml -->`,
+      `**claude-review** reviewed \`${HEAD}\`: read 1 of 1 changed file(s); 1 finding(s), 1 as inline comments.`,
       "",
       "Summary.",
     ].join("\n"),
@@ -517,6 +519,7 @@ test("every completion notice carries the title a merge gate filters on", async 
 async function demotedMarker(summary, bodies, findings = bodies.length) {
   const review = {
     findings,
+    coverage: { read: 1, changed: 1 },
     summary,
     comments: bodies.map((body, i) => ({
       path: "a.js",
@@ -577,6 +580,7 @@ test("an inline batch and a summary with two count lines keep the model's text",
 test("a malformed comment beside a valid one posts the valid one inline and the other in the summary", async () => {
   const review = {
     findings: 2,
+    coverage: { read: 1, changed: 1 },
     summary: "Summary.",
     comments: [REVIEW.comments[0]],
     malformed: [{ path: "b.js", line: 4, body: "Wrong side.<!-- x -->" }],
@@ -595,6 +599,7 @@ test("a malformed comment beside a valid one posts the valid one inline and the 
 test("a malformed CRITICAL comment raises the summary's critical-findings line", async () => {
   const review = (summary) => ({
     findings: 2,
+    coverage: { read: 1, changed: 1 },
     summary,
     comments: [REVIEW.comments[0]],
     malformed: [{ body: "Injection.\n\nseverity: CRITICAL" }],
@@ -619,4 +624,196 @@ test("a malformed CRITICAL comment raises the summary's critical-findings line",
   });
   const kept = suggestion.writes.find(([name]) => name === "createComment");
   assert.deepEqual(criticalLines(kept[1].body), [0]);
+});
+
+// A review that read less than its scope, or whose diff is over one review's
+// read budget or file cap, is partial: its comment states coverage first, records no
+// reviewed head, and the check is not a success.
+const BINARIES = Array.from(
+  { length: 11 },
+  (_, i) => `plugins/p${i + 1}/evals/fixtures.tar.gz`,
+);
+const TEN_NAMED = BINARIES.slice(0, 10)
+  .map((p) => `\`${p}\``)
+  .join(", ");
+test("a partial review states its coverage first, records no head and fails, with no completion notice", async () => {
+  for (const [coverage, size] of [
+    [{ read: 2, changed: 1186 }, /^read 2 of 1186 changed file\(s\)\. /u],
+    [
+      { read: 3, changed: 3, over_budget: 1330000 },
+      /^read 3 of 3 changed file\(s\); the diff is 1330000 bytes, over one review's read budget\. /u,
+    ],
+    [
+      { read: 170, changed: 170, over_files: 170 },
+      /^read 170 of 170 changed file\(s\); one review faced 170 files that are not copies, more than it reads whole\. /u,
+    ],
+    // Every unread file is binary: the reason names them, first 10 by name.
+    [
+      { read: 73, changed: 84, binary_files: BINARIES },
+      new RegExp(
+        `^read 73 of 84 changed file\\(s\\); 11 binary file\\(s\\) not reviewable as text: ${TEN_NAMED} and 1 more\\. `,
+        "u",
+      ),
+    ],
+    // Mixed: the existing reason stays, then the binary count.
+    [
+      {
+        read: 3,
+        changed: 4,
+        over_budget: 1330000,
+        binary_files: ["t/fixtures.tar.gz"],
+      },
+      /^read 3 of 4 changed file\(s\); the diff is 1330000 bytes, over one review's read budget; 1 binary file\(s\) not reviewable as text: `t\/fixtures\.tar\.gz`\. /u,
+    ],
+  ]) {
+    const { writes, log } = await publish({
+      KEY_REVIEW: JSON.stringify({
+        ...REVIEW,
+        findings: 0,
+        comments: [],
+        coverage,
+      }),
+    });
+    assert.equal(log.failed.length, 1);
+    assert.match(log.failed[0], /^claude-review: failure-class=partial: /u);
+    // The failure names the coverage and the reason, as the status line does.
+    const detail = /\((read .*)\)$/u.exec(log.failed[0])?.[1];
+    assert.match(`${detail}. `, size, log.failed[0]);
+    assert.deepEqual(log.notices, []);
+    const [marker] = writes;
+    assert.equal(marker[0], "createComment");
+    const [hidden, base, status] = marker[1].body.split("\n");
+    assert.equal(
+      hidden,
+      "<!-- claude-lane-reviewed-head lane=claude-review sha=none -->",
+    );
+    assert.match(base, / caller=\.github\/workflows\/review\.yml -->$/u);
+    const prefix = `**claude-review** partial review of \`${HEAD}\`: `;
+    assert.ok(status.startsWith(prefix), status);
+    assert.match(status.slice(prefix.length), size);
+    assert.match(
+      status,
+      /0 finding\(s\) in what was read, 0 as inline comments\. This head is not reviewed\.$/u,
+    );
+  }
+});
+
+test("a partial review still posts the findings it made inline", async () => {
+  const { writes, log } = await publish({
+    KEY_REVIEW: JSON.stringify({
+      ...REVIEW,
+      coverage: { read: 1, changed: 2 },
+    }),
+  });
+  assert.deepEqual(
+    writes.map(([name]) => name),
+    ["createReview", "createComment"],
+  );
+  assert.match(
+    log.failed[0],
+    /failure-class=partial: .*\(read 1 of 2 changed file\(s\)\)$/u,
+  );
+});
+
+// A generated data file the job left out of the scope is named in the
+// coverage, so the complete review and the shadow report both say which file
+// no one reviewed; the completion notice, which merge gates parse, is unchanged.
+test("a complete review names each generated data file it left out", async () => {
+  const data =
+    "plugins/source-control/skills/babysit-prs/scripts/verify-legacy-fails.json";
+  const coverage = { read: 1, changed: 1, data_files: [data] };
+  const { writes, log } = await publish({
+    KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
+  });
+  assert.deepEqual(log.failed, []);
+  const status = writes[1][1].body.split("\n")[2];
+  assert.equal(
+    status,
+    `**claude-review** reviewed \`${HEAD}\`: read 1 of 1 changed file(s); 1 data file(s) not reviewed: \`${data}\`; 1 finding(s), 1 as inline comments.`,
+  );
+  assert.deepEqual(log.notices, [
+    `claude-lane-review-complete lane=claude-review sha=${HEAD} findings=1 inline=1 scope=whole`,
+  ]);
+  const shadow = await publish({
+    PUBLISH: "summary",
+    KEY_REVIEW: JSON.stringify({
+      ...REVIEW,
+      coverage: { read: 1, changed: 1, data_files: ["a.json", "b/c.json"] },
+    }),
+  });
+  assert.match(
+    shadow.log.summary,
+    /- Coverage: read 1 of 1 changed file\(s\); 2 data file\(s\) not reviewed: `a\.json`, `b\/c\.json`\n/u,
+  );
+});
+
+test("the status line names the first 10 data files and counts the rest", async () => {
+  const names = (n) => Array.from({ length: n }, (_, i) => `d/${i + 1}.json`);
+  const status = async (n) => {
+    const { writes } = await publish({
+      KEY_REVIEW: JSON.stringify({
+        ...REVIEW,
+        coverage: { read: 1, changed: 1, data_files: names(n) },
+      }),
+    });
+    return writes[1][1].body.split("\n")[2];
+  };
+  const ten = names(10)
+    .map((name) => `\`${name}\``)
+    .join(", ");
+  assert.ok(
+    (await status(10)).includes(
+      `; 10 data file(s) not reviewed: ${ten}; 1 finding(s)`,
+    ),
+  );
+  assert.ok(
+    (await status(12)).includes(
+      `; 12 data file(s) not reviewed: ${ten} and 2 more; 1 finding(s)`,
+    ),
+  );
+});
+
+test("a review with no coverage, or coverage past its scope, is incomplete", async () => {
+  for (const coverage of [
+    undefined,
+    { read: 2, changed: 1 },
+    { read: 1 },
+    { read: 1, changed: 1, over_budget: 0 },
+    { read: 1, changed: 1, over_files: 0 },
+    { read: 1, changed: 1, over_files: "41" },
+    { read: "1", changed: 1 },
+    // A data file list that is empty, not a list, or names a path that
+    // could break out of its code span.
+    { read: 1, changed: 1, data_files: [] },
+    { read: 1, changed: 1, data_files: "a.json" },
+    { read: 1, changed: 1, data_files: ["a`b.json"] },
+    { read: 1, changed: 1, data_files: ["a.json\n**x**"] },
+    { read: 1, changed: 1, binary_files: [] },
+    { read: 1, changed: 1, binary_files: "a.gz" },
+    { read: 1, changed: 1, binary_files: ["a`b.gz"] },
+  ]) {
+    const { writes, log } = await publish({
+      KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
+    });
+    assert.deepEqual(writes, [], JSON.stringify(coverage));
+    assert.match(log.failed[0], /failure-class=incomplete/u);
+  }
+});
+
+test("summary mode reports a partial review in the shadow report and never fails", async () => {
+  const { writes, log } = await publish({
+    PUBLISH: "summary",
+    KEY_REVIEW: JSON.stringify({
+      ...REVIEW,
+      coverage: { read: 1, changed: 4 },
+    }),
+  });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(log.failed, []);
+  assert.match(log.summary, /- Outcome: partial\n/u);
+  assert.match(log.summary, /- Coverage: read 1 of 4 changed file\(s\)\n/u);
+  assert.match(
+    log.notices.at(-1),
+    /^shadow claude-review: failure-class=partial: /u,
+  );
 });
