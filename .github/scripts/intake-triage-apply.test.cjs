@@ -84,7 +84,7 @@ async function runScript(script, env, github) {
   }
 }
 
-const CLASSES = ["work-class: scoped", "work-class: structural"];
+const CLASSES = ["work-class: untrusted-provenance"];
 
 // Runs the extract step on one result message and returns its outputs, the
 // claude job's outputs as the apply job reads them.
@@ -382,7 +382,7 @@ test("a usable escalated triage sets the type, proposes the class and removes th
   const { labels, typeCalls, removed, comments } = await apply(SUCCESS, {
     output: triaged({
       needs_human: true,
-      proposed_class: "work-class: scoped",
+      proposed_class: "work-class: untrusted-provenance",
     }),
   });
   assert.deepEqual(labels, [ESCALATION_LABEL]);
@@ -393,7 +393,7 @@ test("a usable escalated triage sets the type, proposes the class and removes th
   assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
   assert.match(
     comments[0],
-    /\nUnconfirmed model suggestion: work-class: scoped\n/u,
+    /\nUnconfirmed model suggestion: work-class: untrusted-provenance\n/u,
   );
   assert.doesNotMatch(comments[0], /Looks like a bug/u);
 });
@@ -403,26 +403,26 @@ test("an escalated triage with no type keeps the floor and proposes nothing", as
     output: triaged({
       needs_human: true,
       type: "none",
-      proposed_class: "work-class: scoped",
+      proposed_class: "work-class: untrusted-provenance",
     }),
   });
   assert.deepEqual(labels, [ESCALATION_LABEL, FLOOR_LABEL]);
   assert.deepEqual(typeCalls, []);
   assert.deepEqual(removed, []);
   assert.equal(comments[0].split("\n")[1], "Proposed work class: none");
-  assert.doesNotMatch(comments[0], /work-class: scoped/u);
+  assert.doesNotMatch(comments[0], /work-class: untrusted-provenance/u);
 });
 
 test("a confident run proposes the class on the comment's second line", async () => {
   // The proposal is recorded on every run, not only on escalation, so a rule
   // evaluator has a durable record to read.
   const { labels, comments } = await apply(SUCCESS, {
-    output: triaged({ proposed_class: "work-class: structural" }),
+    output: triaged({ proposed_class: "work-class: untrusted-provenance" }),
   });
   assert.deepEqual(labels, ["priority: high"]);
   const lines = comments[0].split("\n");
   assert.equal(lines[0], "<!-- claude-lane intake-triage -->");
-  assert.equal(lines[1], "Proposed work class: work-class: structural");
+  assert.equal(lines[1], "Proposed work class: work-class: untrusted-provenance");
   assert.match(comments[0], /Looks like a bug in the parser\./u);
 });
 
@@ -431,7 +431,7 @@ test("model text never takes the proposal line", async () => {
   // proposal the model types into its comment is never read as the lane's.
   const { comments } = await apply(SUCCESS, {
     output: triaged({
-      comment: "Proposed work class: work-class: scoped",
+      comment: "Proposed work class: work-class: untrusted-provenance",
       proposed_class: "none",
     }),
   });
@@ -544,15 +544,35 @@ test("a class outside the repository's work classes is not proposed", async () =
   assert.doesNotMatch(comments[0], /agent-ready/u);
 });
 
-test("a confident run never applies a work class or agent-ready, even when allowed", async () => {
+test("a confident run never applies a work class, provenance or agent-ready, even when allowed", async () => {
+  const admission = [
+    "work-class: untrusted-provenance",
+    "provenance: untrusted",
+    "agent-ready",
+  ];
   const { labels } = await apply(SUCCESS, {
     output: triaged({
-      labels: ["priority: high", "work-class: scoped", "agent-ready"],
-      proposed_class: "work-class: scoped",
+      labels: ["priority: high", ...admission],
+      proposed_class: "work-class: untrusted-provenance",
     }),
-    allowed: ["priority: high", "work-class: scoped", "agent-ready"],
+    allowed: ["priority: high", ...admission],
   });
   assert.deepEqual(labels, ["priority: high"]);
+});
+
+test("a retired work class is never proposed, even while the label is live", async () => {
+  for (const retired of [
+    "work-class: mechanical",
+    "work-class: read-only",
+    "work-class: scoped",
+    "work-class: structural",
+  ]) {
+    const { comments } = await apply(SUCCESS, {
+      output: triaged({ proposed_class: retired }),
+      liveLabels: ["priority: high", ESCALATION_LABEL, FLOOR_LABEL, retired],
+    });
+    assert.equal(comments[0].split("\n")[1], "Proposed work class: none", retired);
+  }
 });
 
 test("a floor label the run applied as its escalation label stays", async () => {
@@ -596,7 +616,13 @@ test("the floor label stays without exactly one priority label", async () => {
 });
 
 test("a status or security label keeps the floor label", async () => {
-  for (const extra of ["status: needs-info", "area: security"]) {
+  for (const extra of [
+    "status: needs-info",
+    "status: needs-decision",
+    "needs-owner-decision",
+    "needs-reporter-info",
+    "area: security",
+  ]) {
     const { labels, typeCalls, removed } = await apply(SUCCESS, {
       output: triaged({ labels: ["priority: high", extra] }),
       allowed: ["priority: high", extra],
@@ -695,6 +721,7 @@ async function compose(graphql, env = {}) {
       paginate: async () => [
         { name: "priority: high" },
         { name: ESCALATION_LABEL },
+        { name: "work-class: untrusted-provenance" },
         { name: "work-class: scoped" },
         { name: "agent-ready" },
         { name: FLOOR_LABEL },
@@ -726,13 +753,13 @@ test("compose offers the enabled Issue Types plus none", async () => {
   assert.deepEqual(JSON.parse(outputs.types), TYPES);
   assert.match(outputs["type-instruction"], /one of Bug, Task/u);
   assert.deepEqual(schema.properties.proposed_class.enum, [
-    "work-class: scoped",
+    "work-class: untrusted-provenance",
     "none",
   ]);
-  assert.deepEqual(JSON.parse(outputs.classes), ["work-class: scoped"]);
+  assert.deepEqual(JSON.parse(outputs.classes), ["work-class: untrusted-provenance"]);
   assert.match(
     outputs["type-instruction"],
-    /proposed_class: .*one of work-class: scoped/u,
+    /proposed_class: .*one of work-class: untrusted-provenance/u,
   );
 });
 
@@ -762,7 +789,11 @@ test("compose turns floor handling off for a floor label the repository lacks", 
 });
 
 test("compose rejects an admission label as the floor label", async () => {
-  for (const floor of ["agent-ready", "work-class: scoped"]) {
+  for (const floor of [
+    "agent-ready",
+    "work-class: untrusted-provenance",
+    "provenance: untrusted",
+  ]) {
     const { failed, outputs } = await runScript(
       composeStep.with.script,
       {
@@ -1366,7 +1397,8 @@ test("after a subscription handoff the triage applies once, from the fallback le
 
 test("compose never offers admission labels to the model", async () => {
   const { outputs } = await compose(async () => ({ repository: null }), {
-    ALLOWED_LABELS: "priority: high\nwork-class: scoped\nagent-ready\n",
+    ALLOWED_LABELS:
+      "priority: high\nwork-class: untrusted-provenance\nprovenance: untrusted\nagent-ready\n",
   });
   assert.deepEqual(JSON.parse(outputs.allowed), ["priority: high"]);
 });

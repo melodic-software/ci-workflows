@@ -108,12 +108,14 @@ name: intake-triage
 #     in the comment, and withholds a comment that looks like it carries a
 #     credential.
 #   - The model may name one of the repository's enabled Issue Types and
-#     propose one of its `work-class:` labels. The lane never applies a
-#     work class or `agent-ready`. A triage is usable when the run was clean,
-#     had no permission denial, and named a type; then the apply job sets
-#     the type and reads it back. When the type took, it removes
-#     `floor-label` if the run escalated or picked exactly one `priority:`
-#     label and no `status:` or `area: security` label. Otherwise it adds
+#     propose `work-class: untrusted-provenance`, the one work class not
+#     retired, when the repository carries that label. The lane never applies
+#     a work class, `provenance: untrusted` or `agent-ready`. A triage is
+#     usable when the run was clean, had no permission denial, and named a
+#     type; then the apply job sets the type and reads it back. When the type
+#     took, it removes `floor-label` if the run escalated or picked exactly
+#     one `priority:` label and no `status:`, `needs-owner-decision`,
+#     `needs-reporter-info` or `area: security` label. Otherwise it adds
 #     `floor-label` if missing, so the outcome does not depend on whether
 #     the floor labeler ran first.
 #   - `priority:` is exclusive: the issue keeps at most one. A priority whose
@@ -189,6 +191,8 @@ on:
           priority: low
           status: needs-info
           status: needs-decision
+          needs-reporter-info
+          needs-owner-decision
           question
           area: security
           good first issue
@@ -894,7 +898,7 @@ jobs:
             const missing = requested.filter((label) => !live.has(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
             // Admission labels are a person's call, whatever the caller lists.
-            const admission = (label) => label === "agent-ready" || label.startsWith("work-class:");
+            const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
             if (admission(env.ESCALATION_LABEL)) {
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
               return;
@@ -950,7 +954,7 @@ jobs:
               schema.required.push("type");
             }
             // Work classes are only proposed to a maintainer, never applied.
-            const classes = [...live].filter((label) => label.startsWith("work-class:") && !label.includes("'"));
+            const classes = [...live].filter((label) => label === "work-class: untrusted-provenance");
             if (classes.length > 0) {
               schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
               schema.required.push("proposed_class");
@@ -1719,7 +1723,7 @@ jobs:
             const missing = requested.filter((label) => !live.has(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
             // Admission labels are a person's call, whatever the caller lists.
-            const admission = (label) => label === "agent-ready" || label.startsWith("work-class:");
+            const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
             if (admission(env.ESCALATION_LABEL)) {
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
               return;
@@ -1775,7 +1779,7 @@ jobs:
               schema.required.push("type");
             }
             // Work classes are only proposed to a maintainer, never applied.
-            const classes = [...live].filter((label) => label.startsWith("work-class:") && !label.includes("'"));
+            const classes = [...live].filter((label) => label === "work-class: untrusted-provenance");
             if (classes.length > 0) {
               schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
               schema.required.push("proposed_class");
@@ -2511,7 +2515,7 @@ jobs:
             const missing = requested.filter((label) => !live.has(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
             // Admission labels are a person's call, whatever the caller lists.
-            const admission = (label) => label === "agent-ready" || label.startsWith("work-class:");
+            const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
             if (admission(env.ESCALATION_LABEL)) {
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
               return;
@@ -2567,7 +2571,7 @@ jobs:
               schema.required.push("type");
             }
             // Work classes are only proposed to a maintainer, never applied.
-            const classes = [...live].filter((label) => label.startsWith("work-class:") && !label.includes("'"));
+            const classes = [...live].filter((label) => label === "work-class: untrusted-provenance");
             if (classes.length > 0) {
               schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
               schema.required.push("proposed_class");
@@ -2966,7 +2970,7 @@ jobs:
             const live = new Set(
               (await github.paginate(github.rest.issues.listLabelsForRepo, { ...context.repo, per_page: 100 })).map((label) => label.name),
             );
-            const admission = (label) => label === "agent-ready" || label.startsWith("work-class:");
+            const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
             // addLabels would create a missing escalation label.
             if (!live.has(env.ESCALATION_LABEL) || admission(env.ESCALATION_LABEL)) {
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' does not exist in this repository or is an admission label.`);
@@ -2998,7 +3002,7 @@ jobs:
             } catch (error) {
               core.warning(`Issue Types unreadable, so the lane sets none: ${error.message}`);
             }
-            const classes = new Set([...live].filter((label) => label.startsWith("work-class:") && !label.includes("'")));
+            const classes = new Set([...live].filter((label) => label === "work-class: untrusted-provenance"));
 
             const escalate = [];
             const denialText = pick("DENIALS");
@@ -3150,7 +3154,9 @@ jobs:
             // means a person still has to act, so the floor stays. An
             // escalated run is routed to a person by its escalation label,
             // which replaces the floor.
-            const personNeeded = [...labels].some((label) => label.startsWith("status:") || label === "area: security");
+            const personNeeded = [...labels].some(
+              (label) => label.startsWith("status:") || ["needs-owner-decision", "needs-reporter-info", "area: security"].includes(label),
+            );
             const routed = escalated || (priorities.length === 1 && !personNeeded);
             const existingType = typeof issue.type?.name === "string" ? issue.type.name : "";
             let typeSet = !failure && usable && existingType ? existingType : "";

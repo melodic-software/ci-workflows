@@ -1399,13 +1399,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
   The lane then sets that type and reads it back. When the type took, it
   removes `floor-label` (default `needs-triage`; empty or missing turns floor
   handling off) if the run
-  escalated or picked exactly one `priority:` label and no `status:` or
-  `area: security` label. `priority:` is exclusive: a priority already on
+  escalated or picked exactly one `priority:` label and no `status:`,
+  `needs-owner-decision`, `needs-reporter-info` or `area: security` label.
+  `priority:` is exclusive: a priority already on
   the issue whose last labeled event came from a person in
   `allowed-author-ids` stands over the pick, any other is replaced by it,
   and two picks apply neither. An escalated usable triage also posts the run's
-  `Proposed work class:` in its note. The lane never applies a `work-class:`
-  label or `agent-ready`. After any other run the lane adds the floor if it
+  `Proposed work class:` in its note, which only
+  `work-class: untrusted-provenance` can fill. The lane never applies a
+  `work-class:` label, `provenance: untrusted` or `agent-ready`. After any other run the lane adds the floor if it
   is missing, so the result does not depend on whether
   `intake-label-needs-triage` ran first. It runs through
   `.github/actions/run-claude-cli` (lane `intake`, funding `role` default
