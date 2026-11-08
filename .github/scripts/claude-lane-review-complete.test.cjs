@@ -795,6 +795,12 @@ for (const lane of lanes) {
       ],
       // A Read with no result in the file proves nothing was read.
       [...blindShell, toolUse("r1", "Read", { file_path: diffPath("pr") })],
+      // A later Bash call that only names the diff file shows no diff content.
+      [
+        ...blindShell,
+        toolUse("w1", "Bash", { command: "wc -l .claude-lane/pr.diff" }),
+        toolResult("w1", "84 .claude-lane/pr.diff", false),
+      ],
     ];
     for (const messages of blind) {
       const { outputs } = await verify(lane, {
@@ -930,6 +936,15 @@ for (const lane of lanes) {
       [
         toolUse("b1", "Bash", { command: "cat x.claude-lane/pr.diffs" }),
         toolResult("b1", "text", false),
+      ],
+      // A Bash command that names the diff file but prints none of it.
+      [
+        toolUse("b1", "Bash", { command: "ls -l .claude-lane/pr.diff" }),
+        toolResult(
+          "b1",
+          "-rw-r--r-- 1 runner runner 81962 .claude-lane/pr.diff",
+          false,
+        ),
       ],
     ];
     for (const messages of unseen) {
