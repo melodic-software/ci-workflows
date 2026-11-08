@@ -147,6 +147,22 @@ consumer to audit it.
   analyzer or rule error fails closed. `PSUseCorrectCasing` remains disabled
   while the upstream [runspace-affinity defect][pssa-1708] is open; retrying a
   crashing rule is not a quality gate.
+- `.github/actions/version-bump` — moves a repository's release pins to the newest
+  release past its cooldown, as declared in a policy file (cooldown days, per-tool
+  source, verification and pins; a pin in a file yq cannot parse is addressed by a
+  regex with one capture group that must match one line). `command: prepare` resolves
+  and verifies under the caller's read-only token and sets `prepared-count`; when that
+  is above zero the caller mints an App token and calls `command: publish`, which
+  commits through the API so GitHub signs it, opens or updates each pull request on
+  `version-bump/<tool or group>` and arms auto-merge; `command: summary` writes the
+  per-tool measurement and fails on any failed tool. `results.json` under `out` is the
+  measurement artifact for the caller to upload with its own retention. Verification
+  beyond the release's own checksums: GPG, npm and PSGallery registry integrity, GitHub
+  attestations against a pinned signer workflow and source commit (optionally an OCI
+  image, with the release's JSON manifest as the source of the new values), and an MSI's
+  Authenticode publisher under a pinned root (`osslsigncode: 'true'`). `afterBump`
+  commands in the policy run from the repository root after the pins are rewritten and
+  read the bump from `VERSION_BUMP_READY`.
 - `.github/actions/verify-pulumi-deploy-policy` — verifies the complete Pulumi personal
   [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
   then [exports stack state][pulumi-stack-export] without plaintext secrets and
