@@ -74,5 +74,22 @@ The action is a trust boundary only when the PR cannot change it:
   `contents: read`.
 - To guard a merge queue, run the job on `merge_group` as well as
   `pull_request`.
-- Check out the PR with `fetch-depth: 0`, so the base and head commits are
-  both present (in a merge group, `merge_group.base_sha` and `head_sha`).
+- No checkout step is needed: the action checks out `repository` at
+  `head-ref` with `fetch-depth: 0` and `persist-credentials: false`, so the
+  base and head commits are both present (in a merge group,
+  `merge_group.base_sha` and `head_sha`), and it skips that checkout when
+  the guard skips. A caller that still runs its own `actions/checkout` keeps
+  working, at any fetch depth: the action fetches the full history into the
+  same checkout and leaves untracked files in place. A caller that uses the
+  action by local path (`uses: ./...`) needs its own checkout to load it.
+
+```yaml
+jobs:
+  managed-files:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: melodic-software/ci-workflows/.github/actions/check-managed-files@<sha>
+```
