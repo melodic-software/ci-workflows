@@ -681,9 +681,8 @@ consumer to audit it.
   job that validates its inputs; a lane whose Bash is limited to fixed
   read-only rules may stay in one job. The CLI runs with
   `--restricted`, so Bash and the other code-running tools are available
-  only when `tools` names them, and the CLI loads only managed settings
-  and `--settings`, never a user, project or local settings file head code
-  could write ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
+  only when `tools` names them, and the CLI "loads only managed settings
+  and `--settings`" ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
   Callers run `apply-claude-managed-settings`
   while sudo still works, then runner isolation (sudo and docker removed,
   bubblewrap installed, and on Ubuntu 24.04

@@ -807,8 +807,9 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
   ]) {
     assert.ok(call.args.includes(flag), flag);
   }
-  // --restricted already loads only managed settings and --settings; a
-  // --setting-sources list could name a head-writable source.
+  // --restricted already loads only managed settings and --settings
+  // (code.claude.com/docs/en/cli-reference); every source --setting-sources
+  // can name is a file head code can write.
   assert.equal(call.args.includes("--setting-sources"), false);
   // Callers float on @main and rely on this: under `none` the default mode
   // denies every call no rule allows, as dontAsk does.
