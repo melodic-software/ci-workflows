@@ -163,11 +163,16 @@ test("the helper lands root-owned where sandbox-runtime looks for it", (t) => {
   );
 });
 
-test("a tarball that does not match the pinned SHA-256 installs nothing", (t) => {
+// A missing helper only restores the behavior without it, so a bad tarball
+// warns and lets the lane run instead of stopping it.
+test("a tarball that does not match the pinned SHA-256 installs nothing and warns", (t) => {
   const { result, root, stubLog, dir } = runHelperInstall("0".repeat(64));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  assert.notEqual(result.status, 0);
-  assert.match(result.stdout, /::error::.*does not match its pinned SHA-256/u);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /^::warning::.*does not match its pinned SHA-256; the seccomp helper is not installed/mu,
+  );
   assert.equal(fs.existsSync(root), false, "nothing installed");
   assert.doesNotMatch(stubLog, /^sudo /mu);
 });
