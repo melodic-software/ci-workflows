@@ -100,11 +100,22 @@ async function runArming({
   nodeId = "PR_kwFoo",
   operation = "none",
   headSha = "1111111111111111111111111111111111111111",
+  // The PR head GitHub reports on each successive read; the last one repeats.
+  headRefOids = [headSha],
   pullRequest = {},
   missingPullRequest = false,
   graphqlError,
+  // Errors thrown by successive enable calls; `undefined` entries succeed.
+  armErrors = [],
 } = {}) {
-  const keys = ["OWNER", "REPO", "PR_NUMBER", "OPERATION", "HEAD_SHA"];
+  const keys = [
+    "OWNER",
+    "REPO",
+    "PR_NUMBER",
+    "OPERATION",
+    "HEAD_SHA",
+    "HEAD_RETRY_SECONDS",
+  ];
   const originalValues = Object.fromEntries(
     keys.map((key) => [key, process.env[key]]),
   );
@@ -114,7 +125,10 @@ async function runArming({
     PR_NUMBER: String(prNumber),
     OPERATION: operation,
     HEAD_SHA: headSha,
+    HEAD_RETRY_SECONDS: "0",
   });
+  let reads = 0;
+  let arms = 0;
   const graphqlCalls = [];
   const warnings = [];
   const infos = [];
@@ -131,6 +145,9 @@ async function runArming({
           };
         }
         if (/enablePullRequestAutoMerge/u.test(query)) {
+          const armError = armErrors[arms];
+          arms += 1;
+          if (armError) throw armError;
           if (graphqlError) throw graphqlError;
           return {
             enablePullRequestAutoMerge: {
@@ -144,10 +161,13 @@ async function runArming({
         assert.equal(variables.repo, repo);
         assert.equal(variables.number, prNumber);
         if (missingPullRequest) return { repository: { pullRequest: null } };
+        const headRefOid = headRefOids[Math.min(reads, headRefOids.length - 1)];
+        reads += 1;
         return {
           repository: {
             pullRequest: {
               id: nodeId,
+              headRefOid,
               autoMergeRequest: pullRequest.autoMergeRequest ?? null,
               // Mirrors real GitHub: `nodes` is filtered by itemTypes, and a
               // SQUASH arm records AutoSquashEnabledEvent. `totalCount` is
@@ -302,16 +322,98 @@ test("a failed first arm of a never-armed PR only warns", async () => {
   assert.equal(warnings.length, 1);
 });
 
-test("an empty head sha warns and never arms or disarms", async () => {
+test("a PR with no reported head oid warns and never arms or disarms", async () => {
   const { graphqlCalls, warnings } = await runArming({
     operation: "updated",
-    headSha: "",
+    headSha: newHead,
+    headRefOids: [null],
     pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
   });
   assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(disarmCalls(graphqlCalls).length, 0);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /No head SHA/u);
+  assert.match(warnings[0], /No head oid/u);
+});
+
+// The error GitHub returned in standards runs 39620532540 (medley#2191) and
+// 39623401606 (claude-code-plugins#8877).
+const headMismatchError = () =>
+  new Error(
+    "Request failed due to following response errors:\n - Failed to add PR #2191: expected head oid does not match the current head oid",
+  );
+const foreignHead = "3333333333333333333333333333333333333333";
+const laterHead = "4444444444444444444444444444444444444444";
+
+test("a PR whose reported head is not the sync's commit is armed at the reported head", async () => {
+  const { graphqlCalls, failures, warnings } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    headRefOids: [foreignHead],
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+  });
+  assert.equal(failures.length, 0);
+  assert.equal(warnings.length, 0);
+  assert.equal(disarmCalls(graphqlCalls).length, 1);
+  const mutations = mutationCalls(graphqlCalls);
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].variables.expectedHeadOid, foreignHead);
+});
+
+test("a head-oid mismatch re-reads the head once and re-arms at the new head", async () => {
+  const { graphqlCalls, failures, warnings, infos } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    headRefOids: [newHead, laterHead],
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    armErrors: [headMismatchError()],
+  });
+  assert.equal(failures.length, 0);
+  assert.equal(warnings.length, 0);
+  assert.equal(disarmCalls(graphqlCalls).length, 1, "disarm happens once");
+  const mutations = mutationCalls(graphqlCalls);
+  assert.deepEqual(
+    mutations.map((call) => call.variables.expectedHeadOid),
+    [newHead, laterHead],
+  );
+  assert.ok(infos.some((message) => message.includes(`at ${laterHead}`)));
+});
+
+test("a second head-oid mismatch after this run disarmed the PR fails the step", async () => {
+  const { graphqlCalls, failures } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    headRefOids: [newHead, laterHead],
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    armErrors: [headMismatchError(), headMismatchError()],
+  });
+  assert.equal(mutationCalls(graphqlCalls).length, 2, "exactly one retry");
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /could not re-arm/u);
+  assert.match(failures[0], /expected head oid does not match/u);
+});
+
+test("a second head-oid mismatch on a never-armed PR only warns", async () => {
+  const { graphqlCalls, failures, warnings } = await runArming({
+    operation: "created",
+    headSha: newHead,
+    headRefOids: [newHead, laterHead],
+    armErrors: [headMismatchError(), headMismatchError()],
+  });
+  assert.equal(mutationCalls(graphqlCalls).length, 2);
+  assert.equal(failures.length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Could not arm auto-merge/u);
+});
+
+test("any other arm error is not retried", async () => {
+  const { graphqlCalls, failures } = await runArming({
+    operation: "updated",
+    headSha: newHead,
+    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    armErrors: [new Error("Head sha did not match")],
+  });
+  assert.equal(mutationCalls(graphqlCalls).length, 1);
+  assert.equal(failures.length, 1);
 });
 
 test("dry runs and real syncs never share a concurrency slot", () => {
