@@ -1020,7 +1020,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   skips an issue carrying `human-label` (default `needs-human`; set it to the
   lane's `escalation-label`), so a run that lands after the intake-triage
   lane does not re-add the floor it removed. A reopened issue that still
-  carries `human-label` stays without the floor.
+  carries `human-label` stays without the floor. A rate-limited call waits
+  once and retries, as `pr-require-checks/gh-api.sh` does, with up to 10
+  minutes of waits per run; a limit it cannot wait out fails the job with the
+  reset time. The job ends with the job token's `api-calls` and `api-budget`
+  notices.
   **Fail-closed on a missing label**: the raw add-labels endpoint
   auto-creates an unknown label name instead of failing, so this workflow
   first calls `GET /repos/{owner}/{repo}/labels/{name}` and hard-fails the job

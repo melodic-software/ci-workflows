@@ -37,6 +37,18 @@ name: intake-label-needs-triage
 # the guard skips once any tier-prefixed label exists — including a tier a
 # human triager applies after this workflow ran, which the triager (not this
 # workflow) is responsible for reconciling with `label` (see README).
+#
+# RATE LIMITS: a 403 or 429 is a rate limit when it carries `retry-after`,
+# `x-ratelimit-remaining: 0`, or a message naming a rate limit, the test
+# pr-require-checks/gh-api.sh uses; any other 403 fails at once. A rate limit
+# waits, then retries once, in gh-api.sh's order: `retry-after` seconds, else
+# until `x-ratelimit-reset` when none remain, else 60 seconds. The step's
+# waits, summed, stay within RATE_LIMIT_WAIT_SECONDS (10 minutes, inside the
+# 15-minute job timeout), which covers the 5-7 minutes measured between a
+# refusal and the reset in ci-workflows#855. A wait that does not fit, or a
+# second rate limit, fails the job with the reset time, except on the label
+# list, which falls back to the event payload as below. The job ends with
+# the job token's api-calls and api-budget notices.
 on:
   workflow_call:
     inputs:
@@ -74,7 +86,7 @@ jobs:
   apply-label:
     name: Apply floor label when no priority tier is present
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       issues: write # Read the issue's current labels and add the floor label.
     steps:
@@ -84,13 +96,108 @@ jobs:
         if: >-
           github.event_name == 'issues' &&
           (github.event.action == 'opened' || github.event.action == 'reopened')
+        timeout-minutes: 13
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TARGET_LABEL: ${{ inputs.label }}
           LABEL_PREFIX: ${{ inputs.label-prefix }}
           HUMAN_LABEL: ${{ inputs.human-label }}
+          RATE_LIMIT_WAIT_SECONDS: "600"
         with:
           script: |
+            // Each response's rate-limit reading and route, the line
+            // report-api-budget's api-budget.cjs writes (a test holds them
+            // equal), for the job's api-budget and api-routes notices. A failed
+            // write only drops the reading.
+            const budget = (status, headers, url) => {
+              const values = ["limit", "remaining", "used", "reset", "resource"].map((key) => {
+                const value = String(headers?.[`x-ratelimit-${key}`] ?? "");
+                return (key === "resource" ? /^[a-z_]+$/u : /^\d+$/u).test(value) ? value : "na";
+              });
+              // api-budget.cjs's routeOf: the URL's path with no query, name or token.
+              const words = new Set("api v3 repos orgs users user installation app graphql pulls issues comments reviews requested_reviewers git refs ref heads tags trees blobs commits compare merges merge check-runs check-suites statuses status labels assignees milestones events timeline actions runs jobs attempts artifacts logs rerun rerun-failed-jobs workflows dispatches variables secrets contents branches protection rules rulesets collaborators permission teams members hooks deployments environments releases search code reactions files rate_limit annotations repositories installations access_tokens pending_deployments cancel update-branch dismissals readme matching-refs languages notifications".split(" "));
+              const text = String(url ?? "");
+              const host = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/iu.exec(text);
+              const at = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/iu, "").replace(/[?#][\s\S]*$/u, "").replace(/^\/+/u, "").replace(/^api\/(v3\/)?/u, "").replace(/\/+$/u, "");
+              const segments = at.split("/");
+              const out = [];
+              for (let i = 0, tail = false, name = false; i < segments.length; i++) {
+                const seg = segments[i];
+                const id = /^[0-9]+$/u.test(seg) ? "{n}" : /^[0-9a-f]{7,}$/iu.test(seg) ? "{sha}" : undefined;
+                if (tail || name) {
+                  out.push(id ?? "{x}");
+                  name = false;
+                } else if (i === 1 && segments[0] === "repos" && segments.length >= 3) {
+                  out.push("{repo}");
+                  i++;
+                } else if (id) out.push(id);
+                else if (words.has(seg) && !/^(api|v3|graphql)$/u.test(seg)) {
+                  out.push(seg);
+                  tail = /^(contents|ref|refs|matching-refs|readme|compare|trees)$/u.test(seg);
+                  name = /^(labels|branches|tags|users|orgs|teams|members|collaborators|assignees|environments|secrets|variables|workflows|commits|blobs|statuses|releases)$/u.test(seg);
+                } else out.push("{x}");
+              }
+              const route =
+                host && !/^(api|uploads)\.github\.com$/iu.test(host[1]) && !/^\/api\//u.test(host[2])
+                  ? "other"
+                  : at === "graphql"
+                    ? "graphql"
+                    : at === "" || out.join("/").length > 80
+                      ? "other"
+                      : out.join("/");
+              try {
+                const dir = require("node:path").join(process.env.RUNNER_TEMP, "api-budget");
+                require("node:fs").mkdirSync(dir, { recursive: true });
+                require("node:fs").appendFileSync(require("node:path").join(dir, "github-token"), `${status} ${values.join(" ")} ${route}\n`);
+              } catch {
+                // No reading: the notice is only missing one.
+              }
+            };
+            github.hook.after("request", (response) => budget(response.status, response.headers, response.url));
+            github.hook.error("request", (error) => {
+              if (error.response) budget(error.status ?? error.response.status, error.response.headers, error.response.url ?? error.request?.url);
+              throw error;
+            });
+
+            // The header comment's rate-limit wait. A rate limit that is not
+            // waited out throws an error marked rateLimited.
+            const waitCap = Number(process.env.RATE_LIMIT_WAIT_SECONDS) || 0;
+            let waited = 0;
+            const call = async (what, request) => {
+              for (let attempt = 0; ; attempt++) {
+                try {
+                  return await request();
+                } catch (error) {
+                  const header = (name) => String(error.response?.headers?.[name] ?? "");
+                  const status = error.status ?? error.response?.status;
+                  const limited =
+                    (status === 403 || status === 429) &&
+                    (header("retry-after") !== "" ||
+                      header("x-ratelimit-remaining") === "0" ||
+                      /rate limit/iu.test(String(error.message)));
+                  if (!limited) throw error;
+                  const reset = /^\d{1,10}$/u.test(header("x-ratelimit-reset")) ? Number(header("x-ratelimit-reset")) : null;
+                  const resetAt = reset === null ? "an unknown time" : new Date(reset * 1000).toISOString();
+                  const wait = /^\d{1,10}$/u.test(header("retry-after"))
+                    ? Number(header("retry-after"))
+                    : header("x-ratelimit-remaining") === "0" && reset !== null
+                      ? Math.max(1, reset - Math.floor(Date.now() / 1000))
+                      : 60;
+                  const left = waitCap - waited;
+                  if (attempt > 0 || wait > left) {
+                    const why = attempt > 0 ? "again after one wait" : `and needs a ${wait}s wait, more than the ${left}s left of ${waitCap}s`;
+                    throw Object.assign(
+                      new Error(`${what} is rate limited (HTTP ${status}) ${why}. The limit resets at ${resetAt}.`),
+                      { rateLimited: true },
+                    );
+                  }
+                  core.warning(`${what} is rate limited (HTTP ${status}); waiting ${wait}s, then retrying once.`);
+                  await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+                  waited += wait;
+                }
+              }
+            };
+
             const targetLabel = process.env.TARGET_LABEL || "";
             const labelPrefix = process.env.LABEL_PREFIX || "";
 
@@ -114,11 +221,13 @@ jobs:
             let existingLabels;
             try {
               existingLabels = (
-                await github.paginate(github.rest.issues.listLabelsOnIssue, {
-                  ...context.repo,
-                  issue_number: context.payload.issue.number,
-                  per_page: 100,
-                })
+                await call("Listing the issue's labels", () =>
+                  github.paginate(github.rest.issues.listLabelsOnIssue, {
+                    ...context.repo,
+                    issue_number: context.payload.issue.number,
+                    per_page: 100,
+                  })
+                )
               ).map((l) => l.name);
             } catch (error) {
               core.warning(`Live labels unreadable, using the event payload: ${error.message}`);
@@ -139,8 +248,14 @@ jobs:
             // addLabels auto-creates an unknown label, so check first: a 404 fails
             // closed, any other error is an infrastructure failure, not a skip.
             try {
-              await github.rest.issues.getLabel({ ...context.repo, name: targetLabel });
+              await call(`Reading label '${targetLabel}'`, () =>
+                github.rest.issues.getLabel({ ...context.repo, name: targetLabel })
+              );
             } catch (error) {
+              if (error.rateLimited) {
+                core.setFailed(error.message);
+                return;
+              }
               if (error.status === 404) {
                 core.setFailed(
                   `Label '${targetLabel}' does not exist in ${context.repo.owner}/${context.repo.repo}. ` +
@@ -152,9 +267,27 @@ jobs:
               throw error;
             }
 
-            await github.rest.issues.addLabels({
-              ...context.repo,
-              issue_number: context.payload.issue.number,
-              labels: [targetLabel],
-            });
+            try {
+              await call(`Adding '${targetLabel}'`, () =>
+                github.rest.issues.addLabels({
+                  ...context.repo,
+                  issue_number: context.payload.issue.number,
+                  labels: [targetLabel],
+                })
+              );
+            } catch (error) {
+              if (!error.rateLimited) throw error;
+              core.setFailed(error.message);
+              return;
+            }
             core.info(`Applied '${targetLabel}' to issue #${context.payload.issue.number}.`);
+
+      # The job token's api-calls and api-budget notices, from the readings
+      # the script's requests left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
