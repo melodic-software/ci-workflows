@@ -575,11 +575,8 @@ test("a skipped PR that was never armed makes no disarm call", async () => {
   assert.equal(result.disarmCalls.length, 0);
 });
 
-// melodic-software callers float on this repository's main, so a bump merged
-// here runs next in every consumer's secret-holding lanes. This repository's
-// own Dependabot pull requests therefore wait for a person: no workflow here
-// calls the arm, at any ref.
-test("no workflow in this repository arms its own Dependabot bumps", () => {
+// A `./` ref would let a pull request redefine the code holding the write token.
+test("only pr-require-checks.yml arms this repository's bumps, at @main", () => {
   const workflowsDir = path.dirname(workflowPath);
   const callers = fs
     .readdirSync(workflowsDir)
@@ -589,7 +586,14 @@ test("no workflow in this repository arms its own Dependabot bumps", () => {
         fs.readFileSync(path.join(workflowsDir, file), "utf8"),
       ),
     );
-  assert.deepEqual(callers, []);
+  assert.deepEqual(callers, ["pr-require-checks.yml"]);
+  const refs = fs
+    .readFileSync(path.join(workflowsDir, "pr-require-checks.yml"), "utf8")
+    .match(/^\s*uses:\s*\S*pr-automerge-dependabot\.yml\S*/gmu)
+    .map((line) => line.trim());
+  assert.deepEqual(refs, [
+    "uses: melodic-software/ci-workflows/.github/workflows/pr-automerge-dependabot.yml@main",
+  ]);
 });
 
 // GitHub refuses to arm a PR that is already mergeable; the wording below is
