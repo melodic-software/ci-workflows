@@ -406,6 +406,7 @@ for (const job of ["review-key", "review-subscription"]) {
       hook: {
         after: (name, fn) => hooks.after.push([name, fn]),
         error: (name, fn) => hooks.error.push([name, fn]),
+        wrap: () => {},
       },
       paginate: async () => {
         throw new Error("no API in this test");
