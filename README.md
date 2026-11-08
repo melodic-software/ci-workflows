@@ -1140,11 +1140,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
   resolves one immutable standards SHA, then blocks every write lane until a
-  separate metadata-only credential proves the expected App identity, active
-  selected-repository installation metadata, and two consecutive exact views of
-  the full unfiltered manifest's repository set. A caller's `targets` filter
-  limits materialization only; it never weakens this installation-scope
-  attestation. After that barrier, the workflow scopes a different GitHub App
+  separate metadata-only credential proves the expected App identity and active
+  selected-repository installation metadata, and reads two consecutive identical
+  views of the installation's repositories. It compares them with the full
+  unfiltered manifest: a target the App cannot reach fails only that target's
+  sync job, and a selected repository that is not a target is reported as an
+  over-grant warning without blocking the sync. A caller's `targets` filter
+  limits materialization only; it never narrows this installation-scope
+  comparison. After that barrier, the workflow scopes a different GitHub App
   token to each target and opens a signed, human-reviewed PR enumerating every
   managed source-to-destination mapping. It never writes a downstream receipt
   and never copies components declared `locally-owned`; the owner-scoped
