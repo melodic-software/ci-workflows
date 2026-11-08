@@ -811,7 +811,13 @@ for (const lane of lanes) {
     const long = `bwrap: ${"x".repeat(400)}`;
     for (const [content, line] of [
       [`secret output\n  ${SECCOMP}  \n${BWRAP}\nmore output`, SECCOMP],
-      [[{ type: "text", text: "noise" }, { type: "text", text: `${BWRAP}\ntail` }], BWRAP],
+      [
+        [
+          { type: "text", text: "noise" },
+          { type: "text", text: `${BWRAP}\ntail` },
+        ],
+        BWRAP,
+      ],
       [long, long.slice(0, 300)],
     ]) {
       const { outputs, messages } = await verify(lane, {
@@ -884,7 +890,11 @@ for (const lane of lanes) {
         executionFile: executionFile(JSON.stringify(messages)),
       });
       assert.equal(outputs.verdict, "complete");
-      assert.ok(!warnings(logged).some((line) => line.startsWith("A Bash call failed in the sandbox")));
+      assert.ok(
+        !warnings(logged).some((line) =>
+          line.startsWith("A Bash call failed in the sandbox"),
+        ),
+      );
     }
   });
 
