@@ -81,7 +81,10 @@ const update = (
 // The body shape Dependabot writes for a grouped PR, as on ci-workflows #997.
 const updatesBody = (updates) =>
   updates
-    .map((u) => `Updates \`${u?.dependencyName}\` from ${u?.prevVersion} to ${u?.newVersion}`)
+    .map(
+      (u) =>
+        `Updates \`${u?.dependencyName}\` from ${u?.prevVersion} to ${u?.newVersion}`,
+    )
     .join("\n");
 
 async function runGate({
@@ -622,15 +625,21 @@ test("only pr-require-checks.yml arms this repository's bumps, at @main", () => 
 });
 
 // Title from ci-workflows #989; body lines from #997.
-const setupDotnet = update("actions/setup-dotnet", "version-update:semver-minor", "github_actions", {
-  prevVersion: "6.0.0",
-  newVersion: "6.1.0",
-});
+const setupDotnet = update(
+  "actions/setup-dotnet",
+  "version-update:semver-minor",
+  "github_actions",
+  {
+    prevVersion: "6.0.0",
+    newVersion: "6.1.0",
+  },
+);
 
 test("a single update whose title names its versions arms", async () => {
   const { armCalls, notices } = await runGate({
     updates: [setupDotnet],
-    title: "build: bump actions/setup-dotnet from 6.0.0 to 6.1.0 in /.github/actions/dotnet-format",
+    title:
+      "build: bump actions/setup-dotnet from 6.0.0 to 6.1.0 in /.github/actions/dotnet-format",
     body: "Bumps [actions/setup-dotnet](https://github.com/actions/setup-dotnet) from 6.0.0 to 6.1.0.",
   });
   assert.deepEqual(notices, []);
@@ -640,7 +649,8 @@ test("a single update whose title names its versions arms", async () => {
 test("a grouped update whose Updates lines name its versions arms", async () => {
   const { armCalls, notices } = await runGate({
     updates: [setupDotnet, setupDotnet],
-    title: "build: bump the vendor-actions group across 2 directories with 1 update",
+    title:
+      "build: bump the vendor-actions group across 2 directories with 1 update",
     body: "Updates `actions/setup-dotnet` from 6.0.0 to 6.1.0\nUpdates `actions/setup-dotnet` from 6.0.0 to 6.1.0",
   });
   assert.deepEqual(notices, []);
@@ -655,7 +665,10 @@ test("a title naming other versions than the metadata skips and disarms", async 
     autoMerge: { enabled_by: { login: "github-actions[bot]" } },
   });
   assert.equal(result.armCalls.length, 0);
-  assert.match(result.notices[0], /do not name actions\/setup-dotnet from 6\.0\.0 to 6\.1\.0/u);
+  assert.match(
+    result.notices[0],
+    /do not name actions\/setup-dotnet from 6\.0\.0 to 6\.1\.0/u,
+  );
   assert.equal(result.disarmCalls.length, 1);
 });
 
@@ -663,7 +676,8 @@ test("an Updates line the metadata lacks skips", async () => {
   assertSkipped(
     await runGate({
       updates: [setupDotnet],
-      title: "build: bump the vendor-actions group across 1 directory with 2 updates",
+      title:
+        "build: bump the vendor-actions group across 1 directory with 2 updates",
       body: "Updates `actions/setup-dotnet` from 6.0.0 to 6.1.0\nUpdates `actions/checkout` from 5.0.0 to 6.0.0",
     }),
     /metadata does not include actions\/checkout from 5\.0\.0 to 6\.0\.0/u,
@@ -673,7 +687,13 @@ test("an Updates line the metadata lacks skips", async () => {
 test("metadata without versions skips", async () => {
   assertSkipped(
     await runGate({
-      updates: [{ dependencyName: "actions/setup-dotnet", updateType: "version-update:semver-minor", packageEcosystem: "github_actions" }],
+      updates: [
+        {
+          dependencyName: "actions/setup-dotnet",
+          updateType: "version-update:semver-minor",
+          packageEcosystem: "github_actions",
+        },
+      ],
       title: "build: bump actions/setup-dotnet from 6.0.0 to 6.1.0",
       body: "",
     }),
