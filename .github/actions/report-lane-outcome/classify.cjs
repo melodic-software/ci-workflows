@@ -7,7 +7,7 @@
 //
 // This runs on a PUBLIC repo. The result message's `result` field is
 // model-authored free text and its `errors[]` entries are raw error stacks; both
-// are read INSIDE this module only, and nothing but the class token, the
+// are read INSIDE this module only, and nothing but the class, the
 // structured projection below and apiErrorFacts' values ever leaves it.
 // apiErrorFacts reads the CLI's own error text from a run with no model
 // output and keeps only values that match a closed pattern. Never widen the
@@ -346,9 +346,9 @@ function classifyExecutionFile(
   return { reviewDetail: JSON.stringify(projection), failureClass };
 }
 
-// The run record: structured facts about a run, each printed as a bare
-// `key=value` token on the lane's annotation line so a brief can read limit
-// stops, the credential behind them, turn headroom and the models used.
+// The run record: structured facts about a run, each a lane-outcome record
+// field (docs/lane-outcome.md) so a reader can see limit stops, the
+// credential behind them, turn headroom and the models used.
 // Values come from typed SDK fields and caller inputs, and the error facts
 // from the CLI's own error text (apiErrorFacts), each checked against a
 // closed pattern; nothing else is taken from free text.
@@ -528,16 +528,14 @@ function readRunRecord(executionFilePath) {
   };
 }
 
-// At most this many models, in the tokens and the record alike: eight
-// 100-character ids keep the sentence before the record short enough that the
-// runner's 4,096-character cut does not reach the record (docs/lane-outcome.md).
+// At most this many models in the record (docs/lane-outcome.md).
 const MAX_MODELS = 8;
 
 // The run's facts for one annotation, each gate applied once: resets only on
 // a limit stop (rate-limit), the API error facts only on a failure, the
 // credential and fallback reason only from their closed sets, the max-turns
-// cap only as a count, the models only up to MAX_MODELS. recordTokens and the
-// lane-outcome record both serialize this one object.
+// cap only as a count, the models only up to MAX_MODELS. The lane-outcome
+// record serializes this one object.
 function runFacts(
   {
     turns = null,
@@ -582,30 +580,6 @@ function runFacts(
   };
 }
 
-// The legacy `key=value` tokens for one annotation line, unknown values
-// omitted. `fallback=` follows `credential=`.
-function factTokens(facts) {
-  return [
-    ["resets", facts.resetsAt],
-    ["resets-window", facts.resetsWindow],
-    ["error-type", facts.errorType],
-    ["error-code", facts.errorCode],
-    ["request-id", facts.requestId],
-    ["credential", facts.credential],
-    ["fallback", facts.fallbackReason],
-    ["turns", facts.turns],
-    ["max-turns", facts.maxTurns],
-    ["models", facts.models.length > 0 ? facts.models.join(",") : null],
-  ]
-    .filter(([, value]) => value !== null && value !== "")
-    .map(([key, value]) => `${key}=${value}`)
-    .join(" ");
-}
-
-function recordTokens(run, inputs) {
-  return factTokens(runFacts(run, inputs));
-}
-
 // The lane-outcome record v1 (docs/lane-outcome.md, schemas/
 // lane-outcome.v1.schema.json). Written only when the lane id and a
 // credential that maps to a kind are both present; `missing` names what is not.
@@ -615,8 +589,7 @@ const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const RECORD_MAX_LENGTH = 1024;
 
 // The record's closed failure classes (docs/lane-outcome.md, "Failure
-// classes"). A caller's class outside this list is `other` in the record; the
-// legacy `class=` token keeps it as given.
+// classes"). A caller's class outside this list is `other` in the record.
 const FAILURE_CLASSES = [
   "auth",
   "credit-stop",
@@ -739,7 +712,7 @@ function recordOutcome(outcome, failureClass) {
 }
 
 // `recordClass` overrides the class in the record alone, for a branch whose
-// legacy tokens carry no class (incomplete, skipped-validation).
+// step reports no failure class of its own (incomplete, skipped-validation).
 // `shellFailed` flags a success whose allowed Bash calls all failed without
 // failing it.
 function factRecord(
@@ -820,11 +793,10 @@ function factRecord(
   return { record, missing };
 }
 
-// One annotation's report, from one facts object: the legacy tokens and the
-// lane-outcome record (null with `missing` when it cannot be written).
+// One annotation's lane-outcome record (null with `missing` when it cannot be
+// written).
 function laneReport(run, inputs = {}) {
-  const facts = runFacts(run, inputs);
-  return { tokens: factTokens(facts), ...factRecord(facts, inputs) };
+  return factRecord(runFacts(run, inputs), inputs);
 }
 
 // The record as it sits in an annotation message: the marker and the JSON,
@@ -858,6 +830,5 @@ module.exports = {
   readMessages,
   readRunRecord,
   recordText,
-  recordTokens,
   WINDOW_PATTERN,
 };

@@ -170,6 +170,35 @@ async function runOutcome({
   }
 }
 
+// The lane-outcome record (docs/lane-outcome.md). A reader finds the marker
+// anywhere in the message and reads exactly one JSON value after it.
+const MARKER = "lane-outcome ";
+
+function readRecord(message) {
+  const start = message.indexOf(MARKER);
+  if (start === -1) return null;
+  const text = message.slice(start + MARKER.length);
+  let depth = 0;
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (character === "\\") index += 1;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) {
+      return JSON.parse(text.slice(0, index + 1));
+    }
+  }
+  return null;
+}
+
+// No retired `key=value` token in an annotation's sentence (docs/lane-outcome.md,
+// Compatibility): the record carries these facts.
+const LEGACY_TOKEN =
+  /(?<![\w-])(?:class|credential|fallback|turns|max-turns|models|resets|resets-window|error-type|error-code|request-id)=/u;
+
 test("a success with execution evidence is a review that ran", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 12 },
@@ -188,8 +217,8 @@ test("a success with execution evidence is a review that ran", async () => {
 test("a success with no execution evidence is the validation-skip shape, not a review", async () => {
   // claude-code-action's workflow-validation guard exits 0 before running
   // anything, so the step concludes green while nothing was reviewed. The
-  // step must say so machine-readably (a `class=` annotation on the check
-  // run) without counting it as a failure — the skip is
+  // step must say so on the check run (a warning annotation, whose record
+  // has the class) without counting it as a failure — the skip is
   // expected on exactly the PRs that edit the caller workflow.
   for (const executionFile of [
     "",
@@ -205,7 +234,8 @@ test("a success with no execution evidence is the validation-skip shape, not a r
     assert.deepEqual(errors, [], executionFile);
     assert.equal(warnings.length, 1, executionFile);
 
-    assert.match(warnings[0], /\bclass=skipped-validation\b/u, executionFile);
+    assert.match(warnings[0], /^Claude review concluded: success, skipped-validation, /u, executionFile);
+    assert.doesNotMatch(warnings[0], LEGACY_TOKEN, executionFile);
   }
 });
 
@@ -227,7 +257,8 @@ test("a genuine failure still classifies and reports as failed", async () => {
   assert.equal(outputs.review_ran, "false");
   assert.equal(outputs.failure_class, "auth");
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /\bclass=auth\b/u);
+  assert.match(errors[0], /^Claude review exited with: failure, auth \(/u);
+  assert.doesNotMatch(errors[0], LEGACY_TOKEN);
 });
 
 test("a caller's known failure class wins over reclassifying the file", async () => {
@@ -246,7 +277,7 @@ test("a caller's known failure class wins over reclassifying the file", async ()
     knownFailureClass: "timeout",
   });
   assert.equal(known.outputs.failure_class, "timeout");
-  assert.match(known.errors[0], /\bclass=timeout\b/u);
+  assert.match(known.errors[0], /exited with: failure, timeout \(/u);
   const unsafe = await runOutcome({
     outcome: "failure",
     executionFile: file,
@@ -269,10 +300,10 @@ test("a review the sandbox probe kept from starting is a failure of its own clas
   assert.equal(outputs.failure_class, "sandbox-unavailable");
   assert.deepEqual(warnings, []);
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /\bclass=sandbox-unavailable\b/u);
+  assert.match(errors[0], /exited with: skipped, sandbox-unavailable \(/u);
 });
 
-test("a usage limit reads as a skipped review and keeps the class token", async () => {
+test("a usage limit reads as a skipped review and names its class", async () => {
   const file = writeExecutionFile([
     {
       type: "result",
@@ -293,7 +324,7 @@ test("a usage limit reads as a skipped review and keeps the class token", async 
     errors[0],
     /^AI review skipped: usage limit reached; re-run after it resets/u,
   );
-  assert.match(errors[0], /\bclass=rate-limit\b/u);
+  assert.match(errors[0], /\(Claude review exited with: failure, rate-limit\)\. /u);
 });
 
 test("a usage limit on a lane that is not a review names the lane", async () => {
@@ -317,7 +348,7 @@ test("a usage limit on a lane that is not a review names the lane", async () => 
     /^Claude intake triage skipped: usage limit reached; re-run after it resets/u,
   );
   assert.doesNotMatch(errors[0], /AI review/u);
-  assert.match(errors[0], /\bclass=rate-limit\b/u);
+  assert.match(errors[0], /exited with: failure, rate-limit\)/u);
 });
 
 test("a failure with no execution file keeps the fail-path class, not the skip class", async () => {
@@ -344,7 +375,7 @@ test("a failed step that ran its whole timeout-minutes is a timeout", async () =
   });
   assert.equal(outputs.review_failed, "true");
   assert.equal(outputs.failure_class, "timeout");
-  assert.match(errors[0], /\bclass=timeout\b/u);
+  assert.match(errors[0], /exited with: failure, timeout \(/u);
 });
 
 test("a failed step that stopped inside its budget, or reported no start, is not a timeout", async () => {
@@ -368,7 +399,7 @@ test("a failed step that stopped inside its budget, or reported no start, is not
 });
 
 // 1767225600 is 2026-01-01T00:00:00Z in epoch seconds.
-test("a limit stop puts resets, credential, turns, max-turns and models on the class line", async () => {
+test("a limit stop puts resets, credential, turns, max-turns and models on the record", async () => {
   const file = writeExecutionFile([
     {
       type: "rate_limit_event",
@@ -392,12 +423,17 @@ test("a limit stop puts resets, credential, turns, max-turns and models on the c
     executionFile: file,
     credential: "CLAUDE_CODE_OAUTH_TOKEN",
     maxTurns: "30",
+    laneId: "pr-review",
   });
   assert.equal(errors.length, 1);
-  assert.match(
-    errors[0],
-    /\bclass=rate-limit resets=2026-01-01T00:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 max-turns=30 models=claude-sonnet-5\b/u,
-  );
+  const record = readRecord(errors[0]);
+  assert.equal(record.class, "rate-limit");
+  assert.deepEqual(record.resets, { at: "2026-01-01T00:00:00Z", window: "five_hour" });
+  assert.equal(record.credential.secret, "CLAUDE_CODE_OAUTH_TOKEN");
+  assert.equal(record.turns, 3);
+  assert.equal(record.maxTurns, 30);
+  assert.deepEqual(record.models, ["claude-sonnet-5"]);
+  assert.doesNotMatch(errors[0], LEGACY_TOKEN);
   assert.equal(outputs.resets_at, "2026-01-01T00:00:00Z");
 });
 
@@ -419,12 +455,14 @@ test("a non-limit failure carries the record but no resets", async () => {
     outcome: "failure",
     executionFile: file,
     credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    laneId: "pr-review",
   });
-  assert.match(
-    errors[0],
-    /\bclass=auth credential=CLAUDE_CODE_OAUTH_TOKEN turns=1 /u,
-  );
-  assert.doesNotMatch(errors[0], /resets=/u);
+  const record = readRecord(errors[0]);
+  assert.equal(record.class, "auth");
+  assert.equal(record.credential.secret, "CLAUDE_CODE_OAUTH_TOKEN");
+  assert.equal(record.turns, 1);
+  assert.equal("resets" in record, false);
+  assert.doesNotMatch(errors[0], LEGACY_TOKEN);
   assert.equal(outputs.resets_at, undefined);
 });
 
@@ -442,15 +480,18 @@ test("a success writes a notice with turn headroom and models, and no class", as
     outcome: "success",
     executionFile: file,
     maxTurns: "30",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+    laneId: "pr-review",
   });
   assert.deepEqual(errors, []);
   assert.equal(outputs.review_ran, "true");
   assert.equal(notices.length, 1);
-  assert.match(
-    notices[0],
-    /\bturns=11 max-turns=30 models=claude-sonnet-5,claude-haiku-5\b/u,
-  );
-  assert.doesNotMatch(notices[0], /class=/u);
+  const record = readRecord(notices[0]);
+  assert.equal(record.turns, 11);
+  assert.equal(record.maxTurns, 30);
+  assert.deepEqual(record.models, ["claude-sonnet-5", "claude-haiku-5"]);
+  assert.equal("class" in record, false);
+  assert.doesNotMatch(notices[0], LEGACY_TOKEN);
 });
 
 test("a run that finished past its turn cap reads as max-turns with its turns and cap", async () => {
@@ -463,11 +504,16 @@ test("a run that finished past its turn cap reads as max-turns with its turns an
     executionFile: file,
     lane: "Claude intake triage",
     maxTurns: "15",
+    credential: "AUTOMATIONS_CLAUDE_API_KEY",
+    laneId: "intake-triage",
   });
   assert.equal(outputs.failure_class, "max-turns");
   assert.equal(outputs.review_failed, "true");
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /\bclass=max-turns turns=16 max-turns=15\b/u);
+  const record = readRecord(errors[0]);
+  assert.equal(record.class, "max-turns");
+  assert.equal(record.turns, 16);
+  assert.equal(record.maxTurns, 15);
   assert.match(errors[0], /^Claude intake triage stopped: turn budget used /u);
   assert.doesNotMatch(errors[0], /infrastructure error/u);
 });
@@ -486,7 +532,7 @@ test("a run that used every turn reads as a sizing stop, not an infrastructure e
   assert.equal(errors.length, 1);
   assert.match(
     errors[0],
-    /^work-resolve-issue stopped: turn budget used \(work-resolve-issue exited with: failure class=max-turns turns=76 max-turns=75\); the work is too big for one run, split it\. /u,
+    /^work-resolve-issue stopped: turn budget used \(work-resolve-issue exited with: failure, max-turns\); the work is too big for one run, split it\. /u,
   );
   assert.doesNotMatch(errors[0], /infrastructure error/u);
 });
@@ -502,7 +548,7 @@ test("an infrastructure error no longer lists max-turns among its examples", asy
 
 // ci-workflows#806: the subscription job of the two-job pattern writes the
 // run's one lane record, so it names why it ran beside the credential.
-test("a fallback reason rides beside the credential on the notice and the class line", async () => {
+test("a fallback reason rides beside the credential on the notice's and the error's record", async () => {
   const succeeded = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 5 },
   ]);
@@ -511,13 +557,14 @@ test("a fallback reason rides beside the credential on the notice and the class 
     executionFile: succeeded,
     credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
     fallbackReason: "credit-stop",
+    laneId: "intake-triage",
   });
   assert.deepEqual(ok.failed, []);
   assert.equal(ok.notices.length, 1);
-  assert.match(
-    ok.notices[0],
-    / credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop turns=5\b/u,
-  );
+  const okRecord = readRecord(ok.notices[0]);
+  assert.equal(okRecord.credential.secret, "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN");
+  assert.deepEqual(okRecord.fallback, { reason: "credit-stop" });
+  assert.equal(okRecord.turns, 5);
   const authFailed = writeExecutionFile([
     {
       type: "result",
@@ -532,18 +579,20 @@ test("a fallback reason rides beside the credential on the notice and the class 
     executionFile: authFailed,
     credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
     fallbackReason: "no-key",
+    laneId: "intake-triage",
   });
   assert.equal(failed.errors.length, 1);
-  assert.match(
-    failed.errors[0],
-    /\bclass=auth credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=no-key turns=1\b/u,
-  );
+  const failedRecord = readRecord(failed.errors[0]);
+  assert.equal(failedRecord.class, "auth");
+  assert.deepEqual(failedRecord.fallback, { reason: "no-key" });
+  assert.equal(failedRecord.turns, 1);
   const none = await runOutcome({
     outcome: "success",
     executionFile: succeeded,
     credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
+    laneId: "intake-triage",
   });
-  assert.doesNotMatch(none.notices[0], /fallback=/u);
+  assert.equal("fallback" in readRecord(none.notices[0]), false);
 });
 
 test("an auth fallback reason, a rejected key, is recorded beside the credential", async () => {
@@ -555,13 +604,14 @@ test("an auth fallback reason, a rejected key, is recorded beside the credential
     executionFile: succeeded,
     credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN",
     fallbackReason: "auth",
+    laneId: "intake-triage",
   });
   assert.deepEqual(run.failed, []);
   assert.equal(run.notices.length, 1);
-  assert.match(
-    run.notices[0],
-    / credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=auth turns=2\b/u,
-  );
+  const record = readRecord(run.notices[0]);
+  assert.equal(record.credential.secret, "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN");
+  assert.deepEqual(record.fallback, { reason: "auth" });
+  assert.equal(record.turns, 2);
 });
 
 test("a fallback reason outside credit-stop, auth and no-key fails the step and reports nothing", async () => {
@@ -609,38 +659,20 @@ test("a 403 the launcher stopped is recorded with its error type, code and reque
     lane: "Claude intake triage",
     credential: "AUTOMATIONS_CLAUDE_API_KEY",
     knownFailureClass: "auth",
+    laneId: "intake-triage",
   });
   assert.equal(run.errors.length, 1);
-  assert.match(
-    run.errors[0],
-    /\bclass=auth error-type=permission_error error-code=workspace_access_denied request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1\b/u,
-  );
+  const record = readRecord(run.errors[0]);
+  assert.equal(record.class, "auth");
+  assert.deepEqual(record.error, {
+    type: "permission_error",
+    code: "workspace_access_denied",
+    requestId: "req_fake0000000000000000",
+  });
+  assert.equal(record.credential.secret, "AUTOMATIONS_CLAUDE_API_KEY");
+  assert.equal(record.turns, 1);
   assert.equal(run.errors[0].includes("not permitted"), false);
 });
-
-// The lane-outcome record (docs/lane-outcome.md). A reader finds the marker
-// anywhere in the message and reads exactly one JSON value after it.
-const MARKER = "lane-outcome ";
-
-function readRecord(message) {
-  const start = message.indexOf(MARKER);
-  if (start === -1) return null;
-  const text = message.slice(start + MARKER.length);
-  let depth = 0;
-  let inString = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (inString) {
-      if (character === "\\") index += 1;
-      else if (character === '"') inString = false;
-    } else if (character === '"') inString = true;
-    else if (character === "{") depth += 1;
-    else if (character === "}" && --depth === 0) {
-      return JSON.parse(text.slice(0, index + 1));
-    }
-  }
-  return null;
-}
 
 // The contract's examples: every ```json block of docs/lane-outcome.md, a
 // block holding one object or one object per line.
@@ -910,8 +942,8 @@ test("a review lane's usage limit writes the contract's rate-limit example", asy
   });
   assert.equal(errors.length, 1);
   assert.deepEqual(readRecord(errors[0]), reviewLimitExample);
-  // The legacy tokens stay in the sentence.
-  assert.match(errors[0], /\bclass=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN\b/u);
+  // The sentence carries no legacy token; the record holds every fact.
+  assert.doesNotMatch(errors[0], LEGACY_TOKEN);
 });
 
 test("a key leg that handed off on a credit stop writes the contract's key-leg example", async () => {
@@ -1012,7 +1044,7 @@ test("with detect-failed-shell, a green run whose three allowed Bash calls all f
   assert.equal(warnings.length, 1);
   assert.ok(
     warnings[0].startsWith(
-      "Claude review completed with class=shell-failed credential=CLAUDE_CODE_OAUTH_TOKEN turns=3: " +
+      "Claude review completed, shell-failed: " +
         "all 3 allowed Bash call(s) failed, so the review ran with no working shell. lane-outcome {",
     ),
     warnings[0],
@@ -1033,7 +1065,7 @@ test("with detect-failed-shell, one normal non-zero exit is still a review unles
   const lowered = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: "1" });
   assert.equal(lowered.outputs.review_ran, "true");
   assert.equal(lowered.warnings.length, 1);
-  assert.match(lowered.warnings[0], /class=shell-failed/u);
+  assert.match(lowered.warnings[0], /^Claude review completed, shell-failed: /u);
   for (const bad of ["0", "two", "-1"]) {
     const { failed, outputs } = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: bad });
     assert.deepEqual(failed, ["failed-shell-min-calls must be a whole number from 1."], bad);
@@ -1081,7 +1113,7 @@ test("a green session that returned no review to post concludes review-unposted,
   assert.equal(outputs.review_failed, "true");
   assert.equal(outputs.review_ran, "false");
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /^Claude review concluded: success class=review-unposted /u);
+  assert.match(errors[0], /^Claude review concluded: success, review-unposted /u);
   assert.match(errors[0], /no completed review was found: the leg wrote no structured output\./u);
   const record = readRecord(errors[0]);
   assert.equal(record.outcome, "failure");
@@ -1099,7 +1131,7 @@ test("without completion-class, or with incomplete, a failed completion check st
       completionClass,
     });
     assert.equal(outputs.failure_class, "incomplete", completionClass);
-    assert.match(errors[0], / class=incomplete /u, completionClass);
+    assert.match(errors[0], /^Claude review concluded: success, incomplete /u, completionClass);
   }
 });
 
@@ -1116,7 +1148,7 @@ test("a completion-class outside incomplete and review-unposted fails the step a
   assert.deepEqual(outputs, {});
 });
 
-test("a caller that sets lane-id but cannot get a record gets the tokens alone and a warning naming what is missing", async () => {
+test("a caller that sets lane-id but cannot get a record gets the sentence alone and a warning naming what is missing", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
   ]);
@@ -1135,14 +1167,14 @@ test("a caller that sets lane-id but cannot get a record gets the tokens alone a
     assert.equal(notices.length, 1, label);
     assert.equal(notices[0].includes(MARKER), false, label);
     assert.equal("record" in outputs, false, label);
-    assert.match(notices[0], /\bturns=3\b/u, label);
+    assert.equal(notices[0], "Claude review completed. Findings (if any) are in the PR comments.", label);
     assert.equal(warnings.length, 1, label);
     assert.match(warnings[0], missing, label);
     assert.doesNotMatch(warnings[0], /class=|credential=|lane-outcome /u, label);
   }
 });
 
-test("a caller with no lane-id, credential-only or neither, gets the tokens alone and no warning", async () => {
+test("a caller with no lane-id, credential-only or neither, gets the sentence alone and no warning", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
   ]);
@@ -1173,7 +1205,7 @@ test("the fallback leg after a subscription limit stop writes the contract's fal
     fallbackReason: "limit-stop",
   });
   assert.equal(notices.length, 1);
-  assert.match(notices[0], / credential=FALLBACK_CLAUDE_CODE_OAUTH_TOKEN fallback=limit-stop turns=4\b/u);
+  assert.doesNotMatch(notices[0], LEGACY_TOKEN);
   assert.deepEqual(readRecord(notices[0]), fallbackLegExample);
 });
 
@@ -1200,9 +1232,9 @@ test("the schema states the emitter's own patterns, closed sets and limits", () 
 });
 
 // A pin, not a correctness check: with no lane-id, every annotation and
-// output must be byte-for-byte what main's step wrote, so no existing reader
-// sees a change. The expected values were recorded from main (df32b1c) for
-// these exact inputs; a handoff input changes nothing without a record.
+// output is the sentence alone, with no record and no legacy `key=value`
+// token (docs/lane-outcome.md, Compatibility); a handoff input changes
+// nothing without a record.
 const MAIN_OUTPUT = {
   "success": {
     "outputs": {
@@ -1212,7 +1244,7 @@ const MAIN_OUTPUT = {
     "errors": [],
     "warnings": [],
     "notices": [
-      "Claude review completed: credential=CLAUDE_CODE_OAUTH_TOKEN turns=4 max-turns=30 models=claude-sonnet-5. Findings (if any) are in the PR comments."
+      "Claude review completed. Findings (if any) are in the PR comments."
     ],
     "failed": []
   },
@@ -1225,7 +1257,7 @@ const MAIN_OUTPUT = {
     },
     "errors": [],
     "warnings": [
-      "Claude review concluded: success class=skipped-validation credential=CLAUDE_CODE_OAUTH_TOKEN with no execution evidence — the action skipped itself before running (workflow-validation skip: the caller's workflow file must match the default branch's copy). Nothing was reviewed."
+      "Claude review concluded: success, skipped-validation, with no execution evidence — the action skipped itself before running (workflow-validation skip: the caller's workflow file must match the default branch's copy). Nothing was reviewed."
     ],
     "notices": [],
     "failed": []
@@ -1238,7 +1270,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review concluded: success class=incomplete credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 — no completed review was found: no summary."
+      "Claude review concluded: success, incomplete — no completed review was found: no summary."
     ],
     "warnings": [],
     "notices": [],
@@ -1252,7 +1284,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: failure class=credit-stop error-type=billing_error request-id=req_fake0000000000000000 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 max-turns=30 models=claude-sonnet-5 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}"
+      "Claude review exited with: failure, credit-stop (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":null,\"error_type\":null,\"class\":\"other\"}"
     ],
     "warnings": [],
     "notices": [],
@@ -1267,7 +1299,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "AI review skipped: usage limit reached; re-run after it resets (Claude review exited with: failure class=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":null,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":429,\"error_type\":null,\"class\":\"rate-limit\"}"
+      "AI review skipped: usage limit reached; re-run after it resets (Claude review exited with: failure, rate-limit). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":null,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":429,\"error_type\":null,\"class\":\"rate-limit\"}"
     ],
     "warnings": [],
     "notices": [],
@@ -1281,7 +1313,7 @@ const MAIN_OUTPUT = {
     "errors": [],
     "warnings": [],
     "notices": [
-      "Claude review completed: credential=CLAUDE_CODE_OAUTH_TOKEN turns=1000000. Findings (if any) are in the PR comments."
+      "Claude review completed. Findings (if any) are in the PR comments."
     ],
     "failed": []
   },
@@ -1293,7 +1325,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: failure class=auth error-type=permission_error error-code=abc_def request-id=req_abcdefgh12 credential=AUTOMATIONS_CLAUDE_API_KEY turns=1 (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}"
+      "Claude review exited with: failure, auth (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: {\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1,\"duration_ms\":null,\"total_cost_usd\":null,\"api_error_status\":403,\"error_type\":null,\"class\":\"auth\"}"
     ],
     "warnings": [],
     "notices": [],
@@ -1307,7 +1339,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: cancelled class=no-execution credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: (no execution file was produced)"
+      "Claude review exited with: cancelled, no-execution (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: (no execution file was produced)"
     ],
     "warnings": [],
     "notices": [],
@@ -1321,7 +1353,7 @@ const MAIN_OUTPUT = {
       "review_ran": "false"
     },
     "errors": [
-      "Claude review exited with: skipped class=sandbox-unavailable credential=CLAUDE_CODE_OAUTH_TOKEN (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: (no execution file was produced)"
+      "Claude review exited with: skipped, sandbox-unavailable (infrastructure error, not a code-quality signal — e.g. usage limit, OIDC failure, SDK crash, or is_error result). Last SDK result: (no execution file was produced)"
     ],
     "warnings": [],
     "notices": [],
@@ -1329,7 +1361,7 @@ const MAIN_OUTPUT = {
   }
 };
 
-test("with no lane-id, every branch writes exactly what main wrote", async () => {
+test("with no lane-id, every branch writes its sentence alone", async () => {
   const creditStopText =
     'API Error: 402 {"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low"},"request_id":"req_fake0000000000000000"}';
   const files = {};
@@ -1363,10 +1395,10 @@ test("with no lane-id, every branch writes exactly what main wrote", async () =>
   }
 });
 
-test("past six digits of turns the tokens keep the count and the record leaves it out", async () => {
+test("past six digits of turns the record leaves the count out", async () => {
   const file = writeExecutionFile([{ type: "result", subtype: "success", is_error: false, num_turns: 1000000 }]);
   const { notices } = await runOutcome({ outcome: "success", executionFile: file, laneId: "pr-review", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
-  assert.match(notices[0], /\bturns=1000000\b/u);
+  assert.doesNotMatch(notices[0], /1000000/u);
   assert.equal("turns" in readRecord(notices[0]), false);
 });
 
@@ -1390,8 +1422,7 @@ test("with 45 long model ids the record still ends inside the runner's 4,096-cha
     maxTurns: "999999",
   });
   assert.equal(errors.length, 1);
-  const tokenModels = /\bmodels=(\S+)/u.exec(errors[0])[1].split(",");
-  assert.equal(tokenModels.length, MAX_MODELS);
+  assert.doesNotMatch(errors[0], LEGACY_TOKEN);
   const cut = errors[0].slice(0, 4096);
   const record = readRecord(cut);
   assert.notEqual(record, null);
@@ -1440,7 +1471,7 @@ test("a handoff from a caller with lane-id is a notice even when no record can b
     });
     assert.equal(errors.length, 0, credential);
     assert.equal(notices.length, 1, credential);
-    assert.match(notices[0], /\bclass=rate-limit\b/u, credential);
+    assert.match(notices[0], /exited with: failure, rate-limit\)/u, credential);
     assert.equal(readRecord(notices[0]), null, credential);
     assert.deepEqual(warnings, ["Claude review wrote no lane record: credential is empty or invalid."], credential);
   }
@@ -1583,15 +1614,16 @@ test("a run-context field is absent, not guessed, when its input is missing or o
   assert.equal("runId" in forged || "traceId" in forged || "spanId" in forged, false);
 });
 
-test("a caller class outside the closed enum is other in the record and unchanged in the legacy token", async () => {
-  const { errors } = await runOutcome({
+test("a caller class outside the closed enum is other in the record and unchanged in the sentence and output", async () => {
+  const { errors, outputs } = await runOutcome({
     outcome: "failure",
     executionFile: "",
     laneId: "pr-review",
     credential: "CLAUDE_CODE_OAUTH_TOKEN",
     knownFailureClass: "brand-new-class",
   });
-  assert.match(errors[0], /\bclass=brand-new-class\b/u);
+  assert.match(errors[0], /exited with: failure, brand-new-class \(/u);
+  assert.equal(outputs.failure_class, "brand-new-class");
   const record = readRecord(errors[0]);
   assert.equal(record.class, "other");
   assert.deepEqual(schemaErrors(schema, record), []);

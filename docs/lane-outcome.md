@@ -3,15 +3,15 @@
 The lane-outcome record is the public contract for how a Claude lane reports
 the outcome of one credential attempt, and the one lane record for every lane,
 the claude-code-plugins hub lanes included. ci-workflows owns it. Readers outside
-this repository, such as claude-code-account-rotation's limit-stop check, build
-to this page and to the JSON Schema
+this repository, such as claude-code-plugins' pr-unblock `limit-stop.mjs` and
+babysit merge gate, build to this page and to the JSON Schema
 [`schemas/lane-outcome.v1.schema.json`](../schemas/lane-outcome.v1.schema.json).
 
 Every lane workflow emits one record per credential attempt. Each handoff
 adds one: the attempt that handed off writes its record with
 `handoff: true`, and the next attempt writes its own. The next attempt's record is written only when its credential is named
 (for the review lanes, `fallback-credential-name` set); otherwise that attempt
-writes the legacy tokens and a warning. Intake's key leg hands off to the
+writes its sentence and a warning. Intake's key leg hands off to the
 subscription leg on a credit stop or a rejected key; a review lane's first
 token hands off to its fallback token at a usage limit. On the run-claude-cli
 lanes, a subscription leg hands off to the fallback leg, on the org secret
@@ -43,8 +43,8 @@ A reader MAY treat a record that breaks this rule as unreadable.
 
 The record is in a check-run annotation message:
 
-1. One short human sentence. It carries the legacy `key=value` tokens
-   (`class=`, `credential=`, `turns=` and the rest).
+1. One short human sentence. It may name the class in words; a reader does
+   not parse it.
 2. The marker `lane-outcome` and one space, followed by one JSON
    object ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)).
 3. Any free text, such as `Last SDK result: ...`.
@@ -62,12 +62,11 @@ whatever `handoff` says.
 A record is at most 1,024 characters. The runner cuts a workflow-command
 annotation message at 4,096 characters
 ([actions/runner `ExecutionContext.cs`](https://github.com/actions/runner/blob/main/src/Runner.Worker/ExecutionContext.cs)).
-The record comes before the free text, and the legacy sentence before it is
-short, so the cut does not reach the record. The sentence's `models=` token
-and the record's `models` list each name at most 8 models; the run's other
-models are left out. An emitter whose record would pass 1,024 characters
-drops `models`, then `usage`, then `windows`, then `githubCalls`, until it
-fits.
+The record comes before the free text, and the sentence before it is short,
+so the cut does not reach the record. The record's `models` list names at
+most 8 models; the run's other models are left out. An emitter whose record
+would pass 1,024 characters drops `models`, then `usage`, then `windows`,
+then `githubCalls`, until it fits.
 
 ## Examples
 
@@ -88,7 +87,7 @@ key leg that hands off writes its own record with `handoff: true`:
 ```
 
 The subscription leg after that handoff, whose record carries the fallback
-reason, then a review lane under the legacy single token:
+reason, then a review lane on the single `CLAUDE_CODE_OAUTH_TOKEN` secret:
 
 ```json
 {"v":1,"lane":"intake-triage","outcome":"success","credential":{"secret":"AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN","kind":"oauth-token","role":"AUTOMATIONS"},"fallback":{"reason":"credit-stop"},"turns":5,"models":["claude-sonnet-5"]}
@@ -106,7 +105,7 @@ A whole annotation message, with the record between the sentence and the free
 text:
 
 ```text
-AI review skipped: usage limit reached; re-run after it resets (Claude review exited with: failure class=rate-limit resets=2026-10-22T05:00:00Z resets-window=five_hour credential=CLAUDE_CODE_OAUTH_TOKEN). lane-outcome {"v":1,"lane":"pr-review","outcome":"failure","class":"rate-limit","credential":{"secret":"CLAUDE_CODE_OAUTH_TOKEN","kind":"oauth-token"},"resets":{"at":"2026-10-22T05:00:00Z","window":"five_hour"}} Last SDK result: {...}
+AI review skipped: usage limit reached; re-run after it resets (Claude review exited with: failure, rate-limit). lane-outcome {"v":1,"lane":"pr-review","outcome":"failure","class":"rate-limit","credential":{"secret":"CLAUDE_CODE_OAUTH_TOKEN","kind":"oauth-token"},"resets":{"at":"2026-10-22T05:00:00Z","window":"five_hour"}} Last SDK result: {...}
 ```
 
 ## Fields
@@ -232,7 +231,7 @@ reader that warns about limit stops counts both.
 
 `report-lane-outcome` writes the record only when `lane-id` matches its
 pattern and `credential` matches its pattern and maps to a kind. Otherwise it
-writes the legacy tokens alone. When `lane-id` is set, it also writes a
+writes the sentence alone. When `lane-id` is set, it also writes a
 warning naming what is missing; with `lane-id` empty it writes no warning,
 whether or not `credential` is set.
 
@@ -247,10 +246,11 @@ as a check run the caller posts itself.
 - A reader ignores fields and class values it does not know.
 - Removing a field, renaming it, changing its meaning, or adding an `outcome`
   value bumps `v`.
-- A reader that meets a `v` it does not know treats the JSON as unreadable and
-  uses the legacy tokens.
-- Emitters keep writing the legacy `key=value` tokens in the human sentence
-  until an org architecture decision retires them.
+- A reader that meets a `v` it does not know treats the JSON as unreadable.
+- The human sentence carries no `key=value` tokens (`class=`,
+  `credential=`, `fallback=`, `turns=`, `max-turns=`, `models=`, `resets=`,
+  `resets-window=`, `error-type=`, `error-code=`, `request-id=`); the org
+  decision on architecture#7 retired them. A reader reads the record.
 
 The run-context fields, `durationMs` and the closed `class` enum are additive
 under these rules, so the record stays `v: 1`. Records written before them
@@ -264,15 +264,14 @@ add one.
 
 The same failure class is written in several places under different names.
 Each maps to the record's `class` with no change of value, except where noted.
-They are retired over a deprecation window; none changes in the slice that
-adds this section.
+They are retired over a deprecation window, one row at a time.
 
 | Spelling | Where | Plan |
 |---|---|---|
-| `class=<token>` | the legacy sentence before the record | kept until the org decision above; readers move to `class` |
+| `class=<token>` and the other legacy `key=value` tokens | the sentence before the record | retired: `report-lane-outcome` no longer writes them; readers read the record |
 | `failure-class` output, `failure_class` step output | `report-lane-outcome` | kept as the action's interface; readers of annotations read `class` |
 | `failure-class=` | hub annotation and log text | readers move to `class` |
-| hub `CLASSES` and `lane=... activity=... class=` summary line | claude-code-plugins `.github/actions/report-check-run/lane-record.mjs` | replaced by this record on the hub lanes; its set lacks `credit-stop` |
+| hub `CLASSES` and `lane=... activity=... class=` summary line | claude-code-plugins `.github/actions/report-check-run/lane-record.mjs` | retired: claude-code-plugins#14216 removed it, and the hub lanes carry this record |
 | `known-failure-class` mapped from `credit-stop` to `rate-limit` | hub lane workflows | pass `credit-stop` through, so the record says `credit-stop` |
 | `outcome=` | the hub work-resolve-issue lane | replaced by this record |
 

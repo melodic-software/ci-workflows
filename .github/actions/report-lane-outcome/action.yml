@@ -7,35 +7,30 @@ description: >-
   with only a warning annotation when the caller's workflow file differs from
   the default branch's copy, so the step concludes green while nothing ran
   and nothing was reviewed (ci-workflows#363); that shape gets the distinct
-  `class=skipped-validation` warning annotation so the silent no-review is
-  machine-visible, with review-failed staying false (the skip is expected on
+  skipped-validation warning annotation so the silent no-review is
+  visible, with review-failed staying false (the skip is expected on
   exactly the PRs that edit the caller workflow, and self-corrects on merge)
   and review-ran false (so callers do not count or credit a review that never
   happened). With require-completion, a success with evidence counts only
   when the lane's completion check says "complete"; anything else is a red
-  `class=incomplete`, or `class=review-unposted` when completion-class says
+  incomplete, or review-unposted when completion-class says
   the session returned no review to post. With detect-failed-shell, a
   success whose allowed Bash calls all failed, at least
   failed-shell-min-calls of them, stays a
-  success with a `class=shell-failed` warning and `shellFailed: true` in
+  success with a shell-failed warning and `shellFailed: true` in
   the record. On any other outcome it projects the last SDK result message
   from the execution file into safe, structured metadata (classify.cjs — the
   sole reader of the file's free-text fields; see its header for the
-  projection and classification contract), emits the machine-readable
-  `class=<token>` ::error annotation, and
-  records the failure class and detail. Every annotation it writes,
-  a success notice included, carries the run record as bare tokens:
-  `turns=`, `max-turns=`, `credential=`, `fallback=`, `models=` (the result
-  message's modelUsage keys, at most 8), on class rate-limit `resets=<ISO>` and
-  `resets-window=<rateLimitType>` from the newest rejected
-  rate_limit_event, and on a failure the API error body's `error-type=`,
-  `error-code=` and `request-id=` when a run with no model output carries
-  them, each checked against a closed pattern; an unknown value is
-  omitted. With `lane-id` and a credential it maps to a kind, every
-  annotation also carries the lane-outcome record after its first
-  sentence: the marker `lane-outcome ` and one JSON object
-  (docs/lane-outcome.md). Without a record it writes the tokens alone, and
-  adds a warning naming what is missing only when lane-id is set. Runs
+  projection and classification contract), emits an ::error annotation
+  naming the failure class, and records the failure class and detail.
+  With `lane-id` and a credential it maps to a kind, every annotation, a
+  success notice included, carries the lane-outcome record after its
+  first sentence: the marker `lane-outcome ` and one JSON object
+  (docs/lane-outcome.md) holding the class, credential, fallback reason,
+  turns, turn cap, models, resets and API error facts, each checked
+  against a closed pattern. Without a record it writes the sentence
+  alone, and adds a warning naming what is missing only when lane-id is
+  set. Runs
   entirely on the github-script Node runtime — no jq or other runner-image
   tool dependency.
 
@@ -90,7 +85,7 @@ inputs:
       made at least failed-shell-min-calls Bash calls it was allowed to
       make and every one returned an error (a sandbox that would not start
       fails them all). That run stays a success (review-failed "false",
-      review-ran "true", no failure-class) with a `class=shell-failed`
+      review-ran "true", no failure-class) with a shell-failed
       warning and `shellFailed: true` in the record, so a runner fault never
       holds merges. A denied call is not counted. A require-completion `incomplete` is reported
       first. Empty keeps the plain success rule.
@@ -122,9 +117,8 @@ inputs:
   credential:
     description: >-
       Name (never the value) of the secret the run authenticated with, e.g.
-      CLAUDE_CODE_OAUTH_TOKEN. Printed as `credential=<name>` on the lane's
-      annotation line; empty, or anything but an upper-case secret name, is
-      omitted.
+      CLAUDE_CODE_OAUTH_TOKEN. The record's `credential.secret`; empty, or
+      anything but a Claude credential's secret name, writes no record.
     required: false
     default: ""
   fallback-reason:
@@ -134,9 +128,9 @@ inputs:
       credential with status 401, disabled or deleted, or 402, billing; a
       403 hands off nothing), `no-key` (the key was empty) or `limit-stop`
       (the subscription leg hit a usage limit, so the fallback leg ran);
-      run-claude-cli's handoff-reason output gives it. Printed as
-      `fallback=<reason>` right after `credential=`. Empty prints nothing;
-      any other value fails the step before it reports.
+      run-claude-cli's handoff-reason output gives it. The record's
+      `fallback.reason`. Empty adds nothing; any other value fails the step
+      before it reports.
     required: false
     default: ""
   install-outcome:
@@ -148,8 +142,8 @@ inputs:
     default: ""
   max-turns:
     description: >-
-      The run's --max-turns cap, printed as `max-turns=<n>` beside
-      `turns=<n>` so turn headroom shows per run. A failed run whose result
+      The run's --max-turns cap, the record's `maxTurns` beside `turns`,
+      so turn headroom shows per run. A failed run whose result
       reports more turns than this cap classifies as `max-turns`. Empty or
       non-numeric is omitted.
     required: false
@@ -292,18 +286,16 @@ runs:
           const outcome = process.env.LANE_OUTCOME ?? "";
           const lane = process.env.LANE_NAME ?? "Claude review";
           const executionFile = process.env.EXECUTION_FILE ?? "";
-          // The run record (turns, max-turns, credential, models, and on a
-          // limit stop resets) rides on the same annotation line as class=.
-          // Token usage and windows come from the scanned log alone.
+          // The run's facts (turns, max-turns, credential, models, and on a
+          // limit stop resets) for the record. Token usage and windows come
+          // from the scanned log alone.
           const runRecord = {
             ...readRunRecord(executionFile),
             ...readLegLog(process.env.LOG_FILE ?? ""),
           };
-          // One report per annotation: the legacy tokens, which ride on the
-          // same line as class=, and the lane-outcome record, placed after
-          // the message's first sentence and before any free text, so the
-          // runner's 4,096-character cut does not reach it while the
-          // sentence's models= token stays short.
+          // One lane-outcome record per annotation, placed after the
+          // message's first sentence and before any free text, so the
+          // runner's 4,096-character cut does not reach it.
           const laneId = process.env.LANE_ID ?? "";
           const credential = process.env.CREDENTIAL ?? "";
           // The run id, attempt, trace and span ids, and the job's GitHub
@@ -316,16 +308,15 @@ runs:
             credential,
             budgetDir: process.env.API_BUDGET_DIR ?? "",
           });
-          // `failureClass` builds the tokens as they have always been built;
-          // `recordClass` is the record's class where the tokens carry none.
-          // With no record every message is what it was before the record.
+          // `failureClass` is the step's own failure class; `recordClass` is
+          // the record's class where the step reports none.
           const report = (
             stepOutcome,
             failureClass = "",
             recordClass = failureClass,
             { shellFailed = false } = {},
           ) => {
-            const { tokens, record, missing } = laneReport(runRecord, {
+            const { record, missing } = laneReport(runRecord, {
               laneId,
               outcome: stepOutcome,
               failureClass,
@@ -350,7 +341,6 @@ runs:
             if (record !== null) core.setOutput("record", JSON.stringify(record));
             const line = recordText(record);
             return {
-              tokens: tokens === "" ? "" : ` ${tokens}`,
               before: line === "" ? "" : `${line} `,
               after: line === "" ? "" : ` ${line}`,
             };
@@ -364,9 +354,9 @@ runs:
               // "complete" is red with no review-ran, as completion-class.
               const completion = process.env.COMPLETION ?? "";
               if (process.env.REQUIRE_COMPLETION === "true" && completion !== "complete") {
-                const { tokens, after } = report(outcome, "", completionClass);
+                const { after } = report(outcome, "", completionClass);
                 core.error(
-                  `${lane} concluded: ${outcome} class=${completionClass}${tokens} — no completed ` +
+                  `${lane} concluded: ${outcome}, ${completionClass} — no completed ` +
                     `review was found: ${completion || "the completion check reported nothing"}.${after}`,
                 );
                 core.setOutput("failure_class", completionClass);
@@ -388,18 +378,17 @@ runs:
               // hold every calling repository's merges, so a shell-failed
               // run stays green and is only flagged.
               if (failedShell > 0) {
-                const { tokens, before } = report(outcome, "", "", { shellFailed: true });
+                const { before } = report(outcome, "", "", { shellFailed: true });
                 core.warning(
-                  `${lane} completed with class=shell-failed${tokens}: all ` +
+                  `${lane} completed, shell-failed: all ` +
                     `${failedShell} allowed Bash call(s) failed, so the review ran ` +
                     `with no working shell. ${before}Findings (if any) are in the PR comments.`,
                 );
               } else {
                 // A notice, so the record reaches the check run on a success too.
-                const { tokens, before } = report(outcome);
+                const { before } = report(outcome);
                 core.notice(
-                  `${lane} completed:${tokens || " (no run record)"}. ` +
-                    `${before}Findings (if any) are in the PR comments.`,
+                  `${lane} completed. ${before}Findings (if any) are in the PR comments.`,
                 );
               }
               core.setOutput("review_failed", "false");
@@ -411,15 +400,15 @@ runs:
             // guard exits 0 when the caller's workflow file differs from the
             // default branch's copy (any PR editing the caller hits this, as
             // does the PR first adding it). Nothing was reviewed, so this must
-            // not read as a review: the class token below makes the shape
-            // machine-visible on the check run, where a skip would otherwise
-            // leave no `class=` annotation at all. A warning, and
+            // not read as a review: the warning and the record's class make
+            // the shape visible on the check run, where a skip would
+            // otherwise leave no annotation at all. A warning, and
             // review_failed stays false: the skip is expected and
             // self-correcting on the PRs that edit the caller. The lanes'
             // status steps still go red on this class, since nothing ran.
-            const { tokens, before } = report(outcome, "", "skipped-validation");
+            const { before } = report(outcome, "", "skipped-validation");
             core.warning(
-              `${lane} concluded: ${outcome} class=skipped-validation${tokens} with no ` +
+              `${lane} concluded: ${outcome}, skipped-validation, with no ` +
                 "execution evidence — the action skipped itself before running " +
                 "(workflow-validation skip: the caller's workflow file must " +
                 `match the default branch's copy). ${before}Nothing was reviewed.`,
@@ -448,19 +437,18 @@ runs:
             ? known
             : classified.failureClass;
 
-          // `class=<token>` is a machine-readable term, not prose: this
-          // annotation is the detection surface a receiver polls through the
-          // check-run API, so keep it bare and greppable.
+          // A reader polls this annotation through the check-run API and
+          // reads its record (docs/lane-outcome.md), not the sentence.
           //
           // The disclaimer names what the failure is NOT, so the noun must
           // match the lane: a security lane's infra failure is not a
           // security signal, any other lane's is not a code-quality signal.
           // Derived from the lane name so callers need no extra wiring.
           const signal = /security/iu.test(lane) ? "security" : "code-quality";
-          const { tokens, before } = report(outcome, failureClass);
+          const { before } = report(outcome, failureClass);
           // A usage limit stays an error (the check goes red) but reads as a
-          // skipped run; the `class=rate-limit` token is unchanged. A lane
-          // that is not a review (intake triage) names itself instead.
+          // skipped run. A lane that is not a review (intake triage) names
+          // itself instead.
           const skipped = /review/iu.test(lane) ? "AI review" : lane;
           // An attempt that handed off is not the run's failure: the next
           // credential carries the run, so a caller that opted in with
@@ -472,14 +460,14 @@ runs:
           annotate(
             failureClass === "rate-limit"
               ? `${skipped} skipped: usage limit reached; re-run after it resets ` +
-                  `(${lane} exited with: ${outcome} class=rate-limit${tokens}). ` +
+                  `(${lane} exited with: ${outcome}, rate-limit). ` +
                   `${before}Last SDK result: ${reviewDetail}`
               : failureClass === "max-turns"
                 ? `${lane} stopped: turn budget used ` +
-                    `(${lane} exited with: ${outcome} class=max-turns${tokens}); ` +
+                    `(${lane} exited with: ${outcome}, max-turns); ` +
                     "the work is too big for one run, split it. " +
                     `${before}Last SDK result: ${reviewDetail}`
-                : `${lane} exited with: ${outcome} class=${failureClass}${tokens} ` +
+                : `${lane} exited with: ${outcome}, ${failureClass} ` +
                     `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
                     "OIDC failure, SDK crash, or is_error result). " +
                     `${before}Last SDK result: ${reviewDetail}`,

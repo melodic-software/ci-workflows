@@ -391,7 +391,7 @@ test("a success with no summary concludes incomplete, writes no marker and emits
   assert.equal(composite.outputs.review_failed, "true");
   assert.equal(composite.outputs.review_ran, "false");
   assert.equal(composite.errors.length, 1);
-  assert.match(composite.errors[0], /\bclass=incomplete\b/u);
+  assert.match(composite.errors[0], /: success, incomplete — /u);
 
   // The marker step runs only on review-ran == 'true'.
   assert.match(

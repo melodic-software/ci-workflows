@@ -1481,11 +1481,12 @@ parent secret.
 
 **Usage-limit fallback.** Both lanes accept an optional second secret,
 `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`. When the first attempt stops on a usage
-limit (`class=rate-limit`), the job retries the review once on that token, in
+limit (class `rate-limit`), the job retries the review once on that token, in
 the same job and inside the review step's budget, before the report steps; the
 completion record then ends with the field `account=fallback`. The first
-attempt's usage limit writes its own handoff notice, with `class=rate-limit`
-and the primary's credential (`credential-name`), and the final report covers
+attempt's usage limit writes its own handoff notice, whose lane-outcome record
+has class `rate-limit` and the primary's credential (`credential-name`), and
+the final report covers
 the fallback attempt and names the run's class. Without the secret the job
 makes one attempt.
 
@@ -1688,19 +1689,15 @@ which bounds that only when inline comments exist. A count below the summary's
 their number, with a log line. A failed, skipped or
 incomplete review leaves no notice.
 A `rate-limit` failure stays red but reads "AI review skipped: usage limit
-reached; re-run after it resets" (the `class=rate-limit` token is unchanged).
+reached; re-run after it resets".
 A `max-turns` failure stays red but reads "<lane> stopped: turn budget used",
-a sizing stop rather than an infrastructure error (the `class=max-turns` token
-is unchanged).
+a sizing stop rather than an infrastructure error.
 Every outcome annotation, and a notice on a run that completed, also carries
-the run record as bare tokens, each omitted when unknown: `turns=<n>`,
-`max-turns=<n>` (the `max-turns` input), `credential=<secret name>` (the
-`credential` input), `fallback=credit-stop`, `fallback=auth` or
-`fallback=no-key` (the `fallback-reason` input, which rejects any other value),
-`models=<modelUsage keys>` and, on `class=rate-limit`,
-`resets=<ISO 8601 UTC>` and `resets-window=<rateLimitType>` from the run's
-newest `rejected` `rate_limit_event` (none without one), the time also
-exposed as the composite's `resets-at` output.
+the lane-outcome record ([docs/lane-outcome.md](docs/lane-outcome.md)): the
+class, the credential, the fallback reason, turns and the turn cap, the
+models and, on `rate-limit`, the reset time and window from the run's newest
+`rejected` `rate_limit_event` (none without one), the time also exposed as
+the composite's `resets-at` output.
 Re-run a failed review with `gh run rerun --failed`. Both checks are advisory
 (github-iac ADR 0011 keeps agentic review advisory, and `ci-status` is the only
 required check); do not make either check required.
