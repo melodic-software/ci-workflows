@@ -1,4 +1,4 @@
-name: Run Claude Cli
+name: Run Claude CLI
 description: >-
   Run one prompt with headless `claude -p` for an agent-mode CI lane, on a
   Linux runner, on exactly one credential: set one of `api-key`,
