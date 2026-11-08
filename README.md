@@ -213,7 +213,7 @@ consumer to audit it.
   `POST` a commit status, and the combined endpoint exposes no author, so a
   forged `ci-lanes=success` plus a label flip would otherwise turn the sole
   required check green over failing lanes. **The status write is load-bearing, not
-  best-effort**: a write still refused after three retries fails the run naming
+  best-effort**: a write still refused after three sends fails the run naming
   the missing permission, because the carry-forward branch reads nothing else and
   a silently missing status turns every later contract-only run red with no way
   to tell a refused write from a failing lane. **The calling job therefore needs
@@ -456,6 +456,15 @@ consumer to audit it.
   `rerun-wait-seconds` and the job's other work must fit the job's
   `timeout-minutes`, and a wait never outlives a GitHub App installation
   token's hour.
+
+  **Other failed calls and repeated reads.** A call is sent at most three
+  times. A 5xx or a network error is sent again after a full-jitter wait (0 to
+  4 seconds, then 0 to 8) when a resend cannot do a write twice: a read, a
+  GraphQL query, a label add, or the status write, which posts the same state
+  again. A comment create and a re-run request are never sent again, and any
+  other 4xx fails at once. A repeated REST read that GitHub answered with an
+  `etag` sends it as `If-None-Match`, and a `304` reuses the body read before;
+  the paginated status list sends none.
 
   ```yaml
   jobs:
