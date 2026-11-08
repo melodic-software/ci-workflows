@@ -35,11 +35,21 @@ function refusal(status, headers = {}, message = "Forbidden") {
 
 // `failures` maps paginate, getLabel and addLabels to the errors each throws,
 // in order, before it succeeds.
-async function label(liveLabels, { failures = {}, waitCap = "600" } = {}) {
+async function label(
+  liveLabels,
+  {
+    failures = {},
+    waitCap = "600",
+    priorityField = "",
+    fieldIds = [],
+    fieldFails = false,
+  } = {},
+) {
   const env = {
     TARGET_LABEL: "needs-triage",
     LABEL_PREFIX: "priority:",
     HUMAN_LABEL: "needs-human",
+    PRIORITY_FIELD_ID: priorityField,
     RATE_LIMIT_WAIT_SECONDS: waitCap,
   };
   const original = Object.fromEntries(
@@ -62,6 +72,10 @@ async function label(liveLabels, { failures = {}, waitCap = "600" } = {}) {
   try {
     const github = {
       hook: { after: () => {}, error: () => {} },
+      request: async () => {
+        if (fieldFails) throw new Error("field read failed");
+        return { data: fieldIds.map((id) => ({ issue_field_id: id })) };
+      },
       paginate: async () =>
         answer("paginate", () => {
           if (liveLabels === null) throw new Error("socket hang up");
@@ -129,6 +143,36 @@ test("a late run skips an issue the lane already gave a priority", async () => {
 
 test("a late run skips an issue the lane routed to a person", async () => {
   assert.deepEqual((await label(["needs-human"])).added, []);
+});
+
+test("an issue with a Priority field value skips the floor", async () => {
+  const { added } = await label([], {
+    priorityField: "49622037",
+    fieldIds: [49622037],
+  });
+  assert.deepEqual(added, []);
+});
+
+test("another field's value does not skip the floor", async () => {
+  const { added } = await label([], {
+    priorityField: "49622037",
+    fieldIds: [15462270],
+  });
+  assert.deepEqual(added, ["needs-triage"]);
+});
+
+test("an unreadable Priority field falls back to the labels", async () => {
+  const withLabel = await label(["priority: high"], {
+    priorityField: "49622037",
+    fieldFails: true,
+  });
+  assert.deepEqual(withLabel.added, []);
+  assert.equal(withLabel.warnings.length, 1);
+  const without = await label([], {
+    priorityField: "49622037",
+    fieldFails: true,
+  });
+  assert.deepEqual(without.added, ["needs-triage"]);
 });
 
 test("a 429 with retry-after waits that many seconds, then adds the floor", async () => {
