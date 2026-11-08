@@ -1113,8 +1113,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   required check pass. It never merges directly. All gates must hold: the PR
   author and the event sender are account id `49699333` (dependabot[bot]);
   fetch-metadata succeeded; every update is `github_actions` or, unless the
-  caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`
-  (docker, uv, dotnet-sdk and other ecosystems stay manual); every GitHub
+  caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip`, `uv` or
+  `nuget` (docker, dotnet-sdk and other ecosystems stay manual); every GitHub
   Actions dependency name matches a glob in the caller's `publisher-allowlist`
   JSON array (default `["actions/*","github/*","anthropics/*"]`, mirroring
   standards `dependabot-policy` `autoMerge`; an input that is not a JSON array
