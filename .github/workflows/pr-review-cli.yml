@@ -22,7 +22,7 @@ name: pr-review-cli
 #         # request against this grant at startup, so summary mode needs it
 #         # too, though it writes nothing.
 #         permissions:
-#           actions: read         # check-key-credit reads its marker; the status job reads this workflow's runs
+#           actions: write        # check-key-credit reads its marker; the status job reads this workflow's runs and re-runs ci-status after a hold
 #           checks: read          # the status job reads its earlier runs' cost notices
 #           contents: read
 #           pull-requests: write
@@ -205,7 +205,12 @@ name: pr-review-cli
 #     list of 300 or more files
 #     keeps the cost hold. The other criteria still hold. The reason is
 #     model text: HTML comments are stripped and the publish gate withholds
-#     a credential-shaped one.
+#     a credential-shaped one. A label added with GITHUB_TOKEN starts no
+#     workflow run, so once it is on, the status job re-runs the
+#     ci-status-job job of the newest completed ci-status-workflow run on
+#     the head when that job passed, with actions: write; the re-run
+#     reads the label. It skips while a run of that workflow on the head is
+#     in flight, and a refused re-run only warns.
 #
 # REVIEW CADENCE: as pr-review.yml's header states, with this lane's marker:
 # whole pull request on open, reopen and ready; after a push, the files
@@ -311,6 +316,17 @@ on:
           finding. Empty turns holds off.
         type: string
         default: ""
+      ci-status-workflow:
+        description: >-
+          The file name of the caller's workflow that runs the required
+          ci-status check. After a hold, the status job re-runs that check's
+          job on the head so it reads the label.
+        type: string
+        default: pr-require-checks.yml
+      ci-status-job:
+        description: The name of the required check's job in ci-status-workflow.
+        type: string
+        default: ci-status
       hold-paths:
         description: >-
           Newline-separated path globs, as docs-only-paths. The prompt asks
@@ -7062,7 +7078,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 22
     permissions:
-      actions: read # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head
+      actions: write # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head, and re-runs ci-status after a hold
       checks: read # and those status jobs' cost notices (check-run annotations)
       contents: read
       pull-requests: write # the review, its inline comments, the lane's marker comment and the hold label
@@ -7268,6 +7284,8 @@ jobs:
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           STATUS_JOB: ${{ inputs.lane == 'security' && 'security-review' || 'claude-review-status' }}
+          CI_WORKFLOW: ${{ inputs.ci-status-workflow }}
+          CI_STATUS_JOB: ${{ inputs.ci-status-job }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}

@@ -571,7 +571,7 @@ test("each run shape spends the requests pinned here, reading the file list once
     "an incremental review with an inline comment": 10,
     "a no-change skip after a base-branch merge": 8,
     "a whole review that changes a hold-paths file and holds nothing": 8,
-    "a whole review that returns a critical-security hold": 11,
+    "a whole review that returns a critical-security hold": 12, // the hold adds one ci-status run list, which finds no run
   });
 });
 

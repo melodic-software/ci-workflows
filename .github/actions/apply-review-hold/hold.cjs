@@ -2,9 +2,11 @@
 // HOLD_LABEL, LANE_ID, STATUS_JOB (the name of the status job this step runs
 // in, whose earlier runs' notices give a cost decision's decided head),
 // PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
-// counts), and the legs' KEY_* and SUB_* outputs that publish-review's judge
-// reads. It only adds: the label and one marker comment. Every write goes
-// through issues.addLabels or issues.createComment.
+// counts), CI_WORKFLOW and CI_STATUS_JOB (the workflow file and job name of
+// the required ci-status check), and the legs' KEY_* and SUB_* outputs that
+// publish-review's judge reads. It only adds: the label and one marker
+// comment, through issues.addLabels or issues.createComment, then asks for one
+// ci-status job re-run (rerunCiStatus).
 "use strict";
 
 const { judge, loadGate, scan, stripHtml } = require("../publish-review/publish.cjs");
@@ -425,6 +427,81 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     : { carry: false, why: `the net diff against ${base} differs from the decided head ${decided}` };
 }
 
+// The labeled event of a label added with GITHUB_TOKEN starts no workflow
+// run (https://docs.github.com/en/actions/concepts/security/github_token), so
+// a green ci-status on the head would stay green under the hold. This
+// re-runs the ci-status job of the newest completed run of CI_WORKFLOW on the
+// head when that job passed; the re-run reads the live labels. Only the job
+// is re-run, never the whole run: in a workflow that also runs this review a
+// whole-run re-run would review again and re-enter this step. It skips while
+// any run of that workflow on the head is in flight, this one included: a
+// re-run joins the pull request's concurrency group and could cancel it. One
+// list read, one jobs read per run up to MAX_CI_RUNS, one head read and one
+// re-run request. Every failure warns and never fails the hold: a repository
+// must never be stopped by this step. Needs actions: write.
+const MAX_CI_RUNS = 5;
+async function rerunCiStatus(github, owner, repo, env, runId, core, lane) {
+  const workflow = String(env.CI_WORKFLOW || "pr-require-checks.yml").replace(
+    /^\.github\/workflows\//u,
+    "",
+  );
+  const job = String(env.CI_STATUS_JOB || "ci-status");
+  if (!/^[A-Za-z0-9._-]+\.ya?ml$/u.test(workflow) || !/^[A-Za-z0-9._ -]{1,100}$/u.test(job)) {
+    core.warning(`${lane}: ci-status-workflow or ci-status-job is not usable; ci-status is not re-run.`);
+    return;
+  }
+  const skip = (why) => core.info(`${lane}: ${job} is not re-run: ${why}.`);
+  try {
+    const runs = (
+      (
+        await github.rest.actions.listWorkflowRuns({
+          owner,
+          repo,
+          workflow_id: workflow,
+          head_sha: env.HEAD_SHA,
+          per_page: 100,
+        })
+      ).data?.workflow_runs ?? []
+    )
+      .filter((r) => r?.head_sha === env.HEAD_SHA)
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    const busy = runs.find((r) => r.status !== "completed" || r.id === runId);
+    if (busy) {
+      core.warning(
+        `${lane}: run ${busy.id} of ${workflow} on ${env.HEAD_SHA} is in flight; ${job} is not re-run, so it shows the hold only when it runs again.`,
+      );
+      return;
+    }
+    let found;
+    for (const r of runs.slice(0, MAX_CI_RUNS)) {
+      const jobs =
+        (
+          await github.rest.actions.listJobsForWorkflowRun({
+            owner,
+            repo,
+            run_id: r.id,
+            filter: "latest",
+            per_page: 100,
+          })
+        ).data?.jobs ?? [];
+      found = jobs.find((j) => j?.name === job || String(j?.name).endsWith(` / ${job}`));
+      if (found) break;
+    }
+    if (!found) return skip(`no completed run of ${workflow} on ${env.HEAD_SHA} has it`);
+    if (found.conclusion !== "success")
+      return skip(`its newest run concluded ${found.conclusion}, so it already blocks`);
+    const head = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) }))
+      .data?.head?.sha;
+    if (head !== env.HEAD_SHA) return skip(`the head moved to ${head}, whose runs read the label`);
+    await github.rest.actions.reRunJobForWorkflowRun({ owner, repo, job_id: found.id });
+    core.info(`${lane}: re-ran ${job} (job ${found.id}) so it reads the hold.`);
+  } catch (error) {
+    core.warning(
+      `${lane}: could not re-run ${job}: ${error.message}; it shows the hold only when it runs again.`,
+    );
+  }
+}
+
 async function run({ github, context, core, env = process.env }) {
   const label = env.HOLD_LABEL ?? "";
   if (label === "") {
@@ -501,6 +578,7 @@ async function run({ github, context, core, env = process.env }) {
   }
 
   // Both writes are tried; either failing fails the step afterwards.
+  let labeled = false;
   try {
     await github.rest.issues.addLabels({
       owner,
@@ -508,6 +586,7 @@ async function run({ github, context, core, env = process.env }) {
       issue_number: number,
       labels: [label],
     });
+    labeled = true;
   } catch (error) {
     errors.push(`could not add the ${label} label: ${error.message}`);
   }
@@ -537,6 +616,7 @@ async function run({ github, context, core, env = process.env }) {
   } catch (error) {
     errors.push(`could not post the hold comment: ${error.message}`);
   }
+  if (labeled) await rerunCiStatus(github, owner, repo, env, context.runId, core, lane);
   if (errors.length > 0) throw new Error(`${lane}: ${errors.join("; ")}`);
   core.notice(
     `claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} label=${label}`,

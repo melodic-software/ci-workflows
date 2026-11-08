@@ -629,7 +629,7 @@ jobs:
   pr-review:
     if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
     permissions:
-      actions: read
+      actions: write # the hold step re-runs ci-status after a hold
       checks: read
       contents: read
       pull-requests: write
@@ -649,7 +649,7 @@ jobs:
   pr-review-security:
     if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && (contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) || (github.event.action == 'edited' && github.event.changes.base)) }}
     permissions:
-      actions: read
+      actions: write # the hold step re-runs ci-status after a hold
       checks: read
       contents: read
       pull-requests: write

@@ -1308,9 +1308,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pull-requests: write` in both modes and, in summary mode, does not cancel
   in-progress runs, and grants `actions: read` for the `check-key-credit` job,
   which skips the key job for `key-credit-window-hours` after the key's
-  credit stop, and `actions: read` with `checks: read` for the status job,
-  which reads its earlier runs' cost hold notices. GitHub fails the run at
-  startup when the caller does not grant both. The workflow header carries the canonical caller and
+  credit stop, and `actions: write` with `checks: read` for the status job,
+  which reads its earlier runs' cost hold notices and re-runs `ci-status`
+  after a hold. GitHub fails the run at startup when the caller does not
+  grant both. The workflow header carries the canonical caller and
   the security model. A `workflow_run` caller, such as review after another
   workflow finishes on the pull request, sets `pr-number` and `head-sha`
   (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
@@ -1333,7 +1334,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   comment through `.github/actions/apply-review-hold`. It never removes a
   label, and a failed write turns the check red. The workflow outputs
   `hold` and `hold-criteria`. The hold writes with `pull-requests: write`;
-  create the label in the repository first. A cost hold is not added again
+  create the label in the repository first. A label added with
+  `GITHUB_TOKEN` starts no workflow run, so the status job then re-runs the
+  `ci-status-job` job (default `ci-status`) of the newest completed
+  `ci-status-workflow` run (default `pr-require-checks.yml`) on the head
+  when that job passed, and the re-run reads the label. It skips while a
+  run of that workflow on the head is in flight, which includes a caller
+  that runs this lane inside that workflow, and a refused re-run only
+  warns. A cost hold is not added again
   when a trusted person's recorded cost decision covers the head; the head
   it decided comes from this lane's own `claude-lane-hold` check-run notices
   in earlier runs, never from a comment, which any workflow on

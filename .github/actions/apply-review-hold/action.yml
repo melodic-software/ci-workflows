@@ -6,7 +6,9 @@ description: >-
   critical-security. A trust-gate criterion holds nothing. A hold adds
   HOLD_LABEL and posts one `claude-lane-hold` marker comment with the
   reason. It only adds: it never removes or replaces a label. A failed write
-  fails the step. hold.cjs documents the env it reads.
+  fails the step. Once the label is on it re-runs the head's green ci-status
+  job so the required check reads the hold; a failed re-run only warns. The
+  job needs actions: write for that. hold.cjs documents the env it reads.
 
 outputs:
   hold:

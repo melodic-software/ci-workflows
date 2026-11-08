@@ -111,7 +111,9 @@ const laneOf = ({
 // on the pull request, `deletedItems` a raw timelineItems answer in their
 // place, and `failDeleted` fails that read. `lane` holds this lane's
 // earlier runs (laneOf); `fail.run`, `fail.runs`, `fail.jobs`,
-// `fail.annotations` and `fail.activity` fail those reads.
+// `fail.annotations` and `fail.activity` fail those reads. `ci` holds the
+// ci-status workflow's runs on the head, their jobs by run id and the live
+// head; `fail.ciRuns` and `fail.rerun` fail its list and its re-run.
 function fakeGithub({
   lane = laneOf(),
   files = [],
@@ -132,6 +134,7 @@ function fakeGithub({
   deletions = [],
   deletedItems,
   failDeleted = false,
+  ci = { runs: [], jobs: {} },
 }) {
   const calls = [];
   const refuse = (name) => () => {
@@ -203,15 +206,29 @@ function fakeGithub({
           if (fail.run) throw new Error("HTTP 502");
           return { data: lane.current };
         },
+        // The ci-status workflow is read one page at a time, not through
+        // paginate, so it answers in the REST response shape.
         listWorkflowRuns: (params) => {
           calls.push(["listWorkflowRuns", params]);
+          if (params.workflow_id === "pr-require-checks.yml") {
+            if (fail.ciRuns) throw new Error("HTTP 502");
+            return { data: { workflow_runs: ci.runs } };
+          }
           if (fail.runs) throw new Error("HTTP 502");
           return lane.runs;
         },
         listJobsForWorkflowRun: (params) => {
           calls.push(["listJobs", params]);
+          if (params.run_id in ci.jobs)
+            return { data: { jobs: ci.jobs[params.run_id] } };
           if (fail.jobs) throw new Error("HTTP 502");
           return lane.jobs[params.run_id] ?? [];
+        },
+        reRunJobForWorkflowRun: async (params) => {
+          calls.push(["reRunJob", params]);
+          if (fail.rerun)
+            throw new Error("HTTP 403 Resource not accessible by integration");
+          return { status: 201, data: {} };
         },
       },
       checks: {
@@ -255,7 +272,12 @@ function fakeGithub({
         },
         get: async (params) => {
           calls.push(["get", params]);
-          return { data: { changed_files: changedFiles ?? files.length } };
+          return {
+            data: {
+              changed_files: changedFiles ?? files.length,
+              head: { sha: ci.head ?? HEAD },
+            },
+          };
         },
       },
       issues: {
@@ -516,6 +538,197 @@ test("a failed comment fails the step", async () => {
     },
   );
   assert.match(comment.error.message, /could not post the hold comment/u);
+});
+
+// The ci-status re-run. Shapes from docs.github.com/en/rest/actions:
+// workflow_runs[].id, head_sha, status, created_at; jobs[].id, name,
+// conclusion; POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun.
+const ciRun = (id, createdAt, status = "completed") => ({
+  id,
+  head_sha: HEAD,
+  status,
+  created_at: createdAt,
+});
+const ciJob = (id, conclusion, name = "ci-status") => ({
+  id,
+  name,
+  conclusion,
+});
+const securityHold = () =>
+  baseEnv({
+    KEY_REVIEW: review({
+      hold: { criteria: ["critical-security"], reason: "R" },
+    }),
+  });
+const reruns = (github) => github.calls.filter(([name]) => name === "reRunJob");
+
+test("after the label is added, the newest green ci-status job on the head is re-run", async () => {
+  const { github, core, error } = await apply(securityHold(), {
+    ci: {
+      runs: [
+        ciRun(20, "2026-10-23T10:00:00Z"),
+        ciRun(21, "2026-10-23T11:00:00Z"),
+      ],
+      jobs: {
+        20: [ciJob(201, "success")],
+        21: [ciJob(210, "success", "lint"), ciJob(211, "success")],
+      },
+    },
+  });
+  assert.equal(error, undefined);
+  assert.equal(core.outputs.hold, "true");
+  assert.deepEqual(reruns(github), [
+    ["reRunJob", { owner: "o", repo: "r", job_id: 211 }],
+  ]);
+  const names = github.calls.map(([name]) => name);
+  assert.ok(
+    names.indexOf("addLabels") < names.indexOf("reRunJob"),
+    "label before re-run",
+  );
+  assert.deepEqual(
+    github.calls.find(
+      ([name, p]) => name === "listWorkflowRuns" && p.workflow_id,
+    )[1],
+    {
+      owner: "o",
+      repo: "r",
+      workflow_id: "pr-require-checks.yml",
+      head_sha: HEAD,
+      per_page: 100,
+    },
+  );
+  assert.deepEqual(core.warnings, []);
+});
+
+test("a caller's workflow path and prefixed job name pick the job to re-run", async () => {
+  const { github } = await apply(
+    baseEnv({
+      ...securityHold(),
+      CI_WORKFLOW: ".github/workflows/pr-require-checks.yml",
+      CI_STATUS_JOB: "ci-status",
+    }),
+    {
+      ci: {
+        runs: [ciRun(21, "2026-10-23T11:00:00Z")],
+        jobs: { 21: [ciJob(211, "success", "checks / ci-status")] },
+      },
+    },
+  );
+  assert.deepEqual(reruns(github), [
+    ["reRunJob", { owner: "o", repo: "r", job_id: 211 }],
+  ]);
+});
+
+test("with no green ci-status run on the head nothing is re-run and nothing warns", async () => {
+  for (const [what, ci] of [
+    ["no run", { runs: [], jobs: {} }],
+    [
+      "the newest ci-status failed",
+      {
+        runs: [
+          ciRun(20, "2026-10-23T10:00:00Z"),
+          ciRun(21, "2026-10-23T11:00:00Z"),
+        ],
+        jobs: { 20: [ciJob(201, "success")], 21: [ciJob(211, "failure")] },
+      },
+    ],
+    [
+      "a run with no ci-status job",
+      {
+        runs: [ciRun(21, "2026-10-23T11:00:00Z")],
+        jobs: { 21: [ciJob(210, "success", "lint")] },
+      },
+    ],
+  ]) {
+    const { github, core, error } = await apply(securityHold(), { ci });
+    assert.equal(error, undefined, what);
+    assert.equal(core.outputs.hold, "true", what);
+    assert.deepEqual(reruns(github), [], what);
+    assert.deepEqual(core.warnings, [], what);
+    assert.match(core.infos.join("\n"), /ci-status is not re-run/u, what);
+  }
+});
+
+test("a refused re-run warns and the hold step still succeeds", async () => {
+  const { github, core, error } = await apply(securityHold(), {
+    fail: { rerun: true },
+    ci: {
+      runs: [ciRun(21, "2026-10-23T11:00:00Z")],
+      jobs: { 21: [ciJob(211, "success")] },
+    },
+  });
+  assert.equal(error, undefined);
+  assert.equal(core.outputs.hold, "true");
+  assert.equal(reruns(github).length, 1, "one bounded attempt");
+  assert.equal(core.warnings.length, 1);
+  assert.match(core.warnings[0], /could not re-run ci-status: HTTP 403/u);
+  assert.match(
+    core.notices.join("\n"),
+    /^claude-lane-hold lane=claude-review /mu,
+  );
+});
+
+test("a failed run list warns and the hold step still succeeds", async () => {
+  const { github, core, error } = await apply(securityHold(), {
+    fail: { ciRuns: true },
+  });
+  assert.equal(error, undefined);
+  assert.deepEqual(reruns(github), []);
+  assert.match(
+    core.warnings.join("\n"),
+    /could not re-run ci-status: HTTP 502/u,
+  );
+});
+
+test("a run in flight on the head, this one included, re-runs nothing and warns", async () => {
+  for (const runs of [
+    [
+      ciRun(21, "2026-10-23T11:00:00Z"),
+      ciRun(22, "2026-10-23T11:30:00Z", "in_progress"),
+    ],
+    [
+      ciRun(21, "2026-10-23T11:00:00Z"),
+      { ...ciRun(RUN_ID, "2026-10-23T11:30:00Z"), status: "completed" },
+    ],
+  ]) {
+    const { github, core, error } = await apply(securityHold(), {
+      ci: { runs, jobs: { 21: [ciJob(211, "success")] } },
+    });
+    assert.equal(error, undefined);
+    assert.deepEqual(reruns(github), []);
+    assert.match(
+      core.warnings.join("\n"),
+      /is in flight; ci-status is not re-run/u,
+    );
+  }
+});
+
+test("a head that moved since the review re-runs nothing", async () => {
+  const { github, core } = await apply(securityHold(), {
+    ci: {
+      head: "c".repeat(40),
+      runs: [ciRun(21, "2026-10-23T11:00:00Z")],
+      jobs: { 21: [ciJob(211, "success")] },
+    },
+  });
+  assert.deepEqual(reruns(github), []);
+  assert.match(core.infos.join("\n"), /the head moved/u);
+});
+
+test("a failed label write asks for no ci-status re-run", async () => {
+  const { github } = await apply(securityHold(), {
+    fail: { addLabels: true },
+    ci: {
+      runs: [ciRun(21, "2026-10-23T11:00:00Z")],
+      jobs: { 21: [ciJob(211, "success")] },
+    },
+  });
+  assert.deepEqual(
+    github.calls.filter(([name]) =>
+      ["listWorkflowRuns", "reRunJob"].includes(name),
+    ),
+    [],
+  );
 });
 
 test("a rerun posts no second marker for the same head and criteria", async () => {
@@ -1464,5 +1677,12 @@ test("an empty STATUS_JOB reads no run and keeps the cost hold", async () => {
     comments: [decision()],
   });
   assert.equal(core.outputs.hold, "true");
-  assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
+  assert.ok(
+    !github.calls.some(
+      ([name, p]) =>
+        name === "listWorkflowRuns" &&
+        p.workflow_id !== "pr-require-checks.yml",
+    ),
+    "no run of this lane is read",
+  );
 });
