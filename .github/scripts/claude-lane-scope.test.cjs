@@ -917,6 +917,26 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     file("src/a.js", { patch: "@@ -1 +1 @@\n-x\n+y", changes: 2 }),
   ]);
 
+  test("pr-review-cli: an output style is an agent instruction, never docs-only", async () => {
+    const directory = makeTemporaryDirectory("scope-cli-");
+    const decide = async (filenames) =>
+      (
+        await runScope(cliLane, {
+          env: {
+            GITHUB_WORKFLOW_REF: `o/r/${OWN}@refs/pull/7/merge`,
+            FILE_LIST: path.join(directory, "files.txt"),
+            DATA_LIST: path.join(directory, "data.txt"),
+            RUNNER_TEMP: directory,
+            DOCS_ONLY_PATHS: "**/README.md",
+            EVENT_ACTION: "opened",
+          },
+          prFiles: filenames.map((name) => file(name)),
+        })
+      ).outputs.review;
+    assert.equal(await decide(["plugins/x/README.md"]), "false");
+    assert.equal(await decide(["plugins/x/output-styles/README.md"]), "true");
+  });
+
   test("pr-review-cli: a newer legacy marker at the head neither skips nor narrows the review", async () => {
     const { outputs } = await scopeCli(
       [cliMarker(LAST, OWN), legacyMarker(HEAD)],
@@ -1147,6 +1167,7 @@ test("the security lane's default docs-only paths skip documentation, not code o
     ["CLAUDE.md"],
     ["docs/records.json"],
     ["plugins/docs/notes.md"],
+    ["plugins/x/output-styles/README.md"],
   ]) {
     assert.equal(
       (await decide(filenames)).review,
@@ -1176,6 +1197,7 @@ test("a caller's wider docs-only-paths never skips agent instructions", async ()
     "plugins/x/agents/a.md",
     "plugins/x/commands/c.md",
     ".github/copilot-instructions.md",
+    "plugins/x/output-styles/terse.md",
   ]) {
     assert.equal(await decide(["README.md", name]), "true", name);
   }

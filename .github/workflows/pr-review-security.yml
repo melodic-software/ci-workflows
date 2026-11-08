@@ -164,8 +164,9 @@ on:
           no review runs and the check stays green. Empty never skips. Agent
           instruction files (CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md,
           SKILL.md, copilot-instructions.md, and anything under .claude/,
-          skills/, agents/, commands/, rules/, hooks/, instructions/ or
-          prompts/) never count as documentation, whatever this list says.
+          skills/, agents/, commands/, rules/, hooks/, instructions/,
+          prompts/ or output-styles/) never count as documentation, whatever
+          this list says.
         type: string
         default: |
           docs/**/*.md
@@ -351,7 +352,7 @@ jobs:
               .map(globToRegExp);
             // Agent instructions are never documentation, whatever docs-only-paths says.
             const INSTRUCTIONS =
-              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts)\/)/u;
+              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts|output-styles)\/)/u;
             const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
             const isDocs = (file) =>
               names(file).every((name) => !INSTRUCTIONS.test(name) && docsOnly.some((re) => re.test(name)));

@@ -909,7 +909,7 @@ jobs:
               .map(globToRegExp);
             // Agent instructions are never documentation, whatever docs-only-paths says.
             const INSTRUCTIONS =
-              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts)\/)/u;
+              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts|output-styles)\/)/u;
             const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
             const isDocs = (file) =>
               names(file).every((name) => !INSTRUCTIONS.test(name) && docsOnly.some((re) => re.test(name)));
@@ -3062,7 +3062,7 @@ jobs:
               .map(globToRegExp);
             // Agent instructions are never documentation, whatever docs-only-paths says.
             const INSTRUCTIONS =
-              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts)\/)/u;
+              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts|output-styles)\/)/u;
             const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
             const isDocs = (file) =>
               names(file).every((name) => !INSTRUCTIONS.test(name) && docsOnly.some((re) => re.test(name)));
@@ -5188,7 +5188,7 @@ jobs:
               .map(globToRegExp);
             // Agent instructions are never documentation, whatever docs-only-paths says.
             const INSTRUCTIONS =
-              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts)\/)/u;
+              /(?:^|\/)(?:(?:CLAUDE|CLAUDE\.local|AGENTS|GEMINI|SKILL|copilot-instructions)\.md$|(?:\.claude|skills|agents|commands|rules|hooks|instructions|prompts|output-styles)\/)/u;
             const names = (file) => [file.filename, file.previous_filename].filter(Boolean);
             const isDocs = (file) =>
               names(file).every((name) => !INSTRUCTIONS.test(name) && docsOnly.some((re) => re.test(name)));
