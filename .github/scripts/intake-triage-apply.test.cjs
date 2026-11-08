@@ -422,7 +422,10 @@ test("a confident run proposes the class on the comment's second line", async ()
   assert.deepEqual(labels, ["priority: high"]);
   const lines = comments[0].split("\n");
   assert.equal(lines[0], "<!-- claude-lane intake-triage -->");
-  assert.equal(lines[1], "Proposed work class: work-class: untrusted-provenance");
+  assert.equal(
+    lines[1],
+    "Proposed work class: work-class: untrusted-provenance",
+  );
   assert.match(comments[0], /Looks like a bug in the parser\./u);
 });
 
@@ -571,7 +574,11 @@ test("a retired work class is never proposed, even while the label is live", asy
       output: triaged({ proposed_class: retired }),
       liveLabels: ["priority: high", ESCALATION_LABEL, FLOOR_LABEL, retired],
     });
-    assert.equal(comments[0].split("\n")[1], "Proposed work class: none", retired);
+    assert.equal(
+      comments[0].split("\n")[1],
+      "Proposed work class: none",
+      retired,
+    );
   }
 });
 
@@ -756,7 +763,9 @@ test("compose offers the enabled Issue Types plus none", async () => {
     "work-class: untrusted-provenance",
     "none",
   ]);
-  assert.deepEqual(JSON.parse(outputs.classes), ["work-class: untrusted-provenance"]);
+  assert.deepEqual(JSON.parse(outputs.classes), [
+    "work-class: untrusted-provenance",
+  ]);
   assert.match(
     outputs["type-instruction"],
     /proposed_class: .*one of work-class: untrusted-provenance/u,
