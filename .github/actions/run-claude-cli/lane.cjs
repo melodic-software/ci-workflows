@@ -5,8 +5,8 @@
 // Subcommands (argv[2]):
 //   verify-isolation  fail closed unless managed settings are root-owned and
 //                     pinned, sudo and docker are gone, bubblewrap can create
-//                     a PID namespace and no loader, TLS or proxy variable is
-//                     set
+//                     a PID namespace, socat runs (unless the sandbox input
+//                     is false) and no loader, TLS or proxy variable is set
 //   install           resolve the CLI version, install it from the public
 //                     registry outside any checkout's .npmrc, and fail closed
 //                     unless npm verifies both packages' registry signatures
@@ -31,6 +31,10 @@
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
 //     runs as the runner user.
+//   - Unless the sandbox input is `false`, cliArgs passes SANDBOX_SETTINGS
+//     with --settings: Bash runs in Claude Code's sandbox with no unsandboxed
+//     retry and network only to github.com and api.github.com. Without
+//     failIfUnavailable, a sandbox that cannot start leaves Bash unsandboxed.
 //   - Every file-command file the step was given is bound read-only for the
 //     leg (and anything it leaves running), restored to its exact content
 //     once the leg ends, and only then does run write the action's own
@@ -145,6 +149,17 @@ const SIGNING_KEY_URL = "https://downloads.claude.ai/keys/claude-code.asc";
 const SIGNING_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"; // gitleaks:allow (public key fingerprint)
 const DOCKER_SOCKET = "/var/run/docker.sock";
 const BWRAP_PROBE = ["--unshare-pid", "--dev-bind", "/", "/", "true"];
+// Claude Code's sandbox, passed with --settings unless the sandbox input is
+// `false`: Bash runs under bubblewrap, with no unsandboxed retry, and its
+// network reaches only GitHub through the sandbox's proxy, which needs socat
+// (https://code.claude.com/docs/en/sandboxing).
+const SANDBOX_SETTINGS = JSON.stringify({
+  sandbox: {
+    enabled: true,
+    allowUnsandboxedCommands: false,
+    network: { allowedDomains: ["github.com", "api.github.com"] },
+  },
+});
 // Variables that load code into node or bash, or redirect or weaken TLS, so
 // head code that set them could read a leg's credential. Any name ending in
 // _PROXY counts too, NO_PROXY excepted. The ubuntu-24.04 image sets none of
@@ -241,6 +256,18 @@ class LaneError extends Error {
     super(message);
     this.name = "LaneError";
   }
+}
+
+// The sandbox input: `true` or empty turns it on, `false` turns it off, and
+// any other value fails the step.
+function sandboxEnabled(env) {
+  const value = (env.LANE_SANDBOX ?? "").trim();
+  if (!["", "true", "false"].includes(value)) {
+    throw new LaneError(
+      `sandbox ${JSON.stringify(value)} is not true, false or empty`,
+    );
+  }
+  return value !== "false";
 }
 
 function required(env, name, pattern, label) {
@@ -354,6 +381,7 @@ function readConfig(env) {
         : required(env, "LANE_EFFORT", EFFORT_PATTERN, "effort"),
     maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),
     permissionMode,
+    sandbox: sandboxEnabled(env),
     watchdogMaxWaitMs: required(
       env,
       "LANE_WATCHDOG_MAX_WAIT_MS",
@@ -441,6 +469,9 @@ function cliArgs(config) {
     "--restricted",
     "--strict-mcp-config",
     "--no-session-persistence",
+    // Under --restricted the CLI loads only managed settings and --settings,
+    // and no input passes other flag settings, so there is nothing to merge.
+    ...(config.sandbox ? ["--settings", SANDBOX_SETTINGS] : []),
   ];
   // Under --restricted a plugin's own files are readable only inside a
   // working directory, so each plugin directory is added as one too.
@@ -1096,6 +1127,14 @@ function verifyIsolation({
       `bwrap ${BWRAP_PROBE.join(" ")} failed: bubblewrap cannot create a PID namespace. In a Docker worker, Docker's default seccomp profile blocks it: set the ci-runner target's seccompProfile: userns. On an Ubuntu 24.04 host run \`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\` in runner isolation, before sudo is removed (see pr-review.yml, "Install subprocess isolation")`,
     );
   }
+  // The sandbox's network proxy needs socat; with the sandbox off, nothing does.
+  if (!sandboxEnabled(env)) return;
+  const socat = spawn("socat", ["-V"], { stdio: "ignore" });
+  if (socat.error || socat.status !== 0) {
+    throw new LaneError(
+      `socat is missing or does not run (${socat.error?.code ?? `exit ${socat.status}`}): Claude Code's sandbox needs it for its network proxy. Install it with bubblewrap in runner isolation, or set the sandbox input to false`,
+    );
+  }
 }
 
 // Run a command and fail closed when it cannot start or exits non-zero.
@@ -1450,6 +1489,7 @@ module.exports = {
   LaneError,
   MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
+  SANDBOX_SETTINGS,
   SIGNING_KEY_FINGERPRINT,
   cliArgs,
   fileClean,
