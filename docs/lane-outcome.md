@@ -55,7 +55,7 @@ does not depend on newlines, because none are required. A success record is
 a notice, a `skipped-validation` record a warning, and any other failure an
 error, except that a failure record with `handoff: true` is a notice. A
 handoff stays a notice when the caller sets `lane-id` but no record can be
-written. The `incomplete` and `skipped-validation` records keep their levels, and a
+written. The `incomplete`, `review-unposted` and `skipped-validation` records keep their levels, and a
 `shellFailed` success record is a warning,
 whatever `handoff` says.
 
