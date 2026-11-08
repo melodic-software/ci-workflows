@@ -70,6 +70,7 @@ async function runOutcome({
   requireCompletion = "",
   completion = "",
   detectFailedShell = "",
+  failedShellMinCalls = "",
   runId = "",
   runAttempt = "",
   jobId = "",
@@ -95,6 +96,7 @@ async function runOutcome({
     "REQUIRE_COMPLETION",
     "COMPLETION",
     "DETECT_FAILED_SHELL",
+    "FAILED_SHELL_MIN_CALLS",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -116,6 +118,7 @@ async function runOutcome({
     REQUIRE_COMPLETION: requireCompletion,
     COMPLETION: completion,
     DETECT_FAILED_SHELL: detectFailedShell,
+    FAILED_SHELL_MIN_CALLS: failedShellMinCalls,
     RUN_ID: runId,
     RUN_ATTEMPT: runAttempt,
     JOB_ID: jobId,
@@ -972,16 +975,19 @@ test("the step outcome and class map to the record's outcome", async () => {
 });
 
 // The #816 probe's shapes: a failed Bash call's tool_result carries
-// `is_error: true`, the run's own result stays a success.
-const blindShellRun = () =>
+// `is_error: true`, the run's own result stays a success. `ok` names the
+// calls that succeeded.
+const shellRun = (ids, ok = []) =>
   writeExecutionFile([
-    { type: "assistant", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "gh pr diff 7" } }] } },
-    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "Exit code 1", is_error: true }] } },
+    ...ids.flatMap((id) => [
+      { type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: { command: "gh pr diff 7" } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: ok.includes(id) ? "ok" : "Exit code 1", is_error: !ok.includes(id) }] } },
+    ]),
     { type: "result", subtype: "success", is_error: false, num_turns: 3, permission_denials: [] },
   ]);
 
-test("with detect-failed-shell, a green run whose every allowed Bash call failed is shell-failed, not a review", async () => {
-  const executionFile = blindShellRun();
+test("with detect-failed-shell, a green run whose three allowed Bash calls all failed is shell-failed, not a review", async () => {
+  const executionFile = shellRun(["b1", "b2", "b3"]);
   const off = await runOutcome({ outcome: "success", executionFile });
   assert.equal(off.outputs.review_ran, "true", "without the input the plain success rule holds");
   assert.deepEqual(off.errors, []);
@@ -1001,7 +1007,7 @@ test("with detect-failed-shell, a green run whose every allowed Bash call failed
   assert.ok(
     errors[0].startsWith(
       "Claude review concluded: success class=shell-failed credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 — " +
-        "all 1 allowed Bash call(s) failed, so the review ran with no working shell. lane-outcome {",
+        "all 3 allowed Bash call(s) failed, so the review ran with no working shell. lane-outcome {",
     ),
     errors[0],
   );
@@ -1010,19 +1016,28 @@ test("with detect-failed-shell, a green run whose every allowed Bash call failed
   assert.equal(outputs.record, JSON.stringify(record));
 });
 
+test("with detect-failed-shell, one normal non-zero exit is still a review unless the caller lowers the minimum", async () => {
+  const one = shellRun(["b1"]);
+  const kept = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true" });
+  assert.equal(kept.outputs.review_ran, "true");
+  assert.deepEqual(kept.errors, []);
+  const lowered = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: "1" });
+  assert.equal(lowered.outputs.failure_class, "shell-failed");
+  for (const bad of ["0", "two", "-1"]) {
+    const { failed, outputs } = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: bad });
+    assert.deepEqual(failed, ["failed-shell-min-calls must be a whole number from 1."], bad);
+    assert.equal("review_ran" in outputs, false, bad);
+  }
+});
+
 test("with detect-failed-shell, a run with one working Bash call is still a review, and incomplete is reported first", async () => {
-  const working = writeExecutionFile([
-    { type: "assistant", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: {} }, { type: "tool_use", id: "b2", name: "Bash", input: {} }] } },
-    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "Exit code 1", is_error: true }, { type: "tool_result", tool_use_id: "b2", content: "ok", is_error: false }] } },
-    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
-  ]);
-  const ran = await runOutcome({ outcome: "success", executionFile: working, detectFailedShell: "true" });
+  const ran = await runOutcome({ outcome: "success", executionFile: shellRun(["b1", "b2", "b3", "b4"], ["b4"]), detectFailedShell: "true" });
   assert.equal(ran.outputs.review_ran, "true");
   assert.deepEqual(ran.errors, []);
 
   const both = await runOutcome({
     outcome: "success",
-    executionFile: blindShellRun(),
+    executionFile: shellRun(["b1", "b2", "b3"]),
     detectFailedShell: "true",
     requireCompletion: "true",
     completion: "no summary",

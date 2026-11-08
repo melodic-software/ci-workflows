@@ -177,7 +177,7 @@ emitter's copy; a test holds the two equal.
 | `sandbox-unavailable` | the subprocess sandbox probe kept the run from starting |
 | `skipped-validation` | the action skipped itself on its workflow-validation check |
 | `incomplete` | the run succeeded but the lane's completion check found no completed review |
-| `shell-failed` | the run succeeded, but it made at least one Bash call it was allowed to make and every one returned an error, so it ran with no working shell; only for a caller that sets `detect-failed-shell`. A call listed in the result message's `permission_denials` is not counted |
+| `shell-failed` | the run succeeded, but it made at least `failed-shell-min-calls` (default 3) Bash calls it was allowed to make and every one returned an error, so it ran with no working shell; only for a caller that sets `detect-failed-shell`. A call listed in the result message's `permission_denials` is not counted |
 | `no-credential` | the leg had no credential to run with |
 | `no-outcome` | the leg stopped before its outcome step |
 | `other` | anything else, and any caller class outside this enum |

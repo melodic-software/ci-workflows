@@ -1225,22 +1225,34 @@ const runResult = (denied = []) => ({
   permission_denials: denied.map((id) => ({ tool_name: "Bash", tool_use_id: id, tool_input: {} })),
 });
 
-test("a run whose every allowed Bash call failed counts those calls", () => {
+// One Bash call and its result per id, failed unless listed in `ok`.
+const calls = (ids, ok = []) =>
+  ids.flatMap((id) => [shellUse(id), shellResult(id, !ok.includes(id))]);
+
+test("a run whose allowed Bash calls all failed, at least three of them, counts those calls", () => {
   for (const [label, messages, expected] of [
-    ["two failed calls", [shellUse("a"), shellResult("a", true), shellUse("b"), shellResult("b", true), runResult()], 2],
-    ["a denied call beside a failed one", [shellUse("a"), shellResult("a", true), shellUse("d"), shellResult("d", true), runResult(["d"])], 1],
-    ["a successful Read is not a working shell", [shellUse("r", "Read"), shellResult("r", false), shellUse("a"), shellResult("a", true), runResult()], 1],
+    ["three failed calls", [...calls(["a", "b", "c"]), runResult()], 3],
+    ["four failed beside a denied one", [...calls(["a", "b", "c", "e", "d"]), runResult(["d"])], 4],
+    ["a successful Read is not a working shell", [shellUse("r", "Read"), shellResult("r", false), ...calls(["a", "b", "c"]), runResult()], 3],
   ]) {
     assert.equal(failedShellCalls(messages), expected, label);
   }
 });
 
-test("a run with a working, denied-only, absent or unanswered shell is not shell-failed", () => {
+test("the minimum is the caller's: two failed calls qualify at 2, one at 1", () => {
+  assert.equal(failedShellCalls([...calls(["a", "b"]), runResult()], 2), 2);
+  assert.equal(failedShellCalls([...calls(["a"]), runResult()], 1), 1);
+});
+
+test("a run with a working, denied-only, too-short, absent or unanswered shell is not shell-failed", () => {
   for (const [label, messages] of [
-    ["one success among failures", [shellUse("a"), shellResult("a", true), shellUse("b"), shellResult("b", false), runResult()]],
-    ["only denied calls", [shellUse("d"), shellResult("d", true), runResult(["d"])]],
+    ["one success among failures", [...calls(["a", "b", "c", "e"], ["e"]), runResult()]],
+    ["one normal non-zero exit", [...calls(["a"]), runResult()]],
+    ["two failed calls, below the default 3", [...calls(["a", "b"]), runResult()]],
+    ["two failed and a denied call, which does not count", [...calls(["a", "b", "d"]), runResult(["d"])]],
+    ["only denied calls", [...calls(["a", "b", "c"]), runResult(["a", "b", "c"])]],
     ["no Bash calls", [shellUse("r", "Read"), shellResult("r", true), runResult()]],
-    ["a Bash call with no result", [shellUse("a"), runResult()]],
+    ["Bash calls with no result", [shellUse("a"), shellUse("b"), shellUse("c"), runResult()]],
     ["no messages", []],
   ]) {
     assert.equal(failedShellCalls(messages), 0, label);

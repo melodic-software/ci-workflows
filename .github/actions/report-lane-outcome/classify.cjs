@@ -219,15 +219,17 @@ function apiErrorFacts(messages) {
   };
 }
 
-// shell-failed: a run that made at least one Bash call the permission system
-// allowed, and every one of them returned `is_error: true`, as a lost sandbox
-// (`bwrap:` on every call) leaves it. A denied call also returns
-// `is_error: true`, so the result message's `permission_denials`, the Agent
-// SDK's authoritative denial record, takes it out first. A call with no
-// result proves nothing either way and is not counted. Only the `is_error`
-// booleans are read, never a result's content. Returns the failed count, or
-// 0 when the run is not shell-failed.
-function failedShellCalls(messages) {
+// shell-failed: a run that made at least `minCalls` Bash calls the permission
+// system allowed, and every one of them returned `is_error: true`, as a lost
+// sandbox (`bwrap:` on every call) leaves it. One or two failures are often a
+// normal non-zero exit (a grep with no match, a `test -f`), so they never
+// qualify on their own. A denied call also returns `is_error: true`, so the
+// result message's `permission_denials`, the Agent SDK's authoritative denial
+// record, takes it out first. A call with no result proves nothing either way
+// and is not counted. Only the `is_error` booleans are read, never a result's
+// content. Returns the failed count, or 0 when the run is not shell-failed.
+const FAILED_SHELL_MIN_CALLS = 3;
+function failedShellCalls(messages, minCalls = FAILED_SHELL_MIN_CALLS) {
   if (!Array.isArray(messages)) return 0;
   const blocks = (type) =>
     messages
@@ -247,7 +249,8 @@ function failedShellCalls(messages) {
   const results = blocks("tool_result").filter((block) =>
     shellIds.has(block.tool_use_id),
   );
-  return results.length > 0 && results.every((block) => block.is_error === true)
+  return results.length >= Math.max(1, minCalls) &&
+    results.every((block) => block.is_error === true)
     ? results.length
     : 0;
 }

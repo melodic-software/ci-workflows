@@ -209,6 +209,7 @@ on:
           auth | rate-limit | overloaded | max-turns | timeout | install-failed |
           no-execution | other on a failure;
           incomplete when the step succeeded but no completed review was found;
+          shell-failed when it succeeded but every allowed Bash call failed;
           skipped-validation when the action skipped itself; sandbox-unavailable
           when bubblewrap could not create a namespace, so no review ran;
           empty otherwise.
@@ -1205,6 +1206,7 @@ jobs:
           install-outcome: ${{ steps.bun-check.outputs.outcome }}
           require-completion: true
           completion: ${{ steps.verify.outputs.verdict }}
+          detect-failed-shell: true
           known-failure-class: ${{ steps.sandbox.outcome == 'failure' && 'sandbox-unavailable' || '' }}
 
       # The lane's one comment: created once, then edited in place. Only a
@@ -1336,6 +1338,7 @@ jobs:
             no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
             incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, the review saw only part of the diff, or bwrap could not start and the diff file was never read; read the verify step's log" ;;
+            shell-failed) why="every Bash call the review was allowed to make failed, so it ran with no working shell, often because bubblewrap could not start; read the review step's log for the errors" ;;
             sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;
