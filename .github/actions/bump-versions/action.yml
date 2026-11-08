@@ -1,0 +1,77 @@
+name: bump-versions
+description: >-
+  Resolve, verify and bump a repository's release pins under its version-bump policy file.
+  Call with command prepare under a read-only token, then, when prepared-count is above zero,
+  mint an App token and call with command publish, then command summary.
+
+inputs:
+  command:
+    description: prepare, publish or summary.
+    required: true
+  policy:
+    description: Policy file, relative to the repository root (command prepare).
+    required: false
+    default: .github/version-bump/policy.yaml
+  out:
+    description: Directory for results.json and the prepared bumps, relative to the repository root.
+    required: false
+    default: .work/version-bump
+  only:
+    description: Comma-separated tool or group names from the policy; empty for all (command prepare).
+    required: false
+    default: ''
+  dry-run:
+    description: Resolve and verify only; write nothing (command prepare).
+    required: false
+    default: 'false'
+  token:
+    description: >-
+      Token for GitHub reads and writes. Read-only for prepare; the App installation token for
+      publish, or the release lookups and downloads run with the workflow's own token.
+    required: false
+    default: ${{ github.token }}
+  app-slug:
+    description: Slug of the App whose token is passed to publish (command publish).
+    required: false
+    default: ''
+  osslsigncode:
+    description: Install osslsigncode, for tools whose verify block names authenticode (command prepare).
+    required: false
+    default: 'false'
+  python-version:
+    description: Exact Python patch version for the engine (command prepare).
+    required: false
+    default: '3.14.7'
+
+outputs:
+  prepared-count:
+    description: Number of bumps to publish or close; 0 on a dry run.
+    value: ${{ steps.run.outputs.prepared-count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      if: ${{ inputs.command == 'prepare' }}
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install yq and osslsigncode
+      if: ${{ inputs.command == 'prepare' }}
+      shell: bash
+      env:
+        INSTALL_OSSLSIGNCODE: ${{ inputs.osslsigncode }}
+      run: bash "$GITHUB_ACTION_PATH/install-tools.sh"
+    - name: Run the version-bump engine
+      id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BUMP_COMMAND: ${{ inputs.command }}
+        BUMP_POLICY: ${{ inputs.policy }}
+        BUMP_OUT: ${{ inputs.out }}
+        BUMP_ONLY: ${{ inputs.only }}
+        BUMP_DRY_RUN: ${{ inputs.dry-run }}
+        BUMP_APP_SLUG: ${{ inputs.app-slug }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
