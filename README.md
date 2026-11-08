@@ -658,7 +658,11 @@ consumer to audit it.
   subscription leg's `auth` handoff adds a warning annotation naming the
   refused secret, so the owner replaces it even when the fallback job
   succeeds, and the job summary's Stop note for any handoff to the fallback
-  job says the fallback job runs instead. A
+  job says the fallback job runs instead. A caller whose subscription leg is
+  the last, with no fallback job, but that still ends green on a capacity
+  stop passes `fallback-ready: handoff-only`: the leg hands off on the same
+  stops with the same outputs, and its warning and Stop note say no further
+  leg runs. A
   subscription leg's credit stop keeps its class. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
@@ -677,7 +681,10 @@ consumer to audit it.
   job that validates its inputs; a lane whose Bash is limited to fixed
   read-only rules may stay in one job. The CLI runs with
   `--restricted`, so Bash and the other code-running tools are available
-  only when `tools` names them. Callers run `apply-claude-managed-settings`
+  only when `tools` names them, and the CLI loads only managed settings
+  and `--settings`, never a user, project or local settings file head code
+  could write ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
+  Callers run `apply-claude-managed-settings`
   while sudo still works, then runner isolation (sudo and docker removed,
   bubblewrap installed, and on Ubuntu 24.04
   `kernel.apparmor_restrict_unprivileged_userns=0`), then the head checkout,
