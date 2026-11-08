@@ -71,13 +71,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The API call stays SEPARATE from the `|| true` pipe, so a failing
-          # `gh api` aborts instead of falling through to the `v0.0.0` default.
-          releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
-          latest="$(printf '%s\n' "$releases" \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
-          latest="${latest:-v0.0.0}"
+          # A degraded API can answer 200 with an empty list, so an empty
+          # answer is retried and then fails rather than restarting at v0.1.0.
+          # A failing `gh api` aborts the step under `set -e`.
+          latest=""
+          for delay in 0 10 30 60; do
+            sleep "$delay"
+            releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+            latest="$(printf '%s\n' "$releases" \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            [ -n "$latest" ] && break
+          done
+          if [ -z "$latest" ]; then
+            echo "::error::The Releases list came back with no published vX.Y.Z release after 4 reads; GitHub may be degraded. Re-run later. A first release has no automatic path: publish it by hand."
+            exit 1
+          fi
           IFS=. read -r major minor patch <<< "${latest#v}"
           case "$BUMP" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
