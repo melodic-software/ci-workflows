@@ -20,7 +20,6 @@ const CLASSES = new Set([
   "install-failed",
   "skipped-validation",
   "incomplete",
-  "shell-failed",
   "no-execution",
   "other",
 ]);
@@ -482,8 +481,6 @@ const WHY = {
     "the runner isolation or the Claude Code CLI install or its integrity check failed",
   incomplete:
     "the model returned no usable review (findings, files read, summary and comments)",
-  "shell-failed":
-    "every Bash call the review was allowed to make failed, so it had no working shell",
   partial:
     "the review read only part of the pull request, so the head is not reviewed",
   "no-credential": "both secrets were empty, so no review ran",

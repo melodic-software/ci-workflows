@@ -739,12 +739,15 @@ function recordOutcome(outcome, failureClass) {
 
 // `recordClass` overrides the class in the record alone, for a branch whose
 // legacy tokens carry no class (incomplete, skipped-validation).
+// `shellFailed` flags a success whose allowed Bash calls all failed without
+// failing it.
 function factRecord(
   facts,
   {
     laneId = "",
     outcome = "",
     handoff = "",
+    shellFailed = false,
     recordClass = facts.failureClass,
     context = {},
   },
@@ -773,6 +776,7 @@ function factRecord(
     ],
     ["credential", credential],
     ["handoff", handoff === "true" ? true : null],
+    ["shellFailed", shellFailed === true ? true : null],
     ["fallback", present([["reason", facts.fallbackReason]])],
     [
       "resets",
