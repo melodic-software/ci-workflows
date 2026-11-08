@@ -1218,10 +1218,13 @@ status_list_on_call 1 '[]'
 status_list_on_call 2 "[$(full_run_success 100)]"
 status_list_on_call 3 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
-printf '%s\n' 2-4 >"$fixtures/${workflow_runs_key}.fail-on-call"
+printf '%s\n' 2 >"$fixtures/${workflow_runs_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log '::warning::could not read'
+# Without turning the resend off in the wait, a slow 5xx would be sent three
+# times on each poll before the degraded read.
+expect_no_log 'sending it again'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${workflow_runs_key}.fail-on-call"
 
@@ -1540,13 +1543,14 @@ clear_status_fixtures
 clear_run_fixtures
 current_run
 status_list_on_call 1 '[]'
-status_list_on_call 5 "[$(full_run_success 100)]"
-status_list_on_call 6 "[$(full_run_success 100)]"
+status_list_on_call 3 "[$(full_run_success 100)]"
+status_list_on_call 4 "[$(full_run_success 100)]"
 workflow_runs "[${earlier_full_run}]"
-printf '%s\n' 2-4 >"$fixtures/${statuses_key}.fail-on-call"
+printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
+expect_no_log 'sending it again'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${statuses_key}.fail-on-call"
 
@@ -2420,9 +2424,11 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_log '(attempt 2 of 3).'
 expect_log '(attempt 3 of 3).'
 expect_calls "$workflow_runs_key" 3
-mapfile -t jitter_sleeps <"$sleep_log"
-if [[ "${#jitter_sleeps[@]}" -gt 2 || "${jitter_sleeps[0]:-0}" -gt 4 || "${jitter_sleeps[1]:-0}" -gt 8 ]]; then
-  echo "FAIL: expected at most a 4s then an 8s wait, got: ${jitter_sleeps[*]}"
+# A wait of 0 sleeps not at all, so the waits are read from the log lines.
+jitter_second="$(sed -n 's/.*sending it again in \([0-9]*\)s (attempt 2 of 3).*/\1/p' "$log_file")"
+jitter_third="$(sed -n 's/.*sending it again in \([0-9]*\)s (attempt 3 of 3).*/\1/p' "$log_file")"
+if [[ ! "$jitter_second" =~ ^[0-9]+$ || ! "$jitter_third" =~ ^[0-9]+$ || "$jitter_second" -gt 4 || "$jitter_third" -gt 8 ]]; then
+  echo "FAIL: expected at most a 4s then an 8s wait, got: ${jitter_second:-none} ${jitter_third:-none}"
   failures=$((failures + 1))
 fi
 rm -f -- "$fixtures/${workflow_runs_key}.fail-times"

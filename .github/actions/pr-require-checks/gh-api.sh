@@ -34,13 +34,14 @@
 # A 5xx, or a failure with no HTTP status (a network error), is sent again
 # after a full-jitter wait of 0 to `GH_API_RETRY_BASE_SECONDS` seconds, then 0
 # to twice that, but only when a resend cannot do the write twice: GET, PUT,
-# PATCH, DELETE, a GraphQL call (every one these runners send is a query), or a
-# POST whose caller sets `GH_API_RESEND=true` because it sends the same state
-# each time. Any other POST may have taken effect before the error, so it is
+# PATCH, DELETE, a GraphQL query (never a `mutation`), or a POST whose caller
+# sets `GH_API_RESEND=true` because it sends the same state each time. Any other POST may have taken effect before the error, so it is
 # never resent. A caller whose own poll already reads again sets
 # `GH_API_RETRY_ERRORS=false`, so a poll never multiplies the sends. Any other
-# 4xx fails at once. The caller's handling of a failed call decides the
-# verdict, and no path turns a failure into a pass.
+# 4xx fails at once. A resendable call can take up to 32 s more than one send:
+# two more sends GitHub may cut off at 10 s each, and up to 12 s of waits. The
+# caller's handling of a failed call decides the verdict, and no path turns a
+# failure into a pass.
 #
 # A GET sent with `-i` and answered with an `etag` is remembered with its body,
 # keyed by the whole call. Sent again, it carries `If-None-Match`, and a `304`
@@ -72,9 +73,10 @@
 RATE_LIMIT_WAIT_SECONDS="${RATE_LIMIT_WAIT_SECONDS:-60}"
 RATE_LIMIT_WAITED=0
 GH_API_ATTEMPTS=3
-# Overridable only so a harness can run without the waits.
+# Overridable only so a harness can run without the waits; anything but 0 to
+# 8 reads as 4, so the job env can never stretch the waits.
 GH_API_RETRY_BASE_SECONDS="${GH_API_RETRY_BASE_SECONDS:-4}"
-[[ "$GH_API_RETRY_BASE_SECONDS" =~ ^[0-9]{1,3}$ ]] || GH_API_RETRY_BASE_SECONDS=4
+[[ "$GH_API_RETRY_BASE_SECONDS" =~ ^[0-8]$ ]] || GH_API_RETRY_BASE_SECONDS=4
 GH_API_RESEND=false
 GH_API_RETRY_ERRORS=true
 GH_HTTP_STATUS=""
@@ -210,10 +212,21 @@ gh_classify() {
 
 # Whether a 5xx or a network error may be sent again; see the header.
 gh_api_resendable() {
-  local method="$1" path="$2"
+  local method="$1" path="$2" argument
+  shift 2
   case "$method" in
     GET | HEAD | PUT | PATCH | DELETE) return 0 ;;
-    POST) [[ "$path" == graphql || "$GH_API_RESEND" == true ]] ;;
+    POST)
+      if [[ "$path" == graphql ]]; then
+        for argument in "$@"; do
+          if [[ "$argument" == query=* && "$argument" == *mutation* ]]; then
+            return 1
+          fi
+        done
+        return 0
+      fi
+      [[ "$GH_API_RESEND" == true ]]
+      ;;
     *) return 1 ;;
   esac
 }
@@ -266,7 +279,7 @@ gh_api() {
       # shellcheck disable=SC2310 # gh_api_resendable answers through its status.
       if [[ "$attempt" -ge "$GH_API_ATTEMPTS" || "$GH_API_RETRY_ERRORS" != true ]] ||
         [[ -n "$GH_HTTP_STATUS" && ! "$GH_HTTP_STATUS" =~ ^5[0-9][0-9]$ ]] ||
-        ! gh_api_resendable "$method" "$path"; then
+        ! gh_api_resendable "$@"; then
         return "$status"
       fi
       # Full jitter: a random wait from 0 to a ceiling that doubles per attempt.

@@ -661,6 +661,9 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5 — advisory outcome: one marker comment, upserted, plus the label.
 # ---------------------------------------------------------------------------
+# Each call below is sent once: the outcome is advisory, and resending its
+# calls could push the step past a short ci-status job's timeout.
+GH_API_RETRY_ERRORS=false
 # Sets `marker_comment_id` (empty when there is none), from the comments step 1
 # read when that page held them all, else from the REST listing. Never call it in a
 # command substitution: gh_api prints its warnings to stdout and adds its
@@ -705,8 +708,6 @@ upsert_marker_comment() {
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.
 add_linkage_label() {
-  # Adding a label the pull request already carries changes nothing.
-  local GH_API_RESEND=true
   jq -n --arg label "$LINKAGE_LABEL" '{labels: [$label]}' >"$scratch/label-payload.json"
   gh_api POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels" --input "$scratch/label-payload.json"
 }

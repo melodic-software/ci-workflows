@@ -964,8 +964,11 @@ wait_for_sibling_runs() {
     # Not `--paginate`: this endpoint returns an object, and concatenated
     # objects are not valid input to the filter below. 100 runs on one head SHA
     # is already far past the burst this wait exists for.
+    # A failed read here ends the wait in the caller's one fresh read, so
+    # `gh_api` sends it once: resends of slow 5xx answers on every poll
+    # would outlast the margin the job timeout keeps for that read.
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-    if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+    if ! GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
       warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$no_wait"
       # Discard any earlier poll's read so the caller takes the single fresh
       # read the warning above promises. Without this, a listing that fails on
@@ -992,9 +995,10 @@ wait_for_sibling_runs() {
     carry_forward_waited=$((now - wait_started))
     # The status read comes AFTER the listing above, never before it: a sibling
     # writes the status and flips to `completed` moments later, and the other
-    # order lets that completion land between the two calls.
+    # order lets that completion land between the two calls. Every read under
+    # it is sent once, for the reason the listing above is.
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
-    if ! read_carried_state listed; then
+    if ! GH_API_RETRY_ERRORS=false read_carried_state listed; then
       # The same degraded path the listing failure above takes, for the same
       # reason. This endpoint is read once per poll, up to sixteen times
       # under the 240s ceiling, so failing the run on the first transient 5xx

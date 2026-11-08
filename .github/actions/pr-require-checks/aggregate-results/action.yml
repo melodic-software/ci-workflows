@@ -194,8 +194,9 @@ inputs:
       this run re-runs it. Overrides
       `carry-forward-wait-seconds`. Closes the gap `record-pending` alone
       leaves, a full run queued before its `pending` marker is written. The
-      calling job needs `actions: read`; a listing that fails after three
-      tries fails the run. Off by default.
+      calling job needs `actions: read`; a listing that still fails after
+      three sends of a 5xx or a network error fails the run, and a 4xx fails
+      it at once. Off by default.
     default: 'false'
   yield-wait-seconds:
     description: >-
@@ -259,7 +260,9 @@ inputs:
       time, and a second rate limit fails it too: the call fails closed, as any
       other failed read does, and never ends neutral. Every 403 or 429, and
       every GraphQL error, prints its status, message and `x-ratelimit-*`, `retry-after` and
-      `x-accepted-github-permissions` headers. Keep this, plus
+      `x-accepted-github-permissions` headers. A read that fails with a 5xx
+      or a network error is sent up to twice more, which can add up to 32
+      seconds to that call. Keep this, plus that resend time,
       `rerun-wait-seconds` and any other step's wait, under the calling job's
       `timeout-minutes`, and under 3600, the life of a GitHub App installation
       token. `0` never waits.

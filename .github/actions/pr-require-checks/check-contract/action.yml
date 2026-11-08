@@ -81,8 +81,10 @@ inputs:
       notice. Every 403 or 429, and every GraphQL error, prints its status,
       message and
       `x-ratelimit-*`, `retry-after` and `x-accepted-github-permissions`
-      headers. Keep this, plus the other steps' waits, under the calling job's
-      `timeout-minutes`, and under 3600, the life of a GitHub App installation
+      headers. The pull request read is sent up to twice more on a 5xx or a
+      network error, which can add up to 32 seconds; the advisory reads and
+      writes are sent once. Keep this, plus that resend time and the other
+      steps' waits, under the calling job's `timeout-minutes`, and under 3600, the life of a GitHub App installation
       token. `0` never waits.
     default: '60'
 
