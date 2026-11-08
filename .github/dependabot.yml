@@ -2,8 +2,9 @@ version: 2
 updates:
   # Keep SHA-pinned actions current. pr-require-checks.yml arms auto-merge on
   # patch and minor bumps of the standards dependabot-policy publishers
-  # (actions/*, github/*, anthropics/*); every other PR is reviewed by hand.
-  # The "/"
+  # (actions/*, github/*, anthropics/*). Every other PR waits for the AI-review
+  # tier, which is not yet built here
+  # (https://github.com/melodic-software/ci-workflows/issues/1010). The "/"
   # target scans .github/workflows; the glob target is required to also scan
   # the composite actions' own action.yml files (Dependabot does not descend
   # into .github/actions/<name>/ from "/" alone).

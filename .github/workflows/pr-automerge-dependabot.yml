@@ -42,6 +42,9 @@ name: pr-automerge-dependabot
 #   - every update is a semver patch or minor, and a version below 1.0 keeps
 #     its minor component (the policy's non-major rule); a grouped PR with one
 #     major bump, or an update type Dependabot could not compute, is skipped;
+#   - the updates in the metadata are exactly those the title or the body's
+#     `Updates` lines name, each with the same from and to version
+#     (standards dependabot-policy README, auto tier);
 #   - the event's sender (the pusher on opened/synchronize/reopened) is
 #     49699333, so a push or reopen by anyone else is skipped;
 #   - fetch-metadata succeeded; it fails when the first commit is not
@@ -152,6 +155,32 @@ jobs:
               return next === null || next[1] !== "0" || next[2] !== previous[2];
             }
 
+            // The metadata comes from the commit message, the title and body
+            // from the PR; both are Dependabot's, so a disagreement means one
+            // was edited. A grouped PR names its updates in `Updates` lines.
+            function metadataMismatch(updates) {
+              const claimed = new Set();
+              const title = /\bbump (\S+) from (\S+) to (\S+)/iu.exec(String(pr.title ?? ""));
+              if (title) claimed.add(`${title[1]} from ${title[2]} to ${title[3]}`);
+              for (const line of String(pr.body ?? "").matchAll(/^Updates `([^`]+)` from (\S+) to (\S+)\s*$/gmu)) {
+                claimed.add(`${line[1]} from ${line[2]} to ${line[3]}`);
+              }
+              const actual = new Set();
+              for (const update of updates) {
+                if (!update?.prevVersion || !update?.newVersion) {
+                  return `${update?.dependencyName} has no from or to version in the metadata`;
+                }
+                actual.add(`${update.dependencyName} from ${update.prevVersion} to ${update.newVersion}`);
+              }
+              for (const entry of actual) {
+                if (!claimed.has(entry)) return `the title and Updates lines do not name ${entry}`;
+              }
+              for (const entry of claimed) {
+                if (!actual.has(entry)) return `the metadata does not include ${entry}, which the title or an Updates line names`;
+              }
+              return "";
+            }
+
             async function gateFailure() {
               if (pr.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
               if (process.env.SENDER_ID !== String(DEPENDABOT_ID)) return "this event was not sent by Dependabot";
@@ -200,6 +229,8 @@ jobs:
                 if (!UPDATE_TYPES.has(update?.updateType)) return `${name} is not a patch or minor update`;
                 if (breaksBelowOne(update)) return `${name} changes its minor version below 1.0`;
               }
+              const mismatch = metadataMismatch(updates);
+              if (mismatch) return mismatch;
               const commits = await github.paginate(github.rest.pulls.listCommits, {
                 ...context.repo,
                 pull_number: pr.number,

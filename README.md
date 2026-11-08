@@ -113,8 +113,10 @@ make — third-party actions such as `astral-sh/setup-uv`,
 itself pinned to a full commit SHA with a dual-form trailing comment
 (`melodic-software/standards#248`). A bump reaches every `@main` caller on
 merge, so only patch and minor bumps of the standards `dependabot-policy`
-publishers (`actions/*`, `github/*`, `anthropics/*`) arm auto-merge; any
-other bump waits for a person. Dependabot leaves
+publishers (`actions/*`, `github/*`, `anthropics/*`) arm auto-merge. Any
+other bump waits for the AI-review tier, which is not yet built here
+([#1010](https://github.com/melodic-software/ci-workflows/issues/1010)).
+Dependabot leaves
 `anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
 why. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
