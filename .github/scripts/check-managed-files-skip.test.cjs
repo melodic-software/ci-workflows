@@ -218,36 +218,44 @@ test("verification steps run only in sync mode and no step skips it", () => {
 });
 
 // actions/checkout empties or cleans the directory it checks out into, so the
-// repository under check must land at the workspace root before the standards
-// tree is checked out beneath it.
-test("the action checks out the repository under check, in full, before the standards source, and skips both with the guard", () => {
+// repository under check must land at the workspace root before the
+// merge-group step diffs there and before the standards tree is checked out
+// beneath it.
+test("the action checks out the repository under check, in full, before the merge-group diff and the standards source", () => {
   const { parseWorkflow } = require("./workflow-yaml.cjs");
   const { steps } = parseWorkflow(action).runs;
+  const at = (name) => steps.findIndex((s) => s.name === name);
+  const consumer = at("Check out the repository under check");
+  assert.ok(consumer >= 0, "consumer checkout step not found");
+  assert.ok(consumer < at("Map the merge group to its pull requests"));
+  assert.ok(consumer < at("Check out standards manifest source"));
   const checkouts = steps.filter((s) =>
     String(s.uses ?? "").startsWith("actions/checkout@"),
   );
   assert.deepEqual(
-    checkouts.map((s) => s.with),
+    checkouts.map((s) => [s.name, s.if, s.with]),
     [
-      {
-        repository: `\${{ inputs.repository }}`,
-        ref: `\${{ inputs.head-ref }}`,
-        "fetch-depth": 0,
-        clean: false,
-        "persist-credentials": false,
-      },
-      {
-        repository: "melodic-software/standards",
-        ref: `\${{ (steps.group.outputs.mode || steps.mode.outputs.mode) == 'sync' && 'main' || inputs.standards-ref }}`,
-        path: ".managed-files-guard-standards",
-        "persist-credentials": false,
-      },
+      [
+        "Check out the repository under check",
+        "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'",
+        {
+          repository: `\${{ inputs.repository }}`,
+          ref: `\${{ inputs.head-ref }}`,
+          "fetch-depth": 0,
+          clean: false,
+          "persist-credentials": false,
+        },
+      ],
+      [
+        "Check out standards manifest source",
+        "(steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'",
+        {
+          repository: "melodic-software/standards",
+          ref: `\${{ (steps.group.outputs.mode || steps.mode.outputs.mode) == 'sync' && 'main' || inputs.standards-ref }}`,
+          path: ".managed-files-guard-standards",
+          "persist-credentials": false,
+        },
+      ],
     ],
-  );
-  const skip =
-    "(steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'";
-  assert.deepEqual(
-    checkouts.map((s) => s.if),
-    [skip, skip],
   );
 });
