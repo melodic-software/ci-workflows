@@ -223,12 +223,26 @@ function apiErrorFacts(messages) {
 // system allowed, and every one of them returned `is_error: true`, as a lost
 // sandbox (`bwrap:` on every call) leaves it. One or two failures are often a
 // normal non-zero exit (a grep with no match, a `test -f`), so they never
-// qualify on their own. A denied call also returns `is_error: true`, so the
-// result message's `permission_denials`, the Agent SDK's authoritative denial
-// record, takes it out first. A call with no result proves nothing either way
-// and is not counted. Only the `is_error` booleans are read, never a result's
-// content. Returns the failed count, or 0 when the run is not shell-failed.
+// qualify on their own. A denied call also returns `is_error: true`, so it is
+// taken out first: by its id in the result message's `permission_denials`,
+// the Agent SDK's authoritative denial record, or, should a CLI leave it off
+// that list, by its result text matching a CLI permission-denied message. A
+// call with no result proves nothing either way and is not counted. Returns
+// the failed count, or 0 when the run is not shell-failed.
+//
+// The denial texts, as CLI 2.1.303 (claude-code-action v1.0.253) writes them
+// for a Bash call: no allow rule matched; a deny rule matched; dontAsk mode.
+const DENIAL_TEXTS = [
+  /^This command requires approval$/u,
+  /^Permission to use Bash (?:with command [\s\S]* )?has been denied\b/u,
+];
 const FAILED_SHELL_MIN_CALLS = 3;
+function resultText(block) {
+  if (typeof block.content === "string") return block.content;
+  return (Array.isArray(block.content) ? block.content : [])
+    .map((part) => (part?.type === "text" ? String(part.text ?? "") : ""))
+    .join("\n");
+}
 function failedShellCalls(messages, minCalls = FAILED_SHELL_MIN_CALLS) {
   if (!Array.isArray(messages)) return 0;
   const blocks = (type) =>
@@ -246,8 +260,10 @@ function failedShellCalls(messages, minCalls = FAILED_SHELL_MIN_CALLS) {
       .filter((block) => block.name === "Bash" && !denied.has(block.id))
       .map((block) => block.id),
   );
-  const results = blocks("tool_result").filter((block) =>
-    shellIds.has(block.tool_use_id),
+  const results = blocks("tool_result").filter(
+    (block) =>
+      shellIds.has(block.tool_use_id) &&
+      !DENIAL_TEXTS.some((pattern) => pattern.test(resultText(block))),
   );
   return results.length >= Math.max(1, minCalls) &&
     results.every((block) => block.is_error === true)

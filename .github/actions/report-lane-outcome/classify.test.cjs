@@ -1244,6 +1244,38 @@ test("the minimum is the caller's: two failed calls qualify at 2, one at 1", () 
   assert.equal(failedShellCalls([...calls(["a"]), runResult()], 1), 1);
 });
 
+// The tool_result texts CLI 2.1.303 (claude-code-action v1.0.253) wrote for
+// a denied Bash call in `claude -p --output-format stream-json`: no allow rule
+// matched, a --disallowedTools rule matched, and --permission-mode dontAsk.
+// The same runs listed every one of these ids in permission_denials.
+const DENIED_TEXTS = [
+  "This command requires approval",
+  "Permission to use Bash with command curl --version has been denied.",
+  "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools",
+];
+const textResult = (id, text) => ({
+  type: "user",
+  message: { content: [{ type: "tool_result", tool_use_id: id, content: text, is_error: true }] },
+});
+
+test("a denied call left off permission_denials is still not counted, by its CLI denial text", () => {
+  for (const text of DENIED_TEXTS) {
+    const denials = ["x", "y", "z"].flatMap((id) => [shellUse(id), textResult(id, text)]);
+    assert.equal(failedShellCalls([...denials, runResult()]), 0, text);
+    // Beside three real failures, only the failures count.
+    assert.equal(failedShellCalls([...denials, ...calls(["a", "b", "c"]), runResult()]), 3, text);
+  }
+  // The text form an SDK content array takes is read the same way.
+  const arrayed = ["x", "y", "z"].flatMap((id) => [
+    shellUse(id),
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: DENIED_TEXTS[0] }], is_error: true }] } },
+  ]);
+  assert.equal(failedShellCalls([...arrayed, runResult()]), 0);
+  // A failure whose output only mentions a denial is still a failure.
+  const quoted = ["x", "y", "z"].flatMap((id) => [shellUse(id), textResult(id, `Exit code 1\n${DENIED_TEXTS[1]}`)]);
+  assert.equal(failedShellCalls([...quoted, runResult()]), 3);
+});
+
 test("a run with a working, denied-only, too-short, absent or unanswered shell is not shell-failed", () => {
   for (const [label, messages] of [
     ["one success among failures", [...calls(["a", "b", "c", "e"], ["e"]), runResult()]],
