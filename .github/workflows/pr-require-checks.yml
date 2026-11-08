@@ -146,6 +146,11 @@ jobs:
               fixtures/workflow-naming/**
             jsonschema:
               .github/**
+            # Gates one step of `test-contracts`, not a lane.
+            workflow-call-surface:
+              .github/workflows/**
+              .github/standards/runner-policy-contract/**
+              .github/scripts/check-workflow-call-surface.cjs
             selector-contract:
               .github/**
               .node-version
@@ -537,6 +542,14 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Test selector and generated workflow contracts
         run: node --test .github/scripts/*.test.cjs
+      - name: Check reusable workflow_call surfaces against the runner-policy contract
+        # Callers outside this repository may pass only what the synced
+        # contract lists, so a reusable's surface changes expand/contract.
+        if: ${{ contains(fromJSON('["pull_request","merge_group"]'), github.event_name) && fromJSON(needs.detect-changes.outputs.results || '{}')['workflow-call-surface'] != 'false' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: node .github/scripts/check-workflow-call-surface.cjs "$BASE_SHA" "$REPOSITORY"
       - name: Test change-detection matcher
         run: bash .github/actions/detect-changes/match.test.sh
       - name: Test Claude lane outcome classifier
