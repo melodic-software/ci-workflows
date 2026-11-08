@@ -140,6 +140,7 @@ jobs:
             actionlint-pin:
               .github/actions/actionlint/action.yml
               .github/scripts/verify-actionlint-attestation.sh
+              .github/scripts/verify-actionlint-attestation.test.sh
             workflow-naming:
               .github/**
               fixtures/workflow-naming/**
@@ -344,6 +345,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/verify-actionlint-attestation.sh
+      - name: Prove a tampered source digest fails attestation
+        if: ${{ fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint-pin'] != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/verify-actionlint-attestation.test.sh
       - name: Prove embedded scripts are checked by ShellCheck
         run: |
           set -euo pipefail
