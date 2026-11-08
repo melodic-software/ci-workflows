@@ -47,6 +47,11 @@ name: pr-review-security
 #     limit. The job token is least privilege.
 #   - Bash subprocesses run with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, so the
 #     OAuth token is stripped from their environment (GitHub tokens stay).
+#   - Bash runs under Claude Code's full sandbox (the review steps'
+#     settings): writes are limited to the workspace and temp directory,
+#     network to github.com and api.github.com, and a command that fails
+#     in the sandbox is never retried outside it. If the sandbox cannot
+#     start, Claude Code exits instead of running commands unsandboxed.
 #   - display_report stays off (public-repo log-leak risk).
 #   - Dependabot's comments are withheld from the model's context
 #     (exclude-comments-by-actor), as prompt-injection hygiene.
@@ -663,25 +668,18 @@ jobs:
       # Linux's, and a runner without apt-get must already have bwrap. The
       # AppArmor sysctl is lifted only on GitHub-hosted runners, which are
       # discarded after the job, so no reused host keeps the change.
-      # The step also installs sandbox-runtime's apply-seccomp helper. Without
-      # it, Claude Code passes bubblewrap --disable-userns, which writes
-      # /proc/sys/user/max_user_namespaces and dies where Docker mounts
-      # /proc/sys read-only, so every Bash call fails. Claude Code looks for
-      # the helper under the global npm roots, /usr/local/lib/node_modules
-      # among them (sandbox-runtime src/sandbox/generate-seccomp-filter.ts,
-      # buildGlobalNpmPaths). The worker image has no npm, so the helper is
-      # taken from the package tarball after a SHA-256 check. That install is
-      # best-effort: on any failure nothing is installed, a warning names the
-      # cause, and Claude Code runs as it would without the helper.
+      # socat is needed too: the review steps turn on Claude Code's full
+      # sandbox, whose network proxy uses it on Linux
+      # (code.claude.com/docs/en/settings-reference, sandbox.enabled). The
+      # action installs the native Claude Code binary (claude.ai/install.sh,
+      # src/entrypoints/run.ts at this pin), which carries its own seccomp
+      # helper, so no sandbox-runtime package is installed.
       - name: Install subprocess isolation
         id: isolate
         if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
         timeout-minutes: 2
         env:
           RUNNER_HOSTING: ${{ runner.environment }}
-          SANDBOX_RUNTIME_VERSION: 0.0.81
-          # SHA-256 of that version's npm tarball; change both together.
-          SANDBOX_RUNTIME_SHA256: 0e0b8249062047f7b592c7995f8ec2f251f3bbebdc0402db1ee23af09983953f
         run: |
           if command -v apt-get >/dev/null &&
             ! { command -v bwrap && command -v socat; } >/dev/null; then
@@ -711,33 +709,6 @@ jobs:
             echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
             exit 1
           fi
-          case "$RUNNER_ARCH" in
-            X64) arch=x64 ;;
-            ARM64) arch=arm64 ;;
-            *) arch="" ;;
-          esac
-          url="https://registry.npmjs.org/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-$SANDBOX_RUNTIME_VERSION.tgz"
-          helper="/usr/local/lib/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/$arch/apply-seccomp"
-          member="package/vendor/seccomp/$arch/apply-seccomp"
-          work="$(mktemp -d "$RUNNER_TEMP/sandbox-runtime.XXXXXX")"
-          tarball="$work/package.tgz"
-          skip="the seccomp helper is not installed, so Claude Code runs without it"
-          if [ -z "$arch" ]; then
-            echo "::warning::sandbox-runtime ships no apply-seccomp helper for runner architecture $RUNNER_ARCH; $skip"
-          elif ! curl -q --fail --silent --show-error --location \
-            --proto '=https' --proto-redir '=https' \
-            --connect-timeout 10 --max-time 15 --retry 2 --retry-all-errors \
-            --output "$tarball" "$url"; then
-            echo "::warning::the sandbox-runtime $SANDBOX_RUNTIME_VERSION tarball did not download from the npm registry; $skip"
-          elif ! printf '%s  %s\n' "$SANDBOX_RUNTIME_SHA256" "$tarball" | sha256sum -c --quiet -; then
-            echo "::warning::the sandbox-runtime $SANDBOX_RUNTIME_VERSION tarball does not match its pinned SHA-256; $skip"
-          elif ! tar -xzf "$tarball" -C "$work" -- "$member" ||
-            ! sudo install -D -o root -g root -m 0755 -- "$work/$member" "$helper"; then
-            echo "::warning::apply-seccomp from sandbox-runtime $SANDBOX_RUNTIME_VERSION did not extract or install; $skip"
-          else
-            echo "installed apply-seccomp from sandbox-runtime $SANDBOX_RUNTIME_VERSION at $helper"
-          fi
-          rm -rf -- "${work:?}"
 
       # Installed bubblewrap can still fail to create a namespace (unprivileged
       # user namespaces off), and then every Bash call the model makes fails
@@ -776,6 +747,17 @@ jobs:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Bash runs under Claude Code's full sandbox: writes stay in the
+          # workspace and temp directory, network reaches only the two GitHub
+          # hosts, and a failed command is never retried unsandboxed
+          # (code.claude.com/docs/en/sandboxing). With the scrub env set and
+          # sandbox.enabled unset, Claude Code runs a scrub-only sandbox that
+          # passes bwrap --disable-userns, which fails where /proc/sys is
+          # read-only (#938). The scrub env keeps auto-allow off, so Bash
+          # still needs a matching --allowedTools rule
+          # (code.claude.com/docs/en/settings-reference,
+          # sandbox.autoAllowBashIfSandboxed). A test holds the value.
+          settings: '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"failIfUnavailable":true,"network":{"allowedDomains":["github.com","api.github.com"]}}}'
           # No track_progress: on a pull_request event with a prompt the action
           # runs in agent mode, which posts no tracking comment and gives the
           # model no comment tool (claude-code-action src/modes/detector.ts,
@@ -957,6 +939,8 @@ jobs:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
+          # The first attempt's sandbox settings; its comment says why.
+          settings: '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"failIfUnavailable":true,"network":{"allowedDomains":["github.com","api.github.com"]}}}'
           # No track_progress: on a pull_request event with a prompt the action
           # runs in agent mode, which posts no tracking comment and gives the
           # model no comment tool (claude-code-action src/modes/detector.ts,
