@@ -33,8 +33,8 @@
 //     runs as the runner user.
 //   - Unless the sandbox input is `false`, cliArgs passes SANDBOX_SETTINGS
 //     with --settings: Bash runs in Claude Code's sandbox with no unsandboxed
-//     retry and network only to github.com and api.github.com. Without
-//     failIfUnavailable, a sandbox that cannot start leaves Bash unsandboxed.
+//     retry and network only to github.com and api.github.com, and the CLI
+//     exits at startup when the sandbox cannot start (failIfUnavailable).
 //   - Every file-command file the step was given is bound read-only for the
 //     leg (and anything it leaves running), restored to its exact content
 //     once the leg ends, and only then does run write the action's own
@@ -150,13 +150,15 @@ const SIGNING_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"; // g
 const DOCKER_SOCKET = "/var/run/docker.sock";
 const BWRAP_PROBE = ["--unshare-pid", "--dev-bind", "/", "/", "true"];
 // Claude Code's sandbox, passed with --settings unless the sandbox input is
-// `false`: Bash runs under bubblewrap, with no unsandboxed retry, and its
-// network reaches only GitHub through the sandbox's proxy, which needs socat
-// (https://code.claude.com/docs/en/sandboxing).
+// `false`: Bash runs under bubblewrap, with no unsandboxed retry, the CLI exits
+// at startup rather than run Bash unsandboxed when the sandbox cannot start,
+// and its network reaches only GitHub through the sandbox's proxy, which needs
+// socat (https://code.claude.com/docs/en/sandboxing).
 const SANDBOX_SETTINGS = JSON.stringify({
   sandbox: {
     enabled: true,
     allowUnsandboxedCommands: false,
+    failIfUnavailable: true,
     network: { allowedDomains: ["github.com", "api.github.com"] },
   },
 });

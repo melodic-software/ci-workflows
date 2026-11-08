@@ -1482,6 +1482,7 @@ test("the sandbox settings pass by default; sandbox false omits them; other valu
       sandbox: {
         enabled: true,
         allowUnsandboxedCommands: false,
+        failIfUnavailable: true,
         network: { allowedDomains: ["github.com", "api.github.com"] },
       },
     }),
