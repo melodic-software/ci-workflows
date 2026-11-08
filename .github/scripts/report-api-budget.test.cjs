@@ -43,6 +43,12 @@ const INTAKE_TEXT = fs.readFileSync(
   "utf8",
 );
 const INTAKE = parseWorkflow(INTAKE_TEXT);
+const FLOOR = parseWorkflow(
+  fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "intake-label-needs-triage.yml"),
+    "utf8",
+  ),
+);
 
 const RUNNER = {
   GITHUB_WORKFLOW_REF:
@@ -516,8 +522,8 @@ test("every intake-triage job that calls the API ends by logging the job token's
 // Each intake script step that calls the API opens with the scope step's
 // recorder, so its requests reach the notice; it cannot load api-budget.cjs.
 const API_CALL = /github\.(rest|graphql|paginate|request)\b/u;
-const intakeRecorders = Object.entries(INTAKE.jobs).flatMap(
-  ([job, { steps }]) =>
+const recordersOf = (workflow) =>
+  Object.entries(workflow.jobs).flatMap(([job, { steps }]) =>
     steps
       .filter((s) => API_CALL.test(s.with?.script ?? ""))
       .map((s) => {
@@ -531,14 +537,25 @@ const intakeRecorders = Object.entries(INTAKE.jobs).flatMap(
           recorder: end < 0 ? "" : script.slice(0, end + 4),
         };
       }),
-);
+  );
+const intakeRecorders = recordersOf(INTAKE);
+const floorRecorders = recordersOf(FLOOR);
 
-test("every intake-triage API step opens with one shared recorder", () => {
+test("every intake-triage and floor-labeler API step opens with one shared recorder", () => {
   assert.equal(intakeRecorders.length, 11);
-  for (const { where, recorder } of intakeRecorders) {
+  assert.equal(floorRecorders.length, 1);
+  for (const { where, recorder } of [...intakeRecorders, ...floorRecorders]) {
     assert.match(recorder, /^\/\/ Each response's rate-limit reading/u, where);
     assert.equal(recorder, intakeRecorders[0].recorder, where);
   }
+});
+
+test("the floor labeler ends by logging the job token's budget", () => {
+  const last = FLOOR.jobs["apply-label"].steps.at(-1);
+  assert.equal(last.uses, "$/.github/actions/report-api-budget");
+  assert.equal(last.if, "always()");
+  assert.equal(last["continue-on-error"], true);
+  assert.equal(last.with.tokens, "github-token");
 });
 
 test("the intake recorder records each response and refusal as api-budget.cjs does", async () => {
@@ -659,7 +676,7 @@ const inlineRecorders = [
     where: job,
     script: WORKFLOW.jobs[job].steps.find((s) => s.id === "scope").with.script,
   })),
-  ...intakeRecorders.map(({ where, recorder }) => ({
+  ...[...intakeRecorders, ...floorRecorders].map(({ where, recorder }) => ({
     where,
     script: recorder,
   })),
@@ -680,7 +697,7 @@ test("routeOf, the shell's api_route and every inline recorder template each req
     input: `${urls.join("\n")}\n`,
   });
   assert.deepEqual(shell.stdout.split("\n").slice(0, -1), routes, shell.stderr);
-  assert.equal(inlineRecorders.length, 3 + 11);
+  assert.equal(inlineRecorders.length, 3 + 11 + 1);
   for (const { where, budget } of inlineRecorders) {
     const out = makeTemporaryDirectory("api-budget-inline-");
     await withRunnerTemp(out, () => {
