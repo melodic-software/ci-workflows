@@ -277,7 +277,7 @@ test("a manifest target the App cannot reach is reported unreachable, not a fail
   assert.equal(result.warnings.length, 1);
   assert.match(
     result.warnings[0],
-    /cannot reach manifest target melodic-software\/repository-2/u,
+    /cannot reach manifest targets melodic-software\/repository-2;/u,
   );
 });
 
@@ -298,7 +298,7 @@ test("an extra selected repository is an over-grant finding, not a failed attest
   assert.equal(result.warnings.length, 1);
   assert.match(
     result.warnings[0],
-    /over-grant: melodic-software\/excess is selected/u,
+    /over-grant: melodic-software\/excess selected on installation 144867070/u,
   );
 });
 
@@ -338,7 +338,12 @@ test("paginates past the manifest size when the App holds more repositories", as
   });
   assert.equal(result.calls.length, 4, "two pages read twice");
   assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
-  assert.equal(result.warnings.length, 99);
+  assert.equal(
+    result.warnings.length,
+    1,
+    "one annotation for every excess repository",
+  );
+  assert.match(result.warnings[0], /extra-1, .*extra-99 selected/u);
 });
 
 test("paginates a full exact repository set", async () => {

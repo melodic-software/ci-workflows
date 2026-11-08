@@ -372,11 +372,12 @@ jobs:
             const excess = secondSnapshot.filter((repository) => !expectedSet.has(repository));
             // A missing target fails only its own sync job; excess access is reported, never blocking.
             core.setOutput('unreachable-repositories', JSON.stringify(missing));
-            for (const repository of missing) {
-              core.warning(`Standards sync App cannot reach manifest target ${repository}; its sync job will fail.`);
+            // One annotation per kind: GitHub caps warning annotations per step.
+            if (missing.length > 0) {
+              core.warning(`Standards sync App cannot reach manifest targets ${missing.join(', ')}; their sync jobs will fail.`);
             }
-            for (const repository of excess) {
-              core.warning(`Standards sync App over-grant: ${repository} is selected on installation ${expectedInstallationId} but is not a manifest target. Remove it under Repository access.`);
+            if (excess.length > 0) {
+              core.warning(`Standards sync App over-grant: ${excess.join(', ')} selected on installation ${expectedInstallationId} but not manifest targets. Remove them under Repository access.`);
             }
             core.info(`Attested ${expectedSet.size - missing.length} of ${expectedSet.size} manifest targets for ${expectedSlug} (${excess.length} over-granted).`);
 
