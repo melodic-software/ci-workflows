@@ -24,7 +24,9 @@
 //     limit stop (a rejected rate_limit_event with its reset), a credit stop
 //     (classify.cjs isCreditStop) or a 401 or 402. The caller then runs the
 //     fallback leg, on FALLBACK_SECRET, as a third job; that leg is the last
-//     and never hands off. handoff-reason names the stop.
+//     and never hands off. handoff-reason names the stop. fallback-ready
+//     `handoff-only` hands off on the same stops with no further leg: the
+//     caller ends on the handoff.
 //   - legEnv copies the step environment and removes every credential and
 //     file-command VARIABLE, then sets the leg's one credential. That is a
 //     denylist, not a sandbox: code the leg runs (a Bash tool call, a hook)
@@ -193,6 +195,14 @@ const FALLBACK_NOTES = {
   "limit-stop": "limit stop: the fallback job runs instead",
 };
 
+// The Stop note when a subscription leg hands off with fallback-ready
+// `handoff-only`, so no leg runs after it.
+const LAST_LEG_NOTES = {
+  auth: "credential refused: handed off, no further leg runs; the owner replaces the secret",
+  "credit-stop": "credits used up: handed off, no further leg runs",
+  "limit-stop": "limit stop: handed off, no further leg runs",
+};
+
 function nextStep(failureClass) {
   return Object.hasOwn(NEXT_STEPS, failureClass)
     ? NEXT_STEPS[failureClass]
@@ -286,9 +296,9 @@ function readConfig(env) {
     );
   }
   const fallbackReady = (env.LANE_FALLBACK_READY ?? "").trim();
-  if (!["", "true", "false"].includes(fallbackReady)) {
+  if (!["", "true", "false", "handoff-only"].includes(fallbackReady)) {
     throw new LaneError(
-      `fallback-ready ${JSON.stringify(fallbackReady)} is not true, false or empty`,
+      `fallback-ready ${JSON.stringify(fallbackReady)} is not true, handoff-only, false or empty`,
     );
   }
   const legTimeout = (env.LANE_LEG_TIMEOUT_MINUTES ?? "").trim();
@@ -331,7 +341,9 @@ function readConfig(env) {
   return {
     leg: { leg: legName, name, value },
     baseUrl: base.baseUrl,
-    fallbackReady: fallbackReady === "true",
+    // A subscription leg may hand off; handoffOnly: no leg runs after it.
+    fallbackReady: fallbackReady === "true" || fallbackReady === "handoff-only",
+    handoffOnly: fallbackReady === "handoff-only",
     lane: required(env, "LANE_NAME", KEBAB_PATTERN, "lane"),
     role,
     model: required(env, "LANE_MODEL", MODEL_PATTERN, "model"),
@@ -903,7 +915,14 @@ function runLeg(
       messages: judged.messages,
       failureClass: judged.failureClass,
       resets: judged.resets,
-      next: reason === "" ? null : leg.leg === "api-key" ? "subscription" : "fallback",
+      next:
+        reason === ""
+          ? null
+          : leg.leg === "api-key"
+            ? "subscription"
+            : config.handoffOnly === true
+              ? null
+              : "fallback",
       message,
     });
   } finally {
@@ -943,9 +962,13 @@ function errorTokens(record) {
 }
 
 function stopNote(record, reason) {
-  return record.next === "fallback" && Object.hasOwn(FALLBACK_NOTES, reason)
-    ? FALLBACK_NOTES[reason]
-    : nextStep(record.class).note;
+  const notes =
+    record.next === "fallback"
+      ? FALLBACK_NOTES
+      : record.next === null
+        ? LAST_LEG_NOTES
+        : {};
+  return Object.hasOwn(notes, reason) ? notes[reason] : nextStep(record.class).note;
 }
 
 // Every cell is a closed token or a value lane.cjs checked; no CLI text.
@@ -1369,10 +1392,13 @@ function run(env) {
   // dead secret is named here.
   if (
     outcome.outputs["handoff-reason"] === "auth" &&
-    outcome.records[0].next === "fallback"
+    config.leg.leg === "subscription"
   ) {
+    const after = config.handoffOnly
+      ? "No further leg runs."
+      : "The fallback job runs instead.";
     process.stdout.write(
-      `::warning title=run-claude-cli credential::class=auth: the API refused ${outcome.outputs.credential}; the owner must replace the secret. The fallback job runs instead.\n`,
+      `::warning title=run-claude-cli credential::class=auth: the API refused ${outcome.outputs.credential}; the owner must replace the secret. ${after}\n`,
     );
   }
   if (!clean) {
