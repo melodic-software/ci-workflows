@@ -219,6 +219,39 @@ function apiErrorFacts(messages) {
   };
 }
 
+// shell-failed: a run that made at least one Bash call the permission system
+// allowed, and every one of them returned `is_error: true`, as a lost sandbox
+// (`bwrap:` on every call) leaves it. A denied call also returns
+// `is_error: true`, so the result message's `permission_denials`, the Agent
+// SDK's authoritative denial record, takes it out first. A call with no
+// result proves nothing either way and is not counted. Only the `is_error`
+// booleans are read, never a result's content. Returns the failed count, or
+// 0 when the run is not shell-failed.
+function failedShellCalls(messages) {
+  if (!Array.isArray(messages)) return 0;
+  const blocks = (type) =>
+    messages
+      .flatMap((m) => (Array.isArray(m?.message?.content) ? m.message.content : []))
+      .filter((block) => block?.type === type);
+  const result = messages.findLast((message) => message?.type === "result");
+  const denied = new Set(
+    (Array.isArray(result?.permission_denials) ? result.permission_denials : []).map(
+      (denial) => denial?.tool_use_id,
+    ),
+  );
+  const shellIds = new Set(
+    blocks("tool_use")
+      .filter((block) => block.name === "Bash" && !denied.has(block.id))
+      .map((block) => block.id),
+  );
+  const results = blocks("tool_result").filter((block) =>
+    shellIds.has(block.tool_use_id),
+  );
+  return results.length > 0 && results.every((block) => block.is_error === true)
+    ? results.length
+    : 0;
+}
+
 function classifyExecutionFile(
   executionFilePath,
   {
@@ -577,6 +610,7 @@ const FAILURE_CLASSES = [
   "sandbox-unavailable",
   "skipped-validation",
   "incomplete",
+  "shell-failed",
   "no-credential",
   "no-outcome",
   "other",
@@ -784,6 +818,7 @@ module.exports = {
   creditStopResetsAt,
   FAILURE_CLASSES,
   FALLBACK_REASONS,
+  failedShellCalls,
   isCreditStop,
   JOB_PATTERN,
   RUN_ATTEMPT_PATTERN,

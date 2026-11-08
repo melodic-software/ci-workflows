@@ -14,6 +14,7 @@ const {
 } = require("../../scripts/temporary-directories.cjs");
 const {
   classifyExecutionFile,
+  failedShellCalls,
   laneReport,
   readRunRecord,
   recordText,
@@ -1201,4 +1202,48 @@ test("resets and its window come from a rejected event in either field form", ()
   const camelStop = record([rateLimitEvent("rejected", NEW_YEAR, "five_hour")]);
   assert.equal(camelStop.resetsAt, "2026-01-01T00:00:00Z");
   assert.equal(camelStop.resetsWindow, "five_hour");
+});
+
+// Shapes from the #816 probe (CLI 2.1.305, stream-json): a non-zero Bash exit
+// records `{"type":"tool_result","content":"Exit code 1","is_error":true}`; a
+// denied call records `is_error: true` too and its id is listed in the result
+// message's `permission_denials` (Agent SDK `SDKPermissionDenial`).
+const shellUse = (id, name = "Bash") => ({
+  type: "assistant",
+  message: { content: [{ type: "tool_use", id, name, input: { command: "gh pr diff 7" } }] },
+});
+const shellResult = (id, isError) => ({
+  type: "user",
+  message: {
+    content: [{ type: "tool_result", tool_use_id: id, content: isError ? "Exit code 1" : "ok", is_error: isError }],
+  },
+});
+const runResult = (denied = []) => ({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  permission_denials: denied.map((id) => ({ tool_name: "Bash", tool_use_id: id, tool_input: {} })),
+});
+
+test("a run whose every allowed Bash call failed counts those calls", () => {
+  for (const [label, messages, expected] of [
+    ["two failed calls", [shellUse("a"), shellResult("a", true), shellUse("b"), shellResult("b", true), runResult()], 2],
+    ["a denied call beside a failed one", [shellUse("a"), shellResult("a", true), shellUse("d"), shellResult("d", true), runResult(["d"])], 1],
+    ["a successful Read is not a working shell", [shellUse("r", "Read"), shellResult("r", false), shellUse("a"), shellResult("a", true), runResult()], 1],
+  ]) {
+    assert.equal(failedShellCalls(messages), expected, label);
+  }
+});
+
+test("a run with a working, denied-only, absent or unanswered shell is not shell-failed", () => {
+  for (const [label, messages] of [
+    ["one success among failures", [shellUse("a"), shellResult("a", true), shellUse("b"), shellResult("b", false), runResult()]],
+    ["only denied calls", [shellUse("d"), shellResult("d", true), runResult(["d"])]],
+    ["no Bash calls", [shellUse("r", "Read"), shellResult("r", true), runResult()]],
+    ["a Bash call with no result", [shellUse("a"), runResult()]],
+    ["no messages", []],
+  ]) {
+    assert.equal(failedShellCalls(messages), 0, label);
+  }
+  assert.equal(failedShellCalls(null), 0, "an unreadable execution file");
 });

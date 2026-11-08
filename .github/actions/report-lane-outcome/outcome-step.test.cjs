@@ -69,6 +69,7 @@ async function runOutcome({
   handoff = "",
   requireCompletion = "",
   completion = "",
+  detectFailedShell = "",
   runId = "",
   runAttempt = "",
   jobId = "",
@@ -93,6 +94,7 @@ async function runOutcome({
     "HANDOFF",
     "REQUIRE_COMPLETION",
     "COMPLETION",
+    "DETECT_FAILED_SHELL",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -113,6 +115,7 @@ async function runOutcome({
     HANDOFF: handoff,
     REQUIRE_COMPLETION: requireCompletion,
     COMPLETION: completion,
+    DETECT_FAILED_SHELL: detectFailedShell,
     RUN_ID: runId,
     RUN_ATTEMPT: runAttempt,
     JOB_ID: jobId,
@@ -968,6 +971,66 @@ test("the step outcome and class map to the record's outcome", async () => {
   }
 });
 
+// The #816 probe's shapes: a failed Bash call's tool_result carries
+// `is_error: true`, the run's own result stays a success.
+const blindShellRun = () =>
+  writeExecutionFile([
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "gh pr diff 7" } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "Exit code 1", is_error: true }] } },
+    { type: "result", subtype: "success", is_error: false, num_turns: 3, permission_denials: [] },
+  ]);
+
+test("with detect-failed-shell, a green run whose every allowed Bash call failed is shell-failed, not a review", async () => {
+  const executionFile = blindShellRun();
+  const off = await runOutcome({ outcome: "success", executionFile });
+  assert.equal(off.outputs.review_ran, "true", "without the input the plain success rule holds");
+  assert.deepEqual(off.errors, []);
+
+  const { outputs, errors, notices } = await runOutcome({
+    outcome: "success",
+    executionFile,
+    detectFailedShell: "true",
+    laneId: "pr-review-security",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.equal(outputs.failure_class, "shell-failed");
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(outputs.review_ran, "false");
+  assert.deepEqual(notices, []);
+  assert.equal(errors.length, 1);
+  assert.ok(
+    errors[0].startsWith(
+      "Claude review concluded: success class=shell-failed credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 — " +
+        "all 1 allowed Bash call(s) failed, so the review ran with no working shell. lane-outcome {",
+    ),
+    errors[0],
+  );
+  const record = readRecord(errors[0]);
+  assert.deepEqual([record.outcome, record.class], ["failure", "shell-failed"]);
+  assert.equal(outputs.record, JSON.stringify(record));
+});
+
+test("with detect-failed-shell, a run with one working Bash call is still a review, and incomplete is reported first", async () => {
+  const working = writeExecutionFile([
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: {} }, { type: "tool_use", id: "b2", name: "Bash", input: {} }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b1", content: "Exit code 1", is_error: true }, { type: "tool_result", tool_use_id: "b2", content: "ok", is_error: false }] } },
+    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
+  ]);
+  const ran = await runOutcome({ outcome: "success", executionFile: working, detectFailedShell: "true" });
+  assert.equal(ran.outputs.review_ran, "true");
+  assert.deepEqual(ran.errors, []);
+
+  const both = await runOutcome({
+    outcome: "success",
+    executionFile: blindShellRun(),
+    detectFailedShell: "true",
+    requireCompletion: "true",
+    completion: "no summary",
+  });
+  assert.equal(both.outputs.failure_class, "incomplete");
+  assert.equal(both.errors.length, 1);
+});
+
 test("a caller that sets lane-id but cannot get a record gets the tokens alone and a warning naming what is missing", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
@@ -1375,7 +1438,7 @@ test("the schema accepts a record with every run-context field and rejects value
 test("every class the classifier, run-claude-cli and the review lanes produce is in the closed enum", () => {
   for (const known of [
     "auth", "credit-stop", "rate-limit", "overloaded", "max-turns", "timeout", "install-failed",
-    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "no-credential", "no-outcome", "other",
+    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "shell-failed", "no-credential", "no-outcome", "other",
   ]) {
     assert.ok(schema.properties.class.enum.includes(known), known);
   }
