@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { spawnSync } = require("node:child_process");
 const { generateKeyPairSync } = require("node:crypto");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -20,7 +21,7 @@ const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" });
 function extractAttestationScript() {
   const lines = workflow.split(/\r?\n/u);
   const stepIndex = lines.findIndex((line) =>
-    line.includes("- name: Attest App identity and exact repository access"),
+    line.includes("- name: Attest App identity and target repository access"),
   );
   assert.notEqual(stepIndex, -1, "attestation step must exist");
   const scriptIndex = lines.findIndex(
@@ -86,6 +87,8 @@ async function runAttestation({
   const abortTimeouts = [];
   const secrets = [];
   const info = [];
+  const outputs = {};
+  const warnings = [];
   let repositoryObservation = -1;
   const defaultPages = [
     {
@@ -103,6 +106,7 @@ async function runAttestation({
     EXPECTED_REPOSITORIES: JSON.stringify(expected),
     GITHUB_API_URL: "https://api.github.com",
     INSTALLATION_ID: "144867070",
+    TRUST_ROOT_REPOSITORIES: "melodic-software/azure-iac",
     ...env,
   });
   try {
@@ -160,7 +164,11 @@ async function runAttestation({
     };
     const core = {
       info: (message) => info.push(message),
+      setOutput: (name, value) => {
+        outputs[name] = value;
+      },
       setSecret: (value) => secrets.push(value),
+      warning: (message) => warnings.push(message),
     };
     const execute = new AsyncFunction(
       "github",
@@ -172,7 +180,15 @@ async function runAttestation({
       attestationScript,
     );
     await execute(github, core, require, Buffer, fetchMetadata, abortSignal);
-    return { abortTimeouts, calls, info, metadataCalls, secrets };
+    return {
+      abortTimeouts,
+      calls,
+      info,
+      metadataCalls,
+      outputs,
+      secrets,
+      warnings,
+    };
   } finally {
     for (const name of Object.keys(process.env)) {
       if (!(name in originalEnvironment)) delete process.env[name];
@@ -246,8 +262,115 @@ test("attests JWT metadata and one exact repository page", async () => {
   assert.equal(result.secrets.length, 1, "derived JWT must be masked");
   assert.equal(result.secrets[0], jwt);
   assert.deepEqual(result.info, [
-    "Attested 2 selected repositories for melodic-standards-sync.",
+    "Attested 2 of 2 manifest targets for melodic-standards-sync (0 over-granted).",
   ]);
+  assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("a manifest target the App cannot reach is reported unreachable, not a failed attestation", async () => {
+  const result = await runAttestation({
+    pages: [{ total_count: 1, repositories: [repository("repository-1", 1)] }],
+  });
+  assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), [
+    "melodic-software/repository-2",
+  ]);
+  assert.equal(result.warnings.length, 1);
+  assert.match(
+    result.warnings[0],
+    /cannot reach manifest targets melodic-software\/repository-2;/u,
+  );
+});
+
+test("an extra selected repository is an over-grant finding, not a failed attestation", async () => {
+  const result = await runAttestation({
+    pages: [
+      {
+        total_count: 3,
+        repositories: [
+          repository("repository-1", 1),
+          repository("repository-2", 2),
+          repository("excess", 3),
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
+  assert.equal(result.warnings.length, 1);
+  assert.match(
+    result.warnings[0],
+    /over-grant: melodic-software\/excess selected on installation 144867070/u,
+  );
+});
+
+// azure-iac, a trust root, must stay out of the App's reach.
+test("an over-grant that reaches azure-iac fails the whole attestation", async () => {
+  await assert.rejects(
+    runAttestation({
+      pages: [
+        {
+          total_count: 3,
+          repositories: [
+            repository("repository-1", 1),
+            repository("repository-2", 2),
+            repository("azure-iac", 3),
+          ],
+        },
+      ],
+    }),
+    /trust root melodic-software\/azure-iac is selected on installation 144867070/u,
+  );
+});
+
+test("the workflow names azure-iac as a trust root", () => {
+  assert.match(
+    workflow,
+    /TRUST_ROOT_REPOSITORIES: melodic-software\/azure-iac\n/u,
+  );
+});
+
+test("equal-count access with one swap reports both the unreachable target and the over-grant", async () => {
+  const result = await runAttestation({
+    pages: [
+      {
+        total_count: 2,
+        repositories: [repository("repository-1", 1), repository("excess", 2)],
+      },
+    ],
+  });
+  assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), [
+    "melodic-software/repository-2",
+  ]);
+  assert.equal(result.warnings.length, 2);
+  assert.ok(
+    result.warnings.some((message) =>
+      /over-grant: melodic-software\/excess/u.test(message),
+    ),
+  );
+});
+
+test("paginates past the manifest size when the App holds more repositories", async () => {
+  const expected = expectedRepositories(2);
+  const installed = [...expected];
+  for (let index = 1; installed.length < 101; index += 1) {
+    installed.push(`melodic-software/extra-${index}`);
+  }
+  const all = repositoriesFrom(installed);
+  const result = await runAttestation({
+    expected,
+    pages: [
+      { total_count: 101, repositories: all.slice(0, 100) },
+      { total_count: 101, repositories: all.slice(100) },
+    ],
+  });
+  assert.equal(result.calls.length, 4, "two pages read twice");
+  assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
+  assert.equal(
+    result.warnings.length,
+    1,
+    "one annotation for every excess repository",
+  );
+  assert.match(result.warnings[0], /extra-1, .*extra-99 selected/u);
 });
 
 test("paginates a full exact repository set", async () => {
@@ -371,30 +494,6 @@ for (const [name, options, pattern] of [
     "suspended installation",
     { installation: { suspended_at: "2026-07-15T00:00:00Z" } },
     /metadata does not match/u,
-  ],
-  [
-    "missing repository access",
-    {
-      pages: [
-        { total_count: 1, repositories: [repository("repository-1", 1)] },
-      ],
-    },
-    /reports 1 repositories; expected 2/u,
-  ],
-  [
-    "equal-count excess access",
-    {
-      pages: [
-        {
-          total_count: 2,
-          repositories: [
-            repository("repository-1", 1),
-            repository("excess", 2),
-          ],
-        },
-      ],
-    },
-    /repository access differs/u,
   ],
   [
     "malformed repository page",
@@ -583,4 +682,66 @@ test("workflow gates every target mutation behind full-manifest attestation", ()
   assert.match(sync, /permission-contents: write/u);
   assert.match(sync, /name: Check out target/u);
   assert.match(sync, /peter-evans\/create-pull-request@/u);
+  assert.match(
+    attest,
+    /unreachable-repositories: \$\{\{ steps\.attestation\.outputs\.unreachable-repositories \}\}/u,
+  );
+});
+
+function extractTargetGate() {
+  const lines = workflow.split(/\r?\n/u);
+  const stepIndex = lines.findIndex((line) =>
+    line.includes("- name: Require App access to this target"),
+  );
+  assert.notEqual(stepIndex, -1, "per-target access gate must exist");
+  const runIndex = lines.findIndex(
+    (line, index) => index > stepIndex && /^ {8}run: \|$/u.test(line),
+  );
+  const block = lines.slice(stepIndex, runIndex).join("\n");
+  const body = [];
+  for (let index = runIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.length > 0 && !line.startsWith("          ")) break;
+    body.push(line.slice(10));
+  }
+  return { block, script: body.join("\n") };
+}
+
+function runTargetGate(target, unreachable) {
+  return spawnSync("bash", ["-c", extractTargetGate().script], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, TARGET: target, UNREACHABLE: unreachable },
+  });
+}
+
+test("the per-target gate is the sync job's first step and reads the attest output", () => {
+  const sync = workflow.match(/\n {2}sync:\n([\s\S]*)$/u)?.[1] ?? "";
+  assert.match(
+    sync,
+    /steps:\n {6}- name: Require App access to this target\n/u,
+  );
+  const { block } = extractTargetGate();
+  assert.match(
+    block,
+    /UNREACHABLE: \$\{\{ needs\.attest\.outputs\.unreachable-repositories \}\}/u,
+  );
+  assert.match(block, /TARGET: \$\{\{ matrix\.repo \}\}/u);
+});
+
+test("an unreachable target fails only its own sync job", () => {
+  const unreachable = JSON.stringify(["melodic-software/medley"]);
+  const blocked = runTargetGate("melodic-software/medley", unreachable);
+  assert.equal(blocked.status, 1);
+  assert.match(
+    blocked.stdout,
+    /::error::.*cannot reach melodic-software\/medley/u,
+  );
+  const other = runTargetGate("melodic-software/dotfiles", unreachable);
+  assert.equal(other.status, 0, other.stdout + other.stderr);
+});
+
+test("the per-target gate fails closed without an attest list", () => {
+  const result = runTargetGate("melodic-software/dotfiles", "");
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /no unreachable-repositories list/u);
 });

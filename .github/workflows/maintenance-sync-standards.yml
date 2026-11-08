@@ -156,6 +156,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      unreachable-repositories: ${{ steps.attestation.outputs.unreachable-repositories }}
     steps:
       - name: Require App credentials
         env:
@@ -173,10 +175,11 @@ jobs:
         with:
           client-id: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
-          owner: melodic-software # zizmor: ignore[github-app] attesting the App identity and exact repository access needs an org-wide metadata read
+          owner: melodic-software # zizmor: ignore[github-app] attesting the App identity and its repository access needs an org-wide metadata read
           permission-metadata: read
 
-      - name: Attest App identity and exact repository access
+      - name: Attest App identity and target repository access
+        id: attestation
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
@@ -186,6 +189,7 @@ jobs:
           EXPECTED_INSTALLATION_ID: '144867070'
           EXPECTED_OWNER: melodic-software
           EXPECTED_REPOSITORIES: ${{ needs.plan.outputs.expected-repositories }}
+          TRUST_ROOT_REPOSITORIES: melodic-software/azure-iac
           GITHUB_API_URL: ${{ github.api_url }}
           INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
         with:
@@ -305,8 +309,8 @@ jobs:
               const seenIds = new Set();
               const snapshot = new Set();
               let totalCount;
-              // The exact total and unique 100-entry non-final pages make this bound exhaustive.
-              const maximumPages = Math.max(1, Math.ceil(expectedSet.size / 100));
+              // The first page's total and unique 100-entry non-final pages make this bound exhaustive.
+              let maximumPages = 1;
               for (let page = 1; page <= maximumPages; page += 1) {
                 const response = await github.request('GET /installation/repositories', {
                   page,
@@ -325,9 +329,7 @@ jobs:
                 }
                 if (totalCount === undefined) {
                   totalCount = data.total_count;
-                  if (totalCount !== expectedSet.size) {
-                    fail(`installation reports ${totalCount} repositories; expected ${expectedSet.size}`);
-                  }
+                  maximumPages = Math.max(1, Math.ceil(totalCount / 100));
                 } else if (data.total_count !== totalCount) {
                   fail(`repository total_count changed on page ${page}`);
                 }
@@ -367,12 +369,24 @@ jobs:
               fail('repository access changed between consecutive observations');
             }
             const actualSet = new Set(secondSnapshot);
-            const missing = [...expectedSet].filter((repository) => !actualSet.has(repository));
-            const excess = [...actualSet].filter((repository) => !expectedSet.has(repository));
-            if (missing.length > 0 || excess.length > 0) {
-              fail(`repository access differs (missing: ${missing.join(', ') || 'none'}; excess: ${excess.join(', ') || 'none'})`);
+            const missing = [...expectedSet].filter((repository) => !actualSet.has(repository)).sort();
+            const excess = secondSnapshot.filter((repository) => !expectedSet.has(repository));
+            // A trust root in reach of this write-capable App is the one over-grant that stops every target.
+            const trustRoots = required('TRUST_ROOT_REPOSITORIES').split(',').map((name) => name.trim());
+            const reachableTrustRoots = excess.filter((repository) => trustRoots.includes(repository));
+            if (reachableTrustRoots.length > 0) {
+              fail(`trust root ${reachableTrustRoots.join(', ')} is selected on installation ${expectedInstallationId}; remove it under Repository access before any sync runs`);
             }
-            core.info(`Attested ${actualSet.size} selected repositories for ${expectedSlug}.`);
+            // A missing target fails only its own sync job; excess access is reported, never blocking.
+            core.setOutput('unreachable-repositories', JSON.stringify(missing));
+            // One annotation per kind: GitHub caps warning annotations per step.
+            if (missing.length > 0) {
+              core.warning(`Standards sync App cannot reach manifest targets ${missing.join(', ')}; their sync jobs will fail.`);
+            }
+            if (excess.length > 0) {
+              core.warning(`Standards sync App over-grant: ${excess.join(', ')} selected on installation ${expectedInstallationId} but not manifest targets. Remove them under Repository access.`);
+            }
+            core.info(`Attested ${expectedSet.size - missing.length} of ${expectedSet.size} manifest targets for ${expectedSlug} (${excess.length} over-granted).`);
 
   sync:
     needs: [plan, attest]
@@ -389,6 +403,21 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
+      - name: Require App access to this target
+        env:
+          TARGET: ${{ matrix.repo }}
+          UNREACHABLE: ${{ needs.attest.outputs.unreachable-repositories }}
+        run: |
+          set -euo pipefail
+          if ! jq --exit-status 'type == "array"' <<< "$UNREACHABLE" > /dev/null; then
+            echo "::error::The attest job reported no unreachable-repositories list."
+            exit 1
+          fi
+          if jq --exit-status --arg target "$TARGET" 'any(.[]; . == $target)' <<< "$UNREACHABLE" > /dev/null; then
+            echo "::error::The melodic-standards-sync App cannot reach $TARGET: select it under Repository access on installation 144867070, then re-run all jobs (a re-run of this job alone reuses the old attestation), or let the next sync carry it."
+            exit 1
+          fi
+
       - name: Require App credentials
         env:
           APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
