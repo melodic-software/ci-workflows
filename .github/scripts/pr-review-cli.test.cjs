@@ -1019,8 +1019,8 @@ test("each pull request value reads the resolve-pull-request job's output with p
   }
   // Each leg read the event 17 times (checkout, scope 4, full diff 2,
   // context, settled threads 4, prior findings 2, compose 2, handoff
-  // upload); the status job 7 (download, publish 3, hold 3).
-  assert.equal(seen, 3 * 17 + 7);
+  // upload); the status job 8 (download, hold note, publish 3, hold 3).
+  assert.equal(seen, 3 * 17 + 8);
 });
 
 test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
@@ -3174,7 +3174,7 @@ async function incrementalReview(
   };
   const prFiles = fixture.prFiles(head);
   const github = {
-    hook: { after: () => {}, error: () => {} },
+    hook: { after: () => {}, error: () => {}, wrap: () => {} },
     paginate: async (fn) => fn(),
     rest: {
       issues: {
@@ -4717,7 +4717,7 @@ test("an incremental review leaves a file the push deleted out of its file count
       ].join("\n"),
     };
     const github = {
-      hook: { after: () => {}, error: () => {} },
+      hook: { after: () => {}, error: () => {}, wrap: () => {} },
       paginate: async (fn) => fn(),
       rest: {
         issues: { listComments: () => [marker] },
@@ -5571,7 +5571,7 @@ test("an incremental review leaves the data files the base branch declares out o
       body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${LAST} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=none caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
     };
     const github = {
-      hook: { after: () => {}, error: () => {} },
+      hook: { after: () => {}, error: () => {}, wrap: () => {} },
       paginate: async (fn) => fn(),
       rest: {
         issues: { listComments: () => [marker] },

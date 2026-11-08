@@ -119,6 +119,7 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
       hook: {
         after: (_name, fn) => hooks.after.push(fn),
         error: (_name, fn) => hooks.error.push(fn),
+        wrap: () => {},
       },
       paginate: async (method, params) => (await method(params)).data,
     },
