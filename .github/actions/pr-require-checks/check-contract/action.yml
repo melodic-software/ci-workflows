@@ -48,8 +48,11 @@ inputs:
       a `merge_group` run every queue entry at or ahead of the queued pull
       request is read in the same request, since a passing group merges them
       all. A label that cannot be read, after the read's resends, fails the
-      step with `hold-label-unreadable`; a re-run reads it again, so the
-      failure never outlasts GitHub's answer. Off by default.
+      step with `hold-label-unreadable`; a re-run reads it again, which clears
+      a transient failure. A failure that repeats on every read (a token that
+      cannot read the merge queue, a server that rejects `mergeQueue`, or a
+      queue of more than 100 entries or an entry with more than 100 labels)
+      fails every merge group until the input is turned off. Off by default.
     default: 'false'
   hold-label:
     description: Label whose presence holds the merge while `enforce-hold-label` is on.

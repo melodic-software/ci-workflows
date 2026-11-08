@@ -92,9 +92,18 @@ own comment and would post a new one on every failing run.
   `hold-label-unreadable`. That happens after `gh-api.sh` has resent the read
   (up to 3 sends on a 5xx or network error, one bounded rate-limit wait), and
   also when the queue lacks the queued pull request or a page of entries or
-  labels is incomplete. A re-run reads again, so the red lasts only as long as
-  GitHub's failure. The check adds no request, so the step's worst case stays
-  about 132 s, inside a 3-minute `ci-status` job.
+  labels is incomplete. A re-run reads again, which clears a transient
+  failure. A failure that repeats on every read (a token that cannot read the
+  queue, a server that rejects `mergeQueue`, more than 100 entries, or more
+  than 100 labels on one entry) fails every merge group until the input is
+  turned off. The check adds no request, so the step's worst case stays about
+  132 s, inside a 3-minute `ci-status` job.
+- The group walk takes a lower `position` as nearer the front of the queue.
+  GitHub's schema does not say so. If it is the other way round, the walk
+  reads the entries behind the queued pull request instead of those ahead: a
+  held entry behind fails a group that does not hold it, and a held entry
+  ahead can merge inside the group unless its own group already failed on the
+  label (`ALLGREEN`, below).
 - The head ref names only the last pull request in the group, so the merge
   queue must use `grouping_strategy: ALLGREEN`. Under `HEADGREEN` a pull request
   that failed its own group, a `do-not-merge` one included, can still merge
