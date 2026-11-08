@@ -111,7 +111,7 @@ test("approved native tests and module hygiene stay blocking", () => {
 test("this exact workflow head is behaviorally dogfooded on native Windows", () => {
   assert.match(
     ciWorkflow,
-    /^ {2}pr-run-checks-go:[\s\S]*?uses: \.\/\.github\/workflows\/pr-run-checks-go\.yml[\s\S]*?working-directory: fixtures\/go\/windows-race/mu,
+    /^ {2}pr-run-checks-go:[\s\S]*?uses: \$\/\.github\/workflows\/pr-run-checks-go\.yml[\s\S]*?working-directory: fixtures\/go\/windows-race/mu,
   );
   assert.match(ciWorkflow, /^ {4}needs: \[[^\n]*pr-run-checks-go[^\n]*\]$/mu);
   assert.match(

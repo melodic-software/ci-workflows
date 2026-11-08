@@ -208,12 +208,7 @@ test("on merge_group every aggregated lane and ci-status run in full", () => {
 });
 
 test("on merge_group the advisory lanes stay off and no run shares a group", () => {
-  for (const name of [
-    "pr-review",
-    "pr-review-security",
-    "check-actionlint-kjanat-soak",
-    ISSUE_JOB,
-  ]) {
+  for (const name of ["pr-review", "pr-review-security", ISSUE_JOB]) {
     const block = jobBlocks.find((candidate) => jobName(candidate) === name);
     assert.ok(block !== undefined, `no job named ${name}`);
     assert.equal(evaluate(jobCondition(block), mergeGroupContext), false);
@@ -226,18 +221,12 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
 
 test("the advisory lanes and issue labeler stay out of ci-status", () => {
   // Claude lane checks are advisory: a model outage must never block a merge.
-  // The kjanat/actionlint soak (#788) is advisory until phase 2 removes it.
   const needs =
     /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu.exec(
       ciWorkflow,
     )?.groups?.list;
   assert.ok(needs !== undefined, "ci-status has no needs list");
-  for (const job of [
-    "pr-review",
-    "pr-review-security",
-    "check-actionlint-kjanat-soak",
-    ISSUE_JOB,
-  ]) {
+  for (const job of ["pr-review", "pr-review-security", ISSUE_JOB]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
     assert.ok(!needs.split(/,\s*/u).includes(job), `ci-status waits on ${job}`);
     assert.doesNotMatch(ciWorkflow, new RegExp(`needs\\.${job}\\.result`, "u"));
@@ -316,10 +305,10 @@ test("the ci-status job runs pr-contract before the aggregation", () => {
   // covers the read, and without the scope the Actions calls 403.
   assert.match(ciStatusJob, /^ {6}actions: write$/mu);
   const contractStep = ciStatusJob.indexOf(
-    "./.github/actions/pr-require-checks/check-contract",
+    "$/.github/actions/pr-require-checks/check-contract",
   );
   const aggregateStep = ciStatusJob.indexOf(
-    "./.github/actions/pr-require-checks/aggregate-results",
+    "$/.github/actions/pr-require-checks/aggregate-results",
   );
   assert.ok(contractStep !== -1 && aggregateStep !== -1);
   assert.ok(contractStep < aggregateStep);
@@ -380,7 +369,7 @@ test("pr-require-checks.yml consolidates the hygiene composites into the checks 
   assert.match(ciWorkflow, /^ {2}pr-run-checks:$/mu);
   assert.match(
     ciWorkflow,
-    /^ {4}uses: \.\/\.github\/workflows\/pr-run-checks\.yml$/mu,
+    /^ {4}uses: \$\/\.github\/workflows\/pr-run-checks\.yml$/mu,
   );
 
   // change-detection reads the PR file listing, and a called workflow cannot

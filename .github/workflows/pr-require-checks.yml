@@ -54,8 +54,14 @@ concurrency:
     || format('{0}-{1}', github.workflow, github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: true
 
-# Dogfood: this repo is the first consumer of its own composite actions. Local
-# (./) action refs work here because the checkout IS this repo.
+# Dogfood: this repo is the first consumer of its own composite actions. `$/`
+# refs resolve to this workflow's own commit, the one each job checks out.
+#
+# Only `intake-label-needs-triage` runs on `issues`, the one low-trust trigger
+# here, so it alone caps its callee's cache access. The other reusable calls
+# carry an actionlint `cache-call-unrestricted` exception: the rule does not
+# read `if:` guards, and a cap would also apply on the events they run on,
+# stopping the composites' push-to-main cache saves.
 #
 # File-type-scoped lanes gate on `changes` at JOB level, never workflow-level
 # `paths:`, which would wedge the required check Pending. Each gate reads
@@ -79,7 +85,7 @@ jobs:
           persist-credentials: false
       - name: Detect relevant lanes
         id: detect
-        uses: ./.github/actions/detect-changes
+        uses: $/.github/actions/detect-changes
         with:
           # Every group includes `.github/**`, so any workflow, action, or
           # bundled script change re-runs every scoped lane.
@@ -166,7 +172,8 @@ jobs:
       # change-detection lists the pull request's files. A called workflow
       # cannot elevate, so the grant has to be here as well as in pr-run-checks.yml.
       pull-requests: read
-    uses: ./.github/workflows/pr-run-checks.yml
+    # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
+    uses: $/.github/workflows/pr-run-checks.yml
     with:
       # This public repository's hosted lane is free; private consumers pass
       # their hardcoded fleet label instead.
@@ -204,7 +211,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Analyze PowerShell
-        uses: ./.github/actions/psscriptanalyzer
+        uses: $/.github/actions/psscriptanalyzer
       - name: Analyze composite action PowerShell
         # pwsh embedded in composite metadata is invisible to the lane action
         # and to actionlint; the lane action installed the pinned analyzer.
@@ -225,7 +232,7 @@ jobs:
       - name: Resolve heading citations
         # Scope to the fixture corpus: the repo's own docs use no `file.md`
         # "Anchor" prose-cite convention, so the fixture is what exercises it.
-        uses: ./.github/actions/check-markdown-references
+        uses: $/.github/actions/check-markdown-references
         with:
           globs: fixtures/reference-integrity/*.md
 
@@ -240,7 +247,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint and format-check Python
-        uses: ./.github/actions/ruff
+        uses: $/.github/actions/ruff
         with:
           paths: fixtures/python/good
           config: fixtures/python/good/ruff.toml
@@ -256,7 +263,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Type-check Python
-        uses: ./.github/actions/pyright
+        uses: $/.github/actions/pyright
         with:
           config: fixtures/python/good/pyrightconfig.json
 
@@ -272,14 +279,14 @@ jobs:
           persist-credentials: false
       - name: Lint and format-check JS/TS fixture
         # Biome has no CLI exclude, so scope at the conforming fixture.
-        uses: ./.github/actions/biome
+        uses: $/.github/actions/biome
         with:
           paths: fixtures/typescript/good
           config: fixtures/typescript/good/biome.json
       - name: Lint and format-check repo scripts
         # The repo-root biome.json scopes itself to .github/scripts, so authors
         # reproduce this step with `npx @biomejs/biome ci .github/scripts`.
-        uses: ./.github/actions/biome
+        uses: $/.github/actions/biome
         with:
           paths: .github/scripts
 
@@ -296,7 +303,7 @@ jobs:
       - name: Build .NET contract fixture
         # Scope at a self-contained fixture project; this lane verifies the
         # action contract without mirroring the standards catalog.
-        uses: ./.github/actions/dotnet-build
+        uses: $/.github/actions/dotnet-build
         with:
           project: fixtures/dotnet/good/good.csproj
 
@@ -311,7 +318,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify .NET whitespace
-        uses: ./.github/actions/dotnet-format
+        uses: $/.github/actions/dotnet-format
         with:
           project: fixtures/dotnet/good/good.csproj
 
@@ -326,7 +333,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: ./.github/actions/actionlint
+        uses: $/.github/actions/actionlint
       - name: Prove embedded scripts are checked by ShellCheck
         run: |
           set -euo pipefail
@@ -355,43 +362,6 @@ jobs:
       - name: Prove a broken composite shell block fails
         run: bash .github/scripts/composite-run-shellcheck.test.sh
 
-  # Advisory soak of the kjanat/actionlint fork (#788 phase 1): never in
-  # `ci-status`, pull_request only, so it cannot block a merge. It lints with the
-  # `$/` and `queue` ignores removed and groups the fork's findings against the
-  # rhysd baseline the gating lane pins. A failed install, a failed provenance
-  # check or a fork that rejects `$/` or `queue` turns it red; findings do not.
-  # Soak: started 2026-10-20, ends 2026-11-03 (two weeks of pull request runs).
-  # The soak is clean when no run reports `ref is missing` or `unexpected key
-  # "queue"`, the support probe passes on every run, and every finding is
-  # classified as a true positive, a false positive or a cache-safety-policy
-  # finding with its run link in the tally posted on #788. Phase 2 removes
-  # this job.
-  # Trust anchors: KJANAT_SHA256 pins the linux_amd64 archive and KJANAT_COMMIT
-  # the release commit its provenance must name; KJANAT_VERSION only builds the
-  # asset URL, because the fork's version numbers overlap upstream's.
-  check-actionlint-kjanat-soak:
-    if: ${{ github.event_name != 'issues' && github.event_name == 'pull_request' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install both actionlint builds and verify the fork's provenance
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KJANAT_VERSION: 1.17.0
-          KJANAT_COMMIT: 08bb2c4f0d039744455b87aef1c647fb8b66d37b
-          KJANAT_SHA256: 620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a
-        run: bash .github/scripts/actionlint-kjanat-soak.sh
-      # No token in this step: it runs the fork's binary over the checkout.
-      - name: Soak kjanat/actionlint against the rhysd baseline
-        run: >-
-          node .github/scripts/actionlint-kjanat-soak.cjs
-          "$RUNNER_TEMP/ci-workflows/bin/actionlint-kjanat"
-          "$RUNNER_TEMP/ci-workflows/bin/actionlint"
-
   jsonschema:
     needs: detect-changes
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['jsonschema'] != 'false' }}
@@ -410,12 +380,12 @@ jobs:
       # vendor.github-workflows once a check-jsonschema release vendors a
       # schema with `cache-mode`.
       - name: Validate workflows
-        uses: ./.github/actions/check-jsonschema
+        uses: $/.github/actions/check-jsonschema
         with:
           schemafile: https://raw.githubusercontent.com/SchemaStore/schemastore/8324c4fe6ccf1698c05d053e8b9d4c4a08c23a1f/src/schemas/json/github-workflow.json
           files: .github/workflows/*.yml
       - name: Validate composite actions
-        uses: ./.github/actions/check-jsonschema
+        uses: $/.github/actions/check-jsonschema
         with:
           builtin-schema: vendor.github-actions
           files: .github/actions/*/action.yml .github/actions/*/*/action.yml
@@ -430,7 +400,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Reject action.yaml metadata (action.yml is enforced exclusively)
-        uses: ./.github/actions/check-action-filename
+        uses: $/.github/actions/check-action-filename
 
   # Enforcing on this repository's own workflows and actions, against the
   # standards naming conventions at a pinned SHA (standards#672).
@@ -445,13 +415,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Check workflow and action naming
-        uses: ./.github/actions/check-workflow-naming
+        uses: $/.github/actions/check-workflow-naming
         with:
           standards-ref: 584df89f3646cbd0fef574b4b79fe7529f29fc76
       - name: Run a misnamed workflow fixture in enforcing mode
         id: bad-enforcing
         continue-on-error: true
-        uses: ./.github/actions/check-workflow-naming
+        uses: $/.github/actions/check-workflow-naming
         with:
           root: fixtures/workflow-naming/bad
           standards-ref: 584df89f3646cbd0fef574b4b79fe7529f29fc76
@@ -488,7 +458,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Guard managed files
-        uses: ./.github/actions/check-managed-files
+        uses: $/.github/actions/check-managed-files
         with:
           standards-ref: c4d865bb123f476cf1cb36d8f8a1ffb588204f00
 
@@ -503,7 +473,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint shell scripts
-        uses: ./.github/actions/shellcheck
+        uses: $/.github/actions/shellcheck
       - name: Test ShellCheck discovery and scoped exclusions
         run: bash .github/actions/shellcheck/run.test.sh
       - name: Test exec-bit shebang mode scan
@@ -524,7 +494,7 @@ jobs:
       - name: Check shell formatting
         # Includes the selector/OSV shell sources so their generated security
         # boundary cannot bypass the required formatter.
-        uses: ./.github/actions/shfmt
+        uses: $/.github/actions/shfmt
         with:
           paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/pr-require-checks/gh-api.sh .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
@@ -594,7 +564,8 @@ jobs:
     # (paths: .github). Not '.': fixtures/ holds deliberately invalid actions
     # that --strict-collection would refuse to load. Gates: any finding fails
     # the lane and so ci-status.
-    uses: ./.github/workflows/pr-audit-workflows.yml
+    # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
+    uses: $/.github/workflows/pr-audit-workflows.yml
     with:
       paths: .github
       fail-on-severity: low
@@ -605,7 +576,8 @@ jobs:
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
     permissions:
       contents: read
-    uses: ./.github/workflows/pr-scan-dependencies.yml
+    # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
+    uses: $/.github/workflows/pr-scan-dependencies.yml
     with:
       # This public repository's hosted lane is free; private consumers must pass
       # their strict selector output instead.
@@ -621,7 +593,8 @@ jobs:
       contents: read
     # The fixture asserts on Windows that the test binary was built with the
     # race detector: behavioral evidence, not a source-text contract alone.
-    uses: ./.github/workflows/pr-run-checks-go.yml
+    # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
+    uses: $/.github/workflows/pr-run-checks-go.yml
     with:
       config: .golangci.yml
       working-directory: fixtures/go/windows-race
@@ -644,6 +617,7 @@ jobs:
       checks: read
       contents: read
       pull-requests: write
+    # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
     uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@main
     with:
       lane: code
@@ -663,6 +637,7 @@ jobs:
       checks: read
       contents: read
       pull-requests: write
+    # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
     uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@main
     with:
       lane: security
@@ -675,11 +650,14 @@ jobs:
       FALLBACK_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
 
   # Labels with the real `needs-triage` label (the reusable's default), so the
-  # label-set guard and the fail-closed existence check run end to end.
+  # label-set guard and the fail-closed existence check run end to end. Anyone
+  # can open an issue, so `cache-mode: none` stops a later callee from
+  # granting itself default-branch cache writes; the labeler uses no cache.
   intake-label-needs-triage:
     if: ${{ github.event_name == 'issues' }}
     permissions:
       issues: write
+    cache-mode: none
     uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@main
 
   # No pr-automerge-dependabot job: melodic-software callers float on this
@@ -716,7 +694,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check the pull-request contract
-        uses: ./.github/actions/pr-require-checks/check-contract
+        uses: $/.github/actions/pr-require-checks/check-contract
         with:
           # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
@@ -724,7 +702,7 @@ jobs:
         # `!cancelled()` so a failing pr-contract step does not skip the
         # `ci-lanes` status write the next contract-only run needs.
         if: ${{ !cancelled() }}
-        uses: ./.github/actions/pr-require-checks/aggregate-results
+        uses: $/.github/actions/pr-require-checks/aggregate-results
         with:
           # While a full run on the SHA is in flight a contract-only run holds,
           # up to `yield-wait-seconds`, with its check run in progress, then

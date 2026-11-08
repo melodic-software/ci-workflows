@@ -15,14 +15,20 @@ inputs:
   color:
     description: Force colored output (true/false).
     default: 'true'
+  # The kjanat/actionlint fork (ci-workflows#788): it accepts `$/` refs and
+  # `concurrency.queue`, which rhysd/actionlint 1.7.12 rejects. Its version
+  # numbers overlap upstream's, so `sha256` is the trust anchor. That digest's
+  # SLSA provenance names release commit 08bb2c4f0d039744455b87aef1c647fb8b66d37b
+  # (`gh attestation verify --repo kjanat/actionlint --source-digest <commit>`);
+  # re-verify it on every bump.
   version:
-    description: Exact actionlint version to install.
-    default: 1.7.12
+    description: Exact kjanat/actionlint release version to install.
+    default: 1.17.0
   sha256:
     description: >-
       SHA-256 of the linux_amd64 .tar.gz release asset for `version`. Change
       together with `version`.
-    default: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    default: 620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a
   shellcheck-version:
     description: >-
       Exact ShellCheck version used by actionlint for embedded bash/sh `run:`
@@ -49,7 +55,7 @@ runs:
     - name: Install actionlint
       shell: bash
       env:
-        URL: https://github.com/rhysd/actionlint/releases/download/v${{ inputs.version }}/actionlint_${{ inputs.version }}_linux_amd64.tar.gz
+        URL: https://github.com/kjanat/actionlint/releases/download/v${{ inputs.version }}/actionlint_${{ inputs.version }}_linux_amd64.tar.gz
         SHA256: ${{ inputs.sha256 }}
         BIN: actionlint
         ARCHIVE_MEMBER: actionlint
