@@ -3229,6 +3229,8 @@ jobs:
                 else if (live.has(priorityPick)) labels.add(priorityPick);
                 else {
                   priorityLost = true;
+                  // The old priority stays: nothing replaced it.
+                  replaced.length = 0;
                   core.warning(`Neither the Priority field nor label '${priorityPick}' could carry the pick.`);
                 }
               }

@@ -1553,6 +1553,24 @@ test("a pick neither the field nor a label can carry keeps the floor", async () 
   assert.ok(warnings.some((w) => /Neither the Priority field/u.test(w)));
 });
 
+test("a pick nothing can carry leaves the old priority label on", async () => {
+  const { removed } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldWriteFails: true,
+    liveLabels: [ESCALATION_LABEL, FLOOR_LABEL, "priority: low"],
+    issueLabels: ["priority: low"],
+    events: [
+      {
+        event: "labeled",
+        label: { name: "priority: low" },
+        actor: { type: "Bot", id: 7 },
+      },
+    ],
+  });
+  assert.deepEqual(removed, []);
+});
+
 test("compose offers a priority the repository has no label for when the field is set", async () => {
   const { outputs } = await compose(async () => ({ repository: null }), {
     ALLOWED_LABELS: "priority: high\npriority: low\n",
