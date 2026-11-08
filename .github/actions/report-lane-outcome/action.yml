@@ -13,8 +13,10 @@ description: >-
   and review-ran false (so callers do not count or credit a review that never
   happened). With require-completion, a success with evidence counts only
   when the lane's completion check says "complete"; anything else is a red
-  `class=incomplete`. With detect-failed-shell, a success whose allowed
-  Bash calls all failed, at least failed-shell-min-calls of them, stays a
+  `class=incomplete`, or `class=review-unposted` when completion-class says
+  the session returned no review to post. With detect-failed-shell, a
+  success whose allowed Bash calls all failed, at least
+  failed-shell-min-calls of them, stays a
   success with a `class=shell-failed` warning and `shellFailed: true` in
   the record. On any other outcome it projects the last SDK result message
   from the execution file into safe, structured metadata (classify.cjs — the
@@ -78,7 +80,7 @@ inputs:
     description: >-
       "true" makes a successful outcome with execution evidence count as a
       review only when `completion` is "complete". Anything else concludes
-      class `incomplete`: review-failed "true", review-ran "false". Empty
+      completion-class: review-failed "true", review-ran "false". Empty
       keeps the plain success rule (intake triage).
     required: false
     default: ""
@@ -107,6 +109,14 @@ inputs:
       The lane's completion check: "complete", or the reason no completed
       review was found. A fixed-vocabulary string the lane computes, never
       model text; it is printed in the annotation.
+    required: false
+    default: ""
+  completion-class:
+    description: >-
+      The class a require-completion failure concludes: `incomplete`, or
+      `review-unposted` when the session ended without returning a review
+      to post (no structured output, or no summary). Empty is `incomplete`;
+      any other value fails the step before it reports.
     required: false
     default: ""
   credential:
@@ -192,8 +202,9 @@ outputs:
     description: >-
       One class from docs/lane-outcome.md "Failure classes", or the
       caller's known-failure-class as given (empty on a genuine success;
-      skipped-validation when the action skipped itself; incomplete when
-      require-completion found no completed review).
+      skipped-validation when the action skipped itself; incomplete, or
+      the completion-class given, when require-completion found no
+      completed review).
     value: ${{ steps.outcome.outputs.failure_class }}
   review-detail:
     description: >-
@@ -227,6 +238,7 @@ runs:
         STEP_TIMEOUT_MINUTES: ${{ inputs.step-timeout-minutes }}
         REQUIRE_COMPLETION: ${{ inputs.require-completion }}
         COMPLETION: ${{ inputs.completion }}
+        COMPLETION_CLASS: ${{ inputs.completion-class }}
         DETECT_FAILED_SHELL: ${{ inputs.detect-failed-shell }}
         FAILED_SHELL_MIN_CALLS: ${{ inputs.failed-shell-min-calls }}
         CREDENTIAL: ${{ inputs.credential }}
@@ -269,6 +281,11 @@ runs:
           const minShellCalls = process.env.FAILED_SHELL_MIN_CALLS ?? "";
           if (minShellCalls !== "" && !/^[1-9]\d{0,5}$/u.test(minShellCalls)) {
             core.setFailed("failed-shell-min-calls must be a whole number from 1.");
+            return;
+          }
+          const completionClass = process.env.COMPLETION_CLASS || "incomplete";
+          if (!["incomplete", "review-unposted"].includes(completionClass)) {
+            core.setFailed("completion-class must be empty, incomplete or review-unposted.");
             return;
           }
 
@@ -344,15 +361,15 @@ runs:
               // A green step proves the action ran, not that a review was
               // posted: the model can stop before its summary. A lane that
               // checks completion passes its verdict here, and anything but
-              // "complete" is class `incomplete`, red, with no review-ran.
+              // "complete" is red with no review-ran, as completion-class.
               const completion = process.env.COMPLETION ?? "";
               if (process.env.REQUIRE_COMPLETION === "true" && completion !== "complete") {
-                const { tokens, after } = report(outcome, "", "incomplete");
+                const { tokens, after } = report(outcome, "", completionClass);
                 core.error(
-                  `${lane} concluded: ${outcome} class=incomplete${tokens} — no completed ` +
+                  `${lane} concluded: ${outcome} class=${completionClass}${tokens} — no completed ` +
                     `review was found: ${completion || "the completion check reported nothing"}.${after}`,
                 );
-                core.setOutput("failure_class", "incomplete");
+                core.setOutput("failure_class", completionClass);
                 core.setOutput("review_detail", "(no completed review was found)");
                 core.setOutput("review_failed", "true");
                 core.setOutput("review_ran", "false");

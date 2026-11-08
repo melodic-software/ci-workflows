@@ -376,6 +376,37 @@ test("comments mode fails with a named class when no review happened", async () 
   }
 });
 
+test("a session that returned no review to post fails as review-unposted with the extract step's reason", async () => {
+  const unposted = await publish({
+    KEY_FAILED: "true",
+    KEY_CLASS: "review-unposted",
+    KEY_VERDICT: "chunk 2 of 3: the leg wrote no structured output",
+  });
+  assert.deepEqual(unposted.writes, []);
+  assert.deepEqual(unposted.log.failed, [
+    "claude-review: failure-class=review-unposted: the review session ended without returning a review to post (chunk 2 of 3: the leg wrote no structured output)",
+  ]);
+  const malformed = await publish({
+    KEY_FAILED: "true",
+    KEY_CLASS: "incomplete",
+    KEY_VERDICT: "the review's hold is malformed",
+  });
+  assert.match(
+    malformed.log.failed[0],
+    /failure-class=incomplete: .* \(the review's hold is malformed\)$/u,
+  );
+  // Other classes carry no verdict text.
+  const turns = await publish({
+    KEY_FAILED: "true",
+    KEY_CLASS: "max-turns",
+    KEY_VERDICT: "the leg wrote no structured output",
+  });
+  assert.match(
+    turns.log.failed[0],
+    /failure-class=max-turns: the review used every turn before finishing$/u,
+  );
+});
+
 test("a review not needed carries the last summary forward and leaves the skip notice", async () => {
   const { writes, log } = await publish({
     SCOPE_REVIEW: "false",

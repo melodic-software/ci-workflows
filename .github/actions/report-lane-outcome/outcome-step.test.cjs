@@ -69,6 +69,7 @@ async function runOutcome({
   handoff = "",
   requireCompletion = "",
   completion = "",
+  completionClass = "",
   detectFailedShell = "",
   failedShellMinCalls = "",
   runId = "",
@@ -95,6 +96,7 @@ async function runOutcome({
     "HANDOFF",
     "REQUIRE_COMPLETION",
     "COMPLETION",
+    "COMPLETION_CLASS",
     "DETECT_FAILED_SHELL",
     "FAILED_SHELL_MIN_CALLS",
     "ACTION_PATH",
@@ -117,6 +119,7 @@ async function runOutcome({
     HANDOFF: handoff,
     REQUIRE_COMPLETION: requireCompletion,
     COMPLETION: completion,
+    COMPLETION_CLASS: completionClass,
     DETECT_FAILED_SHELL: detectFailedShell,
     FAILED_SHELL_MIN_CALLS: failedShellMinCalls,
     RUN_ID: runId,
@@ -1055,6 +1058,64 @@ test("with detect-failed-shell, a run with one working Bash call is still a revi
   assert.equal(both.errors.length, 1);
 });
 
+// pr-pipeline-sandbox run 39703998175 attempt 2: a green session at 61 of
+// 75 turns that left its review unposted.
+const unpostedRun = () =>
+  writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 61 },
+  ]);
+
+test("a green session that returned no review to post concludes review-unposted, red, with the lane's reason", async () => {
+  const { outputs, errors, failed } = await runOutcome({
+    outcome: "success",
+    executionFile: unpostedRun(),
+    maxTurns: "75",
+    laneId: "pr-review-security",
+    credential: "REVIEWS_CLAUDE_API_KEY",
+    requireCompletion: "true",
+    completion: "the leg wrote no structured output",
+    completionClass: "review-unposted",
+  });
+  assert.deepEqual(failed, []);
+  assert.equal(outputs.failure_class, "review-unposted");
+  assert.equal(outputs.review_failed, "true");
+  assert.equal(outputs.review_ran, "false");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^Claude review concluded: success class=review-unposted /u);
+  assert.match(errors[0], /no completed review was found: the leg wrote no structured output\./u);
+  const record = readRecord(errors[0]);
+  assert.equal(record.outcome, "failure");
+  assert.equal(record.class, "review-unposted");
+  assert.deepEqual(schemaErrors(schema, record), []);
+});
+
+test("without completion-class, or with incomplete, a failed completion check stays incomplete", async () => {
+  for (const completionClass of ["", "incomplete"]) {
+    const { outputs, errors } = await runOutcome({
+      outcome: "success",
+      executionFile: unpostedRun(),
+      requireCompletion: "true",
+      completion: "the review's hold is malformed",
+      completionClass,
+    });
+    assert.equal(outputs.failure_class, "incomplete", completionClass);
+    assert.match(errors[0], / class=incomplete /u, completionClass);
+  }
+});
+
+test("a completion-class outside incomplete and review-unposted fails the step and reports nothing", async () => {
+  const { outputs, errors, failed } = await runOutcome({
+    outcome: "success",
+    executionFile: unpostedRun(),
+    requireCompletion: "true",
+    completion: "no summary",
+    completionClass: "max-turns",
+  });
+  assert.deepEqual(failed, ["completion-class must be empty, incomplete or review-unposted."]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(outputs, {});
+});
+
 test("a caller that sets lane-id but cannot get a record gets the tokens alone and a warning naming what is missing", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
@@ -1462,7 +1523,7 @@ test("the schema accepts a record with every run-context field and rejects value
 test("every class the classifier, run-claude-cli and the review lanes produce is in the closed enum", () => {
   for (const known of [
     "auth", "credit-stop", "rate-limit", "overloaded", "max-turns", "timeout", "install-failed",
-    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "shell-failed", "no-credential", "no-outcome", "other",
+    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "review-unposted", "shell-failed", "no-credential", "no-outcome", "other",
   ]) {
     assert.ok(schema.properties.class.enum.includes(known), known);
   }
